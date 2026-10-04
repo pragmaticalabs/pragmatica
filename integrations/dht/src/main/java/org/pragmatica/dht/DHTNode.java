@@ -15,11 +15,13 @@
  */
 package org.pragmatica.dht;
 
+import java.nio.ByteBuffer;
 import java.util.Arrays;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
@@ -49,7 +51,60 @@ public final class DHTNode {
     private final NodeId nodeId;
     private final StorageEngine storage;
     private final ConsistentHashRing<NodeId> ring;
-    private final DHTConfig config;
+    /// The replication this node places keys and sizes quorums with. Live (#1777 track 1): the cluster's
+    /// committed `[replication]` factors arrive after boot and may change at runtime ([#resolveReplication]).
+    private final AtomicReference<DHTConfig> config;
+    /// Whether [#config] holds the committed factors yet. Until it does, every partition answers
+    /// [Readiness#CATCHING_UP] and clients refuse quorum operations ([DHTError#REPLICATION_UNRESOLVED]).
+    private final AtomicBoolean replicationResolved;
+    /// The quorum floor of the replication changes not yet settled (#1777, CTO rulings R1, R1b): the strictest old write
+    /// and read quorums, which this node keeps using — each raised to at least the new one — until the cluster COMMITS
+    /// that the change is settled ([#settleReplicationChange]). Never cleared by anything local. Empty when no change
+    /// is unsettled.
+    private final AtomicReference<Option<QuorumFloor>> quorumFloor = new AtomicReference<>(Option.none());
+    /// The highest replication change the cluster has committed as settled.
+    private final AtomicLong settledVersion = new AtomicLong(NO_CHANGE);
+    /// The highest replication change whose writers-switched catch-up pass this node has started ([#writersSwitched]).
+    private final AtomicLong regatedVersion = new AtomicLong(NO_CHANGE);
+    /// The highest replication change whose writers-switched catch-up pass this node has completed.
+    private final AtomicLong caughtUpVersion = new AtomicLong(NO_CHANGE);
+
+    private final AtomicReference<Consumer<Long>> caughtUpListener = new AtomicReference<>(_ -> {});
+
+    /// The version no replication change carries.
+    public static final long NO_CHANGE = -1L;
+
+    /// The replication change this node has applied (#1777, CTO ruling R1c): the version every put it coordinates is stamped
+    /// with, and below which it refuses a put ([#handlePutRequest]). Raised when this node applies a change of the factors
+    /// ([#resolveReplication]), and aligned to the committed change's version once that record arrives
+    /// ([#adoptReplicationChange]), so every node that uses the same factors stamps and fences at the same version.
+    private final AtomicLong replicationFence = new AtomicLong(NO_CHANGE);
+    /// Whether [#replicationFence] reflects the cluster's committed replication change yet (#1777, v1882 round 4). A node
+    /// that restarts holds [#NO_CHANGE] until its state restore hands it the committed record; until then its fence is
+    /// UNKNOWN, and an unknown fence refuses writes rather than accepting any stamp — a write in flight across a settled
+    /// change would otherwise land on it at the old quorum.
+    private final AtomicBoolean replicationFenceKnown;
+    /// The first refusal of this node's own writes by the replication-change fence since it last adopted a change (#1777,
+    /// owner rule): the fence version its writes carried and when. Empty while its writes are accepted.
+    private final ConcurrentHashMap<ByteBuffer, PendingLocalWrite> pendingLocalWrites = new ConcurrentHashMap<>();
+
+    private final AtomicReference<Option<StaleRefusal>> staleRefusal = new AtomicReference<>(Option.none());
+
+    /// This node's writes refused as stamped below a replica's applied replication change, since `sinceMillis`, while its
+    /// own fence was `fence`.
+    public record StaleRefusal(long fence, long sinceMillis) {}
+
+    private record QuorumFloor(long version, int writeQuorum, int readQuorum) {
+        QuorumFloor merge(QuorumFloor other) {
+            return new QuorumFloor(Math.max(version, other.version),
+                                   Math.max(writeQuorum, other.writeQuorum),
+                                   Math.max(readQuorum, other.readQuorum));
+        }
+    }
+
+    /// Serializes the two mutations that change replica sets — a ring change and a replication change — so each
+    /// diffs against the state the other left.
+    private final Object placementLock = new Object();
     private final HlcClock hlcClock;
     private final CatchUpState catchUp = CatchUpState.catchUpState();
     /// The ring members when [#beginCatchUp] ran: the joins observed since boot are the current members
@@ -64,11 +119,14 @@ public final class DHTNode {
                     StorageEngine storage,
                     ConsistentHashRing<NodeId> ring,
                     DHTConfig config,
+                    boolean replicationResolved,
                     HlcClock hlcClock) {
         this.nodeId = nodeId;
         this.storage = storage;
         this.ring = ring;
-        this.config = config;
+        this.config = new AtomicReference<>(config);
+        this.replicationResolved = new AtomicBoolean(replicationResolved);
+        this.replicationFenceKnown = new AtomicBoolean(replicationResolved);
         this.hlcClock = hlcClock;
     }
 
@@ -84,7 +142,19 @@ public final class DHTNode {
                                   ConsistentHashRing<NodeId> ring,
                                   DHTConfig config,
                                   HlcClock hlcClock) {
-        return new DHTNode(nodeId, storage, ring, config, hlcClock);
+        return new DHTNode(nodeId, storage, ring, config, true, hlcClock);
+    }
+
+    /// Create a DHT node whose replication factors are not known yet (#1777 track 1): `placeholder` is used for
+    /// the boot catch-up walk and for its timeout and retry policy only. The node answers every partition
+    /// [Readiness#CATCHING_UP], and quorum clients refuse, until [#resolveReplication] supplies the cluster's
+    /// committed factors.
+    public static DHTNode dhtNodeAwaitingReplication(NodeId nodeId,
+                                                     StorageEngine storage,
+                                                     ConsistentHashRing<NodeId> ring,
+                                                     DHTConfig placeholder,
+                                                     HlcClock hlcClock) {
+        return new DHTNode(nodeId, storage, ring, placeholder, false, hlcClock);
     }
 
     /// Create a new DHT node with an internally created HLC clock.
@@ -99,7 +169,7 @@ public final class DHTNode {
                                   DHTConfig config) {
         var clock = HlcClock.hlcClock(nodeId);
 
-        return new DHTNode(nodeId, storage, ring, config, clock);
+        return new DHTNode(nodeId, storage, ring, config, true, clock);
     }
 
     /// Get the node's identifier.
@@ -112,9 +182,324 @@ public final class DHTNode {
         return storage;
     }
 
-    /// Get the configuration.
+    /// The replication this node currently places keys with (see [#resolveReplication]). While a replication change is
+    /// unsettled (#1777, CTO rulings R1, R1b) the quorums are the TRANSITIONAL ones — W_t = max(W_old, W_new) and
+    /// R_t = max(R_old, R_new), each capped at the new replication factor — and the placement is the new one.
+    ///
+    /// The switch to the new quorums is cluster-wide and committed, never per node: it happens only when the cluster
+    /// commits the change as settled ([#settleReplicationChange]). A node that switched on its own completion would read
+    /// at R_new while another node still writes at W_old, and miss that write (v1882's lagging-writer probe).
     public DHTConfig config() {
-        return config;
+        var current = config.get();
+
+        return quorumFloor.get()
+                          .map(floor -> transitional(current, floor))
+                          .or(current);
+    }
+
+    private static DHTConfig transitional(DHTConfig current, QuorumFloor floor) {
+        var replicationFactor = current.replicationFactor();
+
+        return new DHTConfig(replicationFactor,
+                             Math.min(Math.max(current.writeQuorum(), floor.writeQuorum()),
+                                      replicationFactor),
+                             Math.min(Math.max(current.readQuorum(), floor.readQuorum()),
+                                      replicationFactor),
+                             current.operationTimeout(),
+                             current.retryPolicy());
+    }
+
+    /// Whether a replication change is still unsettled on this node (#1777 R1b, a gauge).
+    public boolean replicationChangeSettling() {
+        return quorumFloor.get()
+                          .isPresent();
+    }
+
+    /// Keep the transitional quorums of a committed, unsettled replication change (#1777 R1b): `writeQuorum` and
+    /// `readQuorum` are the strictest old quorums the change carries. This is how a node that did not observe the change
+    /// itself — restarted after it, or a worker learning it from its projection — holds the same floor as the rest.
+    /// Ignored for a change already settled; merged with any floor already held, so consecutive changes keep the
+    /// strictest quorums of all of them.
+    @Contract
+    public void holdReplicationChange(long version, int writeQuorum, int readQuorum) {
+        synchronized (placementLock) {
+            if (version <= settledVersion.get()) {
+                return;
+            }
+
+            var held = new QuorumFloor(version, writeQuorum, readQuorum);
+
+            quorumFloor.set(Option.some(quorumFloor.get().map(floor -> floor.merge(held)).or(held)));
+        }
+    }
+
+    /// Every writer has applied replication change `version` (#1777 R1b: committed by the leader once every expected
+    /// member reported it), so from now on every write is acked at W_t or higher. A write acked at W_old before that may
+    /// sit on fewer replicas than R_new reaches, and a catch-up pass that ran BEFORE the last such write cannot have
+    /// copied it. So every partition this node replicates catches up again, in a FRESH pending spell — a round already
+    /// in flight began before this point and must not complete it — with the replica set at `sourceReplicationFactor`
+    /// as sources: the larger of the old and new factors, whose successor list contains both replica sets. Completion is
+    /// reported through [#onReplicationCaughtUp]. Idempotent per version; ignored for a settled change.
+    @Contract
+    public void writersSwitched(long version, int sourceReplicationFactor) {
+        synchronized (placementLock) {
+            if (version <= regatedVersion.get() || version <= settledVersion.get()) {
+                return;
+            }
+
+            regatedVersion.set(version);
+            if (!config.get().isFullReplication()) {
+                var current = config.get().effectiveReplicationFactor(ring.nodeCount());
+                var sources = Math.min(Math.max(sourceReplicationFactor, current), ring.nodeCount());
+
+                IntStream.range(0, Partition.MAX_PARTITIONS)
+                         .mapToObj(Partition::at)
+                         .filter(partition -> ring.nodesFor(partition, current)
+                                                  .contains(nodeId))
+                         .forEach(partition -> catchUp.markCatchingUpAfresh(partition,
+                                                                            ring.nodesFor(partition, sources)));
+            }
+        }
+
+        noteCaughtUp();
+    }
+
+    /// The cluster committed replication change `version` as settled (#1777 R1b): drop the floor of every change up to
+    /// it and use the new quorums. Monotone — a lower version than one already settled changes nothing.
+    @Contract
+    public void settleReplicationChange(long version) {
+        synchronized (placementLock) {
+            settledVersion.accumulateAndGet(version, Math::max);
+            quorumFloor.set(quorumFloor.get().filter(floor -> floor.version() > settledVersion.get()));
+        }
+    }
+
+    /// As [#settleReplicationChange(long)], for the latest committed change, which installed `settled`. A floor this node
+    /// raised itself is tagged with the configuration version it APPLIED, which can be later than the version the change
+    /// was committed under — a node that skipped configuration versions (a worker between projection polls, a node
+    /// restoring a later snapshot) applied the same factors at a later version. When this node already uses exactly the
+    /// settled factors, its floor belongs to this change and is dropped whatever its tag. A node on other factors keeps
+    /// its floor: a later change is on its way.
+    @Contract
+    public void settleReplicationChange(long version, DHTConfig settled) {
+        synchronized (placementLock) {
+            settledVersion.accumulateAndGet(version, Math::max);
+            var covered = !factorsDiffer(config.get(), settled);
+
+            quorumFloor.set(quorumFloor.get().filter(floor -> !covered && floor.version() > settledVersion.get()));
+        }
+    }
+
+    /// The replication change this node has applied, which its puts are stamped with (#1777 R1c).
+    public long replicationFence() {
+        return replicationFence.get();
+    }
+
+    /// The cluster's committed replication change is `version`, which installed `factors` (#1777 R1c). When this node uses
+    /// exactly those factors it has applied that change, and takes its version as its fence — which can LOWER a fence it
+    /// raised itself at a later configuration version it applied the same factors under (a node that skipped versions), so
+    /// every node on the same factors stamps and fences alike. A node on other factors keeps its fence: either it has not
+    /// applied this change yet, or a later change is on its way.
+    ///
+    /// A node on other factors has already applied a LATER configuration (the record is committed after the configuration
+    /// that carries it, and every node applies commits in order), so its fence is raised to at least this version. Either
+    /// The fence becomes KNOWN only through [#confirmReplicationFence]: a record adopted from a restored prefix may be
+    /// followed by a newer one still in the consensus log tail (v1882 round 5).
+    @Contract
+    public void adoptReplicationChange(long version, DHTConfig factors) {
+        synchronized (placementLock) {
+            if (!factorsDiffer(config.get(), factors)) {
+                replicationFence.set(version);
+            } else {
+                replicationFence.accumulateAndGet(version, Math::max);
+            }
+        }
+
+        clearStaleRefusalBelow(replicationFence.get());
+    }
+
+    /// This node's fence is taken as the committed replication change (#1777, v1882 rounds 4-6): it has adopted the latest
+    /// committed record — or found none — once consensus reported no catch-up pending. That signal sees only log positions
+    /// the node has been told about, so a record in a tail not yet received is NOT excluded
+    /// [unverified: no run shows a confirmed fence older than the committed change] [limit: #1683]. From here on it accepts
+    /// writes stamped at or above its fence.
+    @Contract
+    public void confirmReplicationFence() {
+        replicationFenceKnown.set(true);
+    }
+
+    /// Whether this node accepts writes yet: its replication is resolved and its fence reflects the committed change.
+    public boolean acceptsWrites() {
+        return replicationResolved.get() && replicationFenceKnown.get();
+    }
+
+    /// A write this node coordinates has applied its own slot for `key` and has not resolved yet (v1882 r12): until
+    /// [#endLocalWrite], another writer's put on the key is refused `writePending`, never answered "superseded". The mark
+    /// carries a deadline of `timeoutNanos` from now, so a missed end can never refuse the key forever.
+    @Contract
+    public void beginLocalWrite(byte[] key, long timeoutNanos) {
+        var deadline = System.nanoTime() + timeoutNanos;
+
+        pendingLocalWrites.merge(ByteBuffer.wrap(key.clone()),
+                                 new PendingLocalWrite(1, deadline),
+                                 (current, added) -> expired(current)
+                                                     ? added
+                                                     : new PendingLocalWrite(current.count() + 1,
+                                                                             Math.max(current.deadlineNanos(), deadline)));
+    }
+
+    /// The write begun with [#beginLocalWrite] resolved — acknowledged, failed, timed out or aborted.
+    @Contract
+    public void endLocalWrite(byte[] key) {
+        pendingLocalWrites.computeIfPresent(ByteBuffer.wrap(key.clone()),
+                                            (_, current) -> current.count() <= 1
+                                                            ? null
+                                                            : new PendingLocalWrite(current.count() - 1,
+                                                                                    current.deadlineNanos()));
+    }
+
+    /// Whether this node has its own write to `key` applied and unresolved (and not past its deadline).
+    public boolean localWritePending(byte[] key) {
+        // an expired mark is DROPPED, not just ignored: a leaked count must not survive to keep a later, correctly paired
+        // write pending past its own end (v1882 r12 F19)
+        return Option.option(pendingLocalWrites.computeIfPresent(ByteBuffer.wrap(key.clone()),
+                                                                 (_, current) -> expired(current)
+                                                                                 ? null
+                                                                                 : current)).isPresent();
+    }
+
+    private static boolean expired(PendingLocalWrite pending) {
+        return System.nanoTime() - pending.deadlineNanos() >= 0;
+    }
+
+    private record PendingLocalWrite(int count, long deadlineNanos) {}
+
+    /// Record that a write this node coordinated, stamped with `fence`, was refused by the replication-change fence
+    /// (#1777, owner rule). Only the first refusal since the last adoption is kept: it starts the clock.
+    @Contract
+    public void noteStaleRefusal(long fence, long nowMillis) {
+        if (fence < replicationFence.get()) {
+            return;
+        }
+
+        staleRefusal.updateAndGet(current -> Option.some(current.or(() -> new StaleRefusal(fence, nowMillis))));
+        // an adoption that raced the check above has already cleared; its raised fence is visible here, so re-clear (v1882 r6 F9)
+        clearStaleRefusalBelow(replicationFence.get());
+    }
+
+    /// The ongoing refusal of this node's writes as stale, if any (#1777, owner rule).
+    public Option<StaleRefusal> staleRefusal() {
+        return staleRefusal.get();
+    }
+
+    /// A write this node coordinated was accepted: whatever refusal it recorded is over (v1882 round 5).
+    @Contract
+    public void clearStaleRefusal() {
+        staleRefusal.set(Option.none());
+    }
+
+    private void clearStaleRefusalBelow(long fence) {
+        staleRefusal.updateAndGet(current -> current.filter(refusal -> refusal.fence() >= fence));
+    }
+
+    /// The highest replication change whose writers-switched catch-up pass completed here, or [#NO_CHANGE].
+    public long replicationCaughtUpVersion() {
+        return caughtUpVersion.get();
+    }
+
+    /// Called with the change version each time a writers-switched catch-up pass completes ([#writersSwitched]).
+    @Contract
+    public void onReplicationCaughtUp(Consumer<Long> listener) {
+        caughtUpListener.set(listener);
+    }
+
+    private void noteCaughtUp() {
+        var regated = regatedVersion.get();
+
+        if (catchUp.nonePending() && caughtUpVersion.getAndAccumulate(regated, Math::max) < regated) {
+            caughtUpListener.get().accept(regated);
+        }
+    }
+
+    /// Whether the committed replication factors have been applied ([#dhtNodeAwaitingReplication]).
+    public boolean replicationResolved() {
+        return replicationResolved.get();
+    }
+
+    /// Apply the cluster's committed replication (#1777 track 1) — the first time, and on every later change.
+    /// Like a ring change, a replication change moves replica sets: every partition this node GAINS by it starts
+    /// catching up, with the previous replica set recorded as its sources, and a pending partition it loses is
+    /// forgotten. So a raised replication factor is re-placed through the same catch-up gate as a join, and a read
+    /// in the window refuses rather than answers "absent". FULL replication has no placement to diff.
+    ///
+    /// ANY change of the factors (CTO ruling R1) — not only one that gains a partition — re-opens the gate for EVERY
+    /// partition this node replicates, with its old replica set as the catch-up sources. A confirmation-factor raise at
+    /// a fixed replication factor gains nothing, yet lowers the read quorum below what the old writes were acked at:
+    /// without the gate a read of R_new replicas can miss a value acked at W_old and answer "absent". Gated, a replica
+    /// answers "absent" only after it has pulled the union of what its old replica set held, and until then this node
+    /// uses the transitional quorums of [#config].
+    ///
+    /// `version` names the change (the committed configuration version that carries it), so the floor it installs is
+    /// dropped only by a settle of that change or a later one ([#settleReplicationChange]).
+    @Contract
+    public void resolveReplication(DHTConfig resolved, long version) {
+        synchronized (placementLock) {
+            if (resolved.isFullReplication() || config.get().isFullReplication()) {
+                config.set(resolved);
+            } else {
+                var previous = config();
+                // the factors as applied, not the transitional view: re-applying the same factors is no change
+                var changed = replicationResolved.get() && factorsDiffer(config.get(), resolved);
+                var before = replicaSets();
+
+                config.set(resolved);
+                var after = replicaSets();
+
+                if (changed) {
+                    replicationFence.set(version);
+                    clearStaleRefusalBelow(version);
+                    reopenEveryOwnedPartition(before, after);
+                    // `previous` is the transitional view, so a change made while an earlier one is still settling keeps
+                    // the strictest quorums of all of them
+                    quorumFloor.set(Option.some(floorOf(previous, version)));
+                } else {
+                    markGained(before, after);
+                }
+
+                forgetLost(after);
+            }
+
+            replicationResolved.set(true);
+        }
+
+        noteCaughtUp();
+    }
+
+    private static boolean factorsDiffer(DHTConfig previous, DHTConfig resolved) {
+        return previous.replicationFactor() != resolved.replicationFactor() || previous.writeQuorum() != resolved.writeQuorum() || previous.readQuorum() != resolved.readQuorum();
+    }
+
+    private QuorumFloor floorOf(DHTConfig config, long version) {
+        return new QuorumFloor(Math.max(version,
+                                        quorumFloor.get().map(QuorumFloor::version).or(version)),
+                               config.writeQuorum(),
+                               config.readQuorum());
+    }
+
+    /// [#resolveReplication(DHTConfig, long)] for a change no committed version names (tests, and nodes with nothing to
+    /// settle against): its floor is dropped by a settle of [#NO_CHANGE] or any later version.
+    @Contract
+    public void resolveReplication(DHTConfig resolved) {
+        resolveReplication(resolved, NO_CHANGE);
+    }
+
+    /// Every partition this node replicates after the change catches up again, from its replica set before it.
+    private void reopenEveryOwnedPartition(List<List<NodeId>> before, List<List<NodeId>> after) {
+        IntStream.range(0, Partition.MAX_PARTITIONS)
+                 .filter(index -> after.get(index)
+                                       .contains(nodeId))
+                 .forEach(index -> catchUp.markCatchingUp(Partition.at(index),
+                                                          before.get(index)));
     }
 
     /// Get the consistent hash ring.
@@ -134,19 +519,23 @@ public final class DHTNode {
     /// node is a replica of everything, and anti-entropy does not run in that mode.
     @Contract
     public void changeRing(Consumer<ConsistentHashRing<NodeId>> change) {
-        if (config.isFullReplication()) {
-            change.accept(ring);
+        synchronized (placementLock) {
+            if (config.get().isFullReplication()) {
+                change.accept(ring);
 
-            return;
+                return;
+            }
+
+            var before = replicaSets();
+
+            change.accept(ring);
+            var after = replicaSets();
+
+            markGained(before, after);
+            forgetLost(after);
         }
 
-        var before = replicaSets();
-
-        change.accept(ring);
-        var after = replicaSets();
-
-        markGained(before, after);
-        forgetLost(after);
+        noteCaughtUp();
     }
 
     /// Mark every partition this node currently owns catching up — the boot state of a node whose store
@@ -160,11 +549,11 @@ public final class DHTNode {
     /// ring the cluster actually has, which this node only learns as `NodeJoined` decisions arrive.
     @Contract
     public void beginCatchUp() {
-        if (config.isFullReplication()) {
+        if (config.get().isFullReplication()) {
             return;
         }
 
-        var replicationFactor = config.effectiveReplicationFactor(ring.nodeCount());
+        var replicationFactor = config.get().effectiveReplicationFactor(ring.nodeCount());
 
         bootMembers.set(Set.copyOf(ring.nodes()));
         IntStream.range(0, Partition.MAX_PARTITIONS)
@@ -174,9 +563,12 @@ public final class DHTNode {
                  .forEach(catchUp::markCatchingUpSinceBoot);
     }
 
-    /// Whether this node's answers for `partition` are authoritative.
+    /// Whether this node's answers for `partition` are authoritative. Before the committed replication is known no
+    /// answer is: the node cannot tell which partitions it replicates, and an empty store is no evidence of absence.
     public Readiness readiness(Partition partition) {
-        return catchUp.readiness(partition);
+        return replicationResolved.get()
+               ? catchUp.readiness(partition)
+               : Readiness.CATCHING_UP;
     }
 
     /// Whether this node's answers for the partition holding `key` are authoritative.
@@ -240,7 +632,8 @@ public final class DHTNode {
         var joinedSinceBoot = (int) members.stream().filter(member -> !boot.contains(member)).count();
         var unconfirmed = (int) members.stream().filter(this::unconfirmed).count();
 
-        return config.effectiveReplicationFactor(ring.nodeCount()) + joinedSinceBoot + unconfirmed;
+        return config.get()
+                     .effectiveReplicationFactor(ring.nodeCount()) + joinedSinceBoot + unconfirmed;
     }
 
     private boolean unconfirmed(NodeId member) {
@@ -256,6 +649,7 @@ public final class DHTNode {
     @Contract
     void markServing(Partition partition) {
         catchUp.markServing(partition);
+        noteCaughtUp();
     }
 
     int noteCatchUpRound(Partition partition) {
@@ -269,7 +663,7 @@ public final class DHTNode {
     }
 
     private List<List<NodeId>> replicaSets() {
-        var replicationFactor = config.effectiveReplicationFactor(ring.nodeCount());
+        var replicationFactor = config.get().effectiveReplicationFactor(ring.nodeCount());
 
         return IntStream.range(0, Partition.MAX_PARTITIONS)
                         .mapToObj(index -> ring.nodesFor(Partition.at(index),
@@ -343,7 +737,7 @@ public final class DHTNode {
     /// Check if this node is responsible for a key (as primary or replica).
     public boolean isResponsibleFor(byte[] key) {
         return ring.nodesFor(key,
-                             config.replicationFactor())
+                             config.get().replicationFactor())
                    .contains(nodeId);
     }
 
@@ -393,8 +787,55 @@ public final class DHTNode {
     /// replica enforces the fence against its own per-partition high-water (#345 piece 1c). A
     /// stale-epoch reject surfaces as a failed `putVersioned` promise → `PutResponse(success=false,
     /// superseded=false)`, exactly the deposed-owner rejection the client re-resolves against.
+    ///
+    /// The replication-change fence (#1777, CTO ruling R1c) comes first: a put stamped with an older replication change
+    /// than this node has applied had its quorum sized under factors the cluster has left — it may have been in flight
+    /// across the whole change, past the settle — so it is refused (`replicationStale`) and the writer retries under the
+    /// newer change. A put this node accepted BEFORE it applied the change is safe: every core's writers-switched
+    /// catch-up begins only after every member, this one included, reported the change applied, so it pulls that copy.
     @Contract
     public void handlePutRequest(DHTMessage.PutRequest request, Consumer<DHTMessage.PutResponse> responseHandler) {
+        if (!acceptsWrites()) {
+            responseHandler.accept(new DHTMessage.PutResponse(request.requestId(),
+                                                              nodeId,
+                                                              false,
+                                                              false,
+                                                              false,
+                                                              false,
+                                                              true));
+
+            return;
+        }
+
+        if (request.replicationVersion() < replicationFence.get()) {
+            responseHandler.accept(new DHTMessage.PutResponse(request.requestId(),
+                                                              nodeId,
+                                                              false,
+                                                              false,
+                                                              false,
+                                                              true,
+                                                              false));
+
+            return;
+        }
+        // an owner-epoch fence is stronger evidence and still answers fenced; otherwise a write of OUR OWN to this key is in
+        // flight, and answering "superseded" to another writer could let it count a copy we may roll back (v1882 r12)
+        if (localWritePending(request.key()) && !storage.belowHighWater(request.key(),
+                                                                        request.epochIncarnation(),
+                                                                        request.epochTerm(),
+                                                                        request.epochCounter())) {
+            responseHandler.accept(new DHTMessage.PutResponse(request.requestId(),
+                                                              nodeId,
+                                                              false,
+                                                              false,
+                                                              false,
+                                                              false,
+                                                              false,
+                                                              true));
+
+            return;
+        }
+
         storage.putVersioned(request.key(),
                              request.value(),
                              request.version(),
@@ -405,12 +846,16 @@ public final class DHTNode {
                                                                                        nodeId,
                                                                                        true,
                                                                                        !written,
+                                                                                       false,
+                                                                                       false,
                                                                                        false)))
                .onFailure(cause -> responseHandler.accept(new DHTMessage.PutResponse(request.requestId(),
                                                                                      nodeId,
                                                                                      false,
                                                                                      false,
-                                                                                     cause instanceof DHTError.StaleEpochWrite)));
+                                                                                     cause instanceof DHTError.StaleEpochWrite,
+                                                                                     false,
+                                                                                     false)));
     }
 
     /// Handle a remove request (for message routing integration).
@@ -520,7 +965,7 @@ public final class DHTNode {
     /// placement function every other caller uses (issue #420).
     private boolean isReplicaOf(NodeId candidate, Partition partition) {
         return ring.nodesFor(partition,
-                             config.effectiveReplicationFactor(ring.nodeCount()))
+                             config.get().effectiveReplicationFactor(ring.nodeCount()))
                    .contains(candidate);
     }
 

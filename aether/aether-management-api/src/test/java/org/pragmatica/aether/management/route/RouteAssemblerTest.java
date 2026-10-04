@@ -111,8 +111,8 @@ class RouteAssemblerTest {
     /// un-escape; this pins the caller's shape so the reason is next to the rule.
     @Test
     void assemble_groupPathWithSlashes_spansSegments_becauseMavenRoutesNeedIt() {
-        // ARTIFACT_GET, not ARTIFACT_INFO: the server positional-parses INFO's dotted group and
-        // does not honour the spanning form there (#1102); GET/PUT/DELETE/MAVEN_METADATA do.
+        // ARTIFACT_INFO spans too since #1102 (served by MavenProtocolRoutes, pinned by
+        // MavenProtocolRoutesInfoTest); ARTIFACT_GET stays the canonical example.
         var path = ManagementRoute.ARTIFACT_GET.assemble("org/example", "hello", "1.0.0", "hello-1.0.0.jar");
         path.onSuccess(p -> assertThat(p).isEqualTo("/repository/org/example/hello/1.0.0/hello-1.0.0.jar"));
         assertThat(path.isSuccess()).isTrue();

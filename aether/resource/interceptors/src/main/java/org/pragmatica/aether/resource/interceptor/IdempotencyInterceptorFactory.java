@@ -85,6 +85,8 @@ public final class IdempotencyInterceptorFactory implements ResourceFactory<Idem
         return InMemoryCache.inMemoryCache(config.retentionSeconds(), config.maxEntries());
     }
 
+    /// The REPLICATED DHT at the committed `[replication]` factors, never the cache namespace's (#1777 Q4): a dedup
+    /// record lost with its only copy re-executes the call it guarded.
     private Result<CacheBackend> createDHTBackend(IdempotencyConfig config, ProvisioningContext context) {
         return Result.all(context.extension(DHTClient.class),
                           context.extension(Serializer.class),
