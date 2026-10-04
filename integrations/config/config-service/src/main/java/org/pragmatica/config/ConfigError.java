@@ -33,6 +33,27 @@ public sealed interface ConfigError extends Cause {
         return SectionNotFound.sectionNotFound(section).unwrap();
     }
 
+    /// A required field is missing from a section that IS present, and nothing supplies a default for it.
+    ///
+    /// Distinct from [SectionNotFound] on purpose (#822): a nested record whose field is missing used to
+    /// fail with `SectionNotFound("Record.field")`, which the enclosing record read as "this component's
+    /// section is absent" and answered with its own `SectionNotFound("Outer.component")` — an operator who
+    /// wrote the section was told it does not exist. Absence is the one cause a `DEFAULT` may satisfy;
+    /// this is not absence, so it propagates.
+    ///
+    /// @param key   the full key that is missing, e.g. `notification.smtp_config.host`
+    /// @param owner the record component that requires it, e.g. `SmtpConfig.host`
+    record MissingField(String key, String owner) implements ConfigError {
+        @Override
+        public String message() {
+            return "Required config field '" + key + "' is missing (" + owner + " has no default)";
+        }
+    }
+
+    static MissingField missingField(String key, String owner) {
+        return new MissingField(key, owner);
+    }
+
     /// Failed to parse configuration section.
     record ParseFailed(String section, String reason, Option<Throwable> cause) implements ConfigError {
         public static Result<ParseFailed> parseFailed(String section, String reason) {

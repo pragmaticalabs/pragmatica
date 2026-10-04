@@ -30,10 +30,13 @@ public record SmtpConfig(String host,
                          Option<SmtpAuth> auth,
                          TimeSpan connectTimeout,
                          TimeSpan commandTimeout) {
-    static final int DEFAULT_PORT = 587;
-    static final SmtpTlsMode DEFAULT_TLS_MODE = SmtpTlsMode.STARTTLS;
-    static final TimeSpan DEFAULT_CONNECT_TIMEOUT = timeSpan(10).seconds();
-    static final TimeSpan DEFAULT_COMMAND_TIMEOUT = timeSpan(30).seconds();
+    /// Per-field defaults, read by the config binder by name (`DEFAULT_<COMPONENT>`, #822) so that a TOML
+    /// section may omit these four and still bind. There is deliberately NO whole-record `DEFAULT`: `host`
+    /// has no default, and omitting it must fail naming `host`, not bind an empty one.
+    public static final int DEFAULT_PORT = 587;
+    public static final SmtpTlsMode DEFAULT_TLS_MODE = SmtpTlsMode.STARTTLS;
+    public static final TimeSpan DEFAULT_CONNECT_TIMEOUT = timeSpan(10).seconds();
+    public static final TimeSpan DEFAULT_COMMAND_TIMEOUT = timeSpan(30).seconds();
 
     /// Create SMTP configuration with defaults: port=587, STARTTLS, no auth.
     public static SmtpConfig smtpConfig(String host) {

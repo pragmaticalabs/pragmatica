@@ -32,6 +32,10 @@ import org.pragmatica.lang.Promise;
 ///
 /// Every other failure propagates, so the gate fails closed on it.
 ///
+/// A page the peer cut at its byte cap (`truncated`, #1431) is never read as the peer's end: the probe pages on past
+/// it, so a byte-capped page cannot understate the peer's head and let the gate promote below records the peer
+/// holds. A cut page carrying no event at all can never advance and fails the read.
+///
 /// The backfill's own watermark probe ([#replicaWatermark]) reads the same way, so a peer that HOLDS a partition
 /// it has not materialized (paced by `reshuffle_concurrency`, or budget-deferred) answers with its durable
 /// watermark and is REACHABLE, where a plain read answered `PARTITION_NOT_LOCAL` and was read as unreachable.
@@ -196,12 +200,14 @@ public sealed interface OwnerPeerReads {
         var events = answer.events();
 
         if (events.isEmpty()) {
-            return Promise.success(cursor - 1);
+            return answer.truncated()
+                   ? new EventExceedsReadCap(cursor).<Long> promise()
+                   : Promise.success(cursor - 1);
         }
 
         var lastOffset = events.getLast().offset();
 
-        return events.size() >= page
+        return events.size() >= page || answer.truncated()
                ? pageWatermark(read, target, streamName, partition, lastOffset + 1, page, settle)
                : Promise.success(lastOffset);
     }
@@ -232,6 +238,7 @@ public sealed interface OwnerPeerReads {
                                                                        target,
                                                                        streamName,
                                                                        partition,
+                                                                       cursor,
                                                                        to,
                                                                        page,
                                                                        gathered,
@@ -264,10 +271,15 @@ public sealed interface OwnerPeerReads {
                                                                            NodeId target,
                                                                            String streamName,
                                                                            int partition,
+                                                                           long cursor,
                                                                            long to,
                                                                            int page,
                                                                            List<OffHeapRingBuffer.RawEvent> gathered,
                                                                            StreamForwardClient.ReadForwardResult answer) {
+        if (answer.events().isEmpty() && answer.truncated()) {
+            return new EventExceedsReadCap(cursor).promise();
+        }
+
         var pageEvents = answer.events()
                                .stream()
                                .filter(event -> event.offset() <= to)
@@ -307,6 +319,19 @@ public sealed interface OwnerPeerReads {
         return matcher.find()
                ? Option.some(Long.parseLong(matcher.group(1))).filter(oldest -> oldest > cursor)
                : Option.none();
+    }
+
+    /// #1431: a page the peer cut at its byte cap before its first event — the event at `offset` alone exceeds the
+    /// peer's `maxReadResponseBytes` — can never advance, and reading it as the peer's end would understate the peer.
+    /// A peer whose handler admits the first event of every page never produces one, so this is a BACKSTOP (a peer
+    /// on an older handler). The peer ANSWERED: callers must never read this as an unreachable peer. The event's
+    /// size is not known here — the cut page carries no event.
+    record EventExceedsReadCap(long offset) implements Cause {
+        @Override
+        public String message() {
+            return ("Peer page was cut at the peer's read cap before its first event: the event at offset %d is larger "
+                   + "than the peer's maxReadResponseBytes").formatted(offset);
+        }
     }
 
     record unused() implements OwnerPeerReads {}

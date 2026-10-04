@@ -21,8 +21,16 @@ import static org.pragmatica.lang.Verify.ensure;
 // MetricsMethodInterceptor#tags() splits on '=' and hands the result to Micrometer's
 // MeterRegistry#timer(String, Tags), which requires named dimensions, not bare labels.
 public record MetricsConfig(String name, boolean recordTiming, boolean recordCounts, List<String> tags) {
+    /// Per-field defaults, read by the config binder by name (`DEFAULT_<COMPONENT>`, #822) so a section may omit
+    /// them, as the resource reference promises. Not a whole-record `DEFAULT`: `name` has none.
+    public static final boolean DEFAULT_RECORD_TIMING = true;
+    public static final boolean DEFAULT_RECORD_COUNTS = true;
+
     public static Result<MetricsConfig> metricsConfig(String name) {
-        return ensure(name, Verify.Is::notBlank).map(n -> new MetricsConfig(n, true, true, List.of()));
+        return ensure(name, Verify.Is::notBlank).map(n -> new MetricsConfig(n,
+                                                                            DEFAULT_RECORD_TIMING,
+                                                                            DEFAULT_RECORD_COUNTS,
+                                                                            List.of()));
     }
 
     public static Result<MetricsConfig> metricsConfig(String name, boolean recordTiming, boolean recordCounts) {
