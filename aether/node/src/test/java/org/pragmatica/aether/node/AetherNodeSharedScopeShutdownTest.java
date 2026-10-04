@@ -79,4 +79,35 @@ class AetherNodeSharedScopeShutdownTest {
                 .as("#903: node stop must close the shared scope exactly once")
                 .isEqualTo(1);
     }
+
+    /// A shared-scope close that never resolves must not hold the rest of the stop: storage and the cluster
+    /// node still stop once `SHARED_SCOPE_CLOSE_BOUND` passes.
+    @Test
+    @Timeout(value = 60, unit = SECONDS)
+    void stop_completes_whenASharedScopeCloseNeverResolves() {
+        ReleaseProbeFactory.hangOnClose();
+        var configProvider = ConfigurationProvider.builder()
+                                                  .withDefaults(Map.of(ReleaseProbeFactory.SECTION + ".enabled", "true"))
+                                                  .build();
+
+        node = AetherNode.aetherNode(AetherNodeContentStorageWarnBootTest.minimalConfig(Option.none(),
+                                                                                        Option.none(),
+                                                                                        configProvider,
+                                                                                        tempDir),
+                                     () -> {})
+                         .onFailure(cause -> fail("boot must succeed: " + cause.message()))
+                         .unwrap();
+        ResourceProvider.instance()
+                        .or(() -> fail("the booted node must have installed its ResourceProvider"))
+                        .provide(ReleaseProbeFactory.ProbeResource.class, ReleaseProbeFactory.SECTION)
+                        .await(timeSpan(10).seconds())
+                        .onFailure(cause -> fail("shared-scope provisioning must succeed: " + cause.message()));
+
+        var stopped = node.stop().await(timeSpan(40).seconds());
+        node = null;
+
+        assertThat(stopped.isSuccess()).as("stop must complete past a shared-scope close that never resolves: %s", stopped)
+                                       .isTrue();
+        assertThat(ReleaseProbeFactory.provisioned().getFirst().closeCount()).as("the close was attempted").isEqualTo(1);
+    }
 }

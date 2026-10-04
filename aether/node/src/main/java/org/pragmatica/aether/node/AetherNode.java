@@ -1132,6 +1132,9 @@ public interface AetherNode extends ManageableNode {
     /// #1730: how often an owner re-evaluates its partitions' in-sync replica sets. Lag itself is bounded by
     /// `[streaming] isr_lag_max`; this cadence only adds up to one interval to it.
     TimeSpan ISR_MONITOR_INTERVAL = TimeSpan.timeSpan(1).seconds();
+    /// #903: bound on closing the shared resource scope during stop. A factory close that never resolves must
+    /// not hold storage and the cluster node open behind it; past the bound the step is logged and skipped.
+    TimeSpan SHARED_SCOPE_CLOSE_BOUND = TimeSpan.timeSpan(10).seconds();
     /// #1730: how soon a refused (moved-record) ownership write is re-decided.
     TimeSpan OWNERSHIP_REDRIVE_DELAY = TimeSpan.timeSpan(1).seconds();
     /// Declarative stream-consumer ownership poll (#488). No role-change callback is available to a
@@ -2480,7 +2483,8 @@ public interface AetherNode extends ManageableNode {
             /// point at which every consumer is gone, so it is closed here, after the slice invoker stops.
             private Promise<Unit> closeSharedResources() {
                 return spiResourceProvider.map(SpiResourceProvider::closeShared)
-                                          .or(Promise.unitPromise());
+                                          .or(Promise.unitPromise())
+                                          .timeout(SHARED_SCOPE_CLOSE_BOUND);
             }
 
             /// #1078: the three node-owned storage instances (`content`, `artifacts`, `streams`)

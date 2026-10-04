@@ -473,6 +473,84 @@ class SpiResourceProviderLifecycleTest {
         }
     }
 
+    /// A factory whose OWN `close` reports failure (an override: the default dispatch absorbs and logs its own).
+    private static final class RefusingCloseFactory implements ResourceFactory<AsyncResource, TrackedConfig> {
+        @Override
+        public Class<AsyncResource> resourceType() {
+            return AsyncResource.class;
+        }
+
+        @Override
+        public Class<TrackedConfig> configType() {
+            return TrackedConfig.class;
+        }
+
+        @Override
+        public Promise<AsyncResource> provision(TrackedConfig config) {
+            return Promise.success(new AsyncResource());
+        }
+
+        @Override
+        public Promise<Unit> close(AsyncResource resource) {
+            return Causes.cause("close refused by the factory").promise();
+        }
+    }
+
+    /// `Promise.allOf` collects Results, so a release never FAILS on one resource's failed close; that means the log is
+    /// the only report. `closeShared` is the one place a close failure used to vanish: it is called once, at node stop,
+    /// with no caller left to see a result. Pinned by capturing the WARNING the release writes.
+    @Nested
+    class FailedCloseIsSurfaced {
+        private static final String LOGGER_NAME = SpiResourceProvider.class.getName();
+
+        private final List<java.util.logging.LogRecord> records = new CopyOnWriteArrayList<>();
+        private final java.util.logging.Handler handler = new java.util.logging.Handler() {
+            @Override
+            public void publish(java.util.logging.LogRecord record) {
+                records.add(record);
+            }
+
+            @Override
+            public void flush() {}
+
+            @Override
+            public void close() {}
+        };
+
+        @org.junit.jupiter.api.BeforeEach
+        void attach() {
+            java.util.logging.Logger.getLogger(LOGGER_NAME).addHandler(handler);
+        }
+
+        @org.junit.jupiter.api.AfterEach
+        void detach() {
+            java.util.logging.Logger.getLogger(LOGGER_NAME).removeHandler(handler);
+        }
+
+        @Test
+        void closeShared_logsAFailedFactoryClose_andStillSucceeds() {
+            var provider = providerOf(new RefusingCloseFactory());
+
+            provider.provide(AsyncResource.class, SECTION).await(TIMEOUT);
+
+            assertThat(provider.closeShared().await(TIMEOUT).isSuccess()).as("a failed close never fails the release").isTrue();
+            assertThat(records).as("the failed close must be reported, or nothing reports it")
+                               .anyMatch(record -> record.getLevel().intValue() >= java.util.logging.Level.WARNING.intValue()
+                                                   && record.getMessage().contains("close refused by the factory")
+                                                   && record.getMessage().contains("<unattributed>"));
+        }
+
+        @Test
+        void closeShared_logsNothing_whenEveryCloseSucceeds() {
+            var provider = providerOf(new AsyncFactory());
+
+            provider.provide(AsyncResource.class, SECTION).await(TIMEOUT);
+
+            assertThat(provider.closeShared().await(TIMEOUT).isSuccess()).isTrue();
+            assertThat(records).as("control: a clean close is silent, so the assertion above is attributable to the failure").isEmpty();
+        }
+    }
+
     @Nested
     class ProvideRacingReleaseOfTheSameScope {
         private static final int ROUNDS = 40_000;

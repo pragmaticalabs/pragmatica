@@ -273,8 +273,17 @@ public final class SpiResourceProvider implements ResourceProvider {
             return Promise.unitPromise();
         }
         // allOf collects Results rather than short-circuiting, so one resource that fails to close
-        // (or one entry holding a failed provision) cannot block the release of the others.
-        return Promise.allOf(closeFutures).map(_ -> Unit.unit());
+        // (or one entry holding a failed provision) cannot block the release of the others. It also
+        // never fails, so each failed close is logged here or it is not reported at all.
+        return Promise.allOf(closeFutures).map(results -> logFailedCloses(scope, results));
+    }
+
+    private static Unit logFailedCloses(String scope, List<Result<Unit>> results) {
+        results.forEach(result -> result.onFailure(cause -> System.getLogger(SpiResourceProvider.class.getName()).log(System.Logger.Level.WARNING,
+                                                                                                                      "Resource close failed while releasing scope " + scope
+                                                                                                                     + " — the resource is released from the cache anyway: " + cause.message())));
+
+        return Unit.unit();
     }
 
     /// Close through the factory that built the resource, with a close that THROWS turned into a

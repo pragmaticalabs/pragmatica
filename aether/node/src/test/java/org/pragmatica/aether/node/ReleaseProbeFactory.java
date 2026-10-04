@@ -25,6 +25,7 @@ public final class ReleaseProbeFactory implements ResourceFactory<ReleaseProbeFa
     public static final String SECTION = "release_probe";
 
     private static final List<ProbeResource> PROVISIONED = new CopyOnWriteArrayList<>();
+    private static final java.util.concurrent.atomic.AtomicBoolean HANG_ON_CLOSE = new java.util.concurrent.atomic.AtomicBoolean();
 
     public record ProbeConfig(boolean enabled) {}
 
@@ -43,7 +44,9 @@ public final class ReleaseProbeFactory implements ResourceFactory<ReleaseProbeFa
         public Promise<Unit> close() {
             closes.incrementAndGet();
 
-            return Promise.unitPromise();
+            return HANG_ON_CLOSE.get()
+                   ? Promise.promise()
+                   : Promise.unitPromise();
         }
     }
 
@@ -53,6 +56,12 @@ public final class ReleaseProbeFactory implements ResourceFactory<ReleaseProbeFa
 
     public static void reset() {
         PROVISIONED.clear();
+        HANG_ON_CLOSE.set(false);
+    }
+
+    /// Make every probe's close return a promise that never resolves.
+    public static void hangOnClose() {
+        HANG_ON_CLOSE.set(true);
     }
 
     @Override
