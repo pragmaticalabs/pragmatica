@@ -300,22 +300,20 @@ class RabiaConsensusIntegrationTest {
 
         @Test
         void promise_resolved_with_results_on_v1_decision() throws InterruptedException {
-            // Test that the Promise returned by apply() gets resolved
-            // when V1 decision is made
+            // The Promise returned by apply() must resolve with the state machine's results once the
+            // batch is decided V1
             cluster.activateAll();
 
-            var batch = Batch.create(SERIALIZER, List.of(new TestCommand("cmd")));
+            var promise = cluster.engines.get(NODE_1).<String>apply(List.of(new TestCommand("cmd")));
 
-            // Simulate complete consensus
-            cluster.simulateProposal(NODE_1, batch);
-            cluster.simulateProposal(NODE_2, batch);
-            cluster.simulateProposal(NODE_3, batch);
+            // apply() broadcasts NewBatch, which deliverMessage does not route; relay it as the network would
+            cluster.deliverUntil(() -> !cluster.getMessagesByType(NewBatch.class).isEmpty());
+            var newBatch = cluster.getMessagesByType(NewBatch.class).getFirst();
+            cluster.engines.get(NODE_2).handleNewBatch(newBatch);
+            cluster.engines.get(NODE_3).handleNewBatch(newBatch);
             cluster.deliverUntilQuiescent();
 
-            // Verify decisions were made
-            var decisions = cluster.getMessagesByType(Decision.class);
-            assertThat(decisions).isNotEmpty();
-            assertThat(decisions.stream().anyMatch(d -> d.stateValue() == StateValue.V1)).isTrue();
+            assertThat(promise.await(timeSpan(5).seconds())).isEqualTo(Result.success(List.of("result:cmd")));
         }
 
         @Test
@@ -519,10 +517,10 @@ class RabiaConsensusIntegrationTest {
                         engine.processSyncResponse(new SyncResponse<>(otherId, SavedState.empty(), ResponderState.COLD));
                     }
                 }
-                engine.settleForTesting().await(timeSpan(5).seconds());
+                awaitSettled(engine);
                 Thread.sleep(10);
             }
-            engine.settleForTesting().await(timeSpan(5).seconds());
+            awaitSettled(engine);
         }
 
         void stopAll() {
@@ -561,8 +559,17 @@ class RabiaConsensusIntegrationTest {
         /// Waits until every engine has run all work queued so far on its single apply executor.
         void settleAll() {
             for (var engine : engines.values()) {
-                engine.settleForTesting().await(timeSpan(5).seconds());
+                awaitSettled(engine);
             }
+        }
+
+        /// A barrier that timed out has not settled anything, so it must fail rather than be read as idle.
+        private static void awaitSettled(RabiaEngine<TestCommand> engine) {
+            engine.settleForTesting()
+                  .await(timeSpan(5).seconds())
+                  .onFailure(cause -> {
+                      throw new AssertionError("engine did not settle within 5s: " + cause.message());
+                  });
         }
 
         /// Delivers hop by hop until no engine has work queued and no message is pending. Replaces fixed
