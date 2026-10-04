@@ -71,7 +71,9 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
     private static final Cause NULL_PROMISE = Causes.cause("Foreign call returned null instead of a promise");
     private static final Cause CALL_OVERFLOWED = Causes.cause("Call overflowed its stack");
     private static final Cause PASS_OVERFLOWED = Causes.cause("Delivery pass overflowed its stack");
+
     private static final Cause PASS_FATAL = Causes.cause("Delivery pass threw a VirtualMachineError; loop released, error rethrown");
+
     /// #1239: a periodic commit waits for nothing — the single-flight slot already keeps periodic
     /// commits apart, and a detach flush cancels the consumer before it is issued.
     /// rev1272 F6: bound on one PERIODIC cursor commit. With one periodic commit in flight per consumer, a
