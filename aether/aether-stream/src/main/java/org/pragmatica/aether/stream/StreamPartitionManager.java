@@ -1937,6 +1937,13 @@ public final class StreamPartitionManager implements AutoCloseable {
         return option(divergedAt.get(new PartitionRef(streamName, partition)));
     }
 
+    /// The incarnation of the ring serving `(streamName, partition)` on this node, or [Option#none] when none is built
+    /// (#1730 phase 2): an owner that re-activates with the SAME incarnation kept its offsets, one with another rebuilt
+    /// them and may assign again what it assigned before.
+    public Option<Long> ringIncarnation(String streamName, int partition) {
+        return partitionBuffer(streamName, partition).map(OffHeapRingBuffer::incarnation);
+    }
+
     /// This manager's quarantine record as the backfill orchestrator consumes it (#1505 F2/R3). Its promotion guard
     /// runs under [#quarantineLock], the same lock that records a divergence.
     public QuarantineView quarantineView() {

@@ -112,6 +112,32 @@ public final class OwnerActivation {
         Option<StreamPartitionOwnershipValue> committed(String stream, int partition);
     }
 
+    /// Which ring serves `(stream, partition)` on this node ([OffHeapRingBuffer#incarnation]): the activation tells a ring
+    /// it has already activated from one that was rebuilt since (#1730 phase 2).
+    @FunctionalInterface
+    public interface RingIncarnation {
+        long of(String stream, int partition);
+
+        /// For the factories without a partition manager behind them: every partition has the same, unknown, incarnation.
+        RingIncarnation NONE = (_, _) -> -1L;
+    }
+
+    /// Commits, as the owner, where the current epoch of `(stream, partition)` begins (#1730 phase 2, KIP-320): with
+    /// `restarted` the owner first takes the next ownership term, because its ring was rebuilt and it may assign offsets
+    /// it assigned before. A guarded write of exactly `current`; a refusal (the record moved on) fails the activation, which
+    /// re-runs against the new record.
+    @FunctionalInterface
+    public interface LineageCommit {
+        Promise<Unit> commit(String stream,
+                             int partition,
+                             StreamPartitionOwnershipValue current,
+                             long startOffset,
+                             boolean restarted);
+
+        /// Commits nothing: the factories without a consensus applier behind them.
+        LineageCommit NONE = (_, _, _, _, _) -> Promise.success(Unit.unit());
+    }
+
     /// Whether this node is the owner of `(stream, partition)` under the current placement.
     @FunctionalInterface
     public interface PlacementOwner {
@@ -283,6 +309,11 @@ public final class OwnerActivation {
     private final RecordRange ranges;
     private final BlockAlarm alarm;
     private final TimeSpan unreachableAlarmAfter;
+    private final RingIncarnation ringIncarnation;
+    private final LineageCommit lineage;
+    /// The ring each partition was last activated on, by [RingIncarnation]: an activation on the SAME ring kept its
+    /// offsets, one on another ring (a restart, a re-created stream) may assign them again.
+    private final Map<PartitionKey, Long> activatedIncarnation = new ConcurrentHashMap<>();
 
     /// The committed record each partition was activated for; [Option#none] marks a first-owner activation.
     private final Map<PartitionKey, Option<StreamPartitionOwnershipValue>> activated = new ConcurrentHashMap<>();
@@ -306,7 +337,9 @@ public final class OwnerActivation {
                             BooleanSupplier consensusActive,
                             RecordRange ranges,
                             BlockAlarm alarm,
-                            TimeSpan unreachableAlarmAfter) {
+                            TimeSpan unreachableAlarmAfter,
+                            RingIncarnation ringIncarnation,
+                            LineageCommit lineage) {
         this.self = self;
         this.records = records;
         this.placementOwner = placementOwner;
@@ -319,6 +352,8 @@ public final class OwnerActivation {
         this.ranges = ranges;
         this.alarm = alarm;
         this.unreachableAlarmAfter = unreachableAlarmAfter;
+        this.ringIncarnation = ringIncarnation;
+        this.lineage = lineage;
     }
 
     public static OwnerActivation ownerActivation(NodeId self,
@@ -333,6 +368,38 @@ public final class OwnerActivation {
                                                   RecordRange ranges,
                                                   BlockAlarm alarm,
                                                   TimeSpan unreachableAlarmAfter) {
+        return ownerActivation(self,
+                               records,
+                               placementOwner,
+                               barrier,
+                               liveMembers,
+                               probe,
+                               selfWatermark,
+                               catchUp,
+                               consensusActive,
+                               ranges,
+                               alarm,
+                               unreachableAlarmAfter,
+                               RingIncarnation.NONE,
+                               LineageCommit.NONE);
+    }
+
+    /// The production factory (#1730 phase 2): the activation also commits where the current epoch begins (see
+    /// [LineageCommit]) before the node is marked activated.
+    public static OwnerActivation ownerActivation(NodeId self,
+                                                  OwnershipRecordSource records,
+                                                  PlacementOwner placementOwner,
+                                                  Option<LinearizableBarrier> barrier,
+                                                  Supplier<List<NodeId>> liveMembers,
+                                                  ReplicaWatermarkProbe probe,
+                                                  SelfWatermark selfWatermark,
+                                                  OwnerCatchUp catchUp,
+                                                  BooleanSupplier consensusActive,
+                                                  RecordRange ranges,
+                                                  BlockAlarm alarm,
+                                                  TimeSpan unreachableAlarmAfter,
+                                                  RingIncarnation ringIncarnation,
+                                                  LineageCommit lineage) {
         return new OwnerActivation(self,
                                    records,
                                    placementOwner,
@@ -344,7 +411,9 @@ public final class OwnerActivation {
                                    consensusActive,
                                    ranges,
                                    alarm,
-                                   unreachableAlarmAfter);
+                                   unreachableAlarmAfter,
+                                   ringIncarnation,
+                                   lineage);
     }
 
     /// Whether this node may act as owner of `(stream, partition)` right now: its consensus engine is active,
@@ -450,7 +519,43 @@ public final class OwnerActivation {
 
     private Promise<Unit> runGate(String stream, int partition, PartitionKey key) {
         return freshView(stream, partition).flatMap(record -> catchUpToLiveHolders(stream, partition).map(_ -> record))
+                        .flatMap(record -> commitLineage(stream, partition, key, record))
                         .map(record -> recordActivation(stream, partition, key, record));
+    }
+
+    /// Step 3 (#1730 phase 2, KIP-320): the owner commits where the current epoch begins, BEFORE it is activated and so
+    /// before it assigns or serves a single offset of it. Three cases, decided by the committed record and this
+    /// process's own memory of the ring it activated:
+    ///   - the record names no start for its epoch: a failover or a first record, the epoch begins at the next offset;
+    ///   - it names the start and this process activated THIS ring for it: the offsets were kept, nothing to commit;
+    ///   - it names the start and the ring is another one (a restart, a re-created stream, a re-materialization): the
+    ///     owner may assign again offsets it assigned before, in the SAME epoch, which no consumer could tell apart. It
+    ///     takes the next ownership term, so the new epoch begins where it resumed.
+    /// A consumer that read the replaced offsets holds the old epoch, and is told so (`EpochValidation`).
+    private Promise<Option<StreamPartitionOwnershipValue>> commitLineage(String stream,
+                                                                        int partition,
+                                                                        PartitionKey key,
+                                                                        Option<StreamPartitionOwnershipValue> record) {
+        return record.fold(() -> Promise.success(record), committed -> commitLineage(stream, partition, key, committed));
+    }
+
+    private Promise<Option<StreamPartitionOwnershipValue>> commitLineage(String stream,
+                                                                        int partition,
+                                                                        PartitionKey key,
+                                                                        StreamPartitionOwnershipValue committed) {
+        var started = committed.lastEpochStart()
+                               .filter(start -> start.epoch().equals(committed.ownerEpoch()))
+                               .isPresent();
+        var incarnation = ringIncarnation.of(stream, partition);
+        var restarted = started && !Long.valueOf(incarnation).equals(activatedIncarnation.get(key));
+
+        if (started && !restarted) {
+            return Promise.success(Option.some(committed));
+        }
+
+        return lineage.commit(stream, partition, committed, selfWatermark.localWatermark(stream, partition) + 1L, restarted)
+                      .flatMap(_ -> ownedRecord(stream, partition))
+                      .onSuccess(_ -> activatedIncarnation.put(key, incarnation));
     }
 
     private Unit recordActivation(String stream,
