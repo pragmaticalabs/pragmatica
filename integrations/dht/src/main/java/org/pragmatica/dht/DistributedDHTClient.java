@@ -253,7 +253,8 @@ public final class DistributedDHTClient implements DHTClient {
         // an operation already acknowledged without its own slot has nothing to protect: the copy is written unmarked, so a
         // pending mark can never start after the resolution that would clear it
         if (!collector.resolved()) {
-            node.beginLocalWrite(key, config.get().operationTimeout().nanos());
+            node.beginLocalWrite(key,
+                                 config.get().operationTimeout().nanos());
             pending.set(true);
         }
 
