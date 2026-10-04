@@ -2520,7 +2520,8 @@ public sealed interface AetherValue {
         }
 
         /// The same ownership and ISR with the failover verdict `refused`. Each transition INTO refused counts one more
-        /// in `failoverRefusalSeq`, committed with the flag, so every genuine refusal of a partition is a distinct event
+        /// in `failoverRefusalSeq` WITHIN AN OWNERSHIP TERM (a move mints a fresh record, so the count restarts at 0 and the
+        /// raised term keeps ids distinct), committed with the flag, so every genuine refusal of a partition is a distinct event
         /// (a refusal that resolves by the owner returning and recurs changes nothing else in the record).
         public StreamPartitionOwnershipValue withFailoverRefused(boolean refused) {
             return new StreamPartitionOwnershipValue(owner,

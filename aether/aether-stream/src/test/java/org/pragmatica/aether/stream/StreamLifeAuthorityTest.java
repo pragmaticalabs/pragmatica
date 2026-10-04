@@ -132,6 +132,28 @@ class StreamLifeAuthorityTest {
         node.close();
     }
 
+    /// #1883: why a committed config is not applied over the enforced one follows the adoption rule exactly, and names
+    /// the actual cause: a partition-count change (either direction) first, otherwise weaker-or-equal durability.
+    @Test
+    void notAppliedReason_followsTheAdoptionRule_andNamesTheCause() {
+        var enforced = config().withIncarnation(COMMITTED_LIFE).withReplication(new ReplicationFactors(3, 3));
+        var weaker = enforced.withReplication(new ReplicationFactors(3, 2));
+        var mixedRfUp = enforced.withReplication(new ReplicationFactors(5, 1));
+        var stronger = enforced.withReplication(new ReplicationFactors(5, 4));
+
+        assertThat(StreamPartitionManager.notAppliedReason(weaker, enforced).or("")).startsWith("durability only increases online");
+        assertThat(StreamPartitionManager.notAppliedReason(enforced, enforced).isEmpty()).as("unchanged").isTrue();
+        assertThat(StreamPartitionManager.notAppliedReason(stronger, enforced).isEmpty()).as("adopted").isTrue();
+        assertThat(StreamPartitionManager.notAppliedReason(mixedRfUp, enforced).isEmpty()).as("RF up adopts the whole config").isTrue();
+        assertThat(StreamPartitionManager.notAppliedReason(enforced.withIncarnation(COMMITTED_LIFE + 1).withReplication(new ReplicationFactors(3, 1)), enforced).isEmpty())
+            .as("another life is a recreate").isTrue();
+        var morePartitions = new StreamConfig(STREAM, enforced.partitions() * 2, enforced.retention(), enforced.autoOffsetReset(), enforced.maxEventSizeBytes(),
+                                              enforced.consistencyMode(), 5, 4, enforced.compression(), enforced.encryptionKeyId(), COMMITTED_LIFE);
+
+        assertThat(StreamPartitionManager.notAppliedReason(morePartitions, enforced).or("")).as("a stronger config with another partition count is not adopted")
+                                                                                          .startsWith("partition count of an existing stream cannot change");
+    }
+
     private static StreamPartitionManager manager(RecordingClusterNode cluster, AppendLog.Opener opener) {
         return streamPartitionManager(Long.MAX_VALUE,
                                       EvictionListener.NOOP,

@@ -181,49 +181,93 @@ class StreamIsrAnnouncerTest {
                                                         (_, _) -> Option.none())).as("no committed record").isEmpty();
     }
 
-    /// #1883 (owner rule): a committed CF LOWERING of a running stream is not applied online; the operator asked for
-    /// something the system will not do, and that is announced once, with an id derived from the config.
+    /// #1883 (owner rule): a committed config that does not take effect over what the node ENFORCES is announced once
+    /// per committed Put, compared with the enforced config, with the actual cause as the reason.
     @Test
     void loweringThatIsNotApplied_isAnnouncedOnce_withADeterministicId() {
         var announced = new ArrayList<OperationalEvent>();
-        var put = configPut(config(3, 1), 300L, config(3, 3));
+        var put = configPut(config(3, 1), 300L);
 
-        configAnnouncer(3, 3, announced).onConfigPut(put);
+        enforcing(config(3, 3), announced).onConfigPut(put);
 
-        var notApplied = announced.stream().filter(OperationalEvent.StreamConfigChangeNotApplied.class::isInstance)
-                                  .map(OperationalEvent.StreamConfigChangeNotApplied.class::cast).toList();
-        assertThat(notApplied).singleElement().satisfies(event -> {
+        assertThat(notApplied(announced)).singleElement().satisfies(event -> {
             assertThat(event.stream()).isEqualTo("orders");
             assertThat(event.requestedConfirmationFactor()).isEqualTo(1);
             assertThat(event.effectiveConfirmationFactor()).isEqualTo(3);
-            assertThat(event.reason()).isEqualTo("durability only increases online");
+            assertThat(event.reason()).startsWith("durability only increases online");
         });
         var again = new ArrayList<OperationalEvent>();
-
-        configAnnouncer(3, 3, again).onConfigPut(put);
         var later = new ArrayList<OperationalEvent>();
 
-        configAnnouncer(3, 3, later).onConfigPut(configPut(config(3, 1), 301L, config(3, 3)));
+        enforcing(config(3, 3), again).onConfigPut(put);
+        enforcing(config(3, 3), later).onConfigPut(configPut(config(3, 1), 301L));
 
-        assertThat(idOf(again.getFirst())).as("another node, or a redelivery of the same Put").isEqualTo(notApplied.getFirst().eventId());
-        assertThat(idOf(later.getFirst())).as("a later lowering request").isNotEqualTo(notApplied.getFirst().eventId());
+        assertThat(idOf(again.getFirst())).as("another node, or a redelivery of the same Put").isEqualTo(idOf(announced.getFirst()));
+        assertThat(idOf(later.getFirst())).as("a later lowering request").isNotEqualTo(idOf(announced.getFirst()));
     }
 
-    /// The false-alert controls: an adopted change (including a lowering that came with a replication-factor raise), a
-    /// Put that does not lower the previously committed factor, a new life and a stream not held before announce nothing.
+    /// 3 -> 1 announces, and a later commit to 2 announces too: the enforced factor is still 3, and 2 is not applied
+    /// either. The second event names ITS requested value, not the first one's.
     @Test
-    void configChange_thatIsAdoptedOrNotALowering_announcesNoNotApplied() {
+    void secondUnappliedValue_isAnnouncedToo_comparedWithTheEnforcedConfig() {
+        var announced = new ArrayList<OperationalEvent>();
+        var announcer = enforcing(config(3, 3), announced);
+
+        announcer.onConfigPut(configPut(config(3, 1), 1L));
+        announcer.onConfigPut(configPut(config(3, 2), 2L));
+
+        assertThat(notApplied(announced)).extracting(OperationalEvent.StreamConfigChangeNotApplied::requestedConfirmationFactor)
+                                         .containsExactly(1, 2);
+        assertThat(notApplied(announced)).extracting(OperationalEvent.StreamConfigChangeNotApplied::effectiveConfirmationFactor)
+                                         .containsExactly(3, 3);
+    }
+
+    /// A different partition count is never adopted, up or down, and the reason says so rather than blaming durability.
+    @Test
+    void partitionCountChange_isAnnouncedNotApplied_upAndDown_withThePartitionReason() {
+        var lowered = new ArrayList<OperationalEvent>();
+        var raised = new ArrayList<OperationalEvent>();
+
+        enforcing(config(3, 2), lowered).onConfigPut(configPut(config(2, 3, 2), 1L));
+        enforcing(config(3, 2), raised).onConfigPut(configPut(config(8, 5, 3), 2L));
+
+        assertThat(notApplied(lowered)).singleElement().satisfies(event -> {
+            assertThat(event.reason()).startsWith("partition count of an existing stream cannot change");
+            assertThat(event.reason()).doesNotContain("durability");
+        });
+        assertThat(notApplied(raised)).as("a RAISE (even with stronger durability) is not applied either").singleElement()
+                                      .satisfies(event -> assertThat(event.reason()).startsWith("partition count of an existing stream cannot change"));
+    }
+
+    /// The false-alert controls: an adopted change (including a lowering that came with a replication-factor raise), an
+    /// unchanged config, a raise, a new life and a stream not held here announce nothing.
+    @Test
+    void configChange_thatIsAdoptedOrUnchanged_announcesNoNotApplied() {
         var announced = new ArrayList<OperationalEvent>();
 
-        configAnnouncer(3, 1, announced).onConfigPut(configPut(config(5, 1), 1L, config(3, 3)));
-        configAnnouncer(3, 3, announced).onConfigPut(configPut(config(3, 1), 2L, config(3, 1)));
-        configAnnouncer(3, 3, announced).onConfigPut(configPut(config(3, 3), 3L, config(3, 3)));
-        configAnnouncer(3, 3, announced).onConfigPut(configPut(config(3, 1).withIncarnation(9L), 4L, config(3, 3)));
-        configAnnouncer(0, 0, announced).onConfigPut(configPut(config(3, 1), 5L, config(3, 3)));
-        configAnnouncer(3, 3, announced).onConfigPut(configPut(config(3, 1), 6L, null));
+        enforcing(config(3, 3), announced).onConfigPut(configPut(config(5, 1), 1L));
+        enforcing(config(3, 3), announced).onConfigPut(configPut(config(3, 3), 2L));
+        enforcing(config(3, 2), announced).onConfigPut(configPut(config(3, 3), 3L));
+        enforcing(config(3, 3), announced).onConfigPut(configPut(config(3, 1).withIncarnation(9L), 4L));
+        configAnnouncer(0, 0, announced).onConfigPut(configPut(config(3, 1), 5L));
 
-        assertThat(announced.stream().filter(OperationalEvent.StreamConfigChangeNotApplied.class::isInstance))
-            .as("adopted with an RF raise; previous CF already that low; unchanged; another life; not held; first commit").isEmpty();
+        assertThat(notApplied(announced)).as("adopted with an RF raise; unchanged; a raise; another life; not held").isEmpty();
+    }
+
+    private static List<OperationalEvent.StreamConfigChangeNotApplied> notApplied(List<OperationalEvent> events) {
+        return events.stream()
+                     .filter(OperationalEvent.StreamConfigChangeNotApplied.class::isInstance)
+                     .map(OperationalEvent.StreamConfigChangeNotApplied.class::cast)
+                     .toList();
+    }
+
+    /// An announcer whose node enforces `enforced` for the stream.
+    private static StreamIsrAnnouncer enforcing(StreamConfig enforced, List<OperationalEvent> sink) {
+        return StreamIsrAnnouncer.streamIsrAnnouncer(_ -> enforced.confirmationFactor(),
+                                                     _ -> enforced.confirmationFactor(),
+                                                     _ -> Option.some(enforced),
+                                                     (_, _) -> Option.none(),
+                                                     sink::add);
     }
 
     private static String idOf(OperationalEvent event) {
@@ -239,6 +283,7 @@ class StreamIsrAnnouncerTest {
     private static StreamIsrAnnouncer configAnnouncer(int before, int after, List<OperationalEvent> sink) {
         return StreamIsrAnnouncer.streamIsrAnnouncer(_ -> before,
                                                      _ -> after,
+                                                     _ -> Option.none(),
                                                      (stream, partition) -> partition == 3
                                                                             ? Option.some(record(List.of(A, B), 4L))
                                                                             : Option.none(),
@@ -246,7 +291,11 @@ class StreamIsrAnnouncerTest {
     }
 
     private static StreamConfig config(int replicationFactor, int confirmationFactor) {
-        return StreamConfig.streamConfig("orders", 4, RetentionPolicy.retentionPolicy(1000, 1024 * 1024, 600_000), "earliest")
+        return config(4, replicationFactor, confirmationFactor);
+    }
+
+    private static StreamConfig config(int partitions, int replicationFactor, int confirmationFactor) {
+        return StreamConfig.streamConfig("orders", partitions, RetentionPolicy.retentionPolicy(1000, 1024 * 1024, 600_000), "earliest")
                            .withReplication(new ReplicationFactors(replicationFactor, confirmationFactor));
     }
 
@@ -254,13 +303,6 @@ class StreamIsrAnnouncerTest {
         return new ValuePut<>(new KVCommand.Put<>(StreamConfigKey.streamConfigKey("orders"),
                                                   StreamConfigValue.streamConfigValue(config, createdAt)),
                               Option.none());
-    }
-
-    /// A Put over a previously committed `previous` config (`null`: the first commit).
-    private static ValuePut<StreamConfigKey, StreamConfigValue> configPut(StreamConfig config, long createdAt, StreamConfig previous) {
-        return new ValuePut<>(new KVCommand.Put<>(StreamConfigKey.streamConfigKey("orders"),
-                                                  StreamConfigValue.streamConfigValue(config, createdAt)),
-                              Option.option(previous).map(old -> StreamConfigValue.streamConfigValue(old, 1L)));
     }
 
     private static StreamPartitionOwnershipValue record(List<NodeId> isr, long isrVersion) {

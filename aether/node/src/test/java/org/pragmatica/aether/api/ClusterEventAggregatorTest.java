@@ -406,7 +406,7 @@ class ClusterEventAggregatorTest {
         var resolution = new ValuePut<>(new KVCommand.Put<>(key, restored), Option.some(below));
 
         for (var node : List.of(leader, eventsOwner, third)) {
-            var announcer = org.pragmatica.aether.node.StreamIsrAnnouncer.streamIsrAnnouncer(_ -> 2, _ -> 2, (_, _) -> Option.none(), event -> {
+            var announcer = org.pragmatica.aether.node.StreamIsrAnnouncer.streamIsrAnnouncer(_ -> 2, _ -> 2, _ -> Option.none(), (_, _) -> Option.none(), event -> {
                 switch (event) {
                     case OperationalEvent.StreamIsrBelowMinimum e -> node.aggregator().onStreamIsrBelowMinimum(e);
                     case OperationalEvent.StreamIsrRestored e -> node.aggregator().onStreamIsrRestored(e);
@@ -445,6 +445,25 @@ class ClusterEventAggregatorTest {
                                        .containsEntry("reason", "durability only increases online")
                                        .containsEntry("eventId", "cfg-id");
         });
+    }
+
+    /// STREAM_CONFIG_CHANGE_NOT_APPLIED is derived on every node from the committed config Put, so it is
+    /// published by the events owner only: a non-owner (the leader, a third node) publishes nothing.
+    @Test
+    void streamConfigChangeNotApplied_derivedOnEveryNode_publishedOnlyByTheEventsOwner() {
+        var eventsOwner = Harness.create(Harness.defaultRetention(), OWNER);
+        var notOwner = Harness.create(Harness.defaultRetention(), NOT_OWNER);
+
+        for (var node : List.of(eventsOwner, notOwner)) {
+            node.aggregator().onStreamConfigChangeNotApplied(OperationalEvent.StreamConfigChangeNotApplied.streamConfigChangeNotApplied("orders",
+                                                                                                                                      1,
+                                                                                                                                      3,
+                                                                                                                                      "durability only increases online",
+                                                                                                                                      "cfg-id"));
+        }
+
+        assertThat(notOwner.events()).as("not the events owner: publishes nothing").isEmpty();
+        assertThat(eventsOwner.events()).singleElement().isInstanceOf(ClusterEvent.StreamConfigChangeNotApplied.class);
     }
 
     /// #1883 F3: during a membership change two nodes can both pass the events-owner gate and each publish the event

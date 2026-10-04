@@ -120,7 +120,7 @@ class StreamPartitionOwnershipValueTest {
         assertThat(v.fenced()).hasSize(StreamPartitionOwnershipValue.FENCED_MAX).isEqualTo(many.subList(3, many.size()));
     }
 
-    /// The refusal count grows on each transition INTO refused, only; it is what makes a recurring refusal a new event.
+    /// Within an ownership term the refusal count grows on each transition INTO refused, only; it is what makes a recurring refusal a new event.
     @Test
     void failoverRefusalSeq_countsTransitionsIntoRefused_only() {
         var owner = new NodeId("owner");

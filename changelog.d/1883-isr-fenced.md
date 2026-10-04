@@ -15,12 +15,14 @@
   `STREAM_FAILOVER_REFUSED` and `STREAM_FAILOVER_RESOLVED` carry a deterministic `details.eventId` derived from the committed
   ownership record (partition, epoch, term, ISR version, refusal count), so two nodes that both pass the events-owner gate during a
   membership change publish one event as far as every reader that de-duplicates by `eventId` is concerned. The ownership
-  record gains `failoverRefusalSeq`, incremented on each transition into refused, so a recurring refusal is a new event.
+  record gains `failoverRefusalSeq`, incremented on each transition into refused within an ownership term (a move restarts it; the raised term keeps ids distinct), so a recurring refusal is a new event.
 - **A confirmation-factor change announces too.** Raising `confirmation_factor` above the committed ISR size stalls every ack
   with no ISR commit; it now raises `STREAM_ISR_BELOW_MINIMUM` once (and `STREAM_ISR_RESTORED` when the factor moves back),
   derived from the factor the node enforces before and after the committed config. A lowering a running stream does not adopt
   announces nothing.
-- **`STREAM_CONFIG_CHANGE_NOT_APPLIED` (WARNING).** A committed lowering of a running stream's `confirmation_factor` is not applied
-  online (durability only increases); it now raises this event once, instead of being silently ignored. Documented in
+- **`STREAM_CONFIG_CHANGE_NOT_APPLIED` (WARNING).** A committed config for a running stream that does not take effect over what
+  the node enforces (a lowering of the confirmation or replication factor, since durability only increases online, or a different
+  partition count, which is never re-shaped onto existing rings) now raises this event once per committed config, with the actual
+  cause as the reason, instead of being silently ignored. Documented in
   `bootstrap-config.md` and `guarantees.md`.
 - **Wire:** `StreamPartitionOwnershipValue` also gains `failoverRefusalSeq`; SystemTags 1750 `StreamConfigChangeNotApplied`.

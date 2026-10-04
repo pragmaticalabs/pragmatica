@@ -7,6 +7,7 @@ package org.pragmatica.aether.node;
 import java.util.List;
 import java.util.function.BiFunction;
 import java.util.function.Consumer;
+import java.util.function.Function;
 import java.util.function.ToIntFunction;
 import java.util.stream.IntStream;
 
@@ -16,6 +17,7 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.StreamConfigKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.StreamPartitionOwnershipKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.StreamConfigValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.StreamPartitionOwnershipValue;
+import org.pragmatica.aether.stream.StreamPartitionManager;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Contract;
@@ -57,6 +59,7 @@ public interface StreamIsrAnnouncer {
     /// enforce once a committed config has been applied; `committedRecord` the committed ownership record of a partition.
     static StreamIsrAnnouncer streamIsrAnnouncer(ToIntFunction<String> confirmationFactor,
                                                  ToIntFunction<StreamConfig> confirmationFactorAfter,
+                                                 Function<String, Option<StreamConfig>> enforcedConfig,
                                                  BiFunction<String, Integer, Option<StreamPartitionOwnershipValue>> committedRecord,
                                                  Consumer<OperationalEvent> sink) {
         return new StreamIsrAnnouncer() {
@@ -79,7 +82,7 @@ public interface StreamIsrAnnouncer {
                 var after = confirmationFactorAfter.applyAsInt(config);
 
                 configTransitions(value, before, after, committedRecord).forEach(sink);
-                notApplied(put.oldValue(), value, before, after).onPresent(sink);
+                notApplied(value, enforcedConfig.apply(config.name())).onPresent(sink);
             }
         };
     }
@@ -102,30 +105,28 @@ public interface StreamIsrAnnouncer {
                           .toList();
     }
 
-    /// A committed config that LOWERS the confirmation factor of a running stream is not applied (durability only
-    /// increases online, `StreamPartitionManager#adoptIfMoreDurable`): the operator asked for something the system will
-    /// not do, and acks keep being refused at the old factor. Announced once per such Put, never for an adopted change
-    /// (a lowering that came with a replication-factor raise is adopted, so the factor moves), a new life, a stream
-    /// not held before, or a Put that does not lower the previously committed factor. A later raise does not resolve it:
-    /// it is a point event.
-    static Option<OperationalEvent> notApplied(Option<StreamConfigValue> previous,
-                                               StreamConfigValue value,
-                                               int before,
-                                               int after) {
+    /// A committed config that does not take effect over what the node ENFORCES (a different partition count, or not
+    /// stronger durability: `StreamPartitionManager#notAppliedReason`) is an operator-attention condition: the operator
+    /// asked for something the system will not do, and the stream keeps its enforced shape. Announced once per committed
+    /// Put, compared with what is enforced (not with the previously committed config), so a second unapplied value
+    /// announces too; the reason names the actual cause. Silent for an adopted change (including a lowering that came
+    /// with a replication-factor raise), an unchanged config, a new life and a stream not held here. A later change does
+    /// not resolve it: it is a point event.
+    static Option<OperationalEvent> notApplied(StreamConfigValue value, Option<StreamConfig> enforced) {
         var config = value.config();
 
-        return previous.map(StreamConfigValue::config)
-                       .filter(old -> old.incarnation() == config.incarnation())
-                       .filter(old -> before > 0 && after == before)
-                       .filter(old -> config.confirmationFactor() < old.confirmationFactor() && config.confirmationFactor() < before)
-                       .map(_ -> OperationalEvent.StreamConfigChangeNotApplied.streamConfigChangeNotApplied(config.name(),
-                                                                                                            config.confirmationFactor(),
-                                                                                                            before,
-                                                                                                            "durability only increases online",
-                                                                                                            "stream-config-not-applied:" + config.name()
-                                                                                                           + ":" + config.incarnation()
-                                                                                                           + ":" + value.createdAt()
-                                                                                                           + ":" + config.confirmationFactor()));
+        return enforced.flatMap(current -> StreamPartitionManager.notAppliedReason(config, current)
+                                                                 .map(reason -> OperationalEvent.StreamConfigChangeNotApplied.streamConfigChangeNotApplied(config.name(),
+                                                                                                                                                     config.confirmationFactor(),
+                                                                                                                                                     current.confirmationFactor(),
+                                                                                                                                                     reason,
+                                                                                                                                                     "stream-config-not-applied:"
+                                                                                                                                                     + config.name()
+                                                                                                                                                     + ":" + config.incarnation()
+                                                                                                                                                     + ":" + value.createdAt()
+                                                                                                                                                     + ":" + config.partitions()
+                                                                                                                                                     + ":" + config.replicationFactor()
+                                                                                                                                                     + ":" + config.confirmationFactor())));
     }
 
     private static Option<OperationalEvent> configTransition(StreamConfigValue value,

@@ -1459,6 +1459,34 @@ public final class StreamPartitionManager implements AutoCloseable {
         return incoming.partitions() == existing.partitions() && strongerDurability(incoming, existing);
     }
 
+    /// The config this node ENFORCES for `streamName`, if it holds the stream.
+    public Option<StreamConfig> enforcedConfig(String streamName) {
+        return option(streams.get(streamName)).map(entry -> entry.config());
+    }
+
+    /// Why a committed config of the SAME life does not take effect over the one this node enforces, or none when it
+    /// takes effect or asks for nothing durable to change. The operator asked for something the system will not do:
+    /// a different partition count cannot be re-shaped onto the existing rings and WALs (whatever else the config
+    /// changes), and, with the same partition count, a config that is not strictly stronger than the enforced one is
+    /// not adopted (durability only increases online). The same rule as [#adopts] decides, so what is announced cannot
+    /// differ from what [#confirmationFactorFor] then enforces.
+    public static Option<String> notAppliedReason(StreamConfig incoming, StreamConfig enforced) {
+        if (incoming.incarnation() != enforced.incarnation()) {
+            return Option.none();
+        }
+
+        if (incoming.partitions() != enforced.partitions()) {
+            return Option.some("partition count of an existing stream cannot change (requested " + incoming.partitions()
+                               + ", enforced " + enforced.partitions() + ")");
+        }
+
+        return incoming.replication().equals(enforced.replication()) || strongerDurability(incoming, enforced)
+               ? Option.none()
+               : Option.some("durability only increases online (requested replication/confirmation factor "
+                             + incoming.replicationFactor() + "/" + incoming.confirmationFactor()
+                             + ", enforced " + enforced.replicationFactor() + "/" + enforced.confirmationFactor() + ")");
+    }
+
     /// The confirmation factor [#confirmationFactorFor] will report for `incoming.name()` once the committed
     /// `incoming` has been applied here ([#onStreamConfigPut]); call it BEFORE that handler runs. A config that is not
     /// adopted (weaker, or another partition count) and a different life (a recreate, not a factor change) leave the

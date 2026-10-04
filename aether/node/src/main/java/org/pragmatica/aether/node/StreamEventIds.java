@@ -19,7 +19,8 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.StreamPartitionOwnershipV
 ///
 /// The id names the committed state the event describes: partition, ownership epoch and term, the ISR version and the
 /// failover refusal count. The ISR version is monotone, so two genuine ISR transitions never share an id; the refusal
-/// count is committed with the flag and grows on every transition into refused, so a partition that is refused,
+/// count is committed with the flag and grows on every transition into refused within an ownership term (a move restarts it
+/// at 0, and the raised term keeps ids distinct), so a partition that is refused,
 /// resolved by its owner returning, and refused again in an otherwise identical record still gets a new id.
 final class StreamEventIds {
     private StreamEventIds() {}

@@ -5149,6 +5149,7 @@ public interface AetherNode extends ManageableNode {
         // (next) then installs.
         var streamIsrAnnouncer = StreamIsrAnnouncer.streamIsrAnnouncer(streamPartitionManager::confirmationFactorFor,
                                                                        streamPartitionManager::confirmationFactorAfter,
+                                                                       streamPartitionManager::enforcedConfig,
                                                                        (stream, partition) -> kvStore.getTyped(StreamPartitionOwnershipKey.streamPartitionOwnershipKey(stream,
                                                                                                                                                                        partition),
                                                                                                                StreamPartitionOwnershipValue.class),
