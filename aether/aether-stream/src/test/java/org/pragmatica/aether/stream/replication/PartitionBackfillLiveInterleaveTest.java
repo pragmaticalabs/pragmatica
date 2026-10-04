@@ -302,9 +302,12 @@ class PartitionBackfillLiveInterleaveTest {
         assertThat(backfillAcks).as("no completion ack from a quarantined partition").isEmpty();
     }
 
-    /// #1505 F2: the quarantine is ALSO checked at the terminal step of an in-flight run, not only at entry. The
-    /// run requests 14; while it is in flight the live path meets a divergent entry at 13. The empty response then
-    /// takes the #559 at-owner-tail path, and the owner's probed tail (13) would promote self. It must not.
+    /// #1505 F2: the quarantine is ALSO checked at the terminal step of an in-flight run, not only at entry. The replica holds 0..13 and
+    /// the run requests the overlap window (from 0, #1730 phase 2); while it is in flight the live path meets a divergent entry at 13.
+    /// The owner answers the requested window truthfully (0..14, what its ring holds), the apply refuses the divergent 13, and the run
+    /// must neither promote nor ack. (The earlier form of this test answered an EMPTY response to the window request, which the
+    /// production owner cannot produce for a replica that holds data, so it pinned nothing; the #559 at-owner-tail path it aimed at is
+    /// unreachable for such a replica now.)
     @Test
     void quarantine_recordedWhileRunInFlight_blocksTheAtOwnerTailPromotion() {
         var handler = receiveHandler();
@@ -315,8 +318,8 @@ class PartitionBackfillLiveInterleaveTest {
         assertThat(catchupRequests).extracting(ReplicationMessage.CatchupRequest::fromOffset).containsExactly(0L);
 
         handler.onReplicateEvents(replicateEvents(owner, STREAM, PARTITION, 13, List.of("forged-13".getBytes(UTF_8)), List.of(1013L), Epoch.ZERO));
-        catchupInFlight.resolve(Result.success(response(14, List.of(), List.of())));
-        probeAnswer.resolve(Result.success(13L));
+        catchupInFlight.resolve(Result.success(ownerResponse(0, 15)));
+        probeAnswer.resolve(Result.success(14L));
 
         assertThat(run.await().isFailure()).isTrue();
         assertThat(selfDescriptor().state()).isNotEqualTo(ReplicationState.CAUGHT_UP);

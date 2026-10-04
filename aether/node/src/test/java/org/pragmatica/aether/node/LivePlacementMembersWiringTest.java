@@ -123,6 +123,7 @@ class LivePlacementMembersWiringTest {
         assertThat(code).contains("streamReplicationManager.ownerEpochs(streamOwnerEpochSource);");
         assertThat(code).contains("streamPartitionManager.repairReportBound(TimeSpan.timeSpan(STREAM_BACKFILL_REDRIVE_INTERVAL.millis()*12L).millis());");
         assertThat(code).contains("ownerActivation.peerRingTail((node,stream,partition)->");
+        assertThat(code).contains(":streamForwardClient.ringTailRemote(node,stream,partition).recover(_->Option.<Long>none()));");
     }
 
     @Test

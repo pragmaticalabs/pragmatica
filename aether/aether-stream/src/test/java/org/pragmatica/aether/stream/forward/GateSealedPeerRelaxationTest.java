@@ -210,6 +210,24 @@ class GateSealedPeerRelaxationTest {
         }
     }
 
+    /// H (v1890): the gate asks a remote peer for its ring tail. That query must not go through the consumer read class: a peer that is
+    /// not the owner and holds records it has not compared with the committed owner (right after the epoch change that elected the
+    /// candidate, which is exactly when the gate runs) refuses consumer reads, so the tail would be unknown and the gate would always
+    /// refuse. Over the catch-up class, which reveals no data, it answers. The consumer-class bounds query is the control that fails.
+    @Test
+    void ringTailOfAnUnverifiedPeer_isAnsweredOverTheCatchupClass_notTheConsumerClass() {
+        publishTagged(owner, "common", 3);
+        owner.ownerEpochSource((_, _) -> Epoch.epoch(1L, 1L, 2L));
+        owner.placementRoleSupplier((_, _) -> org.pragmatica.aether.stream.replication.ReplicaSetController.Role.REPLICA);
+
+        var tail = client.ringTailRemote(OWNER, STREAM, PARTITION).await();
+        var consumerClass = client.boundsRemote(OWNER, STREAM, PARTITION).await();
+
+        assertThat(tail.isSuccess()).as("the catch-up class answers: %s", tail).isTrue();
+        assertThat(tail.unwrap().isPresent()).isTrue();
+        assertThat(consumerClass.isFailure()).as("control: the consumer class is refused by the verification gate").isTrue();
+    }
+
     private OwnerActivation gateFor(NodeId candidateNode, StreamPartitionManager candidate) {
         var gate = OwnerActivation.ownerActivation(candidateNode,
                                                (_, _) -> Option.some(isrElected(candidateNode)),

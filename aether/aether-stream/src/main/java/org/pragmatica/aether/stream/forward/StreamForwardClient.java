@@ -147,6 +147,15 @@ public interface StreamForwardClient {
                                                                                                      .async());
     }
 
+    /// Where a peer's RING begins, over the CATCH-UP read class (#1730 phase 2): a read from beyond any head asking for no events, so
+    /// it reveals no data and is not subject to the consumer-read verification gate (a peer that has not been compared with the
+    /// committed owner still answers it). None when the peer holds no ring or reports none.
+    default Promise<Option<Long>> ringTailRemote(NodeId peerId, String streamName, int partition) {
+        return readRemoteCatchup(peerId, streamName, partition, Long.MAX_VALUE, 0).map(result -> result.bounds()
+                                                                                                         .filter(known -> known.earliestRetained() >= 0L)
+                                                                                                         .map(VisibleBounds::earliestRetained));
+    }
+
     private static StreamForwardClient noOpClient() {
         return new StreamForwardClient() {
             @Override

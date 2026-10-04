@@ -5536,12 +5536,7 @@ public interface AetherNode extends ManageableNode {
                                                                                                                          partition)
                                                                                                           .filter(bounds -> bounds.earliestRetained() >= 0L)
                                                                                                           .map(VisibleBounds::earliestRetained))
-                                                                  : streamForwardClient.boundsRemote(node,
-                                                                                                     stream,
-                                                                                                     partition)
-                                                                                       .map(bounds -> Option.some(bounds)
-                                                                                                            .filter(known -> known.earliestRetained() >= 0L)
-                                                                                                            .map(VisibleBounds::earliestRetained))
+                                                                  : streamForwardClient.ringTailRemote(node, stream, partition)
                                                                                        .recover(_ -> Option.<Long> none()));
         ownerActivation.peerRows((stream, partition, peer) -> streamReplicaRegistry.updateWatermark(stream,
                                                                                                     partition,
