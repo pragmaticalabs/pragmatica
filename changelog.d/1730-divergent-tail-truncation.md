@@ -45,4 +45,6 @@
 - **One truncation report.** At `confirmation_factor` 1 the warning `stream-divergent-tail-truncated` is raised once per
   truncation, when the repair completes, with the final range, the epoch of the discarded records and `ackedAtOwner=true`, not
   once per window step.
-
+  A repair that does not settle within twelve backfill redrive ticks (60 s) is reported anyway with `repairSettled=false` and the
+  range known so far; if it later settles with a larger range, one more event (a distinct id: partition, epoch, first cut offset,
+  settled flag) follows, so at most two per truncation.

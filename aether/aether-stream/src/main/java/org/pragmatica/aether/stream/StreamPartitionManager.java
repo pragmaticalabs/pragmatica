@@ -2372,29 +2372,38 @@ public final class StreamPartitionManager implements AutoCloseable {
 
     @Contract
     private void scheduleUnsettledReport(String streamName, int partition) {
-        repairReportBound.onPresent(bound -> SharedScheduler.schedule(() -> reportUnsettled(streamName, partition), bound));
+        repairReportBound.onPresent(bound -> SharedScheduler.schedule(() -> reportUnsettled(streamName, partition),
+                                                                      bound));
     }
 
     @Contract
     private void reportUnsettled(String streamName, int partition) {
         var ref = new PartitionRef(streamName, partition);
 
-        option(pendingCuts.get(ref)).filter(_ -> !reportedUnsettled.containsKey(ref)).onPresent(cut -> {
-            reportedUnsettled.put(ref, cut);
-            reportCut(streamName, partition, cut, confirmationFactorFor(streamName), false);
-        });
+        option(pendingCuts.get(ref)).filter(_ -> !reportedUnsettled.containsKey(ref))
+              .onPresent(cut -> {
+                             reportedUnsettled.put(ref, cut);
+                             reportCut(streamName,
+                                       partition,
+                                       cut,
+                                       confirmationFactorFor(streamName),
+                                       false);
+                         });
     }
 
     private void reportCut(String streamName, int partition, TailCut cut, int confirmationFactor, boolean settled) {
         if (confirmationFactor <= 1) {
             var epoch = cut.epoch().map(Epoch::toString).or("unknown");
-
             // The subject is the event identity: (partition, epoch, first cut offset, settled flag), so an unsettled report and the
             // settled one that follows it are two distinct events, at most two per truncation.
             OperatorWarnings.raise(log,
                                    operatorWarnings,
                                    OperatorWarningCode.STREAM_DIVERGENT_TAIL_TRUNCATED,
-                                   streamName + "[" + partition + "]@" + epoch + "@" + cut.firstRemoved() + "#settled=" + settled,
+                                   streamName
+                                  + "[" + partition
+                                  + "]@" + epoch
+                                  + "@" + cut.firstRemoved()
+                                  + "#settled=" + settled,
                                    "Replica {}[{}] discarded offsets [{}, {}] ({} events, epoch {}) that diverged from its owner; "
                                   + "ackedAtOwner=true: confirmation_factor is 1, so they may have been acknowledged by their writer "
                                   + "and are lost; repairSettled={}",
