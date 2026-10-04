@@ -153,6 +153,7 @@ class DurableProjectionRebuildTest {
 
     private final AtomicInteger poisonSeq = new AtomicInteger(-1);
     private final AtomicInteger attempts = new AtomicInteger();
+    private final AtomicReference<Runnable> afterRewind = new AtomicReference<>();
     private final InMemoryProjectionStore<Long> store = InMemoryProjectionStore.inMemoryProjectionStore();
     private final InMemoryClusterCursorStore localCursors = new InMemoryClusterCursorStore();
     private ExecutorService consensus;
@@ -484,6 +485,35 @@ class DurableProjectionRebuildTest {
         assertThat(committedEpoch()).isEqualTo(Option.some(RewindEpoch.rewindEpoch(0L, 1L, 1L)));
     }
 
+    /// The rewind record's own apply restarts the consumer (`onCheckpointPut` → `restartRewound`), and that
+    /// consumer's first checkpoint, at the minted epoch, is an ordinary next commit. When it lands between
+    /// the rewind's apply and `rebuild()`'s read-back, the committed value is no longer the rewind record,
+    /// though the rewind DID commit. The read-back then reported `RewindNotCommitted` ("the cluster cursor carries
+    /// epoch 0/1/1", the token's own epoch). This was the full-run flake of the `rebuild refused` tests.
+    /// Here the interleaving is forced on the consensus thread instead of waiting for it.
+    @Test
+    void rewindCommitted_thenOvertakenByTheRestartedConsumersCheckpoint_beforeTheReadBack_isReportedCommitted() throws InterruptedException {
+        publishAll(1, 6);
+        awaitModel(123456L, 15_000);
+        var rewindRecordCommitted = new AtomicReference<Boolean>();
+
+        afterRewind.set(() -> {
+            var record = committed(StreamCursorCheckpointKey.streamCursorCheckpointKey(TOPIC_STREAM, PARTITION, GROUP)).unwrap();
+
+            rewindRecordCommitted.set(record.rewind());
+            kv.process(kv.createBatch(List.of(checkpoint(record.committedOffset(), record.rewindEpoch()))));
+        });
+        var outcome = projection.rebuild().await();
+
+        assertThat(rewindRecordCommitted.get()).as("control: the rewind record itself committed, then was overtaken").isTrue();
+        assertThat(committed(StreamCursorCheckpointKey.streamCursorCheckpointKey(TOPIC_STREAM, PARTITION, GROUP)).unwrap().rewind())
+                  .as("control: the read-back saw the overtaking checkpoint, not the rewind record")
+                  .isFalse();
+        assertThat(outcome.isSuccess()).as("a rewind that committed is reported committed: %s", outcome).isTrue();
+        awaitLive(20_000);
+        assertThat(model()).isEqualTo(Option.some(123456L));
+    }
+
     /// Resume order is `(epoch, offset)`: a stale-high local cursor from before the rewind loses to the
     /// rewound cluster cursor, however low. `max(local, cluster)` on the offset turns this red.
     @Test
@@ -592,8 +622,22 @@ class DurableProjectionRebuildTest {
     private Promise<Unit> applyAll(List<KVCommand<AetherKey>> commands) {
         return Promise.promise(promise -> consensus.execute(() -> {
             kv.process(kv.createBatch(commands));
+            afterRewindApply(commands);
             promise.succeed(Unit.unit());
         }));
+    }
+
+    /// When armed, the next applied batch that carries a rewind record is followed, on the consensus thread and
+    /// before the writer learns its batch was applied, by `afterRewind` — the next commit a real cluster can order
+    /// between a rewind's apply and the rewinder's read-back.
+    private void afterRewindApply(List<KVCommand<AetherKey>> commands) {
+        if (commands.stream().anyMatch(DurableProjectionRebuildTest::isRewindRecord)) {
+            Option.option(afterRewind.getAndSet(null)).onPresent(Runnable::run);
+        }
+    }
+
+    private static boolean isRewindRecord(KVCommand<AetherKey> command) {
+        return command instanceof KVCommand.Put<AetherKey, ?> put && put.value() instanceof StreamCursorCheckpointValue value && value.rewind();
     }
 
     private Promise<Unit> apply(KVCommand<AetherKey> command) {
