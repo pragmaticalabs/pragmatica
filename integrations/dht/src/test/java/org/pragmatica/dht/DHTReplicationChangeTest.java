@@ -812,7 +812,7 @@ class DHTReplicationChangeTest {
     /// is refused as stale. Its local tombstone is never written, so the key is not left absent and there is nothing to undo.
     @Test
     void v1882r10_staleRemove_neverTouchesTheWritersOnlyLocalCopy() {
-        var cluster = new Cluster(5, shortTimeout(3, 1));
+        var cluster = new Cluster(5, wideBound(3, 1));
         var replicas = cluster.replicasOf(KEY, 3);
         var writer = replicas.getFirst();
         var others = cluster.nodes.keySet().stream().filter(id -> !id.equals(writer)).toList();
@@ -835,7 +835,7 @@ class DHTReplicationChangeTest {
     /// that is later undone: an acknowledged X, or a write that superseded it, is on at least W = 2 replicas.
     @Test
     void v1882r10_probeS_remove_staleWriterReplica_neverLeavesAnAckedXBelowItsQuorum() {
-        var cluster = new Cluster(5, shortTimeout(3, 1));
+        var cluster = new Cluster(5, wideBound(3, 1));
         var replicas = cluster.replicasOf(KEY, 3);
         var stale = replicas.getFirst();
         var r1 = replicas.get(1);
@@ -910,7 +910,7 @@ class DHTReplicationChangeTest {
     /// is acknowledged on that one copy and clears the genuine stale record.
     @Test
     void v1882r7_remove_excludedWriterThatIsAReplica_localSlotAcceptsAtWold() {
-        var cluster = new Cluster(5, shortTimeout(3, 1));
+        var cluster = new Cluster(5, wideBound(3, 1));
         var replicas = cluster.replicasOf(KEY, 3);
         var writer = replicas.getFirst();
         var others = cluster.nodes.keySet().stream().filter(id -> !id.equals(writer)).toList();
@@ -929,7 +929,7 @@ class DHTReplicationChangeTest {
     /// v1882 r7 F10, REMOVE, order (a) with the remote replies in flight: the local tombstone alone does not acknowledge.
     @Test
     void v1882r7_remove_orderA_localSlotAlone_doesNotAcknowledge_thenRemoteStaleFails() {
-        var cluster = new Cluster(5, shortTimeout(3, 1));
+        var cluster = new Cluster(5, wideBound(3, 1));
         var replicas = cluster.replicasOf(KEY, 3);
         var writer = replicas.getFirst();
         var others = cluster.nodes.keySet().stream().filter(id -> !id.equals(writer)).toList();
@@ -953,7 +953,7 @@ class DHTReplicationChangeTest {
     /// v1882 r7 F10, REMOVE, order (b): two replicas refuse as stale, then a replica that had not applied the change accepts.
     @Test
     void v1882r7_remove_orderB_remoteStaleThenRemoteSuccess_fails() {
-        var cluster = new Cluster(5, shortTimeout(3, 1));
+        var cluster = new Cluster(5, wideBound(3, 1));
         var replicas = cluster.replicasOf(KEY, 3);
         var writer = cluster.nonReplicaOf(replicas);
         var unaware = replicas.getFirst();
@@ -977,7 +977,7 @@ class DHTReplicationChangeTest {
     /// no evidence, the remove stays pending; the replica on the newer change then refuses as stale and the remove fails.
     @Test
     void v1882r9_remove_orderE_nonStaleRefusalFirst_thenStale_failsInsteadOfAckingOnTheNonStaleReply() {
-        var cluster = new Cluster(5, shortTimeout(3, 1));
+        var cluster = new Cluster(5, wideBound(3, 1));
         var replicas = cluster.replicasOf(KEY, 3);
         var writer = replicas.getFirst();
         var restarting = replicas.get(1);
@@ -1005,7 +1005,7 @@ class DHTReplicationChangeTest {
     /// v1882 r9, REMOVE: a non-stale refusal first, then a success from a replica that had not applied the change: acknowledged.
     @Test
     void v1882r9_remove_nonStaleRefusalFirst_thenSuccess_acks() {
-        var cluster = new Cluster(5, shortTimeout(3, 1));
+        var cluster = new Cluster(5, wideBound(3, 1));
         var replicas = cluster.replicasOf(KEY, 3);
         var writer = replicas.getFirst();
         var restarting = replicas.get(1);
