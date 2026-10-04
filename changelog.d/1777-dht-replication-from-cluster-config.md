@@ -34,13 +34,15 @@
     `writerTaughtTheOldChange_isFencedByReplicasOnTheNewOne`]. The roster is the leader's membership view: a wrong one
     only delays or hastens the settle.
   - **A writer that is itself a replica** cannot meet an old quorum with its own unfenced local slot (v1882 r6 F10): the put
-    is acknowledged only after a remote replica answered, any `ReplicationChangeStale` refusal seen first fails it and rolls
+    is acknowledged only on remote evidence (a success; any reply other than a success or a stale refusal keeps it waiting), any `ReplicationChangeStale` refusal seen first fails it and rolls
     the local copy back, and a put refused as stale never clears the stale-writer record. A refusal after the acknowledgement
     is recorded, not revoked. Cost: one round trip on a W=1 put whose writer is a replica
     [verified: DHTReplicationChangeTest `v1882r6_excludedWriterThatIsAReplica_localSlotAcceptsAtWold`,
     `v1882r7_orderA_…`, `v1882r7_orderB_…`, `v1882r7_orderC_…`]
-    [limit: a replica that applied the newer change but stays silent for the whole operation timeout cannot refute an
-    acknowledgement made on the local slot (`v1882r7_orderD_…`); #1683-class]
+    [verified: `v1882r9_orderE_nonStaleRefusalFirst_thenStale_…`, `v1882r9_nonStaleRefusalFirst_thenSuccess_acks`]
+    [limit: with NO evidence — every remote silent, down, fence-unknown or owner-epoch-fenced until every slot replied or the
+    operation timeout — the put is acknowledged on the local slot and sets no stale record (`v1882r7_orderD_…`,
+    `v1882r9_allRemoteRepliesNonStale_…`); #1683-class]
     [unverified: the guard that keeps a late refusal from being cleared by the acknowledgement's own clear step is not
     pinned: that race is not reachable in the in-JVM harness].
   - The two events are published at most once per transition (missed if the cluster-events owner cannot publish then).

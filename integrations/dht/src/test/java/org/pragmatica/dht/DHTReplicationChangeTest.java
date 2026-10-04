@@ -527,6 +527,92 @@ class DHTReplicationChangeTest {
         assertThat(cluster.nodes.get(writer).staleRefusal()).as("the late refusal is recorded").isNotEqualTo(Option.none());
     }
 
+    /// v1882 r9 probe E: the writer is a replica (W_old = 1 met on its own slot). The FIRST remote reply is a NON-stale
+    /// refusal — a restarted replica whose fence is unknown — which is no evidence about this writer, so the put stays
+    /// pending; the replica that applied the change then refuses as stale and the put fails.
+    @Test
+    void v1882r9_orderE_nonStaleRefusalFirst_thenStale_failsInsteadOfAckingOnTheNonStaleReply() {
+        var cluster = new Cluster(5, shortTimeout(3, 1));
+        var replicas = cluster.replicasOf(KEY, 3);
+        var writer = replicas.getFirst();
+        var restarting = replicas.get(1);
+        var applied = replicas.get(2);
+        var others = cluster.nodes.keySet().stream().filter(id -> !id.equals(writer)).toList();
+
+        others.forEach(id -> cluster.nodes.get(id).resolveReplication(factors(3, 2), CHANGE));
+        cluster.settleOnly(CHANGE, 3, others);
+        cluster.restart(restarting);
+
+        cluster.holdPuts = true;
+        var put = cluster.client(writer).put(KEY, VALUE);
+        cluster.holdPuts = false;
+        cluster.deliverHeldTo(restarting);
+
+        assertThat(put.isResolved()).as("a fence-unknown refusal is not evidence: the put is not acknowledged yet").isFalse();
+
+        cluster.deliverHeldTo(applied);
+        var outcome = put.await();
+        boolean stale = outcome.fold(cause -> cause instanceof DHTError.ReplicationChangeStale, _ -> false);
+
+        assertThat(stale).as("refused as stale: " + outcome).isTrue();
+        assertThat(cluster.holds(writer)).as("the local copy was rolled back").isFalse();
+    }
+
+    /// v1882 r9: a non-stale refusal first, then a SUCCESS from a replica that had not applied the change: the success is
+    /// evidence, so the put is acknowledged.
+    @Test
+    void v1882r9_nonStaleRefusalFirst_thenSuccess_acks() {
+        var cluster = new Cluster(5, shortTimeout(3, 1));
+        var replicas = cluster.replicasOf(KEY, 3);
+        var writer = replicas.getFirst();
+        var restarting = replicas.get(1);
+        var unaware = replicas.get(2);
+        var others = cluster.nodes.keySet().stream().filter(id -> !id.equals(writer) && !id.equals(unaware)).toList();
+
+        others.forEach(id -> cluster.nodes.get(id).resolveReplication(factors(3, 2), CHANGE));
+        cluster.settleOnly(CHANGE, 3, others);
+        cluster.restart(restarting);
+
+        cluster.holdPuts = true;
+        var put = cluster.client(writer).put(KEY, VALUE);
+        cluster.holdPuts = false;
+        cluster.deliverHeldTo(restarting);
+
+        assertThat(put.isResolved()).as("arming: the non-stale refusal alone does not release the put").isFalse();
+
+        cluster.deliverHeldTo(unaware);
+
+        assertThat(put.await().isSuccess()).as("acknowledged on a remote success").isTrue();
+    }
+
+    /// v1882 r9: every remote replies and none is a success or a stale refusal (both restarted, fence unknown): there is no
+    /// evidence either way, so the put is acknowledged per the named limit and NO stale record is set.
+    @Test
+    void v1882r9_allRemoteRepliesNonStale_acksPerTheLimit_andSetsNoStaleRecord() {
+        var cluster = new Cluster(5, shortTimeout(3, 1));
+        var replicas = cluster.replicasOf(KEY, 3);
+        var writer = replicas.getFirst();
+        var others = cluster.nodes.keySet().stream().filter(id -> !id.equals(writer)).toList();
+
+        others.forEach(id -> cluster.nodes.get(id).resolveReplication(factors(3, 2), CHANGE));
+        cluster.settleOnly(CHANGE, 3, others);
+        cluster.restart(replicas.get(1));
+        cluster.restart(replicas.get(2));
+
+        cluster.holdPuts = true;
+        var put = cluster.client(writer).put(KEY, VALUE);
+        cluster.holdPuts = false;
+        cluster.deliverHeldTo(replicas.get(1));
+
+        assertThat(put.isResolved()).as("arming: one non-stale reply is not the end of the evidence").isFalse();
+
+        cluster.deliverHeldTo(replicas.get(2));
+        var outcome = put.await();
+
+        assertThat(outcome.isSuccess()).as("acknowledged per the limit once every remote replied: " + outcome).isTrue();
+        assertThat(cluster.nodes.get(writer).staleRefusal()).isEqualTo(Option.none());
+    }
+
     /// v1882 r7 F10, order (d): the writer is a replica, every other replica stays silent for the whole operation. With no
     /// evidence either way the put is acknowledged on its own slot — the named limit — and NO stale record is set.
     @Test
