@@ -2021,18 +2021,39 @@ public final class StreamPartitionManager implements AutoCloseable {
                                              long divergedAtOffset) {
         var keep = divergedAtOffset - 1;
 
-        return resolvePartitionBuffer(streamName, partition).flatMap(ring -> cutRing(streamName,
-                                                                                     partition,
-                                                                                     ref,
-                                                                                     ring,
-                                                                                     divergedAtOffset,
-                                                                                     keep))
+        return requireVouchingHistory(streamName, partition, divergedAtOffset).flatMap(_ -> resolvePartitionBuffer(streamName,
+                                                                                                                  partition))
+                                                                              .flatMap(ring -> cutRing(streamName,
+                                                                                                       partition,
+                                                                                                       ref,
+                                                                                                       ring,
+                                                                                                       divergedAtOffset,
+                                                                                                       keep))
                                      .onSuccess(cut -> reportCut(streamName, partition, cut))
                                      .onFailure(cause -> log.warn("Replica {}[{}] could not cut its divergent tail back to offset {}: {}",
                                                                   streamName,
                                                                   partition,
                                                                   keep,
                                                                   cause.message()));
+    }
+
+    /// A divergence found by comparing owner-epoch provenance is established only when THIS copy's history can vouch for
+    /// its records: a copy that holds records and no history (or a history that does not start at its base) compares
+    /// unequal with every owner at offset 0, which is the absence of evidence, not a lineage split. Such a copy is not
+    /// cut (it keeps the quarantine and the durable flag it always had); a copy without a WAL has no provenance and is
+    /// judged by the records alone.
+    private Result<Unit> requireVouchingHistory(String streamName, int partition, long divergedAtOffset) {
+        return walFor(streamName, partition).map(_ -> provenanceOf(streamName, partition).flatMap(local -> vouches(local,
+                                                                                                                  streamName,
+                                                                                                                  partition,
+                                                                                                                  divergedAtOffset)))
+                                            .or(Result.unitResult());
+    }
+
+    private static Result<Unit> vouches(LogProvenance local, String streamName, int partition, long divergedAtOffset) {
+        return ProvenanceComparison.incompleteness(local).isPresent()
+               ? new StreamError.DivergenceNotEstablished(streamName, partition, divergedAtOffset).<Unit> result()
+               : Result.unitResult();
     }
 
     private Result<TailCut> cutRing(String streamName,

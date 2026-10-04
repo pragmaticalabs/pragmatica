@@ -82,6 +82,18 @@ public sealed interface StreamError extends Cause {
         }
     }
 
+    /// A repair was refused because this copy's own history cannot vouch for its records (#1730 phase 2): it compares
+    /// unequal with the owner at `offset` only because it holds records and no owner-epoch history, which is no evidence of
+    /// a lineage split. Nothing was cut; the partition stays quarantined.
+    record DivergenceNotEstablished(String streamName, int partition, long offset) implements StreamError {
+        @Override
+        public String message() {
+            return "Divergence of %s[%d] at offset %d is not established: this copy's owner-epoch history cannot vouch for its records".formatted(streamName,
+                                                                                                                                                  partition,
+                                                                                                                                                  offset);
+        }
+    }
+
     /// A suffix truncation asked to cut below the ring's retained range (#1730 phase 2): offsets between `keepThrough`
     /// and `tailOffset` were evicted (and possibly sealed), so the ring cannot say they are gone. Nothing changed.
     record TruncateBelowRetained(String streamName, int partition, long keepThrough, long tailOffset) implements StreamError {
