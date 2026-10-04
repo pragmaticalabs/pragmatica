@@ -92,6 +92,16 @@ class JdbcTransactionalOrderingTest {
     }
 
     @Test
+    void failedRollbackRestoreAndClose_keepThePrimaryFailure_andAttemptEveryStep() {
+        var behaviour = new Behaviour().failing("rollback").failing("setAutoCommit(true)").failing("close");
+        var settled = run(Promise.failure(OPERATION_FAILED), behaviour).await();
+
+        settled.onFailure(cause -> assertThat(cause).as("no cleanup failure may replace the primary").isSameAs(OPERATION_FAILED));
+        assertThat(settled.isFailure()).isTrue();
+        assertThat(events).containsExactly("setAutoCommit(false)", "rollback", "setAutoCommit(true)", "close");
+    }
+
+    @Test
     void failedClose_afterACommit_doesNotTurnCommittedWorkIntoAFailure() {
         var behaviour = new Behaviour().failing("close");
         var settled = run(Promise.success("done"), behaviour).await();

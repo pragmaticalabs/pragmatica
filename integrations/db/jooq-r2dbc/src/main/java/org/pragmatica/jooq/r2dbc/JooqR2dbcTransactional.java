@@ -28,6 +28,7 @@ import io.r2dbc.spi.ConnectionFactory;
 import org.jooq.DSLContext;
 import org.jooq.SQLDialect;
 import org.jooq.impl.DSL;
+import org.reactivestreams.Publisher;
 
 
 /// Transaction aspect for JOOQ R2DBC operations.
@@ -120,14 +121,19 @@ public interface JooqR2dbcTransactional {
 
     private static Promise<Unit> rollbackWhenFailed(Connection conn, boolean failed) {
         return failed
-               ? loggingFailure("rollback",
-                                ReactiveOperations.fromVoidPublisher(conn.rollbackTransaction()))
+               ? loggingFailure("rollback", step(conn::rollbackTransaction))
                : Promise.success(Unit.unit());
     }
 
     private static Promise<Unit> closeConnection(Connection conn) {
-        return loggingFailure("close",
-                              ReactiveOperations.fromVoidPublisher(conn.close()));
+        return loggingFailure("close", step(conn::close));
+    }
+
+    /// A driver may refuse a cleanup step by throwing instead of returning a failing publisher (a connection
+    /// already closed underneath). Lifted, the throw is a failed step that is logged like any other; unlifted it
+    /// escaped the callback that settles the returned Promise, which then never settled and never closed.
+    private static Promise<Unit> step(java.util.function.Supplier<Publisher<Void>> publisher) {
+        return Promise.<Publisher<Void>> lift(R2dbcError::fromException, publisher::get).flatMap(ReactiveOperations::fromVoidPublisher);
     }
 
     private static Promise<Unit> loggingFailure(String step, Promise<Unit> stepResult) {

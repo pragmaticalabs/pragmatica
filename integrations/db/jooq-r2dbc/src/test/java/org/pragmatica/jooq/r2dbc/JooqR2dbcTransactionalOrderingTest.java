@@ -2,6 +2,7 @@ package org.pragmatica.jooq.r2dbc;
 
 import java.lang.reflect.Proxy;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -12,6 +13,7 @@ import org.junit.jupiter.api.Test;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.r2dbc.R2dbcError;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.Causes;
 import org.reactivestreams.Publisher;
 import org.reactivestreams.Subscriber;
@@ -75,6 +77,26 @@ class JooqR2dbcTransactionalOrderingTest {
         assertThat(events).containsExactly("begin", "rollback", "close");
     }
 
+    @Test
+    void failedRollbackAndFailedClose_keepThePrimaryFailure() {
+        var settled = run(Promise.failure(OPERATION_FAILED), Behaviour.failing("rollback", "close")).await();
+
+        settled.onFailure(cause -> assertThat(cause).as("neither cleanup failure may replace the primary").isSameAs(OPERATION_FAILED));
+        assertThat(settled.isFailure()).isTrue();
+        assertThat(events).containsExactly("begin", "rollback", "close");
+    }
+
+    /// A driver that refuses the rollback by THROWING (not by a failing publisher) must not strand the caller:
+    /// the returned Promise still settles with the primary failure, and the connection is still closed.
+    @Test
+    void rollbackThatThrows_stillSettlesWithThePrimary_andCloses() {
+        var settled = run(Promise.failure(OPERATION_FAILED), Behaviour.throwing("rollback")).await(TimeSpan.timeSpan(5).seconds());
+
+        settled.onFailure(cause -> assertThat(cause).as("settled with the primary, not a timeout").isSameAs(OPERATION_FAILED));
+        assertThat(settled.isFailure()).isTrue();
+        assertThat(events).containsExactly("begin", "rollback", "close");
+    }
+
     /// The chain starts on the promise executor, so a held step is awaited before anything is asserted about it.
     private void awaitEvent(String name) {
         var deadline = System.currentTimeMillis() + 5_000;
@@ -117,8 +139,19 @@ class JooqR2dbcTransactionalOrderingTest {
                                                    });
     }
 
-    /// Recorded when subscribed to, completed at once unless the behaviour holds or fails it.
+    /// A step the behaviour throws from records itself and throws before any publisher exists.
     private Publisher<Void> step(String name, Behaviour behaviour) {
+        if (behaviour.throwsOn(name)) {
+            events.add(name);
+
+            throw new IllegalStateException(name + " threw");
+        }
+
+        return publisherStep(name, behaviour);
+    }
+
+    /// Recorded when subscribed to, completed at once unless the behaviour holds or fails it.
+    private Publisher<Void> publisherStep(String name, Behaviour behaviour) {
         return subscriber -> {
             events.add(name);
             subscriber.onSubscribe(new Subscription() {
@@ -158,17 +191,21 @@ class JooqR2dbcTransactionalOrderingTest {
         }
     }
 
-    private record Behaviour(String held, String failing) {
+    private record Behaviour(String held, Set<String> failing, String throwing) {
         static Behaviour none() {
-            return new Behaviour("", "");
+            return new Behaviour("", Set.of(), "");
         }
 
         static Behaviour holding(String step) {
-            return new Behaviour(step, "");
+            return new Behaviour(step, Set.of(), "");
         }
 
-        static Behaviour failing(String step) {
-            return new Behaviour("", step);
+        static Behaviour failing(String... steps) {
+            return new Behaviour("", Set.of(steps), "");
+        }
+
+        static Behaviour throwing(String step) {
+            return new Behaviour("", Set.of(), step);
         }
 
         boolean holds(String step) {
@@ -176,7 +213,11 @@ class JooqR2dbcTransactionalOrderingTest {
         }
 
         boolean fails(String step) {
-            return failing.equals(step);
+            return failing.contains(step);
+        }
+
+        boolean throwsOn(String step) {
+            return throwing.equals(step);
         }
     }
 }
