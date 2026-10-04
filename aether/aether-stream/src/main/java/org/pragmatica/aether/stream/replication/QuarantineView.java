@@ -40,6 +40,25 @@ public interface QuarantineView {
         boolean holds(Option<Epoch> divergentEpoch);
     }
 
+    /// This copy has been compared with the committed owner of `epoch` (#1730 phase 2): from then on, and while the committed
+    /// epoch is still `epoch`, it may serve and acknowledge what it holds at and above that epoch's start. Views without a
+    /// partition manager behind them ignore it.
+    @Contract
+    default void verifiedForEpoch(String streamName, int partition, Epoch epoch) {}
+
+    /// The committed owner epoch a backfill is about to compare this copy against, or [Epoch#ZERO] when there is no committed
+    /// ownership record (unfenced).
+    default Epoch committedEpoch(String streamName, int partition) {
+        return Epoch.ZERO;
+    }
+
+    /// Whether this copy may serve and acknowledge what it holds at and above the committed epoch's start: false for a demoted
+    /// owner, or a replica whose committed epoch advanced past the one it was last compared under, while it holds records at or
+    /// above that start. True when there is nothing to doubt, and for views without a partition manager.
+    default boolean verifiedForCurrentEpoch(String streamName, int partition) {
+        return true;
+    }
+
     /// The divergence this copy could not repair was found by comparing owner-epoch provenance: raise the durable
     /// `MARKED_DIVERGED` flag for it (once per process). A divergence that a repair resolves raises nothing. Views without a
     /// partition manager behind them flag nothing.

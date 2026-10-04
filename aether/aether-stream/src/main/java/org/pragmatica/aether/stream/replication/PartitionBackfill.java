@@ -14,6 +14,7 @@ import java.util.function.LongSupplier;
 import java.util.function.Supplier;
 
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.stream.CommittedStreamOwnerSource;
 import org.pragmatica.aether.stream.StreamError;
 import org.pragmatica.lang.Cause;
@@ -895,7 +896,15 @@ public final class PartitionBackfill {
             return false;
         }
 
-        return offsetMoved(descriptor) || reverifyIntervalElapsed(descriptor);
+        return offsetMoved(descriptor) || reverifyIntervalElapsed(descriptor) || notVerifiedForTheCurrentEpoch(descriptor);
+    }
+
+    /// B5/B7 (#1730 phase 2): a CAUGHT_UP copy that has not been compared with the committed owner of the current epoch (it
+    /// was demoted, or the epoch advanced while it was away) is re-driven at once, not at the next quiet interval: it serves
+    /// nothing from the epoch's start and acknowledges nothing until this compare has run, so the wait for it is the redrive
+    /// period plus one window fetch.
+    private boolean notVerifiedForTheCurrentEpoch(ReplicaDescriptor descriptor) {
+        return !quarantine.verifiedForCurrentEpoch(descriptor.streamName(), descriptor.partition());
     }
 
     /// True when self's CAUGHT_UP `confirmedOffset` differs from the offset last re-verified against the HRW
@@ -968,7 +977,10 @@ public final class PartitionBackfill {
         }
         // #1890 (v1890): a row above a non-empty owner's head was confirmed against an earlier lineage; re-acking it
         // would let this owner count offsets the copy holds from another owner. Compare and cap at the owner's head.
-        return ownerHead >= 0 && ownerHead < selfConfirmed
+        // B7: the no-compare shortcut (#333) is allowed only within an epoch this copy was verified for. After a demotion or a
+        // committed-epoch advance it compares even when the heads are EQUAL: a divergent tail of the same length would
+        // otherwise be re-acked as the owner's records.
+        return ownerHead >= 0 && (ownerHead < selfConfirmed || !quarantine.verifiedForCurrentEpoch(streamName, partition))
                ? verifyAgainstOwnerTail(streamName, partition, owner, ownerHead, replicas)
                : reverifyNoOp(streamName, partition, selfConfirmed, ownerHead);
     }
@@ -1031,6 +1043,7 @@ public final class PartitionBackfill {
                                             NodeId owner,
                                             List<ReplicaDescriptor> replicas) {
         var local = selfWatermark.localWatermark(streamName, partition);
+        var epoch = quarantine.committedEpoch(streamName, partition);
         // #1730 phase 2 (v1890): a copy below the owner is compared over its last window too, not only pulled from its
         // head + 1; the apply skips an identical held record and quarantines a different one.
         var fromOffset = local < 0
@@ -1047,7 +1060,19 @@ public final class PartitionBackfill {
         return transport.requestCatchup(owner,
                                         request,
                                         () -> progress(streamName, partition))
-                        .flatMap(response -> applyOwnerResponse(streamName, partition, owner, local, replicas, response));
+                        .flatMap(response -> applyOwnerResponse(streamName, partition, owner, local, replicas, response).onSuccess(_ -> markVerifiedIfCompared(streamName,
+                                                                                                                                                                  partition,
+                                                                                                                                                                  epoch,
+                                                                                                                                                                  !response.payloads().isEmpty())));
+    }
+
+    /// The compare succeeded against the committed owner of `epoch`: this copy may now serve and acknowledge at and above that
+    /// epoch's start. Only a response that carried records compared anything.
+    @Contract
+    private void markVerifiedIfCompared(String streamName, int partition, Epoch epoch, boolean carriedRecords) {
+        if (carriedRecords && !epoch.equals(Epoch.ZERO) && committedOwnerIsSender(streamName, partition)) {
+            quarantine.verifiedForEpoch(streamName, partition, epoch);
+        }
     }
 
     /// Dispatch the owner's catch-up response (#445). An EMPTY response (`payloads().isEmpty()` — the robust
@@ -1961,6 +1986,7 @@ public final class PartitionBackfill {
                                                  long ownerWatermark,
                                                  List<ReplicaDescriptor> replicas) {
         var from = Math.max(0L, ownerWatermark - TAIL_VERIFY_WINDOW + 1);
+        var epoch = quarantine.committedEpoch(streamName, partition);
 
         return transport.requestCatchup(owner,
                                         catchupRequest(owner, streamName, partition, from),
@@ -1968,7 +1994,10 @@ public final class PartitionBackfill {
                         .flatMap(response -> response.payloads()
                                                      .isEmpty()
                                              ? handleNoSource(streamName, partition, replicas)
-                                             : applyAndPromote(streamName, partition, -1L, response));
+                                             : applyAndPromote(streamName, partition, -1L, response).onSuccess(_ -> markVerifiedIfCompared(streamName,
+                                                                                                                                         partition,
+                                                                                                                                         epoch,
+                                                                                                                                         true)));
     }
 
     /// An owner reporting `-1` is an EMPTY owner, never a true tail (#445) — self must not promote off

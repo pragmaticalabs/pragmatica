@@ -138,6 +138,23 @@ public final class ReplicationReceiveHandler {
 
     public static final ReplicaDurability NO_DURABILITY_BARRIER = (_, _) -> Promise.unitPromise();
 
+    /// B7 (#1730 phase 2): whether this node may acknowledge what it holds to the owner. A copy that has not been compared
+    /// with the committed owner of the current epoch (a demoted owner, a replica whose epoch advanced while it was away) holds
+    /// records the owner may not hold, and an acknowledgement of a LATER offset would be counted for those too. Production wires
+    /// `StreamPartitionManager::replicaVerified`; the default always acknowledges.
+    @FunctionalInterface
+    public interface AckGate {
+        boolean mayAck(String streamName, int partition);
+    }
+
+    private volatile AckGate ackGate = (_, _) -> true;
+
+    /// Late-bind the [AckGate]. Set once at wiring.
+    @Contract
+    public void ackGate(AckGate gate) {
+        this.ackGate = gate;
+    }
+
     private final NodeId self;
     private final RecoveredAppender appender;
     private final LocalHead localHead;
@@ -377,6 +394,18 @@ public final class ReplicationReceiveHandler {
         }
 
         var highestHeld = fromOffset + outcome.held() - 1;
+
+        if (!ackGate.mayAck(streamName, partition)) {
+            log.debug("ReplicationReceiveHandler: {}[{}] up to {} applied but NOT acked: this copy is not yet verified against the "
+                     + "committed owner's epoch; backfill compares it first",
+                      streamName,
+                      partition,
+                      highestHeld);
+            onGap.accept(streamName, partition);
+
+            return;
+        }
+
         // Ack ONLY after the batch is fsynced here (#634 item 1): the owner's confirmation barrier counts
         // this ack as a durable copy, so acking from RAM would let correlated power loss inside the
         // unsealed window erase writes the caller was told reached RF. A failed sync WITHHOLDS the ack —

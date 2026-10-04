@@ -5523,6 +5523,14 @@ public interface AetherNode extends ManageableNode {
                                                                                               .suspectTimeout()));
 
         streamPartitionManager.ownerServeGate(ownerActivation::admit);
+        // #1730 phase 2: the gate's relaxation for a divergent peer respects the candidate's durable sealed floor, and a peer it
+        // leaves out loses the row this registry kept for it from an earlier tenure.
+        ownerActivation.sealedFloor(streamSegmentIndex::lastSealedOffset);
+        ownerActivation.peerRows((stream, partition, peer) -> streamReplicaRegistry.updateWatermark(stream,
+                                                                                                    partition,
+                                                                                                    peer,
+                                                                                                    -1L,
+                                                                                                    ReplicationState.SYNCING));
         // #1730: a partition with no live in-sync replica has no owner to report a block, so the controller reports it.
         streamPartitionManager.ownerBlockSource((stream, partition) -> ownerActivation.blockOf(stream, partition)
                                                                                       .orElse(() -> streamReplicaSetController.noInSyncReplica(stream,
@@ -5921,6 +5929,8 @@ public interface AetherNode extends ManageableNode {
                                                                                                   streamOwnershipViews.writeAuthority(),
                                                                                                   operatorWarningSink);
 
+        // #1730 phase 2 (B7): a copy not yet compared with the committed owner of the current epoch acknowledges nothing.
+        streamReplicationReceiveHandler.ackGate(streamPartitionManager::replicaVerified);
         allEntries.add(MessageRouter.Entry.route(ReplicationMessage.ReplicateEvents.class,
                                                  streamReplicationReceiveHandler::onReplicateEvents));
         allEntries.add(MessageRouter.Entry.route(ReplicationMessage.ReplicateAck.class,

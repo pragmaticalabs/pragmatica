@@ -69,6 +69,8 @@ class ReplicaRepairVerificationTest {
     void setUp() {
         registry = replicaRegistry();
         manager = streamPartitionManager(Long.MAX_VALUE);
+        manager.ownerEpochSource((_, _) -> committedEpoch);
+        manager.placementRoleSupplier((_, _) -> ReplicaSetController.Role.REPLICA);
         manager.createStream(StreamConfig.streamConfig(STREAM)).onFailure(cause -> fail(cause.message()));
     }
 
@@ -167,6 +169,69 @@ class ReplicaRepairVerificationTest {
         assertThat(acksSent()).as("acks sent to an owner whose head is 6").allMatch(offset -> offset <= 6L);
     }
 
+    /// B7 (v1890 hole): the replica is CAUGHT_UP at 9 under owner A (records 0..9). A failover commits a NEW epoch; the new owner's
+    /// head is also 9 but its records at 5..9 differ. The replica's row EQUALS the owner's head, which used to take the #333
+    /// no-compare shortcut and re-ack 9 for records the replica holds in another version. Without resetting the registry
+    /// (the real situation), it must compare first, and ack nothing it holds divergently.
+    @Test
+    void reverify_equalLengthDivergentTail_afterAnEpochAdvance_isComparedBeforeAnyAck() {
+        committedEpoch = Epoch.epoch(1L, 5L, 5L);
+        seedReplica(10, 10);
+        backfill(owner(10, 10, new AtomicLong()));
+        assertThat(descriptor().confirmedOffset()).as("premise: CAUGHT_UP at 9 under the first owner").isEqualTo(9L);
+        sentToOwner.clear();
+
+        committedEpoch = Epoch.epoch(1L, 6L, 6L);
+        var requested = new AtomicLong(-1L);
+
+        runBackfill(REPLICA, owner(10, 5, requested));
+
+        assertThat(requested.get()).as("the new epoch's owner was asked for the overlap window, not skipped").isGreaterThanOrEqualTo(0L);
+        assertThat(acksSent()).as("nothing is acked for 5..9 while they hold the old lineage").allMatch(offset -> offset < 5L);
+    }
+
+    /// B7 control: the same epoch advance, the replica's records agree with the new owner's: it compares, is verified for the
+    /// new epoch, and acks 9. And WITHIN a verified epoch the #333 shortcut still skips the compare.
+    @Test
+    void reverify_control_afterAnEpochAdvance_agreeingCopyIsVerifiedAndAcks_andWithinTheEpochTheShortcutHolds() {
+        committedEpoch = Epoch.epoch(1L, 5L, 5L);
+        seedReplica(10, 10);
+        backfill(owner(10, 10, new AtomicLong()));
+        sentToOwner.clear();
+
+        committedEpoch = Epoch.epoch(1L, 6L, 6L);
+        var afterAdvance = new AtomicLong(-1L);
+
+        runBackfill(REPLICA, owner(10, 10, afterAdvance));
+
+        assertThat(afterAdvance.get()).as("compared").isGreaterThanOrEqualTo(0L);
+        assertThat(acksSent()).containsExactly(9L);
+        assertThat(manager.replicaVerified(STREAM, PARTITION)).isTrue();
+
+        sentToOwner.clear();
+        var withinEpoch = new AtomicLong(-1L);
+
+        runBackfill(REPLICA, owner(10, 10, withinEpoch));
+
+        assertThat(withinEpoch.get()).as("verified for this epoch: the no-compare shortcut skips the fetch").isEqualTo(-1L);
+        assertThat(acksSent()).containsExactly(9L);
+    }
+
+    /// B5: the redrive picks a CAUGHT_UP replica that is not verified for the current epoch at once.
+    @Test
+    void redrive_aCaughtUpReplicaNotVerifiedForTheCurrentEpoch_isACandidate() {
+        committedEpoch = Epoch.epoch(1L, 5L, 5L);
+        seedReplica(10, 10);
+        var orchestrator = orchestrator(REPLICA, owner(10, 10, new AtomicLong()));
+        registry.registerReplica(STREAM, PARTITION, REPLICA);
+        orchestrator.backfill(STREAM, PARTITION).await();
+        assertThat(orchestrator.redriveCandidates()).as("verified for the epoch it was compared under").isEmpty();
+
+        committedEpoch = Epoch.epoch(1L, 6L, 6L);
+
+        assertThat(orchestrator.redriveCandidates()).as("the epoch advanced: not verified for it").hasSize(1);
+    }
+
     /// B1 control: the flag stays for the REFUSED case. The committed owner is of an older epoch than the replica's records, so
     /// the repair is refused, the quarantine stands and the durable flag is raised, once.
     @Test
@@ -245,6 +310,8 @@ class ReplicaRepairVerificationTest {
     private void useWal() {
         manager.close();
         manager = streamPartitionManager(Long.MAX_VALUE, Option.some(walDir));
+        manager.ownerEpochSource((_, _) -> committedEpoch);
+        manager.placementRoleSupplier((_, _) -> ReplicaSetController.Role.REPLICA);
         manager.createStream(StreamConfig.streamConfig(STREAM)).onFailure(cause -> fail(cause.message()));
     }
 
@@ -258,6 +325,10 @@ class ReplicaRepairVerificationTest {
     }
 
     private void runBackfill(NodeId self, CatchupTransport owner) {
+        orchestrator(self, owner).backfill(STREAM, PARTITION).await();
+    }
+
+    private PartitionBackfill orchestrator(NodeId self, CatchupTransport owner) {
         SelfWatermark local = (stream, partition) -> manager.partitionInfo(stream, partition)
                                                             .map(StreamPartitionManager.PartitionInfo::headOffset)
                                                             .or(-1L);
@@ -277,7 +348,7 @@ class ReplicaRepairVerificationTest {
                                              manager::syncReplicated,
                                              manager.quarantineView());
 
-        orchestrator.backfill(STREAM, PARTITION).await();
+        return orchestrator;
     }
 
     /// The owner's head is whatever its fake log holds.

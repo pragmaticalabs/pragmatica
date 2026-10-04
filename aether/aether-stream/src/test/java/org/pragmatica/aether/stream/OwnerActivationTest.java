@@ -57,6 +57,8 @@ class OwnerActivationTest {
 
     private final List<OwnerActivation.ActivationBlock> alarms = new CopyOnWriteArrayList<>();
     private final Set<NodeId> divergent = ConcurrentHashMap.newKeySet();
+    /// The first offset at which a node in [#divergent] differs; records below it are the shared lineage.
+    private final AtomicLong divergentFrom = new AtomicLong(0L);
     private final OwnerActivation activation = gate(PromotionTestRanges.NEVER_ALARM);
 
     /// Every node holds the same lineage over any range the gate compares (`rec-<offset>`), except the nodes in
@@ -78,11 +80,9 @@ class OwnerActivationTest {
     }
 
     private Promise<List<OffHeapRingBuffer.RawEvent>> range(NodeId node, String stream, int partition, long from, long to) {
-        var tag = divergent.contains(node) ? "div-" : "rec-";
-
         return Promise.success(LongStream.rangeClosed(from, to)
                                          .mapToObj(offset -> OffHeapRingBuffer.RawEvent.rawEvent(offset,
-                                                                                                 (tag + offset).getBytes(StandardCharsets.UTF_8),
+                                                                                                 ((divergent.contains(node) && offset >= divergentFrom.get() ? "div-" : "rec-") + offset).getBytes(StandardCharsets.UTF_8),
                                                                                                  1L))
                                          .toList());
     }
@@ -203,6 +203,39 @@ class OwnerActivationTest {
         assertThat(activate()).as("the divergent peer must not block an ISR-elected candidate").isTrue();
         assertThat(alarms).isEmpty();
         assertThat(catchUps).isEmpty();
+    }
+
+    /// B6 (the design's Q6): the gate relaxes ONLY for a divergence ABOVE the candidate's durable sealed floor. A peer that
+    /// differs from the candidate at or below the floor holds, in segments already sealed, something no truncation removes: the
+    /// relaxation does not apply and the activation stays refused as before.
+    @Test
+    void activate_isrElectedCandidate_peerDivergentAtOrBelowTheSealedFloor_stillRefuses() {
+        activation.sealedFloor((_, _) -> 12L);
+        record.set(Option.some(isrElected()));
+        members.set(List.of(SELF, PEER_A));
+        peerWatermarks.put(PEER_A, 15L);
+        divergent.add(PEER_A);
+        divergentFrom.set(10L);
+
+        assertThat(activate()).as("first divergence 10 is at or below the floor 12").isFalse();
+        assertThat(alarms).singleElement().isInstanceOf(OwnerActivation.ActivationBlock.DivergentPeer.class);
+    }
+
+    /// Control: the same peer, the divergence ABOVE the floor: relaxed, and the left-out peer's registry row is forgotten.
+    @Test
+    void activate_isrElectedCandidate_peerDivergentAboveTheSealedFloor_isRelaxed_andItsRowIsForgotten() {
+        var forgotten = new java.util.concurrent.CopyOnWriteArrayList<NodeId>();
+
+        activation.sealedFloor((_, _) -> 5L);
+        activation.peerRows((_, _, peer) -> forgotten.add(peer));
+        record.set(Option.some(isrElected()));
+        members.set(List.of(SELF, PEER_A));
+        peerWatermarks.put(PEER_A, 15L);
+        divergent.add(PEER_A);
+        divergentFrom.set(10L);
+
+        assertThat(activate()).as("first divergence 10 is above the floor 5").isTrue();
+        assertThat(forgotten).containsExactly(PEER_A);
     }
 
     @Test

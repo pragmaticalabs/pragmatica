@@ -63,6 +63,32 @@ class ReplicationReceiveHandlerTest {
         assertThat(gapFires.get()).isZero();
     }
 
+    /// B7 (#1730 phase 2): a copy that has not been compared with the committed owner of the current epoch applies the batch but
+    /// acks nothing (an ack of a later offset would be counted for the divergent records it holds below), and asks for the
+    /// backfill that compares it. Control: once verified it acks.
+    @Test
+    void unverifiedCopy_appliesButDoesNotAck_andAsksForTheCompare_thenAcksOnceVerified() {
+        var acks = new ArrayList<ReplicationMessage.ReplicateAck>();
+        var gapFires = new AtomicInteger(0);
+        var verified = new java.util.concurrent.atomic.AtomicBoolean(false);
+        ReplicationReceiveHandler.RecoveredAppender appender = (_, _, _, _, _, _) -> Result.success(0L);
+        var handler = replicationReceiveHandler(SELF,
+                                                appender,
+                                                (target, message) -> acks.add((ReplicationMessage.ReplicateAck) message),
+                                                (_, _) -> gapFires.incrementAndGet());
+
+        handler.ackGate((_, _) -> verified.get());
+        handler.onReplicateEvents(replicateEvents(GOVERNOR, STREAM, PARTITION, 10L, payloads(3), timestamps(3), Epoch.ZERO));
+
+        assertThat(acks).as("nothing acked while unverified").isEmpty();
+        assertThat(gapFires.get()).as("the compare is requested").isEqualTo(1);
+
+        verified.set(true);
+        handler.onReplicateEvents(replicateEvents(GOVERNOR, STREAM, PARTITION, 10L, payloads(3), timestamps(3), Epoch.ZERO));
+
+        assertThat(acks).extracting(ReplicationMessage.ReplicateAck::confirmedOffset).containsExactly(12L);
+    }
+
     @Test
     void midBatchApplyFailure_acksOnlyContiguousPrefix_andTriggersBackfillRepair() {
         var acks = new ArrayList<ReplicationMessage.ReplicateAck>();

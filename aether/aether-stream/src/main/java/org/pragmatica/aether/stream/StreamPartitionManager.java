@@ -204,7 +204,7 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// Source of THIS node's current owner epoch for stamping a LOCAL publish (`publishLocal`). The
     /// floor source ([StreamOwnerEpochSource#zero]) leaves non-fenced callers stamping [Epoch#ZERO],
     /// which a fresh high-water never rejects and which never advances it.
-    private final StreamOwnerEpochSource ownerEpochSource;
+    private volatile StreamOwnerEpochSource ownerEpochSource;
     /// Per-partition crash-durable write-ahead log opener (streaming-persistence W3/W6; since #1567 the
     /// storage instance's [org.pragmatica.storage.StorageInstance#openLog]). [Option#none]
     /// = no WAL ⇒ exactly the pre-WAL behavior (Forge/unit/legacy factories). When present, each
@@ -242,6 +242,20 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// every append raises one transaction, not one per append. A raise that fails is forgotten and retried at the
     /// next occurrence.
     private final Set<String> raisedLocally = ConcurrentHashMap.newKeySet();
+    /// Per partition: the committed owner epoch this copy last judged itself against, and whether it may serve and
+    /// acknowledge at and above that epoch's start ([#unverifiedFrom]).
+    private final ConcurrentHashMap<String, EpochTrust> epochTrust = new ConcurrentHashMap<>();
+    /// Where a committed epoch began, when the cluster records it (the epoch-validated fetch does, #1873). Until then every
+    /// offset counts as at or above the start: a copy that holds anything is doubted until it has been compared.
+    private volatile EpochStartSource epochStarts = (_, _, _) -> none();
+
+    private record EpochTrust(Epoch epoch, boolean verified) {}
+
+    /// The offset the owner of `epoch` began writing at.
+    @FunctionalInterface
+    public interface EpochStartSource {
+        Option<Long> startOf(String streamName, int partition, Epoch epoch);
+    }
     /// The offsets at which a PROVENANCE comparison found this copy divergent (N13), while the partition stays quarantined for
     /// it. The durable flag is raised only if the divergence is not repaired ([#flagUnrepaired]): a repair removes the entry.
     private final ConcurrentHashMap<PartitionRef, Long> provenanceMismatchAt = new ConcurrentHashMap<>();
@@ -851,7 +865,80 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                                 int partition,
                                                                 long fromOffset,
                                                                 int maxEvents) {
-        return ownerRoleGate(streamName, partition).flatMap(_ -> readLocal(streamName, partition, fromOffset, maxEvents));
+        return ownerRoleGate(streamName, partition).flatMap(_ -> readLocal(streamName, partition, fromOffset, maxEvents))
+                                                   .flatMap(events -> servedIfVerified(streamName, partition, fromOffset, events));
+    }
+
+    /// Replace the committed-epoch source after construction (a test seam; production passes it to the factory).
+    @Contract
+    public void ownerEpochSource(StreamOwnerEpochSource source) {
+        this.ownerEpochSource = source;
+    }
+
+    /// Late-bind where committed epochs began ([EpochStartSource]). Set once at wiring.
+    @Contract
+    public void epochStarts(EpochStartSource source) {
+        this.epochStarts = source;
+    }
+
+    /// B5 (#1730 phase 2): a copy that is not the owner serves what it holds at and above the start of the committed epoch only
+    /// once it has been compared with that epoch's owner. A demoted owner still holding its old tail, or a replica whose epoch
+    /// advanced while it was away, would otherwise answer a consumer correctly diverged to the new epoch's start with the OLD
+    /// records at those offsets, labelled with the new epoch. Below the start nothing is held back.
+    private Result<List<OffHeapRingBuffer.RawEvent>> servedIfVerified(String streamName,
+                                                                      int partition,
+                                                                      long fromOffset,
+                                                                      List<OffHeapRingBuffer.RawEvent> events) {
+        return unverifiedFrom(streamName, partition).fold(() -> success(events),
+                                                          start -> fromOffset >= start
+                                                                   ? new StreamError.ReplicaNotVerified(streamName, partition, start).<List<OffHeapRingBuffer.RawEvent>> result()
+                                                                   : success(events.stream()
+                                                                                   .filter(event -> event.offset() < start)
+                                                                                   .toList()));
+    }
+
+    /// The offset from which this node must neither serve nor acknowledge, or none when it may: it is not the owner, there is a
+    /// committed epoch, and this copy holds records at or above that epoch's start that it has not compared with its owner.
+    /// Evaluated lazily at the first call after the committed epoch advances: a copy whose head is still below the start then
+    /// holds nothing from the old lineage at or above it, and stays trusted; a head that reached the start by then is doubted
+    /// (conservative: its backfill compare clears it). The owner itself is never doubted here.
+    public Option<Long> unverifiedFrom(String streamName, int partition) {
+        var epoch = ownerEpochSource.currentOwnerEpoch(streamName, partition);
+
+        if (epoch.equals(Epoch.ZERO) || placementRoleSupplier.roleFor(streamName, partition) == Role.OWNER) {
+            return none();
+        }
+
+        var start = epochStarts.startOf(streamName, partition, epoch).or(0L);
+
+        return trusted(streamName, partition, epoch, start)
+               ? none()
+               : some(start);
+    }
+
+    private boolean trusted(String streamName, int partition, Epoch epoch, long start) {
+        var head = resolvePartitionBuffer(streamName, partition).map(OffHeapRingBuffer::headOffset).or(-1L);
+
+        return epochTrust.compute(partitionKeyOf(streamName, partition),
+                                  (_, known) -> known != null && known.epoch().equals(epoch)
+                                                ? known
+                                                : new EpochTrust(epoch, head < start))
+                         .verified();
+    }
+
+    /// Whether this node may acknowledge to the owner what it holds ([#unverifiedFrom]).
+    public boolean replicaVerified(String streamName, int partition) {
+        return unverifiedFrom(streamName, partition).isEmpty();
+    }
+
+    /// A backfill compared this copy with the committed owner of `epoch` (captured BEFORE the compare, so an epoch that advanced
+    /// meanwhile is not verified by a compare against the earlier one).
+    @Contract
+    public void markVerifiedForEpoch(String streamName, int partition, Epoch epoch) {
+        epochTrust.compute(partitionKeyOf(streamName, partition),
+                           (_, known) -> known != null && known.epoch().isStrictlyAfter(epoch)
+                                         ? known
+                                         : new EpochTrust(epoch, true));
     }
 
     private Result<Unit> ownerRoleGate(String streamName, int partition) {
@@ -2201,6 +2288,22 @@ public final class StreamPartitionManager implements AutoCloseable {
         @Override
         public Result<Option<Long>> repair(String streamName, int partition, RepairAuthority authority) {
             return repairDivergence(streamName, partition, authority).map(cut -> cut.map(TailCut::keptThrough));
+        }
+
+        @Contract
+        @Override
+        public void verifiedForEpoch(String streamName, int partition, Epoch epoch) {
+            markVerifiedForEpoch(streamName, partition, epoch);
+        }
+
+        @Override
+        public Epoch committedEpoch(String streamName, int partition) {
+            return ownerEpochSource.currentOwnerEpoch(streamName, partition);
+        }
+
+        @Override
+        public boolean verifiedForCurrentEpoch(String streamName, int partition) {
+            return replicaVerified(streamName, partition);
         }
 
         @Contract

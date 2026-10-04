@@ -107,6 +107,16 @@ public sealed interface StreamError extends Cause {
         }
     }
 
+    /// This node holds records at or above the start of the committed owner's current epoch that it has not compared with the
+    /// owner (it was demoted, or the epoch advanced while it was away): it serves nothing from there and acknowledges nothing,
+    /// until a backfill has verified it for the epoch (#1730 phase 2). Retriable: the backfill redrive verifies it.
+    record ReplicaNotVerified(String streamName, int partition, long startOffset) implements StreamError, Cause.Transient {
+        @Override
+        public String message() {
+            return "Replica %s[%d] has not been verified against the owner's epoch starting at offset %d".formatted(streamName, partition, startOffset);
+        }
+    }
+
     record TruncateBelowRetained(String streamName, int partition, long keepThrough, long tailOffset) implements StreamError {
         @Override
         public String message() {
