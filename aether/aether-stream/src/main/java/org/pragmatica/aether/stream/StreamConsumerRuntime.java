@@ -114,6 +114,10 @@ public interface StreamConsumerRuntime extends AutoCloseable {
     /// (#1333) is the epoch the consumer resumed under and stamps on every commit — `RewindEpoch.NONE`
     /// for a group never rewound; the node compares it with the committed epoch to detect a rewind it
     /// must restart the consumer for.
+    ///
+    /// `stalled` (#752) is a PROCESSING-FAILURE latch, not a liveness signal: it is set only when a handler failed
+    /// under the STALL error strategy. A consumer that receives nothing at all reports `stalled = false`
+    /// indefinitely, exactly like a healthy consumer on a quiet partition, so `false` never means "receiving".
     record SubscriptionSnapshot(String streamName,
                                 int partition,
                                 String consumerGroup,

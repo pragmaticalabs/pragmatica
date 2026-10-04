@@ -34,6 +34,12 @@ class OperatorWarningWiringTest {
         assertThat(code).contains("streamOwnershipViews.writeAuthority(),operatorWarningSink);");
     }
 
+    /// #752: the declarative consumer manager reports a divergence from its consumer runtime to this node's sink.
+    @Test
+    void assembly_givesTheSinkToTheStreamConsumerManager() {
+        assertThat(assemblyCode()).contains("streamConsumerManager.setOperatorWarningSink(operatorWarningSink);");
+    }
+
     /// #1564 (R10): the replication warnings raised at resource activation, the deploy warnings and the refused
     /// cluster-events registration all reach this node's sink. Un-binding any of them leaves every unit test green.
     @Test

@@ -64,7 +64,11 @@ public enum OperatorWarningCode {
     /// A configured core member died on this node's membership view without this node ever observing it
     /// reachable (#1835): no QUIC handshake, SWIM ALIVE or health evidence. It never joined, so it did not
     /// fail; NODE_FAILED and the CRITICAL node-health alert are reserved for members that had.
-    NODE_NEVER_JOINED("node-never-joined", "membership", WarningLevel.WARNING);
+    NODE_NEVER_JOINED("node-never-joined", "membership", WarningLevel.WARNING),
+    /// A declarative stream consumer this node held as attached had no subscription in the consumer runtime (#752):
+    /// found by a reconcile pass, which forgets and re-attaches it, or by a detach, which then made no final cursor
+    /// flush. The partition was not consumed in between while this node reported it attached.
+    STREAM_CONSUMER_STATE_DIVERGED("stream-consumer-state-diverged", "stream-consumer", WarningLevel.WARNING);
     private final String code;
     private final String subsystem;
     private final WarningLevel level;

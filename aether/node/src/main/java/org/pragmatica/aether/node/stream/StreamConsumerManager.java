@@ -56,6 +56,9 @@ import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.type.TypeToken;
 import org.pragmatica.serialization.SliceCodec;
+import org.pragmatica.utility.warning.OperatorWarningCode;
+import org.pragmatica.utility.warning.OperatorWarningSink;
+import org.pragmatica.utility.warning.OperatorWarnings;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -178,6 +181,11 @@ public interface StreamConsumerManager {
     /// subscriptions is the durable-group liveness gap the ticket was filed for.
     long attachSkippedNoLocalSliceCount();
 
+    /// #752: where a divergence between the subscriptions this manager holds as attached and the consumer runtime's
+    /// is reported to the operator. Late-bound: the node wires its cluster sink; the default is log-only.
+    @Contract
+    void setOperatorWarningSink(OperatorWarningSink sink);
+
     /// #1271: the node's quorum-loss listener with the consumer abandon composed in FRONT of it — delivery
     /// stops before the drain procedure starts, since the drain ends in a halt that may be seconds away and
     /// every batch delivered meanwhile duplicates work the majority's new assignee will redo.
@@ -229,6 +237,10 @@ public interface StreamConsumerManager {
             public long attachSkippedNoLocalSliceCount() {
                 return 0;
             }
+
+            @Contract
+            @Override
+            public void setOperatorWarningSink(OperatorWarningSink sink) {}
         }
 
         return new inactive();
@@ -444,6 +456,8 @@ public interface StreamConsumerManager {
         private final Object passLock = new Object();
         /// #1389: node-wide, process-lifetime. Exposed via [StreamConsumerManager#attachSkippedNoLocalSliceCount].
         private final AtomicLong attachSkippedNoLocalSlice = new AtomicLong();
+        /// #752: late-bound ([#setOperatorWarningSink]); log-only until the node wires its cluster sink.
+        private volatile OperatorWarningSink operatorWarnings = OperatorWarningSink.logOnly();
 
         ManagerState(StreamConsumerRegistry registry,
                      StreamConsumerRuntime runtime,
@@ -509,10 +523,59 @@ public interface StreamConsumerManager {
                                       .flatMap(declaration -> desiredFor(declaration, collisions).stream())
                                       .collect(Collectors.toCollection(LinkedHashSet::new));
 
+            forgetVanished();
             retireSuperseded();
             desired.forEach(key -> subscribeIfAbsent(key, byGroup));
             dropStale(desired);
             restartRewound(byGroup);
+        }
+
+        /// #752, level-triggered: a subscription this manager holds as attached, but the consumer runtime no longer
+        /// has, is consuming nothing — and `attach`'s `putIfAbsent` would skip it on every later pass, so it stayed
+        /// that way, silently. Every write to `active` happens inside a pass or removes from `active` BEFORE the
+        /// runtime, so after a pass the attached set is a subset of the runtime's; a key missing from the runtime
+        /// means the runtime lost it behind this manager's back. Reported once per loss, and forgotten so this
+        /// same pass re-attaches it when it is still desired here.
+        private void forgetVanished() {
+            var held = snapshotsByKey().keySet();
+
+            active.keySet()
+                  .stream()
+                  .filter(key -> !held.contains(key))
+                  .toList()
+                  .forEach(this::forgetVanished);
+        }
+
+        private void forgetVanished(SubscriptionKey key) {
+            reportDiverged(key,
+                           "Declarative stream consumer {}[{}] group={} was held as attached, but the consumer runtime has no subscription for it: delivery for it had stopped without a detach. Forgotten; re-attached in this pass if it is still assigned here",
+                           key.streamName(),
+                           key.partition(),
+                           key.consumerGroup());
+            forget(key);
+        }
+
+        /// #752: the attached set and the runtime disagree. Raised as an operator warning (log line plus cluster
+        /// event), because it means a partition was not consumed while this node reported it attached.
+        private void reportDiverged(SubscriptionKey key, String template, Object... args) {
+            OperatorWarnings.raise(log,
+                                   operatorWarnings,
+                                   OperatorWarningCode.STREAM_CONSUMER_STATE_DIVERGED,
+                                   key.consumerGroup() + ":" + key.streamName() + "[" + key.partition() + "]",
+                                   template,
+                                   args);
+        }
+
+        /// #752: a detach or abandon whose runtime call fails can only have found no subscription
+        /// (`CONSUMER_NOT_FOUND`): the runtime had already lost it, so no final cursor flush was made. The key is
+        /// forgotten either way, which is the state both sides now agree on.
+        private void reportDetachFound(SubscriptionKey key, Cause cause) {
+            reportDiverged(key,
+                           "Detach of declarative stream consumer {}[{}] group={} found no subscription in the consumer runtime ({}): delivery for it had already stopped without a detach, and no final cursor flush was made, so the group resumes from its last committed cursor",
+                           key.streamName(),
+                           key.partition(),
+                           key.consumerGroup(),
+                           cause.message());
         }
 
         /// #1333, level-triggered: a subscription whose committed epoch is STRICTLY newer than the one its
@@ -999,6 +1062,8 @@ public interface StreamConsumerManager {
 
         private void attachAdmitted(SubscriptionKey key, ConsumerDeclaration declaration, Epoch epoch) {
             if (active.putIfAbsent(key, declaration) != null) {
+                log.debug("Declarative stream consumer {}[{}] group={} already attached", key.streamName(), key.partition(), key.consumerGroup());
+
                 return;
             }
 
@@ -1186,11 +1251,7 @@ public interface StreamConsumerManager {
 
             forget(key);
             release(key, stillOurs).onSuccess(_ -> logDetached(key, stillOurs))
-                   .onFailure(cause -> log.debug("Detach of {}[{}] group={} reported: {}",
-                                                 key.streamName(),
-                                                 key.partition(),
-                                                 key.consumerGroup(),
-                                                 cause.message()));
+                   .onFailure(cause -> reportDetachFound(key, cause));
         }
 
         private Result<Unit> release(SubscriptionKey key, boolean stillOurs) {
@@ -1237,12 +1298,19 @@ public interface StreamConsumerManager {
 
         private void abandon(SubscriptionKey key) {
             forget(key);
-            runtime.abandon(key.streamName(), key.partition(), key.consumerGroup());
+            runtime.abandon(key.streamName(), key.partition(), key.consumerGroup())
+                   .onFailure(cause -> reportDetachFound(key, cause));
         }
 
         @Override
         public int activeSubscriptionCount() {
             return active.size();
+        }
+
+        @Contract
+        @Override
+        public void setOperatorWarningSink(OperatorWarningSink sink) {
+            this.operatorWarnings = sink;
         }
 
         @Override

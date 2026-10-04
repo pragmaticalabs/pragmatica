@@ -49,6 +49,7 @@ import org.pragmatica.aether.slice.topic.MessageContext;
 import org.pragmatica.aether.stream.ConsumerFence;
 import org.pragmatica.aether.stream.DeadLetterHandler;
 import org.pragmatica.aether.stream.StreamConsumerRuntime;
+import org.pragmatica.aether.stream.StreamError;
 import org.pragmatica.aether.stream.consumer.TransactionalCursorCommit;
 import org.pragmatica.aether.stream.topic.DurableGroupIdentity;
 import org.pragmatica.aether.stream.topic.DurableTopicPublisher;
@@ -67,6 +68,9 @@ import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.type.TypeToken;
 import org.pragmatica.serialization.FrameworkCodecs;
 import org.pragmatica.serialization.SliceCodec;
+import org.pragmatica.utility.warning.OperatorWarning;
+import org.pragmatica.utility.warning.OperatorWarningCode;
+import org.pragmatica.utility.warning.OperatorWarningSink;
 
 import org.apache.logging.log4j.Level;
 import org.apache.logging.log4j.LogManager;
@@ -1823,6 +1827,107 @@ class StreamConsumerManagerTest {
 
     /// Captures the manager's own log lines by level, so a "logged at WARN" claim is checked against a
     /// line rather than inferred from a status field.
+    /// #752: the attached set this manager holds and the consumer runtime's subscriptions must not diverge
+    /// silently. A subscription the runtime lost is a partition nobody consumes while this node reports it attached.
+    @Nested
+    class StateDivergence {
+        private final List<OperatorWarning> warnings = new CopyOnWriteArrayList<>();
+
+        private StreamConsumerManager attachedOnPartitionZero() {
+            declareStringConsumer();
+            deploySliceLocally();
+            ownership.ownedBySelf(0);
+            ownership.withPartitionCount(1);
+            var manager = manager();
+
+            manager.setOperatorWarningSink(OperatorWarningSink.handingOffTo(warnings::add));
+            manager.reconcile();
+            assertThat(runtime.subscribedPartitions()).containsExactly(0);
+
+            return manager;
+        }
+
+        /// Red under "no reconcile against the runtime": `attach`'s `putIfAbsent` finds the key still held and
+        /// skips it on every pass, so the partition stays unconsumed and nothing is reported.
+        @Test
+        void reconcile_reattachesAndReports_whenTheRuntimeLostAnAttachedSubscription() throws InterruptedException {
+            var manager = attachedOnPartitionZero();
+            var subscribesBefore = runtime.subscribeCalls;
+
+            runtime.lose(0);
+            manager.reconcile();
+
+            assertThat(runtime.subscribedPartitions()).describedAs("the same pass re-attached it").containsExactly(0);
+            assertThat(runtime.subscribeCalls).isEqualTo(subscribesBefore + 1);
+            assertThat(awaitWarnings(1)).singleElement()
+                      .satisfies(warning -> {
+                                     assertThat(warning.code()).isEqualTo(OperatorWarningCode.STREAM_CONSUMER_STATE_DIVERGED);
+                                     assertThat(warning.subject()).isEqualTo(GROUP + ":" + STREAM + "[0]");
+                                     assertThat(warning.message()).contains("no subscription");
+                                 });
+        }
+
+        /// Red under "the detach failure is logged at DEBUG": nothing reaches the operator.
+        @Test
+        void stop_reportsDivergence_whenTheDetachFindsNoSubscription() throws InterruptedException {
+            var manager = attachedOnPartitionZero();
+
+            runtime.strictRemoval = true;
+            runtime.lose(0);
+            manager.stop();
+
+            assertThat(manager.activeSubscriptionCount()).describedAs("forgotten: both sides now hold nothing").isZero();
+            assertThat(awaitWarnings(1)).singleElement()
+                      .satisfies(warning -> assertThat(warning.message()).contains("no final cursor flush"));
+        }
+
+        /// Red under "the abandon result is ignored".
+        @Test
+        void abandonAll_reportsDivergence_whenTheAbandonFindsNoSubscription() throws InterruptedException {
+            var manager = attachedOnPartitionZero();
+
+            runtime.strictRemoval = true;
+            runtime.lose(0);
+            manager.abandonAll();
+
+            assertThat(awaitWarnings(1)).singleElement()
+                      .satisfies(warning -> assertThat(warning.code()).isEqualTo(OperatorWarningCode.STREAM_CONSUMER_STATE_DIVERGED));
+        }
+
+        /// No false alert: ordinary passes and an ordinary stop agree with the runtime and raise nothing. The hand-off
+        /// is FIFO, so a sentinel loss raised AFTER them proves the earlier ones raised nothing rather than racing.
+        @Test
+        void ordinaryPassesAndStop_raiseNothing() throws InterruptedException {
+            var manager = attachedOnPartitionZero();
+
+            runtime.strictRemoval = true;
+            manager.reconcile();
+            manager.reconcile();
+            undeclare();
+            manager.reconcile();
+            assertThat(runtime.subscribedPartitions()).describedAs("detached normally when the declaration went away").isEmpty();
+            declareStringConsumer();
+            manager.reconcile();
+            assertThat(runtime.subscribedPartitions()).containsExactly(0);
+            runtime.lose(0);
+            manager.reconcile();
+
+            assertThat(awaitWarnings(1)).describedAs("only the sentinel loss").hasSize(1);
+            Thread.sleep(100);
+            assertThat(warnings).hasSize(1);
+        }
+
+        private List<OperatorWarning> awaitWarnings(int count) throws InterruptedException {
+            var deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+
+            while (warnings.size() < count && System.nanoTime() < deadline) {
+                Thread.sleep(10);
+            }
+
+            return List.copyOf(warnings);
+        }
+    }
+
     private static final class CapturingAppender extends AbstractAppender {
         private final List<LogEvent> events = new CopyOnWriteArrayList<>();
 
@@ -1951,6 +2056,9 @@ class StreamConsumerManagerTest {
         private final List<Integer> abandoned = new CopyOnWriteArrayList<>();
         private final List<Integer> gracefullyUnsubscribed = new CopyOnWriteArrayList<>();
         private int subscribeCalls;
+        /// #752: when set, unsubscribe/abandon of a subscription this runtime does not hold fails with
+        /// `CONSUMER_NOT_FOUND`, as the real runtime does. Off by default, so existing tests keep their double.
+        private volatile boolean strictRemoval;
         private volatile boolean deadLetterHold;
         private volatile boolean retryHold;
         private volatile boolean awaitingCursorFetch;
@@ -1983,9 +2091,21 @@ class StreamConsumerManagerTest {
         @Override
         public Result<Unit> abandon(String streamName, int partition, String consumerGroup) {
             abandoned.add(partition);
-            subscriptions.remove(new StreamPartition(streamName, partition));
 
-            return Result.unitResult();
+            return removed(streamName, partition);
+        }
+
+        /// #752: the runtime loses a subscription behind the manager's back.
+        void lose(int partition) {
+            subscriptions.remove(new StreamPartition(STREAM, partition));
+        }
+
+        private Result<Unit> removed(String streamName, int partition) {
+            var held = subscriptions.remove(new StreamPartition(streamName, partition)) != null;
+
+            return held || !strictRemoval
+                   ? Result.unitResult()
+                   : StreamError.General.CONSUMER_NOT_FOUND.result();
         }
 
         List<Integer> subscribedPartitions() {
@@ -2023,10 +2143,11 @@ class StreamConsumerManagerTest {
         @Override
         public Result<Unit> unsubscribe(String streamName, int partition, String consumerGroup) {
             gracefullyUnsubscribed.add(partition);
-            subscriptions.remove(new StreamPartition(streamName, partition));
+            var outcome = removed(streamName, partition);
+
             afterUnsubscribe.run();
 
-            return Result.unitResult();
+            return outcome;
         }
 
         @Override

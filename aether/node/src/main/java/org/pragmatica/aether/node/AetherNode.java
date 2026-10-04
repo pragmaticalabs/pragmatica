@@ -5867,6 +5867,7 @@ public interface AetherNode extends ManageableNode {
                                                                                                                                                                                                             partition,
                                                                                                                                                                                                             group))
                                                                                                                                        .map(AetherValue.StreamCursorCheckpointValue::rewindEpoch));
+        streamConsumerManager.setOperatorWarningSink(operatorWarningSink);
         // #1271: a node that loses quorum stops delivering at the self-fence's DETECTION, not at the drain's
         // halt — the majority is free to reassign its partitions from that moment. Re-set here because the
         // manager exists only now; the detector was armed with the same chain earlier and this replaces it
