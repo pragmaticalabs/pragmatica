@@ -6,8 +6,8 @@ package org.pragmatica.aether.resource.entity;
 
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
-import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import org.junit.jupiter.api.Test;
@@ -17,6 +17,7 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.io.TimeSpan;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
@@ -98,6 +99,44 @@ class EntityFoldBatchChaseBehaviourTest {
         assertThat(text(fold, "k139")).as("the records appended during the chase").isEqualTo("v139");
     }
 
+    /// The off-thread path resumes the loop from `onResult`, which swallows a throw: a read that THROWS on a resumed
+    /// batch must still fail the replay (contained in `containedRead`), not leave it unsettled.
+    @Test
+    @Timeout(30)
+    void offThread_aReadThatThrowsOnAResumedBatch_failsTheReplay_ratherThanHanging() {
+        var substrate = new ChaseSubstrate();
+
+        substrate.settleOffThread = true;
+        substrate.appendUpserts(50);
+        substrate.throwFromRead = 25;
+
+        EntityFold.entityFold(KEYSPACE, substrate)
+                  .ready(PARTITION)
+                  .await(TimeSpan.timeSpan(10).seconds())
+                  .onSuccess(_ -> fail("a replay whose resumed read threw must refuse"))
+                  .onFailure(cause -> assertThat(cause.message()).contains("substrate threw"));
+    }
+
+    /// Same for a step that THROWS on a resumed batch (a record the decoder cannot even read, `null`): contained in
+    /// `applyBatch`, so the replay refuses promptly instead of waiting out the await bound.
+    @Test
+    @Timeout(30)
+    void offThread_aStepThatThrowsOnAResumedBatch_failsTheReplay_ratherThanHanging() {
+        var substrate = new ChaseSubstrate();
+
+        substrate.settleOffThread = true;
+        substrate.appendUpserts(20);
+        substrate.records.add(null);
+        substrate.appendUpserts(20);
+
+        var started = System.nanoTime();
+        var result = EntityFold.entityFold(KEYSPACE, substrate).ready(PARTITION).await(TimeSpan.timeSpan(10).seconds());
+        var elapsedMillis = (System.nanoTime() - started) / 1_000_000;
+
+        assertThat(result.isFailure()).as("a replay whose step threw must refuse").isTrue();
+        assertThat(elapsedMillis).as("it must settle, not wait out the 10 s await bound").isLessThan(5_000L);
+    }
+
     private static String text(EntityFold fold, String key) {
         return fold.get(PARTITION, key)
                    .map(value -> new String(value, StandardCharsets.UTF_8))
@@ -107,9 +146,10 @@ class EntityFoldBatchChaseBehaviourTest {
     /// Serves ONE record per read whatever `maxRecords` asks (a legal "up to" answer), so a log of N records is N
     /// batches; the knobs fail, empty or extend the log at a chosen read.
     private static final class ChaseSubstrate implements EntityLogSubstrate {
-        final List<byte[]> records = new CopyOnWriteArrayList<>();
+        final List<byte[]> records = Collections.synchronizedList(new ArrayList<>());
         private final AtomicInteger reads = new AtomicInteger();
         private volatile boolean settleOffThread;
+        volatile int throwFromRead = -1;
         volatile int failFromRead = -1;
         volatile int emptyAtRead = -1;
         volatile int appendAtRead = -1;
@@ -145,6 +185,10 @@ class EntityFoldBatchChaseBehaviourTest {
         public Promise<List<byte[]>> read(String keyspace, int partition, long fromOffset, int maxRecords) {
             var count = reads.incrementAndGet();
 
+            if (throwFromRead > 0 && count >= throwFromRead) {
+                throw new IllegalStateException("substrate threw instead of failing its promise");
+            }
+
             if (failFromRead > 0 && count >= failFromRead) {
                 return new EntityLogError.MalformedRecord("chase read failure").promise();
             }
@@ -153,7 +197,7 @@ class EntityFoldBatchChaseBehaviourTest {
                 appendUpserts(appendCount);
             }
 
-            var snapshot = List.copyOf(records);
+            var snapshot = new ArrayList<>(records);
             var start = (int) fromOffset;
             List<byte[]> batch = count == emptyAtRead ? List.of() : start < 0 || start >= snapshot.size() ? List.of() : snapshot.subList(start, start + 1);
 
