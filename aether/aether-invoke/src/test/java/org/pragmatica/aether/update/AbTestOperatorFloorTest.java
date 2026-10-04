@@ -139,7 +139,7 @@ class AbTestOperatorFloorTest {
 
         /// Rollback is the other conclusion write and carries the identical defect, so pinning only
         /// the promotion would leave an auto-rollback — the path a failing variant actually takes —
-        /// free to strand the slice at one instance.
+        /// free to strand the slice at the canary's count.
         @Test
         void rollbackTest_restoresOperatorFloor_afterTheCanaryWrite() {
             var testId = startTest();

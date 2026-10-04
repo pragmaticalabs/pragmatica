@@ -639,7 +639,8 @@ class HttpRoutePublisherImpl implements HttpRoutePublisher {
                            route.name(),
                            route.security(),
                            route.version(),
-                           route.pathParamCount());
+                           route.pathParamCount(),
+                           route.spacerSlots());
     }
 
     /// #1573 B1: runs the route and records its outcome ([ExecutionOutcome] has the classification).
@@ -883,8 +884,11 @@ class HttpRoutePublisherImpl implements HttpRoutePublisher {
     }
 
     private static boolean sameShape(HttpRouteDefinition left, HttpRouteDefinition right) {
-        return left.pathArity() == right.pathArity() && left.spacers()
-                                                            .equals(right.spacers());
+        return left.pathArity() == right.pathArity()
+               && left.spacers()
+                      .equals(right.spacers())
+               && left.spacerSlots()
+                      .equals(right.spacerSlots());
     }
 
     /// Strictest by strength, with `UNSPECIFIED` ("inherit the global mode", at least public) just above `PUBLIC`;
