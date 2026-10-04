@@ -421,10 +421,12 @@ class RetryExhaustionApplyOutstandingTest {
                 .contains(SLICE);
     }
 
-    /// The control for the test above, with ONE variable changed: the terminal names the COMMITTED
-    /// attempt. That apply is over, so exhaustion re-drives and never condemns.
+    /// The torn-batch property the original test pinned, kept: a blueprint visible beside a terminal
+    /// for the SAME attempt — the committed one — must still decline. That apply is over, so exhaustion
+    /// re-drives and never condemns. It is also the control for the test above, with ONE variable
+    /// changed: the attempt the terminal names.
     @Test
-    void aTerminalForTheCommittedAttempt_doesNotCondemn() {
+    void aTornBatch_terminalForTheSameAttempt_stillDeclines() {
         var expanded = blueprint();
         var newLeaderStore = freshStore();
         var newLeaderHarness = leaderHarness(new RecordingClusterNode(SELF, newLeaderStore),
