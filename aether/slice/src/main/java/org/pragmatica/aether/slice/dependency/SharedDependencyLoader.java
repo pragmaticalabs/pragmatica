@@ -298,11 +298,28 @@ public interface SharedDependencyLoader {
                                                                                        _ -> Promise.success(unit()));
     }
 
+    /// Only a genuine "not found" becomes empty (and so runtime-provided). A repository that could not
+    /// answer (timeout, network, corrupt download) and a coordinate that does not parse propagate as
+    /// themselves: folding them to "absent" registered the library as present with no jar loaded anywhere,
+    /// so a transient outage made the slice load SUCCEED and fail later with `NoClassDefFoundError`, and
+    /// the retry the `Intermittent` typing exists to trigger never happened (#1436).
     private static Promise<Option<Location>> locateOptional(ArtifactDependency dependency, Repository repository) {
         return toArtifact(dependency).async()
                          .flatMap(repository::locate)
-                         .map(Option::<Location> some)
-                         .orElse(() -> Promise.success(Option.none()));
+                         .replaceResult(SharedDependencyLoader::emptyWhenAbsent);
+    }
+
+    private static Result<Option<Location>> emptyWhenAbsent(Result<Location> located) {
+        return located.fold(cause -> isAbsent(cause)
+                                     ? Result.success(Option.<Location> none())
+                                     : cause.<Option<Location>> result(),
+                            location -> Result.success(Option.some(location)));
+    }
+
+    /// `Repository.Absent` is what a single repository answers; the composite behind `SliceStore` reports
+    /// `Intermittent.ArtifactNotFound` once EVERY repository did (#1769), which is the same fact one level up.
+    private static boolean isAbsent(Cause cause) {
+        return cause instanceof Repository.Absent || cause instanceof SliceLoadingFailure.Intermittent.ArtifactNotFound;
     }
 
     private static Promise<Unit> registerAsRuntimeProvided(ArtifactDependency dependency,
