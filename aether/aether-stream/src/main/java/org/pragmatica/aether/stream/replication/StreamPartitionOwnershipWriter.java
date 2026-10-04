@@ -9,6 +9,7 @@ import java.util.List;
 import java.util.UUID;
 import java.util.function.BooleanSupplier;
 import java.util.function.Supplier;
+import java.util.stream.Stream;
 
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
@@ -302,7 +303,8 @@ record IsrOwnershipWriter(BooleanSupplier isLeaderSupplier,
                                                        committedEpoch,
                                                        1L,
                                                        led(desired, isrInputs.initialIsr(stream, partition, desired)),
-                                                       1L)),
+                                                       1L,
+                                                       List.of())),
                               current -> successor(stream, partition, current, desired, committedEpoch, live));
     }
 
@@ -313,17 +315,19 @@ record IsrOwnershipWriter(BooleanSupplier isLeaderSupplier,
                                                             Epoch committedEpoch,
                                                             List<NodeId> live) {
         var liveIsr = current.isr().stream().filter(live::contains).toList();
+        var fenced = fencedAfter(current, live);
 
         if (live.contains(current.owner())) {
             return desired.equals(current.owner())
-                   ? shrunk(current, liveIsr)
-                   : Option.some(moved(current, desired, committedEpoch, liveIsr));
+                   ? shrunk(current, liveIsr, fenced)
+                   : Option.some(moved(current, desired, committedEpoch, liveIsr, fenced));
         }
 
         return failoverOwner(stream, partition, liveIsr, desired).map(owner -> moved(current,
                                                                                      owner,
                                                                                      committedEpoch,
-                                                                                     liveIsr))
+                                                                                     liveIsr,
+                                                                                     fenced))
                             .orElse(() -> refused(current));
     }
 
@@ -339,17 +343,38 @@ record IsrOwnershipWriter(BooleanSupplier isLeaderSupplier,
     /// Owner unchanged and live: drop the ISR members that left the live set. The owner itself is live, so the
     /// shrunk ISR is never empty.
     private static Option<StreamPartitionOwnershipValue> shrunk(StreamPartitionOwnershipValue current,
-                                                                List<NodeId> liveIsr) {
+                                                                List<NodeId> liveIsr,
+                                                                List<NodeId> fenced) {
+        var next = liveIsr.equals(current.isr()) && fenced.equals(current.fenced())
+                   ? current
+                   : current.withIsrAndFenced(liveIsr, fenced);
+
         if (current.failoverRefused()) {
             // The refused owner is live again: the refusal resolves without an election.
-            return Option.some((liveIsr.equals(current.isr())
-                                ? current
-                                : current.withIsr(liveIsr)).withFailoverRefused(false));
+            return Option.some(next.withFailoverRefused(false));
         }
 
-        return liveIsr.equals(current.isr())
+        return next == current
                ? Option.none()
-               : Option.some(current.withIsr(liveIsr));
+               : Option.some(next);
+    }
+
+    /// The members this leader keeps out of the ISR because ITS liveness view does not list them (#1883): the ones
+    /// already fenced and the ISR members it drops now, minus every one it lists as live again. This committed set is
+    /// the single liveness input of ISR membership: the owner never expands a fenced member, so the owner's and the
+    /// leader's views of the same member cannot drive opposite commits (Kafka: an expansion admits only brokers the
+    /// controller lists as unfenced).
+    private static List<NodeId> fencedAfter(StreamPartitionOwnershipValue current, List<NodeId> live) {
+        var fenced = Stream.concat(current.fenced().stream(),
+                                   current.isr().stream())
+                           .filter(member -> !live.contains(member))
+                           .distinct()
+                           .toList();
+
+        // The record keeps only the newest FENCED_MAX; comparing the capped list keeps a settled record a no-op.
+        return fenced.size() > StreamPartitionOwnershipValue.FENCED_MAX
+               ? fenced.subList(fenced.size() - StreamPartitionOwnershipValue.FENCED_MAX, fenced.size())
+               : fenced;
     }
 
     /// Failover elects from the live ISR only: the desired owner when it is a member, else the HRW-first member.
@@ -365,23 +390,26 @@ record IsrOwnershipWriter(BooleanSupplier isLeaderSupplier,
     private StreamPartitionOwnershipValue moved(StreamPartitionOwnershipValue current,
                                                 NodeId owner,
                                                 Epoch committedEpoch,
-                                                List<NodeId> liveIsr) {
+                                                List<NodeId> liveIsr,
+                                                List<NodeId> fenced) {
         var term = current.ownershipTerm() + 1L;
 
-        return minted(owner, committedEpoch, term, led(owner, liveIsr), current.isrVersion() + 1L);
+        return minted(owner, committedEpoch, term, led(owner, liveIsr), current.isrVersion() + 1L, fenced);
     }
 
     private StreamPartitionOwnershipValue minted(NodeId owner,
                                                  Epoch committedEpoch,
                                                  long ownershipTerm,
                                                  List<NodeId> isr,
-                                                 long isrVersion) {
+                                                 long isrVersion,
+                                                 List<NodeId> fenced) {
         return StreamPartitionOwnershipValue.streamPartitionOwnershipValue(owner,
                                                                            committedEpoch.withCounter(ownershipTerm),
                                                                            ownershipTerm,
                                                                            hlcClock.now(),
                                                                            isr,
-                                                                           isrVersion);
+                                                                           isrVersion,
+                                                                           fenced);
     }
 
     /// `owner` first, then the other members in their given order.

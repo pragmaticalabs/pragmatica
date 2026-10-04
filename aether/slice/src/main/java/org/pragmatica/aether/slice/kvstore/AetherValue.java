@@ -2400,7 +2400,12 @@ public sealed interface AetherValue {
                                          HlcTimestamp transferredAt,
                                          List<NodeId> isr,
                                          long isrVersion,
-                                         boolean failoverRefused) implements AetherValue, EpochBearing<Epoch> {
+                                         boolean failoverRefused,
+                                         List<NodeId> fenced) implements AetherValue, EpochBearing<Epoch> {
+        /// Most members one record remembers as fenced. A member that left for good is never unfenced, so the list is
+        /// bounded here: the oldest entry is forgotten first, which can at worst let one stale member fight once more.
+        public static final int FENCED_MAX = 16;
+
         /// Ownership fence (#345 piece 1a): the owner's `ownerEpoch` is the fencing token, so the Rabia
         /// applier rejects a deposed owner's strictly-older-epoch ownership write for free (it fences
         /// ANY `EpochBearing` value). A stale-owner takeover at the same epoch (bumping only
@@ -2422,6 +2427,11 @@ public sealed interface AetherValue {
             isr = isr == null || isr.isEmpty()
                   ? List.of(owner)
                   : List.copyOf(isr);
+            fenced = fenced == null
+                     ? List.of()
+                     : List.copyOf(fenced.size() > FENCED_MAX
+                                   ? fenced.subList(fenced.size() - FENCED_MAX, fenced.size())
+                                   : fenced);
         }
 
         /// A record whose ISR is the owner alone: the shape of every record written before #1730, and of a
@@ -2436,7 +2446,8 @@ public sealed interface AetherValue {
                                                      transferredAt,
                                                      List.of(owner),
                                                      0L,
-                                                     false);
+                                                     false,
+                                                     List.of());
         }
 
         public static StreamPartitionOwnershipValue streamPartitionOwnershipValue(NodeId owner,
@@ -2451,7 +2462,26 @@ public sealed interface AetherValue {
                                                      transferredAt,
                                                      isr,
                                                      isrVersion,
-                                                     false);
+                                                     false,
+                                                     List.of());
+        }
+
+        /// A record with ISR `isr` and fenced set `fenced` (#1883).
+        public static StreamPartitionOwnershipValue streamPartitionOwnershipValue(NodeId owner,
+                                                                                  Epoch ownerEpoch,
+                                                                                  long ownershipTerm,
+                                                                                  HlcTimestamp transferredAt,
+                                                                                  List<NodeId> isr,
+                                                                                  long isrVersion,
+                                                                                  List<NodeId> fenced) {
+            return new StreamPartitionOwnershipValue(owner,
+                                                     ownerEpoch,
+                                                     ownershipTerm,
+                                                     transferredAt,
+                                                     isr,
+                                                     isrVersion,
+                                                     false,
+                                                     fenced);
         }
 
         /// The same ownership with ISR `isr`, one ISR change later.
@@ -2462,7 +2492,22 @@ public sealed interface AetherValue {
                                                      transferredAt,
                                                      isr,
                                                      isrVersion + 1,
-                                                     failoverRefused);
+                                                     failoverRefused,
+                                                     fenced);
+        }
+
+        /// The same ownership with ISR `isr` and fenced set `fenced`, one ISR change later (#1883). `fenced` is the set of
+        /// members the leader removed from the ISR because its own liveness view does not list them; the owner never
+        /// expands a fenced member, so the two writers read ONE liveness input. Bounded by [#FENCED_MAX] at construction, newest kept.
+        public StreamPartitionOwnershipValue withIsrAndFenced(List<NodeId> isr, List<NodeId> fenced) {
+            return new StreamPartitionOwnershipValue(owner,
+                                                     ownerEpoch,
+                                                     ownershipTerm,
+                                                     transferredAt,
+                                                     isr,
+                                                     isrVersion + 1,
+                                                     failoverRefused,
+                                                     fenced);
         }
 
         /// The same ownership and ISR with the failover verdict `refused`.
@@ -2473,7 +2518,8 @@ public sealed interface AetherValue {
                                                      transferredAt,
                                                      isr,
                                                      isrVersion,
-                                                     refused);
+                                                     refused,
+                                                     fenced);
         }
     }
 
