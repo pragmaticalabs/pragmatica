@@ -14,13 +14,16 @@
   `[notification.smtp_config]` needs only `host`; it deliberately has no whole-record `DEFAULT`, which would also
   supply a host. `MetricsConfig` (`record_timing`, `record_counts`) and `RateGuardConfig` (`requests_per_second`,
   `burst`, `type`) get the same, delivering the defaults the resource reference already promised.
-- **A scalar key is not a record section for the binder.** `hasSection` answers true for a path that exists only as a
-  scalar key, so `[streams.x] retention = "time"` (the documented shorthand, interpreted by `StreamConfigParser`) made
-  `streams.x.retention` look like a section and the binder tried to bind `RetentionPolicy` there. A nested record (and
-  an `Option<Record>`) now binds only from a real section (something keyed under the path); a scalar there is treated
-  as absent, so the record's default applies (or `none()`), exactly as before the missing-field reporting. Without this
-  the missing-field reporting made every declarative stream consumer whose section sets `retention` fail
-  `resolveStreamName` and register nothing.
+- **A scalar where a table is expected is now an error.** `hasSection` answers true for a path that exists only as a
+  scalar key, so the binder used to try to bind a record there and fail on its first required field; treating the
+  scalar as absent instead would have silently bound the record's default (or `none()`) and dropped what the operator
+  wrote (`json = "snake_case"` where `HttpClientConfig` expects a `[http.x.json]` table). A nested record or
+  `Option<Record>` now binds only from a real section, and a scalar at that position is a
+  `ConfigError.TypeMismatch` naming the key and saying a table was expected (the value is not echoed). Callers that
+  needed only a stream's name no longer bind the whole record: `NodeDeploymentState.resolveStreamName` takes the
+  name from the section's last segment (`StreamConfigParser` accepts no `name` key), so the documented
+  `[streams.X] retention = "time"` shorthand, which that parser interprets, keeps working and a declarative stream
+  consumer still registers.
 - **Behaviour change (disclosed):** a PARTIAL nested section under an outer record that has a whole-record `DEFAULT`
   (e.g. `[streams.x.retention]` with only `max_count`) used to be silently replaced by the outer `DEFAULT` (the
   operator's `max_count = 5` was dropped and 100000 bound); it now fails naming the missing field. Undocumented shape.
