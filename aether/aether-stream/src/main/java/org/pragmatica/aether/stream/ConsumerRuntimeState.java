@@ -76,6 +76,11 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
     /// [design intent — unverified: not derived from a measured DLQ-append latency.]
     static final TimeSpan DEAD_LETTER_APPEND_TIMEOUT = timeSpan(30).seconds();
     private static final Cause NULL_PROMISE = Causes.cause("Foreign call returned null instead of a promise");
+    private static final Cause CALL_OVERFLOWED = Causes.cause("Call overflowed its stack");
+    private static final Cause PASS_OVERFLOWED = Causes.cause("Delivery pass overflowed its stack");
+
+    private static final Cause PASS_FATAL = Causes.cause("Delivery pass threw a VirtualMachineError; loop released, error rethrown");
+
     /// #1239: a periodic commit waits for nothing — the single-flight slot already keeps periodic
     /// commits apart, and a detach flush cancels the consumer before it is issued.
     /// rev1272 F6: bound on one PERIODIC cursor commit. With one periodic commit in flight per consumer, a
@@ -974,7 +979,30 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
     @Contract
     private void drainPass(ConsumerKey key, ConsumerState state) {
         state.clearDirty();
-        guardedCycle(key, state).onResult(result -> afterDrainPass(key, state, result));
+        vmBoundedCycle(key, state).onResult(result -> afterDrainPass(key, state, result));
+    }
+
+    /// #1367: since #1311 `Result.lift` rethrows a [VirtualMachineError] instead of mapping it, so one thrown out of
+    /// [#pollCycle] escapes [#guardedCycle] before any pass promise exists, and `running` would stay set until restart
+    /// — every later trigger only marking the loop dirty. Same convention as `OffHeapRingBuffer.notifyGuarded`: a
+    /// [StackOverflowError] is the pass's own runaway recursion, recovered once the stack unwinds, so it is a failed
+    /// pass like any other throw ([#passEscaped], then [#afterFailedPass]); every other `VirtualMachineError` means
+    /// the JVM itself is failing, so the loop is released the way a failed pass releases it and the error propagates.
+    /// The consumer is not stopped either way: its next trigger runs a pass. Only the SYNCHRONOUS escape is caught
+    /// here, never one from the pass's continuation, which may already have released or re-scheduled the loop.
+    @SuppressWarnings("JBCT-EX-01")
+    private Promise<Boolean> vmBoundedCycle(ConsumerKey key, ConsumerState state) {
+        try {
+            return guardedCycle(key, state);
+        } catch (StackOverflowError overflow) {
+            passEscaped(key, state, PASS_OVERFLOWED);
+
+            return PASS_OVERFLOWED.promise();
+        } catch (VirtualMachineError fatal) {
+            afterFailedPass(key, state, PASS_FATAL);
+
+            throw fatal;
+        }
     }
 
     /// The pass's escape boundary: anything thrown synchronously out of [#pollCycle] — a reader that
@@ -1244,11 +1272,23 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
     /// #1266 review: a foreign call that returns `null` instead of a promise is a failure of that call
     /// too — a handler returning `null` is a failed delivery (retry, then dead-letter), never a null that
     /// blows up later inside the pass.
+    ///
+    /// #1367: a [StackOverflowError] thrown by the call is that call's own runaway recursion, recovered once its stack
+    /// unwinds (the `OffHeapRingBuffer.notifyGuarded` convention), so it is a failure of that call too. Since #1311
+    /// `Result.lift` rethrows it, and it escaped every holder of a flag set before the call: a retry left its retry
+    /// hold set and wedged the consumer, a dead-letter sink its dead-letter hold, and a handler on the delivery pass
+    /// bypassed the error strategy, so SKIP never dead-lettered the event. Every other `VirtualMachineError` (out of
+    /// memory, internal error) still propagates: the JVM itself is failing.
+    @SuppressWarnings("JBCT-EX-01")
     private static <T> Promise<T> lifted(Functions.ThrowingFn0<Promise<T>> call) {
-        return Result.lift(call)
-                     .flatMap(ConsumerRuntimeState::nonNullPromise)
-                     .async()
-                     .flatMap(promise -> promise);
+        try {
+            return Result.lift(call)
+                         .flatMap(ConsumerRuntimeState::nonNullPromise)
+                         .async()
+                         .flatMap(promise -> promise);
+        } catch (StackOverflowError overflow) {
+            return CALL_OVERFLOWED.promise();
+        }
     }
 
     private static <T> Result<Promise<T>> nonNullPromise(Promise<T> promise) {
