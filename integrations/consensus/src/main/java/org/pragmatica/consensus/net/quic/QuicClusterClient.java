@@ -755,7 +755,11 @@ final class QuicClusterClientInstance implements QuicClusterClient {
 
             log.warn("Hello response timeout for peer {}", peerId);
             promise.fail(HELLO_TIMEOUT);
-            if (ctx.channel().isActive()) {
+            // #1933: close the CONNECTION, not just the stream. The QUIC idle timeout is disabled, so a connection whose dial failed
+            // here would otherwise stay "active" for the life of the process, orphaned from every table that could evict it.
+            if (quicChannel.isActive()) {
+                quicChannel.close();
+            } else if (ctx.channel().isActive()) {
                 ctx.close();
             }
         }

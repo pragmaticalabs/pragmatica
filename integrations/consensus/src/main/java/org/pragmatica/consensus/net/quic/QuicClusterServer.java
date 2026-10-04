@@ -414,6 +414,21 @@ final class QuicClusterServerInstance implements QuicClusterServer {
         @Contract
         protected void initChannel(QuicChannel ch) {
             log.debug("New QUIC connection from {}", ch.remoteAddress());
+            // #1933: the QUIC idle timeout is disabled (cluster connections are persistent), so nothing else bounds a connection that
+            // never completes its Hello — one that opens no stream at all, or whose silent stream the Hello timeout closed while the
+            // connection stayed open. The Hello bound is therefore also a bound on the CONNECTION: registered peers carry the
+            // PEER_CONNECTION attribute (stamped at admission); a connection without it when the bound passes is closed. A Hello'd
+            // connection is never touched (no global idle timeout).
+            ch.eventLoop().schedule(() -> closeIfHelloIncomplete(ch), helloTimeoutMs, TimeUnit.MILLISECONDS);
+        }
+
+        private void closeIfHelloIncomplete(QuicChannel ch) {
+            if (ch.isActive() && ch.attr(PeerOpenedLaneRouter.PEER_CONNECTION).get() == null) {
+                log.warn("QUIC connection from {} did not complete its Hello within {} ms — closing the connection",
+                         ch.remoteAddress(),
+                         helloTimeoutMs);
+                ch.close();
+            }
         }
     }
 
