@@ -41,6 +41,7 @@ class StreamReadRouterEpochTest {
     private static final Epoch E1 = Epoch.epoch(1L, 1L, 1L);
     private static final Epoch E2 = Epoch.epoch(1L, 1L, 2L);
 
+    private final java.util.concurrent.atomic.AtomicReference<StreamPartitionOwnershipValue> ownerRecord = new java.util.concurrent.atomic.AtomicReference<>(record(List.of(new EpochStart(E1, 0L), new EpochStart(E2, 3L))));
     private StreamPartitionManager ownerPartitions;
     private StreamPartitionManager assigneePartitions;
     private StreamReadRouter ownerRouter;
@@ -54,15 +55,7 @@ class StreamReadRouterEpochTest {
         for (var i = 0; i < 5; i++) {
             ownerPartitions.publishLocal(STREAM, PARTITION, new byte[]{(byte) i}, 1_000L + i).onFailure(cause -> fail(cause.message()));
         }
-        ownerPartitions.ownershipRecords((_, _) -> Option.some(new StreamPartitionOwnershipValue(OWNER,
-                                                                                                  E2,
-                                                                                                  2L,
-                                                                                                  HlcTimestamp.ZERO,
-                                                                                                  List.of(OWNER),
-                                                                                                  3L,
-                                                                                                  false,
-                                                                                                  List.of(),
-                                                                                                  List.of(new EpochStart(E1, 0L), new EpochStart(E2, 3L)))));
+        ownerPartitions.ownershipRecords((_, _) -> Option.some(ownerRecord.get()));
         // The assignee knows the stream (its config is committed cluster-wide) and holds no ring: not a replica of it.
         assigneePartitions = StreamPartitionManager.streamPartitionManager();
         assigneePartitions.placementRoleSupplier((_, _) -> org.pragmatica.aether.stream.replication.ReplicaSetController.Role.NONE);
@@ -97,6 +90,22 @@ class StreamReadRouterEpochTest {
         read.onFailure(cause -> assertThat(cause).isInstanceOfSatisfying(StreamError.EpochDiverged.class, diverged -> {
             assertThat(diverged.ownerEpoch()).isEqualTo(E2);
             assertThat(diverged.resumeAt()).isEqualTo(3L);
+            assertThat(diverged.boundaryKnown()).as("the record holds the start that followed E1").isTrue();
+        }));
+    }
+
+    /// C3: whether the boundary is exact crosses the forward transport. The record keeps no start older than E2 (the
+    /// consumer's E1 predates the history), so the owner answers a conservative bound, and the assignee must learn that.
+    @Test
+    void forwardedConsumer_olderThanTheKeptHistory_getsAnInexactBoundary() {
+        ownerRecord.set(record(List.of(new EpochStart(E2, 3L))));
+
+        var read = assigneeRouter.readValidated(STREAM, PARTITION, 5L, 10, E1).await();
+
+        assertThat(read.isFailure()).isTrue();
+        read.onFailure(cause -> assertThat(cause).isInstanceOfSatisfying(StreamError.EpochDiverged.class, diverged -> {
+            assertThat(diverged.resumeAt()).isEqualTo(3L);
+            assertThat(diverged.boundaryKnown()).as("the owner could not name the boundary and said so").isFalse();
         }));
     }
 
@@ -131,5 +140,9 @@ class StreamReadRouterEpochTest {
 
         assertThat(read.isFailure()).isTrue();
         read.onFailure(cause -> assertThat(cause).isEqualTo(StreamError.General.PARTITION_NOT_LOCAL));
+    }
+
+    private static StreamPartitionOwnershipValue record(List<EpochStart> starts) {
+        return new StreamPartitionOwnershipValue(OWNER, E2, 2L, HlcTimestamp.ZERO, List.of(OWNER), 3L, false, List.of(), starts);
     }
 }

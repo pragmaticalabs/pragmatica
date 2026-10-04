@@ -92,6 +92,34 @@ class ConsumerRewoundEventTest {
         assertThat(warnings).isEmpty();
     }
 
+    /// A divergence never moves a cursor FORWARD: a bound above the cursor (it cannot come from the owner's check, which diverges
+    /// only a cursor above its bound, but a consumer must not skip on a wire value) leaves the cursor where it was.
+    @Test
+    void aBoundAboveTheCursor_neverMovesTheCursorForward() throws InterruptedException {
+        var diverged = new java.util.concurrent.atomic.AtomicBoolean();
+
+        runtime = runtime(owner((from, epoch) -> {
+            if (epoch.equals(Epoch.ZERO) && from == 0L) {
+                return Promise.success(new StreamPartitionManager.EpochRead(List.of(event(0, "old-0"), event(1, "old-1")), E1));
+            }
+
+            if (epoch.equals(E1) && from == 2L && diverged.compareAndSet(false, true)) {
+                return new StreamError.EpochDiverged(E2, 9L, false).promise();
+            }
+
+            if (from == 2L) {
+                return Promise.success(new StreamPartitionManager.EpochRead(List.of(event(2, "new-2")), E2));
+            }
+
+            return Promise.success(new StreamPartitionManager.EpochRead(List.of(), epoch));
+        }));
+        subscribe();
+        keepWaking(() -> delivered.contains("2:new-2"));
+
+        assertThat(delivered).as("nothing at offsets 2..8 was skipped").contains("2:new-2");
+        assertThat(warnings).isEmpty();
+    }
+
     /// Owner script: epoch ZERO reads 0 and 1 under E1; the next read (cursor 2, under E1) gets `divergence`; then E2 serves
     /// the new record at offset 1.
     private void run(StreamError.EpochDiverged divergence) throws InterruptedException {
