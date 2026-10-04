@@ -265,9 +265,11 @@ public final class StreamPartitionManager implements AutoCloseable {
     private final ConcurrentHashMap<PartitionRef, Long> provenanceMismatchAt = new ConcurrentHashMap<>();
     /// What the repair in progress of a partition has discarded so far; reported once when it settles ([#settleRepair]).
     private final ConcurrentHashMap<PartitionRef, TailCut> pendingCuts = new ConcurrentHashMap<>();
+
     /// Reports of repairs a previous process left unsettled that were found before the operator-warning sink was wired; made
     /// when it is.
     private final java.util.concurrent.CopyOnWriteArrayList<Runnable> deferredReports = new java.util.concurrent.CopyOnWriteArrayList<>();
+
     private volatile boolean operatorWarningsBound = false;
     /// #1638 F1: the catch-up installs recorded but not yet settled, per partition ([#installProvenance]). Each
     /// partition's list is also that partition's lock serialising recording an install against trimming one, so a trim
@@ -1984,10 +1986,15 @@ public final class StreamPartitionManager implements AutoCloseable {
 
     @Contract
     private void restoreVisible(StreamConfig config, StreamEntry entry) {
-        entry.materialized().forEach((partition, materialized) -> {
-            restoreVisible(config, partition, materialized.ring());
-            reportInterruptedRepair(config.name(), partition, materialized.wal());
-        });
+        entry.materialized()
+             .forEach((partition, materialized) -> {
+                          restoreVisible(config,
+                                         partition,
+                                         materialized.ring());
+                          reportInterruptedRepair(config.name(),
+                                                  partition,
+                                                  materialized.wal());
+                      });
     }
 
     /// visible = min(durable, the highest offset `confirmationFactor - 1` distinct peers have acknowledged).
@@ -2257,7 +2264,11 @@ public final class StreamPartitionManager implements AutoCloseable {
 
         try {
             Files.writeString(pendingCutFile(wal),
-                              cut.keptThrough() + " " + cut.removed() + " " + cut.firstRemoved() + " " + cut.lastRemoved() + " " + epoch,
+                              cut.keptThrough()
+                             + " " + cut.removed()
+                             + " " + cut.firstRemoved()
+                             + " " + cut.lastRemoved()
+                             + " " + epoch,
                               StandardOpenOption.CREATE,
                               StandardOpenOption.TRUNCATE_EXISTING,
                               StandardOpenOption.WRITE,
@@ -2268,7 +2279,8 @@ public final class StreamPartitionManager implements AutoCloseable {
     }
 
     private static Path pendingCutFile(AppendLog wal) {
-        return wal.path().resolveSibling(wal.path().getFileName() + ".pending-cut");
+        return wal.path()
+                  .resolveSibling(wal.path().getFileName() + ".pending-cut");
     }
 
     /// A partition reopened with a pending truncation record: the repair that made the cut never settled (the process died first).
@@ -2293,10 +2305,16 @@ public final class StreamPartitionManager implements AutoCloseable {
         try {
             var parts = Files.readString(file).trim().split(" ");
             var epoch = parts.length >= 7
-                        ? Option.some(Epoch.epoch(Long.parseLong(parts[4]), Long.parseLong(parts[5]), Long.parseLong(parts[6])))
+                        ? Option.some(Epoch.epoch(Long.parseLong(parts[4]),
+                                                  Long.parseLong(parts[5]),
+                                                  Long.parseLong(parts[6])))
                         : Option.<Epoch> none();
 
-            return Option.some(new TailCut(Long.parseLong(parts[0]), Long.parseLong(parts[1]), Long.parseLong(parts[2]), Long.parseLong(parts[3]), epoch));
+            return Option.some(new TailCut(Long.parseLong(parts[0]),
+                                           Long.parseLong(parts[1]),
+                                           Long.parseLong(parts[2]),
+                                           Long.parseLong(parts[3]),
+                                           epoch));
         } catch (IOException | RuntimeException e) {
             return Option.none();
         }
@@ -4443,7 +4461,9 @@ public final class StreamPartitionManager implements AutoCloseable {
                           .onSuccess(candidate -> restoreVisible(config,
                                                                  partition,
                                                                  candidate.ring()))
-                          .onSuccess(candidate -> reportInterruptedRepair(config.name(), partition, candidate.wal()))
+                          .onSuccess(candidate -> reportInterruptedRepair(config.name(),
+                                                                          partition,
+                                                                          candidate.wal()))
                           .map(candidate -> installOrRelease(entry, partition, candidate, floorBytes));
     }
 

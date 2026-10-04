@@ -474,7 +474,9 @@ final class DefaultReplicationManager implements ReplicationManager {
         return registry.replicasFor(streamName, partition)
                        .stream()
                        .collect(Collectors.toMap(ReplicaDescriptor::nodeId,
-                                                 descriptor -> descriptor.nodeId().equals(governorId) || descriptor.epoch().equals(current)
+                                                 descriptor -> descriptor.nodeId()
+                                                                         .equals(governorId) || descriptor.epoch()
+                                                                                                          .equals(current)
                                                                ? descriptor.confirmedOffset()
                                                                : -1L,
                                                  Math::max));

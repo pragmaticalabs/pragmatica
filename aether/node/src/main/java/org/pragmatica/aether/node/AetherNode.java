@@ -5530,13 +5530,16 @@ public interface AetherNode extends ManageableNode {
         // leaves out loses the row this registry kept for it from an earlier tenure.
         ownerActivation.sealedFloor(streamSegmentIndex::lastSealedOffset);
         ownerActivation.peerRingTail((node, stream, partition) -> node.equals(config.self())
-                                                                  ? Promise.success(streamPartitionManager.visibleBounds(stream, partition)
+                                                                  ? Promise.success(streamPartitionManager.visibleBounds(stream,
+                                                                                                                         partition)
                                                                                                           .filter(bounds -> bounds.earliestRetained() >= 0L)
                                                                                                           .map(VisibleBounds::earliestRetained))
-                                                                  : streamForwardClient.boundsRemote(node, stream, partition)
+                                                                  : streamForwardClient.boundsRemote(node,
+                                                                                                     stream,
+                                                                                                     partition)
                                                                                        .map(bounds -> Option.some(bounds)
-                                                                                                           .filter(known -> known.earliestRetained() >= 0L)
-                                                                                                           .map(VisibleBounds::earliestRetained))
+                                                                                                            .filter(known -> known.earliestRetained() >= 0L)
+                                                                                                            .map(VisibleBounds::earliestRetained))
                                                                                        .recover(_ -> Option.<Long> none()));
         ownerActivation.peerRows((stream, partition, peer) -> streamReplicaRegistry.updateWatermark(stream,
                                                                                                     partition,

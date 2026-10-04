@@ -683,7 +683,9 @@ public final class OwnerActivation {
     /// `offset` when the peer holds it in its RING (it is at or above the peer's ring tail); none when it lies below it (sealed
     /// data) or the tail is not known.
     private Promise<Option<Long>> inPeersRing(String stream, int partition, PeerWatermark peer, long offset) {
-        return peerRingTail.of(peer.node(), stream, partition)
+        return peerRingTail.of(peer.node(),
+                               stream,
+                               partition)
                            .map(tail -> tail.filter(ringTail -> offset >= ringTail)
                                             .map(_ -> offset));
     }
