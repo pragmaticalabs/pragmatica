@@ -503,11 +503,16 @@ class SpiResourceProviderLifecycleTest {
     class FailedCloseIsSurfaced {
         private static final String LOGGER_NAME = SpiResourceProvider.class.getName();
 
-        private final List<java.util.logging.LogRecord> records = new CopyOnWriteArrayList<>();
+        private final List<String> records = new CopyOnWriteArrayList<>();
+        /// Held strongly: `System.Logger` here is backed by a java.util.logging logger, which JUL keeps only weakly, so
+        /// a handler on an unreferenced logger is lost to a GC and the capture goes silent.
+        private java.util.logging.Logger julLogger;
         private final java.util.logging.Handler handler = new java.util.logging.Handler() {
             @Override
             public void publish(java.util.logging.LogRecord record) {
-                records.add(record);
+                if (record.getLevel().intValue() >= java.util.logging.Level.WARNING.intValue()) {
+                    records.add(record.getMessage());
+                }
             }
 
             @Override
@@ -519,12 +524,13 @@ class SpiResourceProviderLifecycleTest {
 
         @org.junit.jupiter.api.BeforeEach
         void attach() {
-            java.util.logging.Logger.getLogger(LOGGER_NAME).addHandler(handler);
+            julLogger = java.util.logging.Logger.getLogger(LOGGER_NAME);
+            julLogger.addHandler(handler);
         }
 
         @org.junit.jupiter.api.AfterEach
         void detach() {
-            java.util.logging.Logger.getLogger(LOGGER_NAME).removeHandler(handler);
+            julLogger.removeHandler(handler);
         }
 
         @Test
@@ -535,9 +541,8 @@ class SpiResourceProviderLifecycleTest {
 
             assertThat(provider.closeShared().await(TIMEOUT).isSuccess()).as("a failed close never fails the release").isTrue();
             assertThat(records).as("the failed close must be reported, or nothing reports it")
-                               .anyMatch(record -> record.getLevel().intValue() >= java.util.logging.Level.WARNING.intValue()
-                                                   && record.getMessage().contains("close refused by the factory")
-                                                   && record.getMessage().contains("<unattributed>"));
+                               .anyMatch(message -> message.contains("close refused by the factory")
+                                                    && message.contains("<unattributed>"));
         }
 
         @Test
