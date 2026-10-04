@@ -410,8 +410,7 @@ public final class DHTNode {
         return Option.option(pendingLocalWrites.computeIfPresent(ByteBuffer.wrap(key.clone()),
                                                                  (_, current) -> expired(current)
                                                                                  ? null
-                                                                                 : current))
-                     .isPresent();
+                                                                                 : current)).isPresent();
     }
 
     private static boolean expired(PendingLocalWrite pending) {
