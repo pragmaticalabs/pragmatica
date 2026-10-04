@@ -11,3 +11,7 @@
 - **`JooqR2dbcTransactional` had the identical defect** (`onFailure(rollback)` + `onResult(close)`, each blocking on
   `await()`) and gets the same treatment: rollback, then close, composed into the returned Promise, primary failure
   preserved, a failing step logged.
+- **R2DBC: a driver that THROWS from `begin`, `commit`, `rollback` or `close` (instead of returning a failing
+  publisher) no longer strands the caller.** The cleanup steps and the begin/commit calls are lifted, so a throw is a
+  failed step: the returned Promise always settles with the primary failure and the connection is released. A throw
+  from `begin` previously escaped before the attempt existed and the connection was never closed (also true on rc4).
