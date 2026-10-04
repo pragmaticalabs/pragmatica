@@ -9,8 +9,11 @@
   `POST /api/v1/blueprints/deploy` and `/publish`. The scale route's two-field check used `Result.all`, whose composite cause
   is not `HttpStatusAware`, so a request missing both fields would still have answered 500; it now fails on the first.
 - **409 for a leader-bound A/B write on a non-leader** (`ab-tests/create`, `ab-tests/conclude/{id}`), via
-  `ManagementServerError.NotLeader`, the type every other leader-bound route uses. It fires when task-group owner resolution
-  itself fails, which is when an operator most needs a typed answer.
+  `ManagementServerError.NotLeader` (which had no constructor before this change), matching `SchemaNotLeader`. It fires when
+  task-group owner resolution itself fails, which is when an operator most needs a typed answer. The manager-level
+  `AbTestDeploymentError.NotLeader` (a node that is leader but not yet activated), `TestNotFound`, `VariantNotFound` and
+  `TestAlreadyExists` are typed too (409 / 404 / 404 / 409). Not every not-leader refusal in the codebase answers 409:
+  `DeploymentError.NOT_ASSIGNED` answers 503.
 - **`POST /api/v1/cluster/keys/revoke/{id}`:** an unknown key is now 404 and a key declared in node configuration is 409.
 - `POST /api/v1/cluster/config` and `/cluster/scale` already answered typed 4xx at this base (`ClusterConfigError`); not changed.
 - New `ManagementServerError.InvalidRequest` carries a route's own diagnosis unchanged with status 400.
