@@ -52,7 +52,6 @@ class ConsumerEpochRewindTest {
     /// The consumer must receive the new record at 1, not skip it.
     @Test
     void runningConsumer_toldItsLineageWasReplaced_rereadsFromWhereTheNewEpochBegan() throws InterruptedException {
-        var calls = new AtomicInteger();
         var owner = new StreamConsumerRuntime.PartitionReader() {
             @Override
             public Promise<List<OffHeapRingBuffer.RawEvent>> read(String stream, int partition, long from, int max) {
@@ -63,12 +62,19 @@ class ConsumerEpochRewindTest {
             public Promise<StreamPartitionManager.EpochRead> readFrom(String stream, int partition, long from, int max, Epoch consumerEpoch) {
                 reads.add("from=" + from + ",epoch=" + consumerEpoch.localCounter());
 
-                return switch (calls.incrementAndGet()) {
-                    case 1 -> Promise.success(new StreamPartitionManager.EpochRead(List.of(event(0, "old-0"), event(1, "old-1")), E1));
-                    case 2 -> new StreamError.EpochDiverged(E2, 1L).promise();
-                    case 3 -> Promise.success(new StreamPartitionManager.EpochRead(List.of(event(1, "new-1"), event(2, "new-2")), E2));
-                    default -> Promise.success(new StreamPartitionManager.EpochRead(List.of(), E2));
-                };
+                if (consumerEpoch.equals(Epoch.ZERO) && from == 0L) {
+                    return Promise.success(new StreamPartitionManager.EpochRead(List.of(event(0, "old-0"), event(1, "old-1")), E1));
+                }
+
+                if (consumerEpoch.equals(E1) && from >= 2L) {
+                    return new StreamError.EpochDiverged(E2, 1L).promise();
+                }
+
+                if (consumerEpoch.equals(E2) && from == 1L) {
+                    return Promise.success(new StreamPartitionManager.EpochRead(List.of(event(1, "new-1"), event(2, "new-2")), E2));
+                }
+
+                return Promise.success(new StreamPartitionManager.EpochRead(List.of(), consumerEpoch));
             }
         };
 
