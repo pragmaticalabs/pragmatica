@@ -84,6 +84,45 @@ class DHTDeposedWriterRollbackTest {
                                                 .isInstanceOf(Cause.Transient.class));
     }
 
+    /// v1882 r9b: the deposed owner's slot already held a value; its refused write overwrote it locally, and the rollback must
+    /// put THAT value back exactly (value and version), not delete the key.
+    @Test
+    void deposedOwnerWrite_overwritingALocalPrior_isRestoredToThePrior_notDeleted() {
+        var cluster = new Cluster();
+        var prior = "prior".getBytes(StandardCharsets.UTF_8);
+
+        cluster.member(DEPOSED).node().storage().putVersioned(KEY, prior, 1L, 0L, 1L, 1L).await();
+        var put = cluster.member(DEPOSED).client().put(KEY, VALUE).await();
+        var held = cluster.member(DEPOSED).node().storage().entries().await().or(List.of()).stream()
+                          .filter(entry -> Arrays.equals(entry.key(), KEY))
+                          .findFirst();
+
+        assertThat(put.isFailure()).as("control: the write was refused").isTrue();
+        assertThat(held).as("the prior entry is still there").isPresent();
+        assertThat(held.get().value()).as("byte-identical").isEqualTo(prior);
+        assertThat(held.get().version()).as("version-identical").isEqualTo(1L);
+    }
+
+    /// v1882 r9b: the displaced entry is read in the same step as the write — whatever the key held AT that moment, never
+    /// an earlier read — and the exact-stamp restore leaves a newer write alone.
+    @Test
+    void displacingWrite_returnsWhatItReplaced_andRestoreLeavesANewerWriteAlone() {
+        var storage = memoryStorageEngine();
+
+        storage.putVersioned(KEY, "first".getBytes(StandardCharsets.UTF_8), 1L, 0L, 1L, 1L).await();
+        var displaced = storage.putVersionedDisplacing(KEY, VALUE, 10L, 0L, 1L, 1L).await().fold(cause -> { throw new AssertionError(cause.message()); }, displacedWrite -> displacedWrite);
+
+        assertThat(displaced.written()).isTrue();
+        assertThat(displaced.prior().map(entry -> new String(entry.value(), StandardCharsets.UTF_8)).or("absent")).isEqualTo("first");
+
+        storage.putVersioned(KEY, "newer".getBytes(StandardCharsets.UTF_8), 20L, 0L, 1L, 1L).await();
+
+        assertThat(storage.restoreIfExactly(KEY, 10L, 0L, 1L, 1L, displaced.prior()).await().or(true)).as("superseded: left alone").isFalse();
+        assertThat(new String(storage.get(KEY).await().or(Option.none()).or(new byte[0]), StandardCharsets.UTF_8)).isEqualTo("newer");
+        assertThat(storage.restoreIfExactly(KEY, 20L, 0L, 1L, 1L, displaced.prior()).await().or(false)).as("control: the exact entry is restored").isTrue();
+        assertThat(new String(storage.get(KEY).await().or(Option.none()).or(new byte[0]), StandardCharsets.UTF_8)).isEqualTo("first");
+    }
+
     /// The rollback removes only the writer's OWN entry: one superseded since by a newer write stays.
     @Test
     void rollback_leavesAnEntrySupersededSinceTheWrite() {

@@ -49,9 +49,8 @@ public final class QuorumCollector<T> {
     private final AtomicReference<String> valueSource = new AtomicReference<>();
     private final AtomicInteger departed = new AtomicInteger();
     private final Promise<Unit> allReplied = Promise.promise();
-    /// Successes that came from the coordinator's own slot, and the first piece of EVIDENCE from a REMOTE slot (#1777
-    /// v1882 r6 F10, r9): a quorum met by the local slot alone says nothing about the replicas' fences yet.
-    private final AtomicInteger localSuccesses = new AtomicInteger(0);
+    /// The first piece of EVIDENCE from a REMOTE slot (#1777 v1882 r6 F10, r9): a quorum met by the local slot alone says
+    /// nothing about the replicas' fences yet.
     private final Promise<Unit> remoteEvidence = Promise.promise();
 
     private QuorumCollector(int quorum, int total, Promise<T> promise, UnaryOperator<T> valueMerger) {
@@ -92,7 +91,6 @@ public final class QuorumCollector<T> {
     /// replica (#1777 v1882 r6 F10), so it does not resolve [#remoteEvidence].
     @Contract
     public void onLocalSuccess(T value) {
-        localSuccesses.incrementAndGet();
         onSuccess(value, "");
     }
 
@@ -100,11 +98,6 @@ public final class QuorumCollector<T> {
     @Contract
     public void onLocalFailure(Cause cause) {
         recordFailure(cause);
-    }
-
-    /// Successes from remote slots only.
-    public int remoteSuccessCount() {
-        return successCount.get() - localSuccesses.get();
     }
 
     /// Resolves with the first EVIDENCE from a remote slot about the writer's fence: a success, or a refusal as stale. Any

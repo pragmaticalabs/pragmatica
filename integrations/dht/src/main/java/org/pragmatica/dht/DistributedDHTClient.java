@@ -210,19 +210,21 @@ public final class DistributedDHTClient implements DHTClient {
                                    node.replicationFence());
         Promise<Unit> promise = Promise.promise();
         var collector = QuorumCollector.<Unit> quorumCollector(quorum, targets.size(), promise);
-        var localPut = targets.contains(node.nodeId())
-                       ? Option.some(handleLocalPut(key, value, stamp, collector))
-                       : Option.<Promise<StorageEngine.Displaced>> none();
+        var hasRemote = targets.stream().anyMatch(target -> !target.equals(node.nodeId()));
 
         targets.stream()
                .filter(target -> !target.equals(node.nodeId()))
                .forEach(target -> sendRemotePut(target, key, value, stamp, collector));
-        var hasRemote = targets.stream().anyMatch(target -> !target.equals(node.nodeId()));
+        var localPut = targets.contains(node.nodeId())
+                       ? Option.some(applyLocalAfterEvidence(collector,
+                                                             hasRemote,
+                                                             () -> handleLocalPut(key, value, stamp, collector)))
+                       : Option.<Promise<StorageEngine.Displaced>> none();
 
         collector.allReplied().onSuccess(_ -> noteLateStale(collector, stamp));
 
         return promise.timeout(config.get().operationTimeout())
-                      .flatMap(_ -> confirmedByReplicas(collector, quorum, hasRemote))
+                      .flatMap(_ -> confirmedByReplicas(collector, quorum))
                       .fold(result -> result.fold(cause -> afterFailedPut(key,
                                                                           stamp,
                                                                           localPut,
@@ -234,36 +236,51 @@ public final class DistributedDHTClient implements DHTClient {
 
     /// A put whose quorum is met is acknowledged only if no replica has refused it as stale (#1777 v1882 r6 F10): a
     /// [DHTError.ReplicationChangeStale] refusal from ANY target is authoritative evidence that this writer is behind, so
-    /// the put fails and the caller retries under the newer change. When the quorum was met by this node's own slot alone
-    /// (W_old = 1 and the writer is a replica), the local slot — which no fence guards — says nothing about the others, so
-    /// the acknowledgement waits for EVIDENCE from a remote target: a success (ack) or a stale refusal (fail). Any other
-    /// reply — fence unknown, an owner-epoch fence, a dispatch failure to a down replica — is not evidence, and the wait
-    /// goes on until every slot has replied or the evidence wait runs out. The wait is `operationTimeout /`
-    /// [#EVIDENCE_WAIT_DIVISOR] (3 s by default): one intra-cluster round trip plus a GC pause, an order of magnitude below
-    /// the caller-visible timeout, so a partitioned or down replica set cannot turn every W=1 write into a stall of that
-    /// timeout (CTO judgement on the ratio, taste).
-    /// [limit: with NO evidence — every remote silent, down, fence-unknown or owner-epoch-fenced until every slot has replied
-    /// or the wait runs out — the put is acknowledged on its own slot and sets no stale record; a replica on the newer change
-    /// that does not answer within the wait (slow, GC-paused, partitioned) cannot refute it; #1683-class] A refusal that arrives AFTER the acknowledgement cannot revoke it; it is recorded
-    /// ([#noteLateStale]) and the copies the other replicas accepted are pulled by the writers-switched catch-up.
-    private Promise<Unit> confirmedByReplicas(QuorumCollector<Unit> collector, int quorum, boolean hasRemote) {
-        if (collector.replicationStaleCount() > 0) {
-            return staleFailure(collector, quorum);
-        }
+    /// the put fails and the caller retries under the newer change. A refusal that arrives AFTER the acknowledgement cannot
+    /// revoke it; it is recorded ([#noteLateStale]) and the copies the other replicas accepted are pulled by the
+    /// writers-switched catch-up.
+    private Promise<Unit> confirmedByReplicas(QuorumCollector<Unit> collector, int quorum) {
+        return collector.replicationStaleCount() > 0
+               ? staleFailure(collector, quorum)
+               : Promise.success(unit());
+    }
 
-        if (!hasRemote || collector.remoteSuccessCount() > 0) {
-            return Promise.success(unit());
+    /// The writer's own slot is applied only AFTER the evidence gate releases (v1882 r10, replacing an apply-then-undo that
+    /// could never be made consistent with what other writers observed meanwhile). The gate waits for EVIDENCE from a remote
+    /// target: a success, or a refusal as stale. Any other reply — fence unknown, an owner-epoch fence, a dispatch failure to
+    /// a down replica — is not evidence, and the wait goes on until every slot has replied or the evidence wait runs out.
+    /// - evidence is a stale refusal: the write is NEVER applied locally and fails stale; there is nothing to undo;
+    /// - evidence is a success, or there is none: the local write is applied and counts toward the quorum.
+    /// The wait is `operationTimeout /` [#EVIDENCE_WAIT_DIVISOR] (3 s by default): one intra-cluster round trip plus a GC
+    /// pause, an order of magnitude below the caller-visible timeout, so a partitioned or down replica set cannot turn every
+    /// W=1 write into a stall of that timeout (CTO judgement on the ratio, taste). Cost: a writer that is a replica applies
+    /// its own copy after the first useful remote reply, one round trip later than before.
+    /// [limit: with NO evidence — every remote silent, down, fence-unknown or owner-epoch-fenced until every slot has replied
+    /// or the wait runs out — the write is applied and acknowledged on its own slot and sets no stale record; a replica on
+    /// the newer change that does not answer within the wait (slow, GC-paused, partitioned) cannot refute it; #1683-class]
+    private Promise<StorageEngine.Displaced> applyLocalAfterEvidence(QuorumCollector<?> collector,
+                                                                      boolean hasRemote,
+                                                                      Supplier<Promise<StorageEngine.Displaced>> write) {
+        if (!hasRemote) {
+            return write.get();
         }
 
         var timeout = config.get().operationTimeout().millis();
-        var remaining = Math.max(Math.min(timeout / EVIDENCE_WAIT_DIVISOR, timeout - collector.elapsedMillis()),
-                                 1L);
+        var bound = Math.max(Math.min(timeout / EVIDENCE_WAIT_DIVISOR, timeout - collector.elapsedMillis()), 1L);
 
         return collector.remoteEvidence()
-                        .timeout(timeSpan(remaining).millis())
+                        .timeout(timeSpan(bound).millis())
                         .fold(_ -> collector.replicationStaleCount() > 0
-                                   ? staleFailure(collector, quorum)
-                                   : Promise.success(unit()));
+                                   ? skipLocalSlot(collector)
+                                   : write.get());
+    }
+
+    /// The slot is not applied: it is accounted as a failed slot so the quorum arithmetic can finish, and the operation
+    /// fails with the stale refusals that caused it.
+    private static Promise<StorageEngine.Displaced> skipLocalSlot(QuorumCollector<?> collector) {
+        collector.onLocalFailure(DHTError.OPERATION_TIMEOUT);
+
+        return DHTError.OPERATION_TIMEOUT.promise();
     }
 
     private static Promise<Unit> staleFailure(QuorumCollector<Unit> collector, int quorum) {
@@ -328,17 +345,18 @@ public final class DistributedDHTClient implements DHTClient {
                                          WriteStamp stamp,
                                          Option<Promise<StorageEngine.Displaced>> localPut,
                                          Cause cause) {
-        return cause instanceof DHTError.WriteIndeterminate || cause instanceof DHTError.ReplicationChangeStale
+        return cause instanceof DHTError.WriteIndeterminate
                ? localPut.map(local -> rollBackLocalAccept(key, stamp, local))
                          .or(Promise.success(false))
                          .fold(_ -> cause.promise())
                : cause.promise();
     }
 
-    /// Puts this node's own slot back EXACTLY as the write found it (v1882 r9b): the entry the write displaced — read in
-    /// the same atomic step as the write — replaces our accept while the stored entry is still exactly ours, and a key that
-    /// was absent is deleted. Never a bare delete: a writer whose slot held the only copy would lose it. A newer write that
-    /// landed in between is left alone.
+    /// Puts this node's own slot back EXACTLY as the write found it (v1882 r9b), after an INDETERMINATE put (#1818): the
+    /// entry the write displaced — read in the same atomic step as the write — replaces our accept while the stored entry is
+    /// still exactly ours, and a key that was absent is deleted. Never a bare delete: a writer whose slot held the only copy
+    /// would lose it. A newer write that landed in between is left alone. A put refused as STALE never reaches here: its
+    /// local slot is not applied until the evidence gate releases, so there is nothing to undo (v1882 r10).
     private Promise<Boolean> rollBackLocalAccept(byte[] key,
                                                  WriteStamp stamp,
                                                  Promise<StorageEngine.Displaced> localPut) {
