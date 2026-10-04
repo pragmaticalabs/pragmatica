@@ -256,6 +256,7 @@ public final class StreamPartitionManager implements AutoCloseable {
     public interface EpochStartSource {
         Option<Long> startOf(String streamName, int partition, Epoch epoch);
     }
+
     /// The offsets at which a PROVENANCE comparison found this copy divergent (N13), while the partition stays quarantined for
     /// it. The durable flag is raised only if the divergence is not repaired ([#flagUnrepaired]): a repair removes the entry.
     private final ConcurrentHashMap<PartitionRef, Long> provenanceMismatchAt = new ConcurrentHashMap<>();
@@ -866,7 +867,7 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                                 long fromOffset,
                                                                 int maxEvents) {
         return ownerRoleGate(streamName, partition).flatMap(_ -> readLocal(streamName, partition, fromOffset, maxEvents))
-                                                   .flatMap(events -> servedIfVerified(streamName, partition, fromOffset, events));
+                            .flatMap(events -> servedIfVerified(streamName, partition, fromOffset, events));
     }
 
     /// Replace the committed-epoch source after construction (a test seam; production passes it to the factory).
@@ -891,7 +892,9 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                                       List<OffHeapRingBuffer.RawEvent> events) {
         return unverifiedFrom(streamName, partition).fold(() -> success(events),
                                                           start -> fromOffset >= start
-                                                                   ? new StreamError.ReplicaNotVerified(streamName, partition, start).<List<OffHeapRingBuffer.RawEvent>> result()
+                                                                   ? new StreamError.ReplicaNotVerified(streamName,
+                                                                                                        partition,
+                                                                                                        start).<List<OffHeapRingBuffer.RawEvent>> result()
                                                                    : success(events.stream()
                                                                                    .filter(event -> event.offset() < start)
                                                                                    .toList()));
@@ -920,7 +923,8 @@ public final class StreamPartitionManager implements AutoCloseable {
         var head = resolvePartitionBuffer(streamName, partition).map(OffHeapRingBuffer::headOffset).or(-1L);
 
         return epochTrust.compute(partitionKeyOf(streamName, partition),
-                                  (_, known) -> known != null && known.epoch().equals(epoch)
+                                  (_, known) -> known != null && known.epoch()
+                                                                      .equals(epoch)
                                                 ? known
                                                 : new EpochTrust(epoch, head < start))
                          .verified();
@@ -936,7 +940,8 @@ public final class StreamPartitionManager implements AutoCloseable {
     @Contract
     public void markVerifiedForEpoch(String streamName, int partition, Epoch epoch) {
         epochTrust.compute(partitionKeyOf(streamName, partition),
-                           (_, known) -> known != null && known.epoch().isStrictlyAfter(epoch)
+                           (_, known) -> known != null && known.epoch()
+                                                               .isStrictlyAfter(epoch)
                                          ? known
                                          : new EpochTrust(epoch, true));
     }

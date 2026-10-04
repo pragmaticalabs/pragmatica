@@ -293,12 +293,14 @@ public final class OwnerActivation {
 
     /// The committed record each partition was activated for; [Option#none] marks a first-owner activation.
     private final Map<PartitionKey, Option<StreamPartitionOwnershipValue>> activated = new ConcurrentHashMap<>();
+
     /// The candidate's durable sealed floor, late-bound ([#sealedFloor]); none sealed until wired.
     private volatile LastSealedOffsetSource sealedFloor = LastSealedOffsetSource.none();
 
     /// Forgets what this node's registry says a peer confirmed. Late-bound ([#peerRows]); the default forgets nothing.
     @FunctionalInterface
     public interface PeerRowReset {
+        @Contract
         void reset(String stream, int partition, NodeId peer);
     }
 
@@ -660,7 +662,8 @@ public final class OwnerActivation {
     }
 
     /// The lowest offset present in both ranges whose records differ.
-    private static Option<Long> firstDifference(List<OffHeapRingBuffer.RawEvent> mine, List<OffHeapRingBuffer.RawEvent> theirs) {
+    private static Option<Long> firstDifference(List<OffHeapRingBuffer.RawEvent> mine,
+                                                List<OffHeapRingBuffer.RawEvent> theirs) {
         var theirRecords = new HashSet<>(theirs);
         var theirOffsets = theirs.stream().map(OffHeapRingBuffer.RawEvent::offset).collect(Collectors.toSet());
 
@@ -698,7 +701,9 @@ public final class OwnerActivation {
                          answered.get(i).node(),
                          answered.get(i).watermark(),
                          selfWatermark.localWatermark(stream, partition));
-                peerRows.reset(stream, partition, answered.get(i).node());
+                peerRows.reset(stream,
+                               partition,
+                               answered.get(i).node());
             } else {
                 kept.add(answered.get(i));
             }

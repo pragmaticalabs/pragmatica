@@ -113,7 +113,9 @@ public sealed interface StreamError extends Cause {
     record ReplicaNotVerified(String streamName, int partition, long startOffset) implements StreamError, Cause.Transient {
         @Override
         public String message() {
-            return "Replica %s[%d] has not been verified against the owner's epoch starting at offset %d".formatted(streamName, partition, startOffset);
+            return "Replica %s[%d] has not been verified against the owner's epoch starting at offset %d".formatted(streamName,
+                                                                                                                    partition,
+                                                                                                                    startOffset);
         }
     }
 

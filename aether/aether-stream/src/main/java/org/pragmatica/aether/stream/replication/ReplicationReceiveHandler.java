@@ -405,7 +405,6 @@ public final class ReplicationReceiveHandler {
 
             return;
         }
-
         // Ack ONLY after the batch is fsynced here (#634 item 1): the owner's confirmation barrier counts
         // this ack as a durable copy, so acking from RAM would let correlated power loss inside the
         // unsealed window erase writes the caller was told reached RF. A failed sync WITHHOLDS the ack —

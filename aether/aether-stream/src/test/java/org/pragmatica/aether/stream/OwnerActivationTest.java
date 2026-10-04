@@ -205,6 +205,25 @@ class OwnerActivationTest {
         assertThat(catchUps).isEmpty();
     }
 
+    /// B8 (v1890 M21): the relaxation needs the candidate to be ELECTED FROM the committed ISR, i.e. the ISR names it. A record with
+    /// a committed ISR (isrVersion > 0) that does not name this node is a candidate nobody guarantees holds every acknowledged
+    /// record: a divergent peer keeps blocking.
+    @Test
+    void activate_candidateNotInTheCommittedIsr_peerDivergentInTheOverlap_stillRefuses() {
+        record.set(Option.some(StreamPartitionOwnershipValue.streamPartitionOwnershipValue(SELF,
+                                                                                           Epoch.epoch(0L, 3L, 0),
+                                                                                           3L,
+                                                                                           HlcTimestamp.ZERO,
+                                                                                           List.of(PEER_A, PEER_B),
+                                                                                           5L)));
+        members.set(List.of(SELF, PEER_A));
+        peerWatermarks.put(PEER_A, 15L);
+        divergent.add(PEER_A);
+
+        assertThat(activate()).as("a candidate outside the committed ISR does not relax the gate").isFalse();
+        assertThat(alarms).singleElement().isInstanceOf(OwnerActivation.ActivationBlock.DivergentPeer.class);
+    }
+
     /// B6 (the design's Q6): the gate relaxes ONLY for a divergence ABOVE the candidate's durable sealed floor. A peer that
     /// differs from the candidate at or below the floor holds, in segments already sealed, something no truncation removes: the
     /// relaxation does not apply and the activation stays refused as before.

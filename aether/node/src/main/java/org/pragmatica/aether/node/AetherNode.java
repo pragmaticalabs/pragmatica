@@ -5529,7 +5529,7 @@ public interface AetherNode extends ManageableNode {
         ownerActivation.peerRows((stream, partition, peer) -> streamReplicaRegistry.updateWatermark(stream,
                                                                                                     partition,
                                                                                                     peer,
-                                                                                                    -1L,
+                                                                                                    - 1L,
                                                                                                     ReplicationState.SYNCING));
         // #1730: a partition with no live in-sync replica has no owner to report a block, so the controller reports it.
         streamPartitionManager.ownerBlockSource((stream, partition) -> ownerActivation.blockOf(stream, partition)
@@ -5928,7 +5928,6 @@ public interface AetherNode extends ManageableNode {
                                                                                                   streamPartitionManager::syncReplicated,
                                                                                                   streamOwnershipViews.writeAuthority(),
                                                                                                   operatorWarningSink);
-
         // #1730 phase 2 (B7): a copy not yet compared with the committed owner of the current epoch acknowledges nothing.
         streamReplicationReceiveHandler.ackGate(streamPartitionManager::replicaVerified);
         allEntries.add(MessageRouter.Entry.route(ReplicationMessage.ReplicateEvents.class,
