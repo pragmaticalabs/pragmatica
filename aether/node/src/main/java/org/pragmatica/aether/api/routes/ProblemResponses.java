@@ -100,7 +100,7 @@ public final class ProblemResponses {
         }
 
         if (cause instanceof Causes.CompositeCause composite) {
-            var statuses = composite.stream().map(ProblemResponses::resolveStatus).distinct().toList();
+            var statuses = composite.stream().map(member -> resolveStatus(member)).distinct().toList();
 
             return statuses.size() == 1
                    ? statuses.getFirst()

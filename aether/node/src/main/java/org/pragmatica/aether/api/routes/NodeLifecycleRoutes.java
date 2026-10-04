@@ -262,7 +262,7 @@ public final class NodeLifecycleRoutes implements RouteSource {
     private Promise<TransitionResult> drainNode(String nodeIdStr) {
         return RequestParse.asRequest(NodeId.nodeId(nodeIdStr))
                            .flatMap(node -> admitOperatorDrain(node, true))
-                     .async();
+                           .async();
     }
 
     /// One routes instance is installed per management server. Check and reserve synchronously:
@@ -404,7 +404,7 @@ public final class NodeLifecycleRoutes implements RouteSource {
     private Promise<TransitionResult> shutdownNode(String nodeIdStr) {
         return RequestParse.asRequest(NodeId.nodeId(nodeIdStr))
                            .flatMap(node -> admitOperatorDrain(node, false))
-                     .async();
+                           .async();
     }
 
     Promise<TransitionResult> shutdownNodeForTest(String nodeIdStr) {
@@ -444,7 +444,7 @@ public final class NodeLifecycleRoutes implements RouteSource {
     private Result<PromoteNodeResponse> confirmImmutableRole(String nodeIdStr, String targetRole) {
         return RequestParse.asRequest(NodeId.nodeId(nodeIdStr))
                            .flatMap(this::readCurrentRole)
-                     .flatMap(current -> matchingRoleResponse(nodeIdStr, current, targetRole));
+                           .flatMap(current -> matchingRoleResponse(nodeIdStr, current, targetRole));
     }
 
     private Result<String> readCurrentRole(NodeId nodeId) {
