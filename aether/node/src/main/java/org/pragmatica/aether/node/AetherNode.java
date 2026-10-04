@@ -5128,6 +5128,7 @@ public interface AetherNode extends ManageableNode {
         // owner-epoch history) are raised on the durable, backed-up partition flag -- the same flag the promotion
         // gate and cold-restart detection raise and read.
         streamPartitionManager.partitionFlags(PartitionFlags.kvPartitionFlags(clusterNode, kvStore, nodeCodec));
+        streamPartitionManager.operatorWarnings(operatorWarningSink);
         // `[streaming] reshuffle_concurrency` — set BEFORE any materialization, since it replaces the permit
         // pool wholesale. Until 2026-08-16 this bound was a compile-time constant while the paced-materialize
         // error message named it as a config key, so an operator whose backfills were starving had nothing to
