@@ -1986,6 +1986,35 @@ class PartitionBackfillTest {
             assertThat(descriptorFor(OWNER).state()).isEqualTo(ReplicationState.CAUGHT_UP);
         }
 
+        /// #1431: a blind survivor that ANSWERS with a page cut before its first event (the backstop cause) is not an
+        /// unreachable one: the bounded escape, which promotes at the LOCAL watermark below it, must never fire. Red
+        /// under "any probe failure is unreachable": past the bound the owner self-promotes CAUGHT_UP@-1.
+        @Test
+        void backfill_freshOwner_blindSurvivorEventExceedsReadCap_neverEscapesAtTheLocalWatermark() {
+            registry.registerReplica(STREAM, PARTITION, OWNER);
+            registry.registerReplica(STREAM, PARTITION, SURVIVOR);
+
+            ReplicaWatermarkProbe oversized = (_, _, _) -> new org.pragmatica.aether.stream.OwnerPeerReads.EventExceedsReadCap(0L).promise();
+            var clock = new AtomicLong(BOUND.millis() + 1);
+            var backfill = partitionBackfill(registry,
+                                             recovery,
+                                             failIfCatchup(),
+                                             oversized,
+                                             localHeadWatermark(),
+                                             OWNER,
+                                             BOUND,
+                                             clock::get,
+                                             () -> MEMBERS);
+
+            assertThat(backfill.backfill(STREAM, PARTITION).await().isFailure()).as("first attempt").isTrue();
+            clock.set(3 * BOUND.millis());
+            var outcome = backfill.backfill(STREAM, PARTITION).await();
+
+            assertThat(outcome.isFailure()).as("past the bound, still refused: %s", outcome).isTrue();
+            outcome.onFailure(cause -> assertThat(cause).isInstanceOf(org.pragmatica.aether.stream.OwnerPeerReads.EventExceedsReadCap.class));
+            assertThat(descriptorFor(OWNER).state()).isEqualTo(ReplicationState.SYNCING);
+        }
+
         @Test
         void backfill_ownerWithKnownSurvivorOffset_noProbe_localRegistryHitPathUntouched() {
             // NEGATIVE: when the local registry DOES carry the survivor's offset (not blind), aheadSurvivor is
