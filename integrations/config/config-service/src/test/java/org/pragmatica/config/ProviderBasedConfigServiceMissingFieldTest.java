@@ -119,11 +119,12 @@ class ProviderBasedConfigServiceMissingFieldTest {
     /// `svc.retention` a "section", so the binder tried to bind a record there and failed on its first required
     /// field; the stream shorthand is interpreted by the stream parser, not by this binder. The nested record now
     /// falls to its `DEFAULT` (bare) or `none()` (`Option`), as if the key were absent.
-    record Retention(String kind, int maxCount) {
-        public static final Retention DEFAULT = new Retention("count", 100);
-    }
+    record Retention(String kind, int maxCount) {}
 
-    record Stream(String name, Retention retention) {}
+    /// Shaped like `StreamConfig`: a whole-record `DEFAULT` that supplies the nested record, which has none of its own.
+    record Stream(String name, Retention retention) {
+        public static final Stream DEFAULT = new Stream("d", new Retention("count", 100));
+    }
 
     record OptionalRetentionHolder(String name, Option<Endpoint> endpoint) {}
 
@@ -131,7 +132,7 @@ class ProviderBasedConfigServiceMissingFieldTest {
     void scalarKeyWhereABareRecordIsExpected_isNotARecordSection_fallsToItsDefault() {
         var stream = serviceWith(Map.of("s.name", "x", "s.retention", "time")).config("s", Stream.class).unwrap();
 
-        assertThat(stream.retention()).isEqualTo(Retention.DEFAULT);
+        assertThat(stream.retention()).isEqualTo(Stream.DEFAULT.retention());
     }
 
     @Test
