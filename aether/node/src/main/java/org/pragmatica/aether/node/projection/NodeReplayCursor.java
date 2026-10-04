@@ -52,9 +52,11 @@ import org.slf4j.LoggerFactory;
 /// read here at put time — no committed assignment refuses the rewind before anything is put, and an
 /// assignment that moves between the read and the apply is refused by the applier's guard. The group id is
 /// resolved NOW (an inferred subscriber that turned out ambiguous refuses the rewind rather than rewinding
-/// a guess). Then the committed value is READ BACK and the rewind fails unless it IS the record put: a
-/// refused mint (another rebuild of the group committed first, or a moved assignment) would otherwise
-/// leave the store REBUILDING with nothing saying why. The consumer restart is level-triggered from the
+/// a guess). Then the rewind fails unless the record put was ACCEPTED: a refused mint (another rebuild of
+/// the group committed first, or a moved assignment) would otherwise leave the store REBUILDING with nothing
+/// saying why. Acceptance is witnessed, not inferred from a later read ([CommitWitness]): the record's own
+/// apply restarts the consumer, whose first checkpoint at the same epoch can commit before any read-back, so a
+/// read-back alone reported a committed rewind as refused. The consumer restart is level-triggered from the
 /// committed epoch (`StreamConsumerManager`), so the rewind is complete when the records are committed;
 /// the rewound consumer resumes at `fromOffset` under the token.
 public record NodeReplayCursor(String topicStream,
@@ -64,7 +66,8 @@ public record NodeReplayCursor(String topicStream,
                                Fn1<Promise<Unit>, List<KVCommand<AetherKey>>> commandWriter,
                                Fn1<Option<StreamCursorCheckpointValue>, StreamCursorCheckpointKey> committedReader,
                                CommittedAssignments committedAssignments,
-                               LongSupplier clusterIncarnation) implements ReplayCursor {
+                               LongSupplier clusterIncarnation,
+                               CommitWitness witness) implements ReplayCursor {
     private static final Logger log = LoggerFactory.getLogger(NodeReplayCursor.class);
 
     sealed interface RewindError extends Cause {
@@ -244,8 +247,11 @@ public record NodeReplayCursor(String topicStream,
                                                                                                          entry.getValue()))
                           .toList();
 
+        var watches = watch(group, records);
+
         return commandWriter.apply(puts)
-                            .flatMap(_ -> verifyCommitted(group, records, token))
+                            .flatMap(_ -> verifyCommitted(group, records, watches, token))
+                            .onResultRun(() -> watches.values().forEach(CommitWitness.Watch::close))
                             .onSuccess(_ -> log.info("Rewound group {} on {} to {} under epoch {}",
                                                      group,
                                                      topicStream,
@@ -253,18 +259,30 @@ public record NodeReplayCursor(String topicStream,
                                                      epoch));
     }
 
+    /// Registered BEFORE the put, so the accepted-put notification dispatched inside the apply cannot be missed.
+    private Map<Integer, CommitWitness.Watch> watch(String group, Map<Integer, StreamCursorCheckpointValue> records) {
+        var watches = new HashMap<Integer, CommitWitness.Watch>();
+
+        records.forEach((partition, record) -> watches.put(partition, witness.watch(checkpointKey(group, partition), record)));
+
+        return watches;
+    }
+
     /// The put resolved, which says the command was APPLIED, not that it was ACCEPTED — a fenced refusal is
-    /// silent. Reading back what the applier committed is the only way to know, and it is the RECORD that is
-    /// compared: an equal-epoch mint refused by the applier leaves the earlier record, whose epoch may equal
-    /// the token's.
+    /// silent. A record is committed when its accepted-put notification was witnessed, or, should that
+    /// notification not have reached the witness, when the committed value still IS the record. The RECORD is
+    /// what counts, never its epoch: an equal-epoch mint refused by the applier leaves the competitor's record,
+    /// and the consumer that record restarts then checkpoints at the very same epoch.
     private Promise<Unit> verifyCommitted(String group,
                                           Map<Integer, StreamCursorCheckpointValue> records,
+                                          Map<Integer, CommitWitness.Watch> watches,
                                           RewindToken token) {
         var refused = records.entrySet()
                              .stream()
                              .map(entry -> checkCommitted(group,
                                                           entry.getKey(),
                                                           entry.getValue(),
+                                                          watches.get(entry.getKey()),
                                                           token))
                              .toList();
 
@@ -276,11 +294,12 @@ public record NodeReplayCursor(String topicStream,
     private Result<Unit> checkCommitted(String group,
                                         int partition,
                                         StreamCursorCheckpointValue record,
+                                        CommitWitness.Watch watch,
                                         RewindToken token) {
         var committed = committed(group, partition);
 
-        return committed.filter(record::equals)
-                        .isPresent()
+        return watch.seen() || committed.filter(record::equals)
+                                        .isPresent()
                ? Result.unitResult()
                : new RewindError.RewindNotCommitted(topicStream,
                                                     group,

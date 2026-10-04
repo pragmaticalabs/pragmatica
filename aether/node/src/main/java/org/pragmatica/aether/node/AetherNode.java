@@ -188,6 +188,7 @@ import org.pragmatica.aether.stream.LinearizableOwnerServe;
 import org.pragmatica.aether.stream.OwnerActivation;
 import org.pragmatica.aether.stream.OwnerPeerReads;
 import org.pragmatica.aether.stream.OffHeapRingBuffer;
+import org.pragmatica.aether.node.projection.CommitWitness;
 import org.pragmatica.aether.node.projection.PartitionBounds;
 import org.pragmatica.aether.node.projection.ProjectionAwareCursorStore;
 import org.pragmatica.aether.node.projection.ProjectionNodeSupport;
@@ -5881,6 +5882,11 @@ public interface AetherNode extends ManageableNode {
         // that consumer on the next pass, now rather than on the 5s tick. The manager filters the key type.
         allEntries.add(MessageRouter.Entry.route(KVStoreNotification.ValuePut.class,
                                                  streamConsumerManager::onCheckpointPut));
+        // A rebuild's rewind record counts as committed once its accepted-put notification is seen here; a
+        // read-back alone is overtaken by the restarted consumer's first checkpoint at the same epoch.
+        var rewindWitness = CommitWitness.commitWitness();
+
+        allEntries.add(MessageRouter.Entry.route(KVStoreNotification.ValuePut.class, rewindWitness::onPut));
         // #1333: what a slice's ProjectionRuntime resource needs from the node — the registry above and
         // the replay cursor's collaborators (partition bounds from the local ring or forwarded to the owner
         // through the read router, the fenced checkpoint put, the committed read-back). Registered beside
@@ -5892,7 +5898,8 @@ public interface AetherNode extends ManageableNode {
                                                                                 cursorCommandWriter,
                                                                                 committedCursorReader,
                                                                                 committedConsumerAssignments,
-                                                                                epochSources.incarnation()::current);
+                                                                                epochSources.incarnation()::current,
+                                                                                rewindWitness);
 
         resourceProviderSetup.spiProvider()
                              .onPresent(spi -> spi.registerExtension(ProjectionNodeSupport.class, projectionNodeSupport));

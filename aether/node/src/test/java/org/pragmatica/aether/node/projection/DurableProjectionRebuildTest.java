@@ -191,6 +191,7 @@ class DurableProjectionRebuildTest {
                                                             this::applyAll,
                                                             () -> false);
         var hook = ProjectionAwareCursorStore.projectionAwareCursorStore(cluster, registry);
+        var witness = CommitWitness.commitWitness();
 
         cursorStore = hook;
         support = ProjectionNodeSupport.projectionNodeSupport(registry,
@@ -200,7 +201,8 @@ class DurableProjectionRebuildTest {
                                                               this::applyAll,
                                                               this::committed,
                                                               this::committedAssignment,
-                                                              () -> 0L);
+                                                              () -> 0L,
+                                                              witness);
         projection = support.attach(ARTIFACT.base(),
                                     TOPIC_STREAM,
                                     Option.none(),
@@ -213,6 +215,7 @@ class DurableProjectionRebuildTest {
         runtime = StreamConsumerRuntime.streamConsumerRuntime(partitions, deadLetters, cursorStore);
         manager = wireManager(topics);
         router.addRoute(ValuePut.class, (ValuePut<?, ?> put) -> manager.onCheckpointPut(put));
+        router.addRoute(ValuePut.class, witness::onPut);
         // #1271: the first pass computes and PUTS the assignment (fire-and-forget through consensus) and
         // admits nothing; the consumer attaches on the pass after the record is committed.
         manager.reconcile();
