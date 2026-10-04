@@ -10,11 +10,15 @@
   `activate*` polls `isActive()` instead of sleeping.
 - **`deliverAllPendingMessages` no longer loses messages.** It snapshotted the pending list, delivered it,
   then called `clear()`, discarding anything broadcast in between. It now drains with `poll()`.
-- **Four vacuous tests now assert what their names claim**, each reddened by a named production mutation
+- **Five vacuous tests now assert what their names claim**, each reddened by a named production mutation
   and green on the original under the same mutation: `all_nodes_agree_on_same_proposal` (no round-1 vote
   broadcast at all), `multiple_consecutive_decisions_maintain_agreement` (decisions for phase > 0 never
-  broadcast), `state_machine_receives_commands_on_v1_decision` (committed batch never applied), and the
-  phase-1 vote test (phase > 0 round-1 vote removed).
+  broadcast), `state_machine_receives_commands_on_v1_decision` (committed batch never applied),
+  `promise_resolved_with_results_on_v1_decision` (the `apply()` promise never resolved; it never called
+  `apply()` before), and the phase-1 vote test (phase > 0 round-1 vote removed).
+- **A settle barrier that times out now fails loudly.** `awaitSettled` raises an `AssertionError` when
+  `settleForTesting()` does not complete within 5 s; the old harness discarded the result and could hang
+  for minutes behind a backlog without failing.
 - **`locked_value_propagates_through_phases` is renamed `phase1_initial_vote_is_v1_when_phase1_proposals_agree`.**
   No lock carries across phases: `PhaseData.evaluateInitialVote` reads only its own phase's proposals.
 - [unverified: that CI load starved the executors the way the injected stalls do; inferred from the identical failure signature]
