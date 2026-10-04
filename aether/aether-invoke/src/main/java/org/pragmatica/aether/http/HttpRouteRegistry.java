@@ -347,16 +347,20 @@ public interface HttpRouteRegistry {
             /// omits is subtracted. Each method's map is swapped in one step, so a lookup never sees the contribution
             /// half-replaced; methods the publication no longer names are visited too, to subtract them.
             private void replaceContribution(RouteSource publisher, Map<PublishedEntry, NodeRouteSecurity> entries) {
-                var byMethod = new HashMap<String, Map<PublishedEntry, NodeRouteSecurity>>();
+                var byMethod = entries.entrySet()
+                                      .stream()
+                                      .collect(Collectors.groupingBy(entry -> entry.getKey()
+                                                                                   .method(),
+                                                                     Collectors.toMap(Map.Entry::getKey,
+                                                                                      Map.Entry::getValue)));
 
-                entries.forEach((entry, security) -> byMethod.computeIfAbsent(entry.method(), _ -> new LinkedHashMap<>())
-                                                             .put(entry, security));
                 byMethod.keySet()
-                        .forEach(method -> routesByMethod.computeIfAbsent(method, _ -> new AtomicReference<>(new TreeMap<>())));
+                        .forEach(method -> routesByMethod.computeIfAbsent(method,
+                                                                          _ -> new AtomicReference<>(new TreeMap<>())));
                 routesByMethod.forEach((method, ref) -> ref.updateAndGet(current -> replaceInMethod(current,
-                                                                                                     publisher,
-                                                                                                     byMethod.getOrDefault(method,
-                                                                                                                           Map.of()))));
+                                                                                                    publisher,
+                                                                                                    byMethod.getOrDefault(method,
+                                                                                                                          Map.of()))));
                 entries.keySet()
                        .forEach(entry -> log.debug("HttpRouteRegistry: Registered compound route {} {} node={}",
                                                    entry.method(),

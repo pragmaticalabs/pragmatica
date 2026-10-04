@@ -162,8 +162,7 @@ public interface LoadBalancerManager {
             /// #1314: only the removed key's contribution goes. The node keeps every route it still serves from
             /// another artifact.
             private void applyRemove(ValueRemove<NodeRoutesKey, NodeRoutesValue> valueRemove) {
-                Option.option(contributions.remove(valueRemove.cause().key()))
-                      .onPresent(removed -> removed.forEach(this::announceRoute));
+                Option.option(contributions.remove(valueRemove.cause().key())).onPresent(removed -> removed.forEach(this::announceRoute));
             }
 
             private void announceRoute(String routeIdentity) {
@@ -188,13 +187,11 @@ public interface LoadBalancerManager {
             }
 
             private Map<String, Set<NodeId>> routeNodes() {
-                var aggregated = new HashMap<String, Set<NodeId>>();
-
-                contributions.forEach((key, identities) -> identities.forEach(identity -> aggregated.computeIfAbsent(identity,
-                                                                                                                      _ -> new HashSet<>())
-                                                                                                    .add(key.nodeId())));
-
-                return aggregated;
+                return contributions.values()
+                                    .stream()
+                                    .flatMap(Set::stream)
+                                    .distinct()
+                                    .collect(Collectors.toMap(identity -> identity, this::nodesServing));
             }
 
             void reconcile() {
@@ -213,9 +210,9 @@ public interface LoadBalancerManager {
                     var routes = new ArrayList<RouteChange>();
 
                     routeNodes().forEach((identity, nodeIds) -> collectRouteForReconciliation(identity,
-                                                                                            nodeIds,
-                                                                                            allNodeIps,
-                                                                                            routes));
+                                                                                              nodeIds,
+                                                                                              allNodeIps,
+                                                                                              routes));
                     replaceTrackedIps(allNodeIps);
                     log.info("Reconciling load balancer: {} routes, {} node IPs", routes.size(), allNodeIps.size());
                     loadBalancerState(allNodeIps, routes).onSuccess(state -> provider.reconcile(state)
