@@ -33,8 +33,15 @@
   compare, which the backfill redrive runs at once (the no-compare shortcut holds only within a verified epoch); the owner's
   gate also forgets the registry row of a peer it leaves out as divergent. Until a copy is verified, and while the cluster does
   not record where an epoch began, every offset of a non-empty copy counts as at or above the start.
-- **The gate relaxes for a divergent peer only above the candidate's durable sealed floor** (and only for a candidate that the
-  committed ISR names); a divergence at or below the floor keeps the activation refused.
+- **The gate relaxes for a divergent peer only when the divergence lies in the peer's RING and above the candidate's durable
+  sealed floor** (and only for a candidate that the committed ISR names). The gate still compares the peer's range through its
+  tier, so a difference found in data the peer has sealed is detected and keeps the activation refused: the peer's own repair
+  cannot cut there. A peer whose ring tail is not known is not relaxed for.
+- **A replica's confirmation carries the owner epoch it was made under** (`ReplicateAck.ownerEpoch`, wire change); an owner counts
+  a peer's row, or a late ack, only while it is its current epoch, so a confirmation from an earlier tenure can no longer resolve a
+  later tenure's await (#1890, the stale-row path).
+- **The CF1 loss report survives a restart.** What a cut discarded is recorded beside the WAL until the repair settles, and
+  reported at reopen when the process died first.
 - **One truncation report.** At `confirmation_factor` 1 the warning `stream-divergent-tail-truncated` is raised once per
   truncation, when the repair completes, with the final range, the epoch of the discarded records and `ackedAtOwner=true`, not
   once per window step.
