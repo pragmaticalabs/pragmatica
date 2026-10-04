@@ -63,6 +63,7 @@ import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
 import org.pragmatica.net.tcp.security.CertificateRenewalScheduler;
 
 import org.slf4j.Logger;
@@ -853,13 +854,32 @@ public final class ClusterConfigRoutes implements RouteSource {
             return new UpgradeError.AlreadyAtVersion(targetVersion).promise();
         }
 
-        log.info("Cluster upgrade initiated: {} -> {}",
-                 currentVersion,
-                 targetVersion);
+        return checkVersionAsync(stored.configVersion(),
+                                 request.expectedVersion()).flatMap(_ -> Promise.resolved(fenceUpgradeWrite(stored,
+                                                                                                           request.expectedVersion())))
+                                .flatMap(_ -> {
+                                             log.info("Cluster upgrade initiated: {} -> {}",
+                                                      currentVersion,
+                                                      targetVersion);
 
-        return storeUpgradedVersion(stored, targetVersion).map(_ -> new UpgradeResponse("INITIATED",
-                                                                                        currentVersion,
-                                                                                        targetVersion));
+                                             return storeUpgradedVersion(stored, targetVersion).map(_ -> new UpgradeResponse("INITIATED",
+                                                                                                                             currentVersion,
+                                                                                                                             targetVersion));
+                                         });
+    }
+
+    /// #1424: the client-side fence on the upgrade path, the third mutating cluster-config route to carry it
+    /// (apply-config #289, scale #1086). Without it two operators issuing different `targetVersion`s, or an
+    /// upgrade landing beside a scale or apply, resolved as last intent wins: the store-level successor CAS
+    /// closes the lost UPDATE, but nothing let an operator say "upgrade only if the config is still at version
+    /// N". [#checkVersionAsync] refuses a stale non-zero version; this refuses the `expectedVersion=0` wildcard
+    /// it would otherwise honour, exactly as [#fenceScaleWrite] does, because every stored config an upgrade can
+    /// reach is populated (`INITIAL_CONFIG_VERSION`; the bootstrap seed is stamped 1). Placed after the
+    /// already-at-version check, so a no-op upgrade keeps its own answer.
+    private static Result<Unit> fenceUpgradeWrite(ClusterConfigValue stored, long expectedVersion) {
+        return isUnfencedOverwrite(stored.configVersion(), expectedVersion)
+               ? new ClusterConfigError.UnfencedOverwrite(stored.configVersion()).result()
+               : Result.unitResult();
     }
 
     /// Commit the complete desired config with its expected version and current leader in one
