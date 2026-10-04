@@ -413,6 +413,7 @@ public final class ClusterBootstrapConfigValidator {
                                               List<String> errors) {
         checkIngressProviderSupport(name, source, errors);
         checkPublicManagementWithoutAuth(name, source, managementPort, errors);
+        checkJwtWithoutJwks(name, source, errors);
         source.firewallRules().forEach(rule -> validateSingleFirewallRule(name, rule, errors));
     }
 
@@ -461,6 +462,29 @@ public final class ClusterBootstrapConfigValidator {
                   + " unauthenticated management API on the public internet — anyone who can reach it"
                   + " can deploy, scale and reconfigure the cluster. Scope source_cidr to your operator"
                   + " network, or enable authentication.");
+    }
+
+    /// PF-28 (#909) — a node refuses to boot on `security_mode = "jwt"` with no `jwks_url` (an enabled
+    /// app-http server has nothing to verify tokens against). Caught here, before any server is
+    /// provisioned, so a cloud bootstrap does not pay for a fleet that will all refuse to start.
+    private static void checkJwtWithoutJwks(String name, SourceProfile source, List<String> errors) {
+        var overlay = source.nodeConfig();
+        var jwt = overlay.flatMap(doc -> doc.getString("app-http", "security_mode"))
+                         .map(mode -> "jwt".equalsIgnoreCase(mode.trim()))
+                         .or(false);
+        var enabled = overlay.flatMap(doc -> doc.getString("app-http", "enabled"))
+                             .map(value -> "true".equalsIgnoreCase(value.trim()))
+                             .or(false);
+        var hasJwks = overlay.flatMap(doc -> doc.getString("app-http", "jwks_url"))
+                             .filter(url -> !url.isBlank())
+                             .isPresent();
+
+        if (jwt && enabled && !hasJwks) {
+            errors.add("PF-28: Source '" + name
+                      + "' sets [app-http] security_mode = \"jwt\" without [app-http] jwks_url. Every node would"
+                      + " refuse to start: there is nothing to verify tokens against. Set jwks_url (and"
+                      + " issuer/audience), or change security_mode.");
+        }
     }
 
     private static boolean securityDisabled(SourceProfile source) {

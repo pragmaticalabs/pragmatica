@@ -95,6 +95,21 @@ class ClusterBootstrapConfigValidatorTest {
                                       infrastructureConfig(NetworkingType.MANUAL), defaultOperationsConfig(), java.util.Map.of());
     }
 
+    private static ClusterBootstrapConfig cloudConfigWithOverlay(Map<String, Object> appHttp) {
+        var runtime = runtimeProfile("prod", RuntimeType.CONTAINER, some("aether:latest"), none());
+        var coreRole = roleSubTable(NodeRole.CORE, some(3), none(), some("cx41"), "prod");
+        var overlay = new TomlDocument(Map.of("app-http", appHttp));
+        var source = sourceProfile(sourceNameOrDefault("cloud-src"), SourceType.CLOUD, some(CloudProviderName.HETZNER),
+                                   some("key"), some("eu-central"), none(), none(), none(), none(),
+                                   LoadBalancerMode.EXTERNAL, List.of("10.0.0.1"), none(), Map.of(),
+                                   Map.of(NodeRole.CORE, coreRole), List.of(), some(overlay));
+
+        return clusterBootstrapConfig("1.0.0", clusterIdentity("production", "1.0.0").unwrap(),
+                                      defaultCoreTopology(), Map.of("cloud-src", source),
+                                      Map.of("prod", runtime),
+                                      infrastructureConfig(NetworkingType.MANUAL), defaultOperationsConfig(), java.util.Map.of());
+    }
+
     private static ClusterBootstrapConfig cloudConfigWithPublicManagement(String securityMode) {
         return cloudConfigWithManagement(securityMode, "0.0.0.0/0");
     }
@@ -517,6 +532,27 @@ class ClusterBootstrapConfigValidatorTest {
                 .onSuccess(v -> Assertions.fail("Expected failure"))
                 .onFailure(cause -> assertThat(cause.message()).contains("PF-24")
                                                               .contains("unauthenticated management API"));
+        }
+
+        /// PF-28 (#909): a jwt source with no jwks_url would provision nodes that all refuse to boot.
+        @Test
+        void validate_jwtWithoutJwks_returnsPf28() {
+            validate(cloudConfigWithOverlay(Map.<String, Object>of("security_mode", "jwt", "enabled", "true")))
+                .onSuccess(v -> Assertions.fail("Expected failure"))
+                .onFailure(cause -> assertThat(cause.message()).contains("PF-28").contains("jwks_url"));
+        }
+
+        @Test
+        void validate_jwtWithJwks_succeeds() {
+            validate(cloudConfigWithOverlay(Map.<String, Object>of("security_mode", "jwt", "enabled", "true",
+                                                   "jwks_url", "https://auth.example.com/jwks.json")))
+                .onFailure(cause -> assertThat(cause.message()).doesNotContain("PF-28"));
+        }
+
+        @Test
+        void validate_jwtWithoutJwksOnDisabledAppHttp_isNotRefused() {
+            validate(cloudConfigWithOverlay(Map.<String, Object>of("security_mode", "jwt")))
+                .onFailure(cause -> assertThat(cause.message()).doesNotContain("PF-28"));
         }
 
         @Test

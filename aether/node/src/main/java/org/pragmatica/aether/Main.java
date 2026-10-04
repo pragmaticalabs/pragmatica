@@ -26,6 +26,7 @@ import org.pragmatica.aether.config.AlertConfig;
 import org.pragmatica.aether.config.AetherConfig;
 import org.pragmatica.aether.config.ClusterConfig;
 import org.pragmatica.aether.config.ClusterSizeGate;
+import org.pragmatica.aether.config.ConfigValidator;
 import org.pragmatica.aether.environment.ClusterName;
 import org.pragmatica.aether.environment.AutoHealConfig;
 import org.pragmatica.aether.config.AppHttpConfig;
@@ -591,7 +592,19 @@ public record Main(String[] args) {
         return ConfigLoader.load(path)
                            .onFailure(cause -> log.error("Failed to load config: {}",
                                                          cause.message()))
+                           .onFailure(cause -> refuseBootOnSecurityMisconfiguration(cause, System::exit))
                            .option();
+    }
+
+    /// #909 — every other load failure is logged and the node boots without a config; a security
+    /// setting that contradicts itself must not boot. Package-private with an injectable exit so the
+    /// refusal is verified (`MainShutdownTest#onStartFailure` idiom) rather than asserted.
+    @Contract
+    static void refuseBootOnSecurityMisconfiguration(Cause cause, IntConsumer exit) {
+        if (cause instanceof ConfigValidator.ConfigError.SecurityMisconfigured) {
+            log.error("FATAL: {}", cause.message());
+            exit.accept(1);
+        }
     }
 
     private void logStartupInfo(NodeId nodeId,

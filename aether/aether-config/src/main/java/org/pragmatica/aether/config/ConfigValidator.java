@@ -11,6 +11,7 @@ import java.util.Set;
 import java.util.regex.Pattern;
 
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.io.TimeSpan;
 
@@ -65,6 +66,13 @@ public final class ConfigValidator {
     private ConfigValidator() {}
 
     public static Result<AetherConfig> validate(AetherConfig config) {
+        var security = securityMisconfiguration(config.appHttp());
+
+        if (security.isPresent()) {
+            return security.unwrap()
+                           .result();
+        }
+
         var errors = new ArrayList<String>();
 
         clusterErrors(config.cluster(), errors);
@@ -81,6 +89,23 @@ public final class ConfigValidator {
 
         return toResult(config, errors);
     }
+
+    /// #909 — `security_mode = "jwt"` on a server that will serve, with nothing to verify a token against.
+    /// The factory and `ConfigLoader` accept it (`jwtConfig` exists only when `jwks_url` is present), and
+    /// the request-time deny floor from #888 only turns every non-public route into a `401`. A declared
+    /// contradiction is refused here, as a TYPED cause the node's boot path treats as fatal — a generic
+    /// [ConfigError.ValidationFailed] is logged and discarded by `Main#loadConfigFile`, which would leave
+    /// the node booting with no config at all. A disabled server refuses nothing, so it is not refused.
+    private static Option<ConfigError> securityMisconfiguration(AppHttpConfig appHttp) {
+        return appHttp.enabled() && appHttp.securityMode() == SecurityMode.JWT && appHttp.jwtConfig()
+                                                                                         .isEmpty()
+               ? Option.some(ConfigError.securityMisconfigured(JWT_WITHOUT_JWKS_REASON))
+               : Option.empty();
+    }
+
+    static final String JWT_WITHOUT_JWKS_REASON = "[app-http] security_mode = \"jwt\" but [app-http] jwks_url is missing:"
+                                                + " there is nothing to verify tokens against. Set [app-http] jwks_url"
+                                                + " (and issuer/audience), or change security_mode.";
 
     /// #590 — the two absence windows are the two halves of one mechanism and their ORDER is a
     /// correctness property, not a preference. A community must stop serving before the core hands its
@@ -308,6 +333,19 @@ public final class ConfigValidator {
             public String message() {
                 return "Configuration validation failed:\n- " + String.join("\n- ", errors);
             }
+        }
+
+        /// A security setting that contradicts itself. Distinct from [ValidationFailed] because the boot
+        /// path must refuse to start on THIS cause (#909), where it logs and continues on the others.
+        record SecurityMisconfigured(String reason) implements ConfigError {
+            @Override
+            public String message() {
+                return "Security misconfiguration: " + reason;
+            }
+        }
+
+        static ConfigError securityMisconfigured(String reason) {
+            return new SecurityMisconfigured(reason);
         }
 
         static ConfigError validationFailed(List<String> errors) {
