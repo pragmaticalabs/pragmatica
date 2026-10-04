@@ -6364,10 +6364,11 @@ public interface AetherNode extends ManageableNode {
                                                                                                                                             membershipFsmRef,
                                                                                                                                             target),
                                                                                                            drainCommandRegistry::drainTargets,
-                                                                                                           // #1720: operator drain and shutdown honour the slice minAvailable floor,
-                                                                                                           // as the automatic drain does (same KV-backed guard, same counting rules).
-                                                                                                           NodeLifecycleRoutes.SliceFloor.sliceFloor(SliceOwnershipQuery.minAvailableDrainViolations(kvStore),
-                                                                                                                                                     operatorWarningSink));
+
+                                                  // #1720: operator drain and shutdown honour the slice minAvailable floor,
+                                                  // as the automatic drain does (same KV-backed guard, same counting rules).
+                                                  NodeLifecycleRoutes.SliceFloor.sliceFloor(SliceOwnershipQuery.minAvailableDrainViolations(kvStore),
+                                                                                            operatorWarningSink));
 
                                                   managementServerRef.set(Option.some(managementServer));
                                                   // #278: expose the node's real MeterRegistry to slice-facing resource

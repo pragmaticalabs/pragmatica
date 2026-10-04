@@ -136,12 +136,8 @@ public sealed interface SliceOwnershipQuery {
         var placements = livePlacements(kvStore);
 
         return hostedArtifacts(placements, candidate).stream()
-                                                     .sorted(Comparator.comparing(Artifact::asString))
-                                                     .flatMap(artifact -> refusalFor(kvStore,
-                                                                                     placements,
-                                                                                     candidate,
-                                                                                     artifact,
-                                                                                     remainingNodes).stream());
+                              .sorted(Comparator.comparing(Artifact::asString))
+                              .flatMap(artifact -> refusalFor(kvStore, placements, candidate, artifact, remainingNodes).stream());
     }
 
     /// The distinct artifacts `node` holds a LIVE placement of.

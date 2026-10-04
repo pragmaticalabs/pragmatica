@@ -347,7 +347,10 @@ class ManagementServerImpl implements ManagementServer {
         routeSources.add(MetricsRoutes.metricsRoutes(nodeSupplier, observability));
         routeSources.add(DeployRoutes.deployRoutes(nodeSupplier));
         routeSources.add(AbTestRoutes.abTestRoutes(nodeSupplier));
-        routeSources.add(NodeLifecycleRoutes.nodeLifecycleRoutes(nodeSupplier, drainCommandSink, pendingDrainsSupplier, sliceFloor));
+        routeSources.add(NodeLifecycleRoutes.nodeLifecycleRoutes(nodeSupplier,
+                                                                 drainCommandSink,
+                                                                 pendingDrainsSupplier,
+                                                                 sliceFloor));
         routeSources.add(ScheduledTaskRoutes.scheduledTaskRoutes(scheduledTaskRegistry,
                                                                  scheduledTaskManager,
                                                                  nodeSupplier,

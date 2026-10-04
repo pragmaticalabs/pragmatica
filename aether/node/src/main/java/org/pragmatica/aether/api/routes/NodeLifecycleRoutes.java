@@ -90,7 +90,8 @@ public final class NodeLifecycleRoutes implements RouteSource {
     /// The slice-floor guard the operator drain/shutdown routes consult (#1720), and the sink through which a
     /// FORCED breach is reported. `violations` is [SliceOwnershipQuery#minAvailableDrainViolations]: applied to
     /// `(target, remainingNodes)` it answers every hosted slice the drain would leave below its `minAvailable`.
-    public record SliceFloor(BiFunction<NodeId, Set<NodeId>, List<DrainRefusal>> violations, OperatorWarningSink warnings) {
+    public record SliceFloor(BiFunction<NodeId, Set<NodeId>, List<DrainRefusal>> violations,
+                             OperatorWarningSink warnings) {
         public static SliceFloor sliceFloor(BiFunction<NodeId, Set<NodeId>, List<DrainRefusal>> violations,
                                             OperatorWarningSink warnings) {
             return new SliceFloor(violations, warnings);
@@ -103,8 +104,10 @@ public final class NodeLifecycleRoutes implements RouteSource {
     public record SliceFloorBreached(String nodeId, String operation, List<DrainRefusal> breaches) implements HttpStatusAware {
         @Override
         public String message() {
-            return "Cannot " + operation + " node " + nodeId + ": it would leave "
-                   + describe(breaches) + ". Re-run with force=true to override, which takes the slice below its floor.";
+            return "Cannot " + operation
+                 + " node " + nodeId
+                 + ": it would leave " + describe(breaches)
+                 + ". Re-run with force=true to override, which takes the slice below its floor.";
         }
 
         @Override
@@ -115,8 +118,10 @@ public final class NodeLifecycleRoutes implements RouteSource {
 
     static String describe(List<DrainRefusal> breaches) {
         return breaches.stream()
-                       .map(breach -> breach.artifact().asString() + " with " + breach.remainingActive()
-                                      + " ACTIVE instance(s), below its minAvailable " + breach.minAvailable())
+                       .map(breach -> breach.artifact()
+                                            .asString()
+                                     + " with " + breach.remainingActive()
+                                     + " ACTIVE instance(s), below its minAvailable " + breach.minAvailable())
                        .collect(java.util.stream.Collectors.joining("; "));
     }
 
@@ -198,12 +203,14 @@ public final class NodeLifecycleRoutes implements RouteSource {
                          ManagementRoutes.<TransitionResult> route(ManagementRoute.NODE_DRAIN)
                                          .withPath(aString())
                                          .withQuery(QueryParameter.aBoolean("force"))
-                                         .to((nodeId, force) -> drainNode(nodeId, force.or(false)))
+                                         .to((nodeId, force) -> drainNode(nodeId,
+                                                                          force.or(false)))
                                          .asJson(),
                          ManagementRoutes.<TransitionResult> route(ManagementRoute.NODE_SHUTDOWN)
                                          .withPath(aString())
                                          .withQuery(QueryParameter.aBoolean("force"))
-                                         .to((nodeId, force) -> shutdownNode(nodeId, force.or(false)))
+                                         .to((nodeId, force) -> shutdownNode(nodeId,
+                                                                             force.or(false)))
                                          .asJson(),
                          ManagementRoutes.<PromoteNodeResponse> route(ManagementRoute.NODE_PROMOTE)
                                          .withPath(aString())
@@ -363,7 +370,10 @@ public final class NodeLifecycleRoutes implements RouteSource {
                                floor -> applySliceFloor(floor, node, drain, force));
     }
 
-    private Result<org.pragmatica.lang.Unit> applySliceFloor(SliceFloor floor, NodeId node, boolean drain, boolean force) {
+    private Result<org.pragmatica.lang.Unit> applySliceFloor(SliceFloor floor,
+                                                             NodeId node,
+                                                             boolean drain,
+                                                             boolean force) {
         var remaining = new HashSet<>(nodeSupplier.get().membershipFsm().countedMembers());
 
         remaining.removeAll(pendingDrainsSupplier.get());

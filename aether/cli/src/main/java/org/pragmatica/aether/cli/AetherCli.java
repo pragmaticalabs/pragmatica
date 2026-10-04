@@ -1096,7 +1096,12 @@ public class AetherCli implements Runnable {
                                                  String nodeId,
                                                  NodesCommand nodesParent,
                                                  boolean overrideFloor) {
-            var response = nodesParent.parent.post(route, List.of(nodeId), overrideFloor ? "force=true" : "", "");
+            var response = nodesParent.parent.post(route,
+                                                   List.of(nodeId),
+                                                   overrideFloor
+                                                   ? "force=true"
+                                                   : "",
+                                                   "");
             var errorCode = OutputFormatter.checkResponseError(response,
                                                                nodesParent.parent.outputOptions(),
                                                                "Failed to " + action + " node " + nodeId);
