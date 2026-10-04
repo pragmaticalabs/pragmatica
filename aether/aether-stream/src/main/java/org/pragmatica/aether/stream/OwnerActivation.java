@@ -256,10 +256,10 @@ public final class OwnerActivation {
                 return ("Owner promotion of %s[%d] refused: %s answered the watermark probe, but its event at offset %d "
                        + "is larger than its read cap (maxReadResponseBytes), so its log cannot be read past that "
                        + "event; raise the cap on %s above that event's size").formatted(streamName,
-                                                                                       partition,
-                                                                                       peer,
-                                                                                       offset,
-                                                                                       peer);
+                                                                                         partition,
+                                                                                         peer,
+                                                                                         offset,
+                                                                                         peer);
             }
         }
 

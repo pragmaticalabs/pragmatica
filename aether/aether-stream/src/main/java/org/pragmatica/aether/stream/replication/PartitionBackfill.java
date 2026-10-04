@@ -1500,7 +1500,7 @@ public final class PartitionBackfill {
 
         var oversized = results.stream()
                                .flatMap(result -> failureOf(result).filter(OwnerPeerReads.EventExceedsReadCap.class::isInstance)
-                                                                   .stream())
+                                                           .stream())
                                .findFirst();
 
         if (oversized.isPresent()) {

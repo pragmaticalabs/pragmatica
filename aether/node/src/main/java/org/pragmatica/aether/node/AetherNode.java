@@ -5643,7 +5643,8 @@ public interface AetherNode extends ManageableNode {
                                                                                         streamTieredReader,
                                                                                         streamForwardClient::readRemoteCatchup,
                                                                                         STREAM_CATCHUP_BATCH_SIZE),
-                                                              block -> raiseOwnerPromotionBlock(operatorWarningSink, block),
+                                                              block -> raiseOwnerPromotionBlock(operatorWarningSink,
+                                                                                                block),
                                                               ownerPromotionAlarmWindow(config.timeouts()
                                                                                               .swim()
                                                                                               .suspectTimeout()));
