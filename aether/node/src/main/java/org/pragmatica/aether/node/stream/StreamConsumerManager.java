@@ -616,10 +616,10 @@ public interface StreamConsumerManager {
         /// slice left it. Reporting that would raise a fault on every routine descale. What the
         /// intersection keeps is the state nothing repairs — the deployment map still says ACTIVE here,
         /// so [#candidateNodes] keeps computing this node, while the bridge is gone. `NodeDeploymentState`
-        /// reaches it: `handleReactivationFailure` and `suspendSlice` both unregister the slice from
-        /// invocation WITHOUT transitioning the deployment away from ACTIVE, unlike `handleUnloading` and
-        /// `performDeactivation`, which commit UNLOADING / DEACTIVATING first. In that state no leader
-        /// pass will ever move the partition and this WARN is the only observable.
+        /// reaches it through `suspendSlice`, which unregisters the slice on quorum loss WITHOUT a
+        /// transition because no write can commit then; the state lasts until the quorum returns and the
+        /// reactivation either restores the bridge or, since #1660, commits FAILED. While it lasts no
+        /// leader pass will move the partition and this WARN is the only observable.
         private List<Integer> parkedPartitions(ConsumerDeclaration declaration,
                                                List<PartitionAssignment> assignments,
                                                Option<SliceBridge> bridge) {

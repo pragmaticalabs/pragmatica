@@ -36,6 +36,20 @@ public sealed interface ManagementServerError extends Cause, HttpStatusAware {
         }
     }
 
+    /// #833/#954: a management request whose body or fields the caller got wrong. Carries the route's own
+    /// diagnosis unchanged and answers 400, so a caller's mistake is not reported as a server fault.
+    record InvalidRequest(String detail) implements ManagementServerError {
+        @Override
+        public String message() {
+            return detail;
+        }
+
+        @Override
+        public HttpStatus httpStatus() {
+            return HttpStatus.BAD_REQUEST;
+        }
+    }
+
     record InvalidArtifactPath(String path) implements ManagementServerError {
         @Override
         public String message() {

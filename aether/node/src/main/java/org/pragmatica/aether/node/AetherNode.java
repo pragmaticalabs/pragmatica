@@ -6648,7 +6648,9 @@ public interface AetherNode extends ManageableNode {
         var resolved = declared.isFullReplication()
                        ? Result.success(declared)
                        : declared.withFactors(defaults.replicationFactor(), defaults.confirmationFactor());
-
+        // #1777 track 3: the tombstone retention is cluster-wide, like the factors — every replica must agree
+        // which tombstones have expired, since the anti-entropy digest leaves expired ones out
+        dhtNode.resolveTombstoneRetention(defaults.tombstoneRetention());
         resolved.onSuccess(dht -> logIfReplicationChanged(dhtNode, dht))
                 .onSuccess(dht -> dhtNode.resolveReplication(dht, version))
                 .onFailure(cause -> LOG.error("DHT replication factors refused: {}",
@@ -6697,7 +6699,11 @@ public interface AetherNode extends ManageableNode {
                                                           replication.confirmationFactor(),
                                                           ReplicationDefaultsConfig.BUILT_IN.clusterEventsConfirmationFactor(),
                                                           replication.cacheReplicationFactor(),
-                                                          replication.cacheConfirmationFactor()),
+                                                          replication.cacheConfirmationFactor(),
+
+        // a worker is never a ring member and holds no DHT data, so it
+        // keeps no tombstones and the retention is inert there (#1777)
+        ReplicationDefaultsConfig.DEFAULT_TOMBSTONE_RETENTION),
                             replication.configVersion(),
                             dhtNode,
                             declared,
