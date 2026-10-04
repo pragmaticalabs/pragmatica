@@ -484,6 +484,30 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
         transport().onPresent(t -> t.blackhole(enabled));
     }
 
+    /// Test-only per-peer partition (#1730): drop SWIM traffic to and from `unreachable`, resolved to their SWIM
+    /// addresses from the current membership. An empty set heals.
+    @Contract
+    public void setSwimPeerPartition(java.util.Set<NodeId> unreachable) {
+        var addresses = protocol().map(p -> p.members()
+                                             .values()
+                                             .stream()
+                                             .filter(member -> unreachable.contains(member.nodeId()))
+                                             .map(SwimMember::address)
+                                             .collect(java.util.stream.Collectors.toSet()))
+                                .or(java.util.Set.of());
+
+        transport().onPresent(t -> t.dropPeers(address -> addresses.stream()
+                                                                   .anyMatch(dropped -> sameEndpoint(dropped, address))));
+    }
+
+    private static boolean sameEndpoint(InetSocketAddress left, InetSocketAddress right) {
+        return left.getPort() == right.getPort()
+               && (left.getAddress() == null || right.getAddress() == null || left.getAddress()
+                                                                                  .isLoopbackAddress() && right.getAddress()
+                                                                                                               .isLoopbackAddress() || left.getAddress()
+                                                                                                                                           .equals(right.getAddress()));
+    }
+
     private Option<SwimTransport> transport() {
         return switch (context.fsm()
                               .current()) {

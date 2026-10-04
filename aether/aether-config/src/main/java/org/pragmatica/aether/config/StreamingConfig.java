@@ -15,7 +15,8 @@ public record StreamingConfig(TimeSpan publishForwardTimeout,
                               ReadLinearizationMode readLinearization,
                               int reshuffleConcurrency,
                               long caughtUpMaxLagOffsets,
-                              long segmentDiskMaxBytes) {
+                              long segmentDiskMaxBytes,
+                              TimeSpan isrLagMax) {
     public static final long DEFAULT_MAX_READ_RESPONSE_BYTES = 28L * 1024 * 1024;
     /// How many partitions one node may hold in materialize+backfill at once (`reshuffle_concurrency`).
     /// One-at-a-time starves a large reshuffle; unbounded floods backfill. Was a hard-coded constant with
@@ -55,6 +56,12 @@ public record StreamingConfig(TimeSpan publishForwardTimeout,
     /// holding its stream segments at boot. Disk size is a fact about the node, not cluster policy -- the
     /// previous hard-coded 4 GiB wedged long-lived nodes whatever their real disk.
     public static final long DERIVE_SEGMENT_DISK_MAX_BYTES = 0L;
+    /// #1730 `isr_lag_max`: how long an in-sync replica may stay behind the owner's head before the owner asks for it
+    /// to leave the partition's ISR (Kafka's `replica.lag.time.max.ms`). A LIVENESS knob only: the ISR changes only
+    /// by a committed write, and a confirmation waits for every committed ISR member, so no value of it can make an
+    /// acknowledgement unsafe. Smaller drops a slow replica sooner (shorter ack stalls, fewer copies); larger keeps
+    /// it longer (an ack waits up to this long for a lagging member).
+    public static final TimeSpan DEFAULT_ISR_LAG_MAX = timeSpan(30).seconds();
 
     /// The default `LINEARIZABLE`-read mechanism (spec §8.1): the no-op consensus round (#345 item
     /// 1e-a). The alternative `lease` mechanism is rejected at config parse until validated.
@@ -83,7 +90,8 @@ public record StreamingConfig(TimeSpan publishForwardTimeout,
                                    DEFAULT_READ_LINEARIZATION,
                                    DEFAULT_RESHUFFLE_CONCURRENCY,
                                    DEFAULT_CAUGHT_UP_MAX_LAG_OFFSETS,
-                                   DERIVE_SEGMENT_DISK_MAX_BYTES);
+                                   DERIVE_SEGMENT_DISK_MAX_BYTES,
+                                   DEFAULT_ISR_LAG_MAX);
     }
 
     public static StreamingConfig streamingConfig(TimeSpan publishForwardTimeout,
@@ -95,7 +103,8 @@ public record StreamingConfig(TimeSpan publishForwardTimeout,
                                    DEFAULT_READ_LINEARIZATION,
                                    DEFAULT_RESHUFFLE_CONCURRENCY,
                                    DEFAULT_CAUGHT_UP_MAX_LAG_OFFSETS,
-                                   DERIVE_SEGMENT_DISK_MAX_BYTES);
+                                   DERIVE_SEGMENT_DISK_MAX_BYTES,
+                                   DEFAULT_ISR_LAG_MAX);
     }
 
     public static StreamingConfig streamingConfig(TimeSpan publishForwardTimeout,
@@ -108,7 +117,8 @@ public record StreamingConfig(TimeSpan publishForwardTimeout,
                                    readLinearization,
                                    DEFAULT_RESHUFFLE_CONCURRENCY,
                                    DEFAULT_CAUGHT_UP_MAX_LAG_OFFSETS,
-                                   DERIVE_SEGMENT_DISK_MAX_BYTES);
+                                   DERIVE_SEGMENT_DISK_MAX_BYTES,
+                                   DEFAULT_ISR_LAG_MAX);
     }
 
     public static StreamingConfig streamingConfig(TimeSpan publishForwardTimeout,
@@ -122,7 +132,8 @@ public record StreamingConfig(TimeSpan publishForwardTimeout,
                                    readLinearization,
                                    reshuffleConcurrency,
                                    DEFAULT_CAUGHT_UP_MAX_LAG_OFFSETS,
-                                   DERIVE_SEGMENT_DISK_MAX_BYTES);
+                                   DERIVE_SEGMENT_DISK_MAX_BYTES,
+                                   DEFAULT_ISR_LAG_MAX);
     }
 
     public static StreamingConfig streamingConfig(TimeSpan publishForwardTimeout,
@@ -137,7 +148,8 @@ public record StreamingConfig(TimeSpan publishForwardTimeout,
                                    readLinearization,
                                    reshuffleConcurrency,
                                    caughtUpMaxLagOffsets,
-                                   DERIVE_SEGMENT_DISK_MAX_BYTES);
+                                   DERIVE_SEGMENT_DISK_MAX_BYTES,
+                                   DEFAULT_ISR_LAG_MAX);
     }
 
     /// The same streaming config with the streams disk-tier cap set (`segment_disk_max_bytes`, #1604);
@@ -149,7 +161,20 @@ public record StreamingConfig(TimeSpan publishForwardTimeout,
                                    readLinearization,
                                    reshuffleConcurrency,
                                    caughtUpMaxLagOffsets,
-                                   segmentDiskMaxBytes);
+                                   segmentDiskMaxBytes,
+                                   isrLagMax);
+    }
+
+    /// The same streaming config with the ISR lag bound set (`isr_lag_max`, #1730).
+    public StreamingConfig withIsrLagMax(TimeSpan isrLagMax) {
+        return new StreamingConfig(publishForwardTimeout,
+                                   readForwardTimeout,
+                                   maxReadResponseBytes,
+                                   readLinearization,
+                                   reshuffleConcurrency,
+                                   caughtUpMaxLagOffsets,
+                                   segmentDiskMaxBytes,
+                                   isrLagMax);
     }
 
     /// The same streaming config with the `LINEARIZABLE`-read mechanism replaced — used by the config
@@ -161,7 +186,8 @@ public record StreamingConfig(TimeSpan publishForwardTimeout,
                                    readLinearization,
                                    reshuffleConcurrency,
                                    caughtUpMaxLagOffsets,
-                                   segmentDiskMaxBytes);
+                                   segmentDiskMaxBytes,
+                                   isrLagMax);
     }
 
     /// Bounded wait for a caught-up source to appear before a cold-start replica self-promotes. Derived

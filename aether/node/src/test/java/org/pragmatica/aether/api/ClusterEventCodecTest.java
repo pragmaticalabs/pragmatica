@@ -10,6 +10,8 @@ import org.pragmatica.aether.api.ClusterEvent.ThresholdBreached;
 import org.pragmatica.aether.api.ClusterEvent.ThresholdCleared;
 import org.pragmatica.aether.api.ClusterEvent.CommunityMemberJoined;
 import org.pragmatica.aether.api.ClusterEvent.CommunityMemberLeft;
+import org.pragmatica.aether.api.ClusterEvent.StreamFailoverRefused;
+import org.pragmatica.aether.api.ClusterEvent.StreamFailoverResolved;
 import org.pragmatica.aether.api.ClusterEvent.CommunityMinted;
 import org.pragmatica.aether.api.ClusterEvent.CommunityStateChanged;
 import org.pragmatica.aether.api.ClusterEvent.OperatorWarning;
@@ -367,7 +369,9 @@ class ClusterEventCodecTest {
                        new CommunityStateChanged(ts, sev, "CommunityStateChanged", d),
                        new CommunityMemberJoined(ts, sev, "CommunityMemberJoined", d),
                        new CommunityMemberLeft(ts, sev, "CommunityMemberLeft", d),
-                       new OperatorWarning(ts, sev, "OperatorWarning", d));
+                       new OperatorWarning(ts, sev, "OperatorWarning", d),
+                       new StreamFailoverRefused(ts, sev, "StreamFailoverRefused", d),
+                       new StreamFailoverResolved(ts, sev, "StreamFailoverResolved", d));
     }
 
     /// Guards [#allClosedVariants] against silent drift.

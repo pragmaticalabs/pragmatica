@@ -115,6 +115,18 @@ grep -i "slice\|artifact" /var/log/aether/aether.log | tail -100
    aether> deploy org.example:stuck-slice:1.0.0
    ```
 
+### Stream Partition Without an Owner (`STREAM_FAILOVER_REFUSED`)
+
+**Symptoms:** a CRITICAL `STREAM_FAILOVER_REFUSED` event; publishes and reads to one stream partition fail.
+
+**Cause:** the partition's owner is dead and no member of its in-sync replica set is live. Failover only elects an in-sync replica (unclean failover is off), so the partition waits.
+
+**Actions:**
+
+1. Read the event's `details`: `isr` lists the nodes that hold every acknowledged record; `live` lists who was alive at refusal.
+2. Restart or reconnect any node in `isr`. The leader elects it (or the old owner resumes) and a `STREAM_FAILOVER_RESOLVED` event follows.
+3. If every node in `isr` is permanently gone, the partition's acknowledged data is gone with them. There is no override to promote another replica yet (#1569). Destroy and recreate the stream.
+
 ### High Latency
 
 **Symptoms:** Slow response times, `method.*.duration.avg` metrics elevated

@@ -576,6 +576,9 @@ public interface SystemTags {
         pin(table, 1741, "org.pragmatica.aether.api.ClusterEvent.CommunityStateChanged");
         pin(table, 1742, "org.pragmatica.aether.api.ClusterEvent.CommunityMemberJoined");
         pin(table, 1743, "org.pragmatica.aether.api.ClusterEvent.CommunityMemberLeft");
+        // stream failover refusal transitions (#1730, owner ruling)
+        pin(table, 1744, "org.pragmatica.aether.api.ClusterEvent.StreamFailoverRefused");
+        pin(table, 1745, "org.pragmatica.aether.api.ClusterEvent.StreamFailoverResolved");
         pin(table, 2112, "org.pragmatica.aether.slice.kvstore.AetherKey.CommunityPlacementAvailabilityKey");
         pin(table, 2113, "org.pragmatica.aether.slice.kvstore.AetherValue.CommunityPlacementAvailabilityValue");
         // built-in artifact store versions index in consensus (#1778)

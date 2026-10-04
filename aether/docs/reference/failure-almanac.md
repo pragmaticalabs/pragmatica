@@ -146,6 +146,16 @@ Failure modes surface through a small, fixed set of observables. Learn these onc
 - **Operator action:** none for the ownership move. Replacing the lost core refills the partition's replica set once the voter install adds it (#1732) `[unverified: when the lost core was the partition's OWNER — StreamDefaultRfOwnerReplacementTest kills the owner and joins a replacement but does not assert the replacement's placement]`. To make every acked event reach every replica before the ack, declare `confirmation_factor = replication_factor` — at the cost that losing any one replica refuses writes (see [known-limitations.md](known-limitations.md)).
 - **Proof anchor:** Forge `StreamDefaultRfOwnerReplacementTest` (owner killed, replacement joins under a fresh id: two survivors hold all events, RF=1 control holds none; the new owner serves them — enabled by #1555).
 
+### Stream partition with no in-sync owner — failover refused (#1730)
+
+- **Symptom:** a partition stops being served: its owner is dead and no member of its in-sync replica set (ISR) is live, so failover elects nobody — unclean failover is off, because a live replica outside the ISR may lack acknowledged records.
+- **Detection surface:** the cluster event **`STREAM_FAILOVER_REFUSED`** (severity CRITICAL; `details`: `stream`, `partition`, `owner`, `isr`, `live`, `reason`) on `GET /api/events` / `aether events`, raised ONCE when the refusal commits (every node derives it from the committed ownership record; the cluster-events owner publishes it — at most once if that partition has no owner at the moment, when the `NoInSyncReplica` status is the record); **`STREAM_FAILOVER_RESOLVED`** (INFO) once when an owner is elected or the owner returns. The partition status also carries the `NoInSyncReplica` block.
+- **Automatic response:** none until an ISR member is live again; then the leader elects it (or the returning owner keeps ownership) and the partition serves again.
+- **Budget:** n/a — bounded by when an ISR member returns.
+- **Degraded / at risk:** the partition is unavailable (no reads, no writes); nothing acknowledged is lost while an ISR member's disk survives.
+- **Operator action:** bring an ISR member (listed in `details.isr`) back. There is no operator override to promote a non-ISR replica yet (#1569, open). If every ISR member was terminally removed, the partition's acknowledged data is gone: destroy and recreate the stream.
+- **Proof anchor:** `StreamFailoverAnnouncementTest` (one event per committed transition; repeated reconciles announce nothing; recovery announces resolved), `ClusterEventAggregatorTest.streamFailoverRefused_derivedOnEveryNode_publishedOnceByTheEventsOwner_notTheLeader` (leader not the events owner: still exactly one copy), `StreamFailoverAnnouncerWiringTest`, `IsrOwnershipWriterTest$Failover`, `ClusterEventAggregatorTest.streamFailoverRefusedAndResolved_reachTheEventStream_withTheirDetails`.
+
 ### Fresh-stream first-publish race
 
 - **Symptom:** a concurrent first publish to a brand-new stream returns a transient 503/500.
