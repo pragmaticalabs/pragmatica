@@ -113,6 +113,7 @@ public interface SliceInvoker extends SliceInvokerFacade {
     default Promise<Unit> invokeAwaitingCompletion(Artifact slice, MethodName method, Object request) {
         return invoke(slice, method, request);
     }
+
     <R> Promise<R> invoke(Artifact slice, MethodName method, Object request, TypeToken<R> responseType);
 
     <R> Promise<R> invokeWithRetry(Artifact slice,
@@ -383,13 +384,13 @@ class SliceInvokerImpl implements SliceInvoker {
                                                 MethodName method,
                                                 Object request,
                                                 Deadline deadline) {
-        return encodeFireAndForgetRequest(slice, request).flatMap(payload -> this.<Object>sendAndAwaitResponse(endpoint,
-                                                                                                               slice,
-                                                                                                               method,
-                                                                                                               payload,
-                                                                                                               COMPLETION_ONLY,
-                                                                                                               deadline))
-                                                         .mapToUnit();
+        return encodeFireAndForgetRequest(slice, request).flatMap(payload -> this.<Object> sendAndAwaitResponse(endpoint,
+                                                                                                                slice,
+                                                                                                                method,
+                                                                                                                payload,
+                                                                                                                COMPLETION_ONLY,
+                                                                                                                deadline))
+                                         .mapToUnit();
     }
 
     /// Stands in for the sender bridge of a call whose response payload is never read: the response only has to ARRIVE.
