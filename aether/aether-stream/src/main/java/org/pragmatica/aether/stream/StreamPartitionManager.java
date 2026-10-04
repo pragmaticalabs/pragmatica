@@ -2029,17 +2029,16 @@ public final class StreamPartitionManager implements AutoCloseable {
         var keep = divergedAtOffset - 1;
 
         return requireVouchingHistory(streamName, partition, divergedAtOffset).flatMap(_ -> requireAboveSealedFloor(streamName,
-                                                                                                                   partition,
-                                                                                                                   keep))
-                                                                              .flatMap(_ -> resolvePartitionBuffer(streamName,
-                                                                                                                  partition))
-                                                                              .flatMap(ring -> cutRing(streamName,
-                                                                                                       partition,
-                                                                                                       ref,
-                                                                                                       ring,
-                                                                                                       divergedAtOffset,
-                                                                                                       keep,
-                                                                                                       authority))
+                                                                                                                    partition,
+                                                                                                                    keep))
+                                     .flatMap(_ -> resolvePartitionBuffer(streamName, partition))
+                                     .flatMap(ring -> cutRing(streamName,
+                                                              partition,
+                                                              ref,
+                                                              ring,
+                                                              divergedAtOffset,
+                                                              keep,
+                                                              authority))
                                      .onSuccess(cut -> reportCut(streamName, partition, cut))
                                      .onFailure(cause -> log.warn("Replica {}[{}] could not cut its divergent tail back to offset {}: {}",
                                                                   streamName,
@@ -2055,10 +2054,10 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// judged by the records alone.
     private Result<Unit> requireVouchingHistory(String streamName, int partition, long divergedAtOffset) {
         return walFor(streamName, partition).map(_ -> provenanceOf(streamName, partition).flatMap(local -> vouches(local,
-                                                                                                                  streamName,
-                                                                                                                  partition,
-                                                                                                                  divergedAtOffset)))
-                                            .or(Result.unitResult());
+                                                                                                                   streamName,
+                                                                                                                   partition,
+                                                                                                                   divergedAtOffset)))
+                     .or(Result.unitResult());
     }
 
     private static Result<Unit> vouches(LogProvenance local, String streamName, int partition, long divergedAtOffset) {
@@ -2089,7 +2088,7 @@ public final class StreamPartitionManager implements AutoCloseable {
 
         return ring.truncateSuffix(keep,
                                    () -> authorised(streamName, partition, divergedAtOffset, authority).flatMap(_ -> wal.map(appendLog -> appendLog.truncateSuffix(keep))
-                                                                                                                       .or(Result.unitResult())),
+                                                                                                                        .or(Result.unitResult())),
                                    _ -> forgetCutState(streamName, partition, ref, divergedAtOffset, keep))
                    .map(removed -> new TailCut(keep, removed, keep + 1, head));
     }
@@ -2161,24 +2160,23 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// the repair resolves never gets here, so an ordinary failover raises no flag and blocks nothing.
     @Contract
     private void flagUnrepaired(String streamName, int partition) {
-        option(provenanceMismatchAt.get(new PartitionRef(streamName, partition)))
-            .onPresent(offset -> raiseOnce(streamName,
-                                           partition,
-                                           PartitionRecoveryReasonKind.MARKED_DIVERGED,
-                                           "N13: this copy's owner-epoch provenance differs from its catch-up source's at offset " + offset
-                                          + " and the divergence could not be repaired"));
+        option(provenanceMismatchAt.get(new PartitionRef(streamName, partition))).onPresent(offset -> raiseOnce(streamName,
+                                                                                                                partition,
+                                                                                                                PartitionRecoveryReasonKind.MARKED_DIVERGED,
+                                                                                                                "N13: this copy's owner-epoch provenance differs from its catch-up source's at offset " + offset
+                                                                                                               + " and the divergence could not be repaired"));
     }
 
     /// The epoch the records at and above `offset` on this copy were written under, from its owner-epoch history; none for a
     /// copy that keeps no log (and so no history) or whose history does not reach the offset.
     private Option<Epoch> divergentEpoch(String streamName, int partition, long offset) {
         return walFor(streamName, partition).flatMap(_ -> provenanceOf(streamName, partition).option())
-                                            .flatMap(local -> Option.from(local.history()
-                                                                              .stream()
-                                                                              .filter(entry -> entry.startOffset() <= offset)
-                                                                              .reduce((_, later) -> later)))
-                                            .map(entry -> entry.epoch()
-                                                               .rank());
+                     .flatMap(local -> Option.from(local.history()
+                                                        .stream()
+                                                        .filter(entry -> entry.startOffset() <= offset)
+                                                        .reduce((_, later) -> later)))
+                     .map(entry -> entry.epoch()
+                                        .rank());
     }
 
     private final class ManagerQuarantineView implements QuarantineView {
@@ -2194,6 +2192,7 @@ public final class StreamPartitionManager implements AutoCloseable {
             }
         }
 
+        @Contract
         @Override
         public void verified(String streamName, int partition, long offset) {
             markVerified(streamName, partition, offset);
@@ -2204,6 +2203,7 @@ public final class StreamPartitionManager implements AutoCloseable {
             return repairDivergence(streamName, partition, authority).map(cut -> cut.map(TailCut::keptThrough));
         }
 
+        @Contract
         @Override
         public void flagUnrepaired(String streamName, int partition) {
             StreamPartitionManager.this.flagUnrepaired(streamName, partition);

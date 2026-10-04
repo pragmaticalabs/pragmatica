@@ -101,7 +101,9 @@ public sealed interface StreamError extends Cause {
     record RepairNotAuthorized(String streamName, int partition, long divergedAt) implements StreamError {
         @Override
         public String message() {
-            return "Repair of %s[%d] at offset %d is not authorised by the committed owner".formatted(streamName, partition, divergedAt);
+            return "Repair of %s[%d] at offset %d is not authorised by the committed owner".formatted(streamName,
+                                                                                                      partition,
+                                                                                                      divergedAt);
         }
     }
 

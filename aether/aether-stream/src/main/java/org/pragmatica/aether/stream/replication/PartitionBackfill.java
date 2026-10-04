@@ -678,7 +678,8 @@ public final class PartitionBackfill {
 
     private boolean committedOwnerIsSender(String streamName, int partition) {
         return committedOwnerSource.committedOwner(streamName, partition)
-                                   .filter(committed -> !committed.owner().equals(self))
+                                   .filter(committed -> !committed.owner()
+                                                                  .equals(self))
                                    .flatMap(committed -> hrwOwner(streamName, partition).filter(committed.owner()::equals))
                                    .isPresent();
     }
@@ -687,17 +688,20 @@ public final class PartitionBackfill {
     /// strictly after the epoch of the records to be removed (unknown for a copy that keeps no history: the committed owner's
     /// lineage is the authority there).
     private QuarantineView.RepairAuthority repairAuthority(String streamName, int partition) {
-        return divergentEpoch -> committedOwnerIsSender(streamName, partition)
-                                 && committedOwnerSource.committedOwner(streamName, partition)
-                                                        .filter(committed -> divergentEpoch.map(epoch -> committed.ownerEpoch().isStrictlyAfter(epoch))
-                                                                                           .or(true))
-                                                        .isPresent();
+        return divergentEpoch -> committedOwnerIsSender(streamName, partition) && committedOwnerSource.committedOwner(streamName,
+                                                                                                                      partition)
+                                                                                                      .filter(committed -> divergentEpoch.map(epoch -> committed.ownerEpoch()
+                                                                                                                                                                .isStrictlyAfter(epoch))
+                                                                                                                                         .or(true))
+                                                                                                      .isPresent();
     }
 
     /// Cut the divergent tail, hold self SYNCING at the last shared offset, and run the backfill again from there. A
     /// refused cut leaves the quarantine as it was.
     private Promise<Long> repairThenRun(String streamName, int partition) {
-        return quarantine.repair(streamName, partition, repairAuthority(streamName, partition))
+        return quarantine.repair(streamName,
+                                 partition,
+                                 repairAuthority(streamName, partition))
                          .fold(cause -> repairRefused(streamName, partition, cause),
                                kept -> kept.fold(() -> runBackfill(streamName, partition, false),
                                                  keptThrough -> resumeAfterRepair(streamName, partition, keptThrough)));
@@ -735,8 +739,8 @@ public final class PartitionBackfill {
                                                      .isEmpty()
                                              ? runBackfill(streamName, partition, false)
                                              : applyEvents(streamName, partition, response).fold(cause -> failApply(streamName,
-                                                                                                                      partition,
-                                                                                                                      cause),
+                                                                                                                    partition,
+                                                                                                                    cause),
                                                                                                  _ -> runBackfill(streamName,
                                                                                                                   partition,
                                                                                                                   false)));
@@ -962,7 +966,6 @@ public final class PartitionBackfill {
         if (ownerHead > selfConfirmed) {
             return backfillFromOwner(streamName, partition, owner, replicas);
         }
-
         // #1890 (v1890): a row above a non-empty owner's head was confirmed against an earlier lineage; re-acking it
         // would let this owner count offsets the copy holds from another owner. Compare and cap at the owner's head.
         return ownerHead >= 0 && ownerHead < selfConfirmed
@@ -1044,12 +1047,7 @@ public final class PartitionBackfill {
         return transport.requestCatchup(owner,
                                         request,
                                         () -> progress(streamName, partition))
-                        .flatMap(response -> applyOwnerResponse(streamName,
-                                                                partition,
-                                                                owner,
-                                                                local,
-                                                                replicas,
-                                                                response));
+                        .flatMap(response -> applyOwnerResponse(streamName, partition, owner, local, replicas, response));
     }
 
     /// Dispatch the owner's catch-up response (#445). An EMPTY response (`payloads().isEmpty()` — the robust

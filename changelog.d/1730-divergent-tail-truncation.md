@@ -18,3 +18,10 @@
   first divergent offset; a copy with a WAL is cut at the exact offset by owner-epoch provenance.
 - **A restarted replica hides its recovered tail** until its backfill has verified it against the owner; before, the
   whole tail was readable at once, including an ex-owner's unacknowledged records.
+- **Who may cut, and what is flagged (verifier findings).** A replica cuts its tail only against the COMMITTED owner of a
+  LATER epoch than the records about to go, never as the committed owner itself, never at or below the sealed floor, and
+  the rule is evaluated again inside the cut. A divergence the repair resolves raises no durable flag and no
+  `STREAM_PARTITION_FLAGGED` error (before, an ordinary failover left `MARKED_DIVERGED` standing with nothing to clear it);
+  the flag is raised, once, only when the repair is refused. A replica below the owner now compares its last 1,024 held
+  records with the owner's too (it used to pull from its head + 1 and be promoted over a divergent middle), and a re-verify
+  of a CAUGHT_UP replica whose row is above a new owner's head is capped at that head (#1890, second path).

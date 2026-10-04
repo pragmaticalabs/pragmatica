@@ -866,6 +866,7 @@ public final class OffHeapRingBuffer implements AutoCloseable {
     }
 
     /// Test seam (#1730): see [#truncationWindowProbe]. Set before any reader thread starts.
+    @Contract
     void truncationWindowProbe(Runnable probe) {
         truncationWindowProbe = probe;
     }

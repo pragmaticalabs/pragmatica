@@ -7,6 +7,7 @@ package org.pragmatica.aether.stream.replication;
 import java.util.function.Supplier;
 
 import org.pragmatica.aether.slice.generation.Epoch;
+import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 
@@ -42,11 +43,13 @@ public interface QuarantineView {
     /// The divergence this copy could not repair was found by comparing owner-epoch provenance: raise the durable
     /// `MARKED_DIVERGED` flag for it (once per process). A divergence that a repair resolves raises nothing. Views without a
     /// partition manager behind them flag nothing.
+    @Contract
     default void flagUnrepaired(String streamName, int partition) {}
 
     /// This copy has been compared with its sender through `offset` (#1730 phase 2): a replica that restarted with a
     /// recovered tail shows nothing of it to readers until it is. Views without a partition manager behind them ignore
     /// it.
+    @Contract
     default void verified(String streamName, int partition, long offset) {}
 
     /// For the legacy and test factories, which have no partition manager behind them: nothing is ever quarantined.
