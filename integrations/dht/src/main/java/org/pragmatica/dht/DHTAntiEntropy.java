@@ -171,7 +171,13 @@ public final class DHTAntiEntropy {
                                                 DHTNetwork network,
                                                 DHTConfig config,
                                                 TimeSpan antiEntropyInterval) {
-        return new DHTAntiEntropy(node, network, () -> config, antiEntropyInterval, CATCH_UP_ROUND_TIMEOUT, _ -> false, System::nanoTime);
+        return new DHTAntiEntropy(node,
+                                  network,
+                                  () -> config,
+                                  antiEntropyInterval,
+                                  CATCH_UP_ROUND_TIMEOUT,
+                                  _ -> false,
+                                  System::nanoTime);
     }
 
     /// Create an anti-entropy process that follows the node's LIVE replication ([DHTNode#config], #1777 track 1)
@@ -193,7 +199,13 @@ public final class DHTAntiEntropy {
                                          DHTConfig config,
                                          TimeSpan antiEntropyInterval,
                                          TimeSpan catchUpRoundTimeout) {
-        return new DHTAntiEntropy(node, network, () -> config, antiEntropyInterval, catchUpRoundTimeout, _ -> false, System::nanoTime);
+        return new DHTAntiEntropy(node,
+                                  network,
+                                  () -> config,
+                                  antiEntropyInterval,
+                                  catchUpRoundTimeout,
+                                  _ -> false,
+                                  System::nanoTime);
     }
 
     /// Test seam: catch-up rounds read their ages from `clock` instead of `System.nanoTime`, so a test advances time exactly
@@ -204,7 +216,13 @@ public final class DHTAntiEntropy {
                                          TimeSpan antiEntropyInterval,
                                          TimeSpan catchUpRoundTimeout,
                                          LongSupplier clock) {
-        return new DHTAntiEntropy(node, network, () -> config, antiEntropyInterval, catchUpRoundTimeout, _ -> false, clock);
+        return new DHTAntiEntropy(node,
+                                  network,
+                                  () -> config,
+                                  antiEntropyInterval,
+                                  catchUpRoundTimeout,
+                                  _ -> false,
+                                  clock);
     }
 
     /// Start the periodic anti-entropy process.

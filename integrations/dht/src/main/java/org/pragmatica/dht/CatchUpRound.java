@@ -128,7 +128,8 @@ final class CatchUpRound {
     }
 
     private boolean claimDecision() {
-        return decidedAtNanos.compareAndSet(0L, Math.max(clock.getAsLong(), 1L));
+        return decidedAtNanos.compareAndSet(0L,
+                                            Math.max(clock.getAsLong(), 1L));
     }
 
     /// Decide on the answers in hand, for a round some source never answered (#1777, H2): allowed only when at
