@@ -250,11 +250,16 @@ class EmberOrdinaryFailoverNoFalseAlertTest {
                       .toList();
     }
 
+    /// A management port of a node that was in the cluster from the start. The leader reconciler provisions a replacement for the
+    /// killed node about 15 s after the first ack, and while that node starts it answers `500 Stream config not yet visible on
+    /// this node` (observed: 1 of 20 at cd7520a606, `later-0`); the test is about the original members' failover, so it
+    /// addresses only them.
     private int anyLiveMgmtPort(String excluded) {
         return cluster.status()
                       .nodes()
                       .stream()
                       .filter(node -> !node.id().equals(excluded))
+                      .filter(node -> node.id().startsWith("failover-"))
                       .findFirst()
                       .map(EmberCluster.NodeStatus::mgmtPort)
                       .orElseThrow();
