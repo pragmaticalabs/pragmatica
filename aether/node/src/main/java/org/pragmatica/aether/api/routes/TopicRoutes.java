@@ -137,7 +137,7 @@ public final class TopicRoutes implements RouteSource {
     }
 
     private Promise<TopicGroupsResponse> groups(String namespace, String topic, String version, String groupsLiteral) {
-        return ResourceAddress.resourceAddress(namespace, topic, version)
+        return RequestParse.asRequest(ResourceAddress.resourceAddress(namespace, topic, version))
                               .async()
                               .flatMap(address -> groupsOf(address.asString()));
     }
@@ -258,7 +258,7 @@ public final class TopicRoutes implements RouteSource {
                                              String version,
                                              String rebuildLiteral,
                                              String group) {
-        return ResourceAddress.resourceAddress(namespace, topic, version)
+        return RequestParse.asRequest(ResourceAddress.resourceAddress(namespace, topic, version))
                               .async()
                               .flatMap(address -> rebuildGroup(DurableTopicNames.topicStream(address.asString()),
                                                                URLDecoder.decode(group, StandardCharsets.UTF_8)));

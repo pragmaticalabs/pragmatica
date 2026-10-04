@@ -62,8 +62,8 @@ import org.pragmatica.lang.utils.Causes;
 /// implemented at the `ManagementServer` security pipeline, not here, so the check
 /// short-circuits before role evaluation.
 public final class StreamApiRoutes implements RouteSource {
-    private static final Cause STREAM_NOT_FOUND = Causes.cause("Stream not found");
-    private static final Cause GROUP_NOT_FOUND = Causes.cause("Consumer group not found");
+    private static final Cause STREAM_NOT_FOUND = new ManagementServerError.NotFound("Stream not found");
+    private static final Cause GROUP_NOT_FOUND = new ManagementServerError.NotFound("Consumer group not found");
     private static final int DEFAULT_PARTITIONS = 4;
 
     /// #968: the body-carried create's refusals all carry a status. `Missing stream name` used to be
@@ -464,7 +464,7 @@ public final class StreamApiRoutes implements RouteSource {
     }
 
     Result<StreamMetadataResponse> streamMetadata(String namespace, String stream, String version) {
-        return ResourceAddress.resourceAddress(namespace, stream, version)
+        return RequestParse.asRequest(ResourceAddress.resourceAddress(namespace, stream, version))
                               .flatMap(addr -> namespacesService.lookup(addr)
                                                                 .toResult(StreamRegistry.StreamRegistryError.General.NOT_FOUND))
                               .flatMap(this::toMetadataResponse);
@@ -509,7 +509,7 @@ public final class StreamApiRoutes implements RouteSource {
                                                     String version,
                                                     String partitionsLiteral,
                                                     Integer partition) {
-        return ResourceAddress.resourceAddress(namespace, stream, version)
+        return RequestParse.asRequest(ResourceAddress.resourceAddress(namespace, stream, version))
                               .flatMap(addr -> streamManager().partitionInfo(StreamManager.engineKey(addr),
                                                                              partition))
                               .map(PartitionDetail::partitionDetail);
@@ -527,7 +527,7 @@ public final class StreamApiRoutes implements RouteSource {
                                                          String version,
                                                          String replicasLiteral,
                                                          Integer partition) {
-        return ResourceAddress.resourceAddress(namespace, stream, version).map(addr -> StreamRoutes.toReplicasResponse(streamReadRouter().replicaSnapshot(StreamManager.engineKey(addr),
+        return RequestParse.asRequest(ResourceAddress.resourceAddress(namespace, stream, version)).map(addr -> StreamRoutes.toReplicasResponse(streamReadRouter().replicaSnapshot(StreamManager.engineKey(addr),
                                                                                                                                                           partition)));
     }
 
@@ -541,7 +541,7 @@ public final class StreamApiRoutes implements RouteSource {
                                                         String stream,
                                                         String version,
                                                         String infoLiteral) {
-        return ResourceAddress.resourceAddress(namespace, stream, version)
+        return RequestParse.asRequest(ResourceAddress.resourceAddress(namespace, stream, version))
                               .async()
                               .flatMap(addr -> buildStreamInfoResponse(StreamManager.engineKey(addr)));
     }
@@ -601,7 +601,7 @@ public final class StreamApiRoutes implements RouteSource {
         var max = maxOpt.or(DEFAULT_MAX_EVENTS);
         var preference = preferenceOpt.fold(() -> ReadPreference.GOVERNOR, StreamApiRoutes::parseReadPreference);
 
-        return ResourceAddress.resourceAddress(namespace, stream, version)
+        return RequestParse.asRequest(ResourceAddress.resourceAddress(namespace, stream, version))
                               .async()
                               .flatMap(addr -> readEventsAtPartition(addr, partition, from, max, preference));
     }
@@ -636,7 +636,7 @@ public final class StreamApiRoutes implements RouteSource {
                                                  String stream,
                                                  String version,
                                                  String groupsLiteral) {
-        return ResourceAddress.resourceAddress(namespace, stream, version).map(addr -> new GroupListResponse(addr.asString(),
+        return RequestParse.asRequest(ResourceAddress.resourceAddress(namespace, stream, version)).map(addr -> new GroupListResponse(addr.asString(),
                                                                                                              List.of()));
     }
 
@@ -671,7 +671,7 @@ public final class StreamApiRoutes implements RouteSource {
         var offset = fromOffset.or(0L);
         var limit = clampMaxEvents(maxEvents.or(DEFAULT_MAX_EVENTS));
 
-        return ResourceAddress.resourceAddress(namespace, stream, version)
+        return RequestParse.asRequest(ResourceAddress.resourceAddress(namespace, stream, version))
                               .async()
                               .flatMap(addr -> readEventsAtAddress(addr, offset, limit));
     }
@@ -729,7 +729,7 @@ public final class StreamApiRoutes implements RouteSource {
     /// property alongside [#createStream(StreamCreateRequest)] and [#deleteStream] — the entry point a real
     /// `POST /streams/{namespace}/{stream}/{version}/events` request also goes through.
     Promise<PublishResponse> publishEvent(String namespace, String stream, String version, PublishRequest request) {
-        return ResourceAddress.resourceAddress(namespace, stream, version)
+        return RequestParse.asRequest(ResourceAddress.resourceAddress(namespace, stream, version))
                               .async()
                               .flatMap(addr -> publishOne(addr, request).map(offset -> new PublishResponse(addr.asString(),
                                                                                                            offset)));
@@ -741,7 +741,7 @@ public final class StreamApiRoutes implements RouteSource {
                                                String version,
                                                String publishBatchLiteral,
                                                PublishRequest[] requests) {
-        return ResourceAddress.resourceAddress(namespace, stream, version)
+        return RequestParse.asRequest(ResourceAddress.resourceAddress(namespace, stream, version))
                               .async()
                               .flatMap(addr -> publishMany(addr, requests));
     }
@@ -996,7 +996,7 @@ public final class StreamApiRoutes implements RouteSource {
     /// `StreamApiRoutesCreateStreamTest` can exercise the full create path — including the
     /// catalog registration this ticket adds — without going through HTTP dispatch.
     Result<CreateResponse> createStream(String namespace, String stream, String version, CreateRequest request) {
-        return ResourceAddress.resourceAddress(namespace, stream, version).flatMap(addr -> createAtAddress(addr, request));
+        return RequestParse.asRequest(ResourceAddress.resourceAddress(namespace, stream, version)).flatMap(addr -> createAtAddress(addr, request));
     }
 
     /// Idempotent on an already-registered address (check-exists-first; shared with the body-carried
@@ -1068,7 +1068,7 @@ public final class StreamApiRoutes implements RouteSource {
                                               String version,
                                               String groupsLiteral,
                                               GroupCreateRequest request) {
-        return ResourceAddress.resourceAddress(namespace, stream, version).flatMap(addr -> joinGroupAtAddress(addr,
+        return RequestParse.asRequest(ResourceAddress.resourceAddress(namespace, stream, version)).flatMap(addr -> joinGroupAtAddress(addr,
                                                                                                               request));
     }
 
@@ -1090,7 +1090,7 @@ public final class StreamApiRoutes implements RouteSource {
                                               String version,
                                               String groupsLiteral,
                                               String group) {
-        return ResourceAddress.resourceAddress(namespace, stream, version).flatMap(addr -> leaveGroupAtAddress(addr,
+        return RequestParse.asRequest(ResourceAddress.resourceAddress(namespace, stream, version)).flatMap(addr -> leaveGroupAtAddress(addr,
                                                                                                                group));
     }
 
@@ -1113,7 +1113,7 @@ public final class StreamApiRoutes implements RouteSource {
     }
 
     Promise<DeleteResponse> deleteStream(String namespace, String stream, String version) {
-        return ResourceAddress.resourceAddress(namespace, stream, version)
+        return RequestParse.asRequest(ResourceAddress.resourceAddress(namespace, stream, version))
                               .async()
                               .flatMap(this::destroyAtAddress);
     }

@@ -13,6 +13,7 @@ import org.pragmatica.aether.api.DynamicConfigManager;
 import org.pragmatica.aether.api.ManagementServerError;
 import org.pragmatica.aether.management.route.ManagementRoute;
 import org.pragmatica.aether.node.ManageableNode;
+import org.pragmatica.aether.stream.StreamPartitionManager;
 import org.pragmatica.aether.stream.consumer.ConsumerGroupCoordinator;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.http.ContentType;
@@ -24,6 +25,7 @@ import org.pragmatica.http.routing.RequestContext;
 import org.pragmatica.http.routing.Route;
 import org.pragmatica.http.server.ResponseWriter;
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.type.TypeToken;
 import org.pragmatica.lang.utils.Causes;
@@ -33,6 +35,7 @@ import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 
 /// #1921: two defects of one class. (1) `ProblemResponses.resolveStatus` did not look inside a composite cause, which
@@ -105,6 +108,63 @@ class ManagementCompositeAndIdParseStatusTest {
         var body = new StreamRoutes.LeaveGroupRequest("g1", "orders", "c1");
 
         assertThat(statusOf(routes.routes(), ManagementRoute.CONSUMER_GROUP_LEAVE, List.of(), body)).isEqualTo(HttpStatus.CONFLICT);
+    }
+
+    // ---- (4) stream and topic addresses (namespace / name / version) and their not-found refusals ----
+
+    @Test
+    void streamsMetadata_answers400_whenTheVersionIsMalformed() {
+        var routes = StreamApiRoutes.streamApiRoutes(() -> node(Map.of()), null, ConsumerGroupCoordinator.noOp(), null);
+
+        assertThat(statusOf(routes.routes(), ManagementRoute.STREAMS_METADATA, List.of("ns", "orders", "not-a-version")))
+            .isEqualTo(HttpStatus.BAD_REQUEST);
+    }
+
+    @Test
+    void streamGet_answers400_whenTheAddressIsMalformed() {
+        var routes = StreamApiRoutes.streamApiRoutes(() -> node(Map.of()), null, ConsumerGroupCoordinator.noOp(), null);
+
+        assertThat(statusOf(routes.routes(), ManagementRoute.STREAM_GET, List.of("ns", "orders", "not-a-version", "info")))
+            .isEqualTo(HttpStatus.BAD_REQUEST);
+    }
+
+    @Test
+    void streamsGroupsList_answers400_whenTheAddressIsMalformed() {
+        var routes = StreamApiRoutes.streamApiRoutes(() -> node(Map.of()), null, ConsumerGroupCoordinator.noOp(), null);
+
+        assertThat(statusOf(routes.routes(), ManagementRoute.STREAMS_GROUPS_LIST, List.of("ns", "orders", "not-a-version", "groups")))
+            .isEqualTo(HttpStatus.BAD_REQUEST);
+    }
+
+    @Test
+    void topicsGroups_answers400_whenTheTopicAddressIsMalformed() {
+        var routes = TopicRoutes.topicRoutes(() -> node(Map.of()));
+
+        assertThat(statusOf(routes.routes(), ManagementRoute.TOPICS_GROUPS, List.of("ns", "events", "not-a-version", "groups")))
+            .isEqualTo(HttpStatus.BAD_REQUEST);
+    }
+
+    @Test
+    void streamGet_answers404_whenTheStreamIsUnknown() {
+        var manager = mock(StreamPartitionManager.class);
+
+        when(manager.streamInfo(org.mockito.ArgumentMatchers.anyString())).thenReturn(Option.none());
+
+        var routes = StreamApiRoutes.streamApiRoutes(() -> node(Map.of("streamPartitionManager", manager)),
+                                                     null,
+                                                     ConsumerGroupCoordinator.noOp(),
+                                                     null);
+
+        assertThat(statusOf(routes.routes(), ManagementRoute.STREAM_GET, List.of("ns", "orders", "1.0.0", "info")))
+            .isEqualTo(HttpStatus.NOT_FOUND);
+    }
+
+    @Test
+    void streamsGroupDelete_answers404_whenTheGroupIsUnknown() {
+        var routes = StreamApiRoutes.streamApiRoutes(() -> node(Map.of()), null, ConsumerGroupCoordinator.noOp(), null);
+
+        assertThat(statusOf(routes.routes(), ManagementRoute.STREAMS_GROUP_DELETE, List.of("ns", "orders", "1.0.0", "groups", "g1")))
+            .isEqualTo(HttpStatus.NOT_FOUND);
     }
 
     // ---- (2) caller-supplied ids ----
