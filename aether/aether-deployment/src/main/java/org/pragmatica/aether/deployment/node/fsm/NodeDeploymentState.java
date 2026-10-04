@@ -2151,8 +2151,7 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
 
             if (loadedSlice.isEmpty()) {
                 handleReactivationFailure(sliceKey,
-                                          SLICE_NOT_FOUND_FOR_REACTIVATION.apply(sliceKey.artifact()
-                                                                                         .asString()));
+                                          SLICE_NOT_FOUND_FOR_REACTIVATION.apply(sliceKey.artifact().asString()));
 
                 return;
             }
@@ -2190,7 +2189,9 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
                       sliceKey.artifact(),
                       cause.message());
             unregisterSliceFromInvocation(sliceKey);
-            transitionToFailed(sliceKey, REACTIVATION_FAILED.apply(cause.message()), Unrecognised.RETRY);
+            transitionToFailed(sliceKey,
+                               REACTIVATION_FAILED.apply(cause.message()),
+                               Unrecognised.RETRY);
             unpublishTopicSubscriptions(sliceKey).flatMap(this::unpublishScheduledTasks)
                                        .flatMap(this::unpublishHttpRoutes);
         }
