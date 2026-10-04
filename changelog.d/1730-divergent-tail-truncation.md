@@ -53,3 +53,9 @@
 - The gate asks a remote peer where its ring begins over the catch-up read class (no data revealed), not the consumer class, so a
   peer that has not yet been compared with the owner of the new epoch still answers it and the relaxation is reachable.
 
+- **A new replica no longer raises `HISTORY_MISSING` after an ordinary failover.** A source that does not yet list the pulling
+  node as a replica of the partition answers its catch-up as a consumer read, which carries no owner-epoch history; the replica
+  applied those records with no provenance and its first live append (the first publish after the failover) then raised
+  `STREAM_PARTITION_FLAGGED ... HISTORY_MISSING`, blocking nothing yet but standing with nothing to clear it. A catch-up page of
+  a log-backed partition that carries records and no history is now refused with the retriable `SourceProvenanceMissing`; nothing
+  is applied and the backfill redrive pulls again once the source lists the node.

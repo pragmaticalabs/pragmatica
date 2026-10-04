@@ -130,6 +130,18 @@ public sealed interface StreamError extends Cause {
         }
     }
 
+    /// A catch-up page carried records but no owner-epoch slice. A source that keeps a log has a history for every record it
+    /// serves, so this one answered as a consumer read -- it does not yet list this node as a replica of the partition
+    /// -- and the records would land with no provenance. Nothing is applied. Retriable: the backfill redrive pulls again.
+    record SourceProvenanceMissing(String streamName, int partition, long fromOffset) implements StreamError, Cause.Transient {
+        @Override
+        public String message() {
+            return "Catch-up page of %s[%d] from offset %d carries no owner-epoch history; not applied".formatted(streamName,
+                                                                                                                  partition,
+                                                                                                                  fromOffset);
+        }
+    }
+
     record TruncateBelowRetained(String streamName, int partition, long keepThrough, long tailOffset) implements StreamError {
         @Override
         public String message() {
