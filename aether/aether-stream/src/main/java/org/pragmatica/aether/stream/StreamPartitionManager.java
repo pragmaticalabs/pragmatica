@@ -2011,9 +2011,23 @@ public final class StreamPartitionManager implements AutoCloseable {
         return ownerWriteAdmission.remoteCommittedOwner(streamName, partition)
                                   .map(owner -> new StreamError.NotOwnerAppend(streamName, partition, owner).<Unit> result())
                                   .or(Result::unitResult)
+                                  .flatMap(_ -> ensureOwnerRing(streamName, partition))
                                   .flatMap(_ -> ownerServeGate.admit(streamName, partition))
                                   .flatMap(_ -> ensureReplicaFloor(streamName, partition, minAcks))
                                   .flatMap(_ -> ensureSegmentTierRoom());
+    }
+
+    /// The ring an owner write enters exists BEFORE the owner gate runs (#1873): the gate commits where the epoch begins, which is
+    /// an offset of that ring, so it refuses a partition with no ring ([OwnerActivation.ActivationError#NO_RING]). The append
+    /// path's own lazy materialization runs only after admission, so without this a write that raced ahead of the
+    /// reconcile tick would be refused until the tick built the ring. Only the placement OWNER builds it here, exactly as the
+    /// append's safety valve does.
+    private Result<Unit> ensureOwnerRing(String streamName, int partition) {
+        return option(streams.get(streamName)).toResult(new StreamError.StreamNotFound(streamName))
+                     .flatMap(entry -> entry.ringFor(partition)
+                                            .isPresent() || placementRoleSupplier.roleFor(streamName, partition) != Role.OWNER
+                                       ? Result.unitResult()
+                                       : resolveAppendTarget(streamName, partition, entry).mapToUnit());
     }
 
     /// #1604: refuse an owner write while the durable segment tier is at or above
