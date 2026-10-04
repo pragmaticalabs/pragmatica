@@ -82,7 +82,8 @@ public interface StreamIsrAnnouncer {
                 var after = confirmationFactorAfter.applyAsInt(config);
 
                 configTransitions(value, before, after, committedRecord).forEach(sink);
-                notApplied(value, enforcedConfig.apply(config.name())).onPresent(sink);
+                notApplied(value,
+                           enforcedConfig.apply(config.name())).onPresent(sink);
             }
         };
     }
@@ -115,18 +116,16 @@ public interface StreamIsrAnnouncer {
     static Option<OperationalEvent> notApplied(StreamConfigValue value, Option<StreamConfig> enforced) {
         var config = value.config();
 
-        return enforced.flatMap(current -> StreamPartitionManager.notAppliedReason(config, current)
-                                                                 .map(reason -> OperationalEvent.StreamConfigChangeNotApplied.streamConfigChangeNotApplied(config.name(),
-                                                                                                                                                     config.confirmationFactor(),
-                                                                                                                                                     current.confirmationFactor(),
-                                                                                                                                                     reason,
-                                                                                                                                                     "stream-config-not-applied:"
-                                                                                                                                                     + config.name()
-                                                                                                                                                     + ":" + config.incarnation()
-                                                                                                                                                     + ":" + value.createdAt()
-                                                                                                                                                     + ":" + config.partitions()
-                                                                                                                                                     + ":" + config.replicationFactor()
-                                                                                                                                                     + ":" + config.confirmationFactor())));
+        return enforced.flatMap(current -> StreamPartitionManager.notAppliedReason(config, current).map(reason -> OperationalEvent.StreamConfigChangeNotApplied.streamConfigChangeNotApplied(config.name(),
+                                                                                                                                                                                             config.confirmationFactor(),
+                                                                                                                                                                                             current.confirmationFactor(),
+                                                                                                                                                                                             reason,
+                                                                                                                                                                                             "stream-config-not-applied:" + config.name()
+                                                                                                                                                                                            + ":" + config.incarnation()
+                                                                                                                                                                                            + ":" + value.createdAt()
+                                                                                                                                                                                            + ":" + config.partitions()
+                                                                                                                                                                                            + ":" + config.replicationFactor()
+                                                                                                                                                                                            + ":" + config.confirmationFactor())));
     }
 
     private static Option<OperationalEvent> configTransition(StreamConfigValue value,

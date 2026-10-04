@@ -1477,14 +1477,18 @@ public final class StreamPartitionManager implements AutoCloseable {
 
         if (incoming.partitions() != enforced.partitions()) {
             return Option.some("partition count of an existing stream cannot change (requested " + incoming.partitions()
-                               + ", enforced " + enforced.partitions() + ")");
+                              + ", enforced " + enforced.partitions()
+                              + ")");
         }
 
-        return incoming.replication().equals(enforced.replication()) || strongerDurability(incoming, enforced)
+        return incoming.replication()
+                       .equals(enforced.replication()) || strongerDurability(incoming, enforced)
                ? Option.none()
-               : Option.some("durability only increases online (requested replication/confirmation factor "
-                             + incoming.replicationFactor() + "/" + incoming.confirmationFactor()
-                             + ", enforced " + enforced.replicationFactor() + "/" + enforced.confirmationFactor() + ")");
+               : Option.some("durability only increases online (requested replication/confirmation factor " + incoming.replicationFactor()
+                            + "/" + incoming.confirmationFactor()
+                            + ", enforced " + enforced.replicationFactor()
+                            + "/" + enforced.confirmationFactor()
+                            + ")");
     }
 
     /// The confirmation factor [#confirmationFactorFor] will report for `incoming.name()` once the committed
