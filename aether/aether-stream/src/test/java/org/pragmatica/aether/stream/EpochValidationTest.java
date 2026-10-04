@@ -63,7 +63,7 @@ class EpochValidationTest {
     /// A consumer from a lineage NEWER than the owner serves: the read reached a stale owner and must be re-routed.
     @Test
     void newerEpochThanTheOwners_isAStaleReader() {
-        var result = EpochValidation.admit(STREAM, 0, E1, List.of(start(E1, 0)), E2, 5L, 100L);
+        var result = EpochValidation.admit(STREAM, 0, E1, List.of(start(E1, 0)), E2, 5L);
 
         assertThat(result.isFailure()).isTrue();
         result.onFailure(cause -> assertThat(cause).isInstanceOf(StreamError.StaleEpochRead.class));
@@ -72,7 +72,7 @@ class EpochValidationTest {
     /// The owner has not committed the start of its current epoch yet: it is not activated for it, and serves nothing.
     @Test
     void ownerWhoseCurrentEpochHasNoCommittedStart_isNotActivated() {
-        var result = EpochValidation.admit(STREAM, 0, E2, List.of(start(E1, 0)), E1, 0L, 100L);
+        var result = EpochValidation.admit(STREAM, 0, E2, List.of(start(E1, 0)), E1, 0L);
 
         assertThat(result.isFailure()).isTrue();
         result.onFailure(cause -> assertThat(cause).isInstanceOf(StreamError.OwnerNotActivated.class));
@@ -80,52 +80,55 @@ class EpochValidationTest {
 
     /// #1873, re-create: destroy removes only the stream's config, so the ownership record outlives the stream and a second life
     /// continues its epochs. The new life's first start is offset 0 and supersedes the earlier lives' starts, so a consumer of an
-    /// EARLIER life (older than the oldest kept start, which began at 0) is refused from the start of the new life, whatever its
-    /// cursor: before, a consumer at E1 with a low cursor was admitted and skipped the new life's first records.
+    /// EARLIER life (older than the oldest kept start, at 0) is admitted only at cursor 0 (it read nothing): any cursor above is
+    /// told to resume AT 0, the lowest offset the new life may have re-assigned, with the boundary marked as not exact.
     @Test
-    void consumerOfAnEarlierLife_isRefusedFromTheStartOfTheNewLife_whateverItsCursor() {
+    void consumerOfAnEarlierLife_isAdmittedAtZero_andResumesAtZeroAboveIt() {
         var fresh = List.of(start(E3, 0L));
 
-        for (var cursor : new long[]{0L, 2L, 500L}) {
-            var result = EpochValidation.admit(STREAM, 0, E3, fresh, E1, cursor, 9L);
+        assertThat(EpochValidation.admit(STREAM, 0, E3, fresh, E1, 0L).isSuccess()).as("cursor 0 read nothing").isTrue();
 
-            assertThat(result.isFailure()).as("cursor " + cursor).isTrue();
-            result.onFailure(cause -> assertThat(cause).isInstanceOfSatisfying(StreamError.EpochDiverged.class,
-                                                                              diverged -> assertThat(diverged.resumeAt()).isZero()));
+        for (var cursor : new long[]{2L, 500L}) {
+            var diverged = divergence(E3, fresh, E1, cursor);
+
+            assertThat(diverged.resumeAt()).as("cursor " + cursor).isZero();
+            assertThat(diverged.boundaryKnown()).as("the boundary of a consumer older than the history is not exact").isFalse();
         }
     }
 
-    /// Control for the rule above: a TRIMMED history of one life (the oldest kept start is above offset 0) is not a new life. A
-    /// consumer older than it resumes at `min(cursor, head + 1)` (it may redeliver, it never skips), never at 0.
+    /// The exact boundary stays exact: a consumer whose own epoch is kept is judged against the start that followed it.
     @Test
-    void trimmedHistoryOfTheSameLife_neverResumesFromZero() {
-        var kept = java.util.stream.IntStream.range(0, 16).mapToObj(i -> start(Epoch.epoch(1L, 1L, 10L + i), 100L + i * 10L)).toList();
-        var result = EpochValidation.admit(STREAM, 0, kept.getLast().epoch(), kept, E1, 250L, 300L);
-
-        result.onFailure(cause -> assertThat(cause).isInstanceOfSatisfying(StreamError.EpochDiverged.class,
-                                                                          diverged -> assertThat(diverged.resumeAt()).isEqualTo(250L)));
-        assertThat(result.isFailure()).isTrue();
+    void consumerWithinTheKeptHistory_getsAnExactBoundary() {
+        assertThat(divergence(E2, List.of(start(E1, 0), start(E2, 3)), E1, 5L).boundaryKnown()).isTrue();
     }
 
-    /// The record keeps only the newest starts. A consumer older than the oldest kept cannot be placed: it resumes from
-    /// the head (the clamp's answer: it may redeliver, it never skips).
+    /// C2 (v1873 round 2): a consumer older than the oldest kept start must resume at or below the EARLIEST offset that could
+    /// have been re-assigned since its epoch. The kept history begins at 100, so the oldest kept start is the lowest offset the
+    /// later epochs can have re-assigned: cursor 250 resumes AT 100, never at 250 (which would skip [100, 250)).
     @Test
-    void consumerOlderThanTheKeptHistory_resumesFromTheHead() {
-        var kept = java.util.stream.IntStream.range(0, 16)
-                                             .mapToObj(i -> start(Epoch.epoch(1L, 1L, 10L + i), 100L + i * 10L))
-                                             .toList();
-        var latest = kept.getLast().epoch();
-        var result = EpochValidation.admit(STREAM, 0, latest, kept, E1, 90L, 250L);
+    void trimmedHistory_resumesAtTheOldestKeptStart_neverAtTheCursor() {
+        var kept = keptHistory();
+        var diverged = divergence(kept.getLast().epoch(), kept, E1, 250L);
 
-        result.onFailure(cause -> assertThat(cause).isInstanceOfSatisfying(StreamError.EpochDiverged.class,
-                                                                          diverged -> assertThat(diverged.resumeAt()).isEqualTo(90L)));
-        assertThat(result.isFailure()).isTrue();
+        assertThat(diverged.resumeAt()).as("the lowest offset any kept epoch may have re-assigned").isEqualTo(100L);
+        assertThat(diverged.boundaryKnown()).isFalse();
+    }
 
-        var above = EpochValidation.admit(STREAM, 0, latest, kept, E1, 400L, 250L);
+    /// A consumer older than the history whose cursor is at or below the oldest kept start holds nothing any later epoch can
+    /// have re-assigned: admitted, nothing to re-read.
+    @Test
+    void consumerOlderThanTheKeptHistory_atOrBelowTheOldestKeptStart_isAdmitted() {
+        var kept = keptHistory();
 
-        above.onFailure(cause -> assertThat(cause).isInstanceOfSatisfying(StreamError.EpochDiverged.class,
-                                                                          diverged -> assertThat(diverged.resumeAt()).as("never past the head").isEqualTo(251L)));
-        assertThat(above.isFailure()).isTrue();
+        assertThat(check(kept.getLast().epoch(), kept, E1, 100L)).isEqualTo(kept.getLast().epoch());
+        assertThat(check(kept.getLast().epoch(), kept, E1, 90L)).isEqualTo(kept.getLast().epoch());
+        assertThat(divergence(kept.getLast().epoch(), kept, E1, 101L).resumeAt()).isEqualTo(100L);
+    }
+
+    private static List<EpochStart> keptHistory() {
+        return java.util.stream.IntStream.range(0, 16)
+                                         .mapToObj(i -> start(Epoch.epoch(1L, 1L, 10L + i), 100L + i * 10L))
+                                         .toList();
     }
 
     private static EpochStart start(Epoch epoch, long startOffset) {
@@ -133,11 +136,11 @@ class EpochValidationTest {
     }
 
     private static Epoch check(Epoch owner, List<EpochStart> starts, Epoch consumer, long cursor) {
-        return EpochValidation.admit(STREAM, 0, owner, starts, consumer, cursor, 1_000L).unwrap();
+        return EpochValidation.admit(STREAM, 0, owner, starts, consumer, cursor).unwrap();
     }
 
     private static StreamError.EpochDiverged divergence(Epoch owner, List<EpochStart> starts, Epoch consumer, long cursor) {
-        var result = EpochValidation.admit(STREAM, 0, owner, starts, consumer, cursor, 1_000L);
+        var result = EpochValidation.admit(STREAM, 0, owner, starts, consumer, cursor);
         var holder = new StreamError.EpochDiverged[1];
 
         result.onFailure(cause -> holder[0] = (StreamError.EpochDiverged) cause);

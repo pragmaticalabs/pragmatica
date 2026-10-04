@@ -106,7 +106,8 @@ class ReadForwardCodecTest {
     @Test
     void readForwardResponse_roundTrips_theOwnerEpochAndTheTypedDivergence() {
         var served = ReadForwardResponse.successResponse(SENDER, "corr-9", List.of()).withOwnerEpoch(Epoch.epoch(7L, 8L, 9L));
-        var diverged = ReadForwardResponse.epochDivergedResponse(SENDER, "corr-10", Epoch.epoch(7L, 8L, 10L), 3L, "replaced");
+        var diverged = ReadForwardResponse.epochDivergedResponse(SENDER, "corr-10", Epoch.epoch(7L, 8L, 10L), 3L, true, "replaced");
+        var inexact = ReadForwardResponse.epochDivergedResponse(SENDER, "corr-11", Epoch.epoch(7L, 8L, 10L), 3L, false, "older than the history");
 
         assertThat(roundTripResponse(served)).isEqualTo(served);
         assertThat(roundTripResponse(served).ownerEpoch()).isEqualTo(Epoch.epoch(7L, 8L, 9L));
@@ -115,6 +116,9 @@ class ReadForwardCodecTest {
         assertThat(roundTripResponse(diverged).epochDiverged()).isTrue();
         assertThat(roundTripResponse(diverged).divergenceResumeAt()).isEqualTo(3L);
         assertThat(roundTripResponse(diverged).success()).isFalse();
+        assertThat(roundTripResponse(diverged).divergenceBoundaryKnown()).isTrue();
+        assertThat(roundTripResponse(inexact)).isEqualTo(inexact);
+        assertThat(roundTripResponse(inexact).divergenceBoundaryKnown()).as("the exactness of the boundary crosses the wire").isFalse();
     }
 
     private static ReadForwardResponse roundTripResponse(ReadForwardResponse original) {
