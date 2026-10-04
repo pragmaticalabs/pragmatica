@@ -256,9 +256,12 @@ public final class DistributedDHTClient implements DHTClient {
     /// [DHTError.ReplicationChangeStale] refusal from ANY target is authoritative evidence that this writer is behind, so
     /// the put fails and the caller retries under the newer change. When the quorum was met by this node's own slot alone
     /// (W_old = 1 and the writer is a replica), the local slot — which no fence guards — says nothing about the others, so
-    /// the acknowledgement waits for the first reply of any kind from a remote target.
-    /// [limit: a replica that applied the newer change but stays silent for the rest of the operation timeout cannot refute
-    /// the acknowledgement; #1683-class] A refusal that arrives AFTER the acknowledgement cannot revoke it; it is recorded
+    /// the acknowledgement waits for EVIDENCE from a remote target: a success (ack) or a stale refusal (fail). Any other
+    /// reply — fence unknown, an owner-epoch fence, a dispatch failure to a down replica — is not evidence, and the wait
+    /// goes on until every slot has replied or the operation timeout.
+    /// [limit: with no evidence — every remote silent, down, fence-unknown or owner-epoch-fenced for the whole operation —
+    /// the put is acknowledged on its own slot and sets no stale record; a replica that applied the newer change but is
+    /// unreachable cannot refute it; #1683-class] A refusal that arrives AFTER the acknowledgement cannot revoke it; it is recorded
     /// ([#noteLateStale]) and the copies the other replicas accepted are pulled by the writers-switched catch-up.
     private <T> Promise<T> confirmedByReplicas(QuorumCollector<T> collector, T done, int quorum, boolean hasRemote) {
         if (collector.replicationStaleCount() > 0) {
@@ -272,7 +275,7 @@ public final class DistributedDHTClient implements DHTClient {
         var remaining = Math.max(config.get().operationTimeout().millis() - collector.elapsedMillis(),
                                  1L);
 
-        return collector.remoteReplied()
+        return collector.remoteEvidence()
                         .timeout(timeSpan(remaining).millis())
                         .fold(_ -> collector.replicationStaleCount() > 0
                                    ? staleFailure(collector, quorum)

@@ -53,10 +53,10 @@ public final class QuorumCollector<T> {
     private final AtomicReference<String> valueSource = new AtomicReference<>();
     private final AtomicInteger departed = new AtomicInteger();
     private final Promise<Unit> allReplied = Promise.promise();
-    /// Successes that came from the coordinator's own slot, and the first reply of any kind from a REMOTE slot (#1777 v1882
-    /// r6 F10): a quorum met by the local slot alone has no evidence about the replicas' fences yet.
+    /// Successes that came from the coordinator's own slot, and the first piece of EVIDENCE from a REMOTE slot (#1777
+    /// v1882 r6 F10, r9): a quorum met by the local slot alone says nothing about the replicas' fences yet.
     private final AtomicInteger localSuccesses = new AtomicInteger(0);
-    private final Promise<Unit> remoteReplied = Promise.promise();
+    private final Promise<Unit> remoteEvidence = Promise.promise();
 
     private QuorumCollector(int quorum,
                             int total,
@@ -103,11 +103,11 @@ public final class QuorumCollector<T> {
     public void onSuccess(T value) {
         onSuccess(value, "");
         // after the count is recorded: a waiter released by this reply must read it
-        remoteReplied.succeed(Unit.unit());
+        remoteEvidence.succeed(Unit.unit());
     }
 
     /// Record the coordinator's own slot succeeding: it counts toward the quorum but is not evidence about any remote
-    /// replica (#1777 v1882 r6 F10), so it does not resolve [#remoteReplied].
+    /// replica (#1777 v1882 r6 F10), so it does not resolve [#remoteEvidence].
     @Contract
     public void onLocalSuccess(T value) {
         localSuccesses.incrementAndGet();
@@ -125,10 +125,13 @@ public final class QuorumCollector<T> {
         return successCount.get() - localSuccesses.get();
     }
 
-    /// Resolves with the first reply of any kind from a remote slot: success, refusal or a dispatch failure. Never
-    /// resolves if no remote slot ever answers, so callers bound it with their own timeout.
-    public Promise<Unit> remoteReplied() {
-        return remoteReplied;
+    /// Resolves with the first EVIDENCE from a remote slot about the writer's fence: a success, or a refusal as stale. Any
+    /// other reply — fence unknown, an owner-epoch fence, a dispatch failure — is NOT evidence and does not resolve it
+    /// (v1882 r9: releasing on it let a put ack on its own slot while an applied replica had not yet answered). It also
+    /// resolves once every slot has replied, so a put whose remotes all answered without evidence is not held to the
+    /// timeout. Never resolves while a remote stays silent, so callers bound it with their own timeout.
+    public Promise<Unit> remoteEvidence() {
+        return remoteEvidence;
     }
 
     /// Slots refused because the replica had applied a NEWER replication change than the writer's stamp. Authoritative
@@ -168,7 +171,9 @@ public final class QuorumCollector<T> {
     public void onFailure(Cause cause) {
         recordFailure(cause);
         // after the refusal is counted: a waiter released by this reply must see it
-        remoteReplied.succeed(Unit.unit());
+        if (cause instanceof DHTError.ReplicaOnNewerReplication) {
+            remoteEvidence.succeed(Unit.unit());
+        }
     }
 
     private void recordFailure(Cause cause) {
@@ -220,6 +225,7 @@ public final class QuorumCollector<T> {
 
     private void settleIfAllReplied(int successes, int failures) {
         if (successes + failures >= total) {
+            remoteEvidence.succeed(Unit.unit());
             allReplied.succeed(Unit.unit());
         }
     }
