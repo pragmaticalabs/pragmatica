@@ -20,10 +20,12 @@ import java.util.List;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Supplier;
 
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.ProtocolMessage;
 import org.pragmatica.consensus.net.WriteOutcome;
+import org.pragmatica.dht.storage.StorageEngine;
 import org.pragmatica.hlc.HlcClock;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
@@ -37,6 +39,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import static org.pragmatica.lang.Unit.unit;
+import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 
 /// Distributed DHT client with quorum-based reads and writes.
@@ -52,10 +55,18 @@ public final class DistributedDHTClient implements DHTClient {
     /// inflict on one read; past it the departed slot fails instead of being replaced.
     private static final int DEFAULT_READ_REISSUE_LIMIT = 3;
     private static final HexFormat HEX = HexFormat.of();
+    /// The evidence wait of a put acknowledged on its own slot is the operation timeout divided by this (v1882 r9b).
+    private static final long EVIDENCE_WAIT_DIVISOR = 10L;
+    /// The states of an operation's pending mark: not yet claimed, claimed, and ended (v1882 r12 F19).
+    private static final int MARK_IDLE = 0;
+    private static final int MARK_HELD = 1;
+    private static final int MARK_ENDED = 2;
 
     private final DHTNode node;
     private final DHTNetwork network;
-    private final DHTConfig config;
+    /// The replication this client places keys and sizes quorums with: the node's live, committed replication for
+    /// the base client (#1777 track 1), or a namespace's own declaration for a scoped one.
+    private final Supplier<DHTConfig> config;
     private final OwnerEpochSource ownerEpochSource;
     private final ResolveFallbackObserver fallbackObserver;
     /// Pending operations indexed by correlation ID.
@@ -65,7 +76,7 @@ public final class DistributedDHTClient implements DHTClient {
 
     private DistributedDHTClient(DHTNode node,
                                  DHTNetwork network,
-                                 DHTConfig config,
+                                 Supplier<DHTConfig> config,
                                  OwnerEpochSource ownerEpochSource,
                                  ResolveFallbackObserver fallbackObserver) {
         this.node = node;
@@ -81,7 +92,11 @@ public final class DistributedDHTClient implements DHTClient {
     /// @param network DHT network for inter-node messaging
     /// @param config  DHT configuration (replication factor, quorum sizes)
     public static DistributedDHTClient distributedDHTClient(DHTNode node, DHTNetwork network, DHTConfig config) {
-        return new DistributedDHTClient(node, network, config, OwnerEpochSource.zero(), ResolveFallbackObserver.noop());
+        return new DistributedDHTClient(node,
+                                        network,
+                                        () -> config,
+                                        OwnerEpochSource.zero(),
+                                        ResolveFallbackObserver.noop());
     }
 
     /// Create a distributed DHT client that stamps every put with the node's current owner epoch
@@ -95,7 +110,17 @@ public final class DistributedDHTClient implements DHTClient {
                                                             DHTNetwork network,
                                                             DHTConfig config,
                                                             OwnerEpochSource ownerEpochSource) {
-        return new DistributedDHTClient(node, network, config, ownerEpochSource, ResolveFallbackObserver.noop());
+        return new DistributedDHTClient(node, network, () -> config, ownerEpochSource, ResolveFallbackObserver.noop());
+    }
+
+    /// Create a distributed DHT client that follows the node's LIVE replication ([DHTNode#config]): the cluster's
+    /// committed `[replication]` factors, re-read on every operation so a committed change takes effect without a
+    /// restart (#1777 track 1). Stamps every put with the node's current owner epoch like
+    /// [#distributedDHTClient(DHTNode, DHTNetwork, DHTConfig, OwnerEpochSource)].
+    public static DistributedDHTClient distributedDHTClient(DHTNode node,
+                                                            DHTNetwork network,
+                                                            OwnerEpochSource ownerEpochSource) {
+        return new DistributedDHTClient(node, network, node::config, ownerEpochSource, ResolveFallbackObserver.noop());
     }
 
     /// Return a client that reports resolve-time alternate-target fallback outcomes (issue #428, C2)
@@ -110,23 +135,33 @@ public final class DistributedDHTClient implements DHTClient {
 
     @Override
     public DHTClient scoped(DHTConfig scopedConfig) {
+        return scoped(() -> scopedConfig);
+    }
+
+    /// A client for a namespace with its own declared replication, read on every operation so a committed change
+    /// of the declaration takes effect without a restart (#1777 track 1, e.g. the cache's `[cache]` factors).
+    public DistributedDHTClient scoped(Supplier<DHTConfig> scopedConfig) {
         return new DistributedDHTClient(node, network, scopedConfig, ownerEpochSource, fallbackObserver);
     }
 
     @Override
     public DHTConfig config() {
-        return config;
+        return config.get();
     }
 
     @Override
     public Promise<Option<byte[]>> get(byte[] key) {
+        if (!node.replicationResolved()) {
+            return DHTError.REPLICATION_UNRESOLVED.promise();
+        }
+
         var targets = targetNodes(key);
 
         if (targets.isEmpty()) {
             return DHTError.NO_AVAILABLE_NODES.promise();
         }
 
-        var quorum = config.effectiveReadQuorum(node.ring().nodeCount());
+        var quorum = config.get().effectiveReadQuorum(node.ring().nodeCount());
 
         if (quorumUnreachable(targets, quorum)) {
             return DHTError.quorumNotReached(quorum,
@@ -144,7 +179,7 @@ public final class DistributedDHTClient implements DHTClient {
         targets.forEach(read::markAddressed);
         targets.forEach(target -> dispatchRead(read, target));
 
-        return promise.timeout(config.operationTimeout())
+        return promise.timeout(config.get().operationTimeout())
                       .withResult(_ -> unsubscribe.run())
                       .flatMap(quorumResult -> resolveOrFallback(key,
                                                                  quorumResult,
@@ -154,13 +189,17 @@ public final class DistributedDHTClient implements DHTClient {
 
     @Override
     public Promise<Unit> put(byte[] key, byte[] value) {
+        if (!node.replicationResolved()) {
+            return DHTError.REPLICATION_UNRESOLVED.promise();
+        }
+
         var targets = targetNodes(key);
 
         if (targets.isEmpty()) {
             return DHTError.NO_AVAILABLE_NODES.promise();
         }
 
-        var quorum = config.effectiveWriteQuorum(node.ring().nodeCount());
+        var quorum = config.get().effectiveWriteQuorum(node.ring().nodeCount());
 
         if (quorumUnreachable(targets, quorum)) {
             return DHTError.quorumNotReached(quorum,
@@ -171,27 +210,182 @@ public final class DistributedDHTClient implements DHTClient {
         var stamp = new WriteStamp(node.hlcClock().now().packed(),
                                    ownerEpochSource.currentEpochIncarnation(),
                                    ownerEpochSource.currentEpochTerm(),
-                                   ownerEpochSource.currentEpochCounter());
+                                   ownerEpochSource.currentEpochCounter(),
+                                   node.replicationFence());
         Promise<Unit> promise = Promise.promise();
         var collector = QuorumCollector.<Unit> quorumCollector(quorum, targets.size(), promise);
-        var localPut = targets.contains(node.nodeId())
-                       ? Option.some(handleLocalPut(key, value, stamp, collector))
-                       : Option.<Promise<Boolean>> none();
+        var hasRemote = targets.stream().anyMatch(target -> !target.equals(node.nodeId()));
 
+        collector.expectRemoteReplies(remoteCount(targets));
         targets.stream()
                .filter(target -> !target.equals(node.nodeId()))
                .forEach(target -> sendRemotePut(target, key, value, stamp, collector));
+        var pending = new AtomicInteger(MARK_IDLE);
+        var localPut = targets.contains(node.nodeId())
+                       ? Option.some(applyLocalAfterEvidence(collector,
+                                                             hasRemote,
+                                                             () -> markPending(key,
+                                                                               collector,
+                                                                               pending,
+                                                                               () -> handleLocalPut(key,
+                                                                                                    value,
+                                                                                                    stamp,
+                                                                                                    collector))))
+                       : Option.<Promise<StorageEngine.Displaced>> none();
 
-        return promise.timeout(config.operationTimeout())
+        collector.allReplied().onSuccess(_ -> noteLateStale(collector, stamp));
+
+        return promise.timeout(config.get().operationTimeout())
+                      .flatMap(_ -> confirmedByReplicas(collector, quorum))
                       .fold(result -> result.fold(cause -> afterFailedPut(key,
                                                                           stamp,
                                                                           localPut,
                                                                           indeterminateIfFenced(cause, quorum, collector)),
-                                                  Promise::success));
+                                                  Promise::success))
+                      .onFailure(cause -> noteIfStale(cause, stamp))
+                      .onSuccess(_ -> clearIfNoReplicaRefusedAsStale(collector))
+                      .onResultRun(() -> endPending(key, pending));
     }
 
-    /// The version and owner epoch one put is stamped with — what a rollback must match exactly.
-    private record WriteStamp(long version, long epochIncarnation, long epochTerm, long epochCounter) {}
+    /// The writer's own slot is about to be applied: until the operation resolves, another writer's request on this key is
+    /// refused `writePending` instead of being answered "superseded" (v1882 r12).
+    private Promise<StorageEngine.Displaced> markPending(byte[] key,
+                                                         QuorumCollector<?> collector,
+                                                         AtomicInteger mark,
+                                                         Supplier<Promise<StorageEngine.Displaced>> write) {
+        // an operation already acknowledged without its own slot has nothing to protect: the copy is written unmarked
+        if (!collector.resolved()) {
+            // begin FIRST, then claim the mark: if the operation's resolution already ran its end in between, the claim fails
+            // and the begin is undone here, so begin and end are balanced however the two interleave (v1882 r12 F19)
+            node.beginLocalWrite(key,
+                                 config.get().operationTimeout().nanos());
+            if (!mark.compareAndSet(MARK_IDLE, MARK_HELD)) {
+                node.endLocalWrite(key);
+            }
+        }
+
+        return write.get();
+    }
+
+    /// The operation resolved on EVERY path — acknowledged, failed, timed out or aborted — so its pending mark ends. An end
+    /// that runs before the mark was claimed seals the state, and the late claim above undoes its own begin.
+    @Contract
+    private void endPending(byte[] key, AtomicInteger mark) {
+        if (mark.getAndSet(MARK_ENDED) == MARK_HELD) {
+            node.endLocalWrite(key);
+        }
+    }
+
+    /// A put whose quorum is met is acknowledged only if no replica has refused it as stale (#1777 v1882 r6 F10): a
+    /// [DHTError.ReplicationChangeStale] refusal from ANY target is authoritative evidence that this writer is behind, so
+    /// the put fails and the caller retries under the newer change. A refusal that arrives AFTER the acknowledgement cannot
+    /// revoke it; it is recorded ([#noteLateStale]) and the copies the other replicas accepted are pulled by the
+    /// writers-switched catch-up.
+    private Promise<Unit> confirmedByReplicas(QuorumCollector<Unit> collector, int quorum) {
+        return collector.replicationStaleCount() > 0
+               ? staleFailure(collector, quorum)
+               : Promise.success(unit());
+    }
+
+    /// The writer's own slot is applied only AFTER the evidence gate releases (v1882 r10, replacing an apply-then-undo that
+    /// could never be made consistent with what other writers observed meanwhile). The gate waits for EVIDENCE from a remote
+    /// target: a success, a refusal as stale, or an owner-epoch fence refusal (a replica that has advanced past this writer's
+    /// epoch, v1882 r11). Any other reply — fence unknown, a dispatch failure to a down replica — is not evidence, and the
+    /// wait goes on until every slot has replied or the evidence wait runs out.
+    /// - evidence is a stale refusal or an epoch-fence refusal: the write is NEVER applied locally and fails (stale, or
+    ///   [DHTError.WriteIndeterminate] with the #1820 semantics: remote copies may exist); there is nothing to undo here;
+    /// - evidence is a success, or there is none: the local write is applied and counts toward the quorum. A fence refusal
+    ///   that arrives only AFTER that, and sinks the quorum, still rolls the local copy back (restore-prior, #1818).
+    /// The wait is `operationTimeout /` [#EVIDENCE_WAIT_DIVISOR] (3 s by default): one intra-cluster round trip plus a GC
+    /// pause, an order of magnitude below the caller-visible timeout, so a partitioned or down replica set cannot turn every
+    /// W=1 write into a stall of that timeout (CTO judgement on the ratio, taste). Cost: a writer that is a replica applies
+    /// its own copy after the first useful remote reply, one round trip later than before.
+    /// [limit: with NO evidence — every remote silent, down, fence-unknown or owner-epoch-fenced until every slot has replied
+    /// or the wait runs out — the write is applied and acknowledged on its own slot and sets no stale record; a replica on
+    /// the newer change that does not answer within the wait (slow, GC-paused, partitioned) cannot refute it; #1683-class]
+    private Promise<StorageEngine.Displaced> applyLocalAfterEvidence(QuorumCollector<?> collector,
+                                                                     boolean hasRemote,
+                                                                     Supplier<Promise<StorageEngine.Displaced>> write) {
+        if (!hasRemote) {
+            return write.get();
+        }
+
+        var timeout = config.get().operationTimeout().millis();
+        var bound = Math.max(Math.min(timeout / EVIDENCE_WAIT_DIVISOR, timeout - collector.elapsedMillis()),
+                             1L);
+
+        return collector.remoteEvidence()
+                        .timeout(timeSpan(bound).millis())
+                        .fold(_ -> collector.replicationStaleCount() > 0 || collector.fencedCount() > 0
+                                   ? skipLocalSlot(collector)
+                                   : applyUnlessDecided(collector, write));
+    }
+
+    private int remoteCount(List<NodeId> targets) {
+        return (int) targets.stream()
+                            .filter(target -> !target.equals(node.nodeId()))
+                            .count();
+    }
+
+    /// An operation already decided as a FAILURE applies nothing: a failed write must not be written locally (v1882 r12).
+    private static Promise<StorageEngine.Displaced> applyUnlessDecided(QuorumCollector<?> collector,
+                                                                       Supplier<Promise<StorageEngine.Displaced>> write) {
+        return collector.failed()
+               ? DHTError.OPERATION_TIMEOUT.promise()
+               : write.get();
+    }
+
+    /// The slot is not applied, and the operation ends AT ONCE with the typed failure the evidence calls for (a stale refusal,
+    /// or [DHTError.WriteIndeterminate] for an owner-epoch fence refusal): evidence of failure is a verdict, not a vote, so
+    /// the quorum arithmetic is not left to wait for a silent replica and end in a generic timeout.
+    private static Promise<StorageEngine.Displaced> skipLocalSlot(QuorumCollector<?> collector) {
+        collector.abortOnEvidence();
+
+        return DHTError.OPERATION_TIMEOUT.promise();
+    }
+
+    private static Promise<Unit> staleFailure(QuorumCollector<Unit> collector, int quorum) {
+        return DHTError.replicationChangeStale(quorum,
+                                               collector.successCount(),
+                                               collector.replicationStaleCount())
+                       .promise();
+    }
+
+    /// A refusal that arrived after the put was acknowledged still says this writer is behind: record it, so the
+    /// stale-writer clock starts (the F9 guard in [DHTNode#noteStaleRefusal] drops it if the writer has adopted since).
+    @Contract
+    private void noteLateStale(QuorumCollector<Unit> collector, WriteStamp stamp) {
+        if (collector.replicationStaleCount() > 0) {
+            node.noteStaleRefusal(stamp.replicationVersion(), System.currentTimeMillis());
+        }
+    }
+
+    /// Any accepted write ends a stale episode — but not one that a replica refused as stale (v1882 r6 F10).
+    /// [unverified: the race between the confirm check and this clear — a stale refusal landing in between — is not
+    /// deterministically reachable in-JVM, so the guard is not pinned: an unconditional clear stays green.]
+    @Contract
+    private void clearIfNoReplicaRefusedAsStale(QuorumCollector<Unit> collector) {
+        if (collector.replicationStaleCount() == 0) {
+            node.clearStaleRefusal();
+        }
+    }
+
+    /// #1777 (owner rule): a put refused because replicas applied a NEWER change starts this node's stale-writer clock. A
+    /// refusal by replicas that do not know the change yet ([DHTError.ReplicationFenceUnknown]) says nothing about this
+    /// writer and starts nothing; any accepted write ends the clock.
+    private void noteIfStale(Cause cause, WriteStamp stamp) {
+        if (cause instanceof DHTError.ReplicationChangeStale) {
+            node.noteStaleRefusal(stamp.replicationVersion(), System.currentTimeMillis());
+        }
+    }
+
+    /// The version and owner epoch one put is stamped with — what a rollback must match exactly — and the replication
+    /// change its quorum was sized under (#1777 R1c), read when the put starts.
+    private record WriteStamp(long version,
+                              long epochIncarnation,
+                              long epochTerm,
+                              long epochCounter,
+                              long replicationVersion) {}
 
     /// A put that lost its quorum to owner-epoch fences is INDETERMINATE (#1818, the owner's fence ruling):
     /// this node's own store may have accepted it because its high-water lags, and anti-entropy copies bypass
@@ -208,7 +402,10 @@ public final class DistributedDHTClient implements DHTClient {
                : cause;
     }
 
-    private Promise<Unit> afterFailedPut(byte[] key, WriteStamp stamp, Option<Promise<Boolean>> localPut, Cause cause) {
+    private Promise<Unit> afterFailedPut(byte[] key,
+                                         WriteStamp stamp,
+                                         Option<Promise<StorageEngine.Displaced>> localPut,
+                                         Cause cause) {
         return cause instanceof DHTError.WriteIndeterminate
                ? localPut.map(local -> rollBackLocalAccept(key, stamp, local))
                          .or(Promise.success(false))
@@ -216,19 +413,28 @@ public final class DistributedDHTClient implements DHTClient {
                : cause.promise();
     }
 
-    private Promise<Boolean> rollBackLocalAccept(byte[] key, WriteStamp stamp, Promise<Boolean> localPut) {
-        return localPut.fold(_ -> node.storage()
-                                      .removeIfExactly(key,
-                                                       stamp.version(),
-                                                       stamp.epochIncarnation(),
-                                                       stamp.epochTerm(),
-                                                       stamp.epochCounter()))
-                       .onSuccess(removed -> logRollback(key, removed));
+    /// Puts this node's own slot back EXACTLY as the write found it (v1882 r9b), after an INDETERMINATE put (#1818): the
+    /// entry the write displaced — read in the same atomic step as the write — replaces our accept while the stored entry is
+    /// still exactly ours, and a key that was absent is deleted. Never a bare delete: a writer whose slot held the only copy
+    /// would lose it. A newer write that landed in between is left alone. A put refused as STALE never reaches here: its
+    /// local slot is not applied until the evidence gate releases, so there is nothing to undo (v1882 r10).
+    private Promise<Boolean> rollBackLocalAccept(byte[] key,
+                                                 WriteStamp stamp,
+                                                 Promise<StorageEngine.Displaced> localPut) {
+        return localPut.fold(result -> node.storage()
+                                           .restoreIfExactly(key,
+                                                             stamp.version(),
+                                                             stamp.epochIncarnation(),
+                                                             stamp.epochTerm(),
+                                                             stamp.epochCounter(),
+                                                             result.fold(_ -> Option.<DHTMessage.KeyValue> none(),
+                                                                         StorageEngine.Displaced::prior)))
+                       .onSuccess(restored -> logRollback(key, restored));
     }
 
     @Contract
     private void logRollback(byte[] key, boolean removed) {
-        log.info("Put of {} lost its quorum to owner-epoch fences; local accept {}",
+        log.info("Put of {} was refused by replica fences; local accept {}",
                  hex(key),
                  removed
                  ? "rolled back"
@@ -237,13 +443,17 @@ public final class DistributedDHTClient implements DHTClient {
 
     @Override
     public Promise<Boolean> remove(byte[] key) {
+        if (!node.replicationResolved()) {
+            return DHTError.REPLICATION_UNRESOLVED.promise();
+        }
+
         var targets = targetNodes(key);
 
         if (targets.isEmpty()) {
             return DHTError.NO_AVAILABLE_NODES.promise();
         }
 
-        var quorum = config.effectiveWriteQuorum(node.ring().nodeCount());
+        var quorum = config.get().effectiveWriteQuorum(node.ring().nodeCount());
 
         if (quorumUnreachable(targets, quorum)) {
             return DHTError.quorumNotReached(quorum,
@@ -262,18 +472,22 @@ public final class DistributedDHTClient implements DHTClient {
             }
         }
 
-        return promise.timeout(config.operationTimeout());
+        return promise.timeout(config.get().operationTimeout());
     }
 
     @Override
     public Promise<Boolean> exists(byte[] key) {
+        if (!node.replicationResolved()) {
+            return DHTError.REPLICATION_UNRESOLVED.promise();
+        }
+
         var targets = targetNodes(key);
 
         if (targets.isEmpty()) {
             return DHTError.NO_AVAILABLE_NODES.promise();
         }
 
-        var quorum = config.effectiveReadQuorum(node.ring().nodeCount());
+        var quorum = config.get().effectiveReadQuorum(node.ring().nodeCount());
 
         if (quorumUnreachable(targets, quorum)) {
             return DHTError.quorumNotReached(quorum,
@@ -292,7 +506,7 @@ public final class DistributedDHTClient implements DHTClient {
             }
         }
 
-        return promise.timeout(config.operationTimeout());
+        return promise.timeout(config.get().operationTimeout());
     }
 
     @Override
@@ -334,11 +548,26 @@ public final class DistributedDHTClient implements DHTClient {
         if (response.success()) {
             collector.onSuccess(unit());
         } else {
-            failCollector(collector,
-                          response.fenced()
-                          ? DHTError.replicaFenced(response.sender())
-                          : DHTError.OPERATION_TIMEOUT);
+            failCollector(collector, putRefusal(response));
         }
+    }
+
+    private static Cause putRefusal(DHTMessage.PutResponse response) {
+        if (response.fenced()) {
+            return DHTError.replicaFenced(response.sender());
+        }
+
+        if (response.fenceUnknown()) {
+            return DHTError.replicaFenceUnknown(response.sender());
+        }
+
+        if (response.writePending()) {
+            return DHTError.replicaWritePending(response.sender());
+        }
+
+        return response.replicationStale()
+               ? DHTError.replicaOnNewerReplication(response.sender())
+               : DHTError.OPERATION_TIMEOUT;
     }
 
     /// Handle a remove response from a remote node.
@@ -384,7 +613,8 @@ public final class DistributedDHTClient implements DHTClient {
 
     // --- Private helpers ---
     private long readDeadlineNanos() {
-        return System.nanoTime() + config.operationTimeout()
+        return System.nanoTime() + config.get()
+                                         .operationTimeout()
                                          .nanos();
     }
 
@@ -474,7 +704,7 @@ public final class DistributedDHTClient implements DHTClient {
 
     private List<NodeId> targetNodes(byte[] key) {
         var ringTargets = node.ring().nodesFor(key,
-                                               config.effectiveReplicationFactor(node.ring().nodeCount()));
+                                               config.get().effectiveReplicationFactor(node.ring().nodeCount()));
 
         return filterByLiveness(ringTargets);
     }
@@ -540,7 +770,7 @@ public final class DistributedDHTClient implements DHTClient {
                                                            QuorumCollector<Option<byte[]>> rSetCollector,
                                                            int rSetLive) {
         var _ = rSetCollector.allReplied()
-                             .timeout(config.operationTimeout())
+                             .timeout(config.get().operationTimeout())
                              .onResultRun(() -> fallbackObserver.onUnresolvedAfterFallback(missReport(key,
                                                                                                       rSetCollector,
                                                                                                       rSetLive,
@@ -589,8 +819,10 @@ public final class DistributedDHTClient implements DHTClient {
                                    int rSetLive,
                                    int probed,
                                    int probesFailed) {
-        var rSetSize = node.ring().nodesFor(key,
-                                            config.effectiveReplicationFactor(node.ring().nodeCount())).size();
+        var rSetSize = node.ring()
+                           .nodesFor(key,
+                                     config.get().effectiveReplicationFactor(node.ring().nodeCount()))
+                           .size();
         var candidates = node.ring().nodeCount() - rSetLive;
 
         return ResolveMiss.resolveMiss(hex(key),
@@ -627,7 +859,7 @@ public final class DistributedDHTClient implements DHTClient {
             sendRemoteGet(target, key, collector);
         }
 
-        return probe.timeout(config.operationTimeout())
+        return probe.timeout(config.get().operationTimeout())
                     .recover(cause -> degradeAndCount(cause, probesFailed));
     }
 
@@ -713,19 +945,19 @@ public final class DistributedDHTClient implements DHTClient {
     }
 
     /// The local slot of a put. Returned so a rollback can wait for it to settle (#1818).
-    private Promise<Boolean> handleLocalPut(byte[] key,
-                                            byte[] value,
-                                            WriteStamp stamp,
-                                            QuorumCollector<Unit> collector) {
+    private Promise<StorageEngine.Displaced> handleLocalPut(byte[] key,
+                                                            byte[] value,
+                                                            WriteStamp stamp,
+                                                            QuorumCollector<Unit> collector) {
         return node.storage()
-                   .putVersioned(key,
-                                 value,
-                                 stamp.version(),
-                                 stamp.epochIncarnation(),
-                                 stamp.epochTerm(),
-                                 stamp.epochCounter())
-                   .onSuccess(_ -> collector.onSuccess(unit()))
-                   .onFailure(collector::onFailure);
+                   .putVersionedDisplacing(key,
+                                           value,
+                                           stamp.version(),
+                                           stamp.epochIncarnation(),
+                                           stamp.epochTerm(),
+                                           stamp.epochCounter())
+                   .onSuccess(_ -> collector.onLocalSuccess(unit()))
+                   .onFailure(collector::onLocalFailure);
     }
 
     private void handleLocalRemove(byte[] key, QuorumCollector<Boolean> collector) {
@@ -773,7 +1005,8 @@ public final class DistributedDHTClient implements DHTClient {
                                                   stamp.version(),
                                                   stamp.epochIncarnation(),
                                                   stamp.epochTerm(),
-                                                  stamp.epochCounter()),
+                                                  stamp.epochCounter(),
+                                                  stamp.replicationVersion()),
                         correlationId,
                         collector);
     }
