@@ -620,7 +620,7 @@ public final class OwnerActivation {
 
         return Promise.all(ranges.read(self, stream, partition, from, to),
                            ranges.read(peer.node(), stream, partition, from, to))
-                      .map((mine, theirs) -> compared(mine, theirs) > 0 && !agree(mine, theirs))
+                      .map((mine, theirs) -> !agree(mine, theirs))
                       .recover(_ -> false);
     }
 
