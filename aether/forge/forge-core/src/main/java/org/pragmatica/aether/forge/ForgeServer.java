@@ -661,12 +661,17 @@ public final class ForgeServer {
         var request = builder.POST(HttpRequest.BodyPublishers.ofString(body)).build();
 
         log.info("Deploying blueprint by coordinates: POST /api/v1/blueprints/deploy — {}", artifactCoords);
-        http.sendString(request)
-            .await(startupDeployTimeout(forgeConfig))
-            .onSuccess(result -> handleDeployResponse(result, artifactCoords))
-            .onFailure(cause -> failStartupDeploy(artifactCoords,
-                                                  startupDeployTimeoutDetail(forgeConfig,
-                                                                             cause.message())));
+        awaitStartupDeploy(http, forgeConfig, request).onSuccess(result -> handleDeployResponse(result, artifactCoords))
+                          .onFailure(cause -> failStartupDeploy(artifactCoords,
+                                                                startupDeployTimeoutDetail(forgeConfig,
+                                                                                           cause.message())));
+    }
+
+    /// The one place the startup deploy is awaited, so a test can drive the real wait against a slow
+    /// transport and observe which budget it honours (#1218).
+    static Result<HttpResult<String>> awaitStartupDeploy(HttpOperations http, EmberConfig config, HttpRequest request) {
+        return http.sendString(request)
+                   .await(startupDeployTimeout(config));
     }
 
     /// #1218 — the startup deploy shares the cluster-start budget. It used to carry its own hardcoded
