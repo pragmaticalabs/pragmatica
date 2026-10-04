@@ -26,6 +26,12 @@ import org.pragmatica.lang.Option;
 /// the cluster-events aggregator publishes only on the owner of the cluster-events partition, so exactly one copy
 /// reaches the event stream whichever node led the write. A reconcile of a still-refused partition commits nothing,
 /// so nothing is derived; the committed flag is the dedupe, and it survives a leader change and a restart.
+///
+/// Two nodes that both pass the events-owner gate during a membership change publish the same event, because its
+/// `eventId` is derived from the committed record ([StreamEventIds]), not minted per node. The limit: toggling the
+/// flag changes neither the epoch, the term nor the ISR version, so a refusal that resolves by the owner returning and
+/// is refused again in the identical state repeats its id, and a reader that de-duplicates by `eventId` keeps only the
+/// first of the two.
 public interface StreamFailoverAnnouncer {
     /// Derive and route the event, if any, of one committed ownership Put.
     @Contract
@@ -65,13 +71,15 @@ public interface StreamFailoverAnnouncer {
                                                                               record.owner().id(),
                                                                               isr,
                                                                               liveIds,
-                                                                              "owner not live and no in-sync replica live; unclean failover is off")
+                                                                              "owner not live and no in-sync replica live; unclean failover is off",
+                                                                              StreamEventIds.of("stream-failover-refused", key, record))
                : OperationalEvent.StreamFailoverResolved.streamFailoverResolved(key.stream(),
                                                                                 key.partition(),
                                                                                 record.owner().id(),
                                                                                 isr,
                                                                                 liveIds,
-                                                                                "owner live again or an in-sync replica elected");
+                                                                                "owner live again or an in-sync replica elected",
+                                                                                StreamEventIds.of("stream-failover-resolved", key, record));
     }
 
     private static List<String> ids(List<NodeId> nodes) {

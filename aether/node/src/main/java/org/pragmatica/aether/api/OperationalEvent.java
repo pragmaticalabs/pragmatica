@@ -57,14 +57,16 @@ public sealed interface OperationalEvent extends Message.Local {
                                  List<String> isr,
                                  List<String> live,
                                  String reason,
+                                 String eventId,
                                  long timestamp) implements OperationalEvent {
         public static StreamFailoverRefused streamFailoverRefused(String stream,
                                                                   int partition,
                                                                   String owner,
                                                                   List<String> isr,
                                                                   List<String> live,
-                                                                  String reason) {
-            return new StreamFailoverRefused(stream, partition, owner, isr, live, reason, System.currentTimeMillis());
+                                                                  String reason,
+                                                                  String eventId) {
+            return new StreamFailoverRefused(stream, partition, owner, isr, live, reason, eventId, System.currentTimeMillis());
         }
     }
 
@@ -75,14 +77,16 @@ public sealed interface OperationalEvent extends Message.Local {
                                   List<String> isr,
                                   List<String> live,
                                   String reason,
+                                  String eventId,
                                   long timestamp) implements OperationalEvent {
         public static StreamFailoverResolved streamFailoverResolved(String stream,
                                                                     int partition,
                                                                     String owner,
                                                                     List<String> isr,
                                                                     List<String> live,
-                                                                    String reason) {
-            return new StreamFailoverResolved(stream, partition, owner, isr, live, reason, System.currentTimeMillis());
+                                                                    String reason,
+                                                                    String eventId) {
+            return new StreamFailoverResolved(stream, partition, owner, isr, live, reason, eventId, System.currentTimeMillis());
         }
     }
 
@@ -95,19 +99,22 @@ public sealed interface OperationalEvent extends Message.Local {
                                  List<String> isr,
                                  List<String> fenced,
                                  int confirmationFactor,
+                                 String eventId,
                                  long timestamp) implements OperationalEvent {
         public static StreamIsrBelowMinimum streamIsrBelowMinimum(String stream,
                                                                   int partition,
                                                                   String owner,
                                                                   List<String> isr,
                                                                   List<String> fenced,
-                                                                  int confirmationFactor) {
+                                                                  int confirmationFactor,
+                                                                  String eventId) {
             return new StreamIsrBelowMinimum(stream,
                                              partition,
                                              owner,
                                              isr,
                                              fenced,
                                              confirmationFactor,
+                                             eventId,
                                              System.currentTimeMillis());
         }
     }
@@ -119,19 +126,22 @@ public sealed interface OperationalEvent extends Message.Local {
                              List<String> isr,
                              List<String> fenced,
                              int confirmationFactor,
+                             String eventId,
                              long timestamp) implements OperationalEvent {
         public static StreamIsrRestored streamIsrRestored(String stream,
                                                           int partition,
                                                           String owner,
                                                           List<String> isr,
                                                           List<String> fenced,
-                                                          int confirmationFactor) {
+                                                          int confirmationFactor,
+                                                          String eventId) {
             return new StreamIsrRestored(stream,
                                          partition,
                                          owner,
                                          isr,
                                          fenced,
                                          confirmationFactor,
+                                         eventId,
                                          System.currentTimeMillis());
         }
     }

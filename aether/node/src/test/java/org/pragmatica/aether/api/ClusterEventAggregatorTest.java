@@ -243,13 +243,15 @@ class ClusterEventAggregatorTest {
                                                                                                               "node-a",
                                                                                                               java.util.List.of("node-a", "node-b"),
                                                                                                               java.util.List.of("node-c"),
-                                                                                                              "no live ISR"));
+                                                                                                              "no live ISR",
+                                                                                                              "refused-id"));
         h.aggregator().onStreamFailoverResolved(OperationalEvent.StreamFailoverResolved.streamFailoverResolved("orders",
                                                                                                                 2,
                                                                                                                 "node-b",
                                                                                                                 java.util.List.of("node-b"),
                                                                                                                 java.util.List.of("node-b", "node-c"),
-                                                                                                                "elected"));
+                                                                                                                "elected",
+                                                                                                                "resolved-id"));
 
         var events = h.events();
 
@@ -262,7 +264,8 @@ class ClusterEventAggregatorTest {
                                            .containsEntry("owner", "node-a")
                                            .containsEntry("isr", "node-a,node-b")
                                            .containsEntry("live", "node-c")
-                                           .containsEntry("reason", "no live ISR");
+                                           .containsEntry("reason", "no live ISR")
+                                           .containsEntry("eventId", "refused-id");
         assertThat(events.get(1)).isInstanceOf(ClusterEvent.StreamFailoverResolved.class);
         assertThat(events.get(1).details()).containsEntry("owner", "node-b");
     }
@@ -277,13 +280,15 @@ class ClusterEventAggregatorTest {
                                                                                                             "node-a",
                                                                                                             java.util.List.of("node-a"),
                                                                                                             java.util.List.of("node-b"),
-                                                                                                            2));
+                                                                                                            2,
+                                                                                                            "below-id"));
         h.aggregator().onStreamIsrRestored(OperationalEvent.StreamIsrRestored.streamIsrRestored("orders",
                                                                                                 2,
                                                                                                 "node-a",
                                                                                                 java.util.List.of("node-a", "node-b"),
                                                                                                 java.util.List.of(),
-                                                                                                2));
+                                                                                                2,
+                                                                                                "restored-id"));
 
         var events = h.events();
 
@@ -296,7 +301,8 @@ class ClusterEventAggregatorTest {
                                            .containsEntry("owner", "node-a")
                                            .containsEntry("isr", "node-a")
                                            .containsEntry("fenced", "node-b")
-                                           .containsEntry("confirmationFactor", "2");
+                                           .containsEntry("confirmationFactor", "2")
+                                           .containsEntry("eventId", "below-id");
         assertThat(events.get(1)).isInstanceOf(ClusterEvent.StreamIsrRestored.class);
         assertThat(events.get(1).type()).isEqualTo("STREAM_ISR_RESTORED");
         assertThat(events.get(1).severity()).isEqualTo(ClusterEvent.Severity.INFO);
@@ -400,7 +406,7 @@ class ClusterEventAggregatorTest {
         var resolution = new ValuePut<>(new KVCommand.Put<>(key, restored), Option.some(below));
 
         for (var node : List.of(leader, eventsOwner, third)) {
-            var announcer = org.pragmatica.aether.node.StreamIsrAnnouncer.streamIsrAnnouncer(_ -> 2, event -> {
+            var announcer = org.pragmatica.aether.node.StreamIsrAnnouncer.streamIsrAnnouncer(_ -> 2, _ -> 2, (_, _) -> Option.none(), event -> {
                 switch (event) {
                     case OperationalEvent.StreamIsrBelowMinimum e -> node.aggregator().onStreamIsrBelowMinimum(e);
                     case OperationalEvent.StreamIsrRestored e -> node.aggregator().onStreamIsrRestored(e);
@@ -417,6 +423,26 @@ class ClusterEventAggregatorTest {
         assertThat(eventsOwner.events()).as("exactly one breach and one restoration, on the events owner")
                                         .extracting(ClusterEvent::type)
                                         .containsExactly("STREAM_ISR_BELOW_MINIMUM", "STREAM_ISR_RESTORED");
+    }
+
+    /// #1883 F3: during a membership change two nodes can both pass the events-owner gate and each publish the event
+    /// derived from one committed Put. The event carries a deterministic `eventId` that the aggregator keeps, so the read
+    /// collapses the two copies; an event with another id (another transition) stays.
+    @Test
+    void twoCopiesOfOneDerivedEvent_shareTheirPresetEventId_andReadAsOne() {
+        var h = Harness.create();
+        var isr = java.util.List.of("node-a");
+        var fenced = java.util.List.of("node-b");
+
+        h.aggregator().onStreamIsrBelowMinimum(OperationalEvent.StreamIsrBelowMinimum.streamIsrBelowMinimum("orders", 2, "node-a", isr, fenced, 2, "same-put"));
+        h.aggregator().onStreamIsrBelowMinimum(OperationalEvent.StreamIsrBelowMinimum.streamIsrBelowMinimum("orders", 2, "node-a", isr, fenced, 2, "same-put"));
+        h.aggregator().onStreamIsrBelowMinimum(OperationalEvent.StreamIsrBelowMinimum.streamIsrBelowMinimum("orders", 2, "node-a", isr, fenced, 2, "next-put"));
+        h.aggregator().onStreamFailoverRefused(OperationalEvent.StreamFailoverRefused.streamFailoverRefused("orders", 2, "node-a", isr, fenced, "r", "refusal"));
+        h.aggregator().onStreamFailoverRefused(OperationalEvent.StreamFailoverRefused.streamFailoverRefused("orders", 2, "node-a", isr, fenced, "r", "refusal"));
+
+        assertThat(h.events()).extracting(e -> e.details().get("eventId"))
+                              .as("same id read once, different id kept, failover events the same")
+                              .containsExactlyInAnyOrder("same-put", "next-put", "refusal");
     }
 
     // --- owner-gated emit (operational events: config/deploy/scale/blueprint stay owner-gated) -----

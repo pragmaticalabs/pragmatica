@@ -170,4 +170,43 @@ class StreamFailoverAnnouncementTest {
             }
         });
     }
+
+    /// #1730 round 2 (F3): the id of a failover event is a pure function of the committed record, so two nodes that both
+    /// pass the events-owner gate publish the SAME `eventId`; a different epoch is a different event.
+    @Test
+    void eventId_isDeterministicOverTheCommittedRecord_andDiffersAcrossEpochs() {
+        var key = StreamPartitionOwnershipKey.streamPartitionOwnershipKey(STREAM, PARTITION);
+        var owned = StreamPartitionOwnershipValue.streamPartitionOwnershipValue(A, GENERATION.withCounter(1L), 1L, HlcTimestamp.ZERO, List.of(A, B), 3L);
+        var movedOn = StreamPartitionOwnershipValue.streamPartitionOwnershipValue(A, GENERATION.withCounter(2L), 2L, HlcTimestamp.ZERO, List.of(A, B), 3L);
+
+        var onNodeOne = refusedId(key, owned);
+        var onNodeTwo = refusedId(key, owned);
+        var resolved = (OperationalEvent.StreamFailoverResolved) StreamFailoverAnnouncer.transition(key,
+                                                                                                    Option.some(owned.withFailoverRefused(true)),
+                                                                                                    owned,
+                                                                                                    List.of(A)).unwrap();
+
+        assertThat(onNodeOne).as("two derivations of one committed Put").isEqualTo(onNodeTwo).isNotBlank();
+        assertThat(refusedId(key, movedOn)).as("another epoch").isNotEqualTo(onNodeOne);
+        assertThat(resolved.eventId()).as("the resolution is not the refusal").isNotEqualTo(onNodeOne).isNotBlank();
+    }
+
+    /// LIMIT, pinned so it cannot be forgotten: toggling `failoverRefused` changes neither epoch, term nor ISR version, so
+    /// a refusal that resolves by the owner returning and is refused again in the identical state repeats its id, and a
+    /// reader de-duplicating by `eventId` keeps only the first. If the record ever gains a counter for the flag, this
+    /// reddens: change it to assert the ids differ.
+    @Test
+    void refusalRepeatedInTheIdenticalState_repeatsItsId_untilTheRecordCarriesACounter() {
+        var key = StreamPartitionOwnershipKey.streamPartitionOwnershipKey(STREAM, PARTITION);
+        var owned = StreamPartitionOwnershipValue.streamPartitionOwnershipValue(A, GENERATION.withCounter(1L), 1L, HlcTimestamp.ZERO, List.of(A, B), 3L);
+
+        assertThat(refusedId(key, owned)).isEqualTo(refusedId(key, owned.withFailoverRefused(false)));
+    }
+
+    private static String refusedId(StreamPartitionOwnershipKey key, StreamPartitionOwnershipValue owned) {
+        return ((OperationalEvent.StreamFailoverRefused) StreamFailoverAnnouncer.transition(key,
+                                                                                            Option.some(owned.withFailoverRefused(false)),
+                                                                                            owned.withFailoverRefused(true),
+                                                                                            List.of(C)).unwrap()).eventId();
+    }
 }

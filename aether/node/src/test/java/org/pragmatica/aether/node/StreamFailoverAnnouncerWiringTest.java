@@ -29,7 +29,10 @@ class StreamFailoverAnnouncerWiringTest {
         assertThat(code).contains("MessageRouter.Entry.route(OperationalEvent.StreamFailoverResolved.class,eventAggregator::onStreamFailoverResolved)");
         // #1883: the in-sync-set announcer is fed by the same committed Puts, takes the factor from the stream's committed
         // config, and its events reach the aggregator.
-        assertThat(code).contains("StreamIsrAnnouncer.streamIsrAnnouncer(streamPartitionManager::confirmationFactorFor,delegateRouter::route);");
+        assertThat(code).contains("StreamIsrAnnouncer.streamIsrAnnouncer(streamPartitionManager::confirmationFactorFor,streamPartitionManager::confirmationFactorAfter,");
+        // A committed config Put that moves the factor is announced too, and it is announced BEFORE the manager installs
+        // that config: the factor it enforces before the Put is the baseline.
+        assertThat(code).contains(".onPut(AetherKey.StreamConfigKey.class,streamIsrAnnouncer::onConfigPut).onPut(AetherKey.StreamConfigKey.class,streamPartitionManager::onStreamConfigPut)");
         assertThat(code).contains(".onPut(AetherKey.StreamPartitionOwnershipKey.class,streamIsrAnnouncer::onOwnershipPut)");
         assertThat(code).contains("MessageRouter.Entry.route(OperationalEvent.StreamIsrBelowMinimum.class,eventAggregator::onStreamIsrBelowMinimum)");
         assertThat(code).contains("MessageRouter.Entry.route(OperationalEvent.StreamIsrRestored.class,eventAggregator::onStreamIsrRestored)");

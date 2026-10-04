@@ -1447,10 +1447,29 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// kept). Equal or weaker configs keep the existing entry (the `computeIfAbsent` idempotence this
     /// replaces).
     private StreamEntry adoptIfMoreDurable(StreamConfig config, StreamEntry existing) {
-        return config.partitions() == existing.config()
-                                              .partitions() && strongerDurability(config, existing.config())
+        return adopts(config, existing.config())
                ? adoptConfig(config, existing)
                : existing;
+    }
+
+    /// The one rule that decides whether a committed config of the SAME life replaces the local one: same partition
+    /// count and strictly stronger durability. [#confirmationFactorAfter] reads it too, so what is announced about a
+    /// factor change cannot differ from what [#confirmationFactorFor] then enforces.
+    private static boolean adopts(StreamConfig incoming, StreamConfig existing) {
+        return incoming.partitions() == existing.partitions() && strongerDurability(incoming, existing);
+    }
+
+    /// The confirmation factor [#confirmationFactorFor] will report for `incoming.name()` once the committed
+    /// `incoming` has been applied here ([#onStreamConfigPut]); call it BEFORE that handler runs. A config that is not
+    /// adopted (weaker, or another partition count) and a different life (a recreate, not a factor change) leave the
+    /// factor as it is, so a plain lowering announces nothing: acks keep being refused at the old factor. `0` for a
+    /// stream this node does not hold yet.
+    public int confirmationFactorAfter(StreamConfig incoming) {
+        return option(streams.get(incoming.name())).map(entry -> entry.config())
+                     .map(existing -> existing.incarnation() == incoming.incarnation() && adopts(incoming, existing)
+                                      ? incoming.confirmationFactor()
+                                      : existing.confirmationFactor())
+                     .or(0);
     }
 
     private StreamEntry adoptConfig(StreamConfig config, StreamEntry existing) {

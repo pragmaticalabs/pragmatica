@@ -1450,7 +1450,8 @@ public final class ClusterEventAggregator {
                                                              event.owner(),
                                                              event.isr(),
                                                              event.live(),
-                                                             event.reason())));
+                                                             event.reason(),
+                                                             event.eventId())));
     }
 
     @Contract
@@ -1465,7 +1466,8 @@ public final class ClusterEventAggregator {
                                                               event.owner(),
                                                               event.isr(),
                                                               event.live(),
-                                                              event.reason())));
+                                                              event.reason(),
+                                                              event.eventId())));
     }
 
     @Contract
@@ -1481,7 +1483,8 @@ public final class ClusterEventAggregator {
                                                         event.owner(),
                                                         event.isr(),
                                                         event.fenced(),
-                                                        event.confirmationFactor())));
+                                                        event.confirmationFactor(),
+                                                        event.eventId())));
     }
 
     @Contract
@@ -1496,7 +1499,8 @@ public final class ClusterEventAggregator {
                                                     event.owner(),
                                                     event.isr(),
                                                     event.fenced(),
-                                                    event.confirmationFactor())));
+                                                    event.confirmationFactor(),
+                                                    event.eventId())));
     }
 
     private static Map<String, String> streamIsrDetails(String stream,
@@ -1504,8 +1508,11 @@ public final class ClusterEventAggregator {
                                                         String owner,
                                                         List<String> isr,
                                                         List<String> fenced,
-                                                        int confirmationFactor) {
-        return Map.of("stream",
+                                                        int confirmationFactor,
+                                                        String eventId) {
+        return Map.of(ClusterEventIdentity.EVENT_ID,
+                      eventId,
+                      "stream",
                       stream,
                       "partition",
                       String.valueOf(partition),
@@ -1524,8 +1531,11 @@ public final class ClusterEventAggregator {
                                                              String owner,
                                                              List<String> isr,
                                                              List<String> live,
-                                                             String reason) {
-        return Map.of("stream",
+                                                             String reason,
+                                                             String eventId) {
+        return Map.of(ClusterEventIdentity.EVENT_ID,
+                      eventId,
+                      "stream",
                       stream,
                       "partition",
                       String.valueOf(partition),

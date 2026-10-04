@@ -4,12 +4,20 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.node;
 
+import java.util.ArrayList;
 import java.util.List;
 
 import org.pragmatica.aether.api.OperationalEvent;
+import org.pragmatica.aether.slice.ReplicationFactors;
+import org.pragmatica.aether.slice.RetentionPolicy;
+import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.slice.generation.Epoch;
+import org.pragmatica.aether.slice.kvstore.AetherKey.StreamConfigKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.StreamPartitionOwnershipKey;
+import org.pragmatica.aether.slice.kvstore.AetherValue.StreamConfigValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.StreamPartitionOwnershipValue;
+import org.pragmatica.cluster.state.kvstore.KVCommand;
+import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.hlc.HlcTimestamp;
 import org.pragmatica.lang.Option;
@@ -87,6 +95,119 @@ class StreamIsrAnnouncerTest {
     void firstRecordBelowTheFactor_isAnnounced() {
         assertThat(StreamIsrAnnouncer.transition(KEY, Option.none(), record(List.of(A), 1L), 2).unwrap())
             .isInstanceOf(OperationalEvent.StreamIsrBelowMinimum.class);
+    }
+
+    /// #1883 F3: the id is a pure function of the committed record, so two nodes that both pass the events-owner gate
+    /// publish the SAME `eventId`; a different ISR version is a different transition and a different id.
+    @Test
+    void eventId_isDeterministicOverTheCommittedPut_andDiffersAcrossIsrVersions() {
+        var healthy = record(List.of(A, B), 4L);
+        var below = healthy.withIsrAndFenced(List.of(A), List.of(B));
+        var restored = below.withIsr(List.of(A, B));
+        var belowAgain = restored.withIsrAndFenced(List.of(A), List.of(B));
+
+        var onNodeOne = idOf(StreamIsrAnnouncer.transition(KEY, Option.some(healthy), below, 2).unwrap());
+        var onNodeTwo = idOf(StreamIsrAnnouncer.transition(KEY, Option.some(healthy), below, 2).unwrap());
+        var secondBreach = idOf(StreamIsrAnnouncer.transition(KEY, Option.some(restored), belowAgain, 2).unwrap());
+        var restoration = idOf(StreamIsrAnnouncer.transition(KEY, Option.some(below), restored, 2).unwrap());
+
+        assertThat(onNodeOne).as("two derivations of one committed Put").isEqualTo(onNodeTwo).isNotBlank();
+        assertThat(secondBreach).as("the same breach again, one ISR version later").isNotEqualTo(onNodeOne);
+        assertThat(restoration).as("the restoration is not the breach").isNotEqualTo(onNodeOne);
+    }
+
+    /// #1883 F4: a factor raised above |ISR| stalls acks with no ISR commit at all; it is announced once, on every node
+    /// from the same committed Put, and the same raise derived twice carries the same id.
+    @Test
+    void factorRaisedAboveTheIsr_isAnnouncedBelowOnce_withADeterministicId() {
+        var announced = new ArrayList<OperationalEvent>();
+        var announcer = configAnnouncer(2, 3, announced);
+        var put = configPut(config(2, 3), 111L);
+
+        announcer.onConfigPut(put);
+
+        assertThat(announced).singleElement().isInstanceOfSatisfying(OperationalEvent.StreamIsrBelowMinimum.class, below -> {
+            assertThat(below.stream()).isEqualTo("orders");
+            assertThat(below.partition()).isEqualTo(3);
+            assertThat(below.isr()).containsExactly("node-a", "node-b");
+            assertThat(below.confirmationFactor()).isEqualTo(3);
+        });
+        var again = new ArrayList<OperationalEvent>();
+
+        configAnnouncer(2, 3, again).onConfigPut(put);
+
+        assertThat(idOf(again.getFirst())).as("another node deriving the same Put").isEqualTo(idOf(announced.getFirst()));
+
+        var laterChange = new ArrayList<OperationalEvent>();
+
+        configAnnouncer(2, 3, laterChange).onConfigPut(configPut(config(2, 3), 112L));
+
+        assertThat(idOf(laterChange.getFirst())).as("a later config change is a different event").isNotEqualTo(idOf(announced.getFirst()));
+    }
+
+    @Test
+    void factorMovedBackToTheIsr_isAnnouncedRestoredOnce() {
+        var announced = new ArrayList<OperationalEvent>();
+
+        configAnnouncer(3, 2, announced).onConfigPut(configPut(config(3, 2), 222L));
+
+        assertThat(announced).singleElement().isInstanceOf(OperationalEvent.StreamIsrRestored.class);
+    }
+
+    /// The false-alert controls of the config path: a config change that moves no condition raises nothing.
+    @Test
+    void configChange_thatMovesNoCondition_announcesNothing() {
+        var announced = new ArrayList<OperationalEvent>();
+
+        configAnnouncer(2, 2, announced).onConfigPut(configPut(config(3, 2), 1L));
+        configAnnouncer(2, 1, announced).onConfigPut(configPut(config(3, 1), 2L));
+        configAnnouncer(1, 2, announced).onConfigPut(configPut(config(3, 2), 3L));
+        configAnnouncer(0, 3, announced).onConfigPut(configPut(config(3, 3), 4L));
+
+        assertThat(announced).as("unchanged factor; a CF-1 stream (no minimum); both factors <= |ISR|; a stream not held before").isEmpty();
+    }
+
+    @Test
+    void configChange_skipsPartitionsWithoutACommittedIsr() {
+        var legacy = StreamPartitionOwnershipValue.streamPartitionOwnershipValue(A, Epoch.ZERO, 1L, HlcTimestamp.ZERO);
+
+        assertThat(StreamIsrAnnouncer.configTransitions(StreamConfigValue.streamConfigValue(config(2, 3), 5L),
+                                                        2,
+                                                        3,
+                                                        (_, _) -> Option.some(legacy))).as("isrVersion 0: no committed ISR").isEmpty();
+        assertThat(StreamIsrAnnouncer.configTransitions(StreamConfigValue.streamConfigValue(config(2, 3), 5L),
+                                                        2,
+                                                        3,
+                                                        (_, _) -> Option.none())).as("no committed record").isEmpty();
+    }
+
+    private static String idOf(OperationalEvent event) {
+        return switch (event) {
+            case OperationalEvent.StreamIsrBelowMinimum below -> below.eventId();
+            case OperationalEvent.StreamIsrRestored restored -> restored.eventId();
+            default -> throw new AssertionError("unexpected " + event);
+        };
+    }
+
+    /// The partition 3 holds ISR {A, B}; the factor moves from `before` to `after` with this Put.
+    private static StreamIsrAnnouncer configAnnouncer(int before, int after, List<OperationalEvent> sink) {
+        return StreamIsrAnnouncer.streamIsrAnnouncer(_ -> before,
+                                                     _ -> after,
+                                                     (stream, partition) -> partition == 3
+                                                                            ? Option.some(record(List.of(A, B), 4L))
+                                                                            : Option.none(),
+                                                     sink::add);
+    }
+
+    private static StreamConfig config(int replicationFactor, int confirmationFactor) {
+        return StreamConfig.streamConfig("orders", 4, RetentionPolicy.retentionPolicy(1000, 1024 * 1024, 600_000), "earliest")
+                           .withReplication(new ReplicationFactors(replicationFactor, confirmationFactor));
+    }
+
+    private static ValuePut<StreamConfigKey, StreamConfigValue> configPut(StreamConfig config, long createdAt) {
+        return new ValuePut<>(new KVCommand.Put<>(StreamConfigKey.streamConfigKey("orders"),
+                                                  StreamConfigValue.streamConfigValue(config, createdAt)),
+                              Option.none());
     }
 
     private static StreamPartitionOwnershipValue record(List<NodeId> isr, long isrVersion) {

@@ -5143,7 +5143,19 @@ public interface AetherNode extends ManageableNode {
         // config into replicaCatalog() FIRST (onStreamConfigPut), then place its replica set
         // (reconcileReplicaSetOnConfigPut). clusterEventsControllerRef is the late-bound holder for the
         // stream ReplicaSetController (set below, after the controller is built).
+        // #1883: the in-sync set falling below / returning to the confirmation factor, derived from the committed ownership
+        // Put AND from a committed config Put that moves the factor. The config handler runs FIRST: it reads the factor
+        // the manager enforces before the Put and the one it will enforce after it, which the manager's own handler
+        // (next) then installs.
+        var streamIsrAnnouncer = StreamIsrAnnouncer.streamIsrAnnouncer(streamPartitionManager::confirmationFactorFor,
+                                                                       streamPartitionManager::confirmationFactorAfter,
+                                                                       (stream, partition) -> kvStore.getTyped(StreamPartitionOwnershipKey.streamPartitionOwnershipKey(stream,
+                                                                                                                                                                        partition),
+                                                                                                               StreamPartitionOwnershipValue.class),
+                                                                       delegateRouter::route);
         var streamConfigKvRouter = KVNotificationRouter.<AetherKey, AetherValue> builder(AetherKey.class)
+                                                       .onPut(AetherKey.StreamConfigKey.class,
+                                                              streamIsrAnnouncer::onConfigPut)
                                                        .onPut(AetherKey.StreamConfigKey.class,
                                                               streamPartitionManager::onStreamConfigPut)
                                                        .onPut(AetherKey.StreamConfigKey.class,
@@ -5428,9 +5440,6 @@ public interface AetherNode extends ManageableNode {
         // the cluster-events aggregator publishes only on its partition owner, so it reaches the stream exactly once.
         var streamFailoverAnnouncer = StreamFailoverAnnouncer.streamFailoverAnnouncer(() -> streamIsrInputs(clusterEventsControllerRef).liveMembers(),
                                                                                       delegateRouter::route);
-        // #1883: the same derivation for the in-sync set falling below / returning to the confirmation factor.
-        var streamIsrAnnouncer = StreamIsrAnnouncer.streamIsrAnnouncer(streamPartitionManager::confirmationFactorFor,
-                                                                       delegateRouter::route);
 
         allEntries.addAll(KVNotificationRouter.<AetherKey, AetherValue> builder(AetherKey.class)
                                               .onPut(AetherKey.StreamPartitionOwnershipKey.class,

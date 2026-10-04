@@ -7,6 +7,7 @@ package org.pragmatica.aether.stream;
 import io.netty.buffer.ByteBuf;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.pragmatica.aether.slice.ReplicationFactors;
 import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.slice.fence.OwnershipEpochHighWater;
@@ -100,6 +101,35 @@ class StreamLifeAuthorityTest {
 
         assertThat(served).as("the removed life is not served").isFalse();
         assertThat(afterRemoval.isFailure()).as("the removed life accepts nothing: %s", afterRemoval).isTrue();
+    }
+
+    /// #1883: what a committed config will make [StreamPartitionManager#confirmationFactorFor] report, read BEFORE
+    /// the config is applied, follows the adoption rule: only a strictly stronger config of the same life and shape
+    /// changes the factor. A lowering stays at the old factor, because that is what acks keep enforcing.
+    @Test
+    void confirmationFactorAfter_followsTheAdoptionRule_andAgreesWithWhatIsEnforcedOnceApplied() {
+        var node = manager(new RecordingClusterNode(), AppendLog.Opener.directory(walDir));
+        var life = config().withIncarnation(COMMITTED_LIFE);
+        var rf3cf2 = life.withReplication(new ReplicationFactors(3, 2));
+
+        assertThat(node.confirmationFactorAfter(rf3cf2)).as("a stream not held yet has no factor to move from").isZero();
+        node.onStreamConfigPut(committed(rf3cf2));
+        assertThat(node.confirmationFactorFor(STREAM)).isEqualTo(2);
+
+        var raised = life.withReplication(new ReplicationFactors(3, 3));
+        var lowered = life.withReplication(new ReplicationFactors(3, 1));
+        var anotherLife = raised.withIncarnation(COMMITTED_LIFE + 1);
+
+        assertThat(node.confirmationFactorAfter(raised)).as("a raise is adopted").isEqualTo(3);
+        assertThat(node.confirmationFactorAfter(lowered)).as("a lowering is not adopted: acks keep the old factor").isEqualTo(2);
+        assertThat(node.confirmationFactorAfter(rf3cf2)).as("an unchanged config moves nothing").isEqualTo(2);
+        assertThat(node.confirmationFactorAfter(anotherLife)).as("a new life is a recreate, not a factor change").isEqualTo(2);
+
+        node.onStreamConfigPut(committed(lowered));
+        assertThat(node.confirmationFactorFor(STREAM)).as("the prediction held: the lowering was not enforced").isEqualTo(2);
+        node.onStreamConfigPut(committed(raised));
+        assertThat(node.confirmationFactorFor(STREAM)).as("the prediction held: the raise was enforced").isEqualTo(3);
+        node.close();
     }
 
     private static StreamPartitionManager manager(RecordingClusterNode cluster, AppendLog.Opener opener) {
