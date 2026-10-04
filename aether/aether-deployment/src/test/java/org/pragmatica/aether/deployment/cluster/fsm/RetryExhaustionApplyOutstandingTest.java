@@ -384,14 +384,20 @@ class RetryExhaustionApplyOutstandingTest {
 
     /// The torn-read claim, asserted rather than assumed. `KVStore.process` applies a batch's
     /// commands one at a time under no cross-command lock, so a reader on another thread can observe
-    /// the state between `Put(AppBlueprintKey)` and `Remove(DeploymentOutcomeKey)`. This is that
-    /// intermediate state: the new apply's blueprint is visible while the PREVIOUS attempt's
-    /// terminal record has not yet been removed.
+    /// the state between `Put(AppBlueprintKey)` and the apply-start `Put(DeploymentOutcomeKey)`. This
+    /// is that intermediate state: the new apply's blueprint is visible while the PREVIOUS attempt's
+    /// terminal record has not yet been replaced.
     ///
-    /// It must answer "not outstanding" and decline to settle. That is the reversible arm — the
-    /// exhaustion re-drives and the next one re-decides against a settled store.
+    /// **#972 changed the answer, deliberately.** Before attempt attribution this declined, because a
+    /// terminal could not be told apart from the new apply's own, and reading it as outstanding risked
+    /// condemning on another attempt's evidence. The same inability is what left a publish that LOST
+    /// the apply-start race reading the previous attempt's terminal forever — #972 itself. Every
+    /// terminal now names the attempt it closes, so this one is visibly the previous attempt's and the
+    /// apply reads as outstanding: exactly what it reads one command later, when the IN_PROGRESS lands,
+    /// and exactly what it reads if that IN_PROGRESS is fenced out. The torn state no longer answers
+    /// differently from either state it sits between, which is the property this test exists to pin.
     @Test
-    void aTornBatch_blueprintVisibleBeforeTheStaleOutcomeIsRemoved_doesNotCondemn() {
+    void aTornBatch_blueprintVisibleBeforeItsApplyStartRecord_readsAsTheSettledBatchDoes() {
         var expanded = blueprint();
         var newLeaderStore = freshStore();
         var newLeaderHarness = leaderHarness(new RecordingClusterNode(SELF, newLeaderStore),
@@ -400,14 +406,45 @@ class RetryExhaustionApplyOutstandingTest {
 
         seed(newLeaderStore,
              new KVCommand.Put<>(AppBlueprintKey.appBlueprintKey(expanded.id()),
-                                 AppBlueprintValue.appBlueprintValue(expanded)),
+                                 AppBlueprintValue.appBlueprintValue(expanded, false, "new-attempt")),
              new KVCommand.Put<>(DeploymentOutcomeKey.deploymentOutcomeKey(expanded.id()),
-                                 DeploymentOutcomeValue.failed(List.of(SLICE.asString()), "previous attempt", 1L)));
+                                 DeploymentOutcomeValue.failed(List.of(SLICE.asString()),
+                                                               "previous attempt",
+                                                               1L,
+                                                               1L,
+                                                               "previous-attempt")));
 
         exhaustRetryBudgetOn(newLeaderHarness, SELF, SLICE);
 
         assertThat(activeState(newLeaderHarness).permanentlyFailed())
-                .as("a half-applied batch must never be read as an outstanding apply")
+                .as("a terminal for another attempt does not close this apply, torn read or not")
+                .contains(SLICE);
+    }
+
+    /// The control for the test above, with ONE variable changed: the terminal names the COMMITTED
+    /// attempt. That apply is over, so exhaustion re-drives and never condemns.
+    @Test
+    void aTerminalForTheCommittedAttempt_doesNotCondemn() {
+        var expanded = blueprint();
+        var newLeaderStore = freshStore();
+        var newLeaderHarness = leaderHarness(new RecordingClusterNode(SELF, newLeaderStore),
+                                             newLeaderStore,
+                                             RESOLVED_MEMBERSHIP);
+
+        seed(newLeaderStore,
+             new KVCommand.Put<>(AppBlueprintKey.appBlueprintKey(expanded.id()),
+                                 AppBlueprintValue.appBlueprintValue(expanded, false, "new-attempt")),
+             new KVCommand.Put<>(DeploymentOutcomeKey.deploymentOutcomeKey(expanded.id()),
+                                 DeploymentOutcomeValue.failed(List.of(SLICE.asString()),
+                                                               "this attempt",
+                                                               1L,
+                                                               1L,
+                                                               "new-attempt")));
+
+        exhaustRetryBudgetOn(newLeaderHarness, SELF, SLICE);
+
+        assertThat(activeState(newLeaderHarness).permanentlyFailed())
+                .as("a terminal for the committed attempt closes it")
                 .doesNotContain(SLICE);
     }
 

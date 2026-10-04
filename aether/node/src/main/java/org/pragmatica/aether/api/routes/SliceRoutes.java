@@ -445,7 +445,7 @@ public final class SliceRoutes implements RouteSource {
     private Promise<BlueprintStatusResponse> routeBlueprintStatusByOutcome(BlueprintId blueprintId) {
         return nodeSupplier.get()
                            .blueprintService()
-                           .outcome(blueprintId)
+                           .attributedOutcome(blueprintId)
                            .filter(SliceRoutes::isTerminalFailureOutcome)
                            .fold(() -> handleGetBlueprintStatusFromStore(blueprintId),
                                  outcome -> resolveTerminalOutcomeStatus(blueprintId, outcome));

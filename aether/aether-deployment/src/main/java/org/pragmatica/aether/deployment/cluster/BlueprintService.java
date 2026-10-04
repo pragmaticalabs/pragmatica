@@ -11,6 +11,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.stream.Stream;
 import java.util.Map;
+import java.util.UUID;
 import java.util.stream.Collectors;
 import java.util.zip.ZipInputStream;
 
@@ -162,6 +163,13 @@ public interface BlueprintService {
     /// outcome Put on `inflight.id()`, never `previous.id()`; `restoringBlueprints` gates the
     /// in-flight-tracking checks that would otherwise produce a new terminal write for `previous.id()`]
     Option<AetherValue.DeploymentOutcomeValue> outcome(BlueprintId id);
+    /// #972 — [#outcome] attributed to the committed blueprint. The record when it closes the attempt of
+    /// the committed `AppBlueprintValue`, or when no blueprint is committed (rolled back or deleted, the
+    /// case [#outcome]'s rollback paragraph describes); EMPTY when it closes an EARLIER attempt of a
+    /// blueprint that has since been published again. That earlier attempt's FAILED or ROLLED_BACK says
+    /// nothing about the live deployment, and reporting it against the live blueprint is the "healthy
+    /// deployment reported as the previous attempt's failure" #972 names.
+    Option<AetherValue.DeploymentOutcomeValue> attributedOutcome(BlueprintId id);
     List<ExpandedBlueprint> list();
     Promise<Unit> delete(BlueprintId id);
     Result<Blueprint> validate(String dsl);
@@ -362,6 +370,17 @@ class BlueprintServiceInstance implements BlueprintService {
     }
 
     @Override
+    public Option<AetherValue.DeploymentOutcomeValue> attributedOutcome(BlueprintId id) {
+        var committedAttempt = store.get(AetherKey.AppBlueprintKey.appBlueprintKey(id))
+                                    .filter(AppBlueprintValue.class::isInstance)
+                                    .map(AppBlueprintValue.class::cast)
+                                    .map(AppBlueprintValue::attemptId);
+
+        return outcome(id).filter(outcome -> committedAttempt.map(outcome::describesAttempt)
+                                                             .or(true));
+    }
+
+    @Override
     public List<ExpandedBlueprint> list() {
         var result = new ArrayList<ExpandedBlueprint>();
 
@@ -404,12 +423,20 @@ class BlueprintServiceInstance implements BlueprintService {
     /// state, so this bounds CONTENTION, not transport failure.
     int MAX_OUTCOME_START_ATTEMPTS = 5;
 
-    private AetherValue.DeploymentOutcomeValue startedOutcome(BlueprintId id) {
+    private AetherValue.DeploymentOutcomeValue startedOutcome(BlueprintId id, String attemptId) {
         var successor = outcome(id).map(AetherValue.DeploymentOutcomeValue::outcomeVersion)
                                .map(version -> version + 1)
                                .or(AetherValue.DeploymentOutcomeValue.FIRST_VERSION);
 
-        return AetherValue.DeploymentOutcomeValue.inProgress(System.currentTimeMillis(), successor);
+        return AetherValue.DeploymentOutcomeValue.inProgress(System.currentTimeMillis(), successor, attemptId);
+    }
+
+    /// #972 — the id of one publish attempt, stamped into its `AppBlueprintValue` and its apply-start
+    /// record. Random rather than derived from committed state: two publishes of one id must never share
+    /// an attempt, and nothing committed is available to derive one from before the publish batch lands.
+    private static String newAttemptId() {
+        return UUID.randomUUID()
+                   .toString();
     }
 
     /// The confirmation step [VersionFenced] prescribes, and the reason the publish path is safe
@@ -427,35 +454,27 @@ class BlueprintServiceInstance implements BlueprintService {
     ///
     /// Bounded, for the same reason #956 bounds its merge: each attempt is a fresh read, so progress
     /// needs only that some attempt find no competing writer, and a budget stops a pathological
-    /// contender turning a publish into an unbounded resubmission loop. Exhaustion FAILS the publish
-    /// rather than returning success — a caller told its blueprint published, whose apply-start
-    /// record never landed, would be told the opposite of the truth.
-    private Promise<ExpandedBlueprint> confirmOutcomeStart(ExpandedBlueprint expanded, int attempt) {
+    /// contender turning a publish into an unbounded resubmission loop.
+    ///
+    /// #972: exhaustion no longer fails the publish. The record left behind is a terminal for an EARLIER
+    /// attempt, and since every terminal carries the attempt it closes, that terminal no longer
+    /// attributes to this apply: the FSM's gate reads this apply as not yet terminal, so its own
+    /// completion or failure still writes its own terminal, and the status route does not report the
+    /// earlier attempt's outcome against the live blueprint. Failing the caller here would tell it the
+    /// opposite of what the cluster does.
+    private Promise<ExpandedBlueprint> confirmOutcomeStart(ExpandedBlueprint expanded, String attemptId, int attempt) {
         if (outcomeStartLanded(expanded.id())) {
             return Promise.success(expanded);
         }
 
         if (attempt >= MAX_OUTCOME_START_ATTEMPTS) {
-            // #963 F3: the blueprint is ALREADY COMMITTED when this fires — it landed in the first
-            // batch and only the outcome write was fenced out. "The publish failed" is therefore true
-            // of the record and FALSE of the blueprint, and saying only the former sends an operator
-            // looking for a deployment that is in fact live. Compensating by removing the blueprint
-            // was considered and rejected: it would tear down a possibly-running deployment to tidy
-            // up a bookkeeping failure, trading a legible degraded state for an outage on the rarest
-            // path in this change.
-            log.error("Blueprint {} IS PUBLISHED AND LIVE, but its apply-start record was fenced out after"
-                     + " {} attempts by terminal writes for a previous apply. Consequence: this apply"
-                     + " carries the PREVIOUS attempt's outcome, so retry exhaustion will not condemn it"
-                     + " and the blueprint status route reports that older outcome. Remedy: re-publish {}"
-                     + " — the retry re-derives against current committed state and normally wins.",
-                      expanded.id().asString(),
-                      attempt,
-                      expanded.id().asString());
+            log.warn("Blueprint {} is published; its apply-start record was fenced out after {} attempts by"
+                     + " terminal writes for a previous apply. That terminal belongs to an earlier attempt, so"
+                     + " this apply is still treated as in progress and records its own outcome when it settles.",
+                     expanded.id().asString(),
+                     attempt);
 
-            return Causes.cause("Blueprint " + expanded.id()
-                                                       .asString()
-                               + " is published and live, but its apply-start record could not be written after " + attempt
-                               + " attempts — it carries the previous apply's outcome until re-published").promise();
+            return Promise.success(expanded);
         }
 
         log.debug("Apply-start record for blueprint {} was fenced out (attempt {}), retrying against the"
@@ -464,8 +483,8 @@ class BlueprintServiceInstance implements BlueprintService {
                   attempt);
 
         return cluster.apply(List.<KVCommand<AetherKey>> of(new Put<>(DeploymentOutcomeKey.deploymentOutcomeKey(expanded.id()),
-                                                                      startedOutcome(expanded.id()))))
-                      .flatMap(_ -> confirmOutcomeStart(expanded, attempt + 1));
+                                                                      startedOutcome(expanded.id(), attemptId))))
+                      .flatMap(_ -> confirmOutcomeStart(expanded, attemptId, attempt + 1));
     }
 
     private boolean outcomeStartLanded(BlueprintId id) {
@@ -535,14 +554,16 @@ class BlueprintServiceInstance implements BlueprintService {
                                                          Map<String, List<MigrationEntry>> migrations,
                                                          String artifactCoords,
                                                          boolean registerOnly) {
+        var attemptId = newAttemptId();
         var commands = buildAllCommands(expanded,
                                         streamBindingsPut(expanded.id(), bindings.bound()),
                                         migrations,
                                         artifactCoords,
-                                        registerOnly);
+                                        registerOnly,
+                                        attemptId);
 
         return cluster.apply(commands)
-                      .flatMap(_ -> confirmOutcomeStart(expanded, 0))
+                      .flatMap(_ -> confirmOutcomeStart(expanded, attemptId, 0))
                       .map(stored -> PublishedBlueprint.publishedBlueprint(stored,
                                                                            bindings.rejected(),
                                                                            bindings.warnings()));
@@ -591,10 +612,11 @@ class BlueprintServiceInstance implements BlueprintService {
                                                         KVCommand<AetherKey> streamBindings,
                                                         Map<String, List<MigrationEntry>> migrations,
                                                         String artifactCoords,
-                                                        boolean registerOnly) {
+                                                        boolean registerOnly,
+                                                        String attemptId) {
         var commands = new ArrayList<KVCommand<AetherKey>>();
 
-        commands.add(buildBlueprintPutCommand(expanded, registerOnly));
+        commands.add(buildBlueprintPutCommand(expanded, registerOnly, attemptId));
         // #759 review, BLOCKING: a fresh publish reuses `expanded.id()` on a retry after a prior
         // FAILED/ROLLED_BACK attempt of the SAME blueprint id, and `outcome(id)` otherwise keeps
         // returning that stale terminal record — indistinguishable from the new attempt already
@@ -611,7 +633,7 @@ class BlueprintServiceInstance implements BlueprintService {
         // Remove did AND records that THIS attempt started, so "no terminal yet" is a positive fact
         // rather than an absence. Absence was what five rounds of #924 condemned deployments on.
         commands.add(new Put<>(DeploymentOutcomeKey.deploymentOutcomeKey(expanded.id()),
-                               startedOutcome(expanded.id())));
+                               startedOutcome(expanded.id(), attemptId)));
         // Slice META-INF/resources.toml is intentionally NOT published to KV — it is local to
         // each node and applied via the per-slice intrinsic config layer at slice load
         // (see SliceStore.loadSlice). The resourcesConfig parameter is kept here because the
@@ -747,9 +769,11 @@ class BlueprintServiceInstance implements BlueprintService {
         };
     }
 
-    private static KVCommand<AetherKey> buildBlueprintPutCommand(ExpandedBlueprint expanded, boolean registerOnly) {
+    private static KVCommand<AetherKey> buildBlueprintPutCommand(ExpandedBlueprint expanded,
+                                                                 boolean registerOnly,
+                                                                 String attemptId) {
         return new Put<>(AppBlueprintKey.appBlueprintKey(expanded.id()),
-                         AppBlueprintValue.appBlueprintValue(expanded, registerOnly));
+                         AppBlueprintValue.appBlueprintValue(expanded, registerOnly, attemptId));
     }
 
     private Promise<ExpandedBlueprint> applyResourcesConfig(ExpandedBlueprint expanded,
@@ -1061,7 +1085,8 @@ class BlueprintServiceInstance implements BlueprintService {
     private Promise<ExpandedBlueprint> storeBlueprintWithKey(AetherKey.AppBlueprintKey key,
                                                              ExpandedBlueprint expanded,
                                                              KVCommand<AetherKey> streamBindings) {
-        var value = AppBlueprintValue.appBlueprintValue(expanded);
+        var attemptId = newAttemptId();
+        var value = AppBlueprintValue.appBlueprintValue(expanded, false, attemptId);
         KVCommand<AetherKey> command = new Put<>(key, value);
         // #759 review round 2, BLOCKING 1: `publish(String dsl)` is a live republish path
         // (SliceRoutes.handleBlueprint) that bypasses buildAllCommands, so without this it kept the
@@ -1073,13 +1098,13 @@ class BlueprintServiceInstance implements BlueprintService {
         // #963: same substitution as buildAllCommands — the stale terminal is replaced by a positive
         // IN_PROGRESS marking this attempt's start, in the SAME batch as the blueprint Put.
         KVCommand<AetherKey> outcomeStart = new Put<>(DeploymentOutcomeKey.deploymentOutcomeKey(expanded.id()),
-                                                      startedOutcome(expanded.id()));
+                                                      startedOutcome(expanded.id(), attemptId));
         // #1066: the stream bindings ride the SAME batch as the blueprint Put, exactly as in
         // buildAllCommands. The FSM writes each slice's `SliceTargetKey` only after applying this
         // blueprint, so no node can see a slice target without its bindings — the ordering
         // `StreamAddressError` rests on when it treats missing bindings as fatal rather than retryable.
         return cluster.apply(List.of(command, outcomeStart, streamBindings))
-                      .flatMap(_ -> confirmOutcomeStart(expanded, 0));
+                      .flatMap(_ -> confirmOutcomeStart(expanded, attemptId, 0));
     }
 
     private Promise<Unit> removeFromStore(AetherKey.AppBlueprintKey key) {

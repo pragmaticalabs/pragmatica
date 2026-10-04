@@ -403,19 +403,39 @@ public sealed interface AetherValue {
     /// without immediately making it the active version. Consumed by
     /// `ClusterDeploymentState.handleAppBlueprintChange`, which suppresses the
     /// `SliceTargetValue` Put when `registerOnly && existing SliceTargetValue present`.
-    record AppBlueprintValue(ExpandedBlueprint blueprint, boolean registerOnly) implements AetherValue {
+    ///
+    /// `attemptId` (#972) names the publish that wrote this value. Every publish stamps a fresh one, and
+    /// every terminal [DeploymentOutcomeValue] carries the attempt it closes, so a terminal can be
+    /// attributed to the apply it describes. A terminal whose `attemptId` differs from the committed
+    /// blueprint's describes an EARLIER apply of the same id, and `ClusterDeploymentState` reads it as
+    /// "this apply is not yet terminal". [#NO_ATTEMPT] is the value of the convenience forms, which
+    /// production publish paths never use.
+    record AppBlueprintValue(ExpandedBlueprint blueprint, boolean registerOnly, String attemptId) implements AetherValue {
+        /// The attempt id of a value written without one. Two such values attribute to each other.
+        public static final String NO_ATTEMPT = "";
+
         /// Backward-compat constructor — pre-existing call sites pass blueprint only;
         /// `registerOnly` defaults to `false` (the historical deploy-on-publish semantics).
         public AppBlueprintValue(ExpandedBlueprint blueprint) {
-            this(blueprint, false);
+            this(blueprint, false, NO_ATTEMPT);
+        }
+
+        public AppBlueprintValue(ExpandedBlueprint blueprint, boolean registerOnly) {
+            this(blueprint, registerOnly, NO_ATTEMPT);
         }
 
         public static AppBlueprintValue appBlueprintValue(ExpandedBlueprint blueprint) {
-            return new AppBlueprintValue(blueprint, false);
+            return new AppBlueprintValue(blueprint, false, NO_ATTEMPT);
         }
 
         public static AppBlueprintValue appBlueprintValue(ExpandedBlueprint blueprint, boolean registerOnly) {
-            return new AppBlueprintValue(blueprint, registerOnly);
+            return new AppBlueprintValue(blueprint, registerOnly, NO_ATTEMPT);
+        }
+
+        public static AppBlueprintValue appBlueprintValue(ExpandedBlueprint blueprint,
+                                                          boolean registerOnly,
+                                                          String attemptId) {
+            return new AppBlueprintValue(blueprint, registerOnly, attemptId);
         }
     }
 
@@ -434,7 +454,8 @@ public sealed interface AetherValue {
                                   List<String> failingSlices,
                                   String cause,
                                   long timestampMs,
-                                  long outcomeVersion) implements AetherValue, VersionFenced {
+                                  long outcomeVersion,
+                                  String attemptId) implements AetherValue, VersionFenced {
         /// The first version of a chain — the value written when no outcome record is committed yet.
         /// The applier does not fence a first write (there is no chain to fence), so this constant is
         /// what every write against an absent key carries.
@@ -442,6 +463,13 @@ public sealed interface AetherValue {
 
         public DeploymentOutcomeValue {
             failingSlices = List.copyOf(failingSlices);
+        }
+
+        /// #972 — whether this record describes the publish attempt `attemptId`, i.e. the attempt of
+        /// the committed `AppBlueprintValue`. A record that does not describes an earlier apply of the
+        /// same blueprint id.
+        public boolean describesAttempt(String attemptId) {
+            return this.attemptId.equals(attemptId);
         }
 
         /// Lost-update fence version (RFC-0018, #570) — added for #805 item 2.
@@ -490,11 +518,16 @@ public sealed interface AetherValue {
         }
 
         public static DeploymentOutcomeValue inProgress(long startedAtMs, long outcomeVersion) {
+            return inProgress(startedAtMs, outcomeVersion, AppBlueprintValue.NO_ATTEMPT);
+        }
+
+        public static DeploymentOutcomeValue inProgress(long startedAtMs, long outcomeVersion, String attemptId) {
             return new DeploymentOutcomeValue(DeploymentOutcomeStatus.IN_PROGRESS,
                                               List.of(),
                                               "",
                                               startedAtMs,
-                                              outcomeVersion);
+                                              outcomeVersion,
+                                              attemptId);
         }
 
         public static DeploymentOutcomeValue succeeded(long timestampMs) {
@@ -510,33 +543,56 @@ public sealed interface AetherValue {
         }
 
         public static DeploymentOutcomeValue succeeded(long timestampMs, long outcomeVersion) {
+            return succeeded(timestampMs, outcomeVersion, AppBlueprintValue.NO_ATTEMPT);
+        }
+
+        public static DeploymentOutcomeValue succeeded(long timestampMs, long outcomeVersion, String attemptId) {
             return new DeploymentOutcomeValue(DeploymentOutcomeStatus.SUCCEEDED,
                                               List.of(),
                                               "",
                                               timestampMs,
-                                              outcomeVersion);
+                                              outcomeVersion,
+                                              attemptId);
         }
 
         public static DeploymentOutcomeValue failed(List<String> failingSlices,
                                                     String cause,
                                                     long timestampMs,
                                                     long outcomeVersion) {
+            return failed(failingSlices, cause, timestampMs, outcomeVersion, AppBlueprintValue.NO_ATTEMPT);
+        }
+
+        public static DeploymentOutcomeValue failed(List<String> failingSlices,
+                                                    String cause,
+                                                    long timestampMs,
+                                                    long outcomeVersion,
+                                                    String attemptId) {
             return new DeploymentOutcomeValue(DeploymentOutcomeStatus.FAILED,
                                               failingSlices,
                                               cause,
                                               timestampMs,
-                                              outcomeVersion);
+                                              outcomeVersion,
+                                              attemptId);
         }
 
         public static DeploymentOutcomeValue rolledBack(List<String> failingSlices,
                                                         String cause,
                                                         long timestampMs,
                                                         long outcomeVersion) {
+            return rolledBack(failingSlices, cause, timestampMs, outcomeVersion, AppBlueprintValue.NO_ATTEMPT);
+        }
+
+        public static DeploymentOutcomeValue rolledBack(List<String> failingSlices,
+                                                        String cause,
+                                                        long timestampMs,
+                                                        long outcomeVersion,
+                                                        String attemptId) {
             return new DeploymentOutcomeValue(DeploymentOutcomeStatus.ROLLED_BACK,
                                               failingSlices,
                                               cause,
                                               timestampMs,
-                                              outcomeVersion);
+                                              outcomeVersion,
+                                              attemptId);
         }
     }
 

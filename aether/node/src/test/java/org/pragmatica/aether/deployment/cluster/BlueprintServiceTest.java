@@ -585,6 +585,73 @@ class BlueprintServiceTest {
                     .hasSize(1);
         }
 
+        /// #972 — every publish names its attempt, once, in both records the gate attributes by: the
+        /// blueprint and its apply-start record carry the SAME attempt id, and a republish gets a new one.
+        @Test
+        void publish_stampsOneFreshAttemptId_intoTheBlueprintAndItsApplyStartRecord() {
+            publishRedeployApp();
+            var firstAttempt = committedAttempt();
+
+            assertThat(firstAttempt).as("a publish must stamp an attempt id").isNotEmpty();
+            assertThat(liveService.outcome(REDEPLOY_ID).map(AetherValue.DeploymentOutcomeValue::attemptId))
+                    .as("the apply-start record names the same attempt as the blueprint it starts")
+                    .isEqualTo(Option.some(firstAttempt));
+
+            publishRedeployApp();
+
+            assertThat(committedAttempt())
+                    .as("a republish is a new attempt")
+                    .isNotEqualTo(firstAttempt);
+            assertThat(liveService.outcome(REDEPLOY_ID).map(AetherValue.DeploymentOutcomeValue::attemptId))
+                    .isEqualTo(Option.some(committedAttempt()));
+        }
+
+        /// #972 — the worst case the ticket names: a live blueprint whose outcome record still holds the
+        /// FAILED of an EARLIER attempt (its apply-start write lost the race to that terminal). The route
+        /// must report the live deployment, never the earlier attempt's failure against it.
+        @Test
+        void statusRoute_aTerminalForAnEarlierAttempt_isNotReportedAgainstTheLiveBlueprint() {
+            publishRedeployApp();
+            var committed = liveService.outcome(REDEPLOY_ID).unwrap();
+
+            liveStore.processCommand(new KVCommand.Put<>(AetherKey.DeploymentOutcomeKey.deploymentOutcomeKey(REDEPLOY_ID),
+                                                         AetherValue.DeploymentOutcomeValue.failed(List.of(REDEPLOY_SLICE.asString()),
+                                                                                                   "earlier attempt failed",
+                                                                                                   1L,
+                                                                                                   committed.outcomeVersion() + 1,
+                                                                                                   "an-earlier-attempt")));
+            assertThat(liveService.outcome(REDEPLOY_ID).map(AetherValue.DeploymentOutcomeValue::status))
+                    .as("precondition: the earlier attempt's FAILED holds the record")
+                    .isEqualTo(Option.some(AetherValue.DeploymentOutcomeStatus.FAILED));
+
+            var deploymentMap = DeploymentMap.deploymentMap();
+            deploymentMap.onNodeArtifactPut(nodeArtifactPut(NODE_A, REDEPLOY_SLICE, SliceState.ACTIVE));
+
+            assertThat(liveStatusResponse(deploymentMap).overallStatus())
+                    .as("the live deployment's own progress, not the earlier attempt's FAILED")
+                    .isEqualTo("IN_PROGRESS");
+        }
+
+        private void publishRedeployApp() {
+            var dsl = """
+                    id = "org.example:redeploy-app:1.0.0"
+
+                    [[slices]]
+                    artifact = "org.example:redeploy-slice:1.0.0"
+                    instances = 3
+                    """;
+
+            liveService.publish(dsl)
+                       .await()
+                       .onFailure(cause -> fail("Expected DSL publish to succeed, got: " + cause.message()));
+        }
+
+        private String committedAttempt() {
+            return liveStore.get(AetherKey.AppBlueprintKey.appBlueprintKey(REDEPLOY_ID))
+                            .map(value -> ((AetherValue.AppBlueprintValue) value).attemptId())
+                            .or("");
+        }
+
         private List<List<KVCommand<AetherKey>>> batchesTouching(AetherKey key) {
             return liveCluster.appliedBatches()
                               .stream()
