@@ -467,6 +467,31 @@ class DHTReplicationChangeTest {
         assertThat(cluster.holds(writer)).as("the local copy was rolled back").isFalse();
     }
 
+    /// v1882 r7 F10, order (b), remote form: two replicas refuse as stale and only THEN a replica that had not applied the
+    /// change accepts. A remote success exists, so no evidence is awaited, yet the refusals already said this writer is
+    /// behind: the put fails instead of being acknowledged by the one lagging replica.
+    @Test
+    void v1882r7_orderB_remoteStaleThenRemoteSuccess_fails() {
+        var cluster = new Cluster(5, shortTimeout(3, 1));
+        var replicas = cluster.replicasOf(KEY, 3);
+        var writer = cluster.nonReplicaOf(replicas);
+        var unaware = replicas.getFirst();
+        var applied = cluster.nodes.keySet().stream().filter(id -> !id.equals(writer) && !id.equals(unaware)).toList();
+
+        applied.forEach(id -> cluster.nodes.get(id).resolveReplication(factors(3, 2), CHANGE));
+        cluster.settleOnly(CHANGE, 3, applied);
+
+        cluster.holdPuts = true;
+        var put = cluster.client(writer).put(KEY, VALUE);
+        cluster.holdPuts = false;
+        replicas.stream().filter(id -> !id.equals(unaware)).forEach(cluster::deliverHeldTo);
+        cluster.deliverHeldTo(unaware);
+        var outcome = put.await();
+        boolean stale = outcome.fold(cause -> cause instanceof DHTError.ReplicationChangeStale, _ -> false);
+
+        assertThat(stale).as("refused as stale although one replica accepted: " + outcome).isTrue();
+    }
+
     /// v1882 r7 F10, order (c): a replica that has not applied the change accepts first, the put is acknowledged, and a
     /// replica that HAS applied it refuses afterwards. The acknowledgement stands; the late refusal is still recorded,
     /// because it is evidence this writer is behind.
