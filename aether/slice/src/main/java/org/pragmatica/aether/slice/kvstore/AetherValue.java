@@ -2660,7 +2660,7 @@ public sealed interface AetherValue {
                                                      isrVersion + 1,
                                                      failoverRefused,
                                                      fenced,
-                                                     0L,
+                                                     failoverRefusalSeq,
                                                      append(epochStarts, new EpochStart(epoch, startOffset)));
         }
 

@@ -85,6 +85,19 @@ class OwnershipRecordAllFieldsTest {
         assertThat(next.epochStarts()).startsWith(FOLDED, EXACT);
     }
 
+    /// PR-A's invariant: a record that is refused has counted at least one refusal. `restarted()` raises the term and the epoch
+    /// (the event id includes both), so it must carry the count and the flag, not reset the count under a still-set flag.
+    @Test
+    void restarted_onARefusedRecord_keepsTheFlagAndTheRefusalCount() {
+        var before = full();
+        var next = before.restarted(200L, HlcTimestamp.ZERO);
+
+        assertThat(next.failoverRefused()).as("the flag is unchanged").isTrue();
+        assertThat(next.failoverRefusalSeq()).as("a refused record has counted a refusal").isEqualTo(2L).isGreaterThanOrEqualTo(1L);
+        assertThat(next.ownershipTerm()).isGreaterThan(before.ownershipTerm());
+        assertThat(next.ownerEpoch()).isNotEqualTo(before.ownerEpoch());
+    }
+
     private static void assertKept(StreamPartitionOwnershipValue next, boolean refused) {
         assertThat(next.fenced()).as("fenced").containsExactly(GONE);
         assertThat(next.failoverRefusalSeq()).as("refusal count").isEqualTo(2L);
