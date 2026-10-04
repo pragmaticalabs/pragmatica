@@ -15,6 +15,7 @@ import org.pragmatica.http.server.ResponseWriter;
 import org.pragmatica.json.JsonMapper;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.utils.Causes;
 
 
 /// Canonical RFC 9457 ProblemDetail emission helper for the management plane.
@@ -90,10 +91,23 @@ public final class ProblemResponses {
         return "application/problem+json";
     }
 
+    /// A cause's own status, or -- for a composite, which `Result.all` / `Result.allOf` hand back when several typed failures
+    /// funnel together -- the one status every member agrees on (#1921). Members that disagree, an empty composite and any other
+    /// untyped cause stay 500: the funnel then names a mixed failure, and 500 is the conservative answer for it.
     private static HttpStatus resolveStatus(Cause cause) {
-        return cause instanceof HttpStatusAware ha
-               ? ha.httpStatus()
-               : HttpStatus.INTERNAL_SERVER_ERROR;
+        if (cause instanceof HttpStatusAware ha) {
+            return ha.httpStatus();
+        }
+
+        if (cause instanceof Causes.CompositeCause composite) {
+            var statuses = composite.stream().map(ProblemResponses::resolveStatus).distinct().toList();
+
+            return statuses.size() == 1
+                   ? statuses.getFirst()
+                   : HttpStatus.INTERNAL_SERVER_ERROR;
+        }
+
+        return HttpStatus.INTERNAL_SERVER_ERROR;
     }
 
     private static org.pragmatica.http.HttpStatus toServerStatus(int code) {

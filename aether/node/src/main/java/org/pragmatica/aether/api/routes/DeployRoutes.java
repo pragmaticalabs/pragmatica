@@ -190,7 +190,7 @@ public final class DeployRoutes implements RouteSource {
     }
 
     private static Result<Version> parseVersion(String versionStr) {
-        return Version.version(versionStr);
+        return RequestParse.asRequest(Version.version(versionStr));
     }
 
     private static Result<DeploymentStrategy> parseStrategy(String raw) {

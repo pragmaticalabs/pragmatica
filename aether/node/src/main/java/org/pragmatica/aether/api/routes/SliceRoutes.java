@@ -391,8 +391,8 @@ public final class SliceRoutes implements RouteSource {
     }
 
     private Promise<BlueprintDetailResponse> handleGetBlueprint(String id) {
-        return BlueprintId.blueprintId(id)
-                          .async()
+        return RequestParse.asRequest(BlueprintId.blueprintId(id))
+                           .async()
                           .flatMap(blueprintId -> nodeSupplier.get()
                                                               .blueprintService()
                                                               .get(blueprintId)
@@ -442,8 +442,8 @@ public final class SliceRoutes implements RouteSource {
     /// `get(id)`-based logic: present → 200 with live slice detail (unchanged), empty → 404
     /// `BLUEPRINT_NOT_FOUND`.
     private Promise<BlueprintStatusResponse> handleGetBlueprintStatus(String id) {
-        return BlueprintId.blueprintId(id)
-                          .async()
+        return RequestParse.asRequest(BlueprintId.blueprintId(id))
+                           .async()
                           .flatMap(this::routeBlueprintStatusByOutcome);
     }
 
@@ -596,8 +596,8 @@ public final class SliceRoutes implements RouteSource {
     }
 
     private Promise<BlueprintDeleteResponse> handleDeleteBlueprint(String id) {
-        return BlueprintId.blueprintId(id)
-                          .async()
+        return RequestParse.asRequest(BlueprintId.blueprintId(id))
+                           .async()
                           .flatMap(blueprintId -> nodeSupplier.get()
                                                               .blueprintService()
                                                               .delete(blueprintId)
@@ -673,8 +673,8 @@ public final class SliceRoutes implements RouteSource {
     }
 
     private Promise<SliceConfigResponse> handleSliceConfig(String id) {
-        return Artifact.artifact(id)
-                       .async()
+        return RequestParse.asRequest(Artifact.artifact(id))
+                           .async()
                        .flatMap(this::buildSliceConfigResponse);
     }
 
