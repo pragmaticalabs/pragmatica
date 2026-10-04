@@ -52,6 +52,10 @@ public final class QuorumCollector<T> {
     /// The first piece of EVIDENCE from a REMOTE slot (#1777 v1882 r6 F10, r9): a quorum met by the local slot alone says
     /// nothing about the replicas' fences yet.
     private final Promise<Unit> remoteEvidence = Promise.promise();
+    /// Replies from REMOTE slots, and how many are expected (v1882 r11 F16): when every remote has answered the evidence
+    /// gate has nothing more to wait for. The writer's own slot is NOT counted, because it is applied only after the gate.
+    private final AtomicInteger remoteReplies = new AtomicInteger(0);
+    private volatile int remoteSlots = Integer.MAX_VALUE;
 
     private QuorumCollector(int quorum, int total, Promise<T> promise, UnaryOperator<T> valueMerger) {
         this.quorum = quorum;
@@ -85,6 +89,20 @@ public final class QuorumCollector<T> {
         onSuccess(value, "");
         // after the count is recorded: a waiter released by this reply must read it
         remoteEvidence.succeed(Unit.unit());
+        remoteReplied();
+    }
+
+    /// Declare how many REMOTE slots will answer, before any request is dispatched. Once all have, the evidence gate
+    /// releases (no evidence, or the evidence it already had).
+    @Contract
+    public void expectRemoteReplies(int remote) {
+        remoteSlots = remote;
+    }
+
+    private void remoteReplied() {
+        if (remoteReplies.incrementAndGet() >= remoteSlots) {
+            remoteEvidence.succeed(Unit.unit());
+        }
     }
 
     /// Record the coordinator's own slot succeeding: it counts toward the quorum but is not evidence about any remote
@@ -100,11 +118,13 @@ public final class QuorumCollector<T> {
         recordFailure(cause);
     }
 
-    /// Resolves with the first EVIDENCE from a remote slot about the writer's fence: a success, or a refusal as stale. Any
-    /// other reply — fence unknown, an owner-epoch fence, a dispatch failure — is NOT evidence and does not resolve it
+    /// Resolves with the first EVIDENCE from a remote slot about the writer's fence: a success, or a refusal as stale or by
+    /// the owner-epoch fence (a replica that has advanced past this writer's epoch, v1882 r11). Any other reply — fence
+    /// unknown, a dispatch failure — is NOT evidence and does not resolve it
     /// (v1882 r9: releasing on it let a put ack on its own slot while an applied replica had not yet answered). It also
-    /// resolves once every slot has replied, so a put whose remotes all answered without evidence is not held to the
-    /// timeout. Never resolves while a remote stays silent, so callers bound it with their own timeout.
+    /// resolves once every REMOTE slot has replied ([#expectRemoteReplies]), so a put whose remotes all answered without
+    /// evidence is not held to the timeout. Never resolves while a remote stays silent, so callers bound it with their own
+    /// timeout.
     public Promise<Unit> remoteEvidence() {
         return remoteEvidence;
     }
@@ -146,9 +166,11 @@ public final class QuorumCollector<T> {
     public void onFailure(Cause cause) {
         recordFailure(cause);
         // after the refusal is counted: a waiter released by this reply must see it
-        if (cause instanceof DHTError.ReplicaOnNewerReplication) {
+        if (cause instanceof DHTError.ReplicaOnNewerReplication || cause instanceof DHTError.ReplicaFenced) {
             remoteEvidence.succeed(Unit.unit());
         }
+
+        remoteReplied();
     }
 
     private void recordFailure(Cause cause) {
@@ -180,6 +202,15 @@ public final class QuorumCollector<T> {
     /// A quorum lost to owner-epoch fences is indeterminate, not a definite failure (#1818, the owner's fence
     /// ruling): a replica whose high-water lagged may have applied the write. That takes precedence over a
     /// catching-up refusal (#1777), which only says some replica could not yet answer authoritatively.
+    /// End the operation NOW with the typed failure the evidence calls for (v1882 r11 F17): a stale refusal or an owner-epoch
+    /// fence refusal is a verdict, not a vote — the quorum arithmetic must not be left to wait for a silent replica and end in
+    /// a generic timeout that hides the cause. A fence refusal is [DHTError.WriteIndeterminate] and takes precedence over a
+    /// stale refusal, exactly as [#quorumFailure] orders them.
+    @Contract
+    public void abortOnEvidence() {
+        promise.fail(quorumFailure());
+    }
+
     private Cause quorumFailure() {
         if (fenced.get() > 0) {
             return DHTError.writeIndeterminate(quorum, successCount.get(), fenced.get());
@@ -200,7 +231,6 @@ public final class QuorumCollector<T> {
 
     private void settleIfAllReplied(int successes, int failures) {
         if (successes + failures >= total) {
-            remoteEvidence.succeed(Unit.unit());
             allReplied.succeed(Unit.unit());
         }
     }

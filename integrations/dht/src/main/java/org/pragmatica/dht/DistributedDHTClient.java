@@ -212,6 +212,7 @@ public final class DistributedDHTClient implements DHTClient {
         var collector = QuorumCollector.<Unit> quorumCollector(quorum, targets.size(), promise);
         var hasRemote = targets.stream().anyMatch(target -> !target.equals(node.nodeId()));
 
+        collector.expectRemoteReplies(remoteCount(targets));
         targets.stream()
                .filter(target -> !target.equals(node.nodeId()))
                .forEach(target -> sendRemotePut(target, key, value, stamp, collector));
@@ -247,10 +248,13 @@ public final class DistributedDHTClient implements DHTClient {
 
     /// The writer's own slot is applied only AFTER the evidence gate releases (v1882 r10, replacing an apply-then-undo that
     /// could never be made consistent with what other writers observed meanwhile). The gate waits for EVIDENCE from a remote
-    /// target: a success, or a refusal as stale. Any other reply — fence unknown, an owner-epoch fence, a dispatch failure to
-    /// a down replica — is not evidence, and the wait goes on until every slot has replied or the evidence wait runs out.
-    /// - evidence is a stale refusal: the write is NEVER applied locally and fails stale; there is nothing to undo;
-    /// - evidence is a success, or there is none: the local write is applied and counts toward the quorum.
+    /// target: a success, a refusal as stale, or an owner-epoch fence refusal (a replica that has advanced past this writer's
+    /// epoch, v1882 r11). Any other reply — fence unknown, a dispatch failure to a down replica — is not evidence, and the
+    /// wait goes on until every slot has replied or the evidence wait runs out.
+    /// - evidence is a stale refusal or an epoch-fence refusal: the write is NEVER applied locally and fails (stale, or
+    ///   [DHTError.WriteIndeterminate] with the #1820 semantics: remote copies may exist); there is nothing to undo here;
+    /// - evidence is a success, or there is none: the local write is applied and counts toward the quorum. A fence refusal
+    ///   that arrives only AFTER that, and sinks the quorum, still rolls the local copy back (restore-prior, #1818).
     /// The wait is `operationTimeout /` [#EVIDENCE_WAIT_DIVISOR] (3 s by default): one intra-cluster round trip plus a GC
     /// pause, an order of magnitude below the caller-visible timeout, so a partitioned or down replica set cannot turn every
     /// W=1 write into a stall of that timeout (CTO judgement on the ratio, taste). Cost: a writer that is a replica applies
@@ -271,15 +275,22 @@ public final class DistributedDHTClient implements DHTClient {
 
         return collector.remoteEvidence()
                         .timeout(timeSpan(bound).millis())
-                        .fold(_ -> collector.replicationStaleCount() > 0
+                        .fold(_ -> collector.replicationStaleCount() > 0 || collector.fencedCount() > 0
                                    ? skipLocalSlot(collector)
                                    : write.get());
     }
 
-    /// The slot is not applied: it is accounted as a failed slot so the quorum arithmetic can finish, and the operation
-    /// fails with the stale refusals that caused it.
+    private int remoteCount(List<NodeId> targets) {
+        return (int) targets.stream()
+                            .filter(target -> !target.equals(node.nodeId()))
+                            .count();
+    }
+
+    /// The slot is not applied, and the operation ends AT ONCE with the typed failure the evidence calls for (a stale refusal,
+    /// or [DHTError.WriteIndeterminate] for an owner-epoch fence refusal): evidence of failure is a verdict, not a vote, so
+    /// the quorum arithmetic is not left to wait for a silent replica and end in a generic timeout.
     private static Promise<StorageEngine.Displaced> skipLocalSlot(QuorumCollector<?> collector) {
-        collector.onLocalFailure(DHTError.OPERATION_TIMEOUT);
+        collector.abortOnEvidence();
 
         return DHTError.OPERATION_TIMEOUT.promise();
     }
