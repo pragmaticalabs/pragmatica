@@ -13,3 +13,10 @@
   `[verified: aether/aether-stream/src/test/java/org/pragmatica/aether/stream/replication/ForwardCatchupTransportTest.java]`.
   The replica stays SYNCING `[mechanism: a failed catch-up promise is never promoted by PartitionBackfill]`.
   Recovery: raise `maxReadResponseBytes` on the owner above the largest event.
+- **Same class, sharper consequence: the owner promotion gate's peer probe (`OwnerPeerReads.appendedWatermark`,
+  and the backfill's `replicaWatermark`) also read a byte-capped page as the peer's head.** An understated peer
+  head is the input the gate uses to decide whether a candidate holds everything its peers hold, so a cut page
+  could let a candidate promote below records a peer holds `[design intent — unverified: the gate-level
+  consequence was traced through the code, not reproduced]`. Both probes now page past a truncated page, and a
+  cut page with no event fails the probe or the overlap range read, so the gate fails closed
+  `[verified: aether/aether-stream/src/test/java/org/pragmatica/aether/stream/OwnerPeerReadsTest.java]`.
