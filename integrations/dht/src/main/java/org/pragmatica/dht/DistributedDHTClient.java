@@ -235,12 +235,9 @@ public final class DistributedDHTClient implements DHTClient {
         targets.stream()
                .filter(target -> !target.equals(node.nodeId()))
                .forEach(target -> sendRemotePut(target, key, value, stamp, collector));
+        var hasRemote = targets.stream().anyMatch(target -> !target.equals(node.nodeId()));
 
-        var hasRemote = targets.stream()
-                               .anyMatch(target -> !target.equals(node.nodeId()));
-
-        collector.allReplied()
-                 .onSuccess(_ -> noteLateStale(collector, stamp));
+        collector.allReplied().onSuccess(_ -> noteLateStale(collector, stamp));
 
         return promise.timeout(config.get().operationTimeout())
                       .flatMap(done -> confirmedByReplicas(collector, done, quorum, hasRemote))
@@ -272,7 +269,8 @@ public final class DistributedDHTClient implements DHTClient {
             return Promise.success(done);
         }
 
-        var remaining = Math.max(config.get().operationTimeout().millis() - collector.elapsedMillis(), 1L);
+        var remaining = Math.max(config.get().operationTimeout().millis() - collector.elapsedMillis(),
+                                 1L);
 
         return collector.remoteReplied()
                         .timeout(timeSpan(remaining).millis())
@@ -282,7 +280,9 @@ public final class DistributedDHTClient implements DHTClient {
     }
 
     private static <T> Promise<T> staleFailure(QuorumCollector<T> collector, int quorum) {
-        return DHTError.replicationChangeStale(quorum, collector.successCount(), collector.replicationStaleCount())
+        return DHTError.replicationChangeStale(quorum,
+                                               collector.successCount(),
+                                               collector.replicationStaleCount())
                        .promise();
     }
 
@@ -399,12 +399,9 @@ public final class DistributedDHTClient implements DHTClient {
         targets.stream()
                .filter(target -> !target.equals(node.nodeId()))
                .forEach(target -> sendRemoteRemove(target, key, stamp, collector));
+        var hasRemote = targets.stream().anyMatch(target -> !target.equals(node.nodeId()));
 
-        var hasRemote = targets.stream()
-                               .anyMatch(target -> !target.equals(node.nodeId()));
-
-        collector.allReplied()
-                 .onSuccess(_ -> noteLateStale(collector, stamp));
+        collector.allReplied().onSuccess(_ -> noteLateStale(collector, stamp));
 
         return promise.timeout(config.get().operationTimeout())
                       .flatMap(found -> confirmedByReplicas(collector, found, quorum, hasRemote))
