@@ -34,7 +34,41 @@ class ReplicationDefaultsParserTest {
             confirmation_factor = 2
             """;
 
-        assertThat(parse(toml).unwrap()).isEqualTo(new ReplicationDefaultsConfig(5, 3, 2, 1, 1));
+        assertThat(parse(toml).unwrap()).isEqualTo(new ReplicationDefaultsConfig(5, 3, 2, 1, 1, ReplicationDefaultsConfig.DEFAULT_TOMBSTONE_RETENTION));
+    }
+
+    @Test
+    void parse_declaredTombstoneRetention_isRead() {
+        var parsed = parse("[replication]\ntombstone_retention = \"2h\"\n").unwrap();
+
+        assertThat(parsed.tombstoneRetention()).isEqualTo(org.pragmatica.lang.io.TimeSpan.timeSpan(2).hours());
+    }
+
+    @Test
+    void builtIn_tombstoneRetentionIsOneHour() {
+        assertThat(ReplicationDefaultsConfig.BUILT_IN.tombstoneRetention()).isEqualTo(org.pragmatica.lang.io.TimeSpan.timeSpan(1).hours());
+    }
+
+    @Test
+    void parse_tombstoneRetentionBelowTheFloor_refusesTheApply() {
+        var message = parse("[replication]\ntombstone_retention = \"5m\"\n").fold(cause -> cause.message(), _ -> "");
+
+        assertThat(message).contains("tombstone_retention");
+        assertThat(parse("[replication]\ntombstone_retention = \"6m30s\"\n").isSuccess()).as("the floor itself is accepted")
+                                                                                         .isTrue();
+    }
+
+    @Test
+    void parse_tombstoneRetentionNotADuration_refusesTheApply() {
+        assertThat(parse("[replication]\ntombstone_retention = \"soon\"\n").isFailure()).isTrue();
+    }
+
+    /// The shared duration parser reads a bare number as seconds; the floor still applies to it.
+    @Test
+    void parse_tombstoneRetentionBareNumber_isSeconds_andFloorChecked() {
+        assertThat(parse("[replication]\ntombstone_retention = 3600\n").unwrap().tombstoneRetention())
+            .isEqualTo(org.pragmatica.lang.io.TimeSpan.timeSpan(1).hours());
+        assertThat(parse("[replication]\ntombstone_retention = 60\n").isFailure()).isTrue();
     }
 
     @Test
@@ -51,7 +85,7 @@ class ReplicationDefaultsParserTest {
             confirmation_factor = 2
             """;
 
-        assertThat(parse(toml).unwrap()).isEqualTo(new ReplicationDefaultsConfig(3, 2, 1, 3, 2));
+        assertThat(parse(toml).unwrap()).isEqualTo(new ReplicationDefaultsConfig(3, 2, 1, 3, 2, ReplicationDefaultsConfig.DEFAULT_TOMBSTONE_RETENTION));
     }
 
     @Test
