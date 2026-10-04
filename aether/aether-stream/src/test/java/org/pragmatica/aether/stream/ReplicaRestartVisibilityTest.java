@@ -100,6 +100,28 @@ class ReplicaRestartVisibilityTest {
         manager.markVerified(STREAM, PARTITION, 99L);
 
         assertThat(offsets()).as("never above what is durable here").containsExactly(0L, 1L, 2L, 3L, 4L);
+
+        manager.appendRecovered(STREAM, PARTITION, 5L, "owner-5".getBytes(UTF_8), 5L, org.pragmatica.aether.slice.generation.Epoch.ZERO).unwrap();
+        manager.syncReplicated(STREAM, PARTITION).await();
+
+        assertThat(offsets()).as("everything held is verified now: later appends extend visibility as always")
+                             .containsExactly(0L, 1L, 2L, 3L, 4L, 5L);
+    }
+
+    /// A repair keeps the prefix the copy shares with its sender, which is verified by construction: the owner's
+    /// records appended after the cut are visible together with it, without a further verification.
+    @Test
+    void repairDivergence_ofAnUnverifiedReplica_leavesTheKeptPrefixVerified() {
+        ownerWithPartiallyAckedTail();
+        restart(Role.REPLICA);
+        manager.appendRecovered(STREAM, PARTITION, 3L, "owner-3".getBytes(UTF_8), 3L, org.pragmatica.aether.slice.generation.Epoch.ZERO);
+        assertThat(manager.quarantinedAt(STREAM, PARTITION).or(-1L)).as("premise: the different record at 3 quarantines").isEqualTo(3L);
+
+        manager.repairDivergence(STREAM, PARTITION).unwrap();
+        manager.appendRecovered(STREAM, PARTITION, 3L, "owner-3".getBytes(UTF_8), 3L, org.pragmatica.aether.slice.generation.Epoch.ZERO).unwrap();
+        manager.syncReplicated(STREAM, PARTITION).await();
+
+        assertThat(offsets()).containsExactly(0L, 1L, 2L, 3L);
     }
 
     /// While unverified, a record appended from the owner is durable here but does not drag the unverified tail below it
