@@ -32,6 +32,25 @@ public interface MavenProtocolHandler {
     /// never deletes: the version stops resolving and is delisted, its keys are kept.
     Promise<MavenResponse> handleDelete(String path);
 
+    /// `<groupPath>/<artifactId>/<version>`: the group is every segment before the last two, the same
+    /// reading as `GET`/`PUT` coordinates. Shared by every route that carries a bare version coordinate
+    /// (`DELETE`, and `GET /repository/info/...`, #1102) so none of them re-derives the group
+    /// positionally.
+    static Option<Artifact> parseVersionPath(String path) {
+        var parts = path.split("/");
+
+        if (parts.length < 3) return Option.none();
+
+        var groupPath = String.join(".",
+                                    List.of(parts).subList(0, parts.length - 2));
+
+        return Result.all(GroupId.groupId(groupPath),
+                          ArtifactId.artifactId(parts[parts.length - 2]),
+                          Version.version(parts[parts.length - 1]))
+                     .map(Artifact::new)
+                     .option();
+    }
+
     record MavenResponse(int statusCode, String contentType, byte[] content) {
         public static MavenResponse ok(byte[] content, String contentType) {
             return new MavenResponse(200, contentType, content);
@@ -340,8 +359,8 @@ class MavenProtocolHandlerImpl implements MavenProtocolHandler {
             return Promise.success(MavenResponse.badRequest("Invalid path"));
         }
 
-        return parseVersionPath(path.substring(REPOSITORY_PREFIX.length())).fold(() -> Promise.success(MavenResponse.badRequest("Cannot parse path: " + path)),
-                                                                                 this::archiveVersion);
+        return MavenProtocolHandler.parseVersionPath(path.substring(REPOSITORY_PREFIX.length())).fold(() -> Promise.success(MavenResponse.badRequest("Cannot parse path: " + path)),
+                                                                                                      this::archiveVersion);
     }
 
     /// FER: a refused or failed archive is reported, not dropped: it becomes a status the caller acts on;
@@ -359,23 +378,6 @@ class MavenProtocolHandlerImpl implements MavenProtocolHandler {
             case ArtifactStore.ArtifactStoreError.RetentionNotElapsed young -> MavenResponse.conflict(young.message());
             default -> failureResponse("DELETE", artifact.asString(), cause);
         };
-    }
-
-    /// `<groupPath>/<artifactId>/<version>`: the group is every segment before the last two, the same
-    /// reading as `GET`/`PUT` coordinates.
-    private Option<Artifact> parseVersionPath(String path) {
-        var parts = path.split("/");
-
-        if (parts.length < 3) return Option.none();
-
-        var groupPath = String.join(".",
-                                    List.of(parts).subList(0, parts.length - 2));
-
-        return Result.all(GroupId.groupId(groupPath),
-                          ArtifactId.artifactId(parts[parts.length - 2]),
-                          Version.version(parts[parts.length - 1]))
-                     .map(Artifact::new)
-                     .option();
     }
 
     private byte[] renderArchiveJson(Artifact artifact) {
