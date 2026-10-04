@@ -28,6 +28,9 @@ import static org.pragmatica.aether.stream.StreamPartitionManager.streamPartitio
 /// still holds the OLD lineage at offsets above the new epoch's start serves it stamped with the NEW epoch. The check binds the
 /// cursor to the committed record, never the serving ring to the lineage it claims.
 ///
+/// Ruling (CTO, 2026-10-04): the fix is PR-B's B5 (B owns replica verification); both PRs merge before the cloud runs, so this is not a
+/// shipped limit. Whichever of B and C lands SECOND flips these tripwires to the real assertions.
+///
 /// Measured on a local merge of PR-B (ad19bbe5c) and this PR: still RED, because PR-B's `unverifiedReplicas` is set only when a
 /// ring is materialized as a REPLICA with a recovered tail, not when a live owner is demoted or the committed epoch advances.
 ///
@@ -52,8 +55,8 @@ class ReplicaServesUnrepairedLineageTripwireTest {
     void currently_aReplicaServesItsOldLineageUnderTheNewEpoch_untilTheRepairVerifiesIt() {
         var served = rereadAfterDivergence();
 
-        assertThat(served).as("C5 is fixed: delete this tripwire, enable `aReplicaHoldingTheOldLineage_doesNotServeItUnderTheNewEpoch` "
-                              + "and remove the [limit: ...] for the unrepaired replica from guarantees.md")
+        assertThat(served).as("B5 landed: flip me. Delete this tripwire, enable `aReplicaHoldingTheOldLineage_doesNotServeItUnderTheNewEpoch` "
+                              + "and `aDemotedOwner_doesNotServeItsOldTailUnderTheNewEpoch`, and remove the [limit: ... closed by PR-B B5] from guarantees.md")
                           .anyMatch(payload -> payload.startsWith("old-"));
     }
 
@@ -91,6 +94,44 @@ class ReplicaServesUnrepairedLineageTripwireTest {
                                        .stream()
                                        .map(event -> new String(event.data(), UTF_8))
                                        .toList())
+                      .or(List.of());
+    }
+
+    /// TRIPWIRE (the demoted-owner shape, `C5DemotedOwnerServesOldLineageProbeTest` on the B+C merge): X owned E1 and wrote 0..9, then
+    /// ownership moved to Y (E2, started at 5). X is now a REPLICA that has not been repaired.
+    @Test
+    void currently_aDemotedOwnerServesItsOldTailUnderTheNewEpoch_untilTheRepairVerifiesIt() {
+        assertThat(demotedOwnerReread()).as("B5 landed: flip me. Delete this tripwire and enable `aDemotedOwner_doesNotServeItsOldTailUnderTheNewEpoch`")
+                                        .anyMatch(payload -> payload.startsWith("x-old-"));
+    }
+
+    @Disabled("C5: needs PR-B's B5 (replica verified-for-epoch gating); see the tripwire above")
+    @Test
+    void aDemotedOwner_doesNotServeItsOldTailUnderTheNewEpoch() {
+        assertThat(demotedOwnerReread()).noneMatch(payload -> payload.startsWith("x-old-"));
+    }
+
+    private List<String> demotedOwnerReread() {
+        var role = new java.util.concurrent.atomic.AtomicReference<>(Role.OWNER);
+        var record = new java.util.concurrent.atomic.AtomicReference<Option<StreamPartitionOwnershipValue>>(Option.none());
+
+        manager = streamPartitionManager(Long.MAX_VALUE);
+        manager.placementRoleSupplier((_, _) -> role.get());
+        manager.ownershipRecords((_, _) -> record.get());
+        manager.createStream(StreamConfig.streamConfig(STREAM)).onFailure(cause -> fail(cause.message()));
+        for (var i = 0; i < 10; i++) {
+            assertThat(manager.publishLocal(STREAM, PARTITION, ("x-old-" + i).getBytes(UTF_8), 1L).isSuccess()).isTrue();
+        }
+
+        var e2 = Epoch.epoch(1L, 2L, 2L);
+
+        role.set(Role.REPLICA);
+        record.set(Option.some(StreamPartitionOwnershipValue.streamPartitionOwnershipValue(new NodeId("y"), e2, 2L, HlcTimestamp.ZERO, List.of(new NodeId("y")), 1L)
+                                                           .withEpochStart(5L)));
+        assertThat(manager.readServing(STREAM, PARTITION, 7L, 10, E1).isFailure()).as("control: the cursor is diverged to 5").isTrue();
+
+        return manager.readServing(STREAM, PARTITION, 5L, 10, e2)
+                      .map(read -> read.events().stream().map(event -> new String(event.data(), UTF_8)).toList())
                       .or(List.of());
     }
 }
