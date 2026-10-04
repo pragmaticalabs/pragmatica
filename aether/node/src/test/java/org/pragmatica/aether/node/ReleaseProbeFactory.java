@@ -35,6 +35,10 @@ public final class ReleaseProbeFactory implements ResourceFactory<ReleaseProbeFa
             return closes.get() > 0;
         }
 
+        public int closeCount() {
+            return closes.get();
+        }
+
         @Override
         public Promise<Unit> close() {
             closes.incrementAndGet();

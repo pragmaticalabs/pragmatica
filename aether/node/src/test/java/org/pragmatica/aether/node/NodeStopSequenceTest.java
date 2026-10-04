@@ -63,7 +63,7 @@ class NodeStopSequenceTest {
                                       .await();
 
         assertThat(outcome.isSuccess()).as("the node stop completes").isTrue();
-        assertThat(ran).containsExactly("deactivate", "management", "appHttp", "sliceInvoker", "storage", "clusterNode");
+        assertThat(ran).containsExactly("deactivate", "management", "appHttp", "sliceInvoker", "sharedResources", "storage", "clusterNode");
         assertThat(logged).anyMatch(event -> event.getLevel() == Level.WARN
                                              && event.getMessage()
                                                      .getFormattedMessage()
@@ -77,7 +77,7 @@ class NodeStopSequenceTest {
                                       .await();
 
         assertThat(outcome.isSuccess()).isTrue();
-        assertThat(ran).containsExactly("deactivate", "management", "appHttp", "sliceInvoker", "storage", "clusterNode");
+        assertThat(ran).containsExactly("deactivate", "management", "appHttp", "sliceInvoker", "sharedResources", "storage", "clusterNode");
         assertThat(logged).anyMatch(event -> event.getMessage()
                                                   .getFormattedMessage()
                                                   .startsWith("App HTTP server did not stop cleanly"));
@@ -91,10 +91,30 @@ class NodeStopSequenceTest {
                                                  record("management", Promise.unitPromise()),
                                                  record("appHttp", Promise.unitPromise()),
                                                  record("sliceInvoker", Promise.unitPromise()),
+                                                 record("sharedResources", Promise.unitPromise()),
                                                  storage(),
                                                  record("clusterNode", STOP_TIMED_OUT.promise()));
 
         assertThat(NodeStopSequence.run(steps).await().isFailure()).isTrue();
+    }
+
+    /// #903: the shared resource scope closes after the slice invoker (every consumer is gone) and before
+    /// storage and the cluster node, and its failure does not skip them.
+    @Test
+    void run_sharedResourceCloseFails_runsEveryLaterStep_andLogsTheFailure() {
+        var steps = NodeStopSequence.Steps.steps(record("deactivate", Promise.unitPromise()),
+                                                 record("management", Promise.unitPromise()),
+                                                 record("appHttp", Promise.unitPromise()),
+                                                 record("sliceInvoker", Promise.unitPromise()),
+                                                 record("sharedResources", STOP_TIMED_OUT.promise()),
+                                                 storage(),
+                                                 record("clusterNode", Promise.unitPromise()));
+
+        assertThat(NodeStopSequence.run(steps).await().isSuccess()).isTrue();
+        assertThat(ran).containsExactly("deactivate", "management", "appHttp", "sliceInvoker", "sharedResources", "storage", "clusterNode");
+        assertThat(logged).anyMatch(event -> event.getMessage()
+                                                  .getFormattedMessage()
+                                                  .startsWith("Shared resource scope did not stop cleanly"));
     }
 
     private NodeStopSequence.Steps steps(Promise<Unit> managementStop, Promise<Unit> appHttpStop) {
@@ -102,6 +122,7 @@ class NodeStopSequenceTest {
                                             record("management", managementStop),
                                             record("appHttp", appHttpStop),
                                             record("sliceInvoker", Promise.unitPromise()),
+                                            record("sharedResources", Promise.unitPromise()),
                                             storage(),
                                             record("clusterNode", Promise.unitPromise()));
     }

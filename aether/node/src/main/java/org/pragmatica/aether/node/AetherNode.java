@@ -2265,7 +2265,13 @@ public interface AetherNode extends ManageableNode {
                           AtomicLong swimBootAt,
                           PeriodicTasks periodicTasks,
                           Option<KvBackupService> kvBackupService,
-                          LeaderTerm leaderTerm) implements AetherNode {
+                          LeaderTerm leaderTerm,
+                          // #932: the stream replica-set controller and backfill executor own one
+                          // thread each per node; neither had a close on the stop path.
+                          Runnable streamReplicationShutdown,
+                          // #903: the provider whose shared (unattributed) scope only node shutdown
+                          // can close.
+                          Option<SpiResourceProvider> spiResourceProvider) implements AetherNode {
             private static final Logger log = LoggerFactory.getLogger(aetherNode.class);
 
             @Override
@@ -2421,6 +2427,9 @@ public interface AetherNode extends ManageableNode {
                 // write races clusterNode.stop() at the tail of this method.
                 streamConsumerRuntime.close();
                 streamPartitionManager.close();
+                // #932: after the partition manager, whose close can still be answered by a backfill
+                // already in flight; before the cluster node, which the controller's reconcile reads.
+                streamReplicationShutdown.run();
                 certRenewalScheduler.onPresent(CertificateRenewalScheduler::stop);
                 swimHealthDetector.stop();
                 presenceSampler.stop();
@@ -2460,9 +2469,18 @@ public interface AetherNode extends ManageableNode {
                                                                                                .or(Promise.unitPromise()),
                                                                          appHttpServer::stop,
                                                                          sliceInvoker::stop,
+                                                                         this::closeSharedResources,
                                                                          this::shutdownStorage,
                                                                          clusterNode::stop)).onSuccess(_ -> log.info("Aether node {} stopped",
                                                                                                                      self()));
+            }
+
+            /// #903: the shared (unattributed) resource scope is released by no slice's unload, because a
+            /// caller with no slice identity has no "last consumer" (#268 R2). Node shutdown is the only
+            /// point at which every consumer is gone, so it is closed here, after the slice invoker stops.
+            private Promise<Unit> closeSharedResources() {
+                return spiResourceProvider.map(SpiResourceProvider::closeShared)
+                                          .or(Promise.unitPromise());
             }
 
             /// #1078: the three node-owned storage instances (`content`, `artifacts`, `streams`)
@@ -5573,6 +5591,13 @@ public interface AetherNode extends ManageableNode {
         // Initial reconcile once membership is available; serialized on the controller executor, so
         // this is a safe no-op until the topology observer reports core members.
         streamReplicaSetController.reconcile();
+        // #932: one thread each per node, both daemon and neither closed on stop — nine of each survived a
+        // nine-node stop. The controller's close() is shutdownNow on the executor it owns; the backfill
+        // executor is this method's own. Controller first: its reconcile is what submits to the backfill.
+        Runnable streamReplicationShutdown = () -> {
+            streamReplicaSetController.close();
+            streamBackfillExecutor.shutdownNow();
+        };
         // A4 periodic backfill re-drive: reconcilePartition fires backfill ONCE per reconcile edge, so a
         // cold-start replica that saw NO_SOURCE on its first attempt would never re-attempt and stay
         // SYNCING forever (the system:cluster-events GET /api/events -> 200 [] deadlock). Re-drive every
@@ -6136,7 +6161,9 @@ public interface AetherNode extends ManageableNode {
                                   swimBootAtMs,
                                   periodicTasks,
                                   kvBackupService,
-                                  leaderTerm);
+                                  leaderTerm,
+                                  streamReplicationShutdown,
+                                  resourceProviderSetup.spiProvider());
 
         nodeDeploymentManager.setShutdownCallback(node::stop);
         // #634-4, the periodic half (owner-ruled: on-read + periodic alert). The watch binds the three
@@ -6355,7 +6382,9 @@ public interface AetherNode extends ManageableNode {
                                                                         swimBootAtMs,
                                                                         periodicTasks,
                                                                         kvBackupService,
-                                                                        leaderTerm);
+                                                                        leaderTerm,
+                                                                        streamReplicationShutdown,
+                                                                        resourceProviderSetup.spiProvider());
                                               }
 
                                                   return node;

@@ -22,20 +22,29 @@ import static org.pragmatica.lang.Unit.unit;
 sealed interface NodeStopSequence {
     Logger LOG = LoggerFactory.getLogger(NodeStopSequence.class);
 
-    /// The steps, in order. `storage` is infallible by design (see `AetherNode.shutdownStorage`).
+    /// The steps, in order. `sharedResources` (#903) closes the shared resource scope once the slice invoker has
+    /// stopped; a failure is logged and skipped past, like the HTTP listeners. `storage` is infallible by design (see `AetherNode.shutdownStorage`).
     record Steps(Supplier<Promise<Unit>> deactivateDeployment,
                  Supplier<Promise<Unit>> managementServer,
                  Supplier<Promise<Unit>> appHttpServer,
                  Supplier<Promise<Unit>> sliceInvoker,
+                 Supplier<Promise<Unit>> sharedResources,
                  Supplier<Unit> storage,
                  Supplier<Promise<Unit>> clusterNode) {
         static Steps steps(Supplier<Promise<Unit>> deactivateDeployment,
                            Supplier<Promise<Unit>> managementServer,
                            Supplier<Promise<Unit>> appHttpServer,
                            Supplier<Promise<Unit>> sliceInvoker,
+                           Supplier<Promise<Unit>> sharedResources,
                            Supplier<Unit> storage,
                            Supplier<Promise<Unit>> clusterNode) {
-            return new Steps(deactivateDeployment, managementServer, appHttpServer, sliceInvoker, storage, clusterNode);
+            return new Steps(deactivateDeployment,
+                             managementServer,
+                             appHttpServer,
+                             sliceInvoker,
+                             sharedResources,
+                             storage,
+                             clusterNode);
         }
     }
 
@@ -50,6 +59,8 @@ sealed interface NodeStopSequence {
                                                  steps.appHttpServer().get()))
                     .flatMap(_ -> steps.sliceInvoker()
                                        .get())
+                    .flatMap(_ -> continuingPast("Shared resource scope",
+                                                 steps.sharedResources().get()))
                     .map(_ -> steps.storage()
                                    .get())
                     .flatMap(_ -> steps.clusterNode()

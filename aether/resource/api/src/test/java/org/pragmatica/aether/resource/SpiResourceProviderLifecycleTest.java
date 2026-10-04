@@ -450,6 +450,27 @@ class SpiResourceProviderLifecycleTest {
 
             assertThat(unattributed.isClosed()).isFalse();
         }
+
+        /// #903. The shared scope has exactly one legitimate closer, node shutdown, and it must close the
+        /// unattributed resource exactly once, leave a slice-scoped resource to its own `releaseAll`, and
+        /// find nothing to do the second time.
+        @Test
+        void closeShared_closesTheUnattributedResourceOnce_andOnlyThat() {
+            var factory = new AsyncFactory();
+            var provider = providerOf(factory);
+
+            provider.provide(AsyncResource.class, SECTION).await(TIMEOUT);
+            provider.provide(AsyncResource.class, SECTION, contextFor("slice-a")).await(TIMEOUT);
+
+            var unattributed = factory.provisioned.get(0);
+            var sliceScoped = factory.provisioned.get(1);
+
+            assertThat(provider.closeShared().await(TIMEOUT).isSuccess()).isTrue();
+            assertThat(provider.closeShared().await(TIMEOUT).isSuccess()).isTrue();
+
+            assertThat(unattributed.closeCount()).as("shared resource closed exactly once").isEqualTo(1);
+            assertThat(sliceScoped.isClosed()).as("a slice's resource is its own releaseAll's").isFalse();
+        }
     }
 
     @Nested

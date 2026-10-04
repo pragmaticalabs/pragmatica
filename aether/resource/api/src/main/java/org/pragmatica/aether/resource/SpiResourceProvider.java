@@ -232,14 +232,33 @@ public final class SpiResourceProvider implements ResourceProvider {
     /// refcounting, because nothing in the current model exercises it.
     @Override
     public Promise<Unit> releaseAll(String sliceId) {
+        // The shared unattributed scope is released by nobody here. Relying instead on "no real
+        // slice is named <unattributed>" would make the pin an accident of naming rather than
+        // an invariant, and a slice id that collided would quietly close a pool still in use.
+        return UNATTRIBUTED_SCOPE.equals(sliceId)
+               ? Promise.unitPromise()
+               : releaseScope(sliceId);
+    }
+
+    /// Close the shared (unattributed) scope: every resource provisioned through the context-free
+    /// overload (#903).
+    ///
+    /// `releaseAll` can never reach it (see [#UNATTRIBUTED_SCOPE]), because a caller that presents no
+    /// slice identity has no "last consumer", and closing on any one slice's unload would be
+    /// use-after-close for every other holder. The only point at which no consumer remains is node
+    /// shutdown, so that is the only caller. Same detach-then-close single-remover discipline as
+    /// `releaseAll`, so a second call finds nothing and closes nothing.
+    public Promise<Unit> closeShared() {
+        return releaseScope(UNATTRIBUTED_SCOPE);
+    }
+
+    private Promise<Unit> releaseScope(String scope) {
         var closeFutures = new ArrayList<Promise<Unit>>();
 
         for (var entry : List.copyOf(promiseCache.entrySet())) {
             var key = entry.getKey();
-            // The shared unattributed scope is released by nobody. Relying instead on "no real
-            // slice is named <unattributed>" would make the pin an accident of naming rather than
-            // an invariant, and a slice id that collided would quietly close a pool still in use.
-            if (UNATTRIBUTED_SCOPE.equals(key.scope()) || !sliceId.equals(key.scope())) {
+
+            if (!scope.equals(key.scope())) {
                 continue;
             }
 
