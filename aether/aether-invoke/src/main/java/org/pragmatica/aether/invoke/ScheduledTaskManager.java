@@ -494,9 +494,9 @@ public interface ScheduledTaskManager {
         }
 
         private static Promise<Unit> executeTask(Context ctx, ScheduledTask task, LongSupplier nextFireAtSupplier) {
-            return ctx.invoker.invoke(task.artifact(),
-                                      task.methodName(),
-                                      Unit.unit())
+            return ctx.invoker.invokeAwaitingCompletion(task.artifact(),
+                                                        task.methodName(),
+                                                        Unit.unit())
                               .onSuccess(_ -> writeSuccessState(ctx,
                                                                 task,
                                                                 nextFireAtSupplier.getAsLong()))

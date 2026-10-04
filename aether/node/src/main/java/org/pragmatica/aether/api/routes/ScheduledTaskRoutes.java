@@ -317,9 +317,9 @@ public final class ScheduledTaskRoutes implements RouteSource {
         var priorState = stateRegistry.stateFor(stateKey);
         var previousExecutionMs = priorState.map(ScheduledTaskStateValue::lastExecutionAt).or(0L);
 
-        return invoker.invoke(task.artifact(),
-                              task.methodName(),
-                              Unit.unit())
+        return invoker.invokeAwaitingCompletion(task.artifact(),
+                                                task.methodName(),
+                                                Unit.unit())
                       .onFailure(cause -> writeFailureBestEffort(stateKey, priorState, cause))
                       .flatMap(_ -> writeSuccessAndRespond(stateKey, priorState, req, previousExecutionMs));
     }

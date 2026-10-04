@@ -505,7 +505,9 @@ class ScheduledTaskRoutesInjectTest {
                 SliceInvoker.class.getClassLoader(),
                 new Class[]{SliceInvoker.class},
                 (_, method, args) -> {
-                    if ("invoke".equals(method.getName()) && args != null && args.length == 3) {
+                    // #1723: /inject must judge the fire by the callee's COMPLETION, so only the completion-aware call is
+                    // modelled; the fire-and-forget `invoke` is deliberately not implemented here and fails the test.
+                    if ("invokeAwaitingCompletion".equals(method.getName()) && args != null && args.length == 3) {
                         var slice = (Artifact) args[0];
                         var methodName = (MethodName) args[1];
                         invocations.add(new Invocation(slice.asString(), methodName.name()));

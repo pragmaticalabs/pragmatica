@@ -550,6 +550,28 @@ class ScheduledTaskManagerTest {
             assertThat(afterSuccess.totalExecutions()).isEqualTo(1);
         }
 
+        /// #1723: the fire is judged by the callee's COMPLETION, not by the request being handed to the transport. Here
+        /// `invoke` (fire-and-forget) would resolve at once, but the callee fails: the task must record a failure and
+        /// must not count an execution. Reverted to `invoke`, the fire reads as a success and this goes red.
+        @Test
+        void fixedRate_calleeThatFailsAfterTheRequestWasAccepted_isAFailureNotAnExecution() {
+            Cause calleeFailed = () -> "callee failed after the request was accepted";
+
+            stubInvoker.setCompletionFailure(Option.some(calleeFailed));
+            putTask("cache", artifact, method, self, "1s", ExecutionMode.ALL);
+            establishQuorum();
+            var key = ScheduledTaskStateKey.scheduledTaskStateKey("cache", artifact, method, self);
+
+            awaitTrue(() -> stateFor(key).map(v -> v.consecutiveFailures() >= 1)
+                                    .or(false),
+                      4000);
+            manager.stop();
+            var state = stateFor(key).unwrap();
+
+            assertThat(state.totalExecutions()).as("a fire the callee did not complete is not an execution").isZero();
+            assertThat(state.lastFailureMessage()).isEqualTo("callee failed after the request was accepted");
+        }
+
         @Test
         void fixedRate_overlappingFire_recordsSkipInsteadOfDoubleExecution() {
             var gate = Promise.<Unit> promise();
@@ -832,6 +854,25 @@ class ScheduledTaskManagerTest {
 
             return failureCause.get()
                                .fold(Promise::unitPromise, Cause::promise);
+        }
+
+        /// #1723: a REMOTE callee that is handed the request (so `invoke` resolves, as fire-and-forget does on enqueue) but
+        /// then fails or never answers: only the completion-aware call sees that. Unset, it behaves as `invoke`.
+        private final AtomicReference<Option<Cause>> completionFailure = new AtomicReference<>(Option.none());
+
+        void setCompletionFailure(Option<Cause> cause) {
+            completionFailure.set(cause);
+        }
+
+        @Override
+        public Promise<Unit> invokeAwaitingCompletion(Artifact slice, MethodName method, Object request) {
+            return completionFailure.get()
+                                    .fold(() -> invoke(slice, method, request),
+                                          cause -> {
+                                              invocations.add(new InvocationRecord(slice, method, request));
+
+                                              return cause.promise();
+                                          });
         }
 
         @Override

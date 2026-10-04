@@ -99,6 +99,20 @@ public interface SliceInvoker extends SliceInvokerFacade {
 
     Result<Unit> verifyEndpointExists(Artifact artifact, MethodName method);
     Promise<Unit> invoke(Artifact slice, MethodName method, Object request);
+
+    /// #1723: like [#invoke(Artifact, MethodName, Object)], but resolves only when the callee has COMPLETED the call.
+    /// `invoke` is fire-and-forget: against a REMOTE callee it resolves as soon as the request is handed to the
+    /// transport, so a lost message or a callee that fails still reads as success. This one asks the callee for a
+    /// response and resolves with it: a callee failure, a lost message (the response never arrives within the
+    /// invocation timeout) or a departed node all FAIL it. The response payload is ignored, so the callee's result
+    /// type does not need to be decodable here (a scheduled task's method returns nothing the caller reads). A callee
+    /// hosted on this node is already awaited by `invoke`, so it takes the same path.
+    ///
+    /// The default delegates to [#invoke(Artifact, MethodName, Object)], which is only right for implementations with no
+    /// transport (test stubs); the production invoker overrides it.
+    default Promise<Unit> invokeAwaitingCompletion(Artifact slice, MethodName method, Object request) {
+        return invoke(slice, method, request);
+    }
     <R> Promise<R> invoke(Artifact slice, MethodName method, Object request, TypeToken<R> responseType);
 
     <R> Promise<R> invokeWithRetry(Artifact slice,
@@ -341,6 +355,75 @@ class SliceInvokerImpl implements SliceInvoker {
                                                                                                           method,
                                                                                                           request));
     }
+
+    @Override
+    public Promise<Unit> invokeAwaitingCompletion(Artifact slice, MethodName method, Object request) {
+        if (stopped.get()) {
+            return INVOKER_STOPPED.promise();
+        }
+        // Captured on the caller's thread for the same reason as in the typed `invoke` (#634 follow-up).
+        var deadline = Deadline.current();
+
+        return selectEndpointWithAffinity(slice, method, request).flatMap(endpoint -> endpoint.nodeId()
+                                                                                              .equals(self)
+                                                                                      ? invokeLocalFireAndForget(slice,
+                                                                                                                 method,
+                                                                                                                 request)
+                                                                                      : awaitRemoteCompletion(endpoint,
+                                                                                                              slice,
+                                                                                                              method,
+                                                                                                              request,
+                                                                                                              deadline));
+    }
+
+    /// The remote half of [#invokeAwaitingCompletion]: the same bridge-free `Unit` encoding as the fire-and-forget path,
+    /// but the request asks for a response and the promise settles with it (or times out).
+    private Promise<Unit> awaitRemoteCompletion(Endpoint endpoint,
+                                                Artifact slice,
+                                                MethodName method,
+                                                Object request,
+                                                Deadline deadline) {
+        return encodeFireAndForgetRequest(slice, request).flatMap(payload -> this.<Object>sendAndAwaitResponse(endpoint,
+                                                                                                               slice,
+                                                                                                               method,
+                                                                                                               payload,
+                                                                                                               COMPLETION_ONLY,
+                                                                                                               deadline))
+                                                         .mapToUnit();
+    }
+
+    /// Stands in for the sender bridge of a call whose response payload is never read: the response only has to ARRIVE.
+    private static final SliceBridge COMPLETION_ONLY = new SliceBridge() {
+        @Override
+        public Promise<byte[]> invoke(String methodName, byte[] input) {
+            return Causes.cause("A completion-only bridge carries no methods").promise();
+        }
+
+        @Override
+        public Promise<Unit> start() {
+            return Promise.unitPromise();
+        }
+
+        @Override
+        public Promise<Unit> stop() {
+            return Promise.unitPromise();
+        }
+
+        @Override
+        public Promise<Object> decode(byte[] bytes) {
+            return Promise.success(Unit.unit());
+        }
+
+        @Override
+        public ClassLoader classLoader() {
+            return SliceInvokerImpl.class.getClassLoader();
+        }
+
+        @Override
+        public List<String> methodNames() {
+            return List.of();
+        }
+    };
 
     @Override
     public boolean hasLocalSlice(Artifact slice) {

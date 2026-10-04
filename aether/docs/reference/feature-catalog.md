@@ -112,7 +112,7 @@ Three storage/persistence concepts that are distinct and must not be conflated:
 | 29 | Scheduled task KV types | Complete | `ScheduledTaskKey`/`ScheduledTaskValue` (runtime registration), `ScheduledTaskPauseKey`/`ScheduledTaskPauseValue` (operator pause — cluster state, #1541), `ScheduledTaskStateKey`/`ScheduledTaskStateValue` (execution metrics) |
 | 30 | Deployment lifecycle wiring | Complete | Publish/unpublish scheduled tasks during slice activation, deactivation, reactivation, and failure cleanup |
 | 31 | Scheduled tasks management API | Complete | Full CRUD: list, filter, pause, resume, manual trigger, execution state query. CLI: list/get/pause/resume/trigger |
-| 104 | Execution state tracking | Complete | Tracks last execution time, consecutive failures, total executions per task. Passive `ScheduledTaskStateRegistry` watches KV-Store. Enriched REST responses |
+| 104 | Execution state tracking | Complete | Tracks last execution time, consecutive failures, total executions per task. A fire counts as an execution only when the callee COMPLETED it (#1723): against a remote callee the request asks for a response, so a callee failure, a lost message (no response within the invocation timeout) or a departed node record a failure, and the invocation timeout therefore also bounds how long a remote SINGLE-mode task may run before its fire reads as failed. Passive `ScheduledTaskStateRegistry` watches KV-Store. Enriched REST responses |
 
 ## Storage & Data
 
