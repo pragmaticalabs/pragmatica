@@ -5150,7 +5150,7 @@ public interface AetherNode extends ManageableNode {
         var streamIsrAnnouncer = StreamIsrAnnouncer.streamIsrAnnouncer(streamPartitionManager::confirmationFactorFor,
                                                                        streamPartitionManager::confirmationFactorAfter,
                                                                        (stream, partition) -> kvStore.getTyped(StreamPartitionOwnershipKey.streamPartitionOwnershipKey(stream,
-                                                                                                                                                                        partition),
+                                                                                                                                                                       partition),
                                                                                                                StreamPartitionOwnershipValue.class),
                                                                        delegateRouter::route);
         var streamConfigKvRouter = KVNotificationRouter.<AetherKey, AetherValue> builder(AetherKey.class)

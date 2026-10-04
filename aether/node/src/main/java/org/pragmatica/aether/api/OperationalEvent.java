@@ -66,7 +66,14 @@ public sealed interface OperationalEvent extends Message.Local {
                                                                   List<String> live,
                                                                   String reason,
                                                                   String eventId) {
-            return new StreamFailoverRefused(stream, partition, owner, isr, live, reason, eventId, System.currentTimeMillis());
+            return new StreamFailoverRefused(stream,
+                                             partition,
+                                             owner,
+                                             isr,
+                                             live,
+                                             reason,
+                                             eventId,
+                                             System.currentTimeMillis());
         }
     }
 
@@ -86,7 +93,14 @@ public sealed interface OperationalEvent extends Message.Local {
                                                                     List<String> live,
                                                                     String reason,
                                                                     String eventId) {
-            return new StreamFailoverResolved(stream, partition, owner, isr, live, reason, eventId, System.currentTimeMillis());
+            return new StreamFailoverResolved(stream,
+                                              partition,
+                                              owner,
+                                              isr,
+                                              live,
+                                              reason,
+                                              eventId,
+                                              System.currentTimeMillis());
         }
     }
 

@@ -61,6 +61,7 @@ public interface StreamIsrAnnouncer {
                                                  Consumer<OperationalEvent> sink) {
         return new StreamIsrAnnouncer() {
             @Override
+            @Contract
             public void onOwnershipPut(ValuePut<StreamPartitionOwnershipKey, StreamPartitionOwnershipValue> put) {
                 transition(put.cause().key(),
                            put.oldValue(),
@@ -69,8 +70,10 @@ public interface StreamIsrAnnouncer {
             }
 
             @Override
+            @Contract
             public void onConfigPut(ValuePut<StreamConfigKey, StreamConfigValue> put) {
-                var value = put.cause().value();
+                var value = put.cause()
+                               .value();
                 var config = value.config();
 
                 configTransitions(value,
@@ -92,7 +95,8 @@ public interface StreamIsrAnnouncer {
 
         return before <= 0 || before == after
                ? List.of()
-               : IntStream.range(0, config.partitions())
+               : IntStream.range(0,
+                                 config.partitions())
                           .mapToObj(partition -> configTransition(value, partition, before, after, committedRecord))
                           .flatMap(Option::stream)
                           .toList();
@@ -103,8 +107,7 @@ public interface StreamIsrAnnouncer {
                                                              int before,
                                                              int after,
                                                              BiFunction<String, Integer, Option<StreamPartitionOwnershipValue>> committedRecord) {
-        var key = StreamPartitionOwnershipKey.streamPartitionOwnershipKey(value.config()
-                                                                               .name(),
+        var key = StreamPartitionOwnershipKey.streamPartitionOwnershipKey(value.config().name(),
                                                                           partition);
 
         return committedRecord.apply(key.stream(),
