@@ -383,6 +383,42 @@ class ClusterEventAggregatorTest {
                                                                                            org.pragmatica.lang.Option.some(before));
     }
 
+    /// The ISR events are derived on EVERY node from one committed Put and published once, by the events
+    /// owner only (the leader and a third node publish nothing). Both legs: the breach and the restoration.
+    @Test
+    void streamIsrBelowAndRestored_derivedOnEveryNode_publishedOnceByTheEventsOwner() {
+        var leader = Harness.create(Harness.defaultRetention(), NOT_OWNER);
+        var eventsOwner = Harness.create(Harness.defaultRetention(), OWNER);
+        var third = Harness.create(Harness.defaultRetention(), NOT_OWNER);
+        var a = new NodeId("node-a");
+        var b = new NodeId("node-b");
+        var key = StreamPartitionOwnershipKey.streamPartitionOwnershipKey("orders", 0);
+        var healthy = StreamPartitionOwnershipValue.streamPartitionOwnershipValue(a, Epoch.ZERO, 1L, HlcTimestamp.ZERO, List.of(a, b), 2L);
+        var below = healthy.withIsrAndFenced(List.of(a), List.of(b));
+        var restored = below.withIsrAndFenced(List.of(a, b), List.of());
+        var breach = new ValuePut<>(new KVCommand.Put<>(key, below), Option.some(healthy));
+        var resolution = new ValuePut<>(new KVCommand.Put<>(key, restored), Option.some(below));
+
+        for (var node : List.of(leader, eventsOwner, third)) {
+            var announcer = org.pragmatica.aether.node.StreamIsrAnnouncer.streamIsrAnnouncer(_ -> 2, event -> {
+                switch (event) {
+                    case OperationalEvent.StreamIsrBelowMinimum e -> node.aggregator().onStreamIsrBelowMinimum(e);
+                    case OperationalEvent.StreamIsrRestored e -> node.aggregator().onStreamIsrRestored(e);
+                    default -> throw new AssertionError("unexpected " + event);
+                }
+            });
+
+            announcer.onOwnershipPut(breach);
+            announcer.onOwnershipPut(resolution);
+        }
+
+        assertThat(leader.events()).as("not the events owner: publishes nothing").isEmpty();
+        assertThat(third.events()).isEmpty();
+        assertThat(eventsOwner.events()).as("exactly one breach and one restoration, on the events owner")
+                                        .extracting(ClusterEvent::type)
+                                        .containsExactly("STREAM_ISR_BELOW_MINIMUM", "STREAM_ISR_RESTORED");
+    }
+
     // --- owner-gated emit (operational events: config/deploy/scale/blueprint stay owner-gated) -----
 
     @Test
