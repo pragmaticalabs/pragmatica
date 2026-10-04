@@ -63,6 +63,32 @@ public sealed interface ManagementServerError extends Cause, HttpStatusAware {
         }
     }
 
+    /// #954: a transient server-side condition (a component not yet ready on this node). Answers 503.
+    record ServiceUnavailable(String detail) implements ManagementServerError {
+        @Override
+        public String message() {
+            return detail;
+        }
+
+        @Override
+        public HttpStatus httpStatus() {
+            return HttpStatus.SERVICE_UNAVAILABLE;
+        }
+    }
+
+    /// #954: the route exists and the feature is deferred. Answers 501.
+    record NotImplemented(String detail) implements ManagementServerError {
+        @Override
+        public String message() {
+            return detail;
+        }
+
+        @Override
+        public HttpStatus httpStatus() {
+            return HttpStatus.NOT_IMPLEMENTED;
+        }
+    }
+
     /// #954: the request is well formed but the cluster's current state refuses it. Answers 409.
     record Conflict(String detail) implements ManagementServerError {
         @Override

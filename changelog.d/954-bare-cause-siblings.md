@@ -9,12 +9,15 @@
 - **400:** a missing stream name on `POST /api/v1/streams/groups/join` and `/leave`; an unknown `layer` on
   `GET /api/v1/cluster/journal`; a missing or malformed `epoch`, or a malformed `timeout`, on
   `POST /api/v1/cluster/await-quiesced`. The last was already documented as 400 and answered 500.
-- New `ManagementServerError.NotFound` (404) and `Conflict` (409), alongside the `InvalidRequest` (400) of the first change.
+- **503:** the cluster-topology routes (`/cluster/topology/...` circuit breaker, auto-heal) when the topology manager is not on
+  this node (not the leader, or not yet activated): transient and server-side, so not a bare 500.
+- **501:** `GET /streams/{ns}/{stream}/{version}/tail`, a deferred feature (#212); the message still names the polling alternative.
+- New `ManagementServerError.NotFound` (404), `Conflict` (409), `ServiceUnavailable` (503) and `NotImplemented` (501), alongside the
+  `InvalidRequest` (400) of the first change.
 - Pinned at the route-handler boundary by `ManagementClientErrorSiblingsStatusTest` (11 tests, each red when the production
   hunk is reverted).
 - **Not changed, and why:** `ClusterJournalRoutes.NON_POSITIVE_LIMIT` is swallowed by `.or(DEFAULT_LIMIT)` and never reaches the
-  wire; `ClusterTopologyRoutes.CTM_UNAVAILABLE` (a server-side "not ready", 503 rather than a caller error) and
-  `StreamApiRoutes.tailDeferred` (a deferred feature, 501) are server statuses and need a ruling; path-id parse failures
+  wire; path-id parse failures
   (`BlueprintId`, `Artifact`, `NodeId`, `Version` at about fifteen sites) surface the domain parser's untyped cause and need one shared
   helper rather than fifteen edits.
 - [unverified: a real multi-node cluster; the tests drive the real `Route` handlers and `ProblemResponses.writeProblem`, not a bound listener]

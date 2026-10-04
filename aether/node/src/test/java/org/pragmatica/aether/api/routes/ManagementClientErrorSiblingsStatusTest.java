@@ -143,6 +143,24 @@ class ManagementClientErrorSiblingsStatusTest {
             .isEqualTo(HttpStatus.BAD_REQUEST);
     }
 
+    /// A topology manager that is not (yet) on this node is transient and server-side: 503, not a bare 500.
+    @Test
+    void clusterCircuitBreakerStatus_answers503_whenTheTopologyManagerIsNotOnThisNode() {
+        var routes = ClusterTopologyRoutes.clusterTopologyRoutes(() -> node(Map.of("clusterTopologyManager", Option.none())));
+
+        assertThat(statusOf(routes.routes(), ManagementRoute.CLUSTER_CIRCUIT_BREAKER_STATUS, List.of(), null, Map.of()))
+            .isEqualTo(HttpStatus.SERVICE_UNAVAILABLE);
+    }
+
+    /// The tail subscription is a deferred feature (#212): 501, with the polling alternative in the message.
+    @Test
+    void streamsTail_answers501_becauseTheSubscriptionIsDeferred() {
+        var routes = StreamApiRoutes.streamApiRoutes(() -> node(Map.of()), null, ConsumerGroupCoordinator.noOp(), null);
+
+        assertThat(statusOf(routes.routes(), ManagementRoute.STREAMS_TAIL, List.of("ns", "orders", "1.0.0", "tail"), null, Map.of()))
+            .isEqualTo(HttpStatus.NOT_IMPLEMENTED);
+    }
+
     /// The commit of a cluster config needs a committed core leader; without one it is a state the cluster refuses
     /// (409), not a server fault.
     @Test
