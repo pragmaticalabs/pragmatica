@@ -26,7 +26,9 @@ public interface StreamConsumerRuntime extends AutoCloseable {
     /// call it from a plain statement. `void` is the JDK's contract here, not a choice, hence
     /// [`Contract`].
     ///
-    /// Closing flushes every consumer's cursor before removing push listeners. That flush is
+    /// Closing flushes every consumer's cursor before removing push listeners; each flush first waits, up to
+    /// one second, for a delivery in flight to advance the cursor, so an event whose handler completed is not
+    /// redelivered (#1403). That flush is
     /// `ConsumerCursorStore.commit(...)` — a `Promise<CommitOutcome>` consensus write that can fail, or simply
     /// not settle before shutdown needs to proceed. #654: the batch of final commits is bound-await
     /// for up to 5 seconds so a wedged or slow write cannot hold node stop; a commit that has not
