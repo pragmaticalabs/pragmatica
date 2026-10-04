@@ -2498,6 +2498,27 @@ public sealed interface AetherValue {
                                                      List.of());
         }
 
+        /// A record with ISR `isr`, fenced set `fenced` and the epoch starts `epochStarts` the new owner inherits (#1730 phase 2):
+        /// a failover bumps the epoch but keeps the history of the earlier ones, so a consumer asleep across it is still checked.
+        public static StreamPartitionOwnershipValue streamPartitionOwnershipValue(NodeId owner,
+                                                                                  Epoch ownerEpoch,
+                                                                                  long ownershipTerm,
+                                                                                  HlcTimestamp transferredAt,
+                                                                                  List<NodeId> isr,
+                                                                                  long isrVersion,
+                                                                                  List<NodeId> fenced,
+                                                                                  List<EpochStart> epochStarts) {
+            return new StreamPartitionOwnershipValue(owner,
+                                                     ownerEpoch,
+                                                     ownershipTerm,
+                                                     transferredAt,
+                                                     isr,
+                                                     isrVersion,
+                                                     false,
+                                                     fenced,
+                                                     epochStarts);
+        }
+
         /// The same ownership with ISR `isr`, one ISR change later.
         public StreamPartitionOwnershipValue withIsr(List<NodeId> isr) {
             return new StreamPartitionOwnershipValue(owner,

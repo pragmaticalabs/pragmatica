@@ -15,6 +15,7 @@ import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.StreamPartitionOwnershipKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.EpochStart;
 import org.pragmatica.aether.slice.kvstore.AetherValue.StreamPartitionOwnershipValue;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.LeaderValue;
@@ -304,6 +305,7 @@ record IsrOwnershipWriter(BooleanSupplier isLeaderSupplier,
                                                        1L,
                                                        led(desired, isrInputs.initialIsr(stream, partition, desired)),
                                                        1L,
+                                                       List.of(),
                                                        List.of())),
                               current -> successor(stream, partition, current, desired, committedEpoch, live));
     }
@@ -389,7 +391,7 @@ record IsrOwnershipWriter(BooleanSupplier isLeaderSupplier,
                                                 List<NodeId> fenced) {
         var term = current.ownershipTerm() + 1L;
 
-        return minted(owner, committedEpoch, term, led(owner, liveIsr), current.isrVersion() + 1L, fenced);
+        return minted(owner, committedEpoch, term, led(owner, liveIsr), current.isrVersion() + 1L, fenced, current.epochStarts());
     }
 
     private StreamPartitionOwnershipValue minted(NodeId owner,
@@ -397,14 +399,16 @@ record IsrOwnershipWriter(BooleanSupplier isLeaderSupplier,
                                                  long ownershipTerm,
                                                  List<NodeId> isr,
                                                  long isrVersion,
-                                                 List<NodeId> fenced) {
+                                                 List<NodeId> fenced,
+                                                 List<EpochStart> epochStarts) {
         return StreamPartitionOwnershipValue.streamPartitionOwnershipValue(owner,
                                                                            committedEpoch.withCounter(ownershipTerm),
                                                                            ownershipTerm,
                                                                            hlcClock.now(),
                                                                            isr,
                                                                            isrVersion,
-                                                                           fenced);
+                                                                           fenced,
+                                                                           epochStarts);
     }
 
     /// `owner` first, then the other members in their given order.
