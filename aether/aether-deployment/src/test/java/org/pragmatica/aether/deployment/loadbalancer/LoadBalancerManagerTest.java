@@ -404,6 +404,33 @@ class LoadBalancerManagerTest {
         };
     }
 
+    /// #1314 on the restart / leader-change path (v1882): contributions REBUILT from KV by reconcile, then one
+    /// artifact's key is removed. The node must keep the route it still serves through the other artifact.
+    @Test
+    void reconcileFromKv_thenRemoveOneArtifact_keepsTheOtherArtifactsRoute() {
+        var orders = org.pragmatica.aether.artifact.Artifact.artifact("com.example:orders:1.0.0").unwrap();
+        var users = org.pragmatica.aether.artifact.Artifact.artifact("com.example:users:1.0.0").unwrap();
+        kvStore.process(kvStore.createBatch(List.of(
+            new KVCommand.Put<>(NodeRoutesKey.nodeRoutesKey(node1, orders),
+                                NodeRoutesValue.nodeRoutesValue(List.of(RouteEntry.activeRoute("GET", "/shared/", "m"),
+                                                                        RouteEntry.activeRoute("GET", "/orders/", "m")))),
+            new KVCommand.Put<>(NodeRoutesKey.nodeRoutesKey(node1, users),
+                                NodeRoutesValue.nodeRoutesValue(List.of(RouteEntry.activeRoute("GET", "/shared/", "m")))))));
+        topologyManager.register(node1, "10.0.0.1", 8080);
+        activateAsLeader();
+        assertThat(provider.reconcileCalls).as("arming: activation reconciled from KV").hasSize(1);
+        provider.clear();
+
+        manager.onNodeRoutesRemove(remove(node1, orders));
+
+        var shared = provider.routeChanges.stream().filter(c -> c.pathPrefix().equals("/shared/")).toList();
+        var ordersChanges = provider.routeChanges.stream().filter(c -> c.pathPrefix().equals("/orders/")).toList();
+        assertThat(ordersChanges).as("arming: the removed artifact's own route is announced").isNotEmpty();
+        assertThat(ordersChanges.getLast().nodeIps()).as("/orders/ is withdrawn").isEmpty();
+        assertThat(shared.stream().allMatch(c -> c.nodeIps().contains("10.0.0.1")))
+            .as("/shared/ is never announced without node1, which still serves it through USERS: " + shared).isTrue();
+    }
+
     private void activateAsLeader() {
         manager.activate().await();
     }
