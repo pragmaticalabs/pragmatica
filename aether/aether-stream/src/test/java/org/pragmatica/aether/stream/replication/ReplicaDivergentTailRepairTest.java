@@ -156,6 +156,26 @@ class ReplicaDivergentTailRepairTest {
         assertThat(texts(0, 20)).hasSize(10);
     }
 
+    /// A WAL copy whose own history cannot vouch for its records (it holds records and no owner-epoch history: the
+    /// `HISTORY_MISSING` shape, which a catch-up written without attribution produces) compares unequal with ANY owner at
+    /// offset 0. That is not a divergence, only the absence of evidence, so nothing is cut: the copy stays quarantined
+    /// exactly as before. Cutting it would discard acknowledged records the copy holds because its bookkeeping is thin.
+    @Test
+    void walReplicaWhoseHistoryCannotVouchForItsRecords_isNotCut() {
+        useWal();
+        for (var i = 0; i < 5; i++) {
+            manager.appendRecovered(STREAM, PARTITION, i, ("c" + i).getBytes(UTF_8), 1000L + i).unwrap();
+        }
+        manager.syncReplicated(STREAM, PARTITION).await();
+        var history = List.of(ProvenanceEntry.provenanceEntry(E1, 0L));
+
+        backfill(owner(5, 5, new AtomicLong(), history));
+        backfill(owner(5, 5, new AtomicLong(), history));
+
+        assertThat(manager.quarantinedAt(STREAM, PARTITION).isPresent()).as("quarantined, as before: no evidence of a divergence").isTrue();
+        assertThat(texts(0, 20)).as("nothing was cut").containsExactly("c0", "c1", "c2", "c3", "c4");
+    }
+
     /// A WAL replica that restarted with a recovered tail shows readers nothing of it until its backfill has compared it
     /// with the owner's; completing that comparison exposes it. (Before, a restarted REPLICA exposed its whole recovered
     /// tail at once, including an ex-owner's unacknowledged records.)
