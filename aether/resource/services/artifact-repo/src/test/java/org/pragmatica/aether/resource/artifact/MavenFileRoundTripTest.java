@@ -114,6 +114,75 @@ class MavenFileRoundTripTest {
         assertThat(xml.indexOf("<version>1.0.0</version>")).isLessThan(xml.indexOf("<version>2.0.0-rc1</version>"));
     }
 
+    private static final String METADATA = "/repository/org/example/lib/maven-metadata.xml";
+    private static final java.util.Map<String, String> CHECKSUM_ALGORITHMS = java.util.Map.of(".md5", "MD5",
+                                                                                              ".sha1", "SHA-1",
+                                                                                              ".sha256", "SHA-256",
+                                                                                              ".sha512", "SHA-512");
+
+    /// #1833 — the request sequence of a standard `mvn deploy` followed by a resolving client: the
+    /// artifact files and their sidecars, then the metadata and ITS sidecars (Gradle sends all four
+    /// algorithms, Maven md5 and sha1), then a fetch of the metadata and of each checksum. Every
+    /// metadata sidecar PUT used to be a 400 for sha256/sha512 and every metadata checksum GET a 400.
+    @Test
+    void mavenDeployShapedSequence_metadataChecksumsAreAcceptedAndServed() {
+        put(BASE + ".jar", JAR);
+        put(BASE + ".jar.sha1", "ignored".getBytes(StandardCharsets.UTF_8));
+        put(BASE + ".pom", POM);
+        assertThat(put(METADATA, "<metadata/>".getBytes(StandardCharsets.UTF_8)).statusCode()).isLessThan(300);
+
+        for (var suffix : CHECKSUM_ALGORITHMS.keySet()) {
+            var uploaded = put(METADATA + suffix, "client-side-digest".getBytes(StandardCharsets.UTF_8));
+
+            assertThat(uploaded.statusCode()).as("PUT metadata%s", suffix).isLessThan(300);
+            assertThat(body(uploaded)).as("PUT metadata%s says what happened to the bytes", suffix)
+                                      .contains("\"status\":\"derived\"")
+                                      .contains("not stored");
+        }
+
+        var metadata = get(METADATA);
+
+        assertThat(metadata.statusCode()).isEqualTo(200);
+
+        for (var entry : CHECKSUM_ALGORITHMS.entrySet()) {
+            var checksum = get(METADATA + entry.getKey());
+
+            assertThat(checksum.statusCode()).as("GET metadata%s", entry.getKey()).isEqualTo(200);
+            assertThat(body(checksum)).as("metadata%s is the digest of the exact GET body", entry.getKey())
+                                      .isEqualTo(digest(entry.getValue(), metadata.content()));
+        }
+    }
+
+    /// The metadata and its checksum are two requests. A wall-clock `<lastUpdated>` made the second
+    /// render differ from the first whenever a second boundary fell between them, so the sidecar could
+    /// never be trusted to match; the rendering must be a pure function of the version set.
+    @Test
+    void metadata_isIdenticalAcrossASecondBoundary_soItsChecksumCanBeTrusted() throws InterruptedException {
+        put(BASE + ".jar", JAR);
+
+        var first = get(METADATA).content();
+
+        Thread.sleep(1100);
+
+        assertThat(get(METADATA).content()).isEqualTo(first);
+        assertThat(body(get(METADATA + ".sha256"))).isEqualTo(digest("SHA-256", first));
+    }
+
+    @Test
+    void metadataChecksums_ofAnArtifactWithNoVersions_are404() {
+        for (var suffix : CHECKSUM_ALGORITHMS.keySet()) {
+            assertThat(get(METADATA + suffix).statusCode()).as("GET metadata%s", suffix).isEqualTo(404);
+        }
+    }
+
+    private static String digest(String algorithm, byte[] content) {
+        try {
+            return java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance(algorithm).digest(content));
+        } catch (java.security.NoSuchAlgorithmException e) {
+            throw new AssertionError(e);
+        }
+    }
+
     private MavenResponse put(String path, byte[] content) {
         return handler.handlePut(path, content).await().unwrap();
     }
