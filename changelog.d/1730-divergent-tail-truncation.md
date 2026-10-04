@@ -9,9 +9,12 @@
     activate. Every other refusal (a candidate with no committed ISR, two peers disagreeing with each other, nothing
     comparable) is unchanged.
   - With `confirmation_factor` 1 the discarded records may have been acknowledged by their writer; the new operator
-    warning `stream-divergent-tail-truncated` names the offsets. With `confirmation_factor` >= 2 the cut is only logged.
+    warning `stream-divergent-tail-truncated` names the offsets. With `confirmation_factor` >= 2 the cut is logged at INFO and raises no warning: an acknowledgement needed every
+    in-sync member, the owner among them, so nothing the writer was told is lost and no operator action exists.
 - **A replica no longer acks records it never received.** A replica that completed backfill above the owner's head was
   marked CAUGHT_UP at its own higher offset with no comparison, and the owner then counted that offset as a
   confirmation. It now compares the owner's last 1,024 records first and is promoted at the OWNER's head.
+  (#1890) A divergence older than that window is found by the next window and cut back one window at a time, to the
+  first divergent offset; a copy with a WAL is cut at the exact offset by owner-epoch provenance.
 - **A restarted replica hides its recovered tail** until its backfill has verified it against the owner; before, the
   whole tail was readable at once, including an ex-owner's unacknowledged records.
