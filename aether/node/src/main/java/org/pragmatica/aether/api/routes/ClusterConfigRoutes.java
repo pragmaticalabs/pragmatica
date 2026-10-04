@@ -856,7 +856,7 @@ public final class ClusterConfigRoutes implements RouteSource {
 
         return checkVersionAsync(stored.configVersion(),
                                  request.expectedVersion()).flatMap(_ -> Promise.resolved(fenceUpgradeWrite(stored,
-                                                                                                           request.expectedVersion())))
+                                                                                                            request.expectedVersion())))
                                 .flatMap(_ -> {
                                              log.info("Cluster upgrade initiated: {} -> {}",
                                                       currentVersion,

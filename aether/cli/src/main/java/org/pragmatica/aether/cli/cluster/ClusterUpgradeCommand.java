@@ -66,7 +66,9 @@ class ClusterUpgradeCommand implements Callable<Integer> {
             return new UpgradeError.AlreadyAtVersion(targetVersion).result();
         }
 
-        return ClusterHttpClient.post(CLUSTER_UPGRADE, buildUpgradeJson(targetVersion, config.path("configVersion").asLong(0)));
+        return ClusterHttpClient.post(CLUSTER_UPGRADE,
+                                      buildUpgradeJson(targetVersion,
+                                                       config.path("configVersion").asLong(0)));
     }
 
     /// Field names here MUST match `ManagementApiResponses.UpgradeRequest`; the CLI cannot depend on
