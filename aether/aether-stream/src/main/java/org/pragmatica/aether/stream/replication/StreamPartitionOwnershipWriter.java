@@ -365,16 +365,11 @@ record IsrOwnershipWriter(BooleanSupplier isLeaderSupplier,
     /// leader's views of the same member cannot drive opposite commits (Kafka: an expansion admits only brokers the
     /// controller lists as unfenced).
     private static List<NodeId> fencedAfter(StreamPartitionOwnershipValue current, List<NodeId> live) {
-        var fenced = Stream.concat(current.fenced().stream(),
-                                   current.isr().stream())
-                           .filter(member -> !live.contains(member))
-                           .distinct()
-                           .toList();
-
-        // The record keeps only the newest FENCED_MAX; comparing the capped list keeps a settled record a no-op.
-        return fenced.size() > StreamPartitionOwnershipValue.FENCED_MAX
-               ? fenced.subList(fenced.size() - StreamPartitionOwnershipValue.FENCED_MAX, fenced.size())
-               : fenced;
+        return Stream.concat(current.fenced().stream(),
+                             current.isr().stream())
+                     .filter(member -> !live.contains(member))
+                     .distinct()
+                     .toList();
     }
 
     /// Failover elects from the live ISR only: the desired owner when it is a member, else the HRW-first member.
