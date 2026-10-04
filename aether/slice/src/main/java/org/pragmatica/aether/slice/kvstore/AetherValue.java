@@ -2401,7 +2401,13 @@ public sealed interface AetherValue {
                                          List<NodeId> isr,
                                          long isrVersion,
                                          boolean failoverRefused,
-                                         List<NodeId> fenced) implements AetherValue, EpochBearing<Epoch> {
+                                         List<NodeId> fenced,
+                                         List<EpochStart> epochStarts) implements AetherValue, EpochBearing<Epoch> {
+        /// Most epoch starts one record keeps (#1730 phase 2). Offsets at or below the sealed floor are immutable, so only
+        /// epochs that began above it can invalidate a consumer's cursor; the record keeps the newest, and a consumer older
+        /// than the oldest kept is told to resume from the head instead of being checked against a boundary that is gone.
+        public static final int EPOCH_STARTS_MAX = 16;
+
         /// Most members one record remembers as fenced. A member that left for good is never unfenced, so the list is
         /// bounded here: the oldest entry is forgotten first, which can at worst let one stale member fight once more.
         public static final int FENCED_MAX = 16;
@@ -2432,6 +2438,11 @@ public sealed interface AetherValue {
                      : List.copyOf(fenced.size() > FENCED_MAX
                                    ? fenced.subList(fenced.size() - FENCED_MAX, fenced.size())
                                    : fenced);
+            epochStarts = epochStarts == null
+                          ? List.of()
+                          : List.copyOf(epochStarts.size() > EPOCH_STARTS_MAX
+                                        ? epochStarts.subList(epochStarts.size() - EPOCH_STARTS_MAX, epochStarts.size())
+                                        : epochStarts);
         }
 
         /// A record whose ISR is the owner alone: the shape of every record written before #1730, and of a
@@ -2447,6 +2458,7 @@ public sealed interface AetherValue {
                                                      List.of(owner),
                                                      0L,
                                                      false,
+                                                     List.of(),
                                                      List.of());
         }
 
@@ -2463,6 +2475,7 @@ public sealed interface AetherValue {
                                                      isr,
                                                      isrVersion,
                                                      false,
+                                                     List.of(),
                                                      List.of());
         }
 
@@ -2481,7 +2494,8 @@ public sealed interface AetherValue {
                                                      isr,
                                                      isrVersion,
                                                      false,
-                                                     fenced);
+                                                     fenced,
+                                                     List.of());
         }
 
         /// The same ownership with ISR `isr`, one ISR change later.
@@ -2493,7 +2507,8 @@ public sealed interface AetherValue {
                                                      isr,
                                                      isrVersion + 1,
                                                      failoverRefused,
-                                                     fenced);
+                                                     fenced,
+                                                     epochStarts);
         }
 
         /// The same ownership with ISR `isr` and fenced set `fenced`, one ISR change later (#1883). `fenced` is the set of
@@ -2507,7 +2522,8 @@ public sealed interface AetherValue {
                                                      isr,
                                                      isrVersion + 1,
                                                      failoverRefused,
-                                                     fenced);
+                                                     fenced,
+                                                     epochStarts);
         }
 
         /// The same ownership and ISR with the failover verdict `refused`.
@@ -2519,9 +2535,69 @@ public sealed interface AetherValue {
                                                      isr,
                                                      isrVersion,
                                                      refused,
-                                                     fenced);
+                                                     fenced,
+                                                     epochStarts);
+        }
+
+        /// The start of the newest epoch this record names, if any.
+        public Option<EpochStart> lastEpochStart() {
+            return Option.from(epochStarts.stream().reduce((_, later) -> later));
+        }
+
+        /// The same record with the owner of `ownerEpoch` recorded as beginning to write at `startOffset` (#1730 phase 2).
+        /// Recording the epoch that is already the newest start changes nothing.
+        public StreamPartitionOwnershipValue withEpochStart(long startOffset) {
+            var next = new EpochStart(ownerEpoch, startOffset);
+
+            return lastEpochStart().filter(next::equals).isPresent()
+                   ? this
+                   : withStarts(append(epochStarts, next));
+        }
+
+        /// The same owner after its ring restarted (no WAL, or a rebuilt ring): a new epoch one ownership term later,
+        /// beginning at `startOffset` (#1730 phase 2, KIP-320). A consumer holding the old epoch is then checked against
+        /// this start instead of being served the re-assigned offsets as if nothing happened.
+        public StreamPartitionOwnershipValue restarted(long startOffset, HlcTimestamp at) {
+            var term = ownershipTerm + 1L;
+            var epoch = ownerEpoch.withCounter(term);
+
+            return new StreamPartitionOwnershipValue(owner,
+                                                     epoch,
+                                                     term,
+                                                     at,
+                                                     isr,
+                                                     isrVersion + 1,
+                                                     failoverRefused,
+                                                     fenced,
+                                                     append(epochStarts, new EpochStart(epoch, startOffset)));
+        }
+
+        private StreamPartitionOwnershipValue withStarts(List<EpochStart> starts) {
+            return new StreamPartitionOwnershipValue(owner,
+                                                     ownerEpoch,
+                                                     ownershipTerm,
+                                                     transferredAt,
+                                                     isr,
+                                                     isrVersion + 1,
+                                                     failoverRefused,
+                                                     fenced,
+                                                     starts);
+        }
+
+        private static List<EpochStart> append(List<EpochStart> starts, EpochStart next) {
+            var all = new ArrayList<>(starts);
+
+            all.add(next);
+
+            return all;
         }
     }
+
+    /// One owner epoch of a stream partition and the offset its owner began writing at (#1730 phase 2, Kafka's leader
+    /// epoch start offset). `StreamPartitionOwnershipValue#epochStarts` lists the newest ones, oldest first: a consumer that
+    /// read under an older epoch is valid only while its cursor does not pass the start of the epoch that followed.
+    @Codec
+    record EpochStart(Epoch epoch, long startOffset) {}
 
     @Codec
     enum SpokesmanStatus {

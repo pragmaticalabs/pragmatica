@@ -43,7 +43,7 @@ class StreamPartitionOwnershipValueTest {
     void construct_nullEpoch_normalizesToZero() {
         var owner = NodeId.nodeId("core-1").unwrap();
 
-        var v = new StreamPartitionOwnershipValue(owner, null, 0L, HlcTimestamp.ZERO, null, 0L, false, null);
+        var v = new StreamPartitionOwnershipValue(owner, null, 0L, HlcTimestamp.ZERO, null, 0L, false, null, null);
 
         assertThat(v.ownerEpoch()).isEqualTo(Epoch.ZERO);
     }
@@ -52,7 +52,7 @@ class StreamPartitionOwnershipValueTest {
     void construct_nullTransferredAt_normalizesToZero() {
         var owner = NodeId.nodeId("core-1").unwrap();
 
-        var v = new StreamPartitionOwnershipValue(owner, Epoch.ZERO, 0L, null, null, 0L, false, null);
+        var v = new StreamPartitionOwnershipValue(owner, Epoch.ZERO, 0L, null, null, 0L, false, null, null);
 
         assertThat(v.transferredAt()).isEqualTo(HlcTimestamp.ZERO);
     }
@@ -63,8 +63,8 @@ class StreamPartitionOwnershipValueTest {
     void construct_missingIsr_normalizesToOwnerAlone() {
         var owner = NodeId.nodeId("core-1").unwrap();
 
-        assertThat(new StreamPartitionOwnershipValue(owner, Epoch.ZERO, 0L, null, null, 0L, false, null).isr()).containsExactly(owner);
-        assertThat(new StreamPartitionOwnershipValue(owner, Epoch.ZERO, 0L, null, java.util.List.of(), 0L, false, null).isr()).containsExactly(owner);
+        assertThat(new StreamPartitionOwnershipValue(owner, Epoch.ZERO, 0L, null, null, 0L, false, null, null).isr()).containsExactly(owner);
+        assertThat(new StreamPartitionOwnershipValue(owner, Epoch.ZERO, 0L, null, java.util.List.of(), 0L, false, null, null).isr()).containsExactly(owner);
     }
 
     /// #1730: an ISR change keeps the ownership and advances only the ISR version.
@@ -87,7 +87,7 @@ class StreamPartitionOwnershipValueTest {
     void construct_missingFenced_normalizesToEmpty() {
         var owner = NodeId.nodeId("core-1").unwrap();
 
-        assertThat(new StreamPartitionOwnershipValue(owner, Epoch.ZERO, 0L, null, null, 0L, false, null).fenced()).isEmpty();
+        assertThat(new StreamPartitionOwnershipValue(owner, Epoch.ZERO, 0L, null, null, 0L, false, null, null).fenced()).isEmpty();
         assertThat(StreamPartitionOwnershipValue.streamPartitionOwnershipValue(owner, Epoch.ZERO, 1L, HlcTimestamp.ZERO).fenced()).isEmpty();
     }
 
@@ -118,5 +118,56 @@ class StreamPartitionOwnershipValueTest {
         var v = StreamPartitionOwnershipValue.streamPartitionOwnershipValue(owner, Epoch.ZERO, 1L, HlcTimestamp.ZERO).withIsrAndFenced(java.util.List.of(owner), many);
 
         assertThat(v.fenced()).hasSize(StreamPartitionOwnershipValue.FENCED_MAX).isEqualTo(many.subList(3, many.size()));
+    }
+
+    /// #1730 phase 2: a record names no epoch start unless its owner recorded one.
+    @Test
+    void construct_missingEpochStarts_normalizesToEmpty() {
+        var owner = NodeId.nodeId("core-1").unwrap();
+
+        assertThat(new StreamPartitionOwnershipValue(owner, Epoch.ZERO, 0L, null, null, 0L, false, null, null).epochStarts()).isEmpty();
+        assertThat(StreamPartitionOwnershipValue.streamPartitionOwnershipValue(owner, Epoch.ZERO, 1L, HlcTimestamp.ZERO).epochStarts()).isEmpty();
+    }
+
+    @Test
+    void withEpochStart_recordsTheCurrentEpochAtTheOffset_andIsIdempotent() {
+        var owner = NodeId.nodeId("core-1").unwrap();
+        var epoch = Epoch.epoch(1L, 2L, 3L);
+        var v = StreamPartitionOwnershipValue.streamPartitionOwnershipValue(owner, epoch, 3L, HlcTimestamp.ZERO, java.util.List.of(owner), 4L);
+        var started = v.withEpochStart(10L);
+
+        assertThat(started.epochStarts()).containsExactly(new AetherValue.EpochStart(epoch, 10L));
+        assertThat(started.lastEpochStart().unwrap()).isEqualTo(new AetherValue.EpochStart(epoch, 10L));
+        assertThat(started.isrVersion()).as("a recorded start is a change of the record").isEqualTo(5L);
+        assertThat(started.withEpochStart(10L)).as("the same start again changes nothing").isSameAs(started);
+    }
+
+    /// The owner that restarted its ring takes the next ownership term and the epoch it implies, and begins it at the
+    /// offset it resumed from; the ISR and the fence are untouched.
+    @Test
+    void restarted_takesTheNextTerm_andBeginsTheNewEpochAtTheResumeOffset() {
+        var owner = NodeId.nodeId("core-1").unwrap();
+        var peer = NodeId.nodeId("core-2").unwrap();
+        var epoch = Epoch.epoch(1L, 2L, 3L);
+        var v = StreamPartitionOwnershipValue.streamPartitionOwnershipValue(owner, epoch, 3L, HlcTimestamp.ZERO, java.util.List.of(owner, peer), 4L).withEpochStart(7L);
+        var next = v.restarted(3L, HlcTimestamp.ZERO);
+
+        assertThat(next.owner()).isEqualTo(owner);
+        assertThat(next.ownershipTerm()).isEqualTo(4L);
+        assertThat(next.ownerEpoch()).isEqualTo(epoch.withCounter(4L)).isNotEqualTo(epoch);
+        assertThat(next.epochStarts()).containsExactly(new AetherValue.EpochStart(epoch, 7L), new AetherValue.EpochStart(epoch.withCounter(4L), 3L));
+        assertThat(next.isr()).containsExactly(owner, peer);
+    }
+
+    /// Bounded, newest kept: a consumer older than what is kept falls back to the conservative resume.
+    @Test
+    void epochStarts_areBounded_keepingTheNewest() {
+        var owner = NodeId.nodeId("core-1").unwrap();
+        var starts = java.util.stream.IntStream.range(0, StreamPartitionOwnershipValue.EPOCH_STARTS_MAX + 3)
+                                               .mapToObj(i -> new AetherValue.EpochStart(Epoch.epoch(1L, 2L, i), i * 10L))
+                                               .toList();
+        var v = new StreamPartitionOwnershipValue(owner, Epoch.ZERO, 0L, null, null, 0L, false, null, starts);
+
+        assertThat(v.epochStarts()).hasSize(StreamPartitionOwnershipValue.EPOCH_STARTS_MAX).isEqualTo(starts.subList(3, starts.size()));
     }
 }
