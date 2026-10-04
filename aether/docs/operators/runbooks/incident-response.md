@@ -127,6 +127,18 @@ grep -i "slice\|artifact" /var/log/aether/aether.log | tail -100
 2. Restart or reconnect any node in `isr`. The leader elects it (or the old owner resumes) and a `STREAM_FAILOVER_RESOLVED` event follows.
 3. If every node in `isr` is permanently gone, the partition's acknowledged data is gone with them. There is no override to promote another replica yet (#1569). Destroy and recreate the stream.
 
+### Stream Publishes Refused With `NOT_ENOUGH_REPLICAS` (`STREAM_ISR_BELOW_MINIMUM`)
+
+**Symptoms:** a WARNING `STREAM_ISR_BELOW_MINIMUM` event; publishes to one stream partition fail before the append, reads still work.
+
+**Cause:** the partition's in-sync replica set holds fewer members than the stream's `confirmation_factor`.
+
+**Actions:**
+
+1. Read the event's `details`: `isr` lists the members still in sync, `fenced` the members the leader keeps out because it does not see them live.
+2. Bring the missing replica node back. When the leader sees it live it is unfenced, the owner expands it once it has caught up, and `STREAM_ISR_RESTORED` follows.
+3. If the replica is gone for good, replace the node; the replacement joins the ISR after backfill. To tolerate the loss of one replica without refusing writes, declare `confirmation_factor` below `replication_factor`.
+
 ### High Latency
 
 **Symptoms:** Slow response times, `method.*.duration.avg` metrics elevated
