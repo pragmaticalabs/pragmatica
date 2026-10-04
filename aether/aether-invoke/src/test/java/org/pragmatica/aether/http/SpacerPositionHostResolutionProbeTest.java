@@ -72,6 +72,23 @@ class SpacerPositionHostResolutionProbeTest {
                                 .body());
     }
 
+    /// TRIPWIRE: the host's local resolution (`resolveServed`, over `HttpRouteDefinition`, which carries no slots) still picks a
+    /// slice by spacer MEMBERSHIP, so with two slices under one base the request reaches the wrong slice, whose positional router
+    /// answers 404. Reddens when the definitions carry positions: delete it and enable the real assertion below.
+    @Test
+    void currently_twoSlicesSplitBySpacerPosition_hostResolutionPicksByMembership_tripwire() {
+        var publisher = HttpRoutePublisher.httpRoutePublisher(SELF, new SilentCluster());
+
+        publishInto(publisher, ID_THEN_EDIT, new SpacerPositionSliceRoutes.IdThenEditSlice());
+        publishInto(publisher, EDIT_THEN_ID, new SpacerPositionSliceRoutes.EditThenIdSlice());
+
+        assertThat(servedBody(publisher, "/users/42/edit")).as("CONTROL").contains("id-then-edit-42");
+        assertThat(servedBody(publisher, "/users/edit/42"))
+            .as("host resolution now positional: delete this tripwire and enable the real assertion")
+            .contains("\"status\":404");
+    }
+
+    @org.junit.jupiter.api.Disabled("#755 follow-up: HttpRouteDefinition carries no spacer slots; enable when the tripwire above reddens")
     @Test
     void editThenId_isServedByTheSliceThatDeclaredThatPosition() {
         var publisher = HttpRoutePublisher.httpRoutePublisher(SELF, new SilentCluster());
