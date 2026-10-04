@@ -962,6 +962,17 @@ public final class DHTNode {
             return;
         }
 
+        // as for a put: an owner-epoch fence still answers fenced; otherwise a write of OUR OWN to this key is in flight (v1882 r12)
+        if (localWritePending(request.key())
+            && !storage.belowHighWater(request.key(),
+                                       request.epochIncarnation(),
+                                       request.epochTerm(),
+                                       request.epochCounter())) {
+            responseHandler.accept(new DHTMessage.RemoveResponse(request.requestId(), nodeId, false, false, false, false, true));
+
+            return;
+        }
+
         storage.removeVersioned(request.key(),
                                 request.version(),
                                 request.epochIncarnation(),

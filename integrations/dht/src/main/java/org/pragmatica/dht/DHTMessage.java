@@ -151,16 +151,28 @@ public sealed interface DHTMessage extends ProtocolMessage {
     /// the owner-epoch fence, exactly as for a [PutResponse]: a remove whose quorum is lost to fences is
     /// indeterminate. `replicationStale` marks a refusal by the replication-change fence, exactly as for a [PutResponse]
     /// (#1777, CTO ruling R1c): a tombstone is a write, and one sized under factors the cluster has left is refused too.
-    /// `fenceUnknown` is the replica not knowing the committed change yet, as for a [PutResponse].
+    /// `fenceUnknown` is the replica not knowing the committed change yet, as for a [PutResponse]. `writePending` is the
+    /// replica holding its own unresolved write to the same key, as for a [PutResponse] (v1882 r12).
     record RemoveResponse(String requestId,
                           NodeId sender,
                           boolean found,
                           boolean fenced,
                           boolean replicationStale,
-                          boolean fenceUnknown) implements DHTMessage {
+                          boolean fenceUnknown,
+                          boolean writePending) implements DHTMessage {
         /// An answer that was not fenced.
         public RemoveResponse(String requestId, NodeId sender, boolean found) {
-            this(requestId, sender, found, false, false, false);
+            this(requestId, sender, found, false, false, false, false);
+        }
+
+        /// A response that is not a pending-write refusal.
+        public RemoveResponse(String requestId,
+                              NodeId sender,
+                              boolean found,
+                              boolean fenced,
+                              boolean replicationStale,
+                              boolean fenceUnknown) {
+            this(requestId, sender, found, fenced, replicationStale, fenceUnknown, false);
         }
     }
 

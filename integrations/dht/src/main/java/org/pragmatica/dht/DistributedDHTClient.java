@@ -487,10 +487,14 @@ public final class DistributedDHTClient implements DHTClient {
         targets.stream()
                .filter(target -> !target.equals(node.nodeId()))
                .forEach(target -> sendRemoteRemove(target, key, stamp, collector));
+        var pending = new AtomicBoolean(false);
         var localRemove = targets.contains(node.nodeId())
                           ? Option.some(applyLocalAfterEvidence(collector,
                                                                 hasRemote,
-                                                                () -> handleLocalRemove(key, stamp, collector)))
+                                                                () -> markPending(key,
+                                                                                  collector,
+                                                                                  pending,
+                                                                                  () -> handleLocalRemove(key, stamp, collector))))
                           : Option.<Promise<StorageEngine.Displaced>> none();
 
         collector.allReplied().onSuccess(_ -> noteLateStale(collector, stamp));
@@ -505,7 +509,8 @@ public final class DistributedDHTClient implements DHTClient {
                                                                                                   collector)),
                                                   Promise::success))
                       .onFailure(cause -> noteIfStale(cause, stamp))
-                      .onSuccess(_ -> clearIfNoReplicaRefusedAsStale(collector));
+                      .onSuccess(_ -> clearIfNoReplicaRefusedAsStale(collector))
+                      .onResultRun(() -> endPending(key, pending));
     }
 
     @Override
@@ -666,6 +671,9 @@ public final class DistributedDHTClient implements DHTClient {
         } else if (response.fenceUnknown()) {
             failCollector(collector,
                           DHTError.replicaFenceUnknown(response.sender()));
+        } else if (response.writePending()) {
+            failCollector(collector,
+                          DHTError.replicaWritePending(response.sender()));
         } else if (response.replicationStale()) {
             failCollector(collector,
                           DHTError.replicaOnNewerReplication(response.sender()));
