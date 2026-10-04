@@ -231,6 +231,10 @@ public final class StreamPartitionManager implements AutoCloseable {
     private final Object quarantineLock = new Object();
     /// #1596: the durable partition flag, late-bound ([#partitionFlags(PartitionFlags)]).
     private volatile Option<PartitionFlags> partitionFlags = none();
+    /// #1730 phase 2: replica partitions whose recovered tail has not been verified against the committed owner yet. Such
+    /// a copy may hold a lineage the owner never had (an ex-owner's unacknowledged records), so nothing it recovered is
+    /// visible to a read served here until [#markVerified] covers it; its own appends do not drag it into view either.
+    private final Set<String> unverifiedReplicas = ConcurrentHashMap.newKeySet();
     /// #1730 phase 2: where a replica's divergent-tail truncation is reported to the operator, late-bound
     /// ([#operatorWarnings(OperatorWarningSink)]); log-only until then.
     private volatile OperatorWarningSink operatorWarnings = OperatorWarningSink.logOnly();
@@ -1834,11 +1838,38 @@ public final class StreamPartitionManager implements AutoCloseable {
     @Contract
     private void restoreVisible(StreamConfig config, int partition, OffHeapRingBuffer ring) {
         switch (placementRoleSupplier.roleFor(config.name(), partition)) {
-            case REPLICA -> ring.advanceVisible(ring.durableOffset());
+            case REPLICA -> holdRecoveredTailUntilVerified(config.name(), partition, ring);
             case OWNER, NONE -> ring.advanceVisible(Math.min(ring.durableOffset(),
                                                              replicationManager.replicatedThrough(config.name(),
                                                                                                   partition,
                                                                                                   config.confirmationFactor() - 1)));
+        }
+    }
+
+    /// A REPLICA that recovered a tail keeps it invisible until [#markVerified] (#1730 phase 2): before, "its OWN
+    /// durability" made the whole recovered tail visible at once, including the unacknowledged records of an ex-owner.
+    /// A copy that recovered nothing has nothing to verify.
+    @Contract
+    private void holdRecoveredTailUntilVerified(String streamName, int partition, OffHeapRingBuffer ring) {
+        if (ring.durableOffset() >= 0) {
+            unverifiedReplicas.add(partitionKeyOf(streamName, partition));
+        }
+    }
+
+    /// This copy has been compared with its committed owner through `offset` (#1730 phase 2): that prefix, as far as it
+    /// is durable here, becomes visible. When `offset` reaches the head everything held is verified and later appends
+    /// extend visibility as they always did; below the head the copy stays unverified and its own appends do not
+    /// extend it.
+    @Contract
+    public void markVerified(String streamName, int partition, long offset) {
+        resolvePartitionBuffer(streamName, partition).onSuccess(ring -> exposeVerified(streamName, partition, ring, offset));
+    }
+
+    private void exposeVerified(String streamName, int partition, OffHeapRingBuffer ring, long offset) {
+        ring.advanceVisible(Math.min(offset, ring.durableOffset()));
+
+        if (offset >= ring.headOffset()) {
+            unverifiedReplicas.remove(partitionKeyOf(streamName, partition));
         }
     }
 
@@ -2024,6 +2055,9 @@ public final class StreamPartitionManager implements AutoCloseable {
             divergedAt.remove(ref, divergedAtOffset);
         }
 
+        // What remains is the prefix this copy shares with its sender: verified by construction.
+        unverifiedReplicas.remove(partitionKeyOf(streamName, partition));
+
         lastReplicatedWalWrite.computeIfPresent(partitionKeyOf(streamName, partition),
                                                 (_, write) -> write.offset() > keep
                                                               ? null
@@ -2076,6 +2110,11 @@ public final class StreamPartitionManager implements AutoCloseable {
             synchronized (quarantineLock) {
                 return quarantinedAt(streamName, partition).fold(() -> some(promotion.get()), _ -> none());
             }
+        }
+
+        @Override
+        public void verified(String streamName, int partition, long offset) {
+            markVerified(streamName, partition, offset);
         }
 
         @Override
@@ -2598,13 +2637,18 @@ public final class StreamPartitionManager implements AutoCloseable {
 
     @Contract
     private void replicaDurable(String streamName, int partition, long offset) {
-        resolvePartitionBuffer(streamName, partition).onSuccess(ring -> replicaDurable(ring, offset));
+        var verified = !unverifiedReplicas.contains(partitionKeyOf(streamName, partition));
+
+        resolvePartitionBuffer(streamName, partition).onSuccess(ring -> replicaDurable(ring, offset, verified));
     }
 
     @Contract
-    private static void replicaDurable(OffHeapRingBuffer ring, long offset) {
+    private static void replicaDurable(OffHeapRingBuffer ring, long offset, boolean verified) {
         ring.markDurable(offset);
-        ring.advanceVisible(offset);
+
+        if (verified) {
+            ring.advanceVisible(offset);
+        }
     }
 
     /// The replica append shares the owner's ordered section (#1231): it and any concurrent local append

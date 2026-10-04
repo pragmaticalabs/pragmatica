@@ -29,6 +29,11 @@ public interface QuarantineView {
         return Result.success(Option.none());
     }
 
+    /// This copy has been compared with its sender through `offset` (#1730 phase 2): a replica that restarted with a
+    /// recovered tail shows nothing of it to readers until it is. Views without a partition manager behind them ignore
+    /// it.
+    default void verified(String streamName, int partition, long offset) {}
+
     /// For the legacy and test factories, which have no partition manager behind them: nothing is ever quarantined.
     QuarantineView NONE = new NeverQuarantined();
 

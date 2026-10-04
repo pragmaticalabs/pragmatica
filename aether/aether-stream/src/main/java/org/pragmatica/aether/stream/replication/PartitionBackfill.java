@@ -1140,6 +1140,7 @@ public final class PartitionBackfill {
         }
 
         updateWatermark(streamName, partition, self, watermark);
+        quarantine.verified(streamName, partition, watermark);
         ackBackfillToOwner(streamName, partition, watermark);
         reverifiedAtOffset.put(partitionKey(streamName, partition), watermark);
         // A successful owner/source pull IS a re-verify by definition: the replica now holds the source's
