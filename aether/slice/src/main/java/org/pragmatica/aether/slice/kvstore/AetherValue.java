@@ -2458,7 +2458,7 @@ public sealed interface AetherValue {
         /// LOWEST offset of the dropped ones, so it stays a lower bound of every offset that a later epoch may have re-assigned
         /// for a consumer older than it (`EpochValidation` resumes such a consumer at it: it may redeliver, it never skips).
         /// Starts increase in offset, so the lowest dropped one is the oldest. What the folded entry still asserts EXACTLY is
-        /// that the OLDEST DROPPED epoch (`foldedFrom`) began at its offset; its own epoch did not (see [EpochStart#exactFor]).
+        /// that the OLDEST DROPPED epoch (`coversFrom`) began at its offset; its own epoch did not (see [EpochStart#provesAfter]).
         private static List<EpochStart> capped(List<EpochStart> starts) {
             if (starts.size() <= EPOCH_STARTS_MAX) {
                 return List.copyOf(starts);
@@ -2472,9 +2472,7 @@ public sealed interface AetherValue {
             kept.set(0,
                      new EpochStart(oldest.epoch(),
                                     Math.min(oldest.startOffset(), lowest.startOffset()),
-                                    lowest.foldedFrom().equals(Epoch.ZERO)
-                                    ? lowest.epoch()
-                                    : lowest.foldedFrom()));
+                                    lowest.coversFrom()));
 
             return List.copyOf(kept);
         }
@@ -2658,26 +2656,26 @@ public sealed interface AetherValue {
     /// epoch start offset). `StreamPartitionOwnershipValue#epochStarts` lists the newest ones, oldest first: a consumer that
     /// read under an older epoch is valid only while its cursor does not pass the start of the epoch that followed.
     ///
-    /// `foldedFrom` is [Epoch#ZERO] for a start that is exactly what it says. The record's cap folds the oldest starts into the
-    /// oldest one it keeps: that entry then carries the kept epoch and the LOWEST dropped offset, and `foldedFrom` names the
-    /// oldest dropped epoch, the one that really began at that offset (a re-fold keeps the older). So a folded entry proves
-    /// "`foldedFrom` began at `startOffset`" and nothing about its own epoch.
+    /// `coversFrom` is the OLDEST epoch this entry stands for: its own epoch unless the record's cap folded older starts into it,
+    /// in which case the oldest dropped epoch, the one that really began at `startOffset` (a re-fold keeps the older). So an
+    /// entry proves "every epoch from `coversFrom` to `epoch` began at or above `startOffset`, and `coversFrom` began AT it",
+    /// and a loss from `startOffset` is proven for a consumer only when `coversFrom` is later than the consumer's epoch.
     @Codec
-    record EpochStart(Epoch epoch, long startOffset, Epoch foldedFrom) {
+    record EpochStart(Epoch epoch, long startOffset, Epoch coversFrom) {
         public EpochStart {
-            foldedFrom = foldedFrom == null
-                         ? Epoch.ZERO
-                         : foldedFrom;
+            coversFrom = coversFrom == null || coversFrom.equals(Epoch.ZERO)
+                         ? epoch
+                         : coversFrom;
         }
 
         public EpochStart(Epoch epoch, long startOffset) {
-            this(epoch, startOffset, Epoch.ZERO);
+            this(epoch, startOffset, epoch);
         }
 
-        /// Whether this start is the exact start of an epoch later than `consumerEpoch`: an unfolded start is, a folded one only
-        /// for a consumer older than the epoch it folded from.
-        public boolean exactFor(Epoch consumerEpoch) {
-            return foldedFrom.equals(Epoch.ZERO) || consumerEpoch.compareTo(foldedFrom) < 0;
+        /// Whether this entry proves that an epoch AFTER `consumerEpoch` began at [#startOffset()]: it stands for no epoch the
+        /// consumer itself read under.
+        public boolean provesAfter(Epoch consumerEpoch) {
+            return coversFrom.compareTo(consumerEpoch) > 0;
         }
     }
 

@@ -93,10 +93,7 @@ public final class EpochValidation {
     /// along the list, so the first match is the lowest.
     private static long provenLossFrom(List<EpochStart> starts, Epoch consumerEpoch, long cursor) {
         return starts.stream()
-                     .filter(start -> start.epoch()
-                                           .compareTo(consumerEpoch) > 0
-                                      && start.exactFor(consumerEpoch)
-                                      && start.startOffset() < cursor)
+                     .filter(start -> start.provesAfter(consumerEpoch) && start.startOffset() < cursor)
                      .findFirst()
                      .map(EpochStart::startOffset)
                      .orElse(StreamError.EpochDiverged.NO_PROVEN_LOSS);

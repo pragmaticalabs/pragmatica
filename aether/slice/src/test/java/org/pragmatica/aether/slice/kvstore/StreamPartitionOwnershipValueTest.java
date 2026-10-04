@@ -194,7 +194,7 @@ class StreamPartitionOwnershipValueTest {
                                                                       .isEqualTo(starts.subList(4, starts.size()));
     }
 
-    /// A re-fold keeps the OLDEST dropped epoch: the folded entry that is itself dropped by a later cap hands its `foldedFrom` on,
+    /// A re-fold keeps the OLDEST dropped epoch: the folded entry that is itself dropped by a later cap hands its `coversFrom` on,
     /// so what the entry asserts exactly (that epoch began at that offset) never moves to a newer epoch.
     @Test
     void refold_keepsTheOldestDroppedEpoch() {
@@ -211,9 +211,9 @@ class StreamPartitionOwnershipValueTest {
         var twice = new StreamPartitionOwnershipValue(owner, Epoch.ZERO, 0L, null, null, 0L, false, null, starts);
 
         assertThat(twice.epochStarts()).hasSize(StreamPartitionOwnershipValue.EPOCH_STARTS_MAX);
-        assertThat(twice.epochStarts().getFirst().foldedFrom()).as("still the oldest dropped epoch of the FIRST fold").isEqualTo(Epoch.epoch(1L, 2L, 0L));
+        assertThat(twice.epochStarts().getFirst().coversFrom()).as("still the oldest dropped epoch of the FIRST fold").isEqualTo(Epoch.epoch(1L, 2L, 0L));
         assertThat(twice.epochStarts().getFirst().startOffset()).isZero();
-        assertThat(twice.epochStarts().stream().skip(1)).as("only the oldest entry is ever folded").allMatch(start -> start.foldedFrom().equals(Epoch.ZERO));
+        assertThat(twice.epochStarts().stream().skip(1)).as("only the oldest entry is ever folded").allMatch(start -> start.coversFrom().equals(start.epoch()));
     }
 
     /// Under the cap nothing is folded.
