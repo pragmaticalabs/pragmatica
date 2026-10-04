@@ -4791,6 +4791,12 @@ and names the field in `detail`; `500` is reserved for genuine server faults (#9
 `/api/v1/cluster/keys/revoke/{id}` (an unknown key is `404`; a key declared in node configuration is `409`),
 `/api/v1/ab-tests/create`, `/api/v1/blueprints/deploy` and `/api/v1/blueprints/publish`.
 
+The same applies to the read and operate routes' own refusals: an unknown A/B test, blueprint or unloaded slice
+is `404`; scaling a slice that belongs to no active blueprint, and applying a cluster config while no core leader
+is committed, are `409`; a missing stream name on a consumer-group join or leave, an unknown `layer` on
+`/api/v1/cluster/journal`, and a missing or malformed `epoch` or `timeout` on `/api/v1/cluster/await-quiesced`
+are `400` (#954).
+
 The `aether` CLI honors `--format json` on error paths: with `--format json` a failure is
 emitted to stderr as a structured `{"error":"<message>"}` object; otherwise the human-readable
 `Error: <message>` form is used.

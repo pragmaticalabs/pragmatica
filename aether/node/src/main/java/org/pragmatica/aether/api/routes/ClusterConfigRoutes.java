@@ -11,6 +11,7 @@ import java.util.function.Supplier;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
+import org.pragmatica.aether.api.ManagementServerError;
 import org.pragmatica.aether.api.ManagementApiResponses.ApplyConfigRequest;
 import org.pragmatica.aether.api.ManagementApiResponses.ApplyConfigResponse;
 import org.pragmatica.aether.api.ManagementApiResponses.CertificateStatusResponse;
@@ -880,8 +881,7 @@ public final class ClusterConfigRoutes implements RouteSource {
                    .getTyped(org.pragmatica.cluster.state.kvstore.LeaderKey.INSTANCE,
                              org.pragmatica.cluster.state.kvstore.LeaderValue.class)
                    .filter(leader -> node.isLeader())
-                   .fold(() -> org.pragmatica.lang.utils.Causes.cause("Current core leader required for config update")
-                                                               .promise(),
+                   .fold(() -> new ManagementServerError.Conflict("Current core leader required for config update").<ClusterConfigValue> promise(),
                          leader -> {
                              var id = java.util.UUID.randomUUID()
                                                     .toString();

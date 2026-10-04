@@ -50,6 +50,32 @@ public sealed interface ManagementServerError extends Cause, HttpStatusAware {
         }
     }
 
+    /// #954: the resource the request addressed does not exist. Carries the route's own message and answers 404.
+    record NotFound(String detail) implements ManagementServerError {
+        @Override
+        public String message() {
+            return detail;
+        }
+
+        @Override
+        public HttpStatus httpStatus() {
+            return HttpStatus.NOT_FOUND;
+        }
+    }
+
+    /// #954: the request is well formed but the cluster's current state refuses it. Answers 409.
+    record Conflict(String detail) implements ManagementServerError {
+        @Override
+        public String message() {
+            return detail;
+        }
+
+        @Override
+        public HttpStatus httpStatus() {
+            return HttpStatus.CONFLICT;
+        }
+    }
+
     record InvalidArtifactPath(String path) implements ManagementServerError {
         @Override
         public String message() {
