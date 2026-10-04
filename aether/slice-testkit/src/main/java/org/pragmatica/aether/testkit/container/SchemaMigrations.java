@@ -10,10 +10,12 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicReference;
 
 import org.pragmatica.aether.resource.db.SqlConnector;
 import org.pragmatica.aether.testkit.TestKitError;
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
@@ -77,11 +79,76 @@ public sealed interface SchemaMigrations {
                      .toList();
     }
 
+    /// A LOOP over the statements, not a `flatMap` per statement (the #1392 / #1395 shape). A statement whose update
+    /// is already settled when it returns (an in-process connector answers synchronously) used to run the next one
+    /// inline, so a script of k statements nested k frame groups, measured at 6 frames per statement: 600 statements
+    /// is about 3,600 frames, the depth that overflowed CI's 1 MB stack in #1392. A settled statement is consumed in
+    /// place; only a pending one suspends the loop, which resumes on the thread that settles it.
     private static Promise<Unit> applyFrom(SqlConnector connector, List<String> statements, int index) {
-        return index >= statements.size()
-               ? Promise.unitPromise()
-               : connector.update(statements.get(index))
-                          .flatMap(_ -> applyFrom(connector, statements, index + 1));
+        var output = Promise.<Unit> promise();
+
+        applyLoop(connector, statements, index, output);
+
+        return output;
+    }
+
+    @Contract
+    private static void applyLoop(SqlConnector connector,
+                                  List<String> statements,
+                                  int firstIndex,
+                                  Promise<Unit> output) {
+        var index = firstIndex;
+
+        while (index < statements.size()) {
+            var step = containedUpdate(connector, statements.get(index));
+
+            if (!step.isResolved()) {
+                var next = index + 1;
+
+                step.onResult(result -> resumeApply(result, connector, statements, next, output));
+
+                return;
+            }
+
+            if (settledResult(step) instanceof Result.Failure<?>(var cause)) {
+                output.fail(cause);
+
+                return;
+            }
+
+            index++;
+        }
+
+        output.succeed(Unit.unit());
+    }
+
+    @Contract
+    private static void resumeApply(Result<?> result,
+                                    SqlConnector connector,
+                                    List<String> statements,
+                                    int next,
+                                    Promise<Unit> output) {
+        if (result instanceof Result.Failure<?>(var cause)) {
+            output.fail(cause);
+        } else {
+            applyLoop(connector, statements, next, output);
+        }
+    }
+
+    /// A connector that THROWS instead of returning a promise is a failed statement, so the loop ends exactly once on
+    /// both the inline and the resumed path.
+    private static Promise<Integer> containedUpdate(SqlConnector connector, String statement) {
+        return Result.lift(() -> connector.update(statement)).fold(Cause::promise, step -> step);
+    }
+
+    /// The result of a promise the caller has checked is resolved: `Promise.onResult` runs its consumer inline on a
+    /// settled promise, so the holder is filled before this returns. Not `await()`: that is the blocking join.
+    private static <T> Result<T> settledResult(Promise<T> resolved) {
+        var holder = new AtomicReference<Result<T>>();
+
+        resolved.onResult(holder::set);
+
+        return holder.get();
     }
 
     record unused() implements SchemaMigrations {}

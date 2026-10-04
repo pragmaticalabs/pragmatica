@@ -877,10 +877,17 @@ public final class ClusterConfigRoutes implements RouteSource {
         var node = nodeSupplier.get();
         var expected = storedClusterConfig();
 
-        return node.kvStore()
-                   .getTyped(org.pragmatica.cluster.state.kvstore.LeaderKey.INSTANCE,
-                             org.pragmatica.cluster.state.kvstore.LeaderValue.class)
-                   .filter(leader -> node.isLeader())
+        var committedLeader = node.kvStore()
+                                  .getTyped(org.pragmatica.cluster.state.kvstore.LeaderKey.INSTANCE,
+                                            org.pragmatica.cluster.state.kvstore.LeaderValue.class);
+
+        // No committed leader is an election in progress, which is transient (503, as the forward layer answers it).
+        // A committed leader that is not this node is a state this node refuses (409): retry against the leader.
+        if (committedLeader.isEmpty()) {
+            return new ManagementServerError.ServiceUnavailable("No core leader is committed yet; an election is in progress. Retry shortly.").<ClusterConfigValue> promise();
+        }
+
+        return committedLeader.filter(leader -> node.isLeader())
                    .fold(() -> new ManagementServerError.Conflict("Current core leader required for config update").<ClusterConfigValue> promise(),
                          leader -> {
                              var id = java.util.UUID.randomUUID()

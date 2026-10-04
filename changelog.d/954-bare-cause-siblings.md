@@ -3,9 +3,10 @@
   to 500, and these routes raised bare `Causes.cause(...)` constants. They are now typed with `ManagementServerError`.
 - **404:** `GET /api/v1/ab-tests/{id}` for an unknown test; `GET /api/v1/blueprints/{id}` and `/blueprints/status/{id}` for an
   unknown blueprint; `GET /api/v1/slices/config/{id}` for a slice that is not loaded.
-- **409:** `POST /api/v1/scale` for a slice that belongs to no active blueprint; `POST /api/v1/cluster/config` when no core
-  leader is committed (it is the same "the cluster is not in a state to accept this" refusal the other leader-bound routes
-  report as 409).
+- **409:** `POST /api/v1/scale` for a slice that belongs to no active blueprint; `POST /api/v1/cluster/config` when the committed
+  core leader is another node (retry against it).
+- **503:** `POST /api/v1/cluster/config` when NO core leader is committed (an election in progress, which is transient; the forward
+  layer answers it the same way).
 - **400:** a missing stream name on `POST /api/v1/streams/groups/join` and `/leave`; an unknown `layer` on
   `GET /api/v1/cluster/journal`; a missing or malformed `epoch`, or a malformed `timeout`, on
   `POST /api/v1/cluster/await-quiesced`. The last was already documented as 400 and answered 500.

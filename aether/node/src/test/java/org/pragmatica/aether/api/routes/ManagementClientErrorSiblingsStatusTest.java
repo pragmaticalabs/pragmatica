@@ -21,6 +21,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.TopologyEntry;
 import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.aether.stream.consumer.ConsumerGroupCoordinator;
 import org.pragmatica.aether.update.AbTestManager;
+import org.pragmatica.consensus.NodeId;
 import org.pragmatica.http.ContentType;
 import org.pragmatica.http.Headers;
 import org.pragmatica.http.HttpMethod;
@@ -161,10 +162,10 @@ class ManagementClientErrorSiblingsStatusTest {
             .isEqualTo(HttpStatus.NOT_IMPLEMENTED);
     }
 
-    /// The commit of a cluster config needs a committed core leader; without one it is a state the cluster refuses
-    /// (409), not a server fault.
+    /// The commit of a cluster config needs a committed core leader. With NONE committed it is an election in progress,
+    /// which is transient: 503, as the forward layer answers it (not a bare 500). With a leader committed elsewhere it is 409.
     @Test
-    void clusterConfigApply_answers409_whenNoCoreLeaderIsCommitted() {
+    void clusterConfigApply_answers503_whenNoCoreLeaderIsCommitted() {
         @SuppressWarnings("unchecked")
         var store = (KVStore<AetherKey, AetherValue>) mock(KVStore.class);
         var seed = ClusterConfigValue.bootstrapSeed("prod", "1.0.0", List.of(new TopologyEntry("hetzner", "core", 3)), 3, 9, "hetzner", 1);
@@ -177,7 +178,39 @@ class ManagementClientErrorSiblingsStatusTest {
         var body = new ManagementApiResponses.ApplyConfigRequest(OPERATOR_TOML, 0L);
 
         assertThat(statusOf(routes.routes(), ManagementRoute.CLUSTER_CONFIG_APPLY, List.of(), body, Map.of()))
+            .isEqualTo(HttpStatus.SERVICE_UNAVAILABLE);
+    }
+
+    @Test
+    void clusterConfigApply_answers409_whenTheCommittedLeaderIsAnotherNode() {
+        @SuppressWarnings("unchecked")
+        var store = (KVStore<AetherKey, AetherValue>) mock(KVStore.class);
+        var seed = ClusterConfigValue.bootstrapSeed("prod", "1.0.0", List.of(new TopologyEntry("hetzner", "core", 3)), 3, 9, "hetzner", 1);
+        var leader = new org.pragmatica.cluster.state.kvstore.LeaderValue(new NodeId("core"), 1);
+
+        when(store.get(org.mockito.ArgumentMatchers.<AetherKey> any())).thenReturn(Option.some(seed));
+        when(store.getTyped(org.mockito.ArgumentMatchers.<AetherKey> any(), org.mockito.ArgumentMatchers.<Class<AetherValue>> any()))
+            .thenReturn(Option.some((AetherValue) (Object) leader));
+
+        var routes = ClusterConfigRoutes.clusterConfigRoutes(() -> node(Map.of("kvStore", store, "isLeader", false)));
+        var body = new ManagementApiResponses.ApplyConfigRequest(OPERATOR_TOML, 0L);
+
+        assertThat(statusOf(routes.routes(), ManagementRoute.CLUSTER_CONFIG_APPLY, List.of(), body, Map.of()))
             .isEqualTo(HttpStatus.CONFLICT);
+    }
+
+    /// `/blueprints/status` shares the not-found constant with the GET: an id no store holds is 404.
+    @Test
+    void blueprintStatus_answers404_whenNoOutcomeAndNoBlueprintExist() {
+        var service = mock(BlueprintService.class);
+
+        when(service.outcome(org.mockito.ArgumentMatchers.any())).thenReturn(Option.none());
+        when(service.get(org.mockito.ArgumentMatchers.any())).thenReturn(Option.none());
+
+        var routes = SliceRoutes.sliceRoutes(() -> node(Map.of("blueprintService", service)));
+
+        assertThat(statusOf(routes.routes(), ManagementRoute.BLUEPRINT_STATUS, List.of("org.example:bp:1.0.0"), null, Map.of()))
+            .isEqualTo(HttpStatus.NOT_FOUND);
     }
 
     private static final String OPERATOR_TOML = """
