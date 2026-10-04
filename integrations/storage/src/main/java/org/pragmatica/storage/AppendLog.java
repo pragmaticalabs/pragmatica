@@ -397,6 +397,86 @@ public final class AppendLog implements AutoCloseable {
                                   Cause::result);
     }
 
+    /// Discard every record with `offset > keepThrough` and every owner-epoch entry that began above it, durably
+    /// (#1730 phase 2, KIP-101): the log's tail diverged from the committed owner's, and the records above the last
+    /// common offset were never acknowledged, so they leave the log instead of coming back at the next restart.
+    /// `keepThrough` at or above the last offset changes nothing; `-1` empties the log.
+    ///
+    /// Order: the shortened file is forced WITH its metadata first, the epoch history is rewritten second. A crash
+    /// between them leaves an epoch entry above the head, which the head-bounded trim at open removes
+    /// ([#truncateEpochsAboveHead]); a crash before the force may bring the tail back, which the next comparison
+    /// with the owner detects again, so the operation is idempotent.
+    ///
+    /// Refused when `keepThrough` lies below the discarded prefix ([#truncate]'s watermark): replay filters by that
+    /// watermark, so a record re-appended below it would be invisible to recovery. The caller owns the rest of the
+    /// bound (never below the durable sealed floor), and must hold its ordered append section: a commit already
+    /// requested for a record above the cut would resolve against the shortened file.
+    public Result<Unit> truncateSuffix(long keepThrough) {
+        return closed
+               ? WalError.General.WAL_CLOSED.result()
+               : syncFailure.fold(() -> cutSuffix(keepThrough), Cause::result);
+    }
+
+    /// Takes `writeLock` then `syncLock`, the order [#compact] uses; the in-lock `syncFailure` check closes the race
+    /// with a fail-stop recorded after the entry check, as there.
+    private Result<Unit> cutSuffix(long keepThrough) {
+        synchronized (writeLock) {
+            synchronized (syncLock) {
+                return syncFailure.fold(() -> cutSuffixLocked(keepThrough), Cause::result);
+            }
+        }
+    }
+
+    private Result<Unit> cutSuffixLocked(long keepThrough) {
+        if (keepThrough < truncatedUpto) {
+            return new WalError.TruncateFailed("cut at %d is below the discarded prefix (%d)".formatted(keepThrough,
+                                                                                                    truncatedUpto)).result();
+        }
+
+        return keepThrough >= lastOffset
+               ? epochs.truncateAbove(keepThrough)
+               : readRegion().map(buf -> keptPrefix(buf, keepThrough))
+                             .flatMap(this::shorten)
+                             .flatMap(_ -> epochs.truncateAbove(keepThrough));
+    }
+
+    /// The byte length of the leading run of records with `offset <= keepThrough`, and the last offset in it.
+    private static ScanResult keptPrefix(ByteBuffer buf, long keepThrough) {
+        var kept = new ScanResult(0L, -1L);
+        var open = new boolean[]{true};
+        var holder = new ScanResult[]{kept};
+
+        scan(buf, Long.MIN_VALUE, record -> {
+            if (open[0] && record.offset() <= keepThrough) {
+                holder[0] = new ScanResult(buf.position(), record.offset());
+            } else {
+                open[0] = false;
+            }
+        });
+
+        return holder[0];
+    }
+
+    /// Runs under `writeLock` and `syncLock`. Everything left is forced, so the durable offset is the new last offset.
+    private Result<Unit> shorten(ScanResult kept) {
+        return Result.lift(TRUNCATE_FAILED,
+                           () -> {
+                               channel.truncate(kept.validEnd());
+                               channel.force(true);
+                           })
+                     .onFailure(this::failStop)
+                     .map(_ -> installShortened(kept));
+    }
+
+    private Unit installShortened(ScanResult kept) {
+        writePosition = kept.validEnd();
+        lastOffset = kept.lastOffset();
+        syncedOffset = kept.lastOffset();
+        syncedSeq = writtenSeq;
+
+        return unit();
+    }
+
     /// Highest offset covered by a seal of this process whose block is durable and whose ref is
     /// recorded (#1567); `-1` before the first seal since open. The ceiling of [#truncate].
     public long sealedThrough() {
