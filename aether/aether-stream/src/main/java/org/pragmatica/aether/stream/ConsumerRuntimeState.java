@@ -37,6 +37,7 @@ import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.utility.warning.OperatorWarningCode;
 import org.pragmatica.utility.warning.OperatorWarningSink;
 import org.pragmatica.utility.warning.OperatorWarnings;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -75,7 +76,6 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
     /// [design intent — unverified: not derived from a measured DLQ-append latency.]
     static final TimeSpan DEAD_LETTER_APPEND_TIMEOUT = timeSpan(30).seconds();
     private static final Cause NULL_PROMISE = Causes.cause("Foreign call returned null instead of a promise");
-
     /// #1934: the operator-facing lines of a consumer's escaped passes (the first escape of a run with its frames, the
     /// warning and its end) go through slf4j, the logger [OperatorWarnings] writes to.
     private static final Logger ESCAPE_LOG = LoggerFactory.getLogger(ConsumerRuntimeState.class);
@@ -90,7 +90,6 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
     /// continuous throwing at the backoff above. [design intent — unverified: 5 is a guess; an escape is a defect,
     /// not a routine condition, so a short run is already worth an operator's attention.]
     static final int ESCAPES_BEFORE_WARNING = 5;
-
     /// #1239: a periodic commit waits for nothing — the single-flight slot already keeps periodic
     /// commits apart, and a detach flush cancels the consumer before it is issued.
     /// rev1272 F6: bound on one PERIODIC cursor commit. With one periodic commit in flight per consumer, a
@@ -1063,6 +1062,7 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
         if (state.inEscapeBackoff(clockMs.getAsLong())) {
             return;
         }
+
         if (state.tryStartDrain()) {
             continueDrain(key, state);
         }
@@ -1147,6 +1147,7 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
 
             return;
         }
+
         logPollFailure(key, cause);
         releaseDrain(key, state);
         if (state.pushBuffer().isPresent() && !state.isCancelled() && !closed.get()) {
@@ -1177,7 +1178,7 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
 
     /// The backoff after the `escapes`th consecutive escaped pass.
     static long escapeBackoffMs(int escapes) {
-        return Math.min(ESCAPE_BACKOFF_FIRST_MS << Math.min(escapes - 1, 20), ESCAPE_BACKOFF_CAP_MS);
+        return Math.min(ESCAPE_BACKOFF_FIRST_MS<< Math.min(escapes - 1, 20), ESCAPE_BACKOFF_CAP_MS);
     }
 
     /// Ends the backoff explicitly rather than by the clock, so a scheduler that wakes a millisecond early cannot leave
@@ -1404,8 +1405,7 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
                          .async()
                          .flatMap(promise -> promise);
         } catch (StackOverflowError overflow) {
-            return PassEscape.overflowedCall(overflow)
-                             .promise();
+            return PassEscape.overflowedCall(overflow).promise();
         }
     }
 
