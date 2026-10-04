@@ -105,7 +105,8 @@ class LivePlacementMembersWiringTest {
 
         // #1730: a partition with no live in-sync replica has no owner to report, so the controller's block joins it.
         assertThat(code).contains("streamPartitionManager.ownerBlockSource((stream,partition)->ownerActivation.blockOf(stream,partition).orElse(()->streamReplicaSetController.noInSyncReplica(stream,partition)));");
-        assertThat(code).contains("AetherNode::raiseOwnerPromotionBlock,ownerPromotionAlarmWindow(config.timeouts().swim().suspectTimeout()));");
+        // #1873: the gate's constructor then takes the ring incarnation and the lineage commit (see EpochFetchWiringTest).
+        assertThat(code).contains("AetherNode::raiseOwnerPromotionBlock,ownerPromotionAlarmWindow(config.timeouts().swim().suspectTimeout()),(stream,partition)->");
         assertThat(code).contains("returnsuspectTimeout.plus(suspectTimeout);");
         assertThat(code).as("v1555 F1: the overlap read is the production OwnerPeerReads.ownerRange the gate tests exercise")
                         .contains("OwnerPeerReads.ownerRange(config.self(),streamPartitionManager,streamTieredReader,streamForwardClient::readRemoteCatchup,STREAM_CATCHUP_BATCH_SIZE),AetherNode::raiseOwnerPromotionBlock");
