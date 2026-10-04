@@ -19,7 +19,6 @@ import java.util.HexFormat;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Supplier;
 
@@ -58,6 +57,10 @@ public final class DistributedDHTClient implements DHTClient {
     private static final HexFormat HEX = HexFormat.of();
     /// The evidence wait of a write acknowledged on its own slot is the operation timeout divided by this (v1882 r9b).
     private static final long EVIDENCE_WAIT_DIVISOR = 10L;
+    /// The states of an operation's pending mark: not yet claimed, claimed, and ended (v1882 r12 F19).
+    private static final int MARK_IDLE = 0;
+    private static final int MARK_HELD = 1;
+    private static final int MARK_ENDED = 2;
 
     private final DHTNode node;
     private final DHTNetwork network;
@@ -238,7 +241,7 @@ public final class DistributedDHTClient implements DHTClient {
         targets.stream()
                .filter(target -> !target.equals(node.nodeId()))
                .forEach(target -> sendRemotePut(target, key, value, stamp, collector));
-        var pending = new AtomicBoolean(false);
+        var pending = new AtomicInteger(MARK_IDLE);
         var localPut = targets.contains(node.nodeId())
                        ? Option.some(applyLocalAfterEvidence(collector,
                                                              hasRemote,
@@ -271,23 +274,27 @@ public final class DistributedDHTClient implements DHTClient {
     /// refused `writePending` instead of being answered "superseded" (v1882 r12).
     private Promise<StorageEngine.Displaced> markPending(byte[] key,
                                                          QuorumCollector<?> collector,
-                                                         AtomicBoolean pending,
+                                                         AtomicInteger mark,
                                                          Supplier<Promise<StorageEngine.Displaced>> write) {
-        // an operation already acknowledged without its own slot has nothing to protect: the copy is written unmarked, so a
-        // pending mark can never start after the resolution that would clear it
+        // an operation already acknowledged without its own slot has nothing to protect: the copy is written unmarked
         if (!collector.resolved()) {
+            // begin FIRST, then claim the mark: if the operation's resolution already ran its end in between, the claim fails
+            // and the begin is undone here, so begin and end are balanced however the two interleave (v1882 r12 F19)
             node.beginLocalWrite(key,
                                  config.get().operationTimeout().nanos());
-            pending.set(true);
+            if (!mark.compareAndSet(MARK_IDLE, MARK_HELD)) {
+                node.endLocalWrite(key);
+            }
         }
 
         return write.get();
     }
 
-    /// The operation resolved on EVERY path — acknowledged, failed, timed out or aborted — so its pending mark ends.
+    /// The operation resolved on EVERY path — acknowledged, failed, timed out or aborted — so its pending mark ends. An end
+    /// that runs before the mark was claimed seals the state, and the late claim above undoes its own begin.
     @Contract
-    private void endPending(byte[] key, AtomicBoolean pending) {
-        if (pending.compareAndSet(true, false)) {
+    private void endPending(byte[] key, AtomicInteger mark) {
+        if (mark.getAndSet(MARK_ENDED) == MARK_HELD) {
             node.endLocalWrite(key);
         }
     }

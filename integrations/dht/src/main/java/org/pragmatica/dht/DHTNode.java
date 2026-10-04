@@ -387,8 +387,10 @@ public final class DHTNode {
 
         pendingLocalWrites.merge(ByteBuffer.wrap(key.clone()),
                                  new PendingLocalWrite(1, deadline),
-                                 (current, added) -> new PendingLocalWrite(current.count() + 1,
-                                                                           Math.max(current.deadlineNanos(), deadline)));
+                                 (current, added) -> expired(current)
+                                                     ? added
+                                                     : new PendingLocalWrite(current.count() + 1,
+                                                                             Math.max(current.deadlineNanos(), deadline)));
     }
 
     /// The write begun with [#beginLocalWrite] resolved — acknowledged, failed, timed out or aborted.
@@ -403,9 +405,17 @@ public final class DHTNode {
 
     /// Whether this node has its own write to `key` applied and unresolved (and not past its deadline).
     public boolean localWritePending(byte[] key) {
-        return Option.option(pendingLocalWrites.get(ByteBuffer.wrap(key.clone())))
-                     .filter(pending -> System.nanoTime() - pending.deadlineNanos() < 0)
+        // an expired mark is DROPPED, not just ignored: a leaked count must not survive to keep a later, correctly paired
+        // write pending past its own end (v1882 r12 F19)
+        return Option.option(pendingLocalWrites.computeIfPresent(ByteBuffer.wrap(key.clone()),
+                                                                 (_, current) -> expired(current)
+                                                                                 ? null
+                                                                                 : current))
                      .isPresent();
+    }
+
+    private static boolean expired(PendingLocalWrite pending) {
+        return System.nanoTime() - pending.deadlineNanos() >= 0;
     }
 
     private record PendingLocalWrite(int count, long deadlineNanos) {}
