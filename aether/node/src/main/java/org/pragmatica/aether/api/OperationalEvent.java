@@ -112,6 +112,27 @@ public sealed interface OperationalEvent extends Message.Local {
         }
     }
 
+    /// #1873: a stream partition's owner began a new epoch of the SAME owner (its ring was rebuilt: a restart without a WAL, a
+    /// lazy re-materialize, a re-created stream), so consumers that read the old epoch past `startOffset` are told to re-read
+    /// from it ([ClusterEvent.StreamLineageRestarted]). A fact about the committed record, not a loss: the owner may have pulled
+    /// every record back from replicas.
+    record StreamLineageRestarted(String stream,
+                                  int partition,
+                                  String owner,
+                                  String oldEpoch,
+                                  String newEpoch,
+                                  long startOffset,
+                                  long timestamp) implements OperationalEvent {
+        public static StreamLineageRestarted streamLineageRestarted(String stream,
+                                                                    int partition,
+                                                                    String owner,
+                                                                    String oldEpoch,
+                                                                    String newEpoch,
+                                                                    long startOffset) {
+            return new StreamLineageRestarted(stream, partition, owner, oldEpoch, newEpoch, startOffset, System.currentTimeMillis());
+        }
+    }
+
     /// #1883: the in-sync set of a partition reached its confirmation factor again ([ClusterEvent.StreamIsrRestored]).
     record StreamIsrRestored(String stream,
                              int partition,

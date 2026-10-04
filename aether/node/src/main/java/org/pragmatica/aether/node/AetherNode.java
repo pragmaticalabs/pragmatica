@@ -5451,12 +5451,16 @@ public interface AetherNode extends ManageableNode {
         // #1883: the same derivation for the in-sync set falling below / returning to the confirmation factor.
         var streamIsrAnnouncer = StreamIsrAnnouncer.streamIsrAnnouncer(streamPartitionManager::confirmationFactorFor,
                                                                        delegateRouter::route);
+        // #1873: and for an owner beginning a new epoch of its own (its ring was rebuilt).
+        var streamLineageAnnouncer = StreamLineageAnnouncer.streamLineageAnnouncer(delegateRouter::route);
 
         allEntries.addAll(KVNotificationRouter.<AetherKey, AetherValue> builder(AetherKey.class)
                                               .onPut(AetherKey.StreamPartitionOwnershipKey.class,
                                                      streamFailoverAnnouncer::onOwnershipPut)
                                               .onPut(AetherKey.StreamPartitionOwnershipKey.class,
                                                      streamIsrAnnouncer::onOwnershipPut)
+                                              .onPut(AetherKey.StreamPartitionOwnershipKey.class,
+                                                     streamLineageAnnouncer::onOwnershipPut)
                                               .build()
                                               .asRouteEntries());
         // #1555 sticky ownership: every node routes by the COMMITTED ownership record (HRW only before a record
@@ -8874,6 +8878,8 @@ public interface AetherNode extends ManageableNode {
                                               eventAggregator::onStreamIsrBelowMinimum));
         entries.add(MessageRouter.Entry.route(OperationalEvent.StreamIsrRestored.class,
                                               eventAggregator::onStreamIsrRestored));
+        entries.add(MessageRouter.Entry.route(OperationalEvent.StreamLineageRestarted.class,
+                                              eventAggregator::onStreamLineageRestarted));
         entries.add(MessageRouter.Entry.route(OperationalEvent.BlueprintDeleted.class,
                                               eventAggregator::onBlueprintDeleted));
         entries.add(MessageRouter.Entry.route(InvocationMessage.InvokeRequest.class, invocationHandler::onInvokeRequest));
