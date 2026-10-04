@@ -1928,6 +1928,100 @@ class StreamConsumerManagerTest {
         }
     }
 
+    /// v1890 probes for #1923 (#752): `abandonAll` (the quorum-loss path) does not take `passLock`, so it can run while a
+    /// pass is between `attach`'s `active.putIfAbsent` and the runtime subscribe (here: held inside the local-slice lookup,
+    /// which sits exactly there).
+    @Nested
+    class V1890AbandonDuringAttach {
+        private final List<OperatorWarning> warnings = new CopyOnWriteArrayList<>();
+
+        private Thread passBlockedMidAttach(StreamConsumerManager manager, CountDownLatch entered, CountDownLatch release) {
+            placement.activeOn(SELF);
+            var calls = new java.util.concurrent.atomic.AtomicInteger();
+
+            // The pass asks for the local slice twice: in desiredFor (before attach), then in attachAdmitted, right after
+            // `active.putIfAbsent` and before the runtime subscribe. Block only the second.
+            when(invocationHandler.localSlice(ARTIFACT)).thenAnswer(_ -> {
+                if (calls.incrementAndGet() == 2) {
+                    entered.countDown();
+                    release.await(5, TimeUnit.SECONDS);
+                }
+                return Option.some(new StubBridge(Option.none()));
+            });
+            var pass = new Thread(manager::reconcile);
+
+            pass.start();
+            return pass;
+        }
+
+        /// No false alert: an abandon that meets an attach still in progress found no "lost" subscription; the runtime
+        /// simply had not been asked yet. Expected RED: it raises stream-consumer-state-diverged.
+        @Test
+        void probe1923_abandonDuringAnInFlightAttach_raisesNoDivergenceWarning() throws InterruptedException {
+            declareStringConsumer();
+            ownership.ownedBySelf(0);
+            ownership.withPartitionCount(1);
+            var manager = manager();
+            var entered = new CountDownLatch(1);
+            var release = new CountDownLatch(1);
+
+            manager.setOperatorWarningSink(OperatorWarningSink.handingOffTo(warnings::add));
+            runtime.strictRemoval = true;
+            var pass = passBlockedMidAttach(manager, entered, release);
+
+            assertThat(entered.await(5, TimeUnit.SECONDS)).as("arming: the pass is inside attach").isTrue();
+            manager.abandonAll();
+            release.countDown();
+            pass.join(5000);
+            Thread.sleep(200);
+
+            assertThat(warnings).as("divergence warnings raised by an abandon racing an in-flight attach").isEmpty();
+        }
+
+        /// Pre-existing companion (not introduced by #1923, whose description claims both sides agree after a detach or
+        /// abandon): after the quorum-loss abandon, nothing is subscribed. Expected RED: the in-flight attach subscribes
+        /// after the abandon, leaving a runtime subscription the manager no longer holds, which forgetVanished (manager ->
+        /// runtime direction only) never sees.
+        @Test
+        void probe1923_abandonDuringAnInFlightAttach_leavesNoOrphanSubscription() throws InterruptedException {
+            declareStringConsumer();
+            ownership.ownedBySelf(0);
+            ownership.withPartitionCount(1);
+            var manager = manager();
+            var entered = new CountDownLatch(1);
+            var release = new CountDownLatch(1);
+            var pass = passBlockedMidAttach(manager, entered, release);
+
+            assertThat(entered.await(5, TimeUnit.SECONDS)).as("arming: the pass is inside attach").isTrue();
+            manager.abandonAll();
+            release.countDown();
+            pass.join(5000);
+
+            assertThat(runtime.subscribedPartitions()).as("subscriptions after the quorum-loss abandon").isEmpty();
+            assertThat(manager.activeSubscriptionCount()).as("manager's attached count").isZero();
+        }
+
+        /// Control: abandonAll on a settled attachment (no pass in flight) raises nothing and leaves nothing.
+        @Test
+        void probe1923_control_abandonAfterASettledAttach_isQuiet() throws InterruptedException {
+            declareStringConsumer();
+            deploySliceLocally();
+            ownership.ownedBySelf(0);
+            ownership.withPartitionCount(1);
+            var manager = manager();
+
+            manager.setOperatorWarningSink(OperatorWarningSink.handingOffTo(warnings::add));
+            manager.reconcile();
+            assertThat(runtime.subscribedPartitions()).containsExactly(0);
+            runtime.strictRemoval = true;
+            manager.abandonAll();
+            Thread.sleep(200);
+
+            assertThat(warnings).isEmpty();
+            assertThat(runtime.subscribedPartitions()).isEmpty();
+        }
+    }
+
     private static final class CapturingAppender extends AbstractAppender {
         private final List<LogEvent> events = new CopyOnWriteArrayList<>();
 
