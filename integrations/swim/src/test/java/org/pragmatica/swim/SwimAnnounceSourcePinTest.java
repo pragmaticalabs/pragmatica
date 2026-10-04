@@ -579,6 +579,25 @@ class SwimAnnounceSourcePinTest {
         assertThat(ack.piggyback().getFirst().nodeId()).isEqualTo(longId);
     }
 
+    /// The binding of an ack to the outstanding probe, one dimension at a time: the sequence, the expected member and
+    /// the probed address must ALL match; each wrong one alone confirms nothing, and none of them burns the probe.
+    @Test
+    void ackConfirmsOnlyWhenSequenceMemberAndProbedAddressAllMatch() {
+        protocol = manualProtocol();
+        protocol.onMessage(A_REAL, announceA());
+        var probe = lastPingTo(A_REAL);
+
+        protocol.onMessage(A_REAL, provenAck(NODE_A, TOKEN_A, probe.sequence() + 1));
+        assertThat(protocol.addressPinForTest(NODE_A).isPresent()).as("wrong sequence").isFalse();
+        protocol.onMessage(A_REAL, provenAck(NODE_B, TOKEN_A, probe.sequence()));
+        assertThat(protocol.addressPinForTest(NODE_A).isPresent()).as("wrong member").isFalse();
+        protocol.onMessage(A_MOVED, provenAck(NODE_A, TOKEN_A, probe.sequence()));
+        assertThat(protocol.addressPinForTest(NODE_A).isPresent()).as("wrong source address").isFalse();
+
+        protocol.onMessage(A_REAL, provenAck(NODE_A, TOKEN_A, probe.sequence()));
+        assertThat(protocol.addressPinForTest(NODE_A).isPresent()).as("control: all three match").isTrue();
+    }
+
     // -- helpers --
 
     private static Ack provenAck(NodeId member, long token, long sequence) {
