@@ -69,6 +69,7 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
     /// [design intent — unverified: not derived from a measured DLQ-append latency.]
     static final TimeSpan DEAD_LETTER_APPEND_TIMEOUT = timeSpan(30).seconds();
     private static final Cause NULL_PROMISE = Causes.cause("Foreign call returned null instead of a promise");
+    private static final Cause HANDLER_OVERFLOWED = Causes.cause("Handler overflowed its stack");
     private static final Cause PASS_OVERFLOWED = Causes.cause("Delivery pass overflowed its stack");
     private static final Cause PASS_FATAL = Causes.cause("Delivery pass threw a VirtualMachineError; loop released, error rethrown");
     /// #1239: a periodic commit waits for nothing — the single-flight slot already keeps periodic
@@ -1214,11 +1215,22 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
     /// Review rev1272 F1: the handler is code this runtime does not own. A SYNCHRONOUS throw from it is a
     /// failed delivery, handled by the error strategy (retry, then dead-letter) like any other — never an
     /// exception escaping the pass.
+    ///
+    /// #1367: a [StackOverflowError] thrown synchronously by the handler is that handler's own runaway recursion,
+    /// recovered once its stack unwinds (the `OffHeapRingBuffer.notifyGuarded` convention), so it is a failed delivery
+    /// too. Since #1311 `Result.lift` rethrows it, and it used to escape: out of a retry it left the retry hold set and
+    /// wedged the consumer; out of a pass it bypassed the error strategy, so SKIP never dead-lettered the event. Every
+    /// other `VirtualMachineError` still propagates.
+    @SuppressWarnings("JBCT-EX-01")
     private static Promise<Unit> invokeHandler(ConsumerState state, OffHeapRingBuffer.RawEvent event) {
-        return lifted(() -> state.callback()
-                                 .onEvent(event.offset(),
-                                          event.data(),
-                                          event.timestamp()));
+        try {
+            return lifted(() -> state.callback()
+                                     .onEvent(event.offset(),
+                                              event.data(),
+                                              event.timestamp()));
+        } catch (StackOverflowError overflow) {
+            return HANDLER_OVERFLOWED.promise();
+        }
     }
 
     /// Flattens a promise-returning call whose synchronous throw must surface as a failed promise — the
