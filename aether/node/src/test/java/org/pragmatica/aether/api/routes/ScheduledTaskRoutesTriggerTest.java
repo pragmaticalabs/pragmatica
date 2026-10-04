@@ -131,6 +131,7 @@ class ScheduledTaskRoutesTriggerTest {
             assertThat(manager.claimed).as("the callee is still running: the claim must stay held, or a scheduled fire overlaps it").contains(key);
 
             running.succeed(Unit.unit());
+            awaitReleased(key);
 
             assertThat(manager.claimed).as("released once the callee completed").doesNotContain(key);
         }
@@ -145,6 +146,7 @@ class ScheduledTaskRoutesTriggerTest {
 
             routes().triggerForTest(SECTION, ARTIFACT, METHOD).await();
             running.fail(org.pragmatica.lang.utils.Causes.cause("callee failed"));
+            awaitReleased(key);
 
             assertThat(manager.claimed).as("a failed completion also ends the run").doesNotContain(key);
         }
@@ -176,6 +178,15 @@ class ScheduledTaskRoutesTriggerTest {
     }
 
     // --- helpers ---
+
+    /// `onResult` dependents of a pending promise run off the completing thread.
+    private void awaitReleased(ScheduledTaskKey key) {
+        var deadline = System.currentTimeMillis() + 3_000L;
+
+        while (manager.claimed.contains(key) && System.currentTimeMillis() < deadline) {
+            Thread.onSpinWait();
+        }
+    }
 
     private static Artifact artifact(String s) {
         return Artifact.artifact(s).unwrap();

@@ -80,9 +80,20 @@ class ScheduledSingleModeNoOverlapTest {
         manager = newManager();
     }
 
-    /// The manager under test; overridden by tests that need another completion bound.
-    ScheduledTaskManager newManager() {
+    private ScheduledTaskManager newManager() {
         return ScheduledTaskManager.scheduledTaskManager(registry, invoker, SELF, this::write, key -> Option.option(state.get(key)), leaderManager);
+    }
+
+    /// A manager with a short explicit completion bound, so the bound can be reached within a test.
+    private void useCompletionBound(long millis) {
+        manager.stop();
+        manager = ScheduledTaskManager.scheduledTaskManager(registry,
+                                                            invoker,
+                                                            SELF,
+                                                            this::write,
+                                                            key -> Option.option(state.get(key)),
+                                                            leaderManager,
+                                                            org.pragmatica.lang.io.TimeSpan.timeSpan(millis).millis());
     }
 
     @AfterEach
@@ -124,6 +135,43 @@ class ScheduledSingleModeNoOverlapTest {
         await(() -> state.get(stateKey()) != null && state.get(stateKey()).totalExecutions() == 1, 5_000);
 
         assertThat(state.get(stateKey()).lastOutcome()).as("the late completion is an execution").isEqualTo(ScheduledTaskStateValue.OUTCOME_SUCCESS);
+        await(() -> requests.size() >= 2, 5_000);
+    }
+
+    /// The hold is bounded: a lost response must not keep the task from ever firing again. At the scheduler's explicit
+    /// completion bound the outcome is recorded as UNKNOWN (not a failure, not an execution) and the claim is given up, so
+    /// the next tick fires.
+    @Test
+    @Timeout(60)
+    void remoteSingleModeFire_withNoResponseUntilTheBound_isRecordedUnknown_andThenTheTaskFiresAgain() {
+        useCompletionBound(1_500);
+        startSingleModeTask();
+        await(() -> !requests.isEmpty(), 5_000);
+        sleep(900);
+
+        assertThat(requests).as("before the bound the claim is held").hasSize(1);
+
+        await(() -> state.get(stateKey()) != null && ScheduledTaskStateValue.OUTCOME_UNKNOWN.equals(state.get(stateKey()).lastOutcome()), 8_000);
+        var unknown = state.get(stateKey());
+
+        assertThat(unknown.totalExecutions()).as("unknown is not an execution").isZero();
+        assertThat(unknown.consecutiveFailures()).as("unknown is not a failure").isZero();
+        await(() -> requests.size() >= 2, 8_000);
+    }
+
+    /// A departed callee node ends the wait at once as a FAILURE (the callee is gone, so it is not running), and the claim
+    /// is released.
+    @Test
+    @Timeout(60)
+    void remoteSingleModeFire_whoseCalleeNodeDeparts_isAFailure_andReleasesTheClaim() {
+        startSingleModeTask();
+        await(() -> !requests.isEmpty(), 5_000);
+
+        invoker.onNodeDeparture(HOST);
+        await(() -> state.get(stateKey()) != null && state.get(stateKey()).consecutiveFailures() >= 1, 5_000);
+
+        assertThat(state.get(stateKey()).lastOutcome()).isEqualTo(ScheduledTaskStateValue.OUTCOME_FAILURE);
+        assertThat(state.get(stateKey()).totalExecutions()).isZero();
         await(() -> requests.size() >= 2, 5_000);
     }
 

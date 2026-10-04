@@ -472,11 +472,22 @@ public final class ScheduledTaskRoutes implements RouteSource {
             return new TriggerConflict(configSection, artifactStr, methodStr).promise();
         }
 
-        return invoker.invoke(task.artifact(),
-                              task.methodName(),
-                              Unit.unit())
-                      .onResultRun(() -> manager.release(key))
-                      .map(_ -> new TaskActionResult(true, configSection, artifactStr, methodStr, "triggered"));
+        var triggered = new TaskActionResult(true, configSection, artifactStr, methodStr, "triggered");
+        var completion = invoker.invokeAwaitingCompletion(task.artifact(),
+                                                          task.methodName(),
+                                                          Unit.unit(),
+                                                          manager.completionBound());
+
+        // The claim is the scheduler's in-flight guard: it is held until the callee COMPLETES (success, failure, a departed
+        // node, or the manager's explicit completion bound), not until the request was enqueued, so a scheduled fire cannot
+        // overlap a manual run of a remote callee (#1930).
+        completion.onResultRun(() -> manager.release(key));
+
+        // A callee hosted here is awaited to its end, as before. A remote one answers "triggered" once dispatched (the claim
+        // is still held), unless dispatch itself already failed.
+        return invoker.hasLocalSlice(task.artifact()) || completion.isResolved()
+               ? completion.map(_ -> triggered)
+               : Promise.success(triggered);
     }
 
     private Promise<ScheduledTask> findTask(String configSection, String artifactStr, String methodStr) {

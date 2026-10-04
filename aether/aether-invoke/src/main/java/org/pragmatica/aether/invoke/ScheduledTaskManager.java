@@ -81,12 +81,34 @@ public interface ScheduledTaskManager {
     /// Releases a claim taken via [#tryClaim].
     void release(ScheduledTaskKey key);
 
+    /// How long a fire against a REMOTE callee is awaited for its completion before its outcome is recorded as UNKNOWN
+    /// (#1930). The in-flight claim of a task is held for this long, so a SINGLE-mode task whose callee runs for longer than
+    /// the invocation timeout still never overlaps its own next fire; it is the longest a lost response can keep a task from
+    /// firing. A callee hosted on the firing node is awaited without a bound. Not configurable per task.
+    TimeSpan DEFAULT_COMPLETION_BOUND = TimeSpan.timeSpan(10).minutes();
+
+    /// The bound the manager awaits a remote fire for (see [#DEFAULT_COMPLETION_BOUND]); the trigger route holds the same
+    /// claim for the same length.
+    default TimeSpan completionBound() {
+        return DEFAULT_COMPLETION_BOUND;
+    }
+
     static ScheduledTaskManager scheduledTaskManager(ScheduledTaskRegistry registry,
                                                      SliceInvoker invoker,
                                                      NodeId self,
                                                      Consumer<KVCommand<AetherKey>> stateWriter,
                                                      Function<ScheduledTaskStateKey, Option<ScheduledTaskStateValue>> stateReader,
                                                      LeaderManager leaderManager) {
+        return scheduledTaskManager(registry, invoker, self, stateWriter, stateReader, leaderManager, DEFAULT_COMPLETION_BOUND);
+    }
+
+    static ScheduledTaskManager scheduledTaskManager(ScheduledTaskRegistry registry,
+                                                     SliceInvoker invoker,
+                                                     NodeId self,
+                                                     Consumer<KVCommand<AetherKey>> stateWriter,
+                                                     Function<ScheduledTaskStateKey, Option<ScheduledTaskStateValue>> stateReader,
+                                                     LeaderManager leaderManager,
+                                                     TimeSpan completionBound) {
         var ctxHolder = new AtomicReference<Context>();
         Function<Fsm<SchedulerState, ClusterFsmEvent>, SchedulerState> initialStateFactory = f -> buildContextAndInitialState(ctxHolder,
                                                                                                                               f,
@@ -95,7 +117,8 @@ public interface ScheduledTaskManager {
                                                                                                                               self,
                                                                                                                               stateWriter,
                                                                                                                               stateReader,
-                                                                                                                              leaderManager);
+                                                                                                                              leaderManager,
+                                                                                                                              completionBound);
         var fsm = Fsm.fsm("scheduled-task", self.id(), initialStateFactory);
         var ctx = ctxHolder.get();
 
@@ -111,8 +134,9 @@ public interface ScheduledTaskManager {
                                                               NodeId self,
                                                               Consumer<KVCommand<AetherKey>> stateWriter,
                                                               Function<ScheduledTaskStateKey, Option<ScheduledTaskStateValue>> stateReader,
-                                                              LeaderManager leaderManager) {
-        var ctx = new Context(fsm, registry, invoker, self, stateWriter, stateReader, leaderManager);
+                                                              LeaderManager leaderManager,
+                                                              TimeSpan completionBound) {
+        var ctx = new Context(fsm, registry, invoker, self, stateWriter, stateReader, leaderManager, completionBound);
 
         ctxHolder.set(ctx);
 
@@ -127,6 +151,7 @@ public interface ScheduledTaskManager {
         final Consumer<KVCommand<AetherKey>> stateWriter;
         final Function<ScheduledTaskStateKey, Option<ScheduledTaskStateValue>> stateReader;
         final LeaderManager leaderManager;
+        final TimeSpan completionBound;
         final Map<ScheduledTaskKey, ScheduledFuture<?>> activeTimers = new ConcurrentHashMap<>();
         final Set<ScheduledTaskKey> inFlight = ConcurrentHashMap.newKeySet();
         final AtomicLong quorumSequence = new AtomicLong(0);
@@ -144,7 +169,8 @@ public interface ScheduledTaskManager {
                 NodeId self,
                 Consumer<KVCommand<AetherKey>> stateWriter,
                 Function<ScheduledTaskStateKey, Option<ScheduledTaskStateValue>> stateReader,
-                LeaderManager leaderManager) {
+                LeaderManager leaderManager,
+                TimeSpan completionBound) {
             this.fsm = fsm;
             this.registry = registry;
             this.invoker = invoker;
@@ -152,6 +178,7 @@ public interface ScheduledTaskManager {
             this.stateWriter = stateWriter;
             this.stateReader = stateReader;
             this.leaderManager = leaderManager;
+            this.completionBound = completionBound;
             this.dormant = new Dormant(this);
             this.following = new Following(this);
             this.leading = new Leading(this);
@@ -496,7 +523,8 @@ public interface ScheduledTaskManager {
         private static Promise<Unit> executeTask(Context ctx, ScheduledTask task, LongSupplier nextFireAtSupplier) {
             return ctx.invoker.invokeAwaitingCompletion(task.artifact(),
                                                         task.methodName(),
-                                                        Unit.unit())
+                                                        Unit.unit(),
+                                                        ctx.completionBound)
                               .onSuccess(_ -> writeSuccessState(ctx,
                                                                 task,
                                                                 nextFireAtSupplier.getAsLong()))
@@ -662,6 +690,11 @@ public interface ScheduledTaskManager {
         @Override
         public int activeTimerCount() {
             return ctx.activeTimers.size();
+        }
+
+        @Override
+        public TimeSpan completionBound() {
+            return ctx.completionBound;
         }
 
         @Override

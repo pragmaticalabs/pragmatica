@@ -122,6 +122,40 @@ class SliceInvokerAwaitCompletionTest {
                                                      .satisfies(c -> assertThat(c.message()).contains("departed")));
     }
 
+    /// #1930: an explicit bound longer than the invocation timeout keeps the wait open past it (a long-running task must not
+    /// read as unknown at the invocation timeout), and survives the stale-invocation cleanup, which would otherwise fail
+    /// it after twice the invocation timeout. At the explicit bound itself, with no response, the outcome is unknown.
+    @Test
+    @Timeout(30)
+    void explicitBound_keepsTheWaitOpenPastTheInvocationTimeoutAndTheCleanup_andEndsUnknownAtTheBound() throws Exception {
+        var registry = EndpointRegistry.endpointRegistry();
+        var codec = FrameworkCodecs.frameworkCodecs();
+
+        registry.registerEndpoint(new EndpointKey(ARTIFACT, METHOD, 0), EndpointValue.endpointValue(HOST));
+        // invocation timeout 300 ms, stale cleanup every 100 ms (stale after 600 ms)
+        var longInvoker = SliceInvoker.sliceInvoker(SELF, network, registry, InvocationHandler.invocationHandler(SELF, network), codec, codec, 300L, 100L, new StubDeploymentManager());
+
+        try {
+            var held = longInvoker.invokeAwaitingCompletion(ARTIFACT, METHOD, unit(), org.pragmatica.lang.io.TimeSpan.timeSpan(4).seconds());
+
+            awaitSent();
+            Thread.sleep(1_200);
+
+            assertThat(held.isResolved()).as("still waiting after 1.2 s: past the invocation timeout and the stale cleanup").isFalse();
+
+            longInvoker.onInvokeResponse(InvokeResponse.invokeResponse(HOST, network.sent.get().correlationId(), "r", true, new byte[0]));
+            assertThat(held.await().isSuccess()).as("the late completion is a success").isTrue();
+
+            network.sent.set(null);
+            longInvoker.invokeAwaitingCompletion(ARTIFACT, METHOD, unit(), org.pragmatica.lang.io.TimeSpan.timeSpan(700).millis())
+                       .await()
+                       .onSuccess(_ -> org.junit.jupiter.api.Assertions.fail("no response"))
+                       .onFailure(cause -> assertThat(cause).isInstanceOf(SliceInvokerError.CompletionUnknown.class));
+        } finally {
+            longInvoker.stop().await();
+        }
+    }
+
     /// Control: the plain fire-and-forget `invoke` (durable-topic publish and the like) is unchanged and still resolves
     /// when the request is handed to the transport.
     @Test
