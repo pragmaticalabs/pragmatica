@@ -274,6 +274,22 @@ public final class OwnerActivation {
             }
         }
 
+        /// #1431: `peer` ANSWERED the promotion probe, but the event at `offset` alone exceeds its read cap, so its
+        /// watermark cannot be read past it. Not an unreachable peer: the operator raises `maxReadResponseBytes` on
+        /// `peer` above that event (or upgrades a peer whose handler cuts before the first event).
+        record PeerEventExceedsReadCap(String streamName, int partition, NodeId peer, long offset) implements ActivationBlock {
+            @Override
+            public String message() {
+                return ("Owner promotion of %s[%d] refused: %s answered the watermark probe, but its event at offset %d "
+                       + "is larger than its read cap (maxReadResponseBytes), so its log cannot be read past that "
+                       + "event; raise the cap on %s above that event's size").formatted(streamName,
+                                                                                         partition,
+                                                                                         peer,
+                                                                                         offset,
+                                                                                         peer);
+            }
+        }
+
         /// `unreachable` have not answered the promotion probe for longer than `blockedLongerThan` and may hold a
         /// higher watermark; `responders` answered.
         record HoldersUnreachable(String streamName,
@@ -680,9 +696,39 @@ public final class OwnerActivation {
         var answered = results.stream().flatMap(result -> result.option()
                                                                 .stream()).toList();
 
-        return answered.size() < peers.size()
-               ? holdersUnreachable(stream, partition, peers, answered)
-               : catchUpFromHighest(stream, partition, answered);
+        return oversizedAt(peers, results).fold(() -> answered.size() < peers.size()
+                                                      ? holdersUnreachable(stream, partition, peers, answered)
+                                                      : catchUpFromHighest(stream, partition, answered),
+                                                oversized -> refuseOversized(stream, partition, oversized));
+    }
+
+    private record OversizedPeer(NodeId peer, long offset) {}
+
+    /// #1431: the first peer that answered with a page cut before its first event (index-aligned with `results`).
+    private static Option<OversizedPeer> oversizedAt(List<NodeId> peers, List<Result<PeerWatermark>> results) {
+        for (var i = 0; i < peers.size(); i++) {
+            var peer = peers.get(i);
+            var oversized = results.get(i)
+                                   .fold(cause -> cause instanceof OwnerPeerReads.EventExceedsReadCap(var offset)
+                                                  ? Option.some(new OversizedPeer(peer, offset))
+                                                  : Option.<OversizedPeer> none(),
+                                         _ -> Option.<OversizedPeer> none());
+
+            if (oversized.isPresent()) {
+                return oversized;
+            }
+        }
+
+        return Option.none();
+    }
+
+    /// #1431: its own refusal, reported at once (once per distinct block) — never counted as an unreachable member.
+    private Promise<Unit> refuseOversized(String stream, int partition, OversizedPeer oversized) {
+        var block = new ActivationBlock.PeerEventExceedsReadCap(stream, partition, oversized.peer(), oversized.offset());
+
+        report(PartitionKey.partitionKey(stream, partition), block);
+
+        return block.promise();
     }
 
     /// A member did not answer: refuse, and once the failures have run continuously for longer than

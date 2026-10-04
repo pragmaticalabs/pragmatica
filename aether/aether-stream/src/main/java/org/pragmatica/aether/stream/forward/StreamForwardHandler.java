@@ -478,6 +478,10 @@ final class DefaultStreamForwardHandler implements StreamForwardHandler {
                  errorMessage);
     }
 
+    /// #1431: the FIRST event of a page is always admitted, even when it alone exceeds the cap — the rule the
+    /// replication manager already follows ("a single event larger than the budget is still sent alone"). A page cut
+    /// before its first event can never advance a reader past that event: a catch-up, a promotion probe or a consumer
+    /// read would stall on it. So a capped page is never empty, and only the transport frame limit bounds one event.
     private CappedEvents applyCap(List<OffHeapRingBuffer.RawEvent> events) {
         var capped = new ArrayList<RawEventDto>();
         var total = ENVELOPE_OVERHEAD_BYTES;
@@ -485,7 +489,7 @@ final class DefaultStreamForwardHandler implements StreamForwardHandler {
         for (var event : events) {
             var next = total + event.data().length + PER_EVENT_OVERHEAD_BYTES;
 
-            if (next > maxReadResponseBytes) {
+            if (next > maxReadResponseBytes && !capped.isEmpty()) {
                 break;
             }
 

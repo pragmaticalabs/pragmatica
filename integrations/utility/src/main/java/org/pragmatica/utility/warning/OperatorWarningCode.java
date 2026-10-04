@@ -69,7 +69,11 @@ public enum OperatorWarningCode {
     /// belonged to (#1873, KIP-320): a restart without a WAL, or a failover to a replica that held less, began a new owner
     /// epoch below the consumer's cursor. The records the group processed above that offset are gone from the log and the
     /// records now at those offsets are delivered; the message names the group, the partition and the offsets.
-    STREAM_CONSUMER_REWOUND("stream-consumer-rewound", "stream-consumer", WarningLevel.WARNING);
+    STREAM_CONSUMER_REWOUND("stream-consumer-rewound", "stream-consumer", WarningLevel.WARNING),
+    /// A partition's owner promotion is refused because a peer ANSWERED its watermark probe with a page cut before its
+    /// first event: that event alone exceeds the peer's read cap (#1431). Not an unreachable peer; the operator raises
+    /// the peer's `maxReadResponseBytes`. The message names the partition, the peer and the offset.
+    STREAM_EVENT_EXCEEDS_READ_CAP("stream-event-exceeds-read-cap", "stream-replication", WarningLevel.CRITICAL);
     private final String code;
     private final String subsystem;
     private final WarningLevel level;
