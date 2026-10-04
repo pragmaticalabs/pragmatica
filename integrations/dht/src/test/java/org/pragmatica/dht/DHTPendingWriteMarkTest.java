@@ -31,6 +31,20 @@ class DHTPendingWriteMarkTest {
         assertThat(afterPairedEnd).as("a correctly paired write is not pending after its own end").isFalse();
     }
 
+    /// The same leak, but NO query between its expiry and the next begin, so only the begin-side reset can stop the leaked count
+    /// from inflating the next mark (v1882 b2: the test above queries first, and a query alone drops the expired entry).
+    @Test
+    void leakedBegin_thenBeginWithoutAnInterveningQuery_isNotPendingAfterItsEnd() throws Exception {
+        var node = node();
+
+        node.beginLocalWrite(KEY, 20_000_000L);
+        Thread.sleep(40);
+        node.beginLocalWrite(KEY, 10_000_000_000L);
+        node.endLocalWrite(KEY);
+
+        assertThat(node.localWritePending(KEY)).as("a correctly paired write is not pending after its own end").isFalse();
+    }
+
     @Test
     void control_aPairedBeginEnd_leavesNothingPending_andNestedWritesCount() {
         var node = node();
