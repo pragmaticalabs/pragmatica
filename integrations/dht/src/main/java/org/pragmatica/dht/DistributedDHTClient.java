@@ -442,6 +442,7 @@ public final class DistributedDHTClient implements DHTClient {
         var collector = QuorumCollector.<Boolean> quorumCollector(quorum, targets.size(), promise);
         var hasRemote = targets.stream().anyMatch(target -> !target.equals(node.nodeId()));
 
+        collector.expectRemoteReplies(remoteCount(targets));
         targets.stream()
                .filter(target -> !target.equals(node.nodeId()))
                .forEach(target -> sendRemoteRemove(target, key, stamp, collector));
