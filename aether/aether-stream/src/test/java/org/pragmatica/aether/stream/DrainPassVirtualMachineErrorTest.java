@@ -120,6 +120,49 @@ class DrainPassVirtualMachineErrorTest {
         assertThat(deadLettered.await(5, TimeUnit.SECONDS)).as("SKIP dead-lettered the overflowing event").isTrue();
     }
 
+    /// Sibling: a dead-letter sink that overflows its stack used to escape with the dead-letter hold set, wedging the
+    /// consumer. Now it is a failed append, retried with backoff; the retry stores the entry and the cursor moves on.
+    /// Red under "the overflow escapes the call": no second append is ever attempted.
+    @Test
+    void deadLetterSinkOverflow_isAFailedAppend_retried_notAWedgedHold() throws InterruptedException {
+        var appends = new AtomicInteger();
+        var stored = new CountDownLatch(1);
+        var sink = new DeadLetterHandler() {
+            @Override
+            public Promise<org.pragmatica.lang.Unit> append(String streamName,
+                                                            int partition,
+                                                            long offset,
+                                                            String failingGroup,
+                                                            byte[] payload,
+                                                            String errorMessage,
+                                                            int attemptCount) {
+                if (appends.incrementAndGet() == 1) {
+                    throw new StackOverflowError();
+                }
+                stored.countDown();
+
+                return Promise.unitPromise();
+            }
+
+            @Override
+            public List<DeadLetterEntry> read(String streamName, int maxCount) {
+                return List.of();
+            }
+        };
+
+        runtime = StreamConsumerRuntime.streamConsumerRuntime(manager, sink);
+        manager.createStream(StreamConfig.streamConfig("orders", 1, RetentionPolicy.retentionPolicy(1000, 1024 * 1024, 60_000), "earliest"));
+        runtime.subscribe("orders",
+                          0,
+                          ConsumerConfig.consumerConfig("group-1", 1, ConsumerConfig.ProcessingMode.ORDERED, ConsumerConfig.ErrorStrategy.SKIP),
+                          (_, _, _) -> StreamError.General.BUFFER_EMPTY.promise());
+        manager.publishLocal("orders", 0, "e-0".getBytes(UTF_8), 1L);
+
+        assertThat(stored.await(5, TimeUnit.SECONDS)).as("the append after the overflowing one stored the entry").isTrue();
+        StreamConsumerRuntimeTest.awaitCursorAt(runtime, "orders", 0, "group-1", 1L, 5_000);
+        assertThat(runtime.cursorPosition("orders", 0, "group-1").or(-1L)).as("the cursor moved past the dead-lettered event").isEqualTo(1L);
+    }
+
     private void assertNextPassDelivers(Supplier<VirtualMachineError> error) throws InterruptedException {
         var reads = new AtomicInteger();
         var delivered = new CountDownLatch(1);
