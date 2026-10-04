@@ -914,7 +914,7 @@ public final class DHTNode {
         }
         // an owner-epoch fence is stronger evidence and still answers fenced; otherwise a write of OUR OWN to this key is in
         // flight, and answering "superseded" to another writer could let it count a copy we may roll back (v1882 r12)
-        if (false && localWritePending(request.key()) && !storage.belowHighWater(request.key(),
+        if (localWritePending(request.key()) && !storage.belowHighWater(request.key(),
                                                                         request.epochIncarnation(),
                                                                         request.epochTerm(),
                                                                         request.epochCounter())) {
@@ -971,7 +971,7 @@ public final class DHTNode {
             return;
         }
         // as for a put: an owner-epoch fence still answers fenced; otherwise a write of OUR OWN to this key is in flight (v1882 r12)
-        if (false && localWritePending(request.key()) && !storage.belowHighWater(request.key(),
+        if (localWritePending(request.key()) && !storage.belowHighWater(request.key(),
                                                                         request.epochIncarnation(),
                                                                         request.epochTerm(),
                                                                         request.epochCounter())) {

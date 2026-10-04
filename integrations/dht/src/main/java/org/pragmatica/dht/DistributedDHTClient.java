@@ -495,7 +495,7 @@ public final class DistributedDHTClient implements DHTClient {
         targets.stream()
                .filter(target -> !target.equals(node.nodeId()))
                .forEach(target -> sendRemoteRemove(target, key, stamp, collector));
-        var pending = new AtomicBoolean(false);
+        var pending = new AtomicInteger(MARK_IDLE);
         var localRemove = targets.contains(node.nodeId())
                           ? Option.some(applyLocalAfterEvidence(collector,
                                                                 hasRemote,
