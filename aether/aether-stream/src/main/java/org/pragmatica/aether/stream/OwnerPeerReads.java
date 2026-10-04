@@ -274,8 +274,7 @@ public sealed interface OwnerPeerReads {
                                                                            int page,
                                                                            List<OffHeapRingBuffer.RawEvent> gathered,
                                                                            StreamForwardClient.ReadForwardResult answer) {
-        if (answer.events()
-                  .isEmpty() && answer.truncated()) {
+        if (answer.events().isEmpty() && answer.truncated()) {
             return PageError.EVENT_EXCEEDS_READ_CAP.promise();
         }
 
@@ -325,11 +324,9 @@ public sealed interface OwnerPeerReads {
     enum PageError implements Cause {
         EVENT_EXCEEDS_READ_CAP("Peer page was cut at the peer's read cap before its first event — the event at the cursor is larger than maxReadResponseBytes");
         private final String message;
-
         PageError(String message) {
             this.message = message;
         }
-
         @Override
         public String message() {
             return message;
