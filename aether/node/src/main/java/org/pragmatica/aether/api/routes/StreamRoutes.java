@@ -357,9 +357,8 @@ public final class StreamRoutes implements RouteSource {
                                                               request.streamName(),
                                                               request.partitionCount(),
                                                               request.consumerId(),
-                                                              nodeSupplier.get().self()))
-                          .map(_ -> new GroupStatusResponse(request.groupId(),
-                                                            coordinator.groupStatus(request.groupId())));
+                                                              nodeSupplier.get().self())).map(_ -> new GroupStatusResponse(request.groupId(),
+                                                                                                                           coordinator.groupStatus(request.groupId())));
     }
 
     Result<GroupStatusResponse> leaveGroup(LeaveGroupRequest request) {
@@ -373,9 +372,8 @@ public final class StreamRoutes implements RouteSource {
 
         return CoordinatorRefusal.typed(coordinator.leaveGroup(request.groupId(),
                                                                request.streamName(),
-                                                               request.consumerId()))
-                          .map(_ -> new GroupStatusResponse(request.groupId(),
-                                                            coordinator.groupStatus(request.groupId())));
+                                                               request.consumerId())).map(_ -> new GroupStatusResponse(request.groupId(),
+                                                                                                                       coordinator.groupStatus(request.groupId())));
     }
 
     private static boolean isBlank(String value) {

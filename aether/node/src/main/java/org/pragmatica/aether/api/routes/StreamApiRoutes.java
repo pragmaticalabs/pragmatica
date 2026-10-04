@@ -1080,10 +1080,9 @@ public final class StreamApiRoutes implements RouteSource {
                                                               streamName,
                                                               DEFAULT_PARTITIONS,
                                                               consumerId,
-                                                              nodeSupplier.get().self()))
-                          .map(_ -> new GroupResponse(addr.asString(),
-                                                      request.groupId(),
-                                                      "created"));
+                                                              nodeSupplier.get().self())).map(_ -> new GroupResponse(addr.asString(),
+                                                                                                                     request.groupId(),
+                                                                                                                     "created"));
     }
 
     private Result<GroupResponse> deleteGroup(String namespace,
