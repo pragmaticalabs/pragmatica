@@ -323,9 +323,13 @@ class DHTCatchUpGateTest {
 
     /// K5: a round that decided on its answers in hand — after it timed out — keeps its pulls for one more
     /// round timeout. Replaced on the next tick, a pull slower than a tick would never complete the partition.
+    /// Time is a manual clock: the old version slept 5 ms between the decision and the next tick against a 50 ms window and
+    /// failed 14 of 250 runs under CPU load (always at the readiness assertion), because a real stall past 50 ms between
+    /// the two ticks IS the documented replacement.
     @Test
-    void roundDecidedOnAnswersInHand_survivesTheNextTick_untilItsSlowPullLands() throws InterruptedException {
-        var cluster = Cluster.of(5, timeSpan(50).millis());
+    void roundDecidedOnAnswersInHand_survivesTheNextTick_untilItsSlowPullLands() {
+        var clock = new ManualClock();
+        var cluster = Cluster.of(5, timeSpan(50).millis(), clock);
         var joiner = new NodeId("node-5");
         var key = cluster.keyGainedBy(joiner, "k5-slow-pull");
 
@@ -336,15 +340,57 @@ class DHTCatchUpGateTest {
 
         cluster.silence(silent);
         cluster.member(joiner).antiEntropy().catchUpNow();
-        Thread.sleep(60);
+        clock.advanceMillis(60);
         cluster.holdPullAnswers();
         cluster.member(joiner).antiEntropy().catchUpNow();
-        Thread.sleep(5);
+        clock.advanceMillis(5);
         cluster.member(joiner).antiEntropy().catchUpNow();
         cluster.releasePullAnswers();
 
         assertThat(cluster.member(joiner).node().readiness(cluster.partitionOf(key))).isEqualTo(Readiness.SERVING);
         assertThat(cluster.holds(joiner, key)).isTrue();
+    }
+
+    /// K5, the other side of the window: the kept pulls last one round timeout, no more. A next tick MORE than a round
+    /// timeout after the decision replaces the round, and the slow pull's late answer completes nothing. This is exactly what
+    /// a real stall did to the sleeping version of the test above.
+    @Test
+    void roundDecidedOnAnswersInHand_isReplacedWhenTheNextTickComesAfterAWholeRoundTimeout() {
+        var clock = new ManualClock();
+        var cluster = Cluster.of(5, timeSpan(50).millis(), clock);
+        var joiner = new NodeId("node-5");
+        var key = cluster.keyGainedBy(joiner, "k5-late-tick");
+
+        cluster.seedOnReplicas(key);
+        cluster.joinWithoutCatchUp(joiner);
+
+        var silent = cluster.replicasOf(key).stream().filter(id -> !id.equals(joiner)).findFirst().orElseThrow();
+
+        cluster.silence(silent);
+        cluster.member(joiner).antiEntropy().catchUpNow();
+        clock.advanceMillis(60);
+        cluster.holdPullAnswers();
+        cluster.member(joiner).antiEntropy().catchUpNow();
+        clock.advanceMillis(51);
+        cluster.member(joiner).antiEntropy().catchUpNow();
+        cluster.releasePullAnswers();
+
+        assertThat(cluster.member(joiner).node().readiness(cluster.partitionOf(key))).as("the replaced round's pull completes nothing")
+                                                                                     .isEqualTo(Readiness.CATCHING_UP);
+    }
+
+    /// A clock the test moves by hand.
+    private static final class ManualClock implements java.util.function.LongSupplier {
+        private long nanos;
+
+        @Override
+        public long getAsLong() {
+            return nanos;
+        }
+
+        void advanceMillis(long millis) {
+            nanos += millis * 1_000_000L;
+        }
     }
 
     /// H3/H7: the boot walk's 2·RF bound, on the LIVE ring. Three cores join together and become a key's whole
@@ -540,6 +586,7 @@ class DHTCatchUpGateTest {
         private final Set<NodeId> dead = new HashSet<>();
         private int catchUpTraffic;
         private TimeSpan roundTimeout = DHTAntiEntropy.CATCH_UP_ROUND_TIMEOUT;
+        private java.util.function.LongSupplier clock = System::nanoTime;
 
         /// `size` nodes formed and serving: every node knows every other.
         static Cluster of(int size) {
@@ -551,6 +598,20 @@ class DHTCatchUpGateTest {
             var cluster = new Cluster();
 
             cluster.roundTimeout = roundTimeout;
+            var ids = ids(size);
+
+            ids.forEach(id -> cluster.members.put(id, cluster.member(id, ids)));
+
+            return cluster;
+        }
+
+        /// As [#of(int, TimeSpan)], with the rounds' ages read from `clock`: the test moves time exactly, so a stall between two
+        /// ticks is neither missed nor invented (a real `Thread.sleep` margin flaked under CI load: #1777 K5).
+        static Cluster of(int size, TimeSpan roundTimeout, java.util.function.LongSupplier clock) {
+            var cluster = new Cluster();
+
+            cluster.roundTimeout = roundTimeout;
+            cluster.clock = clock;
             var ids = ids(size);
 
             ids.forEach(id -> cluster.members.put(id, cluster.member(id, ids)));
@@ -578,7 +639,7 @@ class DHTCatchUpGateTest {
 
             var node = dhtNode(id, memoryStorageEngine(), ring, CONFIG);
             DHTNetwork network = network();
-            var antiEntropy = dhtAntiEntropy(node, network, CONFIG, DHTAntiEntropy.DEFAULT_ANTI_ENTROPY_INTERVAL, roundTimeout);
+            var antiEntropy = dhtAntiEntropy(node, network, CONFIG, DHTAntiEntropy.DEFAULT_ANTI_ENTROPY_INTERVAL, roundTimeout, clock);
             var listener = dhtTopologyListener(node, dhtRebalancer(node, network, CONFIG), antiEntropy);
 
             return new Member(id, node, antiEntropy, listener, distributedDHTClient(node, network, CONFIG));
@@ -631,7 +692,7 @@ class DHTCatchUpGateTest {
 
             var node = dhtNode(joiner, new RefusingCopies(memoryStorageEngine()), ring, CONFIG);
             DHTNetwork network = network();
-            var antiEntropy = dhtAntiEntropy(node, network, CONFIG, DHTAntiEntropy.DEFAULT_ANTI_ENTROPY_INTERVAL, roundTimeout);
+            var antiEntropy = dhtAntiEntropy(node, network, CONFIG, DHTAntiEntropy.DEFAULT_ANTI_ENTROPY_INTERVAL, roundTimeout, clock);
 
             members.put(joiner,
                         new Member(joiner,

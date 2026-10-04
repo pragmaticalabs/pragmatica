@@ -26,6 +26,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Collectors;
+import java.util.function.LongSupplier;
 import java.util.function.Predicate;
 import java.util.function.Supplier;
 
@@ -80,6 +81,8 @@ public final class DHTAntiEntropy {
     private final Supplier<DHTConfig> config;
     private final TimeSpan antiEntropyInterval;
     private final TimeSpan catchUpRoundTimeout;
+    /// The monotonic clock catch-up rounds read their ages from: `System.nanoTime` in production, a manual clock in a test.
+    private final LongSupplier clock;
     /// Which senders may push a departure batch (`ackRequested`) here: the nodes the leader commanded to
     /// drain, or that the membership has seen depart. Strict by default — no sender.
     private final Predicate<NodeId> departingSenders;
@@ -112,13 +115,15 @@ public final class DHTAntiEntropy {
                            Supplier<DHTConfig> config,
                            TimeSpan antiEntropyInterval,
                            TimeSpan catchUpRoundTimeout,
-                           Predicate<NodeId> departingSenders) {
+                           Predicate<NodeId> departingSenders,
+                           LongSupplier clock) {
         this.node = node;
         this.network = network;
         this.config = config;
         this.antiEntropyInterval = antiEntropyInterval;
         this.catchUpRoundTimeout = catchUpRoundTimeout;
         this.departingSenders = departingSenders;
+        this.clock = clock;
         node.ring().onNodeRemoved(this::dropRoundsAsking);
     }
 
@@ -133,7 +138,8 @@ public final class DHTAntiEntropy {
                                   () -> config,
                                   DEFAULT_ANTI_ENTROPY_INTERVAL,
                                   CATCH_UP_ROUND_TIMEOUT,
-                                  _ -> false);
+                                  _ -> false,
+                                  System::nanoTime);
     }
 
     /// Create an anti-entropy process that accepts departure pushes from `departingSenders`.
@@ -151,7 +157,8 @@ public final class DHTAntiEntropy {
                                   () -> config,
                                   DEFAULT_ANTI_ENTROPY_INTERVAL,
                                   CATCH_UP_ROUND_TIMEOUT,
-                                  departingSenders);
+                                  departingSenders,
+                                  System::nanoTime);
     }
 
     /// Create an anti-entropy process for the given node with configurable interval.
@@ -164,7 +171,7 @@ public final class DHTAntiEntropy {
                                                 DHTNetwork network,
                                                 DHTConfig config,
                                                 TimeSpan antiEntropyInterval) {
-        return new DHTAntiEntropy(node, network, () -> config, antiEntropyInterval, CATCH_UP_ROUND_TIMEOUT, _ -> false);
+        return new DHTAntiEntropy(node, network, () -> config, antiEntropyInterval, CATCH_UP_ROUND_TIMEOUT, _ -> false, System::nanoTime);
     }
 
     /// Create an anti-entropy process that follows the node's LIVE replication ([DHTNode#config], #1777 track 1)
@@ -176,7 +183,8 @@ public final class DHTAntiEntropy {
                                   node::config,
                                   DEFAULT_ANTI_ENTROPY_INTERVAL,
                                   CATCH_UP_ROUND_TIMEOUT,
-                                  departingSenders);
+                                  departingSenders,
+                                  System::nanoTime);
     }
 
     /// Test seam: an anti-entropy process whose catch-up rounds time out after `catchUpRoundTimeout`.
@@ -185,7 +193,18 @@ public final class DHTAntiEntropy {
                                          DHTConfig config,
                                          TimeSpan antiEntropyInterval,
                                          TimeSpan catchUpRoundTimeout) {
-        return new DHTAntiEntropy(node, network, () -> config, antiEntropyInterval, catchUpRoundTimeout, _ -> false);
+        return new DHTAntiEntropy(node, network, () -> config, antiEntropyInterval, catchUpRoundTimeout, _ -> false, System::nanoTime);
+    }
+
+    /// Test seam: catch-up rounds read their ages from `clock` instead of `System.nanoTime`, so a test advances time exactly
+    /// and a stall between two ticks can neither be missed nor invented.
+    static DHTAntiEntropy dhtAntiEntropy(DHTNode node,
+                                         DHTNetwork network,
+                                         DHTConfig config,
+                                         TimeSpan antiEntropyInterval,
+                                         TimeSpan catchUpRoundTimeout,
+                                         LongSupplier clock) {
+        return new DHTAntiEntropy(node, network, () -> config, antiEntropyInterval, catchUpRoundTimeout, _ -> false, clock);
     }
 
     /// Start the periodic anti-entropy process.
@@ -323,7 +342,8 @@ public final class DHTAntiEntropy {
                                               node.catchUpGeneration(partition),
                                               partition,
                                               sources,
-                                              anchors(partition, coReplicas));
+                                              anchors(partition, coReplicas),
+                                              clock);
 
         rounds.put(partition.value(), round);
         warnIfStuck(partition, node.noteCatchUpRound(partition), sources);
