@@ -353,11 +353,11 @@ public final class StreamRoutes implements RouteSource {
             return Result.failure(SYSTEM_STREAM_GROUP_FORBIDDEN);
         }
 
-        return coordinator.joinGroup(request.groupId(),
-                                     request.streamName(),
-                                     request.partitionCount(),
-                                     request.consumerId(),
-                                     nodeSupplier.get().self())
+        return CoordinatorRefusal.typed(coordinator.joinGroup(request.groupId(),
+                                                              request.streamName(),
+                                                              request.partitionCount(),
+                                                              request.consumerId(),
+                                                              nodeSupplier.get().self()))
                           .map(_ -> new GroupStatusResponse(request.groupId(),
                                                             coordinator.groupStatus(request.groupId())));
     }
@@ -371,9 +371,9 @@ public final class StreamRoutes implements RouteSource {
             return Result.failure(SYSTEM_STREAM_GROUP_FORBIDDEN);
         }
 
-        return coordinator.leaveGroup(request.groupId(),
-                                      request.streamName(),
-                                      request.consumerId())
+        return CoordinatorRefusal.typed(coordinator.leaveGroup(request.groupId(),
+                                                               request.streamName(),
+                                                               request.consumerId()))
                           .map(_ -> new GroupStatusResponse(request.groupId(),
                                                             coordinator.groupStatus(request.groupId())));
     }

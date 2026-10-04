@@ -1076,11 +1076,11 @@ public final class StreamApiRoutes implements RouteSource {
         var streamName = addr.asString();
         var consumerId = "operator-" + System.nanoTime();
 
-        return coordinator.joinGroup(request.groupId(),
-                                     streamName,
-                                     DEFAULT_PARTITIONS,
-                                     consumerId,
-                                     nodeSupplier.get().self())
+        return CoordinatorRefusal.typed(coordinator.joinGroup(request.groupId(),
+                                                              streamName,
+                                                              DEFAULT_PARTITIONS,
+                                                              consumerId,
+                                                              nodeSupplier.get().self()))
                           .map(_ -> new GroupResponse(addr.asString(),
                                                       request.groupId(),
                                                       "created"));
@@ -1105,9 +1105,9 @@ public final class StreamApiRoutes implements RouteSource {
 
         var consumers = status.getOrDefault(streamName, List.of());
         var leaveResults = consumers.stream()
-                                    .map(c -> coordinator.leaveGroup(group,
-                                                                     streamName,
-                                                                     c.consumerId()))
+                                    .map(c -> CoordinatorRefusal.typed(coordinator.leaveGroup(group,
+                                                                                              streamName,
+                                                                                              c.consumerId())))
                                     .toList();
 
         return Result.allOf(leaveResults).map(_ -> new GroupResponse(addr.asString(), group, "deleted"));

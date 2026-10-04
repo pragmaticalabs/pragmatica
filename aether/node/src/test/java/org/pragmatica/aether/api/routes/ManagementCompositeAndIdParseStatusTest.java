@@ -13,6 +13,8 @@ import org.pragmatica.aether.api.DynamicConfigManager;
 import org.pragmatica.aether.api.ManagementServerError;
 import org.pragmatica.aether.management.route.ManagementRoute;
 import org.pragmatica.aether.node.ManageableNode;
+import org.pragmatica.aether.stream.consumer.ConsumerGroupCoordinator;
+import org.pragmatica.consensus.NodeId;
 import org.pragmatica.http.ContentType;
 import org.pragmatica.http.Headers;
 import org.pragmatica.http.HttpMethod;
@@ -71,6 +73,38 @@ class ManagementCompositeAndIdParseStatusTest {
     @Test
     void composite_thatIsEmpty_staysInternalServerError() {
         assertThat(problemStatus(Causes.composite())).isEqualTo(HttpStatus.INTERNAL_SERVER_ERROR);
+    }
+
+    // ---- (3) the consumer-group coordinator's not-leader refusal (an untyped CoordinatorError until now) ----
+
+    @Test
+    void streamsGroupCreate_answers409_whenTheCoordinatorIsNotTheLeader() {
+        var routes = StreamApiRoutes.streamApiRoutes(() -> node(Map.of("self", NodeId.nodeId("node-1").unwrap())),
+                                                     null,
+                                                     ConsumerGroupCoordinator.noOp(),
+                                                     null);
+        var body = new StreamApiRoutes.GroupCreateRequest("g1", null);
+
+        assertThat(statusOf(routes.routes(), ManagementRoute.STREAMS_GROUP_CREATE, List.of("ns", "orders", "1.0.0", "groups"), body))
+            .isEqualTo(HttpStatus.CONFLICT);
+    }
+
+    @Test
+    void consumerGroupJoin_answers409_whenTheCoordinatorIsNotTheLeader() {
+        var routes = StreamRoutes.streamRoutes(() -> node(Map.of("self", NodeId.nodeId("node-1").unwrap())),
+                                               ConsumerGroupCoordinator.noOp(),
+                                               null);
+        var body = new StreamRoutes.JoinGroupRequest("g1", "orders", 4, "c1");
+
+        assertThat(statusOf(routes.routes(), ManagementRoute.CONSUMER_GROUP_JOIN, List.of(), body)).isEqualTo(HttpStatus.CONFLICT);
+    }
+
+    @Test
+    void consumerGroupLeave_answers409_whenTheCoordinatorIsNotTheLeader() {
+        var routes = StreamRoutes.streamRoutes(() -> node(Map.of()), ConsumerGroupCoordinator.noOp(), null);
+        var body = new StreamRoutes.LeaveGroupRequest("g1", "orders", "c1");
+
+        assertThat(statusOf(routes.routes(), ManagementRoute.CONSUMER_GROUP_LEAVE, List.of(), body)).isEqualTo(HttpStatus.CONFLICT);
     }
 
     // ---- (2) caller-supplied ids ----
