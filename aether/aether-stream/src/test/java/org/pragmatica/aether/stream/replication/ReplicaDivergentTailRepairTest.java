@@ -156,6 +156,29 @@ class ReplicaDivergentTailRepairTest {
         assertThat(texts(0, 20)).hasSize(10);
     }
 
+    /// A WAL replica that restarted with a recovered tail shows readers nothing of it until its backfill has compared it
+    /// with the owner's; completing that comparison exposes it. (Before, a restarted REPLICA exposed its whole recovered
+    /// tail at once, including an ex-owner's unacknowledged records.)
+    @Test
+    void walReplicaRestartedWithATail_isVisibleOnlyAfterItsBackfillVerifiesIt() {
+        useWal();
+        for (var i = 0; i < 5; i++) {
+            manager.appendRecovered(STREAM, PARTITION, i, ("c" + i).getBytes(UTF_8), 1000L + i, E1).unwrap();
+        }
+        manager.syncReplicated(STREAM, PARTITION).await();
+        manager.close();
+        manager = streamPartitionManager(Long.MAX_VALUE, Option.some(walDir));
+        manager.placementRoleSupplier((_, _) -> org.pragmatica.aether.stream.replication.ReplicaSetController.Role.REPLICA);
+        manager.createStream(StreamConfig.streamConfig(STREAM)).onFailure(cause -> fail(cause.message()));
+
+        assertThat(manager.readLocal(STREAM, PARTITION, 0, 20).unwrap()).as("recovered, durable, not yet verified: invisible").isEmpty();
+
+        backfill(owner(5, 5, new AtomicLong(), List.of(ProvenanceEntry.provenanceEntry(E1, 0L))));
+
+        assertThat(descriptor().state()).isEqualTo(ReplicationState.CAUGHT_UP);
+        assertThat(manager.readLocal(STREAM, PARTITION, 0, 20).unwrap()).as("verified through the owner's head").hasSize(5);
+    }
+
     /// Control: a replica exactly at the owner's head with the owner's records is CAUGHT_UP at that offset, no repair.
     @Test
     void control_replicaAtTheOwnersHead_agreeing_isCaughtUpWithoutARepair() {
