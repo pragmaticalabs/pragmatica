@@ -369,11 +369,13 @@ Transport is selected automatically by priority:
 - Each URL override (`jdbc_url`, `r2dbc_url`, `async_url`) takes precedence over the discrete
   `host`/`port`/`database` fields for the transport it selects — e.g. if `async_url` embeds its
   own port, that port is used even when a discrete `port` is also set.
-- Setting **two different URL kinds to different hosts** (e.g. `jdbc_url` pointing at one host and
-  `async_url` at another) is **unsupported** today: the effective host/port/database are derived
-  by checking URL kinds in a fixed order (jdbc, then r2dbc, then async) that does not follow the
-  transport-selection priority above. Until this is reconciled, configure only the URL kind for
-  the transport you intend to use.
+- When **more than one URL kind is set**, each connector reads host, port, database, credentials and database type
+  from **its own** URL: the JDBC connector from `jdbc_url`, the R2DBC connector from `r2dbc_url`, the async connector
+  from `async_url` (#784). Which transport connects is the best one on the slice's classpath, so a datasource may
+  carry, say, a MySQL `jdbc_url` and a PostgreSQL `async_url` and each connector gets its own. A connector whose own
+  URL is absent, or cannot supply a value (no port, say), falls through to the other URLs in the transport-selection
+  priority above, then to the discrete fields; a single URL kind behaves as before. The provisioning log line shows
+  the values of the transport the priority would pick.
 
 ### Database Types
 
@@ -604,29 +606,25 @@ Two backends are supported: `smtp` (direct SMTP) and `http` (vendor API).
 component name (camelCase → snake_case), so it reads `[notification.smtp_config]`, not
 `[notification.smtp]` (#671).
 
-Nested under `[notification.smtp_config]`. `SmtpConfig` has convenience factory methods
-with defaults (`587`/`STARTTLS`/`10s`/`30s`), but the binder only calls a factory whose
-parameters match the record's constructor exactly — none of `SmtpConfig`'s overloads do — so
-it always falls back to the constructor, which requires every field below. Unlike
-`RetryConfig`, `SmtpConfig` has no static `DEFAULT` instance for the binder's per-field
-fallback to read from, so **all of these fields must currently be set explicitly** when
-`[notification.smtp_config]` is present, even though the "Default" column shows the value the
-factory methods would otherwise apply:
+Nested under `[notification.smtp_config]`. Only `host` is required; the other four settings have
+per-field defaults (the binder reads `SmtpConfig.DEFAULT_<COMPONENT>` constants by name; there is no
+whole-record default, because that would also supply a host):
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `host` | `String` | required | SMTP server hostname |
-| `port` | `int` | required — `587` not yet reachable via the binder | SMTP server port |
-| `tls_mode` | `SmtpTlsMode` | required — `STARTTLS` not yet reachable via the binder | TLS mode: `NONE`, `STARTTLS`, `IMPLICIT` |
+| `port` | `int` | `587` | SMTP server port |
+| `tls_mode` | `SmtpTlsMode` | `STARTTLS` | TLS mode: `NONE`, `STARTTLS`, `IMPLICIT` |
 | `auth.username` | `String` (optional, nested) | none | AUTH PLAIN username — under `[notification.smtp_config.auth]` |
 | `auth.password` | `String` (optional, nested) | none | AUTH PLAIN password — under `[notification.smtp_config.auth]` |
-| `connect_timeout` | duration | required — `10s` not yet reachable via the binder | TCP connection timeout |
-| `command_timeout` | duration | required — `30s` not yet reachable via the binder | SMTP command timeout |
+| `connect_timeout` | duration | `10s` | TCP connection timeout |
+| `command_timeout` | duration | `30s` | SMTP command timeout |
 
-Omitting any of `port`/`tls_mode`/`connect_timeout`/`command_timeout` does not fail with a
-message naming the missing field — the whole `[notification.smtp_config]` bind fails with a
-`Config section not found: NotificationConfig.smtpConfig` error instead, even though the
-section is present (binder mechanism; tracked as a #671 follow-up, not fixed in this change).
+Omitting `host` from a present `[notification.smtp_config]` fails with
+`Required config field 'notification.smtp_config.host' is missing (SmtpConfig.host has no default)`
+(#822); it used to report `Config section not found: NotificationConfig.smtpConfig`, which told an
+operator who had written the section that it did not exist. The same applies to any required field of any
+nested record, `Option`-wrapped or not.
 
 #### HTTP Vendor Backend
 

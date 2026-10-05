@@ -16,6 +16,7 @@ import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.io.AsyncCloseable;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.JitterUtil;
 import org.pragmatica.lang.utils.SharedScheduler;
@@ -25,8 +26,10 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 
+/// Implements [AsyncCloseable] because, when webhooks are enabled, it owns a JDK `HttpClient` whose selector
+/// thread otherwise outlives the node (#1097's class).
 @SuppressWarnings("JBCT-RET-01")
-public class AlertForwarder {
+public class AlertForwarder implements AsyncCloseable {
     private static final Logger log = LoggerFactory.getLogger(AlertForwarder.class);
     private static final long RETRY_BASE_MS = 200L;
     private static final long RETRY_CAP_MS = 30_000L;
@@ -52,6 +55,15 @@ public class AlertForwarder {
 
     public static AlertForwarder alertForwarder(AlertConfig config) {
         return new AlertForwarder(config);
+    }
+
+    /// Releases the webhook client, when there is one. Idempotent: the client's shutdown is.
+    @Override
+    public Promise<Unit> close() {
+        return httpOps.filter(AsyncCloseable.class::isInstance)
+                      .map(AsyncCloseable.class::cast)
+                      .map(AsyncCloseable::close)
+                      .or(Promise.unitPromise());
     }
 
     public Promise<Unit> forward(AlertEvent event) {

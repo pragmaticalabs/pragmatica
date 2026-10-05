@@ -19,13 +19,18 @@ import static org.pragmatica.lang.Result.success;
 /// `pathPrefix` (`GET /orders/{id}` and `GET /orders/{id}/admin` are both `/orders/`), and only the shape tells them
 /// apart -- [RouteShapeSelector] picks among them exactly as the slice's router does. A definition built without a
 /// shape (arity 0, no spacers) is a prefix route, which is what every definition was before.
+///
+/// `spacerSlots` (#755) are the positions of the spacers among the trailing segments, parallel to `spacers`; empty means
+/// not carried. A definition is LOCAL to the node that serves the route (the replicated `AetherValue.HttpRoute` does not
+/// carry them), so a node resolving a request to one of its own slices can match spacers by position.
 public record HttpRouteDefinition(String httpMethod,
                                   String pathPrefix,
                                   String artifactCoord,
                                   String sliceMethod,
                                   SecurityPolicy security,
                                   int pathArity,
-                                  List<String> spacers) implements RouteShape {
+                                  List<String> spacers,
+                                  List<Integer> spacerSlots) implements RouteShape {
     /// #884: the prefix is normalized HERE, not in one of the factories, because every local route
     /// lookup compares a normalized request path against this field with `startsWith`. That is a
     /// segment-boundary comparison only while the stored prefix ends in a slash -- without it
@@ -44,6 +49,17 @@ public record HttpRouteDefinition(String httpMethod,
         Objects.requireNonNull(security, "security");
         pathPrefix = normalizePrefix(pathPrefix);
         spacers = List.copyOf(Objects.requireNonNull(spacers, "spacers"));
+        spacerSlots = List.copyOf(Objects.requireNonNull(spacerSlots, "spacerSlots"));
+    }
+
+    public HttpRouteDefinition(String httpMethod,
+                               String pathPrefix,
+                               String artifactCoord,
+                               String sliceMethod,
+                               SecurityPolicy security,
+                               int pathArity,
+                               List<String> spacers) {
+        this(httpMethod, pathPrefix, artifactCoord, sliceMethod, security, pathArity, spacers, List.of());
     }
 
     public HttpRouteDefinition(String httpMethod,
@@ -51,7 +67,7 @@ public record HttpRouteDefinition(String httpMethod,
                                String artifactCoord,
                                String sliceMethod,
                                SecurityPolicy security) {
-        this(httpMethod, pathPrefix, artifactCoord, sliceMethod, security, 0, List.of());
+        this(httpMethod, pathPrefix, artifactCoord, sliceMethod, security, 0, List.of(), List.of());
     }
 
     public static HttpRouteDefinition httpRouteDefinition(String httpMethod,
@@ -64,6 +80,24 @@ public record HttpRouteDefinition(String httpMethod,
         return new HttpRouteDefinition(httpMethod, pathPrefix, artifactCoord, sliceMethod, security, pathArity, spacers);
     }
 
+    public static HttpRouteDefinition httpRouteDefinition(String httpMethod,
+                                                          String pathPrefix,
+                                                          String artifactCoord,
+                                                          String sliceMethod,
+                                                          SecurityPolicy security,
+                                                          int pathArity,
+                                                          List<String> spacers,
+                                                          List<Integer> spacerSlots) {
+        return new HttpRouteDefinition(httpMethod,
+                                       pathPrefix,
+                                       artifactCoord,
+                                       sliceMethod,
+                                       security,
+                                       pathArity,
+                                       spacers,
+                                       spacerSlots);
+    }
+
     /// The same route with another policy -- an override applied, or the policy of the sibling actually served.
     public HttpRouteDefinition withSecurity(SecurityPolicy newSecurity) {
         return new HttpRouteDefinition(httpMethod,
@@ -72,7 +106,8 @@ public record HttpRouteDefinition(String httpMethod,
                                        sliceMethod,
                                        newSecurity,
                                        pathArity,
-                                       spacers);
+                                       spacers,
+                                       spacerSlots);
     }
 
     /// [RouteShape]: the base path is the prefix.

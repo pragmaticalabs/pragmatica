@@ -36,6 +36,72 @@ public sealed interface ManagementServerError extends Cause, HttpStatusAware {
         }
     }
 
+    /// #833/#954: a management request whose body or fields the caller got wrong. Carries the route's own
+    /// diagnosis unchanged and answers 400, so a caller's mistake is not reported as a server fault.
+    record InvalidRequest(String detail) implements ManagementServerError {
+        @Override
+        public String message() {
+            return detail;
+        }
+
+        @Override
+        public HttpStatus httpStatus() {
+            return HttpStatus.BAD_REQUEST;
+        }
+    }
+
+    /// #954: the resource the request addressed does not exist. Carries the route's own message and answers 404.
+    record NotFound(String detail) implements ManagementServerError {
+        @Override
+        public String message() {
+            return detail;
+        }
+
+        @Override
+        public HttpStatus httpStatus() {
+            return HttpStatus.NOT_FOUND;
+        }
+    }
+
+    /// #954: a transient server-side condition (a component not yet ready on this node). Answers 503.
+    record ServiceUnavailable(String detail) implements ManagementServerError {
+        @Override
+        public String message() {
+            return detail;
+        }
+
+        @Override
+        public HttpStatus httpStatus() {
+            return HttpStatus.SERVICE_UNAVAILABLE;
+        }
+    }
+
+    /// #954: the route exists and the feature is deferred. Answers 501.
+    record NotImplemented(String detail) implements ManagementServerError {
+        @Override
+        public String message() {
+            return detail;
+        }
+
+        @Override
+        public HttpStatus httpStatus() {
+            return HttpStatus.NOT_IMPLEMENTED;
+        }
+    }
+
+    /// #954: the request is well formed but the cluster's current state refuses it. Answers 409.
+    record Conflict(String detail) implements ManagementServerError {
+        @Override
+        public String message() {
+            return detail;
+        }
+
+        @Override
+        public HttpStatus httpStatus() {
+            return HttpStatus.CONFLICT;
+        }
+    }
+
     record InvalidArtifactPath(String path) implements ManagementServerError {
         @Override
         public String message() {

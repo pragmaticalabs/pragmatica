@@ -15,6 +15,7 @@ import java.util.function.Supplier;
 
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.aether.stream.CommittedStreamOwnerSource;
+import org.pragmatica.aether.stream.OwnerPeerReads;
 import org.pragmatica.aether.stream.StreamError;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
@@ -1497,11 +1498,36 @@ public final class PartitionBackfill {
                                             localWatermark);
         }
 
+        var oversized = results.stream()
+                               .flatMap(result -> failureOf(result).filter(OwnerPeerReads.EventExceedsReadCap.class::isInstance)
+                                                           .stream())
+                               .findFirst();
+
+        if (oversized.isPresent()) {
+            return oversizedPeer(streamName, partition, oversized.get());
+        }
+
         if (results.stream().anyMatch(Result::isFailure)) {
             return escapeOwnerCatchup(streamName, partition, localWatermark, UNREACHABLE_REPLICA_BLOCKS_PROMOTION);
         }
 
         return ownerSelfPromote(streamName, partition);
+    }
+
+    private static Option<Cause> failureOf(Result<Long> result) {
+        return result.fold(Option::some, _ -> Option.none());
+    }
+
+    /// #1431: a peer ANSWERED with a page cut before its first event, so its tail is unknown but it is not
+    /// unreachable: the bounded [#escapeOwnerCatchup] (which would promote at the LOCAL watermark below it) does not
+    /// apply. Self stays behind and the redrive retries until an operator raises that peer's read cap.
+    private Promise<Long> oversizedPeer(String streamName, int partition, Cause cause) {
+        log.warn("Backfill {}[{}]: promoted-owner catch-up refused — {}; staying non-authoritative, never escaping at the local watermark",
+                 streamName,
+                 partition,
+                 cause.message());
+
+        return cause.promise();
     }
 
     /// The reachable peer whose probed tail equals `tail` (index-aligned with `results`, since
