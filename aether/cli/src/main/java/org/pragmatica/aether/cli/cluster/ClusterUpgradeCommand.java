@@ -66,9 +66,17 @@ class ClusterUpgradeCommand implements Callable<Integer> {
             return new UpgradeError.AlreadyAtVersion(targetVersion).result();
         }
 
-        var jsonBody = "{\"targetVersion\":\"" + targetVersion + "\"}";
+        return ClusterHttpClient.post(CLUSTER_UPGRADE,
+                                      buildUpgradeJson(targetVersion,
+                                                       config.path("configVersion").asLong(0)));
+    }
 
-        return ClusterHttpClient.post(CLUSTER_UPGRADE, jsonBody);
+    /// Field names here MUST match `ManagementApiResponses.UpgradeRequest`; the CLI cannot depend on
+    /// `aether/node`, so the contract is spelled twice and `ClusterUpgradeCommandTest` /
+    /// `UpgradeRequestContractTest` pin the two spellings to the same names. `expectedVersion` is the
+    /// `configVersion` read from the same `GET /cluster/config` that supplied the current version (#1424).
+    static String buildUpgradeJson(String targetVersion, long expectedVersion) {
+        return "{\"targetVersion\":\"" + targetVersion + "\",\"expectedVersion\":" + expectedVersion + "}";
     }
 
     private int onSuccess(String json) {
