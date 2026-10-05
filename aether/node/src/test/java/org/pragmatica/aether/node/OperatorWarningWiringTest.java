@@ -71,6 +71,12 @@ class OperatorWarningWiringTest {
         assertThat(code).contains("TimeSpanOPERATOR_WARNING_EVICTION_INTERVAL=TimeSpan.timeSpan(60).seconds();");
     }
 
+    /// #1431: the owner gate's block alarm reaches this node's sink, so an oversized peer event is an operator event.
+    @Test
+    void assembly_givesTheSinkToTheOwnerPromotionBlockAlarm() {
+        assertThat(assemblyCode()).contains("block->raiseOwnerPromotionBlock(operatorWarningSink,block),");
+    }
+
     /// `AetherNode.java` with line comments removed and all whitespace stripped. An unreadable file fails loudly,
     /// because a pin that scans nothing always passes.
     private static String assemblyCode() {

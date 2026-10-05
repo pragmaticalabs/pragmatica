@@ -68,7 +68,11 @@ public enum OperatorWarningCode {
     /// A declarative stream consumer this node held as attached had no subscription in the consumer runtime (#752):
     /// found by a reconcile pass, which forgets and re-attaches it, or by a detach, which then made no final cursor
     /// flush. The partition was not consumed in between while this node reported it attached.
-    STREAM_CONSUMER_STATE_DIVERGED("stream-consumer-state-diverged", "stream-consumer", WarningLevel.WARNING);
+    STREAM_CONSUMER_STATE_DIVERGED("stream-consumer-state-diverged", "stream-consumer", WarningLevel.WARNING),
+    /// A partition's owner promotion is refused because a peer ANSWERED its watermark probe with a page cut before its
+    /// first event: that event alone exceeds the peer's read cap (#1431). Not an unreachable peer; the operator raises
+    /// the peer's `maxReadResponseBytes`. The message names the partition, the peer and the offset.
+    STREAM_EVENT_EXCEEDS_READ_CAP("stream-event-exceeds-read-cap", "stream-replication", WarningLevel.CRITICAL);
     private final String code;
     private final String subsystem;
     private final WarningLevel level;
