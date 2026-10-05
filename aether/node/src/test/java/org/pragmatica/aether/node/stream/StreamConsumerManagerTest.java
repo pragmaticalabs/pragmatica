@@ -1961,14 +1961,57 @@ class StreamConsumerManagerTest {
         /// released. With `abandonAll` under `passLock` it waits for the pass and abandons what the pass attached;
         /// without the lock it runs inside the held attach. Issued from the test thread it would wait for a pass that
         /// only the test thread can release.
-        private void abandonWhileThePassIsHeld(StreamConsumerManager manager, CountDownLatch release) throws InterruptedException {
+        ///
+        /// No timed wait decides the interleaving: the pass is released only once the abandon has either finished
+        /// (it never waited) or is parked on a monitor the pass thread owns (it is waiting for the pass).
+        private void abandonWhileThePassIsHeld(StreamConsumerManager manager, Thread pass, CountDownLatch release) throws InterruptedException {
             var abandon = new Thread(manager::abandonAll);
 
             abandon.start();
-            abandon.join(200);
+            assertThat(finishedOrWaitingOn(abandon, pass)).as("arming: the abandon ran, or waits for the pass").isTrue();
             release.countDown();
             abandon.join(5000);
             assertThat(abandon.isAlive()).as("the abandon completed").isFalse();
+        }
+
+        private boolean finishedOrWaitingOn(Thread waiter, Thread owner) throws InterruptedException {
+            var threads = java.lang.management.ManagementFactory.getThreadMXBean();
+            var deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+
+            while (System.nanoTime() < deadline) {
+                var info = Option.option(threads.getThreadInfo(waiter.threadId()));
+
+                if (!waiter.isAlive() || info.map(live -> live.getLockOwnerId() == owner.threadId()).or(false)) {
+                    return true;
+                }
+
+                Thread.sleep(1);
+            }
+
+            return false;
+        }
+
+        /// The hand-off is FIFO, so a real loss raised AFTER the scenario is its last warning: everything before it
+        /// in `warnings` was raised by the scenario. Returns the divergence warnings up to and including the sentinel.
+        private List<OperatorWarning> divergencesUpToASentinelLoss(StreamConsumerManager manager) throws InterruptedException {
+            manager.reconcile();
+            assertThat(runtime.subscribedPartitions()).as("sentinel arming: attached again").containsExactly(0);
+            runtime.lose(0);
+            manager.reconcile();
+            var deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+
+            while (warnings.stream().noneMatch(AbandonDuringAttach::isSentinelLoss) && System.nanoTime() < deadline) {
+                Thread.sleep(1);
+            }
+
+            return warnings.stream()
+                           .filter(warning -> warning.code() == OperatorWarningCode.STREAM_CONSUMER_STATE_DIVERGED)
+                           .toList();
+        }
+
+        private static boolean isSentinelLoss(OperatorWarning warning) {
+            return warning.code() == OperatorWarningCode.STREAM_CONSUMER_STATE_DIVERGED && warning.message()
+                                                                                                  .contains("was held as attached");
         }
 
         /// No false alert: an abandon that meets an attach still in progress found no "lost" subscription; the runtime
@@ -1987,11 +2030,12 @@ class StreamConsumerManagerTest {
             var pass = passBlockedMidAttach(manager, entered, release);
 
             assertThat(entered.await(5, TimeUnit.SECONDS)).as("arming: the pass is inside attach").isTrue();
-            abandonWhileThePassIsHeld(manager, release);
+            abandonWhileThePassIsHeld(manager, pass, release);
             pass.join(5000);
-            Thread.sleep(200);
 
-            assertThat(warnings).as("divergence warnings raised by an abandon racing an in-flight attach").isEmpty();
+            assertThat(divergencesUpToASentinelLoss(manager)).as("divergence warnings: only the sentinel loss, none from the abandon racing an in-flight attach")
+                      .singleElement()
+                      .matches(AbandonDuringAttach::isSentinelLoss);
         }
 
         /// Pre-existing companion: after the quorum-loss abandon, nothing is subscribed. Without the lock the in-flight
@@ -2008,7 +2052,7 @@ class StreamConsumerManagerTest {
             var pass = passBlockedMidAttach(manager, entered, release);
 
             assertThat(entered.await(5, TimeUnit.SECONDS)).as("arming: the pass is inside attach").isTrue();
-            abandonWhileThePassIsHeld(manager, release);
+            abandonWhileThePassIsHeld(manager, pass, release);
             pass.join(5000);
 
             assertThat(runtime.subscribedPartitions()).as("subscriptions after the quorum-loss abandon").isEmpty();
@@ -2029,10 +2073,9 @@ class StreamConsumerManagerTest {
             assertThat(runtime.subscribedPartitions()).containsExactly(0);
             runtime.strictRemoval = true;
             manager.abandonAll();
-            Thread.sleep(200);
 
-            assertThat(warnings).isEmpty();
             assertThat(runtime.subscribedPartitions()).isEmpty();
+            assertThat(divergencesUpToASentinelLoss(manager)).singleElement().matches(AbandonDuringAttach::isSentinelLoss);
         }
     }
 
