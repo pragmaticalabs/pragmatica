@@ -8,6 +8,7 @@ import java.util.List;
 
 import org.pragmatica.aether.resource.ResourceFactory;
 import org.pragmatica.aether.resource.db.DatabaseConnectorConfig;
+import org.pragmatica.aether.resource.db.DatabaseType;
 import org.pragmatica.aether.resource.db.DatabaseConnectorError;
 import org.pragmatica.aether.resource.db.PgSqlConnector;
 import org.pragmatica.aether.resource.db.RowMapper;
@@ -49,11 +50,11 @@ public final class PgSqlConnectorFactory implements ResourceFactory<PgSqlConnect
     }
 
     private static void configureConnection(NettyConnectibleBuilder builder, DatabaseConnectorConfig config) {
-        builder.hostname(config.effectiveHost());
-        builder.port(config.effectivePort());
-        builder.database(config.effectiveDatabase());
-        config.effectiveUsername().onPresent(builder::username);
-        config.effectivePassword().onPresent(builder::password);
+        builder.hostname(config.effectiveHost(DatabaseConnectorConfig.Transport.ASYNC));
+        builder.port(config.effectivePort(DatabaseConnectorConfig.Transport.ASYNC));
+        builder.database(config.effectiveDatabase(DatabaseConnectorConfig.Transport.ASYNC));
+        config.effectiveUsername(DatabaseConnectorConfig.Transport.ASYNC).onPresent(builder::username);
+        config.effectivePassword(DatabaseConnectorConfig.Transport.ASYNC).onPresent(builder::password);
     }
 
     private static void configurePool(NettyConnectibleBuilder builder, DatabaseConnectorConfig config) {
@@ -96,6 +97,11 @@ public final class PgSqlConnectorFactory implements ResourceFactory<PgSqlConnect
         @Override
         public DatabaseConnectorConfig config() {
             return delegate.config();
+        }
+
+        @Override
+        public DatabaseType databaseType() {
+            return delegate.databaseType();
         }
 
         @Override
