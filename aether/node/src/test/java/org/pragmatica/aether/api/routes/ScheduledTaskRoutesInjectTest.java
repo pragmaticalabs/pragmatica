@@ -146,6 +146,28 @@ class ScheduledTaskRoutesInjectTest {
             assertEquals(0, written.getFirst().totalExecutions(), "unknown is not an execution");
             assertEquals(1, written.getFirst().unknownOutcomes());
         }
+
+        /// The failure half of the same rule: a callee that answered with a failure is recorded as a FAILURE (the streak
+        /// moves), never as UNKNOWN. Without this, recording every failed /inject as unknown would pass every test here.
+        @Test
+        void inject_calleeFails_isRecordedAsAFailure_notAsUnknown() {
+            registry.addTask(SECTION, ARTIFACT, METHOD);
+            var remoteLike = new RecordingInvoker();
+
+            remoteLike.failure = org.pragmatica.lang.utils.Causes.cause("callee failed");
+            invokeInject(routesWith(remoteLike), new ScheduledTaskInjectRequest(SECTION, ARTIFACT, METHOD)).await();
+            var written = node.commands.stream()
+                                       .flatMap(List::stream)
+                                       .filter(command -> command instanceof KVCommand.Put<?, ?> put && put.value() instanceof ScheduledTaskStateValue)
+                                       .map(command -> (ScheduledTaskStateValue) ((KVCommand.Put<?, ?>) command).value())
+                                       .toList();
+
+            assertEquals(1, written.size(), "one state write");
+            assertEquals(ScheduledTaskStateValue.OUTCOME_FAILURE, written.getFirst().lastOutcome());
+            assertEquals(1, written.getFirst().consecutiveFailures(), "a failure moves the streak");
+            assertEquals(0, written.getFirst().unknownOutcomes(), "a failure is not an unknown outcome");
+            assertEquals("callee failed", written.getFirst().lastFailureMessage());
+        }
     }
 
     @Nested
