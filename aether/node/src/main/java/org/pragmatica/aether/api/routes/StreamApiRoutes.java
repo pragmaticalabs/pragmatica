@@ -31,6 +31,7 @@ import org.pragmatica.aether.slice.stream.StreamRegistryEntry;
 import org.pragmatica.aether.slice.stream.StreamVersionSpec;
 import org.pragmatica.aether.stream.OffHeapRingBuffer.RawEvent;
 import org.pragmatica.aether.stream.StreamCreateOutcome;
+import org.pragmatica.aether.stream.StreamError;
 import org.pragmatica.aether.stream.StreamPartitionManager;
 import org.pragmatica.aether.stream.StreamReadRouter;
 import org.pragmatica.aether.stream.StreamWriteRouter;
@@ -648,11 +649,11 @@ public final class StreamApiRoutes implements RouteSource {
                                                         String stream,
                                                         String version,
                                                         String tailLiteral) {
-        return Causes.cause("Tail subscription via SSE/WebSocket is deferred to issue #212. "
-                           + "For polling-based tail, use GET /api/streams/" + namespace
-                           + "/" + stream
-                           + "/" + version
-                           + "/events?fromOffset=N&maxEvents=K.").result();
+        return new ManagementServerError.NotImplemented("Tail subscription via SSE/WebSocket is deferred to issue #212. "
+                                                       + "For polling-based tail, use GET /api/streams/" + namespace
+                                                       + "/" + stream
+                                                       + "/" + version
+                                                       + "/events?fromOffset=N&maxEvents=K.").result();
     }
 
     /// Spec event-stream-namespaces §16: paginated event read for polling-based tail subscription.
@@ -848,10 +849,22 @@ public final class StreamApiRoutes implements RouteSource {
     /// a 500 — whether this node is the owner (`NOT_ENOUGH_REPLICAS`) or forwarded to it and the owner answered
     /// retryable (`RemotePublishRetryable`, which the owner sends only for a pre-append refusal). The batch form
     /// reports it per item already (`OUTCOME_UNKNOWN` with the cause).
+    ///
+    /// #1944: the owner-local admission refusals that are just as transient and just as pre-append map the same way, or
+    /// they answered 500: a stream whose committed config this node has not applied yet
+    /// ([StreamError.StreamConfigNotYetVisible], refused by `committedLife` before anything reaches the ring, the WAL or a
+    /// replica), an owner that has not finished promotion ([StreamError.OwnerNotActivated]) and a node that is not the
+    /// committed owner ([StreamError.NotOwnerAppend]). Deliberately an allow-list, not "any `Cause.Transient`": a transient
+    /// cause can follow a write (a timeout), and `PublishRetryable` says "refused before writing". No `Retry-After`, as
+    /// on this path before (#1735).
     static Cause retryableRefusal(String streamName, Cause cause) {
-        return cause == ReplicationError.General.NOT_ENOUGH_REPLICAS || cause instanceof StreamForwardError.RemotePublishRetryable
+        return isPreAppendRefusal(cause)
                ? new ManagementServerError.PublishRetryable(streamName, cause)
                : cause;
+    }
+
+    private static boolean isPreAppendRefusal(Cause cause) {
+        return cause == ReplicationError.General.NOT_ENOUGH_REPLICAS || cause instanceof StreamForwardError.RemotePublishRetryable || cause instanceof StreamError.StreamConfigNotYetVisible || cause instanceof StreamError.OwnerNotActivated || cause instanceof StreamError.NotOwnerAppend;
     }
 
     /// #524 guard: an out-of-range `partition` on a Management-API publish must fail 4xx naming the

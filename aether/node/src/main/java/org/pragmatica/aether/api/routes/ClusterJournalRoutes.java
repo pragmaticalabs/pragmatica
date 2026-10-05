@@ -10,6 +10,7 @@ import java.util.List;
 import java.util.function.Supplier;
 import java.util.stream.Stream;
 
+import org.pragmatica.aether.api.ManagementServerError;
 import org.pragmatica.aether.management.route.ManagementRoute;
 import org.pragmatica.aether.node.ManageableNode;
 import org.pragmatica.aether.node.journal.TransitionJournal;
@@ -36,7 +37,7 @@ import org.pragmatica.lang.utils.Causes;
 public final class ClusterJournalRoutes implements RouteSource {
     private static final int DEFAULT_LIMIT = 256;
 
-    private static final Cause INVALID_LAYER = Causes.cause("Invalid 'layer' query parameter: expected 'fsm' or 'peer'");
+    private static final Cause INVALID_LAYER = new ManagementServerError.InvalidRequest("Invalid 'layer' query parameter: expected 'fsm' or 'peer'");
 
     private static final Cause NON_POSITIVE_LIMIT = Causes.cause("limit must be positive");
 

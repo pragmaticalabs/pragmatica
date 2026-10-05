@@ -3604,9 +3604,15 @@ Initiate a cluster version upgrade. Phase 1 updates the version in the KV-Store 
 **Request:**
 ```json
 {
-  "targetVersion": "0.26.0"
+  "targetVersion": "0.26.0",
+  "expectedVersion": 7
 }
 ```
+
+| Field | Description |
+|-------|-------------|
+| `targetVersion` | Version to upgrade to. |
+| `expectedVersion` | Config version read from `GET /api/v1/cluster/config`; the request is rejected if it no longer matches (#1424, the same fence as `POST /api/v1/cluster/config` and `/cluster/scale`). Required: an omitted or `null` field is refused at decode time (HTTP 400, `Type mismatch: expected long`). An explicit `0` is not a wildcard: against a stored config it is refused as an unfenced overwrite. `aether cluster upgrade` reads the version from the same `GET /api/v1/cluster/config` that supplies the current version and sends it. **Breaking change for a client that omitted the field.** |
 
 **Response:**
 ```json
@@ -3623,6 +3629,12 @@ Initiate a cluster version upgrade. Phase 1 updates the version in the KV-Store 
   "error": "Cluster is already at version 0.26.0"
 }
 ```
+
+**Conflicts (HTTP 409, #1424).** `expectedVersion` no longer matches the stored config version
+(`VersionConflict`), or is an explicit `0` against a stored config (`UnfencedOverwrite`). A request for the
+version the cluster is already at answers "already at version" regardless of `expectedVersion`. Recovery:
+re-read `GET /api/v1/cluster/config` and re-issue with the fresh `expectedVersion`. The store-level
+RFC-0018 successor fence still rejects a write built on a stale read.
 
 **Conflicts (HTTP 409, changed 2026-09-04, #837).** No cluster config is stored yet (e.g. right
 after a `docker compose down -v` volume wipe and fresh bootstrap). An upgrade request cannot create
@@ -4792,6 +4804,12 @@ and names the field in `detail`; `500` is reserved for genuine server faults (#9
 `/api/v1/deploy`, `/api/v1/scale`, `/api/v1/config`, `/api/v1/logging/levels`, `/api/v1/cluster/keys` and
 `/api/v1/cluster/keys/revoke/{id}` (an unknown key is `404`; a key declared in node configuration is `409`),
 `/api/v1/ab-tests/create`, `/api/v1/blueprints/deploy` and `/api/v1/blueprints/publish`.
+
+The same applies to the read and operate routes' own refusals: an unknown A/B test, blueprint or unloaded slice
+is `404`; scaling a slice that belongs to no active blueprint, and applying a cluster config while the committed core leader
+is another node, are `409` (with no leader committed yet, an election in progress, the config route answers `503`); a missing stream name on a consumer-group join or leave, an unknown `layer` on
+`/api/v1/cluster/journal`, and a missing or malformed `epoch` or `timeout` on `/api/v1/cluster/await-quiesced`
+are `400`; the cluster-topology routes answer `503` while the topology manager is not on the node, and the stream tail route answers `501` (deferred) (#954).
 
 A caller-supplied id that cannot be parsed (a blueprint id, an artifact coordinate, a version, a node id) is `400` on every management route, and a refusal that several typed failures funnel into answers their common status when they agree (#1921).
 
@@ -5964,8 +5982,13 @@ partition's owner and on a non-owner that forwards the publish: the owner answer
 forwarder bounded-retries and then answers 503 too. The batch form reports the item `OUTCOME_UNKNOWN` with the cause —
 conservative, since nothing was written, but a batch item does not distinguish a refusal before the append from an
 unknown outcome after it; a retry with the same message ID is safe either way.
+The same `503` answers the other owner-side refusals that precede any append (#1944): the node has not applied the
+stream's committed config yet (`Stream config not yet visible on this node: <stream>`, typically a freshly started or
+replaced node), the owner has not finished promotion, or this node is not the committed owner. All three clear within
+seconds; retry. The mapping is an allow-list of pre-append refusals, not every transient cause: a timeout can follow a
+write and keeps its own status. No `Retry-After` header is set on this path.
 `[mechanism: ManagementServerError.PublishRetryable, StreamForwardHandler retryable floor refusal; pinned by
-StreamApiRoutesPublishPartitionTest, StreamForwardHandlerTest]`
+StreamApiRoutesPublishPartitionTest, StreamForwardHandlerTest, #1944 pins in StreamApiRoutesPublishPartitionTest]`
 
 When the stream's partition count cannot be determined — the auto-create guard could not
 materialize the stream locally (capacity exhausted, or `STRONG` consistency requiring AHSE
