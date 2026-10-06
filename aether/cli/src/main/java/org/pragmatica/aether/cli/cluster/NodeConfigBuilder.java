@@ -4,6 +4,8 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.cli.cluster;
 
+import java.util.List;
+
 import org.pragmatica.aether.cli.cluster.ClusterBootstrapOrchestrator.BootstrapContext;
 import org.pragmatica.aether.config.cluster.BootstrapOverlayGenerator;
 import org.pragmatica.aether.config.cluster.SourceCloudBindings;
@@ -33,7 +35,8 @@ sealed interface NodeConfigBuilder {
                                                         dockerGid,
                                                         clusterSecret,
                                                         role,
-                                                        ctx.sshKeyIdsFor(source.name().value()));
+                                                        ctx.sshKeyIdsFor(source.name().value()),
+                                                        genesisVotersFor(ctx, role));
         var protectedOverlay = SourceCloudBindings.augment(overlay,
                                                            ctx.config(),
                                                            role,
@@ -46,5 +49,13 @@ sealed interface NodeConfigBuilder {
                                                                               typeDefault,
                                                                               source.nodeConfig(),
                                                                               protectedOverlay));
+    }
+
+    /// #1543 — only a CORE of the initial bootstrap carries the genesis roster; a worker does not vote.
+    static List<String> genesisVotersFor(BootstrapContext ctx, NodeRole role) {
+        return role == NodeRole.CORE
+               ? ctx.config()
+                    .initialCoreIds()
+               : List.of();
     }
 }

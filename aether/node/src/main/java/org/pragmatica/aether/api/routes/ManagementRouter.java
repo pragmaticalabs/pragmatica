@@ -60,6 +60,12 @@ public final class ManagementRouter {
         return new ManagementRouter(RequestRouter.with(sources), JsonCodecAdapter.defaultCodec(), Map.copyOf(byName));
     }
 
+    /// The handler registered under a [ManagementRoute] name, or none. Read-only; lets a test ask the SAME lookup `dispatch` uses
+    /// which handler a declared route resolves to, and how many path slots that handler consumes (#1921).
+    public Option<Route<?>> registered(String name) {
+        return Option.option(routesByName.get(name));
+    }
+
     public boolean handle(HttpRequest ctx, ResponseWriter response) {
         return parseMethod(ctx.method().name()).flatMap(method -> dispatch(method, ctx, response))
                           .or(false);
