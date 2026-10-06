@@ -36,6 +36,20 @@ public sealed interface ManagementServerError extends Cause, HttpStatusAware {
         }
     }
 
+    /// #1921: a stream-engine refusal on a management route, carrying the status `StreamErrorStatus` classifies it under and the
+    /// engine's own message unchanged.
+    record StreamRefused(HttpStatus status, Cause refusal) implements ManagementServerError {
+        @Override
+        public String message() {
+            return refusal.message();
+        }
+
+        @Override
+        public HttpStatus httpStatus() {
+            return status;
+        }
+    }
+
     /// #833/#954: a management request whose body or fields the caller got wrong. Carries the route's own
     /// diagnosis unchanged and answers 400, so a caller's mistake is not reported as a server fault.
     record InvalidRequest(String detail) implements ManagementServerError {
