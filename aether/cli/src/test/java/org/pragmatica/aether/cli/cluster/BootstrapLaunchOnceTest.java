@@ -728,6 +728,39 @@ class BootstrapLaunchOnceTest {
         assertThat(ctx.addresses().stream().map(NodeAddress::publicIp).toList()).containsExactly("203.0.113.10", "10.0.0.1");
     }
 
+    /// End to end through the resume entry: after a partial deploy (core-0 started and recorded) the resumed
+    /// context deploys exactly the not-yet-started nodes. At 592929877 the resumed context held zero nodes,
+    /// so nothing was deployed and the run reported success.
+    @Test
+    void resume_afterPartialDeploy_deploysExactlyTheNotYetStartedNodes() {
+        var state = BootstrapState.initialState(CLUSTER, "h", "now")
+                                  .withPhaseStatus(BootstrapPhase.PROVISION, BootstrapState.PhaseStatus.COMPLETED)
+                                  .withPhaseStatus(BootstrapPhase.COLLECT_ADDRESSES, BootstrapState.PhaseStatus.COMPLETED)
+                                  .withPhaseStatus(BootstrapPhase.DEPLOY_RUNTIME, BootstrapState.PhaseStatus.FAILED)
+                                  .withProvisionedNodeIds(EU)
+                                  .withCollectedAddresses(List.of("203.0.113.10", "203.0.113.11", "203.0.113.12"))
+                                  .withStartedNodeId("eu-1-core-0")
+                                  .withClusterSecret(SECRET);
+        var config = config(Map.of("eu-1", cloudSource(), "dc-1", sshSource()), RuntimeType.CONTAINER);
+        var ctx = ClusterBootstrapOrchestrator.resumeContext(config, state, List.of(), "");
+        var calls = new ConcurrentLinkedQueue<Call>();
+        Fn3<Result<String>, String, String, SshConfig> ssh = (host, command, cfg) -> {
+            calls.add(new Call(host, command));
+            return Result.success("");
+        };
+
+        var result = BootstrapPhaseDeploy.deployCloudSource(ctx,
+                                                            config.sources().get("eu-1"),
+                                                            sourceNameOrDefault("eu-1"),
+                                                            url -> Result.success("OK"),
+                                                            ssh,
+                                                            envWithKey());
+
+        assertThat(result.isSuccess()).as(() -> "resume: " + result).isTrue();
+        assertThat(calls.stream().filter(c -> isStart(c.command())).map(Call::host).sorted().toList())
+            .as("exactly the nodes no earlier run started").containsExactly("203.0.113.11", "203.0.113.12");
+    }
+
     @Test
     void resume_leavesTheNodeListEmpty_whenProvisioningNeverCompleted() {
         var state = BootstrapState.initialState(CLUSTER, "h", "now")
