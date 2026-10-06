@@ -31,6 +31,45 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// late response can land after a fire's UNKNOWN row was submitted but before it committed. Every other test applies
 /// writes synchronously and cannot see that window. Here commits are deferred and the response wins the race.
 class ScheduledTaskManagerLateRaceTest {
+    /// Commits never land during the test: every fire's prior must still include the rows this manager already submitted,
+    /// or the second fire reuses the first fire's sequence (and so its event ids) and loses its timeout count.
+    @Test
+    void nextFire_buildsOnTheRowAlreadySubmitted_notOnTheLaggingCommittedOne() throws Exception {
+        var registry = ScheduledTaskRegistry.scheduledTaskRegistry();
+        var stub = new ScheduledTaskManagerTest.StubSliceInvoker(new CopyOnWriteArrayList<>(), Option.none());
+        var self = new NodeId("node-self");
+        var artifact = Artifact.artifact("org.example:my-slice:1.0.0").unwrap();
+        var method = MethodName.methodName("cleanup").unwrap();
+        var submitted = new CopyOnWriteArrayList<ScheduledTaskStateValue>();
+        Consumer<KVCommand<AetherKey>> writer = command -> {
+            if (command instanceof KVCommand.Put<AetherKey, ?> put && put.value() instanceof ScheduledTaskStateValue value) {
+                submitted.add(value);
+            }
+        };
+        var manager = ScheduledTaskManager.scheduledTaskManager(registry,
+                                                                stub,
+                                                                self,
+                                                                writer,
+                                                                _ -> Option.none(),
+                                                                new ScheduledTaskManagerTest.TestLeaderManager(self));
+
+        stub.unknownWithLateOutcome.set(true);
+        registry.onScheduledTaskPut(new ValuePut<>(new KVCommand.Put<>(ScheduledTaskKey.scheduledTaskKey("cache", artifact, method),
+                                                                       ScheduledTaskValue.intervalTask(self, "1s", ExecutionMode.ALL)),
+                                                   Option.none()));
+        manager.onQuorumStateChange(ClusterStateNotification.active());
+        var deadline = System.currentTimeMillis() + 6_000;
+
+        while (submitted.size() < 2 && System.currentTimeMillis() < deadline) {
+            Thread.sleep(10);
+        }
+        manager.stop();
+
+        assertThat(submitted).hasSizeGreaterThanOrEqualTo(2);
+        assertThat(submitted.get(1).fireSeq()).as("fire 2 follows fire 1").isEqualTo(2);
+        assertThat(submitted.get(1).completionTimeouts()).as("both timeouts are counted").isEqualTo(2);
+    }
+
     /// F2b: fire 1 times out and its UNKNOWN commits; fire 2 FAILS and its row is submitted but not yet committed; then
     /// fire 1's late success arrives. The committed row still says "fire 1 is the newest", but this manager has already
     /// submitted fire 2's row: the resolution must build on THAT (the newer, by sequence), so fire 2's failure is not
