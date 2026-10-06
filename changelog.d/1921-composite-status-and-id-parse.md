@@ -29,7 +29,7 @@
   parameter errors is 400 too; a composite that also carries an untyped member or another status stays 500. Pinned by
   `ManagementParameterErrorStatusTest` over every integer-typed path and query parameter in the management route table.
 - **Unknown stream is 404 at the stream routes**: `StreamRegistryError.General.NOT_FOUND` (`STREAMS_METADATA`, `STREAMS_EVENTS`,
-  `STREAM_NAMESPACES_GET`), `NO_VERSIONS_REGISTERED` (`STREAMS_LATEST`) and `StreamError.StreamNotFound` (`STREAM_CONSUMERS`,
+  `STREAM_NAMESPACES_GET`, which only became reachable with the next entry but one), `NO_VERSIONS_REGISTERED` (`STREAMS_LATEST`) and `StreamError.StreamNotFound` (`STREAM_CONSUMERS`,
   `STREAM_PARTITION`) answered 500. `RequestParse.asNotFound` maps exactly those three causes (not `ALREADY_REGISTERED`) at the
   route layer. Pinned by `ManagementStreamNotFoundStatusTest`.
 - **`TOPICS_GROUP_REBUILD` answers 400 for a malformed percent-escape** in the group segment (`billing%zz`, a trailing `%`):
@@ -44,3 +44,21 @@
   the forwarder to a 503. It is now 400 and nothing is sent. A WELL-FORMED node id that names no connected node stays 503 in this
   change (a statement about the cluster, ticketed separately). Pinned in `ManagementServerForwardDispatchTest`, with both 503
   controls.
+- **`GET /streams/namespaces/{address}` could not be reached over HTTP.** `STREAM_NAMESPACES_GET` declares ONE path segment while its
+  handler registered three, the same arity defect as `STREAM_CONSUMERS`: the matcher delivered `{namespace=foo}` and the handler
+  answered a bare 404 "Unknown request path" for every request, including for a registered stream. The segment is now the full
+  `namespace:stream:version` address (`ResourceAddress#asString`); the earlier "pin" fed the handler a three-value path the router
+  can never deliver. [marked guess: the single `address` segment follows the spec's reduction of this route to one segment; a
+  three-segment form collides with `STREAM_GET`'s bucket.]
+- **Arity guard over the whole route table**, `ManagementRouteArityGuardTest`: for every declared `ManagementRoute` the path is
+  rendered by `assemble`, matched back by the real `ManagementRoute.match`, and the handler the server's own router resolves for
+  that name must register the template's parameters. Red on the previous head for `STREAM_NAMESPACES_GET`, and for
+  `STREAM_CONSUMERS` with its fix reverted. A trailing literal a handler leaves unregistered (`STREAM_REPLICAS_LOCAL`) is not
+  counted: it still reads the right two slots, and a forge test drives it. The funnel's 400 for a `ParameterError` can hide exactly
+  this class (a path-slot mismatch is a server wiring fault, not a caller error); this guard is what makes it a build failure.
+- **Unknown topic or consumer group is 404 on the topic routes.** `TOPICS_GROUPS` answered 200 with an empty list for a topic that
+  does not exist, and `TOPICS_GROUP_REBUILD` answered 409 ("hosts no projection") for an unknown topic or group. Existence is what
+  THIS node sees: a committed stream config in its KV view, or the stream materialized in its engine; a group is known when a declared
+  consumer of the topic carries it. A known group not hosted on this node stays the deliberate 409. A topic created moments ago on
+  another node can read as unknown here until its config commit applies. Pinned by `ManagementTopicExistenceStatusTest`.
+- `STREAM_CONSUMERS`' engine key is pinned for a `system`-namespace stream (bare name), where it differs from the address string.
