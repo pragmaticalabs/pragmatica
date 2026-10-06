@@ -41,9 +41,9 @@ import static org.mockito.Mockito.when;
 
 
 /// #1921 structural guard, the class behind two live defects: a route whose [ManagementRoute] declares N path slots while its
-/// handler registers M. A trailing literal the handler leaves unregistered is NOT counted (`STREAM_REPLICAS_LOCAL` omits its
-/// `replicas-local` spacer and still reads the right two slots, forge-tested); a missing or extra PARAMETER, or a handler that
-/// consumes more segments than the template has, is. The matcher accepts the path the enum describes, the handler then reads a slot that is not there (or
+/// handler registers M. A missing or extra PARAMETER, a handler that consumes more segments than the template has, and a trailing
+/// literal the handler leaves unregistered are all failures; the one intended omission (`STREAM_REPLICAS_LOCAL`) is on an explicit
+/// allow-list with its reason. The matcher accepts the path the enum describes, the handler then reads a slot that is not there (or
 /// reads the wrong one), and the answer is a bare 404 or a lookup of the wrong value. `STREAM_CONSUMERS` (one slot registered,
 /// three declared) looked a namespace up as a stream name; `STREAM_NAMESPACES_GET` (one declared, three registered) was
 /// unreachable over HTTP, and the test that "pinned" its 404 fed the handler a three-value path the router can never deliver.
@@ -53,6 +53,13 @@ import static org.mockito.Mockito.when;
 /// asked how many parameters and segments it consumes. Nothing feeds a value to a handler directly.
 class ManagementRouteArityGuardTest {
     private static final String CLAIMING_PREFIX = "/repository";
+
+    /// Routes whose handler deliberately leaves a TRAILING literal unregistered. Each entry needs its reason; an omission that is
+    /// not listed here fails the guard, because an unregistered literal is also what a forgotten slot looks like.
+    private static final Map<ManagementRoute, String> TRAILING_LITERAL_OMISSION_INTENDED = Map.of(ManagementRoute.STREAM_REPLICAS_LOCAL,
+                                                                                                  "`replicas-local` is never read; the handler reads the "
+                                                                                                  + "two leading slots (name, partition) and the route is "
+                                                                                                  + "driven over HTTP by DurableTopicDeliveryForgeTest");
 
     @Test
     void everyServedRoute_registersTheParametersItsTemplateDeclares() {
@@ -81,6 +88,13 @@ class ManagementRouteArityGuardTest {
             var declared = segments(path) - segments(route.prefix());
             var registeredArity = handler.unwrap().pathParamCount();
             var registeredParams = registeredArity - handler.unwrap().spacerSlots().size();
+
+            var omitsTrailingLiteral = registeredArity < declared && registeredParams == route.paramCount();
+
+            if (omitsTrailingLiteral && !TRAILING_LITERAL_OMISSION_INTENDED.containsKey(route)) {
+                mismatches.add(route.name() + ": handler leaves " + (declared - registeredArity) + " trailing literal segment(s) of "
+                               + route.prefix() + " unregistered, and the omission is not on the allow-list");
+            }
 
             if (registeredParams != route.paramCount() || registeredArity > declared) {
                 mismatches.add(route.name() + ": template " + route.prefix() + " declares " + route.paramCount() + " parameter(s) in "
