@@ -61,17 +61,28 @@ class InterceptorConfigDefaultAllowlistTest {
 
         @Test
         void cacheConfig_hasNoPublicDefault_becauseCacheNameIsIdentityBearing() {
-            assertNoPublicDefaultField(CacheConfig.class);
+            assertNoPublicDefaultField(CacheConfig.class, "DEFAULT_CACHE_NAME");
         }
 
         @Test
         void idempotencyConfig_hasNoPublicDefault_becauseStoreNameIsIdentityBearing() {
-            assertNoPublicDefaultField(IdempotencyConfig.class);
+            assertNoPublicDefaultField(IdempotencyConfig.class, "DEFAULT_STORE_NAME");
         }
 
         @Test
         void metricsConfig_hasNoPublicDefault_becauseNameIsIdentityBearing() {
-            assertNoPublicDefaultField(MetricsConfig.class);
+            assertNoPublicDefaultField(MetricsConfig.class, "DEFAULT_NAME");
+        }
+
+        /// #822 — the binder now also reads a public static final `DEFAULT_<COMPONENT>` constant as a per-field
+        /// default. For an identity-bearing component that is the same hazard as a whole-record `DEFAULT`: every
+        /// call site omitting `cache_name` would collapse onto one namespace. So the identity component's
+        /// constant must not exist publicly either.
+        private void assertNoPublicDefaultField(Class<?> configType, String identityDefaultConstant) {
+            assertThatThrownBy(() -> configType.getField(identityDefaultConstant))
+                          .as("%s must not expose %s: the binder would supply the identity", configType.getSimpleName(), identityDefaultConstant)
+                          .isInstanceOf(NoSuchFieldException.class);
+            assertNoPublicDefaultField(configType);
         }
 
         private void assertNoPublicDefaultField(Class<?> configType) {

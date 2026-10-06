@@ -9,6 +9,7 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
+import java.util.function.UnaryOperator;
 import java.util.function.Supplier;
 import java.util.stream.Stream;
 
@@ -152,7 +153,8 @@ public final class ScheduledTaskRoutes implements RouteSource {
                        int consecutiveFailures,
                        int totalExecutions,
                        String lastOutcome,
-                       int unknownOutcomes) {}
+                       int completionTimeouts,
+                       int lateResolutions) {}
 
     record ScheduledTasksResponse(List<TaskSummary> tasks, int activeTimers) {}
 
@@ -171,7 +173,8 @@ public final class ScheduledTaskRoutes implements RouteSource {
                              long updatedAt,
                              int skippedOverlaps,
                              String lastOutcome,
-                             int unknownOutcomes) {}
+                             int completionTimeouts,
+                             int lateResolutions) {}
 
     @Override
     public Stream<Route<?>> routes() {
@@ -321,12 +324,13 @@ public final class ScheduledTaskRoutes implements RouteSource {
         var stateKey = injectStateKeyFor(task);
         var priorState = stateRegistry.stateFor(stateKey);
         var previousExecutionMs = priorState.map(ScheduledTaskStateValue::lastExecutionAt).or(0L);
+        var firedAt = System.currentTimeMillis();
 
         return invoker.invokeAwaitingCompletion(task.artifact(),
                                                 task.methodName(),
                                                 Unit.unit())
-                      .onFailure(cause -> writeFailureBestEffort(stateKey, priorState, cause))
-                      .flatMap(_ -> writeSuccessAndRespond(stateKey, priorState, req, previousExecutionMs));
+                      .onFailure(cause -> writeFailureBestEffort(stateKey, priorState, cause, firedAt))
+                      .flatMap(_ -> writeSuccessAndRespond(stateKey, priorState, req, previousExecutionMs, firedAt));
     }
 
     /// Mirrors `ScheduledTaskManager.TaskOps#stateKeyFor` so `/inject` writes land on the same
@@ -349,11 +353,9 @@ public final class ScheduledTaskRoutes implements RouteSource {
     private Promise<ScheduledTaskInjectResponse> writeSuccessAndRespond(ScheduledTaskStateKey stateKey,
                                                                         Option<ScheduledTaskStateValue> priorState,
                                                                         ScheduledTaskInjectRequest req,
-                                                                        long previousExecutionMs) {
-        var priorTotal = priorState.map(ScheduledTaskStateValue::totalExecutions).or(0);
-        var priorSkipped = priorState.map(ScheduledTaskStateValue::skippedOverlaps).or(0);
-        var priorUnknown = priorState.map(ScheduledTaskStateValue::unknownOutcomes).or(0);
-        var value = ScheduledTaskStateValue.successState(0, priorTotal + 1, priorSkipped, priorUnknown);
+                                                                        long previousExecutionMs,
+                                                                        long firedAt) {
+        var value = ScheduledTaskStateValue.successState(priorState, 0, firedAt);
         KVCommand<AetherKey> command = new KVCommand.Put<>(stateKey, value);
 
         return nodeSupplier.get()
@@ -365,26 +367,50 @@ public final class ScheduledTaskRoutes implements RouteSource {
                                                                      value.lastExecutionAt()));
     }
 
+    /// The callee's response arrived after the injected fire had been recorded as UNKNOWN, or the invoker gave the fire up.
+    /// Applied to the row as it is now, except that a row older than the fire itself (its UNKNOWN commit not yet visible)
+    /// is replaced by `written` as the base, so the sequence never goes backwards (#1723). A row that is gone has nothing
+    /// to resolve.
+    private void resolveLateOutcome(ScheduledTaskStateKey stateKey,
+                                    ScheduledTaskStateValue written,
+                                    UnaryOperator<ScheduledTaskStateValue> resolution) {
+        stateRegistry.stateFor(stateKey)
+                     .map(row -> ScheduledTaskStateValue.resolutionBase(row, written))
+                     .map(resolution::apply)
+                     .onPresent(value -> writeLateOutcome(stateKey, value));
+    }
+
+    private void writeLateOutcome(ScheduledTaskStateKey stateKey, ScheduledTaskStateValue value) {
+        KVCommand<AetherKey> command = new KVCommand.Put<>(stateKey, value);
+
+        nodeSupplier.get().apply(List.of(command));
+    }
+
     /// A fire that ended without a success. A timeout of a REMOTE fire says nothing about the callee, so its outcome is
     /// recorded as UNKNOWN and counted neither as an execution nor as a failure (#1723); anything else is a failure.
     private void writeFailureBestEffort(ScheduledTaskStateKey stateKey,
                                         Option<ScheduledTaskStateValue> priorState,
-                                        Cause cause) {
-        var priorTotal = priorState.map(ScheduledTaskStateValue::totalExecutions).or(0);
-        var priorFailures = priorState.map(ScheduledTaskStateValue::consecutiveFailures).or(0);
-        var priorSkipped = priorState.map(ScheduledTaskStateValue::skippedOverlaps).or(0);
-        var priorUnknown = priorState.map(ScheduledTaskStateValue::unknownOutcomes).or(0);
+                                        Cause cause,
+                                        long firedAt) {
         var value = cause instanceof SliceInvokerError.CompletionUnknown
-                    ? ScheduledTaskStateValue.unknownOutcomeState(priorState, 0)
-                    : ScheduledTaskStateValue.failureState(0,
-                                                           priorFailures + 1,
-                                                           priorTotal,
-                                                           priorSkipped,
-                                                           cause.message(),
-                                                           priorUnknown);
+                    ? ScheduledTaskStateValue.unknownOutcomeState(priorState, 0, firedAt)
+                    : ScheduledTaskStateValue.failureState(priorState, 0, firedAt, cause.message());
         KVCommand<AetherKey> command = new KVCommand.Put<>(stateKey, value);
 
         nodeSupplier.get().apply(List.of(command));
+        if (cause instanceof SliceInvokerError.CompletionUnknown unknown) {
+            var fireSeq = value.fireSeq();
+
+            unknown.lateOutcome()
+                   .onSuccess(_ -> resolveLateOutcome(stateKey,
+                                                      value,
+                                                      base -> ScheduledTaskStateValue.lateSuccessState(base, fireSeq)))
+                   .onFailure(late -> resolveLateOutcome(stateKey,
+                                                         value,
+                                                         base -> ScheduledTaskStateValue.lateFailureState(base,
+                                                                                                          fireSeq,
+                                                                                                          late.message())));
+        }
     }
 
     /// Stable total-order over scheduled tasks so positional access into the response
@@ -518,14 +544,15 @@ public final class ScheduledTaskRoutes implements RouteSource {
     /// SINGLE-mode tasks keep the cheap `stateRegistry` read (one writer, already correct).
     private TaskSummary toSummary(ScheduledTask task) {
         if (task.executionMode() == ExecutionMode.ALL) {
-            return aggregateAllModeState(task).fold(() -> buildSummary(task, 0, 0, 0, 0, "", 0),
+            return aggregateAllModeState(task).fold(() -> buildSummary(task, 0, 0, 0, 0, "", 0, 0),
                                                     state -> buildSummary(task,
                                                                           state.lastExecutionAt(),
                                                                           state.nextFireAt(),
                                                                           state.consecutiveFailures(),
                                                                           state.totalExecutions(),
                                                                           state.lastOutcome(),
-                                                                          state.unknownOutcomes()));
+                                                                          state.completionTimeouts(),
+                                                                          state.lateResolutions()));
         }
 
         var stateKey = ScheduledTaskStateKey.scheduledTaskStateKey(task.configSection(),
@@ -533,14 +560,15 @@ public final class ScheduledTaskRoutes implements RouteSource {
                                                                    task.methodName());
 
         return stateRegistry.stateFor(stateKey)
-                            .fold(() -> buildSummary(task, 0, 0, 0, 0, "", 0),
+                            .fold(() -> buildSummary(task, 0, 0, 0, 0, "", 0, 0),
                                   state -> buildSummary(task,
                                                         state.lastExecutionAt(),
                                                         state.nextFireAt(),
                                                         state.consecutiveFailures(),
                                                         state.totalExecutions(),
                                                         state.lastOutcome(),
-                                                        state.unknownOutcomes()));
+                                                        state.completionTimeouts(),
+                                                        state.lateResolutions()));
     }
 
     private static TaskSummary buildSummary(ScheduledTask task,
@@ -549,7 +577,8 @@ public final class ScheduledTaskRoutes implements RouteSource {
                                             int consecutiveFailures,
                                             int totalExecutions,
                                             String lastOutcome,
-                                            int unknownOutcomes) {
+                                            int completionTimeouts,
+                                            int lateResolutions) {
         return new TaskSummary(task.configSection(),
                                task.artifact().asString(),
                                task.methodName().name(),
@@ -563,7 +592,8 @@ public final class ScheduledTaskRoutes implements RouteSource {
                                consecutiveFailures,
                                totalExecutions,
                                lastOutcome,
-                               unknownOutcomes);
+                               completionTimeouts,
+                               lateResolutions);
     }
 
     private Promise<TaskStateResponse> getTaskState(String configSection, String artifactStr, String methodStr) {
@@ -616,11 +646,12 @@ public final class ScheduledTaskRoutes implements RouteSource {
                                      state.updatedAt(),
                                      state.skippedOverlaps(),
                                      state.lastOutcome(),
-                                     state.unknownOutcomes());
+                                     state.completionTimeouts(),
+                                     state.lateResolutions());
     }
 
     private static TaskStateResponse emptyStateResponse(String configSection, String artifactStr, String methodStr) {
-        return new TaskStateResponse(configSection, artifactStr, methodStr, 0, 0, 0, 0, "", 0, 0, "", 0);
+        return new TaskStateResponse(configSection, artifactStr, methodStr, 0, 0, 0, 0, "", 0, 0, "", 0, 0);
     }
 
     /// Cluster-wide combine of an ALL-mode task's per-node [ScheduledTaskStateValue] rows, feeding
@@ -649,7 +680,10 @@ public final class ScheduledTaskRoutes implements RouteSource {
                                            latest.updatedAt(),
                                            a.skippedOverlaps() + b.skippedOverlaps(),
                                            latest.lastOutcome(),
-                                           a.unknownOutcomes() + b.unknownOutcomes());
+                                           latest.fireSeq(),
+                                           latest.newestFireAt(),
+                                           a.completionTimeouts() + b.completionTimeouts(),
+                                           a.lateResolutions() + b.lateResolutions());
     }
 
     /// Scans the live KV store for every per-node row belonging to `task` (same

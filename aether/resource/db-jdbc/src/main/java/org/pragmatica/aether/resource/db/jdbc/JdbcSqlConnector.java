@@ -16,6 +16,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 import org.pragmatica.aether.resource.db.DatabaseConnectorConfig;
+import org.pragmatica.aether.resource.db.DatabaseType;
 import org.pragmatica.aether.resource.db.DatabaseConnectorError;
 import org.pragmatica.aether.resource.db.RowMapper;
 import org.pragmatica.aether.resource.db.SqlConnector;
@@ -78,6 +79,11 @@ public final class JdbcSqlConnector implements SqlConnector {
     @Override
     public DatabaseConnectorConfig config() {
         return config;
+    }
+
+    @Override
+    public DatabaseType databaseType() {
+        return config.effectiveType(DatabaseConnectorConfig.Transport.JDBC);
     }
 
     @Override

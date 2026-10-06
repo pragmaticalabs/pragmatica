@@ -55,6 +55,8 @@ sealed interface BootstrapStateJson {
         appendStringField(sb, "clusterSecret", state.clusterSecret());
         sb.append(",\n");
         appendSources(sb, state.sources());
+        sb.append(",\n");
+        appendStringList(sb, "startedNodeIds", state.startedNodeIds());
         sb.append("\n}");
 
         return sb.toString();
@@ -95,7 +97,7 @@ sealed interface BootstrapStateJson {
                                              nodeIds,
                                              addresses,
                                              clusterSecret,
-                                             sources);
+                                             sources).withStartedNodeIds(parseStringList(root.path("startedNodeIds")));
     }
 
     private static Map<String, SourceCleanupHandle> parseSources(JsonNode node) {

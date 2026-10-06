@@ -4,7 +4,9 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.invoke;
 
+import java.util.Collections;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -109,6 +111,10 @@ public interface SliceInvoker extends SliceInvokerFacade {
     /// invocation timeout) or a departed node all FAIL it. The response payload is ignored, so the callee's result
     /// type does not need to be decodable here (a scheduled task's method returns nothing the caller reads). A callee
     /// hosted on this node is already awaited by `invoke`, so it takes the same path.
+    ///
+    /// A response that never arrives within the invocation timeout fails it with [SliceInvokerError.CompletionUnknown],
+    /// whose `lateOutcome` settles with the callee's real outcome if the response arrives LATE. The invoker retains at
+    /// most [SliceInvokerImpl#LATE_COMPLETION_CAPACITY] timed-out calls for that; see there for what happens past it.
     ///
     /// The default delegates to [#invoke(Artifact, MethodName, Object)], which is only right for implementations with no
     /// transport (test stubs); the production invoker overrides it.
@@ -267,6 +273,19 @@ class SliceInvokerImpl implements SliceInvoker {
     private final DeploymentManager deploymentManager;
     private final ConcurrentHashMap<String, PendingInvocation> pendingInvocations = new ConcurrentHashMap<>();
     private final Map<NodeId, Set<String>> pendingInvocationsByNode = new ConcurrentHashMap<>();
+
+    /// #1723: completion-awaited calls that TIMED OUT, kept so a late response resolves their unknown outcome instead
+    /// of being dropped. Insertion-ordered and bounded by [#LATE_COMPLETION_CAPACITY]: one more timed-out call drops
+    /// the OLDEST retained one, whose late response is then discarded (DEBUG) and whose outcome stays unknown to its
+    /// caller. Entries also leave when their response arrives, when they outlive [#LATE_COMPLETION_TTL_MS], when their
+    /// target node departs and on [#stop].
+    private final Map<String, LateCompletion> lateCompletions = Collections.synchronizedMap(new LinkedHashMap<>() {
+        @Override
+        protected boolean removeEldestEntry(Map.Entry<String, LateCompletion> eldest) {
+            return size() > LATE_COMPLETION_CAPACITY;
+        }
+    });
+
     private final Map<String, CacheAffinityResolver> affinityResolvers = new ConcurrentHashMap<>();
 
     private final java.util.concurrent.atomic.AtomicBoolean stopped = new java.util.concurrent.atomic.AtomicBoolean(false);
@@ -275,12 +294,27 @@ class SliceInvokerImpl implements SliceInvoker {
     /// membership-backed filter (the same one the HTTP forward path uses).
     private volatile AccessibilityFilter accessibilityFilter = AccessibilityFilter.IDENTITY;
 
+    /// Most timed-out completion-awaited calls retained for a late response. Chosen, not measured: one entry per
+    /// scheduled fire that timed out and has not been answered, so it bounds memory, not correctness.
+    static final int LATE_COMPLETION_CAPACITY = 1024;
+    /// How long a timed-out fire is retained for a late response. Chosen, not measured: an hour is far past any
+    /// invocation timeout, and the capacity bounds memory whatever the TTL.
+    static final long LATE_COMPLETION_TTL_MS = 3_600_000L;
+    /// Marks the correlationId of a completion-awaited request, so a response that matches nothing can be told from a
+    /// protocol anomaly without any retained state: past the retention bound it is still an expected late answer.
+    static final String COMPLETION_ID_PREFIX = "completion-";
+
+    /// `lateOutcome` is present for a completion-awaited call only: it settles with the callee's real outcome whenever
+    /// the response arrives, in time or late.
     record PendingInvocation(Promise<Object> promise,
                              long createdAtMs,
                              String requestId,
                              NodeId targetNode,
                              SliceBridge senderBridge,
+                             Option<Promise<Unit>> lateOutcome,
                              long boundMs) {}
+
+    record LateCompletion(Promise<Unit> outcome, String requestId, NodeId targetNode, long retainedAtMs) {}
 
     SliceInvokerImpl(NodeId self,
                      ClusterNetwork network,
@@ -307,6 +341,16 @@ class SliceInvokerImpl implements SliceInvoker {
         var now = System.currentTimeMillis();
 
         pendingInvocations.entrySet().removeIf(entry -> isStaleAndCleanup(entry, now));
+        expireLateCompletions(now);
+    }
+
+    /// Drops the retained timed-out fires older than [#LATE_COMPLETION_TTL_MS]: their late response is then discarded
+    /// like one past the capacity, and their outcome stays unknown. Runs with the stale-invocation cleanup, so a retained
+    /// fire lives at most the TTL plus one cleanup interval.
+    Unit expireLateCompletions(long nowMs) {
+        lateCompletions.values().removeIf(late -> nowMs - late.retainedAtMs() >= LATE_COMPLETION_TTL_MS);
+
+        return Unit.unit();
     }
 
     /// A pending invocation is stale once it has outlived its OWN bound (the invocation timeout, or the longer explicit
@@ -340,6 +384,7 @@ class SliceInvokerImpl implements SliceInvoker {
         pendingInvocations.forEach(this::cancelPendingInvocation);
         pendingInvocations.clear();
         pendingInvocationsByNode.clear();
+        lateCompletions.clear();
         affinityResolvers.clear();
         var task = cleanupTask;
 
@@ -356,6 +401,11 @@ class SliceInvokerImpl implements SliceInvoker {
     @Override
     public int pendingCount() {
         return pendingInvocations.size();
+    }
+
+    /// Timed-out completion-awaited calls currently retained for a late response.
+    int lateCompletionCount() {
+        return lateCompletions.size();
     }
 
     @Override
@@ -405,18 +455,22 @@ class SliceInvokerImpl implements SliceInvoker {
                                                 Object request,
                                                 Deadline deadline,
                                                 long boundMs) {
+        var lateOutcome = Promise.<Unit> promise();
+
         return encodeFireAndForgetRequest(slice, request).flatMap(payload -> this.<Object> sendAndAwaitResponse(endpoint,
                                                                                                                 slice,
                                                                                                                 method,
                                                                                                                 payload,
                                                                                                                 COMPLETION_ONLY,
                                                                                                                 deadline,
-                                                                                                                boundMs))
+                                                                                                                boundMs,
+                                                                                                                Option.some(lateOutcome)))
                                          .mapToUnit()
                                          .mapError(cause -> cause instanceof CoreError.Timeout
                                                             ? SliceInvokerError.CompletionUnknown.completionUnknown(slice,
                                                                                                                     method,
-                                                                                                                    cause)
+                                                                                                                    cause,
+                                                                                                                    lateOutcome)
                                                             : cause);
     }
 
@@ -566,7 +620,8 @@ class SliceInvokerImpl implements SliceInvoker {
                                                                                                                                        payload,
                                                                                                                                        senderBridge,
                                                                                                                                        deadline,
-                                                                                                                                       timeoutMs)));
+                                                                                                                                       timeoutMs,
+                                                                                                                                       Option.none())));
     }
 
     @SuppressWarnings("unchecked")
@@ -576,8 +631,10 @@ class SliceInvokerImpl implements SliceInvoker {
                                                 byte[] payload,
                                                 SliceBridge senderBridge,
                                                 Deadline deadline,
-                                                long boundMs) {
-        var correlationId = IdGenerator.generate();
+                                                long boundMs,
+                                                Option<Promise<Unit>> lateOutcome) {
+        var correlationId = lateOutcome.map(_ -> COMPLETION_ID_PREFIX + IdGenerator.generate())
+                                       .or(IdGenerator::generate);
 
         return Promise.promise(pendingPromise -> setupPendingInvocation((Promise<Object>)(Promise<?>) pendingPromise,
                                                                         correlationId,
@@ -587,7 +644,8 @@ class SliceInvokerImpl implements SliceInvoker {
                                                                         payload,
                                                                         senderBridge,
                                                                         deadline,
-                                                                        boundMs));
+                                                                        boundMs,
+                                                                        lateOutcome));
     }
 
     private void setupPendingInvocation(Promise<Object> pendingPromise,
@@ -598,7 +656,8 @@ class SliceInvokerImpl implements SliceInvoker {
                                         byte[] payload,
                                         SliceBridge senderBridge,
                                         Deadline deadline,
-                                        long boundMs) {
+                                        long boundMs,
+                                        Option<Promise<Unit>> lateOutcome) {
         var requestId = InvocationContext.getOrGenerateRequestId();
         var targetNode = endpoint.nodeId();
         var pending = new PendingInvocation(pendingPromise,
@@ -606,12 +665,13 @@ class SliceInvokerImpl implements SliceInvoker {
                                             requestId,
                                             targetNode,
                                             senderBridge,
+                                            lateOutcome,
                                             boundMs);
 
         pendingInvocations.put(correlationId, pending);
         pendingInvocationsByNode.computeIfAbsent(targetNode, _ -> ConcurrentHashMap.newKeySet()).add(correlationId);
         pendingPromise.timeout(deadline.bounded(timeSpan(boundMs).millis()))
-                      .onResult(_ -> removePendingInvocation(correlationId, targetNode));
+                      .onResult(result -> settlePendingInvocation(correlationId, pending, result));
         var invokeRequest = InvokeRequest.invokeRequest(self,
                                                         correlationId,
                                                         requestId,
@@ -789,6 +849,7 @@ class SliceInvokerImpl implements SliceInvoker {
                                             ctx.requestId,
                                             targetNode,
                                             senderBridge,
+                                            Option.none(),
                                             timeoutMs);
 
         pendingInvocations.put(correlationId, pending);
@@ -996,15 +1057,50 @@ class SliceInvokerImpl implements SliceInvoker {
     @SuppressWarnings({"JBCT-RET-01"})
     public void onInvokeResponse(InvokeResponse response) {
         Option.option(pendingInvocations.remove(response.correlationId()))
-              .onEmpty(() -> log.warn("[requestId={}] Received response for unknown correlationId: {}",
-                                      response.requestId(),
-                                      response.correlationId()))
+              .onEmpty(() -> resolveLateCompletion(response))
               .onPresent(pending -> processReceivedResponse(pending, response));
     }
 
     private void processReceivedResponse(PendingInvocation pending, InvokeResponse response) {
         removeFromNodeIndex(response.correlationId(), pending.targetNode());
         handlePendingResponse(pending, response);
+        // Also when the call has just timed out and is not retained yet: the response is its real outcome either way.
+        pending.lateOutcome().onPresent(lateOutcome -> lateOutcome.resolve(completionOutcome(response)));
+    }
+
+    /// #1723: a response that matches no pending call. For a completion-awaited call that timed out it is the callee's
+    /// real outcome, and it resolves the caller's unknown outcome.
+    private void resolveLateCompletion(InvokeResponse response) {
+        Option.option(lateCompletions.remove(response.correlationId()))
+              .onEmpty(() -> reportUnmatchedResponse(response))
+              .onPresent(late -> resolveLateCompletion(late, response));
+    }
+
+    private void resolveLateCompletion(LateCompletion late, InvokeResponse response) {
+        log.debug("[requestId={}] Late completion response [{}] resolves an unknown outcome",
+                  late.requestId(),
+                  response.correlationId());
+        late.outcome().resolve(completionOutcome(response));
+    }
+
+    /// A completion-awaited call that is no longer retained (past [#LATE_COMPLETION_CAPACITY], a departed target, a
+    /// stopped invoker) is an expected late answer, not a protocol anomaly: its outcome stays unknown to the caller.
+    private void reportUnmatchedResponse(InvokeResponse response) {
+        if (response.correlationId().startsWith(COMPLETION_ID_PREFIX)) {
+            log.debug("[requestId={}] Late completion response [{}] is no longer retained; its outcome stays unknown",
+                      response.requestId(),
+                      response.correlationId());
+        } else {
+            log.warn("[requestId={}] Received response for unknown correlationId: {}",
+                     response.requestId(),
+                     response.correlationId());
+        }
+    }
+
+    private static Result<Unit> completionOutcome(InvokeResponse response) {
+        return response.success()
+               ? Result.unitResult()
+               : new SliceInvokerError.RemoteInvocationError(new String(response.payload())).result();
     }
 
     @Override
@@ -1027,6 +1123,9 @@ class SliceInvokerImpl implements SliceInvoker {
     }
 
     public org.pragmatica.lang.Unit onNodeDeparture(NodeId departedNode) {
+        // A departed node sends no late response: nothing can resolve these, so their outcomes stay unknown.
+        lateCompletions.values().removeIf(late -> late.targetNode()
+                                                      .equals(departedNode));
         Option.option(pendingInvocationsByNode.remove(departedNode))
               .filter(ids -> !ids.isEmpty())
               .onPresent(correlationIds -> retryPendingForDepartedNode(departedNode, correlationIds));
@@ -1055,6 +1154,26 @@ class SliceInvokerImpl implements SliceInvoker {
     private void retryDepartedInvocation(PendingInvocation pending, NodeId departedNode) {
         log.debug("Triggering retry for request [{}] due to node {} departure", pending.requestId(), departedNode);
         pending.promise().fail(Causes.cause("Target node " + departedNode + " departed"));
+    }
+
+    /// The pending call settled: answered, failed, or timed out. A completion-awaited call that TIMED OUT is retained
+    /// for its late response. It is retained BEFORE it leaves the pending table, so a response racing the timeout
+    /// finds it in one of the two; when the response won that race, it has already resolved the late outcome.
+    private void settlePendingInvocation(String correlationId, PendingInvocation pending, Result<Object> result) {
+        var timedOut = result.fold(cause -> cause instanceof CoreError.Timeout, _ -> false);
+
+        pending.lateOutcome()
+               .filter(_ -> timedOut)
+               .onPresent(lateOutcome -> lateCompletions.put(correlationId,
+                                                             new LateCompletion(lateOutcome,
+                                                                                pending.requestId(),
+                                                                                pending.targetNode(),
+                                                                                System.currentTimeMillis())));
+        if (pendingInvocations.remove(correlationId) == null) {
+            lateCompletions.remove(correlationId);
+        }
+
+        removeFromNodeIndex(correlationId, pending.targetNode());
     }
 
     private void removePendingInvocation(String correlationId, NodeId targetNode) {

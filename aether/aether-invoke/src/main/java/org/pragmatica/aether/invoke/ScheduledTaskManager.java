@@ -15,9 +15,11 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.function.LongSupplier;
+import java.util.function.UnaryOperator;
 
 import org.pragmatica.aether.invoke.ScheduledTaskRegistry.ScheduledTask;
 import org.pragmatica.aether.slice.ExecutionMode;
+import org.pragmatica.consensus.topology.MembershipDecision;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ScheduledTaskKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ScheduledTaskStateKey;
@@ -68,6 +70,13 @@ public interface ScheduledTaskManager {
     /// the per-node lifecycle-projection layer was removed in the membership-v2 finale. Default no-op
     /// so the route-test stubs that implement this interface stay compilable.
     default void onDrainInitiated() {}
+
+    /// A node left the cluster for good (the committed membership decision, never a transient suspicion): the LEADER closes
+    /// the open UNKNOWN of every per-node (ALL-mode) row that node was firing, because nothing will ever write those rows
+    /// again (#1723). Default no-op so the route-test stubs that implement this interface stay compilable.
+    default void onNodeRemoved(MembershipDecision.NodeRemoved event) {}
+
+    default void onNodeDecommissioned(MembershipDecision.NodeDecommissioned event) {}
 
     int activeTimerCount();
     void stop();
@@ -161,6 +170,11 @@ public interface ScheduledTaskManager {
         final Consumer<KVCommand<AetherKey>> stateWriter;
         final Function<ScheduledTaskStateKey, Option<ScheduledTaskStateValue>> stateReader;
         final LeaderManager leaderManager;
+        /// The last row THIS manager submitted per state key. The writer is asynchronous consensus and the reader the
+        /// COMMITTED registry, so for a few milliseconds after a write the committed row is older than what this manager
+        /// already decided. Every decision that builds on "the row" (the next fire's prior, a late resolution) builds on
+        /// the newer of the two by `fireSeq`, so a row in flight is never overwritten with an older fire's.
+        final Map<ScheduledTaskStateKey, ScheduledTaskStateValue> submitted = new ConcurrentHashMap<>();
         final TimeSpan completionBound;
         final Map<ScheduledTaskKey, ScheduledFuture<?>> activeTimers = new ConcurrentHashMap<>();
         final Set<ScheduledTaskKey> inFlight = ConcurrentHashMap.newKeySet();
@@ -193,6 +207,33 @@ public interface ScheduledTaskManager {
             this.following = new Following(this);
             this.leading = new Leading(this);
             this.stopped = new Stopped(this);
+        }
+
+        /// The newer, by `fireSeq`, of the committed row and the last row this manager submitted (the submitted one on a
+        /// tie: it carries every write this manager has made since).
+        Option<ScheduledTaskStateValue> currentRow(ScheduledTaskStateKey key) {
+            var committed = stateReader.apply(key);
+            var mine = Option.option(submitted.get(key));
+
+            mine.filter(own -> caughtUp(own, committed)).onPresent(own -> submitted.remove(key, own));
+
+            return mine.filter(own -> !caughtUp(own, committed))
+                       .filter(own -> committed.map(row -> own.fireSeq() >= row.fireSeq())
+                                               .or(true))
+                       .fold(() -> committed,
+                             Option::some);
+        }
+
+        /// The commit has caught up with what this manager submitted: the committed row IS it, or a newer fire's. The
+        /// entry has nothing left to protect and is dropped, so the map stays as small as the writes in flight.
+        private static boolean caughtUp(ScheduledTaskStateValue own, Option<ScheduledTaskStateValue> committed) {
+            return committed.map(row -> row.equals(own) || row.fireSeq() > own.fireSeq())
+                            .or(false);
+        }
+
+        void submit(ScheduledTaskStateKey key, ScheduledTaskStateValue value) {
+            submitted.put(key, value);
+            stateWriter.accept(new KVCommand.Put<>(key, value));
         }
     }
 
@@ -309,6 +350,7 @@ public interface ScheduledTaskManager {
 
         private void handleTaskRemoved(ScheduledTaskKey key) {
             TaskOps.cancelTimer(ctx, key);
+            TaskOps.clearOpenConditions(ctx, key, fsm.current() instanceof Leading);
         }
 
         private boolean shouldRunInCurrentState(ScheduledTask task) {
@@ -436,10 +478,10 @@ public interface ScheduledTaskManager {
 
         private static void recordSkippedOverlap(Context ctx, ScheduledTask task) {
             var key = stateKeyFor(ctx, task);
-            var prior = ctx.stateReader.apply(key);
+            var prior = ctx.currentRow(key);
             var value = ScheduledTaskStateValue.skippedOverlapState(prior, System.currentTimeMillis());
 
-            ctx.stateWriter.accept(new KVCommand.Put<>(key, value));
+            ctx.submit(key, value);
             log.warn("Scheduled task {}.{} skipped fire: previous execution still in flight",
                      task.configSection(),
                      task.methodName().name());
@@ -531,76 +573,104 @@ public interface ScheduledTaskManager {
         }
 
         private static Promise<Unit> executeTask(Context ctx, ScheduledTask task, LongSupplier nextFireAtSupplier) {
+            var firedAt = System.currentTimeMillis();
+
             return ctx.invoker.invokeAwaitingCompletion(task.artifact(),
                                                         task.methodName(),
                                                         Unit.unit(),
                                                         ctx.completionBound)
                               .onSuccess(_ -> writeSuccessState(ctx,
                                                                 task,
-                                                                nextFireAtSupplier.getAsLong()))
+                                                                nextFireAtSupplier.getAsLong(),
+                                                                firedAt))
                               .onFailure(cause -> recordFailedFire(ctx,
                                                                    task,
                                                                    cause,
-                                                                   nextFireAtSupplier.getAsLong()));
+                                                                   nextFireAtSupplier.getAsLong(),
+                                                                   firedAt));
         }
 
         /// A fire that ended without a success. A timeout of a REMOTE fire ([SliceInvokerError.CompletionUnknown]) says
         /// nothing about the callee: the outcome is UNKNOWN, recorded as such and counted neither as an execution nor as a
         /// failure. Every other failure (a failure response, a departed node, a request that could not be sent) is one.
-        private static void recordFailedFire(Context ctx, ScheduledTask task, Cause cause, long nextFireAt) {
-            if (cause instanceof SliceInvokerError.CompletionUnknown) {
-                writeUnknownOutcomeState(ctx, task, cause.message(), nextFireAt);
+        private static void recordFailedFire(Context ctx,
+                                             ScheduledTask task,
+                                             Cause cause,
+                                             long nextFireAt,
+                                             long firedAt) {
+            if (cause instanceof SliceInvokerError.CompletionUnknown unknown) {
+                var written = writeUnknownOutcomeState(ctx, task, cause.message(), nextFireAt, firedAt);
+                var fireSeq = written.fireSeq();
+
+                unknown.lateOutcome()
+                       .onSuccess(_ -> resolveLate(ctx,
+                                                   task,
+                                                   written,
+                                                   base -> ScheduledTaskStateValue.lateSuccessState(base, fireSeq)))
+                       .onFailure(late -> resolveLate(ctx,
+                                                      task,
+                                                      written,
+                                                      base -> lateFailure(task, base, fireSeq, late)));
             } else {
-                handleTaskFailure(ctx, task, cause.message(), nextFireAt);
+                handleTaskFailure(ctx, task, cause.message(), nextFireAt, firedAt);
             }
         }
 
-        private static void handleTaskFailure(Context ctx, ScheduledTask task, String message, long nextFireAt) {
+        private static ScheduledTaskStateValue lateFailure(ScheduledTask task,
+                                                           ScheduledTaskStateValue base,
+                                                           int fireSeq,
+                                                           Cause late) {
+            log.warn("Scheduled task {}.{} failed (late response): {}",
+                     task.configSection(),
+                     task.methodName().name(),
+                     late.message());
+
+            return ScheduledTaskStateValue.lateFailureState(base, fireSeq, late.message());
+        }
+
+        private static void handleTaskFailure(Context ctx,
+                                              ScheduledTask task,
+                                              String message,
+                                              long nextFireAt,
+                                              long firedAt) {
             log.warn("Scheduled task {}.{} failed: {}",
                      task.configSection(),
                      task.methodName().name(),
                      message);
-            writeFailureState(ctx, task, message, nextFireAt);
+            writeFailureState(ctx, task, message, nextFireAt, firedAt);
         }
 
-        private static void writeSuccessState(Context ctx, ScheduledTask task, long nextFireAt) {
+        private static void writeSuccessState(Context ctx, ScheduledTask task, long nextFireAt, long firedAt) {
             var key = stateKeyFor(ctx, task);
-            var prior = ctx.stateReader.apply(key);
-            var priorTotal = prior.map(ScheduledTaskStateValue::totalExecutions).or(0);
-            var priorSkipped = prior.map(ScheduledTaskStateValue::skippedOverlaps).or(0);
-            var priorUnknown = prior.map(ScheduledTaskStateValue::unknownOutcomes).or(0);
-            var value = ScheduledTaskStateValue.successState(nextFireAt, priorTotal + 1, priorSkipped, priorUnknown);
+            var prior = ctx.currentRow(key);
 
             logOutcomeTransitionOut(task, prior);
-            ctx.stateWriter.accept(new KVCommand.Put<>(key, value));
+            ctx.submit(key, ScheduledTaskStateValue.successState(prior, nextFireAt, firedAt));
         }
 
-        private static void writeFailureState(Context ctx, ScheduledTask task, String message, long nextFireAt) {
+        private static void writeFailureState(Context ctx,
+                                              ScheduledTask task,
+                                              String message,
+                                              long nextFireAt,
+                                              long firedAt) {
             var key = stateKeyFor(ctx, task);
-            var prior = ctx.stateReader.apply(key);
-            var priorFailures = prior.map(ScheduledTaskStateValue::consecutiveFailures).or(0);
-            var priorTotal = prior.map(ScheduledTaskStateValue::totalExecutions).or(0);
-            var priorSkipped = prior.map(ScheduledTaskStateValue::skippedOverlaps).or(0);
-            var priorUnknown = prior.map(ScheduledTaskStateValue::unknownOutcomes).or(0);
-            var value = ScheduledTaskStateValue.failureState(nextFireAt,
-                                                             priorFailures + 1,
-                                                             priorTotal,
-                                                             priorSkipped,
-                                                             message,
-                                                             priorUnknown);
+            var prior = ctx.currentRow(key);
 
             logOutcomeTransitionOut(task, prior);
-            ctx.stateWriter.accept(new KVCommand.Put<>(key, value));
+            ctx.submit(key, ScheduledTaskStateValue.failureState(prior, nextFireAt, firedAt, message));
         }
 
         /// The outcome is UNKNOWN (#1723). Logged ONCE per transition into the unknown state, not per fire: a task that
-        /// keeps timing out is counted in `unknownOutcomes`, and the log line says so; the line for leaving the state is
+        /// keeps timing out is counted in `completionTimeouts`, and the log line says so; the line for leaving the state is
         /// [#logOutcomeTransitionOut].
-        private static void writeUnknownOutcomeState(Context ctx, ScheduledTask task, String message, long nextFireAt) {
+        private static ScheduledTaskStateValue writeUnknownOutcomeState(Context ctx,
+                                                                        ScheduledTask task,
+                                                                        String message,
+                                                                        long nextFireAt,
+                                                                        long firedAt) {
             var key = stateKeyFor(ctx, task);
-            var prior = ctx.stateReader.apply(key);
-            var alreadyUnknown = prior.map(state -> ScheduledTaskStateValue.OUTCOME_UNKNOWN.equals(state.lastOutcome()))
-                                      .or(false);
+            var prior = ctx.currentRow(key);
+            var alreadyUnknown = prior.map(ScheduledTaskStateValue::outcomeUnknown).or(false);
 
             if (!alreadyUnknown) {
                 log.warn("Scheduled task {}.{} outcome UNKNOWN: {} (not counted as an execution or a failure; further unknown"
@@ -610,8 +680,100 @@ public interface ScheduledTaskManager {
                          message);
             }
 
-            ctx.stateWriter.accept(new KVCommand.Put<>(key,
-                                                       ScheduledTaskStateValue.unknownOutcomeState(prior, nextFireAt)));
+            var value = ScheduledTaskStateValue.unknownOutcomeState(prior, nextFireAt, firedAt);
+
+            ctx.submit(key, value);
+
+            return value;
+        }
+
+        /// A late answer for the fire that wrote `written`. Applied to the newer, by `fireSeq`, of the committed row and the
+        /// last row this manager submitted ([ScheduledTaskStateValue#resolutionBase]): a newer fire's outcome stands (see
+        /// [ScheduledTaskStateValue#lateSuccessState]) even while its row is still in flight, and the sequence never goes
+        /// backwards. A row that is gone (the task was removed) has nothing to resolve.
+        private static void resolveLate(Context ctx,
+                                        ScheduledTask task,
+                                        ScheduledTaskStateValue written,
+                                        UnaryOperator<ScheduledTaskStateValue> resolution) {
+            var key = stateKeyFor(ctx, task);
+
+            ctx.stateReader.apply(key)
+                           .map(row -> ScheduledTaskStateValue.resolutionBase(row,
+                                                                              Option.option(ctx.submitted.get(key)).or(written)))
+                           .onPresent(base -> writeResolved(ctx,
+                                                            task,
+                                                            key,
+                                                            base,
+                                                            resolution.apply(base)));
+        }
+
+        private static void writeResolved(Context ctx,
+                                          ScheduledTask task,
+                                          ScheduledTaskStateKey key,
+                                          ScheduledTaskStateValue base,
+                                          ScheduledTaskStateValue resolved) {
+            if (base.outcomeUnknown() && !resolved.outcomeUnknown()) {
+                log.info("Scheduled task {}.{} outcome known again: the unknown fire was answered late",
+                         task.configSection(),
+                         task.methodName().name());
+            }
+
+            ctx.submit(key, resolved);
+        }
+
+        /// The task is gone: an open UNKNOWN condition ends with it, so a task registered again under the same key starts
+        /// with a fresh condition instead of inheriting an UNKNOWN (#1723). The counters, the sequence and the history
+        /// stay; only the unknown outcome is cleared, and that committed change is what tells the operator
+        /// (`task-removed`). This node's own ALL-mode row is cleared by this node; the unscoped SINGLE-mode row, shared by
+        /// every node, only by the leader.
+        static void clearOpenConditions(Context ctx, ScheduledTaskKey key, boolean leader) {
+            clearOpenCondition(ctx,
+                               ScheduledTaskStateKey.scheduledTaskStateKey(key.configSection(),
+                                                                           key.artifact(),
+                                                                           key.methodName(),
+                                                                           ctx.self));
+            if (leader) {
+                clearOpenCondition(ctx,
+                                   ScheduledTaskStateKey.scheduledTaskStateKey(key.configSection(),
+                                                                               key.artifact(),
+                                                                               key.methodName()));
+            }
+        }
+
+        /// The leader closes the open UNKNOWN of the per-node rows `departed` was firing (`node-departed`).
+        static void closeDepartedNodeRows(Context ctx, NodeId departed, boolean leader) {
+            if (!leader) {
+                return;
+            }
+
+            ctx.registry.allTasks()
+                        .stream()
+                        .filter(task -> task.executionMode() == ExecutionMode.ALL)
+                        .map(task -> ScheduledTaskStateKey.scheduledTaskStateKey(task.configSection(),
+                                                                                 task.artifact(),
+                                                                                 task.methodName(),
+                                                                                 departed))
+                        .forEach(stateKey -> ctx.currentRow(stateKey)
+                                                .filter(ScheduledTaskStateValue::outcomeUnknown)
+                                                .onPresent(row -> ctx.submit(stateKey,
+                                                                             ScheduledTaskStateValue.nodeDepartedState(row))));
+            // The departed node's rows are never written by anyone again.
+            ctx.registry.allTasks()
+                        .stream()
+                        .map(task -> ScheduledTaskStateKey.scheduledTaskStateKey(task.configSection(),
+                                                                                 task.artifact(),
+                                                                                 task.methodName(),
+                                                                                 departed))
+                        .forEach(ctx.submitted::remove);
+        }
+
+        private static void clearOpenCondition(Context ctx, ScheduledTaskStateKey stateKey) {
+            ctx.currentRow(stateKey)
+               .filter(ScheduledTaskStateValue::outcomeUnknown)
+               .onPresent(row -> ctx.submit(stateKey,
+                                            ScheduledTaskStateValue.conditionClearedState(row)));
+            // The task is gone: nothing fires on this row any more, so nothing in flight needs protecting.
+            ctx.submitted.remove(stateKey);
         }
 
         /// A fire that completed (success or failure) after the task had been UNKNOWN: the outcome is known again.
@@ -691,6 +853,16 @@ public interface ScheduledTaskManager {
         }
 
         @Override
+        public void onNodeRemoved(MembershipDecision.NodeRemoved event) {
+            TaskOps.closeDepartedNodeRows(ctx, event.nodeId(), fsm.current() instanceof Leading);
+        }
+
+        @Override
+        public void onNodeDecommissioned(MembershipDecision.NodeDecommissioned event) {
+            TaskOps.closeDepartedNodeRows(ctx, event.nodeId(), fsm.current() instanceof Leading);
+        }
+
+        @Override
         public void onDrainInitiated() {
             if (ctx.draining.compareAndSet(false, true)) {
                 TaskOps.cancelAllModeTimers(ctx);
@@ -700,6 +872,16 @@ public interface ScheduledTaskManager {
         @Override
         public int activeTimerCount() {
             return ctx.activeTimers.size();
+        }
+
+        /// Rows this manager submitted that the commit has not yet caught up with (test seam).
+        int submittedRowCount() {
+            return ctx.submitted.size();
+        }
+
+        /// The row decisions build on (test seam).
+        Option<ScheduledTaskStateValue> currentRowFor(ScheduledTaskStateKey key) {
+            return ctx.currentRow(key);
         }
 
         @Override

@@ -12,6 +12,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
 import java.util.function.Function;
 import java.util.function.IntSupplier;
@@ -28,6 +29,7 @@ import org.pragmatica.aether.api.ClusterEvent.StreamFailoverRefused;
 import org.pragmatica.aether.api.ClusterEvent.StreamFailoverResolved;
 import org.pragmatica.aether.api.ClusterEvent.StreamIsrBelowMinimum;
 import org.pragmatica.aether.api.ClusterEvent.StreamIsrRestored;
+import org.pragmatica.aether.api.ClusterEvent.StreamLineageRestarted;
 import org.pragmatica.aether.api.ClusterEvent.StreamConfigChangeNotApplied;
 import org.pragmatica.aether.api.ClusterEvent.DeparturePushIncomplete;
 import org.pragmatica.aether.api.ClusterEvent.DeploymentCompleted;
@@ -180,6 +182,19 @@ public final class ClusterEventAggregator {
     /// The key is `code:subject`. It is unambiguous because a code is kebab-case and never contains `:`,
     /// which `OperatorWarningCodeTest` enforces.
     private final ConcurrentHashMap<String, ThrottleWindow> operatorWarningThrottle = new ConcurrentHashMap<>();
+
+    /// Per-task window for the scheduled-task outcome events (#1723): the same 60 s mechanism, its own key space
+    /// (`task@node`), so one flapping task cannot starve another and neither starves the operator warnings.
+    private final ConcurrentHashMap<String, ThrottleWindow> scheduledOutcomeThrottle = new ConcurrentHashMap<>();
+    /// What the operator can see of each task's unknown outcome, keyed like [#scheduledOutcomeThrottle]. One map, one
+    /// entry per task, changed only through `compute`/`remove`, so "announce a held UNKNOWN" and "the outcome was
+    /// resolved" cannot interleave into a published UNKNOWN that no RESTORED will ever follow.
+    private final ConcurrentHashMap<String, ScheduledOutcome> scheduledOutcomes = new ConcurrentHashMap<>();
+
+    /// `visible`: its UNKNOWN event was published (or would have been, on a node that is not the events owner), so a
+    /// RESTORED may follow it. Otherwise the UNKNOWN was held back by the window: nothing is visible yet, and a
+    /// resolution cancels it instead of announcing an all-clear for something never announced.
+    private record ScheduledOutcome(OperationalEvent.ScheduledTaskOutcomeUnknown unknown, boolean visible) {}
 
     /// Throttle window shared by {@link #onStreamMemoryExceeded} (60s per `(streamName, phase)`, spec
     /// §4.5c) and {@link #onOperatorWarning} (60s per `(code, subject)`, #1574).
@@ -835,6 +850,12 @@ public final class ClusterEventAggregator {
         return lastRaisedOperatorWarning;
     }
 
+    /// The tasks whose UNKNOWN the aggregator is tracking (published or held): it ends with the task's RESTORED,
+    /// including `task-removed`, so a removed task cannot leave an entry behind.
+    public int trackedScheduledOutcomes() {
+        return scheduledOutcomes.size();
+    }
+
     /// Operator-warning throttle keys currently held (observability for #1617 R3).
     public int operatorWarningThrottleKeys() {
         return operatorWarningThrottle.size();
@@ -847,7 +868,9 @@ public final class ClusterEventAggregator {
     public Unit evictIdleThrottleWindows() {
         var now = hlcClock.now().physicalMillis();
 
+        announceHeldScheduledOutcomes();
         evictIdle(streamMemoryEventThrottle, now);
+        evictIdle(scheduledOutcomeThrottle, now);
 
         return reportEvictedHeldBack(evictIdle(operatorWarningThrottle, now));
     }
@@ -1504,6 +1527,161 @@ public final class ClusterEventAggregator {
                                                     event.eventId())));
     }
 
+    /// #1723: a scheduled task has a fire whose outcome is unknown. Throttled per task to one event per
+    /// [#EVENT_THROTTLE_MS]: an UNKNOWN that arrives inside the window is HELD, and [#announceHeldScheduledOutcomes]
+    /// publishes it once the window has closed IF the outcome is still unknown by then. One that resolved meanwhile
+    /// is never announced, nor is its RESTORED (see [#onScheduledTaskOutcomeRestored]).
+    @Contract
+    public void onScheduledTaskOutcomeUnknown(OperationalEvent.ScheduledTaskOutcomeUnknown event) {
+        if (replayingCheck.getAsBoolean()) {
+            LOG.debug("ClusterEventAggregator: snapshot/resync replay in progress — suppressing side-effect emit of {}",
+                      event);
+
+            return;
+        }
+
+        var key = event.key();
+        var window = admit(scheduledOutcomeThrottle, key);
+        var entry = new ScheduledOutcome(event, window.admitted());
+        var previous = scheduledOutcomes.putIfAbsent(key, entry);
+
+        if (previous != null) {
+            LOG.debug("ClusterEventAggregator: ScheduledTaskOutcomeUnknown for {} repeats an outcome already tracked",
+                      key);
+
+            return;
+        }
+
+        if (window.admitted()) {
+            emitScheduledOutcomeUnknown(event, window.suppressedBefore());
+        } else {
+            LOG.debug("ClusterEventAggregator: holding throttled ScheduledTaskOutcomeUnknown for {}", key);
+        }
+    }
+
+    /// #1723: the unknown fire was answered late. Announced only if its UNKNOWN was: a RESTORED with no visible UNKNOWN
+    /// would be an all-clear for a condition the operator never saw. Not throttled, since it follows a published event.
+    @Contract
+    public void onScheduledTaskOutcomeRestored(OperationalEvent.ScheduledTaskOutcomeRestored event) {
+        if (replayingCheck.getAsBoolean()) {
+            LOG.debug("ClusterEventAggregator: snapshot/resync replay in progress — suppressing side-effect emit of {}",
+                      event);
+
+            return;
+        }
+
+        var previous = scheduledOutcomes.remove(event.key());
+
+        if (previous == null || !previous.visible()) {
+            LOG.debug("ClusterEventAggregator: ScheduledTaskOutcomeRestored for {} has no published UNKNOWN; not announced",
+                      event.key());
+
+            return;
+        }
+
+        var unknown = previous.unknown();
+
+        emit(new ClusterEvent.ScheduledTaskOutcomeRestored(hlcClock.now(),
+                                                           Severity.INFO,
+                                                           restoredSummary(event),
+                                                           scheduledOutcomeDetails(event.task(),
+                                                                                   event.node(),
+                                                                                   unknown.fireAt(),
+                                                                                   event.eventId(),
+                                                                                   Map.of("outcome",
+                                                                                          event.outcome(),
+                                                                                          "reason",
+                                                                                          event.reason(),
+                                                                                          "late",
+                                                                                          String.valueOf(event.late())))));
+    }
+
+    private static String restoredSummary(OperationalEvent.ScheduledTaskOutcomeRestored event) {
+        var task = "Scheduled task " + event.task();
+
+        return switch (event.reason()) {
+            case OperationalEvent.ScheduledTaskOutcomeRestored.LATE_ANSWER -> task + " resolved its unknown outcome: the late response says it " + event.outcome();
+            case OperationalEvent.ScheduledTaskOutcomeRestored.NODE_DEPARTED -> task + " is closed: the node that fired it left the cluster while its outcome was unknown";
+            case OperationalEvent.ScheduledTaskOutcomeRestored.TASK_REMOVED -> task + " was removed while its outcome was unknown";
+            default -> task + " is known again: a later fire completed and " + event.outcome();
+        };
+    }
+
+    /// Publishes every UNKNOWN the window held back whose window has since closed and whose outcome is still unknown:
+    /// a held entry still in the map has not been resolved. Run once per window by `AetherNode` (through
+    /// [#evictIdleThrottleWindows]), so a held UNKNOWN is announced within about two windows.
+    public Unit announceHeldScheduledOutcomes() {
+        var now = hlcClock.now().physicalMillis();
+
+        scheduledOutcomes.entrySet()
+                         .stream()
+                         .filter(entry -> !entry.getValue()
+                                                .visible())
+                         .filter(entry -> windowClosed(scheduledOutcomeThrottle.get(entry.getKey()),
+                                                       now))
+                         .map(Map.Entry::getKey)
+                         .toList()
+                         .forEach(this::announceHeld);
+
+        return Unit.unit();
+    }
+
+    // RET-06: `window` is the nullable value of a JDK map lookup (absent key → null), a framework boundary.
+    @SuppressWarnings("JBCT-RET-06")
+    private static boolean windowClosed(ThrottleWindow window, long now) {
+        return window == null || !window.openAt(now);
+    }
+
+    private void announceHeld(String key) {
+        var promoted = new AtomicReference<ScheduledOutcome>();
+
+        scheduledOutcomes.computeIfPresent(key,
+                                           (_, held) -> held.visible()
+                                                        ? held
+                                                        : promote(held, promoted));
+        Option.option(promoted.get()).onPresent(entry -> emitScheduledOutcomeUnknown(entry.unknown(),
+                                                                                     admit(scheduledOutcomeThrottle, key).suppressedBefore()));
+    }
+
+    private static ScheduledOutcome promote(ScheduledOutcome held, AtomicReference<ScheduledOutcome> promoted) {
+        var visible = new ScheduledOutcome(held.unknown(), true);
+
+        promoted.set(visible);
+
+        return visible;
+    }
+
+    private void emitScheduledOutcomeUnknown(OperationalEvent.ScheduledTaskOutcomeUnknown event, long suppressedSince) {
+        emit(new ClusterEvent.ScheduledTaskOutcomeUnknown(hlcClock.now(),
+                                                          Severity.WARNING,
+                                                          "Scheduled task " + event.task()
+                                                         + " has a fire whose outcome is unknown: no response arrived in"
+                                                         + " time, so it is not known whether the work ran",
+                                                          scheduledOutcomeDetails(event.task(),
+                                                                                  event.node(),
+                                                                                  event.fireAt(),
+                                                                                  event.eventId(),
+                                                                                  Map.of("suppressedSince",
+                                                                                         Long.toString(suppressedSince)))));
+    }
+
+    private static Map<String, String> scheduledOutcomeDetails(String task,
+                                                               String node,
+                                                               long fireAt,
+                                                               String eventId,
+                                                               Map<String, String> extra) {
+        var details = new HashMap<>(extra);
+
+        details.put(ClusterEventIdentity.EVENT_ID, eventId);
+        details.put("task", task);
+        details.put("fireAt", Long.toString(fireAt));
+        if (!node.isEmpty()) {
+            details.put("node", node);
+        }
+
+        return Map.copyOf(details);
+    }
+
     /// Taste: WARNING. The operator asked for a lower factor and the system will not do it; nothing is lost and
     /// nothing stalls by this event itself.
     @Contract
@@ -1525,6 +1703,30 @@ public final class ClusterEventAggregator {
                                                      String.valueOf(event.effectiveConfirmationFactor()),
                                                      "reason",
                                                      event.reason())));
+    }
+
+    @Contract
+    public void onStreamLineageRestarted(OperationalEvent.StreamLineageRestarted event) {
+        emit(new StreamLineageRestarted(hlcClock.now(),
+                                        Severity.INFO,
+                                        "Stream " + event.stream()
+                                       + "[" + event.partition()
+                                       + "] began a new epoch " + event.newEpoch()
+                                       + " on its owner " + event.owner()
+                                       + " at offset " + event.startOffset()
+                                       + ": its ring was rebuilt, consumers read from that offset again",
+                                        Map.of("stream",
+                                               event.stream(),
+                                               "partition",
+                                               String.valueOf(event.partition()),
+                                               "owner",
+                                               event.owner(),
+                                               "oldEpoch",
+                                               event.oldEpoch(),
+                                               "newEpoch",
+                                               event.newEpoch(),
+                                               "startOffset",
+                                               String.valueOf(event.startOffset()))));
     }
 
     private static Map<String, String> streamIsrDetails(String stream,

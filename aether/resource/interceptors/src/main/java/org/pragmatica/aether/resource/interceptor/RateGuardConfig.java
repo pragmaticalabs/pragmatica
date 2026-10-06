@@ -14,8 +14,15 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 
 public record RateGuardConfig(int requestsPerSecond, int burst, String type) {
+    /// Per-field defaults, read by the config binder by name (`DEFAULT_<COMPONENT>`, #822) so a section may omit
+    /// them, as the resource reference promises. Not a whole-record `DEFAULT`: see
+    /// `InterceptorConfigDefaultAllowlistTest`.
+    public static final int DEFAULT_REQUESTS_PER_SECOND = 100;
+    public static final int DEFAULT_BURST = 20;
+    public static final String DEFAULT_TYPE = "local";
+
     public static Result<RateGuardConfig> rateGuardConfig(int requestsPerSecond, int burst) {
-        return rateGuardConfig(requestsPerSecond, burst, "local");
+        return rateGuardConfig(requestsPerSecond, burst, DEFAULT_TYPE);
     }
 
     public static Result<RateGuardConfig> rateGuardConfig(int requestsPerSecond, int burst, String type) {
@@ -27,7 +34,7 @@ public record RateGuardConfig(int requestsPerSecond, int burst, String type) {
     }
 
     public static Result<RateGuardConfig> rateGuardConfig() {
-        return rateGuardConfig(100, 20);
+        return rateGuardConfig(DEFAULT_REQUESTS_PER_SECOND, DEFAULT_BURST);
     }
 
     public TimeSpan window() {
