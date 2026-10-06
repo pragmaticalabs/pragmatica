@@ -29,6 +29,7 @@ import org.pragmatica.aether.api.ClusterEvent.StreamFailoverRefused;
 import org.pragmatica.aether.api.ClusterEvent.StreamFailoverResolved;
 import org.pragmatica.aether.api.ClusterEvent.StreamIsrBelowMinimum;
 import org.pragmatica.aether.api.ClusterEvent.StreamIsrRestored;
+import org.pragmatica.aether.api.ClusterEvent.StreamLineageRestarted;
 import org.pragmatica.aether.api.ClusterEvent.StreamConfigChangeNotApplied;
 import org.pragmatica.aether.api.ClusterEvent.DeparturePushIncomplete;
 import org.pragmatica.aether.api.ClusterEvent.DeploymentCompleted;
@@ -1702,6 +1703,30 @@ public final class ClusterEventAggregator {
                                                      String.valueOf(event.effectiveConfirmationFactor()),
                                                      "reason",
                                                      event.reason())));
+    }
+
+    @Contract
+    public void onStreamLineageRestarted(OperationalEvent.StreamLineageRestarted event) {
+        emit(new StreamLineageRestarted(hlcClock.now(),
+                                        Severity.INFO,
+                                        "Stream " + event.stream()
+                                       + "[" + event.partition()
+                                       + "] began a new epoch " + event.newEpoch()
+                                       + " on its owner " + event.owner()
+                                       + " at offset " + event.startOffset()
+                                       + ": its ring was rebuilt, consumers read from that offset again",
+                                        Map.of("stream",
+                                               event.stream(),
+                                               "partition",
+                                               String.valueOf(event.partition()),
+                                               "owner",
+                                               event.owner(),
+                                               "oldEpoch",
+                                               event.oldEpoch(),
+                                               "newEpoch",
+                                               event.newEpoch(),
+                                               "startOffset",
+                                               String.valueOf(event.startOffset()))));
     }
 
     private static Map<String, String> streamIsrDetails(String stream,

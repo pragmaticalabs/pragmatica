@@ -39,6 +39,10 @@ class StreamFailoverAnnouncerWiringTest {
         assertThat(code).contains(".onPut(AetherKey.StreamPartitionOwnershipKey.class,streamIsrAnnouncer::onOwnershipPut)");
         assertThat(code).contains("MessageRouter.Entry.route(OperationalEvent.StreamIsrBelowMinimum.class,eventAggregator::onStreamIsrBelowMinimum)");
         assertThat(code).contains("MessageRouter.Entry.route(OperationalEvent.StreamIsrRestored.class,eventAggregator::onStreamIsrRestored)");
+        // #1873: and the lineage-restart announcer, fed by the same Puts.
+        assertThat(code).contains("StreamLineageAnnouncer.streamLineageAnnouncer(delegateRouter::route);");
+        assertThat(code).contains(".onPut(AetherKey.StreamPartitionOwnershipKey.class,streamLineageAnnouncer::onOwnershipPut)");
+        assertThat(code).contains("MessageRouter.Entry.route(OperationalEvent.StreamLineageRestarted.class,eventAggregator::onStreamLineageRestarted)");
         assertThat(code).contains("MessageRouter.Entry.route(OperationalEvent.StreamConfigChangeNotApplied.class,eventAggregator::onStreamConfigChangeNotApplied)");
         // #1723: a scheduled task's unknown fire outcome and its late resolution are derived from the committed task state
         // on every node and reach the aggregator.
