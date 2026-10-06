@@ -202,7 +202,7 @@ public sealed interface NodeUserDataRenderer {
     }
 
     private static boolean isContainerRuntime(Option<RuntimeProfile> profile) {
-        return profile.map(p -> p.type() == RuntimeType.CONTAINER || p.type() == RuntimeType.DOCKER || p.type() == RuntimeType.MANAGED_CONTAINER)
+        return profile.map(RuntimeProfile::isContainer)
                       .or(true);
     }
 

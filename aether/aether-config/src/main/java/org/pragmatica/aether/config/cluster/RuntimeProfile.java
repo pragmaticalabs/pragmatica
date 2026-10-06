@@ -31,4 +31,18 @@ public record RuntimeProfile(@ConfigKeyLive("#693: parsed but never read — Clu
                                                 Option<String> jarUrl) {
         return new RuntimeProfile(name, type, image, jvmArgs, jarUrl);
     }
+
+    /// Mirrors the renderer's launch choice: container runtimes (and an absent profile, handled by the caller)
+    /// launch `image`, everything else launches `jarUrl`.
+    public boolean isContainer() {
+        return type == RuntimeType.CONTAINER || type == RuntimeType.DOCKER || type == RuntimeType.MANAGED_CONTAINER;
+    }
+
+    /// True when the launch artifact this profile selects is an explicit pin, so `[cluster] version` cannot
+    /// change what a replacement boots (#1543 part C).
+    public boolean pinsArtifact() {
+        return isContainer()
+               ? image.isPresent()
+               : jarUrl.isPresent();
+    }
 }

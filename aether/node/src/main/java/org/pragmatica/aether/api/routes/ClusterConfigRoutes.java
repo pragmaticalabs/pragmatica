@@ -33,6 +33,7 @@ import org.pragmatica.aether.config.cluster.ClusterBootstrapConfigDiff;
 import org.pragmatica.aether.config.cluster.ClusterBootstrapConfigParser;
 import org.pragmatica.aether.config.cluster.ClusterBootstrapConfigValidator;
 import org.pragmatica.aether.config.cluster.ClusterConfigError;
+import org.pragmatica.aether.config.cluster.ClusterUpgradeToml;
 import org.pragmatica.aether.config.cluster.DiffAction;
 import org.pragmatica.aether.config.cluster.DiffPlan;
 import org.pragmatica.aether.deployment.cluster.ClusterConfigApplier;
@@ -858,12 +859,13 @@ public final class ClusterConfigRoutes implements RouteSource {
         return checkVersionAsync(stored.configVersion(),
                                  request.expectedVersion()).flatMap(_ -> Promise.resolved(fenceUpgradeWrite(stored,
                                                                                                             request.expectedVersion())))
-                                .flatMap(_ -> {
+                                .flatMap(_ -> upgradedToml(stored, targetVersion).async())
+                                .flatMap(toml -> {
                                              log.info("Cluster upgrade initiated: {} -> {}",
                                                       currentVersion,
                                                       targetVersion);
 
-                                             return storeUpgradedVersion(stored, targetVersion).map(_ -> new UpgradeResponse("INITIATED",
+                                             return storeUpgradedVersion(stored, toml, targetVersion).map(_ -> new UpgradeResponse("INITIATED",
                                                                                                                              currentVersion,
                                                                                                                              targetVersion));
                                          });
@@ -940,8 +942,33 @@ public final class ClusterConfigRoutes implements RouteSource {
                                     });
     }
 
-    private Promise<Object> storeUpgradedVersion(ClusterConfigValue stored, String targetVersion) {
-        var configValue = new ClusterConfigValue(stored.tomlContent(),
+    /// #1543 part C: the committed TOML's `[cluster] version` is what replacements render (image tag, jar URL),
+    /// so the upgrade rewrites it — the TOML stays the single source of truth and a later `apply` of that TOML
+    /// cannot revert the upgrade. Refused (409) when a role's runtime profile pins the launch artifact, which
+    /// would make the new version a recorded no-op. A seed with no committed TOML has nothing to rewrite and
+    /// renders no replacement user data, so only the stored version moves, as before.
+    private static Result<Option<String>> upgradedToml(ClusterConfigValue stored, String targetVersion) {
+        return stored.tomlContent()
+                     .fold(() -> Result.success(Option.<String> none()), toml -> upgradeToml(toml, targetVersion));
+    }
+
+    private static Result<Option<String>> upgradeToml(String toml, String targetVersion) {
+        return ClusterBootstrapConfigParser.parse(toml)
+                                           .flatMap(config -> pinnedRefusal(config, targetVersion))
+                                           .flatMap(_ -> ClusterUpgradeToml.withVersion(toml, targetVersion))
+                                           .map(Option::some);
+    }
+
+    private static Result<Unit> pinnedRefusal(ClusterBootstrapConfig config, String targetVersion) {
+        var pinned = ClusterUpgradeToml.pinnedRuntimeProfiles(config);
+
+        return pinned.isEmpty()
+               ? Result.unitResult()
+               : new ClusterConfigError.UpgradeVersionPinned(targetVersion, pinned).result();
+    }
+
+    private Promise<Object> storeUpgradedVersion(ClusterConfigValue stored, Option<String> toml, String targetVersion) {
+        var configValue = new ClusterConfigValue(toml.isPresent() ? toml : stored.tomlContent(),
                                                  stored.clusterName(),
                                                  targetVersion,
                                                  stored.desiredTopology(),

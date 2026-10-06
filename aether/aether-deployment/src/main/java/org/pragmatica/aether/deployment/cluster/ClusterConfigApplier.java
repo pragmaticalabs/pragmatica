@@ -33,6 +33,9 @@ public sealed interface ClusterConfigApplier {
 }
 
 record ClusterConfigApplierRecord(ClusterTopologyManager topologyManager) implements ClusterConfigApplier {
+    /// The `ClusterLevelChange` field [ClusterBootstrapConfigDiff] emits for a changed `[cluster] version`.
+    private static final String VERSION_FIELD = "version";
+
     @Override
     public Promise<Unit> validate(List<DiffAction> actions) {
         if (topologyManager.usesExplicitCommunities() && actions.stream()
@@ -58,6 +61,8 @@ record ClusterConfigApplierRecord(ClusterTopologyManager topologyManager) implem
         return switch (action) {
             case DiffAction.ScaleUp _, DiffAction.ScaleDown _, DiffAction.CommunityPlacementChange _ -> Option.none();
             case DiffAction.ImmutableFieldChange change -> Option.some(new ClusterConfigError.ImmutableFieldChange(change.field()));
+            case DiffAction.ClusterLevelChange change when VERSION_FIELD.equals(change.field()) -> Option.some(new ClusterConfigError.VersionChangeViaApply(change.from(),
+                                                                                                                                                              change.to()));
             case DiffAction.AddSource _, DiffAction.RemoveSource _, DiffAction.AddRole _, DiffAction.RemoveRole _, DiffAction.RuntimeChange _, DiffAction.SourceFieldChange _, DiffAction.ClusterLevelChange _ -> Option.some(new ClusterConfigError.UnsupportedApplyAction(action));
         };
     }
