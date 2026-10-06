@@ -568,7 +568,8 @@ public interface StreamConsumerManager {
             if (active.containsKey(key)) {
                 reportRepaired(key, "attached again, resuming from the group's last committed cursor");
             } else if (!desired.contains(key)) {
-                reportRepaired(key, "this pass no longer wants it attached on this node, so nothing is left to attach here");
+                reportRepaired(key,
+                               "this pass no longer wants it attached on this node, so nothing is left to attach here");
             }
         }
 

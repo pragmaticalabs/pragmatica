@@ -15,9 +15,10 @@
  */
 package org.pragmatica.utility.warning;
 
+import java.util.Arrays;
+
 import org.pragmatica.lang.Option;
 
-import java.util.Arrays;
 
 /// The single catalogue of operator-warning codes (#1574).
 ///
@@ -117,8 +118,7 @@ public enum OperatorWarningCode {
     }
     /// Whether some other code is the recovery of this one.
     public boolean hasRecovery() {
-        return Arrays.stream(values())
-                     .anyMatch(other -> other.recoveryOf.filter(this::equals)
-                                                        .isPresent());
+        return Arrays.stream(values()).anyMatch(other -> other.recoveryOf.filter(this::equals)
+                                                                         .isPresent());
     }
 }
