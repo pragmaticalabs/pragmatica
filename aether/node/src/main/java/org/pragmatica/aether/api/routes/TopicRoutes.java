@@ -13,6 +13,7 @@ import java.util.function.Supplier;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
+import org.pragmatica.aether.api.ManagementServerError;
 import org.pragmatica.aether.management.route.ManagementRoute;
 import org.pragmatica.aether.node.ManageableNode;
 import org.pragmatica.aether.node.projection.ProjectionHandle;
@@ -259,9 +260,16 @@ public final class TopicRoutes implements RouteSource {
                                              String rebuildLiteral,
                                              String group) {
         return RequestParse.asRequest(ResourceAddress.resourceAddress(namespace, topic, version))
-                           .async()
-                           .flatMap(address -> rebuildGroup(DurableTopicNames.topicStream(address.asString()),
-                                                            URLDecoder.decode(group, StandardCharsets.UTF_8)));
+                           .flatMap(address -> decodeGroup(group).map(decoded -> rebuildGroup(DurableTopicNames.topicStream(address.asString()),
+                                                                                              decoded)))
+                           .fold(cause -> cause.<RebuildResponse> promise(), promise -> promise);
+    }
+
+    /// `URLDecoder.decode` throws on a malformed escape (`%zz`, a trailing `%`); the group segment is caller input, so that
+    /// is a 400 carrying the offending segment, not a throw out of the handler (#1921).
+    private static Result<String> decodeGroup(String group) {
+        return Result.lift(_ -> new ManagementServerError.InvalidRequest("Malformed percent-escape in consumer group '" + group + "'"),
+                           () -> URLDecoder.decode(group, StandardCharsets.UTF_8));
     }
 
     /// Two conditions, both LOCAL: the projection must be attached here AND this node must consume at
