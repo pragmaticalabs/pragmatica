@@ -4814,6 +4814,19 @@ are `400`; the cluster-topology routes answer `503` while the topology manager i
 A caller-supplied id that cannot be parsed (a blueprint id, an artifact coordinate, a version, a node id) is `400` on every management route, and a refusal that several typed failures funnel into answers their common status when they agree (#1921).
 A malformed integer path or query parameter (`partition=abc`, `max=abc`) and a malformed percent-escape in a topic group name are `400`; an unknown stream or consumer group on the stream routes, and an unknown topic or consumer group on the topic routes, is `404` (read from the answering node's own view: the committed stream config in its KV view or the stream in its engine, so a stream or topic created moments ago elsewhere can read as unknown until its commit applies; a known group whose projection is not hosted on the node stays `409`); a malformed node id, partition or stream address on a route that is forwarded to another node is `400` before anything is forwarded, while a well-formed node id naming no connected node is `503` (#1921).
 
+**Stream engine refusals on the stream read routes** (`STREAM_PARTITION`, `STREAM_READ`, `STREAMS_EVENTS`, `STREAM_CONSUMERS`) answer the status of their class, decided in one exhaustive mapper (`StreamErrorStatus`; a new engine error type does not compile until it is classified) (#1921):
+
+| Status | Class | Engine refusals |
+|---|---|---|
+| `400` | the request is wrong | `PartitionOutOfRange`, `EventTooLarge`, `EVENT_DROPPED`, `AHSE_REQUIRED_FOR_STRONG`, `PartitionCeilingExceeded`, `RetentionCountUnindexable`, `RetentionBoundInvalid`, `PartitionCapExceeded` |
+| `404` | unknown to this node's engine | `StreamNotFound`, `CONSUMER_NOT_FOUND` |
+| `409` | conflicts with what exists | `STREAM_ALREADY_EXISTS`, `CONSUMER_ALREADY_SUBSCRIBED`, `ReplicationRefused` |
+| `410` | the cursor's offset was reclaimed by retention (a judgement call: the offset was valid) | `CursorExpired` |
+| `503` | retry later or elsewhere | `PARTITION_NOT_LOCAL`, `PartitionHeldNotMaterialized`, `MaterializeBudgetExceeded`, `ReshufflePaced`, `STREAM_MEMORY_EXCEEDED`, `SEGMENT_TIER_FULL`, `SEALING_BEHIND`, `BUFFER_FULL`, `StreamConfigNotYetVisible`, the ownership and epoch refusals (`NotOwnerAppend`, `OwnerNotActivated`, `NotCurrentOwner`, `StaleEpochAppend`, `StaleEpochRead`, `OwnerCatchupPending`, `LinearizableRoundTimeout`, `ReplicaQuarantined`), the closed and stalled signals, `CONSENSUS_PATH_UNAVAILABLE` |
+| `500` | engine integrity or an internal signal | `WalReplayMismatch`, `WalHeadLost`, `STREAM_CONFIG_COMMIT_FAILED`, `RingIndexCorrupted`, `EventProcessingFailed`, `SeedRejected`, `ProvenanceRegression`, `ProvenanceMismatch`, `ReplicaOffsetGap`, `ReplicaEntryConflict`, `UNREADABLE_CONSISTENCY_MODE`, `BUFFER_EMPTY`, `RUN_DOES_NOT_FIT` |
+
+The publish routes keep their own refusals (#524). A refusal that travels from a remote owner as its message only arrives as an untyped cause and stays `500`.
+
 The `aether` CLI honors `--format json` on error paths: with `--format json` a failure is
 emitted to stderr as a structured `{"error":"<message>"}` object; otherwise the human-readable
 `Error: <message>` form is used.

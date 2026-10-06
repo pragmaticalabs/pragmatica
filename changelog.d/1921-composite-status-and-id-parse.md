@@ -62,3 +62,13 @@
   consumer of the topic carries it. A known group not hosted on this node stays the deliberate 409. A topic created moments ago on
   another node can read as unknown here until its config commit applies. Pinned by `ManagementTopicExistenceStatusTest`.
 - `STREAM_CONSUMERS`' engine key is pinned for a `system`-namespace stream (bare name), where it differs from the address string.
+- **One exhaustive `StreamError` -> status mapper on the stream read routes** (`StreamErrorStatus`; `STREAM_PARTITION`, `STREAM_READ`,
+  `STREAMS_EVENTS`, `STREAM_CONSUMERS`). No engine error carried a status, so a partition the stream does not have
+  (`partition=99` on a 2-partition stream) answered 500. The switch has no default branch, so a new error type or `General`
+  constant fails compilation until it is classified. 400 caller error, 404 unknown, 409 conflict, 410 expired cursor [marked
+  guess], 503 availability, 500 integrity; the table is in `management-api.md`. Pinned by `StreamErrorStatusTest` (a row per
+  variant, checked against the sealed hierarchy, plus driven `STREAM_PARTITION` and `STREAM_READ` out-of-range). The publish routes
+  are untouched.
+- The arity guard now FAILS on an unregistered trailing literal unless the route is on an allow-list with its reason
+  (`STREAM_REPLICAS_LOCAL` only).
+
