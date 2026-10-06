@@ -126,11 +126,29 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
     /// issued.
     private final Set<TrackedCommit> inFlightCommits = ConcurrentHashMap.newKeySet();
 
-    /// #1403 (v-str-1914 F1): a graceful detach's flush still pending — held behind the old consumer's in-flight
-    /// advance for up to [#DETACH_ADVANCE_BOUND] — per key. A re-subscription of the same key on this node fetches its
-    /// cursor only after that flush settles ([#loadCursorAndStart]), so the old flush can never land after the
-    /// successor's own commits and move the group's cursor backwards.
-    private final ConcurrentHashMap<ConsumerKey, Promise<CommitOutcome>> pendingDetachFlushes = new ConcurrentHashMap<>();
+    /// #1403 (v-str-1914 F1): the graceful detaches of one key whose flush is still pending — held behind the old
+    /// consumer's in-flight advance for up to [#DETACH_ADVANCE_BOUND] — per key. A re-subscription of the same key on
+    /// this node fetches its cursor only after the last of them settles ([#loadCursorAndStart]), so an old flush can
+    /// never land after the successor's own commits and move the group's cursor backwards.
+    private final ConcurrentHashMap<ConsumerKey, PendingDetaches> pendingDetachFlushes = new ConcurrentHashMap<>();
+
+    /// One promise and a counter per key, never a chain of promises: resolving a nested chain recurses once per link
+    /// (v-str-1914 N1: a StackOverflowError at ~20k links), this is O(1) however many detaches pile up. The counter is
+    /// touched only inside `compute`, which is atomic per key.
+    private static final class PendingDetaches {
+        final Promise<CommitOutcome> settled = Promise.promise();
+        private int pending = 1;
+
+        PendingDetaches added() {
+            pending++;
+
+            return this;
+        }
+
+        boolean released() {
+            return --pending == 0;
+        }
+    }
 
     /// Test-only seam (#1355), run by [#issueCheckpoint] at each [CheckpointIssuePoint]. Volatile because the
     /// issuing thread is a delivery continuation or the shared scheduler, which already exist when a test
@@ -274,13 +292,11 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
     @Override
     public Result<Unit> unsubscribe(String streamName, int partition, String consumerGroup) {
         var key = ConsumerKey.consumerKey(streamName, partition, consumerGroup);
-        var gate = Promise.<CommitOutcome> promise();
-
-        holdUntilSettled(key, gate);
+        var held = holdDetach(key);
 
         return option(consumers.remove(key)).toResult(StreamError.General.CONSUMER_NOT_FOUND)
-                     .onSuccess(state -> cleanupConsumer(key, state, gate))
-                     .onFailure(_ -> gate.succeed(CommitOutcome.persisted()))
+                     .onSuccess(state -> cleanupConsumer(key, state, held))
+                     .onFailure(_ -> releaseDetach(key, held))
                      .mapToUnit();
     }
 
@@ -299,29 +315,38 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
     /// — chained behind any periodic commit still in flight ([#flushCursorForKey]) — is the last commit
     /// this consumer ever makes. A consumer whose commit was already refused as `Fenced` (#1271) skips
     /// the flush: it is no longer the assignee, and the store would refuse it the same way.
-    private void cleanupConsumer(ConsumerKey key, ConsumerState state, Promise<CommitOutcome> gate) {
+    private void cleanupConsumer(ConsumerKey key, ConsumerState state, PendingDetaches held) {
         detachWithoutFlush(key, state);
         if (state.isFenced()) {
-            gate.succeed(CommitOutcome.persisted());
+            releaseDetach(key, held);
 
             return;
         }
 
-        flushCursorForKey(key, state).withResult(gate::resolve);
+        flushCursorForKey(key, state).withResult(_ -> releaseDetach(key, held));
     }
 
-    /// #1403 (v-str-1914 F1, R2): the gate is registered BEFORE the consumer leaves [#consumers], so a same-key
-    /// re-subscription that sees the key free also sees the gate — the flush itself is only issued after the removal,
-    /// and a store that blocks its caller would otherwise leave a window with neither. Chained behind any earlier
-    /// pending gate of the key, never replacing it: a later detach whose flush is already settled must not release a
-    /// successor while an earlier flush is still held. Removed once it settles, and only if still the key's latest.
-    private void holdUntilSettled(ConsumerKey key, Promise<CommitOutcome> gate) {
-        var held = pendingDetachFlushes.compute(key,
-                                                (_, prev) -> prev == null
-                                                             ? gate
-                                                             : prev.fold(_ -> gate));
+    /// #1403 (v-str-1914 F1, R2): counted BEFORE the consumer leaves [#consumers], so a same-key re-subscription that
+    /// sees the key free also sees the pending detach — the flush itself is only issued after the removal, and a store
+    /// that blocks its caller would otherwise leave a window with neither. Counted, never replaced: a later detach
+    /// whose flush is already settled must not release a successor while an earlier flush is still held.
+    private PendingDetaches holdDetach(ConsumerKey key) {
+        return pendingDetachFlushes.compute(key,
+                                            (_, current) -> current == null
+                                                            ? new PendingDetaches()
+                                                            : current.added());
+    }
 
-        held.withResult(_ -> pendingDetachFlushes.remove(key, held));
+    /// The last release of a key removes its entry and settles the promise a waiting successor holds.
+    private void releaseDetach(ConsumerKey key, PendingDetaches held) {
+        var remaining = pendingDetachFlushes.compute(key,
+                                                     (_, current) -> current.released()
+                                                                     ? null
+                                                                     : current);
+
+        if (remaining == null) {
+            held.settled.succeed(CommitOutcome.persisted());
+        }
     }
 
     private void detachWithoutFlush(ConsumerKey key, ConsumerState state) {
@@ -557,12 +582,14 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
         unsubscribe(key.streamName(), key.partition(), key.groupId());
     }
 
-    /// #1403 (v-str-1914 F1): the fetch waits for a detach flush of the same key still pending on this node, so the
-    /// successor resumes from the old consumer's final cursor and nothing of the old consumer commits after it starts.
-    /// Neither skipping that flush (it would drop the old handler's progress) nor a store-side max-fence (it would
+    /// #1403 (v-str-1914 F1): the fetch waits for the detach flushes of the same key still pending on this node, so the
+    /// successor resumes from the old consumer's final cursor and no detach flush lands after it starts. Not covered: a
+    /// periodic commit that outlived its own `PERIODIC_COMMIT_BOUND` is abandoned by the flush's chain, and its store
+    /// write can still land late and move the cursor backwards (pre-existing, not introduced by this gate). Neither skipping that flush (it would drop the old handler's progress) nor a store-side max-fence (it would
     /// refuse a legitimate operator rewind) is used.
     private void loadCursorAndStart(ConsumerKey key, ConsumerState state) {
-        cursorStore.onPresent(store -> option(pendingDetachFlushes.get(key)).or(NO_PREDECESSOR)
+        cursorStore.onPresent(store -> option(pendingDetachFlushes.get(key)).map(detaches -> detaches.settled)
+                                             .or(NO_PREDECESSOR)
                                              .onResult(_ -> fetchCursorAndStart(store, key, state, 1)))
                    .onEmpty(() -> startConsumer(key, state));
     }

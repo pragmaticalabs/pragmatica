@@ -414,6 +414,36 @@ class DetachAwaitsInFlightAdvanceTest {
         assertThat(commits).as("the held flush committed the pre-delivery cursor at the bound").startsWith(0L);
     }
 
+    /// v-str-1914 N1: 50,000 same-key detach/re-subscribe rounds pile up behind one held flush. Resolving a nested
+    /// chain of gates recursed once per link and overflowed the stack at about 20,000 links (logged only as "Throwable
+    /// escaped"), so the successor never started. Red under "the gates are a nested chain": the final successor does
+    /// not deliver after the bound.
+    @Test
+    void deepChurnBehindOneHeldFlush_finalSuccessorStartsAfterTheBound() throws InterruptedException {
+        var entered = new CountDownLatch(1);
+        var successorDelivered = new CountDownLatch(1);
+
+        runtime.subscribe(STREAM, 0, ConsumerConfig.consumerConfig(GROUP), (_, _, _) -> {
+            entered.countDown();
+
+            return Promise.promise();
+        });
+        manager.publishLocal(STREAM, 0, "event-0".getBytes(UTF_8), 1000L);
+        assertThat(entered.await(5, TimeUnit.SECONDS)).isTrue();
+        runtime.unsubscribe(STREAM, 0, GROUP);
+        for (var round = 0; round < 50_000; round++) {
+            runtime.subscribe(STREAM, 0, ConsumerConfig.consumerConfig(GROUP), (_, _, _) -> Promise.unitPromise());
+            runtime.unsubscribe(STREAM, 0, GROUP);
+        }
+        runtime.subscribe(STREAM, 0, ConsumerConfig.consumerConfig(GROUP), (_, _, _) -> {
+            successorDelivered.countDown();
+
+            return Promise.unitPromise();
+        });
+        assertThat(successorDelivered.await(15, TimeUnit.SECONDS)).as("the final successor started").isTrue();
+        assertThat(commits).as("the held flush committed the pre-delivery cursor at the bound").startsWith(0L);
+    }
+
     /// v-str-1914 second window: the old consumer leaves the registry before its flush is registered, and a store whose
     /// commit blocks the CALLER keeps the flush from being registered at all. A same-key subscription on another thread
     /// in that gap must still wait for the flush. Red under "the gate is registered after the consumer is removed": the
