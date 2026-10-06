@@ -1692,10 +1692,19 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     /// only when [#graceReapVerdict] still allows it (#1050) — AND clears the target from the registry
     /// (`drainCommandClear`). Returns on the enqueue (the drain itself proceeds asynchronously via the
     /// heartbeat + backstop).
+    ///
+    /// #1543: a SURPLUS trim of a node a live replacement pairing protects is refused — the `LeaderReconciler`
+    /// surplus drain picks a fresh ephemeral core first, which is exactly the +1 replacement. Non-surplus
+    /// reasons are not gated by the pairing: a never-joined zombie (`JOIN_GRACE_REAP`) has no other reaper.
     @Override
     public synchronized Promise<Unit> drainNode(NodeId targetNodeId, DrainReason reason) {
         if (!active.get() || retirementRefusal.get().apply(targetNodeId).isPresent()) {
             return org.pragmatica.lang.utils.Causes.cause("Node retirement awaits certified voter handoff")
+                                                   .promise();
+        }
+
+        if (reason.isSurplusTrim() && nodeReplacements.get().retirementProtected().contains(targetNodeId)) {
+            return org.pragmatica.lang.utils.Causes.cause("Node is paired in an in-flight node replacement")
                                                    .promise();
         }
 

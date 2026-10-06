@@ -98,13 +98,4 @@ class CoreCandidateRetirementTest {
         assertThat(AetherNode.excludedCores(counted, installed, history, installed, Set.of(B))).containsExactly(DEAD);
         assertThat(AetherNode.excludedCores(counted, installed, history, installed, Set.of())).containsExactlyInAnyOrder(B, DEAD);
     }
-
-    /// The backstop every CTM drain consults (the LeaderReconciler surplus drain picks a fresh ephemeral core first).
-    @Test void retirementRefusal_pairedNode_isRefusedWithReason_unpairedVerdictUnchanged() {
-        assertThat(AetherNode.retirementRefusal(Set.of(REPLACEMENT), TRACKED_CORE, ELECTORATE, ORIGINAL, ORIGINAL, true, REPLACEMENT).or(""))
-            .contains("node replacement");
-        assertThat(AetherNode.retirementRefusal(Set.of(REPLACEMENT), TRACKED_WORKER, Option.none(), Set.of(), Set.of(), true, REPLACEMENT).isPresent())
-            .isTrue();
-        assertThat(AetherNode.retirementRefusal(Set.of(), TRACKED_CORE, ELECTORATE, ORIGINAL, ORIGINAL, true, REPLACEMENT).isEmpty()).isTrue();
-    }
 }

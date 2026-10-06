@@ -398,6 +398,38 @@ class ClusterTopologyManagerActuatorTest {
         assertThat(lifecycleManager.terminateCount.get()).isZero();
     }
 
+    /// #1543: the LeaderReconciler surplus drain picks a fresh ephemeral core first — the +1 replacement. While
+    /// paired it is refused for every surplus reason; a join-grace reap of a never-joined zombie is not gated.
+    @Test
+    void drainNode_pairedReplacement_surplusTrimRefused_joinGraceReapProceeds() {
+        var pairings = NodeReplacementIndex.nodeReplacementIndex();
+        pairings.put(new AetherKey.NodeReplacementKey(PEER_C),
+                     new AetherValue.NodeReplacementValue(PEER_D, "core", AetherValue.NodeReplacementPhase.JOINING, 0L));
+        ctm.setNodeReplacements(pairings);
+        ctm.activate();
+
+        assertThat(ctm.drainNode(PEER_D, DrainReason.OVERPROVISION_PARTITION_HEAL).await().isFailure()).isTrue();
+        assertThat(ctm.drainNode(PEER_D, DrainReason.OVERPROVISION_SCALE_DOWN).await().isFailure()).isTrue();
+        assertThat(ctm.drainNode(PEER_C, DrainReason.OVERPROVISION_PARTITION_HEAL).await().isFailure()).isTrue();
+        assertThat(drainCommandSinkCalls).isEmpty();
+
+        assertThat(ctm.drainNode(PEER_D, DrainReason.JOIN_GRACE_REAP).await().isSuccess()).isTrue();
+        assertThat(drainCommandSinkCalls).containsExactly(PEER_D);
+    }
+
+    /// Control: a terminal pairing gates nothing.
+    @Test
+    void drainNode_terminalPairing_surplusTrimProceeds() {
+        var pairings = NodeReplacementIndex.nodeReplacementIndex();
+        pairings.put(new AetherKey.NodeReplacementKey(PEER_C),
+                     new AetherValue.NodeReplacementValue(PEER_D, "core", AetherValue.NodeReplacementPhase.ROLLED_BACK, 0L));
+        ctm.setNodeReplacements(pairings);
+        ctm.activate();
+
+        assertThat(ctm.drainNode(PEER_D, DrainReason.OVERPROVISION_PARTITION_HEAL).await().isSuccess()).isTrue();
+        assertThat(drainCommandSinkCalls).containsExactly(PEER_D);
+    }
+
     @Test
     void drainNode_enqueuesDrainCommand_forTarget_withoutSynchronousTerminate() {
         ctm.activate();

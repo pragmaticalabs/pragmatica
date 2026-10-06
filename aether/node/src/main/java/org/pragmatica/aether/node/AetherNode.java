@@ -3424,7 +3424,6 @@ public interface AetherNode extends ManageableNode {
         clusterTopologyManager.setRetirementRefusal(node -> retirementRefusal(clusterNode,
                                                                               membershipFsmRef::get,
                                                                               deploymentMap,
-                                                                              nodeReplacements,
                                                                               readyCoreCandidates(stableCdmReadyNodesSupplier.get(),
                                                                                                   membershipFsmRef::get),
                                                                               node));
@@ -8406,32 +8405,16 @@ public interface AetherNode extends ManageableNode {
     private static Option<String> retirementRefusal(RabiaNode<KVCommand<AetherKey>> cluster,
                                                     Supplier<MembershipFsm> membership,
                                                     DeploymentMap deploymentMap,
-                                                    NodeReplacementIndex replacements,
                                                     Set<NodeId> ready,
                                                     NodeId node) {
         return Option.option(membership.get()).fold(() -> Option.some("membership view not available"),
-                                                    fsm -> retirementRefusal(replacements.retirementProtected(),
-                                                                             fsm.memberDescriptor(node),
+                                                    fsm -> retirementRefusal(fsm.memberDescriptor(node),
                                                                              cluster.retirementSafeVoters()
                                                                                     .map(voters -> Set.copyOf(voters.members())),
                                                                              cluster.verifiedVoterHistoryIds(),
                                                                              ready,
                                                                              deploymentMap.byNode(node).isEmpty(),
                                                                              node));
-    }
-
-    /// #1543: a node a live replacement pairing protects is refused first, whatever its role — the backstop for
-    /// every drain that reaches the CTM (the `LeaderReconciler` surplus drain picks a fresh ephemeral core first).
-    static Option<String> retirementRefusal(Set<NodeId> replacementProtected,
-                                            Option<MemberDescriptor> descriptor,
-                                            Option<Set<NodeId>> installedVoters,
-                                            Set<NodeId> history,
-                                            Set<NodeId> ready,
-                                            boolean deploymentsEmpty,
-                                            NodeId node) {
-        return replacementProtected.contains(node)
-               ? Option.some("paired in an in-flight node replacement")
-               : retirementRefusal(descriptor, installedVoters, history, ready, deploymentsEmpty, node);
     }
 
     /// A tracked worker or spot is retirable. Everything else is judged by the core rule: a tracked core, and a node
