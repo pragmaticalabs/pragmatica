@@ -1367,7 +1367,7 @@ aether scheduled-tasks inject \
 aether scheduled-tasks executions-by-node <configSection> <artifact> <method>
 ```
 
-The task entries printed by `list` and `get` carry `lastOutcome` (`SUCCESS`, `FAILURE`, `UNKNOWN`, or empty) and `unknownOutcomes` (a gauge, lowered when a late response resolves the fire): `UNKNOWN` is a remote fire whose response did not arrive within the invocation timeout, counted neither as an execution nor as a failure (see the scheduled-tasks state API in the management API reference).
+The task entries printed by `list` and `get` carry `lastOutcome` (`SUCCESS`, `FAILURE`, `UNKNOWN`, or empty) and `unknownOutcomes` (a gauge, lowered when a late response resolves the fire or the invoker gives it up): `UNKNOWN` is a remote fire whose response did not arrive within the invocation timeout, counted neither as an execution nor as a failure (see the scheduled-tasks state API in the management API reference).
 
 Example:
 ```bash

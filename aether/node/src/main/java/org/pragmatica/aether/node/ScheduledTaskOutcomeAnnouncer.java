@@ -20,13 +20,14 @@ import org.pragmatica.lang.Option;
 ///
 /// Derived from the COMMITTED task state, like [StreamIsrAnnouncer]: every node applies the same Put and derives the same
 /// event from its old and new value, and the cluster-events aggregator publishes only on the owner of the cluster-events
-/// partition. The condition is `unknownOutcomes > 0`, the gauge of fires whose outcome is currently unknown, so a commit
-/// that keeps it on the same side of zero (another unknown fire, a definite fire, a skipped overlap, a partial late
-/// resolution) announces nothing: the committed gauge is the dedupe. Per-task flood control (the window, and holding an
-/// UNKNOWN that resolves inside it) is the aggregator's.
+/// partition. The condition is "the NEWEST fire's outcome is UNKNOWN" (`lastOutcome`): it begins with a fire that timed
+/// out and ends with a later fire that completed (RESTORED, not late) or the late answer of the newest fire (RESTORED,
+/// late). A commit that keeps it unchanged (another timed-out fire while unknown, the late answer of an OLDER fire, a
+/// skipped overlap, a gauge falling because a fire was given up) announces nothing: the committed outcome is the dedupe.
+/// Per-task flood control (the window, and holding an UNKNOWN that ends inside it) is the aggregator's.
 ///
-/// What the gauge cannot see is announced as nothing: a removed task row raises no event (the condition is gone with the
-/// task), and an unknown fire whose response never arrives keeps the condition, so no RESTORED follows it.
+/// A removed task row raises no event (the condition is gone with the task). The condition ends only through a fire's
+/// completion: a task that stops firing while unknown stays unknown, and says so.
 ///
 /// Every event carries a deterministic `eventId` (task row and its fire sequence), so two nodes that both pass the
 /// events-owner gate during a membership change publish ONE event as far as every reader that de-duplicates by `eventId`
@@ -46,8 +47,8 @@ public interface ScheduledTaskOutcomeAnnouncer {
     static Option<OperationalEvent> transition(ScheduledTaskStateKey key,
                                                Option<ScheduledTaskStateValue> before,
                                                ScheduledTaskStateValue after) {
-        var wasUnknown = before.map(state -> state.unknownOutcomes() > 0).or(false);
-        var isUnknown = after.unknownOutcomes() > 0;
+        var wasUnknown = before.map(ScheduledTaskStateValue::outcomeUnknown).or(false);
+        var isUnknown = after.outcomeUnknown();
 
         if (wasUnknown == isUnknown) {
             return Option.none();
@@ -64,17 +65,24 @@ public interface ScheduledTaskOutcomeAnnouncer {
                                                                                                      + ":" + after.fireSeq())
                            : OperationalEvent.ScheduledTaskOutcomeRestored.scheduledTaskOutcomeRestored(task,
                                                                                                         node,
-                                                                                                        lateOutcome(before,
-                                                                                                                    after),
+                                                                                                        outcomeOf(after),
+                                                                                                        lateAnswer(before,
+                                                                                                                   after),
                                                                                                         "scheduled-outcome-restored:" + key.asString()
                                                                                                        + ":" + after.fireSeq()));
     }
 
-    /// The late response made the fire an execution (counted) or a failure (not counted).
-    private static String lateOutcome(Option<ScheduledTaskStateValue> before, ScheduledTaskStateValue after) {
-        return after.totalExecutions() > before.map(ScheduledTaskStateValue::totalExecutions)
-                                               .or(0)
+    /// The outcome the task now records for its newest fire: an execution or a failure.
+    private static String outcomeOf(ScheduledTaskStateValue after) {
+        return ScheduledTaskStateValue.OUTCOME_SUCCESS.equals(after.lastOutcome())
                ? "executed"
                : "failed";
+    }
+
+    /// A late answer is the only commit that both ends the condition and lowers the gauge; a later fire's completion
+    /// carries the gauge over.
+    private static boolean lateAnswer(Option<ScheduledTaskStateValue> before, ScheduledTaskStateValue after) {
+        return after.unknownOutcomes() < before.map(ScheduledTaskStateValue::unknownOutcomes)
+                                               .or(0);
     }
 }

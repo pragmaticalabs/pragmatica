@@ -15,6 +15,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.function.LongSupplier;
+import java.util.function.UnaryOperator;
 
 import org.pragmatica.aether.invoke.ScheduledTaskRegistry.ScheduledTask;
 import org.pragmatica.aether.slice.ExecutionMode;
@@ -511,17 +512,44 @@ public interface ScheduledTaskManager {
         /// failure. Every other failure (a failure response, a departed node, a request that could not be sent) is one.
         private static void recordFailedFire(Context ctx, ScheduledTask task, Cause cause, long nextFireAt) {
             if (cause instanceof SliceInvokerError.CompletionUnknown unknown) {
-                var fireSeq = writeUnknownOutcomeState(ctx, task, cause.message(), nextFireAt);
+                var written = writeUnknownOutcomeState(ctx, task, cause.message(), nextFireAt);
+                var fireSeq = written.fireSeq();
 
                 unknown.lateOutcome()
-                       .onSuccess(_ -> resolveLateSuccess(ctx, task, fireSeq))
-                       .onFailure(late -> resolveLateFailure(ctx,
-                                                             task,
-                                                             fireSeq,
-                                                             late.message()));
+                       .onSuccess(_ -> resolveLate(ctx,
+                                                   task,
+                                                   written,
+                                                   base -> ScheduledTaskStateValue.lateSuccessState(base, fireSeq)))
+                       .onFailure(late -> resolveLate(ctx,
+                                                      task,
+                                                      written,
+                                                      base -> lateFailureOrAbandoned(task, base, fireSeq, late)));
             } else {
                 handleTaskFailure(ctx, task, cause.message(), nextFireAt);
             }
+        }
+
+        /// The invoker gave the fire up (a [SliceInvokerError.OutcomeAbandoned]): its outcome is never learned, which is
+        /// not a failure of the call. Any other failure is the callee's own late failure.
+        private static ScheduledTaskStateValue lateFailureOrAbandoned(ScheduledTask task,
+                                                                      ScheduledTaskStateValue base,
+                                                                      int fireSeq,
+                                                                      Cause late) {
+            if (late instanceof SliceInvokerError.OutcomeAbandoned) {
+                log.warn("Scheduled task {}.{} unknown outcome will never be learned: {}",
+                         task.configSection(),
+                         task.methodName().name(),
+                         late.message());
+
+                return ScheduledTaskStateValue.abandonedState(base);
+            }
+
+            log.warn("Scheduled task {}.{} failed (late response): {}",
+                     task.configSection(),
+                     task.methodName().name(),
+                     late.message());
+
+            return ScheduledTaskStateValue.lateFailureState(base, fireSeq, late.message());
         }
 
         private static void handleTaskFailure(Context ctx, ScheduledTask task, String message, long nextFireAt) {
@@ -535,42 +563,27 @@ public interface ScheduledTaskManager {
         private static void writeSuccessState(Context ctx, ScheduledTask task, long nextFireAt) {
             var key = stateKeyFor(ctx, task);
             var prior = ctx.stateReader.apply(key);
-            var priorTotal = prior.map(ScheduledTaskStateValue::totalExecutions).or(0);
-            var priorSkipped = prior.map(ScheduledTaskStateValue::skippedOverlaps).or(0);
-            var priorUnknown = prior.map(ScheduledTaskStateValue::unknownOutcomes).or(0);
-            var value = ScheduledTaskStateValue.successState(nextFireAt,
-                                                             priorTotal + 1,
-                                                             priorSkipped,
-                                                             priorUnknown,
-                                                             ScheduledTaskStateValue.nextFireSeq(prior));
 
             logOutcomeTransitionOut(task, prior);
-            ctx.stateWriter.accept(new KVCommand.Put<>(key, value));
+            ctx.stateWriter.accept(new KVCommand.Put<>(key, ScheduledTaskStateValue.successState(prior, nextFireAt)));
         }
 
         private static void writeFailureState(Context ctx, ScheduledTask task, String message, long nextFireAt) {
             var key = stateKeyFor(ctx, task);
             var prior = ctx.stateReader.apply(key);
-            var priorFailures = prior.map(ScheduledTaskStateValue::consecutiveFailures).or(0);
-            var priorTotal = prior.map(ScheduledTaskStateValue::totalExecutions).or(0);
-            var priorSkipped = prior.map(ScheduledTaskStateValue::skippedOverlaps).or(0);
-            var priorUnknown = prior.map(ScheduledTaskStateValue::unknownOutcomes).or(0);
-            var value = ScheduledTaskStateValue.failureState(nextFireAt,
-                                                             priorFailures + 1,
-                                                             priorTotal,
-                                                             priorSkipped,
-                                                             message,
-                                                             priorUnknown,
-                                                             ScheduledTaskStateValue.nextFireSeq(prior));
 
             logOutcomeTransitionOut(task, prior);
-            ctx.stateWriter.accept(new KVCommand.Put<>(key, value));
+            ctx.stateWriter.accept(new KVCommand.Put<>(key,
+                                                       ScheduledTaskStateValue.failureState(prior, nextFireAt, message)));
         }
 
         /// The outcome is UNKNOWN (#1723). Logged ONCE per transition into the unknown state, not per fire: a task that
         /// keeps timing out is counted in `unknownOutcomes`, and the log line says so; the line for leaving the state is
         /// [#logOutcomeTransitionOut].
-        private static int writeUnknownOutcomeState(Context ctx, ScheduledTask task, String message, long nextFireAt) {
+        private static ScheduledTaskStateValue writeUnknownOutcomeState(Context ctx,
+                                                                        ScheduledTask task,
+                                                                        String message,
+                                                                        long nextFireAt) {
             var key = stateKeyFor(ctx, task);
             var prior = ctx.stateReader.apply(key);
             var alreadyUnknown = prior.map(state -> ScheduledTaskStateValue.OUTCOME_UNKNOWN.equals(state.lastOutcome()))
@@ -588,33 +601,41 @@ public interface ScheduledTaskManager {
 
             ctx.stateWriter.accept(new KVCommand.Put<>(key, value));
 
-            return value.fireSeq();
+            return value;
         }
 
-        /// The callee's response arrived after fire `fireSeq` had been recorded as UNKNOWN: the fire was an execution after
-        /// all. Written against the row as it is NOW, whatever was recorded since (a newer fire's outcome stands, see
-        /// [ScheduledTaskStateValue#lateSuccessState]); a row that is gone (the task was removed) has nothing to resolve.
-        private static void resolveLateSuccess(Context ctx, ScheduledTask task, int fireSeq) {
+        /// A late answer for (or the abandonment of) the fire that wrote `written`. Applied to the row as it is NOW, whatever
+        /// was recorded since (a newer fire's outcome stands, see [ScheduledTaskStateValue#lateSuccessState]), except that a
+        /// row older than the fire itself (its UNKNOWN commit not yet visible) is replaced by `written` as the base
+        /// ([ScheduledTaskStateValue#resolutionBase]): the sequence never goes backwards and the gauge is lowered against a
+        /// count that includes this fire. A row that is gone (the task was removed) has nothing to resolve.
+        private static void resolveLate(Context ctx,
+                                        ScheduledTask task,
+                                        ScheduledTaskStateValue written,
+                                        UnaryOperator<ScheduledTaskStateValue> resolution) {
             var key = stateKeyFor(ctx, task);
-            var prior = ctx.stateReader.apply(key);
 
-            logOutcomeTransitionOut(task, prior);
-            prior.map(state -> ScheduledTaskStateValue.lateSuccessState(state, fireSeq))
-                 .onPresent(value -> ctx.stateWriter.accept(new KVCommand.Put<>(key, value)));
+            ctx.stateReader.apply(key)
+                           .map(row -> ScheduledTaskStateValue.resolutionBase(row, written))
+                           .onPresent(base -> writeResolved(ctx,
+                                                            task,
+                                                            key,
+                                                            base,
+                                                            resolution.apply(base)));
         }
 
-        /// The late response was a failure: the fire failed after all.
-        private static void resolveLateFailure(Context ctx, ScheduledTask task, int fireSeq, String message) {
-            var key = stateKeyFor(ctx, task);
-            var prior = ctx.stateReader.apply(key);
+        private static void writeResolved(Context ctx,
+                                          ScheduledTask task,
+                                          ScheduledTaskStateKey key,
+                                          ScheduledTaskStateValue base,
+                                          ScheduledTaskStateValue resolved) {
+            if (base.outcomeUnknown() && !resolved.outcomeUnknown()) {
+                log.info("Scheduled task {}.{} outcome known again: the unknown fire was answered late",
+                         task.configSection(),
+                         task.methodName().name());
+            }
 
-            log.warn("Scheduled task {}.{} failed (late response): {}",
-                     task.configSection(),
-                     task.methodName().name(),
-                     message);
-            logOutcomeTransitionOut(task, prior);
-            prior.map(state -> ScheduledTaskStateValue.lateFailureState(state, fireSeq, message))
-                 .onPresent(value -> ctx.stateWriter.accept(new KVCommand.Put<>(key, value)));
+            ctx.stateWriter.accept(new KVCommand.Put<>(key, resolved));
         }
 
         /// A fire that completed (success or failure) after the task had been UNKNOWN: the outcome is known again.

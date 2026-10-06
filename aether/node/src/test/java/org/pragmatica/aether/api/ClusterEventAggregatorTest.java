@@ -1224,7 +1224,7 @@ class ClusterEventAggregatorTest {
     }
 
     private static OperationalEvent.ScheduledTaskOutcomeRestored restoredOutcome(String eventId, String outcome) {
-        return OperationalEvent.ScheduledTaskOutcomeRestored.scheduledTaskOutcomeRestored(CRON_TASK, "node-a", outcome, eventId);
+        return OperationalEvent.ScheduledTaskOutcomeRestored.scheduledTaskOutcomeRestored(CRON_TASK, "node-a", outcome, true, eventId);
     }
 
     private Harness harnessWithClock(AtomicLong physicalMillis) {
@@ -1313,6 +1313,40 @@ class ClusterEventAggregatorTest {
 
         assertThat(h.events()).hasSize(4);
         assertThat(h.events().getLast().details()).containsEntry("outcome", "failed").containsEntry("fireAt", "2");
+    }
+
+    /// #1723 N1: the periodic edge. `AetherNode` schedules `evictIdleThrottleWindows` once a minute; it is what runs the
+    /// sweep that announces a held UNKNOWN, so the sweep must be reachable through it, not only when called directly.
+    @Test
+    void scheduledTaskOutcome_heldUnknown_isAnnouncedByThePeriodicEvictionTick() {
+        var physicalMillis = new AtomicLong(1_000_000L);
+        var h = harnessWithClock(physicalMillis);
+
+        h.aggregator().onScheduledTaskOutcomeUnknown(unknownOutcome("first", 1L));
+        h.aggregator().onScheduledTaskOutcomeRestored(restoredOutcome("first-restored", "executed"));
+        physicalMillis.addAndGet(10_000L);
+        h.aggregator().onScheduledTaskOutcomeUnknown(unknownOutcome("second", 2L));
+        physicalMillis.addAndGet(50_000L);
+        h.aggregator().evictIdleThrottleWindows();
+
+        assertThat(h.events()).hasSize(3);
+        assertThat(h.events().getLast().details()).containsEntry("eventId", "second");
+    }
+
+    /// A RESTORED because a LATER fire completed says so: `late` is false.
+    @Test
+    void scheduledTaskOutcome_restoredByALaterFire_isNotMarkedLate() {
+        var h = Harness.create();
+
+        h.aggregator().onScheduledTaskOutcomeUnknown(unknownOutcome("u", 5L));
+        h.aggregator().onScheduledTaskOutcomeRestored(OperationalEvent.ScheduledTaskOutcomeRestored.scheduledTaskOutcomeRestored(CRON_TASK,
+                                                                                                                                   "node-a",
+                                                                                                                                   "failed",
+                                                                                                                                   false,
+                                                                                                                                   "r"));
+
+        assertThat(h.events().getLast().details()).containsEntry("late", "false").containsEntry("outcome", "failed");
+        assertThat(h.events().getLast().summary()).contains("a later fire completed");
     }
 
     /// #1723: a RESTORED nobody was told the UNKNOWN for is not an all-clear.

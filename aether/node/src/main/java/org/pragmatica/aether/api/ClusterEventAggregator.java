@@ -1576,8 +1576,9 @@ public final class ClusterEventAggregator {
 
         emit(new ClusterEvent.ScheduledTaskOutcomeRestored(hlcClock.now(),
                                                            Severity.INFO,
-                                                           "Scheduled task " + event.task()
-                                                          + " resolved its unknown outcome: the late response says it " + event.outcome(),
+                                                           "Scheduled task " + event.task() + (event.late()
+                                                                                               ? " resolved its unknown outcome: the late response says it "
+                                                                                               : " is known again: a later fire completed and ") + event.outcome(),
                                                            scheduledOutcomeDetails(event.task(),
                                                                                    event.node(),
                                                                                    unknown.fireAt(),
@@ -1585,7 +1586,7 @@ public final class ClusterEventAggregator {
                                                                                    Map.of("outcome",
                                                                                           event.outcome(),
                                                                                           "late",
-                                                                                          "true"))));
+                                                                                          String.valueOf(event.late())))));
     }
 
     /// Publishes every UNKNOWN the window held back whose window has since closed and whose outcome is still unknown:

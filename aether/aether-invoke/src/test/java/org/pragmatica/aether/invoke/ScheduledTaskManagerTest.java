@@ -662,11 +662,7 @@ class ScheduledTaskManagerTest {
         void fixedRate_olderFireLateFailure_afterNewerFireSucceeded_keepsTheNewerSuccess() {
             var key = unknownTaskState(1);
             var unknown = stateFor(key).unwrap();
-            var newer = ScheduledTaskStateValue.successState(unknown.nextFireAt(),
-                                                             unknown.totalExecutions() + 1,
-                                                             unknown.skippedOverlaps(),
-                                                             unknown.unknownOutcomes(),
-                                                             unknown.fireSeq() + 1);
+            var newer = ScheduledTaskStateValue.successState(Option.some(unknown), unknown.nextFireAt());
 
             stateMap.put(key, newer);
             stubInvoker.lateOutcomes.getFirst().fail(() -> "old fire failed late");
@@ -685,13 +681,7 @@ class ScheduledTaskManagerTest {
         void fixedRate_olderFireLateSuccess_afterNewerFireFailed_keepsTheNewerFailure() {
             var key = unknownTaskState(1);
             var unknown = stateFor(key).unwrap();
-            var newer = ScheduledTaskStateValue.failureState(unknown.nextFireAt(),
-                                                             unknown.consecutiveFailures() + 1,
-                                                             unknown.totalExecutions(),
-                                                             unknown.skippedOverlaps(),
-                                                             "newer failed",
-                                                             unknown.unknownOutcomes(),
-                                                             unknown.fireSeq() + 1);
+            var newer = ScheduledTaskStateValue.failureState(Option.some(unknown), unknown.nextFireAt(), "newer failed");
 
             stateMap.put(key, newer);
             stubInvoker.lateOutcomes.getFirst().succeed(Unit.unit());
@@ -702,6 +692,26 @@ class ScheduledTaskManagerTest {
             assertThat(state.consecutiveFailures()).as("an older success does not reset the newer streak").isEqualTo(newer.consecutiveFailures());
             assertThat(state.lastFailureMessage()).isEqualTo("newer failed");
             assertThat(state.totalExecutions()).as("it still executed").isEqualTo(newer.totalExecutions() + 1);
+        }
+
+        /// #1723 B1: a fire the invoker gives up (capacity, TTL, a departed callee, a stop) leaves the gauge for the
+        /// never-learned counter. Nothing is invented: not an execution, not a failure, the newest fire stays UNKNOWN.
+        @Test
+        void fixedRate_abandonedFire_leavesTheGauge_forTheNeverLearnedCounter_inventingNoOutcome() {
+            var key = unknownTaskState(1);
+            var before = stateFor(key).unwrap();
+
+            stubInvoker.lateOutcomes.getLast().fail(SliceInvokerError.OutcomeAbandoned.outcomeAbandoned("test"));
+            awaitLate(key, v -> v.unknownOutcomes() < before.unknownOutcomes());
+            var state = stateFor(key).unwrap();
+
+            assertThat(state.unknownOutcomes()).as("the gauge drops").isEqualTo(before.unknownOutcomes() - 1);
+            assertThat(state.outcomesNeverLearned()).as("and the fire is counted as never learned").isEqualTo(before.outcomesNeverLearned() + 1);
+            assertThat(state.completionTimeouts()).as("the timeout total is monotonic").isEqualTo(before.completionTimeouts());
+            assertThat(state.completionTimeouts()).isGreaterThanOrEqualTo(before.unknownOutcomes());
+            assertThat(state.lastOutcome()).as("the newest fire is still unknown").isEqualTo(ScheduledTaskStateValue.OUTCOME_UNKNOWN);
+            assertThat(state.totalExecutions()).as("not an execution").isZero();
+            assertThat(state.consecutiveFailures()).as("not a failure").isZero();
         }
 
         /// The late outcome is applied on the promise's own thread: wait for the write, bounded. A resolution that never

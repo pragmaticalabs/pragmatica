@@ -172,7 +172,9 @@ public final class ScheduledTaskRoutes implements RouteSource {
                              long updatedAt,
                              int skippedOverlaps,
                              String lastOutcome,
-                             int unknownOutcomes) {}
+                             int unknownOutcomes,
+                             int outcomesNeverLearned,
+                             int completionTimeouts) {}
 
     @Override
     public Stream<Route<?>> routes() {
@@ -351,14 +353,7 @@ public final class ScheduledTaskRoutes implements RouteSource {
                                                                         Option<ScheduledTaskStateValue> priorState,
                                                                         ScheduledTaskInjectRequest req,
                                                                         long previousExecutionMs) {
-        var priorTotal = priorState.map(ScheduledTaskStateValue::totalExecutions).or(0);
-        var priorSkipped = priorState.map(ScheduledTaskStateValue::skippedOverlaps).or(0);
-        var priorUnknown = priorState.map(ScheduledTaskStateValue::unknownOutcomes).or(0);
-        var value = ScheduledTaskStateValue.successState(0,
-                                                         priorTotal + 1,
-                                                         priorSkipped,
-                                                         priorUnknown,
-                                                         ScheduledTaskStateValue.nextFireSeq(priorState));
+        var value = ScheduledTaskStateValue.successState(priorState, 0);
         KVCommand<AetherKey> command = new KVCommand.Put<>(stateKey, value);
 
         return nodeSupplier.get()
@@ -370,10 +365,17 @@ public final class ScheduledTaskRoutes implements RouteSource {
                                                                      value.lastExecutionAt()));
     }
 
-    /// The callee's response arrived after the injected fire had been recorded as UNKNOWN: the row, as it is now, takes
-    /// the real outcome (#1723). A row that is gone has nothing to resolve.
-    private void resolveLateOutcome(ScheduledTaskStateKey stateKey, UnaryOperator<ScheduledTaskStateValue> resolved) {
-        stateRegistry.stateFor(stateKey).map(resolved::apply).onPresent(value -> writeLateOutcome(stateKey, value));
+    /// The callee's response arrived after the injected fire had been recorded as UNKNOWN, or the invoker gave the fire up.
+    /// Applied to the row as it is now, except that a row older than the fire itself (its UNKNOWN commit not yet visible)
+    /// is replaced by `written` as the base, so the sequence never goes backwards (#1723). A row that is gone has nothing
+    /// to resolve.
+    private void resolveLateOutcome(ScheduledTaskStateKey stateKey,
+                                    ScheduledTaskStateValue written,
+                                    UnaryOperator<ScheduledTaskStateValue> resolution) {
+        stateRegistry.stateFor(stateKey)
+                     .map(row -> ScheduledTaskStateValue.resolutionBase(row, written))
+                     .map(resolution::apply)
+                     .onPresent(value -> writeLateOutcome(stateKey, value));
     }
 
     private void writeLateOutcome(ScheduledTaskStateKey stateKey, ScheduledTaskStateValue value) {
@@ -382,24 +384,23 @@ public final class ScheduledTaskRoutes implements RouteSource {
         nodeSupplier.get().apply(List.of(command));
     }
 
+    /// The late failure of an injected fire: the callee's own, or the invoker giving the fire up, which is no failure.
+    private static ScheduledTaskStateValue lateFailureOrAbandoned(ScheduledTaskStateValue base,
+                                                                  int fireSeq,
+                                                                  Cause late) {
+        return late instanceof SliceInvokerError.OutcomeAbandoned
+               ? ScheduledTaskStateValue.abandonedState(base)
+               : ScheduledTaskStateValue.lateFailureState(base, fireSeq, late.message());
+    }
+
     /// A fire that ended without a success. A timeout of a REMOTE fire says nothing about the callee, so its outcome is
     /// recorded as UNKNOWN and counted neither as an execution nor as a failure (#1723); anything else is a failure.
     private void writeFailureBestEffort(ScheduledTaskStateKey stateKey,
                                         Option<ScheduledTaskStateValue> priorState,
                                         Cause cause) {
-        var priorTotal = priorState.map(ScheduledTaskStateValue::totalExecutions).or(0);
-        var priorFailures = priorState.map(ScheduledTaskStateValue::consecutiveFailures).or(0);
-        var priorSkipped = priorState.map(ScheduledTaskStateValue::skippedOverlaps).or(0);
-        var priorUnknown = priorState.map(ScheduledTaskStateValue::unknownOutcomes).or(0);
         var value = cause instanceof SliceInvokerError.CompletionUnknown
                     ? ScheduledTaskStateValue.unknownOutcomeState(priorState, 0)
-                    : ScheduledTaskStateValue.failureState(0,
-                                                           priorFailures + 1,
-                                                           priorTotal,
-                                                           priorSkipped,
-                                                           cause.message(),
-                                                           priorUnknown,
-                                                           ScheduledTaskStateValue.nextFireSeq(priorState));
+                    : ScheduledTaskStateValue.failureState(priorState, 0, cause.message());
         KVCommand<AetherKey> command = new KVCommand.Put<>(stateKey, value);
 
         nodeSupplier.get().apply(List.of(command));
@@ -408,11 +409,11 @@ public final class ScheduledTaskRoutes implements RouteSource {
 
             unknown.lateOutcome()
                    .onSuccess(_ -> resolveLateOutcome(stateKey,
-                                                      state -> ScheduledTaskStateValue.lateSuccessState(state, fireSeq)))
+                                                      value,
+                                                      base -> ScheduledTaskStateValue.lateSuccessState(base, fireSeq)))
                    .onFailure(late -> resolveLateOutcome(stateKey,
-                                                         state -> ScheduledTaskStateValue.lateFailureState(state,
-                                                                                                           fireSeq,
-                                                                                                           late.message())));
+                                                         value,
+                                                         base -> lateFailureOrAbandoned(base, fireSeq, late)));
         }
     }
 
@@ -636,11 +637,13 @@ public final class ScheduledTaskRoutes implements RouteSource {
                                      state.updatedAt(),
                                      state.skippedOverlaps(),
                                      state.lastOutcome(),
-                                     state.unknownOutcomes());
+                                     state.unknownOutcomes(),
+                                     state.outcomesNeverLearned(),
+                                     state.completionTimeouts());
     }
 
     private static TaskStateResponse emptyStateResponse(String configSection, String artifactStr, String methodStr) {
-        return new TaskStateResponse(configSection, artifactStr, methodStr, 0, 0, 0, 0, "", 0, 0, "", 0);
+        return new TaskStateResponse(configSection, artifactStr, methodStr, 0, 0, 0, 0, "", 0, 0, "", 0, 0, 0);
     }
 
     /// Cluster-wide combine of an ALL-mode task's per-node [ScheduledTaskStateValue] rows, feeding
@@ -670,7 +673,9 @@ public final class ScheduledTaskRoutes implements RouteSource {
                                            a.skippedOverlaps() + b.skippedOverlaps(),
                                            latest.lastOutcome(),
                                            a.unknownOutcomes() + b.unknownOutcomes(),
-                                           latest.fireSeq());
+                                           latest.fireSeq(),
+                                           a.outcomesNeverLearned() + b.outcomesNeverLearned(),
+                                           a.completionTimeouts() + b.completionTimeouts());
     }
 
     /// Scans the live KV store for every per-node row belonging to `task` (same
