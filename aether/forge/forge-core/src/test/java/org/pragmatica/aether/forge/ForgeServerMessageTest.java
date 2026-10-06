@@ -203,4 +203,20 @@ class ForgeServerMessageTest {
                                                               .contains("ruled out");
         }
     }
+
+    /// #1218 — the startup deploy was bounded by a hardcoded 10 s that `start_timeout_seconds` did not
+    /// cover. [EmberConfig#DEFAULT] carries 60, so a regression to any fixed constant differs from it.
+    @Test
+    void startupDeployTimeout_followsTheConfiguredStartBudget() {
+        assertThat(ForgeServer.startupDeployTimeout(EmberConfig.DEFAULT).millis())
+            .isEqualTo(EmberConfig.DEFAULT.startTimeoutSeconds() * 1000L);
+    }
+
+    @Test
+    void startupDeployTimeoutDetail_namesTheBudgetAndItsSetting() {
+        assertThat(ForgeServer.startupDeployTimeoutDetail(EmberConfig.DEFAULT, "timed out"))
+            .contains("timed out")
+            .contains("deploy budget 60s")
+            .contains("cluster.start_timeout_seconds");
+    }
 }

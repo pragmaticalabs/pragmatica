@@ -31,8 +31,29 @@ public interface StorageEngine {
     /// Get a value by key.
     ///
     /// @param key the key to look up
-    /// @return the value if present, or empty option
+    /// @return the value if present, or empty option — a removed key (a tombstone) is empty too
     Promise<Option<byte[]>> get(byte[] key);
+
+    /// The stored entry for `key` with its stamp — a live value or a tombstone (#1777 track 3) — so a reader can
+    /// order this replica's answer against the others'. An engine without versions answers live entries at
+    /// version 0, which lose to any stamped entry.
+    default Promise<Option<DHTMessage.KeyValue>> getEntry(byte[] key) {
+        return get(key).map(value -> value.map(present -> new DHTMessage.KeyValue(key, present, 0L, 0L, 0L, 0L)));
+    }
+
+    /// Remove `key` by storing a TOMBSTONE stamped with the remover's version and owner epoch (#1777 track 3),
+    /// under exactly the decision order of [#putVersioned(byte[], byte[], long, long, long, long)]: the owner-epoch
+    /// fence first (a failed [org.pragmatica.dht.DHTError.StaleEpochWrite] promise), then the per-key order. A
+    /// tombstone that loses to a newer stored entry leaves that entry.
+    ///
+    /// @return `true` if a live value was superseded, `false` if there was none or a newer entry kept its place.
+    default Promise<Boolean> removeVersioned(byte[] key,
+                                             long version,
+                                             long epochIncarnation,
+                                             long epochTerm,
+                                             long epochCounter) {
+        return remove(key);
+    }
 
     /// Store a value.
     ///
@@ -108,10 +129,55 @@ public interface StorageEngine {
         return putVersioned(key, value, version, epochIncarnation, epochTerm, epochCounter);
     }
 
+    /// Store a COPY that may be a tombstone (#1777 track 3), with the copy semantics of
+    /// [#putReplica(byte[], byte[], long, long, long, long)]. `createIfAbsent = false` stores it only over an older
+    /// entry, never where the key has none: an EXPIRED tombstone still kills a stale value it meets, but must not
+    /// re-create an entry its holders have already collected.
+    ///
+    /// @return `true` if written; `false` if a stored entry is newer, or nothing was stored and `createIfAbsent`
+    ///         was `false`.
+    default Promise<Boolean> putReplica(DHTMessage.KeyValue entry, boolean createIfAbsent) {
+        return entry.tombstone()
+               ? remove(entry.key())
+               : putReplica(entry.key(),
+                            entry.value(),
+                            entry.version(),
+                            entry.epochIncarnation(),
+                            entry.epochTerm(),
+                            entry.epochCounter());
+    }
+
+    /// Drop every entry — values and tombstones — of a partition this node no longer replicates (#1777 track 3): a
+    /// stray copy kept past the tombstone horizon could reintroduce a removed value once the tombstone is gone.
+    ///
+    /// @return the number of entries dropped.
+    default Promise<Integer> dropPartition(ConsistentHashRing<?> ring, Partition partition) {
+        return entriesForPartition(ring, partition).flatMap(entries -> Promise.allOf(entries.stream()
+                                                                                            .map(entry -> remove(entry.key()))
+                                                                                            .toList()))
+                                  .map(List::size);
+    }
+
+    /// Collect the tombstones of `partition` stamped at or before `expiredAtOrBeforeMillis` (HLC physical time,
+    /// #1777 track 3). Only the tombstone that is stored is removed: a newer entry that replaced it is kept.
+    ///
+    /// @return the number of tombstones collected.
+    default Promise<Integer> collectTombstones(ConsistentHashRing<?> ring,
+                                               Partition partition,
+                                               long expiredAtOrBeforeMillis) {
+        return Promise.success(0);
+    }
+
+    /// Tombstones currently held (#1777 track 3, a gauge).
+    default long tombstoneCount() {
+        return 0L;
+    }
+
     /// Remove `key` only while its stored entry is exactly the given version and owner epoch — a writer rolling
     /// back its OWN accept after the put lost its quorum to owner-epoch fences (#1818, the owner's fence
     /// ruling). An entry since superseded, or never stored, is left alone. An engine without the capability
-    /// removes nothing, which leaves the accept in place (the residual #1777 track 3 closes).
+    /// removes nothing, which leaves the accept in place. A HARD delete, never a tombstone (#1777 track 3): a
+    /// tombstone at the failed write's stamp would beat the previous value on every replica it reached.
     ///
     /// @return `true` if the exact entry was removed.
     default Promise<Boolean> removeIfExactly(byte[] key,
@@ -120,6 +186,54 @@ public interface StorageEngine {
                                              long epochTerm,
                                              long epochCounter) {
         return Promise.success(false);
+    }
+
+    /// The outcome of a write that reports the entry it displaced: whether it was written, and — as part of the SAME atomic
+    /// step — the entry it replaced, exactly as it was (v1882 r9b).
+    record Displaced(boolean written, Option<DHTMessage.KeyValue> prior) {}
+
+    /// [#putVersioned(byte[], byte[], long, long, long, long)] that also returns the entry it displaced, read in the same
+    /// atomic step as the write, so a writer that must roll its accept back restores what the key held when it wrote and
+    /// no concurrent write can land between a read and the write. An engine without the capability reports no prior entry.
+    default Promise<Displaced> putVersionedDisplacing(byte[] key,
+                                                      byte[] value,
+                                                      long version,
+                                                      long epochIncarnation,
+                                                      long epochTerm,
+                                                      long epochCounter) {
+        return putVersioned(key, value, version, epochIncarnation, epochTerm, epochCounter).map(written -> new Displaced(written,
+                                                                                                                         Option.none()));
+    }
+
+    /// [#removeVersioned(byte[], long, long, long, long)] that also returns the entry its tombstone displaced, read in the
+    /// same atomic step as the write (v1882 r9b). `written` says the tombstone was stored; the remove found a live value
+    /// exactly when it was written and the displaced entry was a live value. An engine without the capability reports no
+    /// prior entry.
+    default Promise<Displaced> removeVersionedDisplacing(byte[] key,
+                                                         long version,
+                                                         long epochIncarnation,
+                                                         long epochTerm,
+                                                         long epochCounter) {
+        return removeVersioned(key, version, epochIncarnation, epochTerm, epochCounter).map(found -> new Displaced(true,
+                                                                                                                   Option.none()));
+    }
+
+    /// Roll a writer's own accept back to what the key held BEFORE it: while the stored entry is still exactly the given
+    /// version and owner epoch, replace it with `prior` — value, version and epoch as they were — or hard-delete it when
+    /// `prior` is empty (the key was absent). An entry since superseded is left alone, so a newer write that landed in
+    /// between survives. An engine without the capability restores nothing, which leaves the accept in place (with no
+    /// prior entry it is [#removeIfExactly]).
+    ///
+    /// @return `true` if the exact entry was replaced or removed.
+    default Promise<Boolean> restoreIfExactly(byte[] key,
+                                              long version,
+                                              long epochIncarnation,
+                                              long epochTerm,
+                                              long epochCounter,
+                                              Option<DHTMessage.KeyValue> prior) {
+        return prior.isPresent()
+               ? Promise.success(false)
+               : removeIfExactly(key, version, epochIncarnation, epochTerm, epochCounter);
     }
 
     /// Whether an entry stamped with this owner epoch is older than this store's high-water — a copy applied
@@ -137,9 +251,9 @@ public interface StorageEngine {
     Promise<Unit> shutdown();
     /// Get all keys in storage.
     Promise<List<byte[]>> keys();
-    /// Get all entries as key-value pairs.
+    /// Get all entries as key-value pairs, tombstones included (#1777 track 3).
     Promise<List<DHTMessage.KeyValue>> entries();
 
-    /// Get entries belonging to a specific partition.
+    /// Get entries belonging to a specific partition, tombstones included (#1777 track 3).
     Promise<List<DHTMessage.KeyValue>> entriesForPartition(ConsistentHashRing<?> ring, Partition partition);
 }

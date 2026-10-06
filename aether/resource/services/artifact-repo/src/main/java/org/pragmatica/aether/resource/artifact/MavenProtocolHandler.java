@@ -9,6 +9,7 @@ import java.time.Instant;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
 import java.util.List;
+import java.util.stream.Stream;
 
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.artifact.ArtifactId;
@@ -31,6 +32,25 @@ public interface MavenProtocolHandler {
     /// Archives the version named by `/repository/<groupPath>/<artifactId>/<version>` (#1778). The store
     /// never deletes: the version stops resolving and is delisted, its keys are kept.
     Promise<MavenResponse> handleDelete(String path);
+
+    /// `<groupPath>/<artifactId>/<version>`: the group is every segment before the last two, the same
+    /// reading as `GET`/`PUT` coordinates. Shared by every route that carries a bare version coordinate
+    /// (`DELETE`, and `GET /repository/info/...`, #1102) so none of them re-derives the group
+    /// positionally.
+    static Option<Artifact> parseVersionPath(String path) {
+        var parts = path.split("/");
+
+        if (parts.length < 3) return Option.none();
+
+        var groupPath = String.join(".",
+                                    List.of(parts).subList(0, parts.length - 2));
+
+        return Result.all(GroupId.groupId(groupPath),
+                          ArtifactId.artifactId(parts[parts.length - 2]),
+                          Version.version(parts[parts.length - 1]))
+                     .map(Artifact::new)
+                     .option();
+    }
 
     record MavenResponse(int statusCode, String contentType, byte[] content) {
         public static MavenResponse ok(byte[] content, String contentType) {
@@ -96,6 +116,14 @@ public interface MavenProtocolHandler {
 
         record MetadataPath(GroupId groupId, ArtifactId artifactId) implements ParsedPath {}
 
+        /// `<group>/<artifact>/<version>/maven-metadata.xml`: what Maven writes for a SNAPSHOT version. The built-in
+        /// store holds no SNAPSHOTs, so this is recognised in order to be refused accurately, never served (#1919).
+        record VersionMetadataPath(String path) implements ParsedPath {}
+
+        /// `<group path>/maven-metadata.xml`: what `mvn deploy` writes for a `maven-plugin` packaging (the plugin
+        /// goal prefixes of a group). Recognised in order to be refused accurately, never served.
+        record GroupMetadataPath(String path) implements ParsedPath {}
+
         record ChecksumPath(ParsedPath inner, String algorithm) implements ParsedPath {}
     }
 
@@ -118,6 +146,11 @@ class MavenProtocolHandlerImpl implements MavenProtocolHandler {
     /// THIRD non-coordinate route declared under `/repository/` would reintroduce this bug — see the
     /// note on #525.
     private static final String ARTIFACTS_LIST_PATH = "/repository/artifacts";
+
+    private static final String DERIVED_METADATA_JSON = "{\"status\":\"derived\",\"detail\":\"maven-metadata.xml and its checksums are computed by the repository; the uploaded bytes were not stored\"}";
+
+    private static final String METADATA_FILE = "maven-metadata.xml";
+    private static final DateTimeFormatter LAST_UPDATED_FORMAT = DateTimeFormatter.ofPattern("yyyyMMddHHmmss");
 
     /// Names the missing capability, why it is missing, where it is tracked, and every
     /// listing-adjacent surface that DOES work today, so an operator who hits it learns both what to
@@ -168,6 +201,8 @@ class MavenProtocolHandlerImpl implements MavenProtocolHandler {
         return switch (parsed) {
             case ParsedPath.ArtifactPath ap -> handleGetArtifact(ap);
             case ParsedPath.MetadataPath mp -> handleGetMetadata(mp);
+            case ParsedPath.VersionMetadataPath vp -> Promise.success(MavenResponse.notFound(versionMetadataRefusal(vp)));
+            case ParsedPath.GroupMetadataPath gp -> Promise.success(MavenResponse.notFound(groupMetadataRefusal(gp)));
             case ParsedPath.ChecksumPath cp -> handleGetChecksum(cp);
         };
     }
@@ -212,36 +247,87 @@ class MavenProtocolHandlerImpl implements MavenProtocolHandler {
     }
 
     private Promise<MavenResponse> handleGetMetadata(ParsedPath.MetadataPath mp) {
+        return renderMetadata(mp).map(rendered -> rendered.fold(() -> MavenResponse.notFound("No versions found"),
+                                                                xml -> MavenResponse.ok(xml, "application/xml")))
+                             .recover(cause -> metadataFailureResponse(mp, cause));
+    }
+
+    /// The render reads the stored metadata of EVERY listed version (for `<lastUpdated>`), so one transient
+    /// read failure must not turn into a 500 for the whole listing and its checksums: it answers 503 so the
+    /// client retries, exactly like a failed artifact read.
+    private static MavenResponse metadataFailureResponse(ParsedPath.MetadataPath mp, Cause cause) {
+        return failureResponse("GET",
+                               mp.groupId().id() + ":" + mp.artifactId().id() + " maven-metadata.xml",
+                               cause);
+    }
+
+    /// The exact bytes `GET .../maven-metadata.xml` returns, or empty when nothing is deployed. Every
+    /// checksum of the metadata (#1833) is computed from THIS, so a client that fetches the metadata and
+    /// then its sidecar compares like with like.
+    private Promise<Option<byte[]>> renderMetadata(ParsedPath.MetadataPath mp) {
         return store.versions(mp.groupId(),
                               mp.artifactId())
-                    .map(versions -> {
-                             if (versions.isEmpty()) {
-                             return MavenResponse.notFound("No versions found");
-                         }
+                    .flatMap(versions -> versions.isEmpty()
+                                         ? Promise.success(Option.<byte[]> none())
+                                         : lastDeployedAt(mp, versions).map(deployedAt -> Option.some(generateMavenMetadata(mp.groupId(),
+                                                                                                                            mp.artifactId(),
+                                                                                                                            versions,
+                                                                                                                            deployedAt).getBytes(StandardCharsets.UTF_8))));
+    }
 
-                             var xml = generateMavenMetadata(mp.groupId(),
-                                                             mp.artifactId(),
-                                                             versions);
+    /// The newest deploy time among the listed versions, read from the metadata the store persisted when each
+    /// version's primary file was written (write-once, #1778), so it only changes when a version is added. A
+    /// read that FAILS fails the render: omitting the field on a transient error would make the bytes, and so
+    /// their checksums, depend on the failure. A version with no stored metadata contributes nothing.
+    private Promise<Long> lastDeployedAt(ParsedPath.MetadataPath mp, List<Version> versions) {
+        var reads = versions.stream()
+                            .map(version -> store.metadata(new Artifact(mp.groupId(),
+                                                                        mp.artifactId(),
+                                                                        version))
+                                                 .map(stored -> stored.map(ArtifactStore.ArtifactMetadata::deployedAt)
+                                                                      .or(0L)))
+                            .toList();
 
-                             return MavenResponse.ok(xml.getBytes(StandardCharsets.UTF_8),
-                                                     "application/xml");
-                         });
+        return Promise.allOf(reads).flatMap(MavenProtocolHandlerImpl::newestOrFirstFailure);
+    }
+
+    private static Promise<Long> newestOrFirstFailure(List<Result<Long>> results) {
+        return results.stream()
+                      .flatMap(result -> result.fold(Stream::of,
+                                                     _ -> Stream.<Cause> empty()))
+                      .findFirst()
+                      .<Promise<Long>> map(Cause::promise)
+                      .orElseGet(() -> Promise.success(results.stream()
+                                                              .mapToLong(result -> result.fold(_ -> 0L,
+                                                                                               deployedAt -> deployedAt))
+                                                              .max()
+                                                              .orElse(0L)));
     }
 
     private Promise<MavenResponse> handleGetChecksum(ParsedPath.ChecksumPath cp) {
-        if (cp.inner() instanceof ParsedPath.ArtifactPath ap) {
-            return store.resolve(ap.file())
-                        .map(content -> {
-                                 var checksum = computeChecksum(content,
-                                                                cp.algorithm());
+        return switch (cp.inner()) {
+            case ParsedPath.ArtifactPath ap -> handleGetArtifactChecksum(ap, cp.algorithm());
+            case ParsedPath.MetadataPath mp -> handleGetMetadataChecksum(mp, cp.algorithm());
+            case ParsedPath.VersionMetadataPath vp -> Promise.success(MavenResponse.notFound(versionMetadataRefusal(vp)));
+            case ParsedPath.GroupMetadataPath gp -> Promise.success(MavenResponse.notFound(groupMetadataRefusal(gp)));
+            case ParsedPath.ChecksumPath _ -> Promise.success(MavenResponse.badRequest("Invalid checksum path"));
+        };
+    }
 
-                                 return MavenResponse.ok(checksum.getBytes(StandardCharsets.UTF_8),
-                                                         "text/plain");
-                             })
-                        .recover(MavenProtocolHandlerImpl::checksumFailureResponse);
-        }
+    private Promise<MavenResponse> handleGetArtifactChecksum(ParsedPath.ArtifactPath ap, String algorithm) {
+        return store.resolve(ap.file())
+                    .map(content -> checksumResponse(content, algorithm))
+                    .recover(MavenProtocolHandlerImpl::checksumFailureResponse);
+    }
 
-        return Promise.success(MavenResponse.badRequest("Invalid checksum path"));
+    private Promise<MavenResponse> handleGetMetadataChecksum(ParsedPath.MetadataPath mp, String algorithm) {
+        return renderMetadata(mp).map(rendered -> rendered.fold(() -> MavenResponse.notFound("No versions found"),
+                                                                xml -> checksumResponse(xml, algorithm)))
+                             .recover(cause -> metadataFailureResponse(mp, cause));
+    }
+
+    private MavenResponse checksumResponse(byte[] content, String algorithm) {
+        return MavenResponse.ok(computeChecksum(content, algorithm).getBytes(StandardCharsets.UTF_8), "text/plain");
     }
 
     /// A sidecar of an archived file is as gone as the file (410, #1778); every other failure keeps answering 404,
@@ -272,9 +358,22 @@ class MavenProtocolHandlerImpl implements MavenProtocolHandler {
             // the content DISCARDED, so a subsequent GET 404'd — silent data loss (the GET path
             // resolves any extension). Sidecars stay contentless 201s (separate ParsedPath cases).
             case ParsedPath.ArtifactPath ap -> handlePutArtifact(ap, content);
+            case ParsedPath.ChecksumPath cp when cp.inner() instanceof ParsedPath.VersionMetadataPath vp -> Promise.success(MavenResponse.badRequest(versionMetadataRefusal(vp)));
+            case ParsedPath.VersionMetadataPath vp -> Promise.success(MavenResponse.badRequest(versionMetadataRefusal(vp)));
+            case ParsedPath.ChecksumPath cp when cp.inner() instanceof ParsedPath.GroupMetadataPath gp -> Promise.success(MavenResponse.badRequest(groupMetadataRefusal(gp)));
+            case ParsedPath.GroupMetadataPath gp -> Promise.success(MavenResponse.badRequest(groupMetadataRefusal(gp)));
+            case ParsedPath.ChecksumPath cp when cp.inner() instanceof ParsedPath.MetadataPath -> Promise.success(derivedMetadataResponse());
             case ParsedPath.ChecksumPath _ -> Promise.success(MavenResponse.created());
-            case ParsedPath.MetadataPath _ -> Promise.success(MavenResponse.created());
+            case ParsedPath.MetadataPath _ -> Promise.success(derivedMetadataResponse());
         };
+    }
+
+    /// `maven-metadata.xml` and its checksums are DERIVED from the version index, never stored: a client's
+    /// uploaded copy describes its own view of the versions, not ours. The upload is accepted (a standard
+    /// `mvn deploy` PUTs the metadata and its checksums and must not fail on them) but the answer says it
+    /// was not stored, instead of the contentless 201 that used to read as "stored" (#1833).
+    private static MavenResponse derivedMetadataResponse() {
+        return MavenResponse.json(DERIVED_METADATA_JSON.getBytes(StandardCharsets.UTF_8));
     }
 
     /// Write-once PUT (#1778); the decisions live in `ArtifactStore.deploy`, which this maps to HTTP:
@@ -340,8 +439,8 @@ class MavenProtocolHandlerImpl implements MavenProtocolHandler {
             return Promise.success(MavenResponse.badRequest("Invalid path"));
         }
 
-        return parseVersionPath(path.substring(REPOSITORY_PREFIX.length())).fold(() -> Promise.success(MavenResponse.badRequest("Cannot parse path: " + path)),
-                                                                                 this::archiveVersion);
+        return MavenProtocolHandler.parseVersionPath(path.substring(REPOSITORY_PREFIX.length())).fold(() -> Promise.success(MavenResponse.badRequest("Cannot parse path: " + path)),
+                                                                                                      this::archiveVersion);
     }
 
     /// FER: a refused or failed archive is reported, not dropped: it becomes a status the caller acts on;
@@ -359,23 +458,6 @@ class MavenProtocolHandlerImpl implements MavenProtocolHandler {
             case ArtifactStore.ArtifactStoreError.RetentionNotElapsed young -> MavenResponse.conflict(young.message());
             default -> failureResponse("DELETE", artifact.asString(), cause);
         };
-    }
-
-    /// `<groupPath>/<artifactId>/<version>`: the group is every segment before the last two, the same
-    /// reading as `GET`/`PUT` coordinates.
-    private Option<Artifact> parseVersionPath(String path) {
-        var parts = path.split("/");
-
-        if (parts.length < 3) return Option.none();
-
-        var groupPath = String.join(".",
-                                    List.of(parts).subList(0, parts.length - 2));
-
-        return Result.all(GroupId.groupId(groupPath),
-                          ArtifactId.artifactId(parts[parts.length - 2]),
-                          Version.version(parts[parts.length - 1]))
-                     .map(Artifact::new)
-                     .option();
     }
 
     private byte[] renderArchiveJson(Artifact artifact) {
@@ -453,15 +535,80 @@ class MavenProtocolHandlerImpl implements MavenProtocolHandler {
                                                                                                             "SHA-1"));
         }
 
+        var metadataChecksum = metadataSidecar(path, ".sha256", "SHA-256").orElse(() -> metadataSidecar(path,
+                                                                                                        ".sha512",
+                                                                                                        "SHA-512"));
+
+        if (metadataChecksum.isPresent()) {
+            return metadataChecksum;
+        }
+
         var parts = path.split("/");
 
         if (parts.length < 3) return Option.none();
 
-        if (parts[parts.length - 1].equals("maven-metadata.xml")) {
-            return parseMetadataPath(parts);
+        if (parts[parts.length - 1].equals(METADATA_FILE)) {
+            return parseMetadataPath(parts).orElse(() -> parseVersionMetadataPath(path, parts))
+                                    .orElse(() -> parseGroupMetadataPath(path, parts));
         }
 
         return parseArtifactPath(parts);
+    }
+
+    /// Why a version-level `maven-metadata.xml` is not served or accepted (#1919): Maven writes it only for SNAPSHOT
+    /// versions, which the built-in store does not hold (#1778), so there is nothing to serve and nothing to accept.
+    private static String versionMetadataRefusal(ParsedPath.VersionMetadataPath refused) {
+        return "Version-level maven-metadata.xml is not supported: it exists only for SNAPSHOT versions, which the "
+             + "built-in artifact store does not accept (" + refused.path()
+             + "); use the artifact-level "
+             + "maven-metadata.xml, or publish a release version";
+    }
+
+    /// Why a group-level `maven-metadata.xml` is not served or accepted: it is the plugin-prefix metadata `mvn deploy`
+    /// writes for a Maven plugin, and the built-in repository is an internal cache for deployed slices, not a Maven
+    /// plugin repository, so there is no plugin registry to serve or to update.
+    private static String groupMetadataRefusal(ParsedPath.GroupMetadataPath refused) {
+        return "Group-level maven-metadata.xml is not supported: it is the plugin-prefix metadata Maven writes when "
+             + "deploying a Maven plugin, and the built-in artifact repository stores slices and libraries, not Maven "
+             + "plugins (" + refused.path()
+             + ")";
+    }
+
+    /// `<group path>/maven-metadata.xml`: tried last, only when neither the artifact-level nor the version-level
+    /// reading applies, i.e. the path before the file is itself a valid dotted group (at least two segments).
+    private Option<ParsedPath> parseGroupMetadataPath(String path, String[] parts) {
+        return GroupId.groupId(String.join(".",
+                                           List.of(parts).subList(0, parts.length - 1)))
+                      .map(_ -> Option.<ParsedPath> some(new ParsedPath.GroupMetadataPath(path)))
+                      .or(Option.none());
+    }
+
+    /// `<group>/<artifact>/<version>/maven-metadata.xml`: tried only when the artifact-level reading fails, i.e. the
+    /// segment before the file is a version, not an artifact id (a version's dots are not valid in one).
+    private Option<ParsedPath> parseVersionMetadataPath(String path, String[] parts) {
+        if (parts.length < 4) return Option.none();
+
+        var groupPath = String.join(".",
+                                    List.of(parts).subList(0, parts.length - 3));
+
+        return Result.all(GroupId.groupId(groupPath),
+                          ArtifactId.artifactId(parts[parts.length - 3]),
+                          Version.version(parts[parts.length - 2]))
+                     .map((_, _, _) -> Option.<ParsedPath> some(new ParsedPath.VersionMetadataPath(path)))
+                     .or(Option.none());
+    }
+
+    /// SHA-256 and SHA-512 of `maven-metadata.xml` (#1833). For every other file those suffixes name a
+    /// stored sidecar file in its own right (#1778), so they are claimed here ONLY when the stripped path
+    /// is the metadata file; the MD5 and SHA-1 suffixes are always checksums and are handled above.
+    private Option<ParsedPath> metadataSidecar(String path, String suffix, String algorithm) {
+        if (!path.endsWith("/" + METADATA_FILE + suffix)) {
+            return Option.none();
+        }
+
+        return parsePath(path.substring(0,
+                                        path.length() - suffix.length())).map(inner -> new ParsedPath.ChecksumPath(inner,
+                                                                                                                   algorithm));
     }
 
     private Option<ParsedPath> parseMetadataPath(String[] parts) {
@@ -527,13 +674,17 @@ class MavenProtocolHandlerImpl implements MavenProtocolHandler {
 
     /// `<latest>` is the highest version by [VersionOrder], `<release>` the highest non-SNAPSHOT
     /// one (falling back to `<latest>` when every version is a snapshot); `<versions>` lists them
-    /// ascending. The versions list is stored in deploy order, so "last deployed" used to be
+    /// ascending. `<lastUpdated>` is the newest deploy time of the listed versions, from stored state and not
+    /// the wall clock: a clock value made every render differ, so a checksum fetched after the metadata (#1833)
+    /// could never match it. The output is a pure function of the stored versions. The versions list is stored in deploy order, so "last deployed" used to be
     /// reported as latest (#281).
-    private String generateMavenMetadata(GroupId groupId, ArtifactId artifactId, List<Version> unordered) {
+    private String generateMavenMetadata(GroupId groupId,
+                                         ArtifactId artifactId,
+                                         List<Version> unordered,
+                                         long lastDeployedAtMillis) {
         var versions = unordered.stream().sorted(VersionOrder.INSTANCE).toList();
         var latest = versions.getLast();
         var release = versions.stream().filter(v -> !VersionOrder.isSnapshot(v)).reduce((a, b) -> b).orElse(latest);
-        var timestamp = DateTimeFormatter.ofPattern("yyyyMMddHHmmss").format(Instant.now().atOffset(ZoneOffset.UTC));
         var sb = new StringBuilder();
 
         sb.append("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
@@ -549,7 +700,12 @@ class MavenProtocolHandlerImpl implements MavenProtocolHandler {
         }
 
         sb.append("    </versions>\n");
-        sb.append("    <lastUpdated>").append(timestamp).append("</lastUpdated>\n");
+        if (lastDeployedAtMillis > 0) {
+            sb.append("    <lastUpdated>")
+              .append(LAST_UPDATED_FORMAT.format(Instant.ofEpochMilli(lastDeployedAtMillis).atOffset(ZoneOffset.UTC)))
+              .append("</lastUpdated>\n");
+        }
+
         sb.append("  </versioning>\n");
         sb.append("</metadata>\n");
 

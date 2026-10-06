@@ -103,7 +103,7 @@ How far each operation can take a running slice down (#1495):
 | Automatic drain (leader reconciler) | `minAvailable` ACTIVE instances on the remaining nodes | the victim is deferred `[mechanism: SliceOwnershipQuery.minAvailableDrainGuard, SliceOwnershipQuery.java:104]` |
 | Operator drain or shutdown (`aether nodes drain`, `POST /api/v1/nodes/drain\|shutdown`) | **none yet**: only the core disruption budget is checked | see #1720 `[unverified-gap: #1720]` |
 | Automatic rollback (#1573) | 3 when it has to create the slice target; otherwise the existing count | a missing target is written at `SliceSpec.MIN_INSTANCES` |
-| A/B test (known exception) | **1**: A/B tests currently write a 1-instance target | see #1721 `[unverified-gap: #1721]` |
+| A/B test (#1721) | 3: the variant is written onto the slice's own target at `SliceSpec.MIN_INSTANCES`; the conclusion writes `max(minAvailable, 3)` | `AbTestManager.VARIANT_INSTANCES` |
 
 ### Topological Ordering
 

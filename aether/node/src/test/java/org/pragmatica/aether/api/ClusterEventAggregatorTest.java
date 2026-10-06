@@ -30,7 +30,10 @@ import org.pragmatica.consensus.topology.TransportObservation;
 import org.pragmatica.consensus.topology.TransportObservation.ObservationSource;
 import org.pragmatica.hlc.HlcClock;
 import org.pragmatica.aether.slice.generation.Epoch;
+import org.pragmatica.aether.slice.SliceState;
+import org.pragmatica.aether.slice.kvstore.AetherKey.NodeArtifactKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.StreamPartitionOwnershipKey;
+import org.pragmatica.aether.slice.kvstore.AetherValue.NodeArtifactValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.StreamPartitionOwnershipValue;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
@@ -233,6 +236,53 @@ class ClusterEventAggregatorTest {
                                      .containsEntry("requestedBy", "operator-x");
     }
 
+    /// #1777 R1b (owner rule): a DHT replication change entering and leaving the overdue condition reaches the
+    /// cluster-events stream as the typed pair, with the change, its factors and the reason, through the codec transport.
+    @Test
+    void dhtReplicationUnsettledAndSettled_reachTheEventStream_withTheirDetails() {
+        var h = Harness.create();
+        h.aggregator().onDhtReplicationUnsettled(OperationalEvent.DhtReplicationUnsettled.dhtReplicationUnsettled(9,
+                                                                                                                   3,
+                                                                                                                   1,
+                                                                                                                   "APPLYING",
+                                                                                                                   1000,
+                                                                                                                   "unsettled for longer than 5 minutes"));
+        h.aggregator().onDhtReplicationSettled(OperationalEvent.DhtReplicationSettled.dhtReplicationSettled(9, 3, 1, 1000, "settled"));
+
+        var events = h.events();
+
+        assertThat(events).hasSize(2);
+        assertThat(events.get(0)).isInstanceOf(ClusterEvent.DhtReplicationUnsettled.class);
+        assertThat(events.get(0).type()).isEqualTo("DHT_REPLICATION_UNSETTLED");
+        assertThat(events.get(0).severity()).isEqualTo(ClusterEvent.Severity.WARNING);
+        assertThat(events.get(0).details()).containsEntry("changeVersion", "9")
+                                           .containsEntry("replicationFactor", "3")
+                                           .containsEntry("confirmationFactor", "1")
+                                           .containsEntry("stage", "APPLYING")
+                                           .containsEntry("since", "1000");
+        assertThat(events.get(1)).isInstanceOf(ClusterEvent.DhtReplicationSettled.class);
+        assertThat(events.get(1).type()).isEqualTo("DHT_REPLICATION_SETTLED");
+        assertThat(events.get(1).details()).containsEntry("reason", "settled");
+    }
+
+    /// #1777 (owner rule): a stale DHT writer's own announcement and its resolution reach the stream as the typed pair.
+    @Test
+    void dhtWriterStaleAndResolved_reachTheEventStream_withTheirDetails() {
+        var h = Harness.create();
+        h.aggregator().onDhtWriterStale(OperationalEvent.DhtWriterStale.dhtWriterStale("writer-1", 5, 1000));
+        h.aggregator().onDhtWriterStaleResolved(OperationalEvent.DhtWriterStaleResolved.dhtWriterStaleResolved("writer-1", 5, 1000));
+
+        var events = h.events();
+
+        assertThat(events).hasSize(2);
+        assertThat(events.get(0).type()).isEqualTo("DHT_WRITER_STALE");
+        assertThat(events.get(0).severity()).isEqualTo(ClusterEvent.Severity.WARNING);
+        assertThat(events.get(0).details()).containsEntry("nodeId", "writer-1")
+                                           .containsEntry("fence", "5")
+                                           .containsEntry("since", "1000");
+        assertThat(events.get(1).type()).isEqualTo("DHT_WRITER_STALE_RESOLVED");
+    }
+
     /// #1730 owner ruling: the stream failover refusal and its resolution reach the cluster-events stream as typed
     /// events carrying the stream, partition, owner, ISR, live set and reason, through the codec transport.
     @Test
@@ -306,6 +356,27 @@ class ClusterEventAggregatorTest {
         assertThat(events.get(1)).isInstanceOf(ClusterEvent.StreamIsrRestored.class);
         assertThat(events.get(1).type()).isEqualTo("STREAM_ISR_RESTORED");
         assertThat(events.get(1).severity()).isEqualTo(ClusterEvent.Severity.INFO);
+    }
+
+    /// #1873: a ring rebuilt under an unchanged owner reaches the stream as an INFO event (the commit proves a restart, not a
+    /// loss), with the epochs and the offset the new epoch began at.
+    @Test
+    void streamLineageRestarted_reachesTheEventStream_asInfo_withTheEpochsAndTheStartOffset() {
+        var h = Harness.create();
+        h.aggregator().onStreamLineageRestarted(OperationalEvent.StreamLineageRestarted.streamLineageRestarted("orders", 2, "node-a", "1:1:1", "1:1:2", 7L));
+
+        var events = h.events();
+
+        assertThat(events).hasSize(1);
+        assertThat(events.get(0)).isInstanceOf(ClusterEvent.StreamLineageRestarted.class);
+        assertThat(events.get(0).type()).isEqualTo("STREAM_LINEAGE_RESTARTED");
+        assertThat(events.get(0).severity()).isEqualTo(ClusterEvent.Severity.INFO);
+        assertThat(events.get(0).details()).containsEntry("stream", "orders")
+                                           .containsEntry("partition", "2")
+                                           .containsEntry("owner", "node-a")
+                                           .containsEntry("oldEpoch", "1:1:1")
+                                           .containsEntry("newEpoch", "1:1:2")
+                                           .containsEntry("startOffset", "7");
     }
 
     /// #1730 owner ruling, the cluster-wide path: EVERY node derives the failover event from the same committed
@@ -1388,6 +1459,33 @@ class ClusterEventAggregatorTest {
         h.aggregator().onStreamMemoryExceeded(growthExhaustion("edge"));
 
         assertThat(h.events()).as("60,000 ms: the window has ended").hasSize(2);
+    }
+
+    // --- slice failure on a node -----------------------------------------------------------------
+
+    /// #1660: the operator surface for a node that stopped hosting a slice after a failed reactivation is
+    /// the committed FAILED `NodeArtifactValue` `NodeDeploymentState.handleReactivationFailure` now writes.
+    /// One committed put, one WARNING `DeploymentFailed`, naming the node, the artifact and the reason.
+    @Test
+    void committedFailedNodeArtifactPut_emitsOneWarningDeploymentFailed_namingNodeArtifactAndReason() {
+        var h = Harness.create();
+        var key = NodeArtifactKey.nodeArtifactKey(new NodeId("node-2"), ROLLBACK_ARTIFACT);
+        var value = new NodeArtifactValue(SliceState.FAILED,
+                                          Option.some("Reactivation after quorum restore failed: consensus timeout"),
+                                          false,
+                                          0,
+                                          List.of(),
+                                          0L);
+
+        h.aggregator().onNodeArtifactPut(new ValuePut<>(new KVCommand.Put<>(key, value), Option.none()));
+
+        var events = h.events();
+        assertThat(events).hasSize(1);
+        assertThat(events.getFirst()).isInstanceOf(ClusterEvent.DeploymentFailed.class);
+        assertThat(events.getFirst().severity()).isEqualTo(ClusterEvent.Severity.WARNING);
+        assertThat(events.getFirst().summary()).contains("node-2")
+                                               .contains(ROLLBACK_ARTIFACT.asString())
+                                               .contains("Reactivation after quorum restore failed");
     }
 
     // --- production retention -------------------------------------------------------------------

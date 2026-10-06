@@ -49,6 +49,71 @@ public sealed interface OperationalEvent extends Message.Local {
         }
     }
 
+    /// #1777 (CTO ruling R1b, owner rule): a live DHT replication change has stayed unsettled for longer than the
+    /// operator-attention bound, so every node still reads and writes at the stricter transitional quorums
+    /// ([ClusterEvent.DhtReplicationUnsettled]). Derived from the committed change record on every node; published at most once.
+    record DhtReplicationUnsettled(long changeVersion,
+                                   int replicationFactor,
+                                   int confirmationFactor,
+                                   String stage,
+                                   long since,
+                                   String reason,
+                                   long timestamp) implements OperationalEvent {
+        public static DhtReplicationUnsettled dhtReplicationUnsettled(long changeVersion,
+                                                                      int replicationFactor,
+                                                                      int confirmationFactor,
+                                                                      String stage,
+                                                                      long since,
+                                                                      String reason) {
+            return new DhtReplicationUnsettled(changeVersion,
+                                               replicationFactor,
+                                               confirmationFactor,
+                                               stage,
+                                               since,
+                                               reason,
+                                               System.currentTimeMillis());
+        }
+    }
+
+    /// #1777: an overdue DHT replication change left the condition — it settled, or a newer change superseded it
+    /// ([ClusterEvent.DhtReplicationSettled]).
+    record DhtReplicationSettled(long changeVersion,
+                                 int replicationFactor,
+                                 int confirmationFactor,
+                                 long since,
+                                 String reason,
+                                 long timestamp) implements OperationalEvent {
+        public static DhtReplicationSettled dhtReplicationSettled(long changeVersion,
+                                                                  int replicationFactor,
+                                                                  int confirmationFactor,
+                                                                  long since,
+                                                                  String reason) {
+            return new DhtReplicationSettled(changeVersion,
+                                             replicationFactor,
+                                             confirmationFactor,
+                                             since,
+                                             reason,
+                                             System.currentTimeMillis());
+        }
+    }
+
+    /// #1777 (owner rule): this node's DHT writes have been refused as stale by the replication-change fence for longer
+    /// than the operator-attention bound, and it has not adopted the change ([ClusterEvent.DhtWriterStale]). Raised by the
+    /// refused node itself, the subject.
+    record DhtWriterStale(String nodeId, long fence, long since, long timestamp) implements OperationalEvent {
+        public static DhtWriterStale dhtWriterStale(String nodeId, long fence, long since) {
+            return new DhtWriterStale(nodeId, fence, since, System.currentTimeMillis());
+        }
+    }
+
+    /// #1777: the stale writer adopted a newer replication change; its writes are stamped under it now
+    /// ([ClusterEvent.DhtWriterStaleResolved]).
+    record DhtWriterStaleResolved(String nodeId, long fence, long since, long timestamp) implements OperationalEvent {
+        public static DhtWriterStaleResolved dhtWriterStaleResolved(String nodeId, long fence, long since) {
+            return new DhtWriterStaleResolved(nodeId, fence, since, System.currentTimeMillis());
+        }
+    }
+
     /// #1730 (owner ruling): failover refused for a stream partition — its owner is dead and no in-sync replica is
     /// live. Raised once per committed refusal by the leader that committed it ([ClusterEvent.StreamFailoverRefused]).
     record StreamFailoverRefused(String stream,
@@ -180,6 +245,33 @@ public sealed interface OperationalEvent extends Message.Local {
                                                     reason,
                                                     eventId,
                                                     System.currentTimeMillis());
+        }
+    }
+
+    /// #1873: a stream partition's owner began a new epoch of the SAME owner (its ring was rebuilt: a restart without a WAL, a
+    /// lazy re-materialize, a re-created stream), so consumers that read the old epoch past `startOffset` are told to re-read
+    /// from it ([ClusterEvent.StreamLineageRestarted]). A fact about the committed record, not a loss: the owner may have pulled
+    /// every record back from replicas.
+    record StreamLineageRestarted(String stream,
+                                  int partition,
+                                  String owner,
+                                  String oldEpoch,
+                                  String newEpoch,
+                                  long startOffset,
+                                  long timestamp) implements OperationalEvent {
+        public static StreamLineageRestarted streamLineageRestarted(String stream,
+                                                                    int partition,
+                                                                    String owner,
+                                                                    String oldEpoch,
+                                                                    String newEpoch,
+                                                                    long startOffset) {
+            return new StreamLineageRestarted(stream,
+                                              partition,
+                                              owner,
+                                              oldEpoch,
+                                              newEpoch,
+                                              startOffset,
+                                              System.currentTimeMillis());
         }
     }
 }
