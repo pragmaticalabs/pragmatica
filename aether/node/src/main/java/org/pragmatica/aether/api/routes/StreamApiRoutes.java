@@ -46,6 +46,7 @@ import org.pragmatica.http.routing.RouteSource;
 import org.pragmatica.aether.stream.forward.StreamForwardError;
 import org.pragmatica.aether.stream.replication.ReplicationError;
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
@@ -63,8 +64,8 @@ import org.pragmatica.lang.utils.Causes;
 /// implemented at the `ManagementServer` security pipeline, not here, so the check
 /// short-circuits before role evaluation.
 public final class StreamApiRoutes implements RouteSource {
-    private static final Cause STREAM_NOT_FOUND = Causes.cause("Stream not found");
-    private static final Cause GROUP_NOT_FOUND = Causes.cause("Consumer group not found");
+    private static final Cause STREAM_NOT_FOUND = new ManagementServerError.NotFound("Stream not found");
+    private static final Cause GROUP_NOT_FOUND = new ManagementServerError.NotFound("Consumer group not found");
     private static final int DEFAULT_PARTITIONS = 4;
 
     /// #968: the body-carried create's refusals all carry a status. `Missing stream name` used to be
@@ -458,17 +459,14 @@ public final class StreamApiRoutes implements RouteSource {
     }
 
     private Result<StreamMetadataResponse> resolveLatest(String namespace, String stream, String latestLiteral) {
-        return namespacesService.resolve(namespace,
-                                         stream,
-                                         StreamVersionSpec.latest())
-                                .flatMap(this::toMetadataResponse);
+        return RequestParse.asNotFound(namespacesService.resolve(namespace, stream, StreamVersionSpec.latest())).flatMap(this::toMetadataResponse);
     }
 
     Result<StreamMetadataResponse> streamMetadata(String namespace, String stream, String version) {
-        return ResourceAddress.resourceAddress(namespace, stream, version)
-                              .flatMap(addr -> namespacesService.lookup(addr)
-                                                                .toResult(StreamRegistry.StreamRegistryError.General.NOT_FOUND))
-                              .flatMap(this::toMetadataResponse);
+        return RequestParse.asRequest(ResourceAddress.resourceAddress(namespace, stream, version))
+                           .flatMap(addr -> RequestParse.asNotFound(namespacesService.lookup(addr)
+                                                                                     .toResult(StreamRegistry.StreamRegistryError.General.NOT_FOUND)))
+                           .flatMap(this::toMetadataResponse);
     }
 
     private Result<StreamMetadataResponse> toMetadataResponse(StreamRegistryEntry entry) {
@@ -510,10 +508,10 @@ public final class StreamApiRoutes implements RouteSource {
                                                     String version,
                                                     String partitionsLiteral,
                                                     Integer partition) {
-        return ResourceAddress.resourceAddress(namespace, stream, version)
-                              .flatMap(addr -> streamManager().partitionInfo(StreamManager.engineKey(addr),
-                                                                             partition))
-                              .map(PartitionDetail::partitionDetail);
+        return RequestParse.asRequest(ResourceAddress.resourceAddress(namespace, stream, version))
+                           .flatMap(addr -> StreamErrorStatus.typed(streamManager().partitionInfo(StreamManager.engineKey(addr),
+                                                                                                  partition)))
+                           .map(PartitionDetail::partitionDetail);
     }
 
     /// #260/#261/#333 replica-state observability, catalog-identity variant — see
@@ -528,8 +526,8 @@ public final class StreamApiRoutes implements RouteSource {
                                                          String version,
                                                          String replicasLiteral,
                                                          Integer partition) {
-        return ResourceAddress.resourceAddress(namespace, stream, version).map(addr -> StreamRoutes.toReplicasResponse(streamReadRouter().replicaSnapshot(StreamManager.engineKey(addr),
-                                                                                                                                                          partition)));
+        return RequestParse.asRequest(ResourceAddress.resourceAddress(namespace, stream, version)).map(addr -> StreamRoutes.toReplicasResponse(streamReadRouter().replicaSnapshot(StreamManager.engineKey(addr),
+                                                                                                                                                                                  partition)));
     }
 
     /// Catalog-scoped STREAM_GET handler — #742 fold of [StreamRoutes#streamInfo]'s flat-name legacy
@@ -542,9 +540,9 @@ public final class StreamApiRoutes implements RouteSource {
                                                         String stream,
                                                         String version,
                                                         String infoLiteral) {
-        return ResourceAddress.resourceAddress(namespace, stream, version)
-                              .async()
-                              .flatMap(addr -> buildStreamInfoResponse(StreamManager.engineKey(addr)));
+        return RequestParse.asRequest(ResourceAddress.resourceAddress(namespace, stream, version))
+                           .async()
+                           .flatMap(addr -> buildStreamInfoResponse(StreamManager.engineKey(addr)));
     }
 
     /// #1478: STREAM_GET is delegate-routed (`taskGroup(STREAMING)`), so the answering node is arbitrary
@@ -598,27 +596,54 @@ public final class StreamApiRoutes implements RouteSource {
                                                    Option<Long> fromOpt,
                                                    Option<Integer> maxOpt,
                                                    Option<String> preferenceOpt) {
-        var from = fromOpt.or(0L);
         var max = maxOpt.or(DEFAULT_MAX_EVENTS);
         var preference = preferenceOpt.fold(() -> ReadPreference.GOVERNOR, StreamApiRoutes::parseReadPreference);
 
-        return ResourceAddress.resourceAddress(namespace, stream, version)
-                              .async()
-                              .flatMap(addr -> readEventsAtPartition(addr, partition, from, max, preference));
+        return RequestParse.asRequest(ResourceAddress.resourceAddress(namespace, stream, version))
+                           .async()
+                           .flatMap(addr -> readEventsAtPartition(addr, partition, fromOpt, max, preference));
     }
 
     private Promise<ReadEventsResponse> readEventsAtPartition(ResourceAddress addr,
                                                               Integer partition,
-                                                              long fromOffset,
+                                                              Option<Long> fromOffset,
                                                               int maxEvents,
                                                               ReadPreference preference) {
-        return streamReadRouter().read(StreamManager.engineKey(addr),
-                                       partition,
-                                       fromOffset,
-                                       maxEvents,
-                                       preference)
-                               .map(StreamApiRoutes::toReadEventsResponse);
+        return readFromRequestedOrEarliest(fromOffset,
+                                           from -> streamReadRouter().read(StreamManager.engineKey(addr),
+                                                                           partition,
+                                                                           from,
+                                                                           maxEvents,
+                                                                           preference)).map(window -> toReadEventsResponse(window.events()));
     }
+
+    /// Events read from `from`, which is where the caller asked to start or, when it asked for nothing, where the stream
+    /// starts NOW (#1921). A caller that supplied no offset must not be told its cursor expired: retention may have rolled the
+    /// tail past 0, so a default of 0 answered 410 to a request that named no offset. The engine's refusal carries the earliest
+    /// retained offset, and the read is retried once from there; an offset the caller supplied keeps its 410.
+    private static Promise<Window> readFromRequestedOrEarliest(Option<Long> requested,
+                                                               Fn1<Promise<List<RawEvent>>, Long> read) {
+        var from = requested.or(0L);
+
+        return StreamErrorStatus.typed(read.apply(from)
+                                           .<Window> fold(result -> result.fold(cause -> afterRefusal(requested,
+                                                                                                      cause,
+                                                                                                      read),
+                                                                                events -> Promise.success(new Window(from,
+                                                                                                                     events)))));
+    }
+
+    private static Promise<Window> afterRefusal(Option<Long> requested,
+                                                Cause cause,
+                                                Fn1<Promise<List<RawEvent>>, Long> read) {
+        return requested.isEmpty() && cause instanceof StreamError.CursorExpired expired
+               ? read.apply(expired.tailOffset())
+                     .map(events -> new Window(expired.tailOffset(),
+                                               events))
+               : cause.promise();
+    }
+
+    private record Window(long from, List<RawEvent> events) {}
 
     private static ReadEventsResponse toReadEventsResponse(List<RawEvent> events) {
         return ReadEventsResponse.readEventsResponse(events.stream().map(EventRecord::eventRecord).toList());
@@ -637,8 +662,8 @@ public final class StreamApiRoutes implements RouteSource {
                                                  String stream,
                                                  String version,
                                                  String groupsLiteral) {
-        return ResourceAddress.resourceAddress(namespace, stream, version).map(addr -> new GroupListResponse(addr.asString(),
-                                                                                                             List.of()));
+        return RequestParse.asRequest(ResourceAddress.resourceAddress(namespace, stream, version)).map(addr -> new GroupListResponse(addr.asString(),
+                                                                                                                                     List.of()));
     }
 
     /// Wave 6B: Tail subscription via SSE/WebSocket is deferred to issue #212 — the streaming
@@ -669,26 +694,43 @@ public final class StreamApiRoutes implements RouteSource {
                                                        String eventsLiteral,
                                                        Option<Long> fromOffset,
                                                        Option<Integer> maxEvents) {
-        var offset = fromOffset.or(0L);
         var limit = clampMaxEvents(maxEvents.or(DEFAULT_MAX_EVENTS));
 
-        return ResourceAddress.resourceAddress(namespace, stream, version)
-                              .async()
-                              .flatMap(addr -> readEventsAtAddress(addr, offset, limit));
+        return RequestParse.asRequest(ResourceAddress.resourceAddress(namespace, stream, version))
+                           .async()
+                           .flatMap(addr -> readEventsAtAddress(addr, fromOffset, limit));
     }
 
-    private Promise<StreamEventsResponse> readEventsAtAddress(ResourceAddress addr, long fromOffset, int maxEvents) {
-        var streamName = addr.asString();
+    private Promise<StreamEventsResponse> readEventsAtAddress(ResourceAddress addr,
+                                                              Option<Long> fromOffset,
+                                                              int maxEvents) {
+        var streamName = StreamManager.engineKey(addr);
 
-        return namespacesService.lookup(addr)
-                                .toResult(StreamRegistry.StreamRegistryError.General.NOT_FOUND)
-                                .async()
-                                .flatMap(_ -> streamReadRouter().read(streamName,
-                                                                      0,
-                                                                      fromOffset,
-                                                                      maxEvents,
-                                                                      ReadPreference.NEAREST))
-                                .map(events -> buildEventsResponse(addr, events, fromOffset, maxEvents));
+        return RequestParse.asNotFound(namespacesService.lookup(addr)
+                                                        .toResult(StreamRegistry.StreamRegistryError.General.NOT_FOUND))
+                           .async()
+                           .flatMap(_ -> readFromRequestedOrEarliest(fromOffset,
+                                                                     from -> notMaterializedHere(addr,
+                                                                                                 streamReadRouter().read(streamName,
+                                                                                                                         0,
+                                                                                                                         from,
+                                                                                                                         maxEvents,
+                                                                                                                         ReadPreference.NEAREST))))
+                           .map(window -> buildEventsResponse(addr,
+                                                              window.events(),
+                                                              window.from(),
+                                                              maxEvents));
+    }
+
+    /// The catalog has just CONFIRMED this stream exists, so the engine's `StreamNotFound` can only mean it is not materialized on
+    /// this node (config committed here, apply lagging; or metadata-only placement): 503, retry. Answering 404 told the caller
+    /// that a stream the catalog knows does not exist.
+    private static Promise<List<RawEvent>> notMaterializedHere(ResourceAddress addr, Promise<List<RawEvent>> read) {
+        return read.mapError(cause -> cause instanceof StreamError.StreamNotFound
+                                      ? new ManagementServerError.StreamRefused(HttpStatus.SERVICE_UNAVAILABLE,
+                                                                                Causes.cause("Stream " + addr.asString()
+                                                                                            + " is registered but not materialized on this node yet"))
+                                      : cause);
     }
 
     private static StreamEventsResponse buildEventsResponse(ResourceAddress addr,
@@ -730,10 +772,10 @@ public final class StreamApiRoutes implements RouteSource {
     /// property alongside [#createStream(StreamCreateRequest)] and [#deleteStream] — the entry point a real
     /// `POST /streams/{namespace}/{stream}/{version}/events` request also goes through.
     Promise<PublishResponse> publishEvent(String namespace, String stream, String version, PublishRequest request) {
-        return ResourceAddress.resourceAddress(namespace, stream, version)
-                              .async()
-                              .flatMap(addr -> publishOne(addr, request).map(offset -> new PublishResponse(addr.asString(),
-                                                                                                           offset)));
+        return RequestParse.asRequest(ResourceAddress.resourceAddress(namespace, stream, version))
+                           .async()
+                           .flatMap(addr -> publishOne(addr, request).map(offset -> new PublishResponse(addr.asString(),
+                                                                                                        offset)));
     }
 
     /// Package-visible for direct unit coverage, like [#publishEvent].
@@ -742,9 +784,9 @@ public final class StreamApiRoutes implements RouteSource {
                                                String version,
                                                String publishBatchLiteral,
                                                PublishRequest[] requests) {
-        return ResourceAddress.resourceAddress(namespace, stream, version)
-                              .async()
-                              .flatMap(addr -> publishMany(addr, requests));
+        return RequestParse.asRequest(ResourceAddress.resourceAddress(namespace, stream, version))
+                           .async()
+                           .flatMap(addr -> publishMany(addr, requests));
     }
 
     /// Every item is written concurrently and reports its own outcome (#1342); a failed item never hides the
@@ -1009,7 +1051,8 @@ public final class StreamApiRoutes implements RouteSource {
     /// `StreamApiRoutesCreateStreamTest` can exercise the full create path — including the
     /// catalog registration this ticket adds — without going through HTTP dispatch.
     Result<CreateResponse> createStream(String namespace, String stream, String version, CreateRequest request) {
-        return ResourceAddress.resourceAddress(namespace, stream, version).flatMap(addr -> createAtAddress(addr, request));
+        return RequestParse.asRequest(ResourceAddress.resourceAddress(namespace, stream, version)).flatMap(addr -> createAtAddress(addr,
+                                                                                                                                   request));
     }
 
     /// Idempotent on an already-registered address (check-exists-first; shared with the body-carried
@@ -1081,22 +1124,21 @@ public final class StreamApiRoutes implements RouteSource {
                                               String version,
                                               String groupsLiteral,
                                               GroupCreateRequest request) {
-        return ResourceAddress.resourceAddress(namespace, stream, version).flatMap(addr -> joinGroupAtAddress(addr,
-                                                                                                              request));
+        return RequestParse.asRequest(ResourceAddress.resourceAddress(namespace, stream, version)).flatMap(addr -> joinGroupAtAddress(addr,
+                                                                                                                                      request));
     }
 
     private Result<GroupResponse> joinGroupAtAddress(ResourceAddress addr, GroupCreateRequest request) {
         var streamName = addr.asString();
         var consumerId = "operator-" + System.nanoTime();
 
-        return coordinator.joinGroup(request.groupId(),
-                                     streamName,
-                                     DEFAULT_PARTITIONS,
-                                     consumerId,
-                                     nodeSupplier.get().self())
-                          .map(_ -> new GroupResponse(addr.asString(),
-                                                      request.groupId(),
-                                                      "created"));
+        return CoordinatorRefusal.typed(coordinator.joinGroup(request.groupId(),
+                                                              streamName,
+                                                              DEFAULT_PARTITIONS,
+                                                              consumerId,
+                                                              nodeSupplier.get().self())).map(_ -> new GroupResponse(addr.asString(),
+                                                                                                                     request.groupId(),
+                                                                                                                     "created"));
     }
 
     private Result<GroupResponse> deleteGroup(String namespace,
@@ -1104,8 +1146,8 @@ public final class StreamApiRoutes implements RouteSource {
                                               String version,
                                               String groupsLiteral,
                                               String group) {
-        return ResourceAddress.resourceAddress(namespace, stream, version).flatMap(addr -> leaveGroupAtAddress(addr,
-                                                                                                               group));
+        return RequestParse.asRequest(ResourceAddress.resourceAddress(namespace, stream, version)).flatMap(addr -> leaveGroupAtAddress(addr,
+                                                                                                                                       group));
     }
 
     private Result<GroupResponse> leaveGroupAtAddress(ResourceAddress addr, String group) {
@@ -1118,18 +1160,18 @@ public final class StreamApiRoutes implements RouteSource {
 
         var consumers = status.getOrDefault(streamName, List.of());
         var leaveResults = consumers.stream()
-                                    .map(c -> coordinator.leaveGroup(group,
-                                                                     streamName,
-                                                                     c.consumerId()))
+                                    .map(c -> CoordinatorRefusal.typed(coordinator.leaveGroup(group,
+                                                                                              streamName,
+                                                                                              c.consumerId())))
                                     .toList();
 
         return Result.allOf(leaveResults).map(_ -> new GroupResponse(addr.asString(), group, "deleted"));
     }
 
     Promise<DeleteResponse> deleteStream(String namespace, String stream, String version) {
-        return ResourceAddress.resourceAddress(namespace, stream, version)
-                              .async()
-                              .flatMap(this::destroyAtAddress);
+        return RequestParse.asRequest(ResourceAddress.resourceAddress(namespace, stream, version))
+                           .async()
+                           .flatMap(this::destroyAtAddress);
     }
 
     /// Engine key via [StreamManager#engineKey] — same reasoning as [#publishOne]: a `system`-namespace

@@ -392,13 +392,13 @@ public final class SliceRoutes implements RouteSource {
     }
 
     private Promise<BlueprintDetailResponse> handleGetBlueprint(String id) {
-        return BlueprintId.blueprintId(id)
-                          .async()
-                          .flatMap(blueprintId -> nodeSupplier.get()
-                                                              .blueprintService()
-                                                              .get(blueprintId)
-                                                              .async(BLUEPRINT_NOT_FOUND))
-                          .map(this::toBlueprintDetailResponse);
+        return RequestParse.asRequest(BlueprintId.blueprintId(id))
+                           .async()
+                           .flatMap(blueprintId -> nodeSupplier.get()
+                                                               .blueprintService()
+                                                               .get(blueprintId)
+                                                               .async(BLUEPRINT_NOT_FOUND))
+                           .map(this::toBlueprintDetailResponse);
     }
 
     private BlueprintDetailResponse toBlueprintDetailResponse(ExpandedBlueprint blueprint) {
@@ -443,9 +443,9 @@ public final class SliceRoutes implements RouteSource {
     /// `get(id)`-based logic: present → 200 with live slice detail (unchanged), empty → 404
     /// `BLUEPRINT_NOT_FOUND`.
     private Promise<BlueprintStatusResponse> handleGetBlueprintStatus(String id) {
-        return BlueprintId.blueprintId(id)
-                          .async()
-                          .flatMap(this::routeBlueprintStatusByOutcome);
+        return RequestParse.asRequest(BlueprintId.blueprintId(id))
+                           .async()
+                           .flatMap(this::routeBlueprintStatusByOutcome);
     }
 
     private Promise<BlueprintStatusResponse> routeBlueprintStatusByOutcome(BlueprintId blueprintId) {
@@ -597,16 +597,16 @@ public final class SliceRoutes implements RouteSource {
     }
 
     private Promise<BlueprintDeleteResponse> handleDeleteBlueprint(String id) {
-        return BlueprintId.blueprintId(id)
-                          .async()
-                          .flatMap(blueprintId -> nodeSupplier.get()
-                                                              .blueprintService()
-                                                              .delete(blueprintId)
-                                                              .map(_ -> new BlueprintDeleteResponse("deleted",
-                                                                                                    blueprintId.asString())))
-                          .onSuccess(r -> auditAndEmitBlueprintDeleted(r.id()))
-                          .onFailure(cause -> log.warn("Blueprint delete failed: {}",
-                                                       cause.message()));
+        return RequestParse.asRequest(BlueprintId.blueprintId(id))
+                           .async()
+                           .flatMap(blueprintId -> nodeSupplier.get()
+                                                               .blueprintService()
+                                                               .delete(blueprintId)
+                                                               .map(_ -> new BlueprintDeleteResponse("deleted",
+                                                                                                     blueprintId.asString())))
+                           .onSuccess(r -> auditAndEmitBlueprintDeleted(r.id()))
+                           .onFailure(cause -> log.warn("Blueprint delete failed: {}",
+                                                        cause.message()));
     }
 
     private void auditAndEmitBlueprintDeployed(String blueprintId, int sliceCount) {
@@ -674,9 +674,9 @@ public final class SliceRoutes implements RouteSource {
     }
 
     private Promise<SliceConfigResponse> handleSliceConfig(String id) {
-        return Artifact.artifact(id)
-                       .async()
-                       .flatMap(this::buildSliceConfigResponse);
+        return RequestParse.asRequest(Artifact.artifact(id))
+                           .async()
+                           .flatMap(this::buildSliceConfigResponse);
     }
 
     private Promise<SliceConfigResponse> buildSliceConfigResponse(Artifact artifact) {

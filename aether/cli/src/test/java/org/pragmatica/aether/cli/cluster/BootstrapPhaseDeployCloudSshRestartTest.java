@@ -265,7 +265,7 @@ class BootstrapPhaseDeployCloudSshRestartTest {
                                                             envWithKey("/home/op/.ssh/aether_id_ed25519"));
 
         assertTrue(result.isSuccess(), () -> "Cloud deploy must succeed when SSH and health-poll succeed; got: " + result);
-        var dockerInvocations = invocations.stream().filter(i -> i.command().startsWith("docker")).toList();
+        var dockerInvocations = invocations.stream().filter(i -> i.command().contains("docker run")).toList();
         assertEquals(3, dockerInvocations.size(), "Docker-restart SSH must be invoked exactly once per cloud node");
         var hostsSeen = dockerInvocations.stream().map(SshInvocation::host).toList();
         assertTrue(hostsSeen.contains("203.0.113.10"), "Must SSH-back to node 0; saw: " + hostsSeen);
@@ -372,7 +372,7 @@ class BootstrapPhaseDeployCloudSshRestartTest {
     void relaunchBuilders_stampTheNodesSourceAndZone_overTheHostEnv() {
         var hostEnv = envOf(Map.of("AETHER_SOURCE", "leader-source", "AETHER_ZONE", "leader-zone"));
         var source = sourceNameOrDefault("eu-2");
-        var docker = BootstrapPhaseDeploy.buildRestartCommand("img:1",
+        var docker = BootstrapPhaseDeploy.buildStartCommand("img:1",
                                                               CLUSTER_NAME,
                                                               "eu-2-worker-0",
                                                               NodeRole.WORKER,
@@ -383,7 +383,7 @@ class BootstrapPhaseDeployCloudSshRestartTest {
                                                               "eu-1-core-0:1.2.3.4:8090",
                                                               CLUSTER_SECRET,
                                                               hostEnv);
-        var jvm = BootstrapPhaseDeploy.buildJvmRestartCommand("eu-2-worker-0",
+        var jvm = BootstrapPhaseDeploy.buildJvmStartCommand("eu-2-worker-0",
                                                               NodeRole.WORKER,
                                                               source,
                                                               Option.some("fsn1"),
@@ -416,8 +416,10 @@ class BootstrapPhaseDeployCloudSshRestartTest {
                                                       envWithKey("/home/op/.ssh/aether_id_ed25519"));
 
         for (var cmd : commands.values()) {
-            assertTrue(cmd.contains("docker rm -f aether-node"),
-                       () -> "Restart command MUST tear down the previous container: " + cmd);
+            assertFalse(cmd.contains("rm -f aether-node"),
+                        () -> "#1543: a start must NEVER tear down a previous container (same-NodeId restart): " + cmd);
+            assertTrue(cmd.contains("exit 17"),
+                       () -> "#1543: a start must REFUSE a host that already holds an aether-node: " + cmd);
             assertTrue(cmd.contains("docker run -d"),
                        () -> "Restart command MUST start a new container in detached mode: " + cmd);
             assertTrue(cmd.contains("-v /opt/aether/config/aether.toml:/app/aether.toml:ro"),
@@ -439,7 +441,7 @@ class BootstrapPhaseDeployCloudSshRestartTest {
         Fn3<Result<String>, String, String, SshConfig> sshExec = (host, command, config) -> {
             // Preflight uses command="cloud-init status --wait"; restart uses "docker rm -f ...".
             // Only fail the restart.
-            if (failingHost.equals(host) && command.startsWith("docker")) {
+            if (failingHost.equals(host) && command.contains("docker run")) {
                 return new TestError("ssh: connect refused").result();
             }
             return Result.success("");
@@ -458,7 +460,7 @@ class BootstrapPhaseDeployCloudSshRestartTest {
         var msg = result.fold(c -> c.message(), v -> "<unexpected success: " + v + ">");
         assertTrue(msg.contains(failingHost),
                    () -> "Failure message must name the unreachable IP. Got: " + msg);
-        assertTrue(msg.contains("Failed to restart aether-node"),
+        assertTrue(msg.contains("Failed to start aether-node"),
                    () -> "Failure message must explain *what* failed. Got: " + msg);
     }
 
@@ -585,9 +587,9 @@ class BootstrapPhaseDeployCloudSshRestartTest {
     }
 
     @Test
-    void buildRestartCommand_includesAllRequiredEnvVarsAndImage_inExpectedOrder() {
+    void buildStartCommand_includesAllRequiredEnvVarsAndImage_inExpectedOrder() {
         // Mutation guard: any future refactor that drops/renames an env var should fail here.
-        var cmd = BootstrapPhaseDeploy.buildRestartCommand("ghcr.io/pragmaticalabs/aether-node:" + CLUSTER_VERSION,
+        var cmd = BootstrapPhaseDeploy.buildStartCommand("ghcr.io/pragmaticalabs/aether-node:" + CLUSTER_VERSION,
                                                            CLUSTER_NAME,
                                                            "eu-1-core-0",
                                                            NodeRole.CORE,
@@ -598,7 +600,8 @@ class BootstrapPhaseDeployCloudSshRestartTest {
                                                            "eu-1-core-0:1.2.3.4:8090,eu-1-core-1:1.2.3.5:8091",
                                                            CLUSTER_SECRET,
                                                            emptyEnv());
-        assertTrue(cmd.contains("docker rm -f aether-node"), cmd);
+        assertFalse(cmd.contains("rm -f aether-node"), cmd);
+        assertTrue(cmd.contains("docker ps -a --format '{{.Names}}' | grep -qx aether-node"), cmd);
         assertTrue(cmd.contains("docker run -d --name aether-node --restart no --network host"), cmd);
         assertTrue(cmd.contains("-l aether-cluster=" + CLUSTER_NAME), cmd);
         assertTrue(cmd.contains("-l aether-node-id=eu-1-core-0"), cmd);
@@ -621,8 +624,8 @@ class BootstrapPhaseDeployCloudSshRestartTest {
     }
 
     @Test
-    void buildRestartCommand_emitsInsecureDevMode_whenPresentInInjectedEnv() {
-        var cmd = BootstrapPhaseDeploy.buildRestartCommand("img:1",
+    void buildStartCommand_emitsInsecureDevMode_whenPresentInInjectedEnv() {
+        var cmd = BootstrapPhaseDeploy.buildStartCommand("img:1",
                                                            CLUSTER_NAME,
                                                            "eu-1-core-0",
                                                            NodeRole.CORE,
@@ -638,8 +641,8 @@ class BootstrapPhaseDeployCloudSshRestartTest {
     }
 
     @Test
-    void buildRestartCommand_omitsInsecureDevMode_whenAbsentFromInjectedEnv() {
-        var cmd = BootstrapPhaseDeploy.buildRestartCommand("img:1",
+    void buildStartCommand_omitsInsecureDevMode_whenAbsentFromInjectedEnv() {
+        var cmd = BootstrapPhaseDeploy.buildStartCommand("img:1",
                                                            CLUSTER_NAME,
                                                            "eu-1-core-0",
                                                            NodeRole.CORE,
@@ -655,8 +658,8 @@ class BootstrapPhaseDeployCloudSshRestartTest {
     }
 
     @Test
-    void buildRestartCommand_emitsPresentIdentityVar_andOmitsAbsentOnes() {
-        var cmd = BootstrapPhaseDeploy.buildRestartCommand("img:1",
+    void buildStartCommand_emitsPresentIdentityVar_andOmitsAbsentOnes() {
+        var cmd = BootstrapPhaseDeploy.buildStartCommand("img:1",
                                                            CLUSTER_NAME,
                                                            "eu-1-core-0",
                                                            NodeRole.CORE,
@@ -675,11 +678,11 @@ class BootstrapPhaseDeployCloudSshRestartTest {
     }
 
     @Test
-    void buildRestartCommand_clusterSecretAppearsExactlyOnce_evenWhenInIdentityAllowList() {
+    void buildStartCommand_clusterSecretAppearsExactlyOnce_evenWhenInIdentityAllowList() {
         // AETHER_CLUSTER_SECRET is BOTH in ClusterIdentityEnv.IDENTITY_VARS AND passed explicitly.
         // The allow-list pass must exclude it so it is never emitted twice. Inject it into the
         // host-env lookup too, to prove the exclusion holds regardless of host env.
-        var cmd = BootstrapPhaseDeploy.buildRestartCommand("img:1",
+        var cmd = BootstrapPhaseDeploy.buildStartCommand("img:1",
                                                            CLUSTER_NAME,
                                                            "eu-1-core-0",
                                                            NodeRole.CORE,
@@ -701,9 +704,9 @@ class BootstrapPhaseDeployCloudSshRestartTest {
     }
 
     @Test
-    void buildRestartCommand_identityEnvFlags_useSingleLineForm_noLineContinuation() {
+    void buildStartCommand_identityEnvFlags_useSingleLineForm_noLineContinuation() {
         // SSH-exec'd single line: env flags must be ' -e VAR="value"' with NO trailing backslash.
-        var cmd = BootstrapPhaseDeploy.buildRestartCommand("img:1",
+        var cmd = BootstrapPhaseDeploy.buildStartCommand("img:1",
                                                            CLUSTER_NAME,
                                                            "eu-1-core-0",
                                                            NodeRole.CORE,
@@ -721,8 +724,8 @@ class BootstrapPhaseDeployCloudSshRestartTest {
     }
 
     @Test
-    void buildJvmRestartCommand_inlinesInsecureDevMode_whenPresentInInjectedEnv_secretOnce() {
-        var cmd = BootstrapPhaseDeploy.buildJvmRestartCommand("eu-1-core-0",
+    void buildJvmStartCommand_inlinesInsecureDevMode_whenPresentInInjectedEnv_secretOnce() {
+        var cmd = BootstrapPhaseDeploy.buildJvmStartCommand("eu-1-core-0",
                                                              NodeRole.CORE,
                                                              SourceName.DEFAULT,
                                                              Option.none(),
@@ -737,16 +740,16 @@ class BootstrapPhaseDeployCloudSshRestartTest {
         var secretOccurrences = cmd.split("AETHER_CLUSTER_SECRET=", -1).length - 1;
         assertEquals(1, secretOccurrences,
                      () -> "AETHER_CLUSTER_SECRET must appear exactly once in the JVM command: " + cmd);
-        assertTrue(cmd.indexOf("AETHER_INSECURE_DEV_MODE") < cmd.indexOf("systemctl restart"),
+        assertTrue(cmd.indexOf("AETHER_INSECURE_DEV_MODE") < cmd.indexOf("systemctl start"),
                    () -> "every env line must be written BEFORE the unit is restarted, or the restart reads the old file: " + cmd);
-        assertTrue(cmd.contains("systemctl restart aether-node.service"),
+        assertTrue(cmd.contains("systemctl start aether-node.service"),
                    () -> "JVM re-launch must restart the unit: " + cmd);
         assertFalse(cmd.contains("docker"), () -> "JVM command must NOT mention docker: " + cmd);
     }
 
     @Test
-    void buildJvmRestartCommand_omitsIdentityVars_whenInjectedEnvEmpty() {
-        var cmd = BootstrapPhaseDeploy.buildJvmRestartCommand("eu-1-core-0",
+    void buildJvmStartCommand_omitsIdentityVars_whenInjectedEnvEmpty() {
+        var cmd = BootstrapPhaseDeploy.buildJvmStartCommand("eu-1-core-0",
                                                              NodeRole.CORE,
                                                              SourceName.DEFAULT,
                                                              Option.none(),
@@ -868,7 +871,7 @@ class BootstrapPhaseDeployCloudSshRestartTest {
                                                             envWithKey("/home/op/.ssh/aether_id_ed25519"));
 
         assertTrue(result.isSuccess(), () -> "Cloud deploy must succeed; got: " + result);
-        var dockerCommands = commands.values().stream().filter(c -> c.startsWith("docker")).toList();
+        var dockerCommands = commands.values().stream().filter(c -> c.contains("docker run")).toList();
         assertFalse(dockerCommands.isEmpty(), "At least one docker-restart command must have been issued");
         for (var cmd : dockerCommands) {
             assertTrue(cmd.endsWith(configuredImage),
@@ -897,7 +900,7 @@ class BootstrapPhaseDeployCloudSshRestartTest {
 
         assertTrue(result.isSuccess(), () -> "Cloud deploy must succeed; got: " + result);
         for (var cmd : commands.values()) {
-            if (!cmd.startsWith("docker")) { continue; }
+            if (!cmd.contains("docker run")) { continue; }
             assertTrue(cmd.endsWith("ghcr.io/pragmaticalabs/aether-node:" + CLUSTER_VERSION),
                        () -> "Without runtime.image config, image MUST fall back to cluster.version. Got: " + cmd);
         }
@@ -998,7 +1001,7 @@ class BootstrapPhaseDeployCloudSshRestartTest {
         var ctx = contextWithThreeCloudNodes(cloudSource());
         var order = new ConcurrentLinkedQueue<String>();
         Fn3<Result<String>, String, String, SshConfig> sshExec = (host, command, config) -> {
-            var kind = command.startsWith("docker") ? "restart" : "preflight";
+            var kind = command.contains("docker run") ? "restart" : "preflight";
             order.add(kind + ":" + host);
             return Result.success("");
         };
@@ -1034,7 +1037,7 @@ class BootstrapPhaseDeployCloudSshRestartTest {
     /// pattern self-killed the session.
     ///
     /// The re-launch now restarts the systemd unit BY NAME, which removes that hazard class rather
-    /// than guarding it: `systemctl restart aether-node.service` cannot match a command line because
+    /// than guarding it: `systemctl start aether-node.service` cannot match a command line because
     /// it does not look at command lines. So the assertions invert — the pattern must be ABSENT — and
     /// the test keeps its original job of proving the JVM path is not the docker path.
     @Test
@@ -1057,7 +1060,7 @@ class BootstrapPhaseDeployCloudSshRestartTest {
         assertTrue(result.isSuccess(), () -> "JVM cloud deploy must succeed; got: " + result);
         assertEquals(3, commands.size(), "Each JVM node must receive a single restart command");
         for (var cmd : commands.values()) {
-            assertTrue(cmd.contains("systemctl restart aether-node.service"),
+            assertTrue(cmd.contains("systemctl start aether-node.service"),
                        () -> "JVM restart MUST drive the systemd unit by name: " + cmd);
             assertFalse(cmd.contains("pkill"),
                         () -> "Bug 20a's hazard class is removed, not re-guarded: `pkill -f` matches the SSH "
@@ -1129,7 +1132,7 @@ class BootstrapPhaseDeployCloudSshRestartTest {
         var ctx = contextWithJvmRuntime(cloudSource());
         var order = new ConcurrentLinkedQueue<String>();
         Fn3<Result<String>, String, String, SshConfig> sshExec = (host, command, config) -> {
-            var kind = command.contains("systemctl restart") ? "restart" : "preflight";
+            var kind = command.contains("systemctl start") ? "restart" : "preflight";
             order.add(kind + ":" + host);
             return Result.success("");
         };
@@ -1164,7 +1167,7 @@ class BootstrapPhaseDeployCloudSshRestartTest {
         var ctx = contextWithJvmRuntime(cloudSource());
         var failingHost = "203.0.113.11";
         Fn3<Result<String>, String, String, SshConfig> sshExec = (host, command, config) -> {
-            if (failingHost.equals(host) && command.contains("systemctl restart")) {
+            if (failingHost.equals(host) && command.contains("systemctl start")) {
                 return new TestError("ssh: connect refused").result();
             }
             return Result.success("");
@@ -1183,14 +1186,14 @@ class BootstrapPhaseDeployCloudSshRestartTest {
         var msg = result.fold(c -> c.message(), v -> "<unexpected success: " + v + ">");
         assertTrue(msg.contains(failingHost),
                    () -> "Failure message must name the unreachable IP. Got: " + msg);
-        assertTrue(msg.contains("Failed to restart aether-node JVM"),
-                   () -> "Failure message must clarify the JVM restart failed (not container): " + msg);
+        assertTrue(msg.contains("Failed to start aether-node JVM"),
+                   () -> "Failure message must clarify the JVM start failed (not container): " + msg);
     }
 
     @Test
-    void buildJvmRestartCommand_includesAllRequiredCliFlagsAndEnv_inExpectedOrder() {
+    void buildJvmStartCommand_includesAllRequiredCliFlagsAndEnv_inExpectedOrder() {
         // Mutation guard: any future refactor that drops/renames a CLI flag should fail here.
-        var cmd = BootstrapPhaseDeploy.buildJvmRestartCommand("eu-1-core-0",
+        var cmd = BootstrapPhaseDeploy.buildJvmStartCommand("eu-1-core-0",
                                                               NodeRole.CORE,
                                                               SourceName.DEFAULT,
                                                               Option.none(),
@@ -1209,7 +1212,7 @@ class BootstrapPhaseDeployCloudSshRestartTest {
                     "#1021: the JVM re-launch must name the unit, never pattern-match a command line. Got: " + cmd);
         assertFalse(cmd.contains("nohup") || cmd.contains("disown"),
                     "#1021: the node must run UNDER the unit, not beside it as a detached process. Got: " + cmd);
-        assertTrue(cmd.contains("systemctl restart aether-node.service"),
+        assertTrue(cmd.contains("systemctl start aether-node.service"),
                    "#1021: the re-launch must restart the unit by name. Got: " + cmd);
         assertTrue(cmd.contains("AETHER_CLUSTER_SECRET=" + CLUSTER_SECRET), cmd);
         assertTrue(cmd.contains("AETHER_NODE_ID=eu-1-core-0"), cmd);
@@ -1246,7 +1249,7 @@ class BootstrapPhaseDeployCloudSshRestartTest {
         var ctx = contextWithThreeCloudNodes(cloudSource());
         var preflightCommands = new ConcurrentLinkedQueue<String>();
         Fn3<Result<String>, String, String, SshConfig> sshExec = (host, command, config) -> {
-            if (!command.startsWith("docker")) { preflightCommands.add(command); }
+            if (!command.contains("docker run")) { preflightCommands.add(command); }
             return Result.success("");
         };
 
@@ -1348,7 +1351,7 @@ class BootstrapPhaseDeployCloudSshRestartTest {
         var ctx = BootstrapContext.bootstrapContext(config, state, nodes, addresses).withClusterSecret(CLUSTER_SECRET);
         var hosts = new ConcurrentLinkedQueue<String>();
         Fn3<Result<String>, String, String, SshConfig> sshExec = (host, command, sshConfig) -> {
-            if (command.startsWith("docker")) { hosts.add(host); }
+            if (command.contains("docker run")) { hosts.add(host); }
             return Result.success("");
         };
 
