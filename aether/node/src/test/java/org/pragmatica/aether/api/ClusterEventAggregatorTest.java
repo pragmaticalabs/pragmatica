@@ -1818,9 +1818,12 @@ class ClusterEventAggregatorTest {
         replaying.set(false);
         h.aggregator().redeliverDue();
         h.aggregator().redeliverDue();
+        assertThat(codes(h)).as("released by the tick alone").containsExactly("stream-consumer-state-diverged", "stream-consumer-state-repaired");
+
         h.aggregator().onOperatorWarning(repaired("g:orders[0]"));
 
-        assertThat(codes(h)).containsExactly("stream-consumer-state-diverged", "stream-consumer-state-repaired");
+        assertThat(codes(h)).as("once: a later raise finds the warning closed")
+                            .containsExactly("stream-consumer-state-diverged", "stream-consumer-state-repaired");
     }
 
     /// D1 held for redelivery, its repair held (clearing the window), then a recurrence D2 is admitted before D1
