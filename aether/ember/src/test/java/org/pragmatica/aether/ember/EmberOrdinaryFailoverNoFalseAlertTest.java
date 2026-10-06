@@ -278,6 +278,11 @@ class EmberOrdinaryFailoverNoFalseAlertTest {
         var response = publishResponse(anyLiveMgmtPort(excluded), name, payload);
 
         for (var attempt = 1; attempt < REFUSAL_RETRY_ATTEMPTS && isRetryableRefusal(response) && System.currentTimeMillis() < deadline; attempt++) {
+            System.out.printf("PUBLISH-REFUSAL-RETRY %s attempt=%d elapsedMs=%d -> %s%n",
+                              payload,
+                              attempt,
+                              REFUSAL_RETRY_BUDGET_MS - (deadline - System.currentTimeMillis()),
+                              response.lines().findFirst().orElse(""));
             sleepQuietly(REFUSAL_RETRY_PAUSE_MS);
             response = publishResponse(anyLiveMgmtPort(excluded), name, payload);
         }

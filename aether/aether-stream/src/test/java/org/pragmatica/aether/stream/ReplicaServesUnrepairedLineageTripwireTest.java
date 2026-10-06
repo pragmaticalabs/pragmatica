@@ -16,7 +16,6 @@ import org.pragmatica.hlc.HlcTimestamp;
 import org.pragmatica.lang.Option;
 
 import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 
 import static java.nio.charset.StandardCharsets.UTF_8;
@@ -24,24 +23,19 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
 import static org.pragmatica.aether.stream.StreamPartitionManager.streamPartitionManager;
 
-/// C5 (v1873 F5), a stated limit of #1873 that the divergent-tail repair of #1730 phase 2 (PR-B) has to close: a REPLICA whose ring
-/// still holds the OLD lineage at offsets above the new epoch's start serves it stamped with the NEW epoch. The check binds the
-/// cursor to the committed record, never the serving ring to the lineage it claims.
+/// C5 (v1873 F5), closed by the divergent-tail repair of #1730 phase 2 (PR-B's B5): a REPLICA, or a demoted owner, whose ring still holds
+/// the OLD lineage at offsets above the new epoch's start must not serve it stamped with the NEW epoch. The epoch check binds the cursor
+/// to the committed record; B5 (`StreamPartitionManager#servedIfVerified`, applied on the validated read too) binds the serving copy.
 ///
-/// Ruling (CTO, 2026-10-04): the fix is PR-B's B5 (B owns replica verification); both PRs merge before the cloud runs, so this is not a
-/// shipped limit. Whichever of B and C lands SECOND flips these tripwires to the real assertions.
-///
-/// Measured on a local merge of PR-B (ad19bbe5c) and this PR: still RED, because PR-B's `unverifiedReplicas` is set only when a
-/// ring is materialized as a REPLICA with a recovered tail, not when a live owner is demoted or the committed epoch advances.
-///
-/// Per the workspace rule, a test that cannot pass yet is an ENABLED TRIPWIRE, not a disabled one: the first test asserts the
-/// CURRENT behaviour and reddens the moment the repair lands, with the instruction to delete it and enable the real assertion.
+/// The manager is wired as `AetherNode` wires it: `ownerEpochSource` and `ownershipRecords` both read the one committed record. A manager
+/// wired with `ownershipRecords` alone sees `Epoch.ZERO` as the committed epoch, doubts nothing, and passes these vacuously.
 class ReplicaServesUnrepairedLineageTripwireTest {
     private static final String STREAM = "orders";
     private static final int PARTITION = 0;
     private static final NodeId SELF = new NodeId("self");
     private static final Epoch E1 = Epoch.epoch(1L, 2L, 1L);
 
+    private final java.util.concurrent.atomic.AtomicReference<Option<StreamPartitionOwnershipValue>> record = new java.util.concurrent.atomic.AtomicReference<>(Option.none());
     private StreamPartitionManager manager;
 
     @AfterEach
@@ -49,20 +43,6 @@ class ReplicaServesUnrepairedLineageTripwireTest {
         manager.close();
     }
 
-    /// TRIPWIRE: asserts the limit. When this goes red the replica no longer serves the old lineage under the new epoch: delete
-    /// this test, enable the one below, and remove the `[limit: ...]` for the unrepaired replica from `guarantees.md`.
-    @Test
-    void currently_aReplicaServesItsOldLineageUnderTheNewEpoch_untilTheRepairVerifiesIt() {
-        var served = rereadAfterDivergence();
-
-        assertThat(served).as("B5 landed: flip me. Delete this tripwire, enable `aReplicaHoldingTheOldLineage_doesNotServeItUnderTheNewEpoch` "
-                              + "and `aDemotedOwner_doesNotServeItsOldTailUnderTheNewEpoch`, and remove the [limit: ... closed by PR-B B5] from guarantees.md")
-                          .anyMatch(payload -> payload.startsWith("old-"));
-    }
-
-    /// The real assertion. Disabled, not absent: while the tripwire above is green this one would FAIL, and it must not pass
-    /// vacuously either.
-    @Disabled("C5: needs the replica's verified-for-epoch state from the divergent-tail repair (#1730 phase 2, PR-B); see the tripwire above")
     @Test
     void aReplicaHoldingTheOldLineage_doesNotServeItUnderTheNewEpoch() {
         assertThat(rereadAfterDivergence()).noneMatch(payload -> payload.startsWith("old-"));
@@ -73,6 +53,7 @@ class ReplicaServesUnrepairedLineageTripwireTest {
     private List<String> rereadAfterDivergence() {
         manager = streamPartitionManager();
         manager.placementRoleSupplier((_, _) -> Role.REPLICA);
+        manager.ownerEpochSource((_, _) -> record.get().map(StreamPartitionOwnershipValue::ownerEpoch).or(Epoch.ZERO));
         manager.createStream(StreamConfig.streamConfig(STREAM, 1, RetentionPolicy.retentionPolicy(10_000, 1024 * 1024, 60_000), "earliest"))
                .onFailure(cause -> fail(cause.message()));
         for (var i = 0; i < 5; i++) {
@@ -86,7 +67,8 @@ class ReplicaServesUnrepairedLineageTripwireTest {
                      .withEpochStart(0L)
                      .restarted(3L, HlcTimestamp.ZERO);
 
-        manager.ownershipRecords((_, _) -> Option.some(e2));
+        record.set(Option.some(e2));
+        manager.ownershipRecords((_, _) -> record.get());
         assertThat(manager.readServing(STREAM, PARTITION, 5L, 10, E1).isFailure()).as("control: the cursor is diverged to 3").isTrue();
 
         return manager.readServing(STREAM, PARTITION, 3L, 10, e2.ownerEpoch())
@@ -97,15 +79,6 @@ class ReplicaServesUnrepairedLineageTripwireTest {
                       .or(List.of());
     }
 
-    /// TRIPWIRE (the demoted-owner shape, `C5DemotedOwnerServesOldLineageProbeTest` on the B+C merge): X owned E1 and wrote 0..9, then
-    /// ownership moved to Y (E2, started at 5). X is now a REPLICA that has not been repaired.
-    @Test
-    void currently_aDemotedOwnerServesItsOldTailUnderTheNewEpoch_untilTheRepairVerifiesIt() {
-        assertThat(demotedOwnerReread()).as("B5 landed: flip me. Delete this tripwire and enable `aDemotedOwner_doesNotServeItsOldTailUnderTheNewEpoch`")
-                                        .anyMatch(payload -> payload.startsWith("x-old-"));
-    }
-
-    @Disabled("C5: needs PR-B's B5 (replica verified-for-epoch gating); see the tripwire above")
     @Test
     void aDemotedOwner_doesNotServeItsOldTailUnderTheNewEpoch() {
         assertThat(demotedOwnerReread()).noneMatch(payload -> payload.startsWith("x-old-"));
@@ -113,11 +86,11 @@ class ReplicaServesUnrepairedLineageTripwireTest {
 
     private List<String> demotedOwnerReread() {
         var role = new java.util.concurrent.atomic.AtomicReference<>(Role.OWNER);
-        var record = new java.util.concurrent.atomic.AtomicReference<Option<StreamPartitionOwnershipValue>>(Option.none());
 
         manager = streamPartitionManager(Long.MAX_VALUE);
         manager.placementRoleSupplier((_, _) -> role.get());
         manager.ownershipRecords((_, _) -> record.get());
+        manager.ownerEpochSource((_, _) -> record.get().map(StreamPartitionOwnershipValue::ownerEpoch).or(Epoch.ZERO));
         manager.createStream(StreamConfig.streamConfig(STREAM)).onFailure(cause -> fail(cause.message()));
         for (var i = 0; i < 10; i++) {
             assertThat(manager.publishLocal(STREAM, PARTITION, ("x-old-" + i).getBytes(UTF_8), 1L).isSuccess()).isTrue();
