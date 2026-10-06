@@ -15,6 +15,10 @@
  */
 package org.pragmatica.utility.warning;
 
+import org.pragmatica.lang.Option;
+
+import java.util.Arrays;
+
 /// The single catalogue of operator-warning codes (#1574).
 ///
 /// Operators identify a warning in the cluster event log by `code`, so the kebab string is part of the
@@ -69,6 +73,13 @@ public enum OperatorWarningCode {
     /// found by a reconcile pass, which forgets and re-attaches it, or by a detach, which then made no final cursor
     /// flush. The partition was not consumed in between while this node reported it attached.
     STREAM_CONSUMER_STATE_DIVERGED("stream-consumer-state-diverged", "stream-consumer", WarningLevel.WARNING),
+    /// The recovery of a [#STREAM_CONSUMER_STATE_DIVERGED] that a reconcile pass found (#752), same subject: the
+    /// consumer is attached again, or the partition is no longer assigned to this node. A divergence found by a detach
+    /// is a point event with the state already reconciled, so it gets no recovery event.
+    STREAM_CONSUMER_STATE_REPAIRED("stream-consumer-state-repaired",
+                                   "stream-consumer",
+                                   WarningLevel.INFO,
+                                   STREAM_CONSUMER_STATE_DIVERGED),
     /// A partition's owner promotion is refused because a peer ANSWERED its watermark probe with a page cut before its
     /// first event: that event alone exceeds the peer's read cap (#1431). Not an unreachable peer; the operator raises
     /// the peer's `maxReadResponseBytes`. The message names the partition, the peer and the offset.
@@ -76,10 +87,18 @@ public enum OperatorWarningCode {
     private final String code;
     private final String subsystem;
     private final WarningLevel level;
+    private final Option<OperatorWarningCode> recoveryOf;
     OperatorWarningCode(String code, String subsystem, WarningLevel level) {
         this.code = code;
         this.subsystem = subsystem;
         this.level = level;
+        this.recoveryOf = Option.none();
+    }
+    OperatorWarningCode(String code, String subsystem, WarningLevel level, OperatorWarningCode recoveryOf) {
+        this.code = code;
+        this.subsystem = subsystem;
+        this.level = level;
+        this.recoveryOf = Option.some(recoveryOf);
     }
     /// The stable kebab-case identifier of the condition.
     public String code() {
@@ -90,5 +109,16 @@ public enum OperatorWarningCode {
     }
     public WarningLevel level() {
         return level;
+    }
+    /// The condition this code is the recovery of, when it is one. A recovery is only meaningful for a subject whose
+    /// condition an operator has seen, so the event layer publishes it exactly then (#752).
+    public Option<OperatorWarningCode> recoveryOf() {
+        return recoveryOf;
+    }
+    /// Whether some other code is the recovery of this one.
+    public boolean hasRecovery() {
+        return Arrays.stream(values())
+                     .anyMatch(other -> other.recoveryOf.filter(this::equals)
+                                                        .isPresent());
     }
 }

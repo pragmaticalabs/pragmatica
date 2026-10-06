@@ -1861,12 +1861,92 @@ class StreamConsumerManagerTest {
 
             assertThat(runtime.subscribedPartitions()).describedAs("the same pass re-attached it").containsExactly(0);
             assertThat(runtime.subscribeCalls).isEqualTo(subscribesBefore + 1);
-            assertThat(awaitWarnings(1)).singleElement()
+            assertThat(awaitWarnings(2)).first()
                       .satisfies(warning -> {
                                      assertThat(warning.code()).isEqualTo(OperatorWarningCode.STREAM_CONSUMER_STATE_DIVERGED);
                                      assertThat(warning.subject()).isEqualTo(GROUP + ":" + STREAM + "[0]");
                                      assertThat(warning.message()).contains("no subscription");
                                  });
+        }
+
+        /// The recovery event: one per divergence, after it, same subject. Red under "no repaired report".
+        @Test
+        void reconcile_reportsTheRepair_onceTheLostSubscriptionIsAttachedAgain() throws InterruptedException {
+            var manager = attachedOnPartitionZero();
+
+            runtime.lose(0);
+            manager.reconcile();
+            manager.reconcile();
+            runtime.lose(0);
+            manager.reconcile();
+
+            assertThat(awaitWarnings(4)).extracting(OperatorWarning::code)
+                      .describedAs("each loss is followed by exactly one repair; the quiet pass between them raises nothing")
+                      .containsExactly(OperatorWarningCode.STREAM_CONSUMER_STATE_DIVERGED,
+                                       OperatorWarningCode.STREAM_CONSUMER_STATE_REPAIRED,
+                                       OperatorWarningCode.STREAM_CONSUMER_STATE_DIVERGED,
+                                       OperatorWarningCode.STREAM_CONSUMER_STATE_REPAIRED);
+            assertThat(warnings.get(1)).satisfies(repaired -> {
+                                                      assertThat(repaired.subject()).isEqualTo(warnings.get(0).subject());
+                                                      assertThat(repaired.message()).contains("attached again");
+                                                  });
+        }
+
+        /// A divergence whose key the pass no longer wants here is over too: nothing is left to attach.
+        @Test
+        void reconcile_reportsTheRepair_whenTheLostSubscriptionIsNoLongerWantedHere() throws InterruptedException {
+            var manager = attachedOnPartitionZero();
+
+            runtime.lose(0);
+            undeclare();
+            manager.reconcile();
+
+            assertThat(awaitWarnings(2)).extracting(OperatorWarning::code)
+                      .containsExactly(OperatorWarningCode.STREAM_CONSUMER_STATE_DIVERGED,
+                                       OperatorWarningCode.STREAM_CONSUMER_STATE_REPAIRED);
+            assertThat(warnings.get(1).message()).contains("no longer wants it attached");
+            assertThat(runtime.subscribedPartitions()).isEmpty();
+        }
+
+        /// Still wanted here but not attachable (the slice went away between the desired-set read and the attach): the
+        /// partition is still consumed by nobody, so the divergence stays open until a later pass attaches it. Had the
+        /// first pass closed it, its message would be the "no longer wants" one.
+        @Test
+        void reconcile_holdsTheRepair_untilAStillWantedSubscriptionAttaches() throws InterruptedException {
+            var manager = attachedOnPartitionZero();
+
+            runtime.lose(0);
+            when(invocationHandler.localSlice(ARTIFACT)).thenReturn(Option.some(new StubBridge(Option.none())), Option.none());
+            manager.reconcile();
+            assertThat(runtime.subscribedPartitions()).describedAs("arming: the re-attach did not happen").isEmpty();
+            deploySliceLocally();
+            manager.reconcile();
+            assertThat(runtime.subscribedPartitions()).containsExactly(0);
+
+            assertThat(awaitWarnings(2)).extracting(OperatorWarning::code)
+                      .containsExactly(OperatorWarningCode.STREAM_CONSUMER_STATE_DIVERGED,
+                                       OperatorWarningCode.STREAM_CONSUMER_STATE_REPAIRED);
+            assertThat(warnings.get(1).message()).contains("attached again");
+        }
+
+        /// A divergence found by a detach or abandon is a point report: nothing is left to repair, so no recovery
+        /// event follows it. The hand-off is FIFO, so the sentinel loss and its repair close the list.
+        @Test
+        void abandonAll_thatFindsNoSubscription_raisesNoRepair() throws InterruptedException {
+            var manager = attachedOnPartitionZero();
+
+            runtime.strictRemoval = true;
+            runtime.lose(0);
+            manager.abandonAll();
+            manager.reconcile();
+            runtime.lose(0);
+            manager.reconcile();
+
+            assertThat(awaitWarnings(3)).extracting(OperatorWarning::code)
+                      .containsExactly(OperatorWarningCode.STREAM_CONSUMER_STATE_DIVERGED,
+                                       OperatorWarningCode.STREAM_CONSUMER_STATE_DIVERGED,
+                                       OperatorWarningCode.STREAM_CONSUMER_STATE_REPAIRED);
+            assertThat(warnings.get(0).message()).contains("Detach of");
         }
 
         /// Red under "the detach failure is logged at DEBUG": nothing reaches the operator.
@@ -1914,9 +1994,10 @@ class StreamConsumerManagerTest {
             runtime.lose(0);
             manager.reconcile();
 
-            assertThat(awaitWarnings(1)).describedAs("only the sentinel loss").hasSize(1);
-            Thread.sleep(100);
-            assertThat(warnings).hasSize(1);
+            assertThat(awaitWarnings(2)).extracting(OperatorWarning::code)
+                      .describedAs("only the sentinel loss and its repair, which is the last thing the scenario can raise")
+                      .containsExactly(OperatorWarningCode.STREAM_CONSUMER_STATE_DIVERGED,
+                                       OperatorWarningCode.STREAM_CONSUMER_STATE_REPAIRED);
         }
 
         private List<OperatorWarning> awaitWarnings(int count) throws InterruptedException {

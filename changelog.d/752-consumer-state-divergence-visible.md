@@ -11,6 +11,19 @@
   `[verified: aether/node/src/test/java/org/pragmatica/aether/node/stream/StreamConsumerManagerTest.java]`
   (`StateDivergence`, against the recording runtime double; wiring pinned by `OperatorWarningWiringTest`). Ordinary
   passes and an ordinary stop raise nothing (same class).
+- **The divergence has a recovery event.** A divergence found by a reconcile pass is followed by one operator warning
+  `stream-consumer-state-repaired` (same subject, INFO) once the consumer is attached again, or once the pass no
+  longer wants it on this node. A divergence found by a detach is a point event with the state already reconciled, and
+  has none. `[verified: same test class, StateDivergence]`
+- **`WarningLevel.INFO`** is a new generic level of the operator-warning mechanism: logs at INFO, publishes at
+  `ClusterEvent.Severity.INFO`. A code can name the code it is the recovery of; the aggregator publishes such a
+  recovery only after a published event of the code it closes for the same subject, once per event, outside the 60 s
+  window. `[verified: ClusterEventAggregatorTest onOperatorWarning_recovery*, OperatorWarningsTest, OperatorWarningCodeTest]`
+- **The quorum-loss abandon could raise the divergence warning falsely.** `abandonAll` did not take the pass lock, so
+  it could run while a reconcile pass was between recording a subscription as attached and subscribing it in the
+  runtime: the abandon found nothing to remove and reported a divergence that did not exist, and the pass then
+  subscribed behind it, leaving a subscription the manager no longer tracked. `abandonAll` now waits for a pass in
+  flight, like `stop`. `[verified: same test class, AbandonDuringAttach]`
 - `attach`'s early return for an already-attached key is now logged at DEBUG, so a pass's decisions can be
   reconstructed.
 - `SubscriptionSnapshot.stalled` now states its meaning: a processing-failure latch under the STALL strategy, never

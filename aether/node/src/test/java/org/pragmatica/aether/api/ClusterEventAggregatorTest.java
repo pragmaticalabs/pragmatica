@@ -1217,6 +1217,109 @@ class ClusterEventAggregatorTest {
         assertThat(events.getFirst().details()).containsEntry("suppressedSince", "0");
     }
 
+    private static OperatorWarning diverged(String subject) {
+        return OperatorWarning.operatorWarning(OperatorWarningCode.STREAM_CONSUMER_STATE_DIVERGED, subject, "diverged " + subject);
+    }
+
+    private static OperatorWarning repaired(String subject) {
+        return OperatorWarning.operatorWarning(OperatorWarningCode.STREAM_CONSUMER_STATE_REPAIRED, subject, "repaired " + subject);
+    }
+
+    private List<String> codes(Harness h) {
+        return h.events().stream().map(event -> event.details().get("code")).toList();
+    }
+
+    /// #752: a WarningLevel.INFO code maps to ClusterEvent.Severity.INFO, not WARNING.
+    @Test
+    void onOperatorWarning_infoLevelCode_publishesAtInfoSeverity() {
+        var h = Harness.create();
+
+        h.aggregator().onOperatorWarning(diverged("g:orders[0]"));
+        h.aggregator().onOperatorWarning(repaired("g:orders[0]"));
+
+        assertThat(h.events().stream().map(ClusterEvent::severity).toList())
+            .containsExactly(ClusterEvent.Severity.WARNING, ClusterEvent.Severity.INFO);
+    }
+
+    /// #752: a recovery with no published warning for its subject is refused, and a warning for a different subject
+    /// does not stand in for it.
+    @Test
+    void onOperatorWarning_recoveryWithoutItsWarning_isNotPublished() {
+        var h = Harness.create();
+
+        h.aggregator().onOperatorWarning(repaired("g:orders[0]"));
+        h.aggregator().onOperatorWarning(diverged("g:orders[1]"));
+        h.aggregator().onOperatorWarning(repaired("g:orders[0]"));
+
+        assertThat(codes(h)).containsExactly("stream-consumer-state-diverged");
+    }
+
+    /// #752: a warning held back by the flood guard shows the operator nothing, so its recovery is held back with it.
+    /// Independent windows published the second recovery here (its own window was free) without its warning.
+    @Test
+    void onOperatorWarning_recoveryOfAThrottledWarning_isNotPublished() {
+        var physicalMillis = new AtomicLong(1_000_000L);
+        var h = Harness.create(Harness.defaultRetention(), OWNER, () -> false, LEADER,
+                               HlcClock.hlcClock(SELF, physicalMillis::get, Long.MAX_VALUE));
+
+        h.aggregator().onOperatorWarning(diverged("g:orders[0]"));
+        physicalMillis.addAndGet(30_000L);
+        h.aggregator().onOperatorWarning(repaired("g:orders[0]"));
+        physicalMillis.addAndGet(10_000L);
+        h.aggregator().onOperatorWarning(diverged("g:orders[0]"));
+        physicalMillis.addAndGet(60_000L);
+        h.aggregator().onOperatorWarning(repaired("g:orders[0]"));
+
+        assertThat(codes(h)).containsExactly("stream-consumer-state-diverged", "stream-consumer-state-repaired");
+    }
+
+    /// #752: the recovery of a published warning is published even when it comes late. Independent windows swallowed
+    /// the second recovery here (its window, opened by the first, was still shut) though its warning was shown.
+    @Test
+    void onOperatorWarning_recoveryOfAPublishedWarning_isNotThrottledAway() {
+        var physicalMillis = new AtomicLong(1_000_000L);
+        var h = Harness.create(Harness.defaultRetention(), OWNER, () -> false, LEADER,
+                               HlcClock.hlcClock(SELF, physicalMillis::get, Long.MAX_VALUE));
+
+        h.aggregator().onOperatorWarning(diverged("g:orders[0]"));
+        physicalMillis.addAndGet(30_000L);
+        h.aggregator().onOperatorWarning(repaired("g:orders[0]"));
+        physicalMillis.addAndGet(35_000L);
+        h.aggregator().onOperatorWarning(diverged("g:orders[0]"));
+        physicalMillis.addAndGet(5_000L);
+        h.aggregator().onOperatorWarning(repaired("g:orders[0]"));
+
+        assertThat(codes(h)).containsExactly("stream-consumer-state-diverged",
+                                             "stream-consumer-state-repaired",
+                                             "stream-consumer-state-diverged",
+                                             "stream-consumer-state-repaired");
+    }
+
+    /// #752: one published warning allows one recovery.
+    @Test
+    void onOperatorWarning_secondRecoveryForOneWarning_isNotPublished() {
+        var h = Harness.create();
+
+        h.aggregator().onOperatorWarning(diverged("g:orders[0]"));
+        h.aggregator().onOperatorWarning(repaired("g:orders[0]"));
+        h.aggregator().onOperatorWarning(repaired("g:orders[0]"));
+
+        assertThat(codes(h)).containsExactly("stream-consumer-state-diverged", "stream-consumer-state-repaired");
+    }
+
+    /// #752: a warning whose publish was dropped (replay) was never shown, so a recovery for it is refused.
+    @Test
+    void onOperatorWarning_recoveryOfAnUnpublishedWarning_isNotPublished() {
+        var replaying = new java.util.concurrent.atomic.AtomicBoolean(true);
+        var h = Harness.create(Harness.defaultRetention(), OWNER, replaying::get, LEADER, HlcClock.hlcClock(SELF, () -> 1_000_000L, Long.MAX_VALUE));
+
+        h.aggregator().onOperatorWarning(diverged("g:orders[0]"));
+        replaying.set(false);
+        h.aggregator().onOperatorWarning(repaired("g:orders[0]"));
+
+        assertThat(h.events()).isEmpty();
+    }
+
     /// One millisecond short of the window is still inside it.
     @Test
     void onOperatorWarning_justInsideTheWindow_isStillSuppressed() {

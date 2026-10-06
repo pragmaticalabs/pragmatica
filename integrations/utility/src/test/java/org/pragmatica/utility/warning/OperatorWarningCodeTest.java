@@ -53,6 +53,31 @@ class OperatorWarningCodeTest {
             .allMatch(subsystem -> subsystem.matches("[a-z][a-z0-9]*(-[a-z0-9]+)*"));
     }
 
+    /// #752: a recovery code closes a condition of its own subsystem, and a condition is not itself a recovery, so a
+    /// recovery is never itself waiting for one.
+    @Test
+    void recoveryCodes_closeAnOrdinaryConditionOfTheirOwnSubsystem() {
+        var recoveries = Arrays.stream(OperatorWarningCode.values())
+                               .filter(code -> code.recoveryOf().isPresent())
+                               .toList();
+
+        assertThat(recoveries).as("control: the catalogue has a recovery").isNotEmpty();
+        assertThat(recoveries).allSatisfy(recovery -> {
+            var closes = recovery.recoveryOf().unwrap();
+            assertThat(closes.subsystem()).isEqualTo(recovery.subsystem());
+            assertThat(closes.recoveryOf().isPresent()).isFalse();
+            assertThat(closes.hasRecovery()).isTrue();
+            assertThat(recovery.hasRecovery()).isFalse();
+        });
+    }
+
+    @Test
+    void streamConsumerRecovery_isInfo_andClosesTheDivergence() {
+        assertThat(OperatorWarningCode.STREAM_CONSUMER_STATE_REPAIRED.level()).isEqualTo(WarningLevel.INFO);
+        assertThat(OperatorWarningCode.STREAM_CONSUMER_STATE_REPAIRED.recoveryOf().unwrap())
+            .isEqualTo(OperatorWarningCode.STREAM_CONSUMER_STATE_DIVERGED);
+    }
+
     /// Positive control for [#codes_areUnique]: the same grouping reports a duplicate when one exists.
     @Test
     void uniquenessCheck_detectsADuplicate() {

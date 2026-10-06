@@ -100,6 +100,22 @@ class OperatorWarningsTest {
             .isEqualTo("[replica-fsync-failed] sync failed for orders[3]");
     }
 
+    /// #752: an INFO code (a recovery notice) is logged at INFO, not WARN, and still reaches the sink.
+    @Test
+    void raise_infoCode_logsAtInfo_notWarn() {
+        OperatorWarnings.raise(SITE_LOG,
+                               OperatorWarningSink.handingOffTo(emitted::add),
+                               OperatorWarningCode.STREAM_CONSUMER_STATE_REPAIRED,
+                               "g:orders[0]",
+                               "repaired {}",
+                               "g:orders[0]");
+
+        assertThat(appender.events).hasSize(1);
+        assertThat(appender.events.getFirst().getLevel()).isEqualTo(Level.INFO);
+        assertThat(appender.events.getFirst().getMessage().getFormattedMessage())
+            .isEqualTo("[stream-consumer-state-repaired] repaired g:orders[0]");
+    }
+
     @Test
     void raise_criticalCode_logsAtError() {
         OperatorWarnings.raise(SITE_LOG, OperatorWarningSink.handingOffTo(emitted::add), CORE_ABSENCE_FENCE, "core", "fence firing");

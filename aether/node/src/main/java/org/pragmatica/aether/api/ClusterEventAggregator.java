@@ -8,6 +8,7 @@ import java.time.Instant;
 import java.util.HashMap;
 import java.util.Comparator;
 import java.util.HashSet;
+import java.util.Set;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -82,6 +83,7 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.utility.warning.OperatorWarning;
+import org.pragmatica.utility.warning.OperatorWarningCode;
 import org.pragmatica.utility.warning.WarningLevel;
 
 import org.slf4j.Logger;
@@ -180,6 +182,10 @@ public final class ClusterEventAggregator {
     /// The key is `code:subject`. It is unambiguous because a code is kebab-case and never contains `:`,
     /// which `OperatorWarningCodeTest` enforces.
     private final ConcurrentHashMap<String, ThrottleWindow> operatorWarningThrottle = new ConcurrentHashMap<>();
+    /// Throttle keys of operator warnings that were published and whose recovery code has not been raised since (#752).
+    /// A recovery is published exactly when its key is here, so it never appears without the warning it closes and is
+    /// never throttled away from one an operator saw. Bounded by the (code, subject) pairs the node can raise.
+    private final Set<String> openRecoverable = ConcurrentHashMap.newKeySet();
 
     /// Throttle window shared by {@link #onStreamMemoryExceeded} (60s per `(streamName, phase)`, spec
     /// §4.5c) and {@link #onOperatorWarning} (60s per `(code, subject)`, #1574).
@@ -211,6 +217,11 @@ public final class ClusterEventAggregator {
         /// A new window opened at `now` by an admitted call, closing one that held back `suppressedBefore`.
         static ThrottleWindow throttleWindow(long now, long suppressedBefore) {
             return new ThrottleWindow(now, EVENT_THROTTLE_MS, now, 0, true, suppressedBefore);
+        }
+
+        /// The state of a call that was refused outright, with no window behind it.
+        static ThrottleWindow refused(long now) {
+            return new ThrottleWindow(now, 0, now, 0, false, 0);
         }
 
         /// The same window with one more suppressed call.
@@ -798,8 +809,11 @@ public final class ClusterEventAggregator {
     /// once per retry window.
     @Contract
     public void onOperatorWarning(OperatorWarning warning) {
-        var key = warning.code().code() + ":" + warning.subject();
-        var window = admit(operatorWarningThrottle, key);
+        var key = throttleKey(warning.code(), warning.subject());
+        var recovery = warning.code().recoveryOf();
+        var window = recovery.isPresent()
+                     ? recoveryWindow(recovery.unwrap(), warning)
+                     : admit(operatorWarningThrottle, key);
 
         if (!window.admitted()) {
             LOG.debug("ClusterEventAggregator: suppressing throttled OperatorWarning {} for {}",
@@ -807,6 +821,10 @@ public final class ClusterEventAggregator {
                       warning.subject());
 
             return;
+        }
+
+        if (warning.code().hasRecovery()) {
+            openRecoverable.add(key);
         }
 
         var event = new ClusterEvent.OperatorWarning(hlcClock.now(),
@@ -887,19 +905,39 @@ public final class ClusterEventAggregator {
 
     /// Shortens `window` to a retry window if it is still the key's current window. A later window is left alone.
     private Unit shortenWindow(String key, ThrottleWindow window) {
-        operatorWarningThrottle.computeIfPresent(key, (_, current) -> shortenedIfCurrent(current, window));
+        operatorWarningThrottle.computeIfPresent(key, (_, current) -> shortenedIfCurrent(current, window, key));
 
         return Unit.unit();
     }
 
-    private static ThrottleWindow shortenedIfCurrent(ThrottleWindow current, ThrottleWindow admitted) {
-        return current.openedAt() == admitted.openedAt()
-               ? current.shortenedForRetry()
-               : current;
+    /// A window whose event was not published leaves nothing for a recovery to close, so the open mark goes with it.
+    private ThrottleWindow shortenedIfCurrent(ThrottleWindow current, ThrottleWindow admitted, String key) {
+        if (current.openedAt() != admitted.openedAt()) {
+            return current;
+        }
+
+        openRecoverable.remove(key);
+        return current.shortenedForRetry();
+    }
+
+    private static String throttleKey(OperatorWarningCode code, String subject) {
+        return code.code() + ":" + subject;
+    }
+
+    /// A recovery is admitted iff the warning it closes was published for the same subject and is still open, and it
+    /// closes it. It has no window of its own: one published warning allows one recovery, so a second window could only
+    /// hold back a recovery whose warning an operator saw.
+    private ThrottleWindow recoveryWindow(OperatorWarningCode closes, OperatorWarning recovery) {
+        var now = hlcClock.now().physicalMillis();
+
+        return openRecoverable.remove(throttleKey(closes, recovery.subject()))
+               ? ThrottleWindow.throttleWindow(now, 0)
+               : ThrottleWindow.refused(now);
     }
 
     private static Severity severityOf(WarningLevel level) {
         return switch (level) {
+            case INFO -> Severity.INFO;
             case WARNING -> Severity.WARNING;
             case CRITICAL -> Severity.CRITICAL;
         };
