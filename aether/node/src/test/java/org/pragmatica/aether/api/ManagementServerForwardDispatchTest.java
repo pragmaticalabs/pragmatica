@@ -113,6 +113,52 @@ class ManagementServerForwardDispatchTest {
                 .isEmpty();
     }
 
+    /// #1921 (e): a forwarded route is validated BEFORE it leaves this node. A partition that is not an integer, or an address that
+    /// does not parse, used to resolve no owner and ride the forwarder to a 503 ("the cluster is unavailable") for what is the
+    /// caller's own malformed request. Nothing may be sent and the answer is 400.
+    @Test
+    void dispatchManagementRequest_answers400AndSendsNothing_whenThePartitionIsNotAnInteger() {
+        dispatch(server(Option.some(OWNER)), "/api/v1/streams/myns/orders/1.0.0/replicas/abc");
+
+        assertThat(network.targets()).isEmpty();
+        assertThat(writer.writes()).containsExactly(HttpStatus.BAD_REQUEST);
+    }
+
+    @Test
+    void dispatchManagementRequest_answers400AndSendsNothing_whenTheStreamAddressIsMalformed() {
+        dispatch(server(Option.some(OWNER)), "/api/v1/streams/myns/orders/not-a-version/replicas/7");
+
+        assertThat(network.targets()).isEmpty();
+        assertThat(writer.writes()).containsExactly(HttpStatus.BAD_REQUEST);
+    }
+
+    @Test
+    void dispatchManagementRequest_answers400AndSendsNothing_whenTheNodeIdIsBlank() {
+        dispatch(server(Option.some(OWNER)), "/api/v1/nodes/status/ ");
+
+        assertThat(network.targets()).isEmpty();
+        assertThat(writer.writes()).containsExactly(HttpStatus.BAD_REQUEST);
+    }
+
+    /// Control, and the boundary of (e): a WELL-FORMED node id that names no node this one is connected to is not a malformed
+    /// request, and keeps the forwarder's 503. If this went 400 the validation would be refusing on reachability, not on form.
+    @Test
+    void dispatchManagementRequest_stillAnswers503_whenTheNodeIdIsWellFormedButNamesNoConnectedNode() {
+        dispatch(server(Option.some(OWNER)), "/api/v1/nodes/status/node-nobody");
+
+        assertThat(network.targets()).isEmpty();
+        assertThat(writer.writes()).containsExactly(HttpStatus.SERVICE_UNAVAILABLE);
+    }
+
+    /// Control: a well-formed partition whose owner cannot be resolved keeps the forwarder's `PartitionOwnerUnresolved` 503 (#1039).
+    @Test
+    void dispatchManagementRequest_stillAnswers503_whenTheRequestIsWellFormedButTheOwnerIsUnresolvable() {
+        dispatch(server(Option.none()), REPLICAS_PATH);
+
+        assertThat(network.targets()).isEmpty();
+        assertThat(writer.writes()).containsExactly(HttpStatus.SERVICE_UNAVAILABLE);
+    }
+
     private void dispatch(ManagementServerImpl server, String path) {
         server.dispatchManagementRequest(new StubHttpRequest(path),
                                          InstrumentedResponseWriter.instrumentedResponseWriter(writer),

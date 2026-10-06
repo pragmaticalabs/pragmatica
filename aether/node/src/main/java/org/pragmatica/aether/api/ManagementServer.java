@@ -1010,6 +1010,10 @@ class ManagementServerImpl implements ManagementServer {
         var matchedRoute = matched.unwrap();
         var target = matchedRoute.route().target();
 
+        if (refuseMalformedForwardParams(ctx, response, methodName, startTime, matchedRoute)) {
+            return true;
+        }
+
         return switch (target) {
             case RouteTarget.LocalNode __ -> false;
             case RouteTarget.AnyCoreNode __ -> tryForwardIfNotCore(ctx, response, methodName, startTime);
@@ -1032,6 +1036,65 @@ class ManagementServerImpl implements ManagementServer {
                                                                                                       matchedRoute,
                                                                                                       partitionParamIndex);
         };
+    }
+
+    /// #1921: a forwarded route is validated BEFORE it leaves this node. A node id, partition or stream address the caller got
+    /// wrong resolves no target, and the forwarder reports that as "owner unresolved" or "invalid node id", which
+    /// `sendForwardError` surfaces as 503: the cluster is unavailable, when the request was malformed. FORM only: a well-formed id
+    /// that names no connected node is still the forwarder's 503, because that is a statement about the cluster.
+    private boolean refuseMalformedForwardParams(HttpRequest ctx,
+                                                 InstrumentedResponseWriter response,
+                                                 String methodName,
+                                                 long startTime,
+                                                 MatchedRoute matched) {
+        return malformedForwardParam(matched).fold(() -> false,
+                                                   cause -> {
+                                                       ProblemResponses.writeProblem(response,
+                                                                                     cause,
+                                                                                     ctx.path(),
+                                                                                     ctx.requestId());
+                                                       recordRequestMetrics(methodName, ctx.path(), response, startTime);
+
+                                                       return true;
+                                                   });
+    }
+
+    /// Package-visible pure decision behind [#refuseMalformedForwardParams], like [#answersPartitionLocally].
+    static Option<Cause> malformedForwardParam(MatchedRoute matched) {
+        return switch (matched.route().target()) {
+            case RouteTarget.NodeIdParam(var paramIndex) -> paramAt(matched, paramIndex).flatMap(id -> NodeId.nodeId(id)
+                                                                                                          .fold(cause -> Option.some(new ManagementServerError.InvalidRequest("Invalid node id '" + id + "': "
+                                                                                                                                                                              + cause.message())),
+                                                                                                                _ -> Option.none()));
+            case RouteTarget.PartitionOwner(var partitionParamIndex) -> malformedPartitionOwnerParam(matched, partitionParamIndex);
+            default -> Option.none();
+        };
+    }
+
+    private static Option<Cause> malformedPartitionOwnerParam(MatchedRoute matched, int partitionParamIndex) {
+        var partition = paramAt(matched, partitionParamIndex).flatMap(raw -> Result.lift(Causes::fromThrowable, () -> Integer.valueOf(raw))
+                                                                                  .fold(_ -> Option.some(new ManagementServerError.InvalidRequest("Invalid partition '" + raw
+                                                                                                                                                  + "': not an integer")),
+                                                                                        _ -> Option.none()));
+
+        return partition.isPresent()
+               ? partition.map(cause -> (Cause) cause)
+               : malformedStreamAddress(matched);
+    }
+
+    private static Option<Cause> malformedStreamAddress(MatchedRoute matched) {
+        return Option.all(matched.param("namespace"), matched.param("stream"), matched.param("version"))
+                     .flatMap((ns, stream, version) -> ResourceAddress.resourceAddress(ns, stream, version)
+                                                                      .fold(cause -> Option.some(new ManagementServerError.InvalidRequest(cause.message())),
+                                                                            _ -> Option.none()));
+    }
+
+    private static Option<String> paramAt(MatchedRoute matched, int index) {
+        var names = matched.route().paramNames();
+
+        return index < 0 || index >= names.size()
+               ? Option.none()
+               : matched.param(names.get(index));
     }
 
     private boolean tryForwardIfNotLeader(HttpRequest ctx,
