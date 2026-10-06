@@ -866,8 +866,8 @@ public final class ClusterConfigRoutes implements RouteSource {
                                                       targetVersion);
 
                                              return storeUpgradedVersion(stored, toml, targetVersion).map(_ -> new UpgradeResponse("INITIATED",
-                                                                                                                             currentVersion,
-                                                                                                                             targetVersion));
+                                                                                                                                   currentVersion,
+                                                                                                                                   targetVersion));
                                          });
     }
 
@@ -949,7 +949,8 @@ public final class ClusterConfigRoutes implements RouteSource {
     /// renders no replacement user data, so only the stored version moves, as before.
     private static Result<Option<String>> upgradedToml(ClusterConfigValue stored, String targetVersion) {
         return stored.tomlContent()
-                     .fold(() -> Result.success(Option.<String> none()), toml -> upgradeToml(toml, targetVersion));
+                     .fold(() -> Result.success(Option.<String> none()),
+                           toml -> upgradeToml(toml, targetVersion));
     }
 
     private static Result<Option<String>> upgradeToml(String toml, String targetVersion) {
@@ -968,7 +969,9 @@ public final class ClusterConfigRoutes implements RouteSource {
     }
 
     private Promise<Object> storeUpgradedVersion(ClusterConfigValue stored, Option<String> toml, String targetVersion) {
-        var configValue = new ClusterConfigValue(toml.isPresent() ? toml : stored.tomlContent(),
+        var configValue = new ClusterConfigValue(toml.isPresent()
+                                                 ? toml
+                                                 : stored.tomlContent(),
                                                  stored.clusterName(),
                                                  targetVersion,
                                                  stored.desiredTopology(),

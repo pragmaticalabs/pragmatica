@@ -318,7 +318,8 @@ public sealed interface ClusterConfigError extends Cause, HttpStatusAware {
     record UpgradeVersionPinned(String targetVersion, List<String> profiles) implements ClusterConfigError {
         @Override
         public String message() {
-            return "Refusing to upgrade to " + targetVersion + ": runtime profile(s) " + profiles
+            return "Refusing to upgrade to " + targetVersion
+                 + ": runtime profile(s) " + profiles
                  + " pin image/jar_url, so replacements would keep booting the pinned artifact and ignore the "
                  + "version. Update the pin to the " + targetVersion
                  + " artifact in the TOML and run 'aether cluster apply', or remove the pin.";
@@ -337,7 +338,8 @@ public sealed interface ClusterConfigError extends Cause, HttpStatusAware {
     record VersionChangeViaApply(String from, String to) implements ClusterConfigError {
         @Override
         public String message() {
-            return "cluster.version change " + from + " -> " + to
+            return "cluster.version change " + from
+                 + " -> " + to
                  + " is not applied through 'aether cluster apply'. Use 'aether cluster upgrade --version " + to
                  + "' (it commits the version replacements are provisioned from), or keep version = \"" + from
                  + "\" in the file you apply.";

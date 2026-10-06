@@ -172,7 +172,7 @@ public final class NodeLifecycleRoutes implements RouteSource {
     }
 
     private List<LifecycleEntry> collectLifecycleEntries(Option<String> stateFilter,
-                                                                Map<NodeId, NodeReportedState> states) {
+                                                         Map<NodeId, NodeReportedState> states) {
         var normalizedFilter = stateFilter.map(RouteFilters::parseStateFilter);
         var entries = new ArrayList<LifecycleEntry>();
 
@@ -215,9 +215,9 @@ public final class NodeLifecycleRoutes implements RouteSource {
     }
 
     private void appendIfMatches(List<LifecycleEntry> entries,
-                                        NodeId nodeId,
-                                        NodeReportedState state,
-                                        Option<Set<String>> normalizedFilter) {
+                                 NodeId nodeId,
+                                 NodeReportedState state,
+                                 Option<Set<String>> normalizedFilter) {
         var entry = new LifecycleEntry(nodeId.id(), state.name(), 0L, advertisedVersion(nodeId));
 
         if (normalizedFilter.map(set -> set.contains(entry.state())).or(true)) {

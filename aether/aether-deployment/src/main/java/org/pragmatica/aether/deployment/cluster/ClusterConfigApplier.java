@@ -62,7 +62,7 @@ record ClusterConfigApplierRecord(ClusterTopologyManager topologyManager) implem
             case DiffAction.ScaleUp _, DiffAction.ScaleDown _, DiffAction.CommunityPlacementChange _ -> Option.none();
             case DiffAction.ImmutableFieldChange change -> Option.some(new ClusterConfigError.ImmutableFieldChange(change.field()));
             case DiffAction.ClusterLevelChange change when VERSION_FIELD.equals(change.field()) -> Option.some(new ClusterConfigError.VersionChangeViaApply(change.from(),
-                                                                                                                                                              change.to()));
+                                                                                                                                                            change.to()));
             case DiffAction.AddSource _, DiffAction.RemoveSource _, DiffAction.AddRole _, DiffAction.RemoveRole _, DiffAction.RuntimeChange _, DiffAction.SourceFieldChange _, DiffAction.ClusterLevelChange _ -> Option.some(new ClusterConfigError.UnsupportedApplyAction(action));
         };
     }

@@ -3597,7 +3597,7 @@ Disable CTM auto-heal. Writes `AutoHealStateValue(enabled=false, reason)` throug
 
 ### POST /api/v1/cluster/upgrade
 
-Initiate a cluster version upgrade. Phase 1 updates the version in the KV-Store config. Full rolling upgrade orchestration uses existing RollingUpdateManager infrastructure.
+Change the version the cluster provisions (#1543 part C). The upgrade rewrites the `[cluster] version` line of the committed TOML — the one replacements render their image tag and jar URL from — and stores the same version beside it, under the `expectedVersion` fence. After it, every node a replacement or scale-up provisions boots the target version, and a later `POST /api/v1/cluster/config` built from the committed TOML does not put the old version back. It does **not** restart or replace any running node.
 
 **RBAC:** ADMIN
 
@@ -3635,6 +3635,10 @@ Initiate a cluster version upgrade. Phase 1 updates the version in the KV-Store 
 version the cluster is already at answers "already at version" regardless of `expectedVersion`. Recovery:
 re-read `GET /api/v1/cluster/config` and re-issue with the fresh `expectedVersion`. The store-level
 RFC-0018 successor fence still rejects a write built on a stale read.
+
+**Conflicts (HTTP 409, #1543 part C — `UpgradeVersionPinned`).** A runtime profile referenced by a source role pins the launch artifact: `image` on a container runtime, or `jar_url` on a JVM runtime. Replacements would keep booting the pinned artifact and ignore the version, so the upgrade is refused before any write and the message names the profile(s). Recovery: change the pin to the target artifact in the TOML and `aether cluster apply` it, or remove the pin, then retry. A config whose `[cluster] version` is not a plain `version = "..."` line is refused the same way (typed parse failure) rather than half-rewritten.
+
+**Version changes through apply (HTTP 409, #1543 part C — `VersionChangeViaApply`).** `POST /api/v1/cluster/config` refuses a TOML whose `[cluster] version` differs from the committed one (previously a generic 501 "escalate"); the message points at this route.
 
 **Conflicts (HTTP 409, changed 2026-09-04, #837).** No cluster config is stored yet (e.g. right
 after a `docker compose down -v` volume wipe and fresh bootstrap). An upgrade request cannot create
@@ -4497,15 +4501,19 @@ The `state` value is node-authoritative and heartbeat-reported (`NodeReportedSta
   {
     "nodeId": "node-1",
     "state": "READY",
-    "updatedAt": 0
+    "updatedAt": 0,
+    "version": "1.0.0"
   },
   {
     "nodeId": "node-2",
     "state": "DRAINING",
-    "updatedAt": 0
+    "updatedAt": 0,
+    "version": "1.0.0"
   }
 ]
 ```
+
+`version` (#1543 part C) is the software version the node advertises in its `version` label, so an upgrade can be checked against what nodes actually run. It is empty when the answering node holds no label for that peer: the label rides the SWIM ANNOUNCE and the QUIC Hello, not the steady-state gossip, so a peer learned only from gossip, or a node built before the label existed, shows `""`. Empty means unknown, not "old".
 
 ### GET /api/v1/nodes/lifecycle/{id}
 
@@ -4516,7 +4524,8 @@ Get membership + readiness for a specific node.
 {
   "nodeId": "node-1",
   "state": "READY",
-  "updatedAt": 0
+  "updatedAt": 0,
+  "version": "1.0.0"
 }
 ```
 

@@ -2514,11 +2514,15 @@ See [`cluster-generation-spec.md`](../specs/cluster-generation-spec.md) §14.
 
 ### `aether cluster upgrade`
 
-Initiate a cluster version upgrade.
+Change the version the cluster provisions. The command rewrites `[cluster] version` in the committed TOML (the version replacements and scale-ups boot) and stores the same version beside it; it does not restart or replace any running node.
 
 ```bash
 aether cluster upgrade --version <X.Y.Z>
 ```
+
+The upgrade is refused (HTTP 409) when a runtime profile used by a source role pins `image` (container) or `jar_url` (JVM): the pin would win over the version, so nothing would change. Point the pin at the target artifact and `aether cluster apply` it, or drop the pin. A version change inside a file given to `aether cluster apply` is likewise refused, with a pointer back to this command — `cluster upgrade` is the only way to change the version.
+
+`GET /api/v1/nodes/lifecycle` shows the `version` each node advertises.
 
 | Option | Description |
 |--------|-------------|

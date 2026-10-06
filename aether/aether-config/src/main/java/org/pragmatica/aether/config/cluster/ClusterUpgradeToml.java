@@ -6,9 +6,14 @@ package org.pragmatica.aether.config.cluster;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
 import java.util.regex.Pattern;
+import java.util.stream.Collectors;
 
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
+
+import static org.pragmatica.lang.Result.success;
 
 
 /// #1543 part C — the committed TOML's `[cluster] version` is the version replacements provision
@@ -30,7 +35,7 @@ public sealed interface ClusterUpgradeToml {
     static Result<String> withVersion(String toml, String targetVersion) {
         if (!SAFE_VERSION.matcher(targetVersion).matches()) {
             return new ClusterConfigError.ParseFailed("Target version '" + targetVersion
-                                                      + "' is not a valid version string").result();
+                                                     + "' is not a valid version string").result();
         }
 
         return rewriteVersionLine(toml, targetVersion).flatMap(rewritten -> confirmVersion(rewritten, targetVersion));
@@ -40,6 +45,13 @@ public sealed interface ClusterUpgradeToml {
     /// pinned: `image` for container runtimes, `jar_url` for JVM runtimes — exactly the field
     /// [NodeUserDataRenderer] prefers over the version-derived default.
     static List<String> pinnedRuntimeProfiles(ClusterBootstrapConfig config) {
+        return referencedRuntimeRefs(config).stream()
+                                    .filter(ref -> isPinned(config, ref))
+                                    .sorted()
+                                    .toList();
+    }
+
+    private static Set<String> referencedRuntimeRefs(ClusterBootstrapConfig config) {
         return config.sources()
                      .values()
                      .stream()
@@ -47,16 +59,17 @@ public sealed interface ClusterUpgradeToml {
                                               .values()
                                               .stream())
                      .map(RoleSubTable::runtimeRef)
-                     .distinct()
-                     .filter(ref -> config.runtimes().containsKey(ref) && config.runtimes()
-                                                                                .get(ref)
-                                                                                .pinsArtifact())
-                     .sorted()
-                     .toList();
+                     .collect(Collectors.toSet());
+    }
+
+    private static boolean isPinned(ClusterBootstrapConfig config, String runtimeRef) {
+        return Option.option(config.runtimes().get(runtimeRef))
+                     .filter(RuntimeProfile::pinsArtifact)
+                     .isPresent();
     }
 
     private static Result<String> rewriteVersionLine(String toml, String targetVersion) {
-        var lines = toml.split("\n", - 1);
+        var lines = toml.split("\n", -1);
         var out = new ArrayList<String>(lines.length);
         var inCluster = false;
         var replaced = false;
@@ -81,18 +94,17 @@ public sealed interface ClusterUpgradeToml {
         }
 
         return replaced
-               ? Result.success(String.join("\n", out))
+               ? success(String.join("\n", out))
                : new ClusterConfigError.ParseFailed("Committed config has no `version = \"…\"` line under [cluster] to rewrite").result();
     }
 
     private static Result<String> confirmVersion(String rewritten, String targetVersion) {
         return ClusterBootstrapConfigParser.parse(rewritten)
-                                           .flatMap(config -> config.cluster()
-                                                                    .version()
-                                                                    .equals(targetVersion)
-                                                              ? Result.success(rewritten)
-                                                              : new ClusterConfigError.ParseFailed("Rewritten config reads cluster.version '" + config.cluster()
-                                                                                                                                                      .version()
-                                                                                                   + "', not the target '" + targetVersion + "'").<String> result());
+                                           .map(config -> config.cluster()
+                                                                .version())
+                                           .filter(new ClusterConfigError.ParseFailed("Rewritten config does not read back cluster.version '" + targetVersion
+                                                                                     + "'"),
+                                                   targetVersion::equals)
+                                           .map(_ -> rewritten);
     }
 }
