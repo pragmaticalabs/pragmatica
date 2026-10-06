@@ -181,6 +181,22 @@ class ClusterCursorStoreTest {
                                                                       .containsExactly(99L, SELF_TOKEN));
         }
 
+        /// #1873 (KIP-320): the owner epoch the consumer read under travels into the committed checkpoint, and a resume gets it
+        /// back with the cursor, so the first read after a restart is validated by the partition's owner.
+        @Test
+        void commit_recordsTheOwnerEpoch_andTheResumeCursorCarriesItBack() {
+            var proposed = new AtomicReference<KVCommand<AetherKey>>();
+            var owner = Epoch.epoch(1L, 2L, 7L);
+            var store = storeWith(recordingLocal(new AtomicReference<>()), _ -> Option.none(), commands -> capture(proposed, commands));
+
+            store.commit(GROUP, STREAM, PARTITION, 99L, EPOCH, RewindEpoch.NONE, owner).await();
+
+            assertThat(proposed.get()).isInstanceOfSatisfying(KVCommand.Put.class,
+                                                              put -> assertThat(((StreamCursorCheckpointValue) put.value()).ownerEpoch()).isEqualTo(owner));
+            assertThat(ClusterCursorStore.toCursor(StreamCursorCheckpointValue.streamCursorCheckpointValue(99L, SELF_TOKEN, RewindEpoch.NONE, owner)).ownerEpoch())
+                    .isEqualTo(owner);
+        }
+
         @Test
         void fetch_composesLocalAndClusterCursors() {
             var store = storeWith(fixedLocal(Option.some(10L)), _ -> Option.some(checkpoint(70L, SELF_TOKEN)), _ -> Promise.unitPromise());
