@@ -85,7 +85,20 @@ sealed interface BootstrapPhaseDeploy {
             }
         }
 
-        return verifyForgeReachable(ctx).map(_ -> ctx);
+        return verifyForgeReachable(ctx).map(_ -> withPersistedLedger(ctx));
+    }
+
+    /// #1543 — the started ledger is written to the state FILE as each node starts, but the phase-completion
+    /// save writes this context's state, which would erase it. Carry the file's ledger into the context.
+    private static BootstrapContext withPersistedLedger(BootstrapContext ctx) {
+        var persisted = BootstrapStatePersistence.load(ctx.config().cluster().name())
+                                                 .map(BootstrapState::startedNodeIds)
+                                                 .or(List.of());
+        var merged = new ArrayList<>(ctx.state().startedNodeIds());
+
+        persisted.stream().filter(id -> !merged.contains(id)).forEach(merged::add);
+
+        return ctx.withState(ctx.state().withStartedNodeIds(merged));
     }
 
     @SuppressWarnings("JBCT-EX-01")
@@ -629,7 +642,7 @@ sealed interface BootstrapPhaseDeploy {
 
     /// Single-line `-e VAR="value"` fragment for the cluster-identity allow-list (minus
     /// AETHER_CLUSTER_SECRET, emitted explicitly by the caller). Mirrors the cloud-init start's
-    /// emission so the re-launch keeps full env parity. Empty when no allow-list var is present
+    /// emission so the start keeps full env parity. Empty when no allow-list var is present
     /// (prod-safe: unset host env → nothing emitted).
     private static String identityEnvFlags(ClusterName clusterName,
                                            NodeRole role,
@@ -682,8 +695,10 @@ sealed interface BootstrapPhaseDeploy {
     /// ([#buildStartCommand]): the cluster-identity allow-list (minus AETHER_CLUSTER_SECRET,
     /// written explicitly) is written into the env file so the JVM carries the identity + dev-mode
     /// posture the install-only cloud-init would have set. `envLookup` is injectable for unit testing.
-    /// The unit is only STARTED here, never restarted: the guard refuses a unit that is active, activating or
-    /// failed, i.e. one that has already run under this node id.
+    /// The unit is only STARTED here, never restarted: the guard refuses a unit that is active, failed, or has EVER been
+    /// active (`ActiveEnterTimestamp` set — a cleanly exited unit is `inactive`, which the first two checks miss),
+    /// i.e. one that has already run under this node id. The unit FILE cannot be the test: install-only cloud-init
+    /// writes it before the first start.
     ///
     /// #1021 — this rewrites the node's systemd env file and starts the unit. It used to
     /// `pkill -f '^java -jar /opt/aether/aether-node.jar'` and re-launch a bare `nohup java`, which
@@ -713,6 +728,8 @@ sealed interface BootstrapPhaseDeploy {
                                        Fn1<String, String> envLookup) {
         return "if systemctl is-active --quiet " + NodeUserDataRenderer.JVM_UNIT_NAME
              + " || systemctl is-failed --quiet " + NodeUserDataRenderer.JVM_UNIT_NAME
+             + " || [ -n \"$(systemctl show -p ActiveEnterTimestamp --value " + NodeUserDataRenderer.JVM_UNIT_NAME
+             + ")\" ]"
              + "; then echo " + ALREADY_PRESENT_MARKER
              + " >&2; exit " + ALREADY_PRESENT_EXIT
              + "; fi"
@@ -873,7 +890,7 @@ sealed interface BootstrapPhaseDeploy {
         return Result.unitResult();
     }
 
-    /// #1090 — the SSH source's launch, brought level with the cloud re-launch it used to be a
+    /// #1090 — the SSH source's launch, brought level with the cloud start it used to be a
     /// hand-rolled copy of: only THIS source's hosts (exact id attribution, not every `ssh` node
     /// in the context), each with its OWN role (label + `AETHER_ROLE`, else the node classifies
     /// itself as CORE), the image the runtime profile resolves to (never `:latest`), and the

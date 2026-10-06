@@ -43,7 +43,7 @@ public sealed interface NodeUserDataRenderer {
     Pattern PLAIN_SEMVER = Pattern.compile("^[0-9]+\\.[0-9]+\\.[0-9]+$");
     String JAR_REPO_PATH = "pragmaticalabs/pragmatica";
     /// #1021 — the JVM-mode launch surface. Shared with `BootstrapPhaseDeploy`, whose finalized-PEERS
-    /// re-launch rewrites [#JVM_ENV_FILE_PATH] and restarts [#JVM_UNIT_NAME] rather than pattern-matching
+    /// start rewrites [#JVM_ENV_FILE_PATH] and starts [#JVM_UNIT_NAME] rather than pattern-matching
     /// the process with `pkill -f`.
     String JVM_UNIT_NAME = "aether-node.service";
     String JVM_UNIT_PATH = "/etc/systemd/system/aether-node.service";
@@ -360,17 +360,17 @@ public sealed interface NodeUserDataRenderer {
     }
 
     /// Single source of truth for the cluster-identity env allow-list emission, shared by the
-    /// cloud-init user-data start ([#appendEnv]) and the finalized-PEERS SSH re-launch
-    /// (`BootstrapPhaseDeploy#buildRestartCommand` / `buildJvmRestartCommand`). Without this the
-    /// re-launch dropped AETHER_INSECURE_DEV_MODE and the rest of the allow-list that the initial
-    /// start set, so the actually-running (re-launched) container lost its cluster identity and
+    /// cloud-init user-data start ([#appendEnv]) and the finalized-PEERS SSH start
+    /// (`BootstrapPhaseDeploy#buildStartCommand` / `buildJvmStartCommand`). Without this the
+    /// old re-launch dropped AETHER_INSECURE_DEV_MODE and the rest of the allow-list that the initial
+    /// start set, so the actually-running (relaunched) container lost its cluster identity and
     /// dev-mode posture — the C2 security gate then refused to serve the management API and the
     /// health poll never succeeded.
     ///
     /// `clusterSecretRef` controls whether AETHER_CLUSTER_SECRET is emitted from this pass:
     /// `some(ref)` emits it (cloud-init uses the `${AETHER_CLUSTER_SECRET}` shell ref);
-    /// `none()` excludes it so the re-launch can emit the finalized secret explicitly without a
-    /// duplicate `-e AETHER_CLUSTER_SECRET`. `envLookup` is injectable so the re-launch can be
+    /// `none()` excludes it so the SSH start can emit the finalized secret explicitly without a
+    /// duplicate `-e AETHER_CLUSTER_SECRET`. `envLookup` is injectable so the SSH start can be
     /// unit-tested without mutating the real process env (mirrors `buildCloudSshConfig`).
     ///
     /// AETHER_INSECURE_DEV_MODE is ISOLATED — it rides a standalone block, never the identity
@@ -418,7 +418,7 @@ public sealed interface NodeUserDataRenderer {
             case "AETHER_SOURCE" -> Option.some(source.value());
             case "AETHER_ZONE" -> zone;
             // Sourced from the supplied ref (cloud-init: the script's own
-            // ${AETHER_CLUSTER_SECRET} shell var); none() for the re-launch which emits the
+            // ${AETHER_CLUSTER_SECRET} shell var); none() for the SSH start which emits the
             // finalized secret explicitly to avoid a duplicate -e AETHER_CLUSTER_SECRET.
             case "AETHER_CLUSTER_SECRET" -> clusterSecretRef;
             default -> lookupNonEmpty(name, envLookup);
@@ -501,7 +501,7 @@ public sealed interface NodeUserDataRenderer {
     ///    [#appendAdvertiseHostResolution].
     ///
     /// AETHER_CLUSTER_SECRET rides the expanding block via the `none()` ref to [#emitIdentityEnv] —
-    /// the same seam `BootstrapPhaseDeploy`'s re-launch uses to avoid emitting the secret twice — so
+    /// the same seam `BootstrapPhaseDeploy`'s start uses to avoid emitting the secret twice — so
     /// it is written once, from the script's own shell var.
     ///
     /// AETHER_ADVERTISE_HOST is written only when non-empty, preserving the old launch's runtime test:

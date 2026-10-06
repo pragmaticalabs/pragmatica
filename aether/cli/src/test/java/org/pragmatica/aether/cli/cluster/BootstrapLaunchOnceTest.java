@@ -493,7 +493,7 @@ class BootstrapLaunchOnceTest {
                                                              SECRET,
                                                              name -> null);
 
-        var present = runWithStub("docker", "[ \"$1\" = ps ] && echo aether-node; [ \"$1\" = run ] && echo RAN-DOCKER-RUN; exit 0", command);
+        var present = runWithStub("docker", "[ \"$1\" = ps ] && [ \"$2\" = -a ] && echo aether-node; [ \"$1\" = run ] && echo RAN-DOCKER-RUN; exit 0", command);
         var absent = runWithStub("docker", "[ \"$1\" = ps ] && echo other-container; [ \"$1\" = run ] && echo RAN-DOCKER-RUN; exit 0", command);
 
         assertThat(present.exit()).isEqualTo(BootstrapPhaseDeploy.ALREADY_PRESENT_EXIT);
@@ -521,6 +521,28 @@ class BootstrapLaunchOnceTest {
         assertThat(active.exit()).isEqualTo(BootstrapPhaseDeploy.ALREADY_PRESENT_EXIT);
         assertThat(active.output()).contains(BootstrapPhaseDeploy.ALREADY_PRESENT_MARKER);
         assertThat(command.indexOf("exit 17")).as("the guard precedes every write").isLessThan(command.indexOf("install -d"));
+    }
+
+    /// N2: a cleanly exited unit is `inactive`, not active or failed — only its activation HISTORY says it ran.
+    /// A never-run unit (installed by cloud-init, empty timestamp) is NOT refused by the history clause.
+    @Test
+    void jvmStartGuard_refusesAnInactiveUnitThatHasRunBefore() throws Exception {
+        var command = BootstrapPhaseDeploy.buildJvmStartCommand("eu-1-core-0",
+                                                                NodeRole.CORE,
+                                                                sourceNameOrDefault("eu-1"),
+                                                                Option.empty(),
+                                                                7000,
+                                                                8080,
+                                                                "eu-1-core-0:203.0.113.10:7000",
+                                                                SECRET,
+                                                                CLUSTER,
+                                                                name -> null);
+        var exitedCleanly = runWithStub("systemctl",
+                                        "[ \"$1\" = show ] && [ \"$3\" = ActiveEnterTimestamp ] && echo 'Tue 2026-10-06 10:00:00 UTC' && exit 0; exit 3",
+                                        command);
+
+        assertThat(exitedCleanly.exit()).isEqualTo(BootstrapPhaseDeploy.ALREADY_PRESENT_EXIT);
+        assertThat(exitedCleanly.output()).contains(BootstrapPhaseDeploy.ALREADY_PRESENT_MARKER);
     }
 
     private record Ran(int exit, String output) {}
@@ -759,6 +781,60 @@ class BootstrapLaunchOnceTest {
         assertThat(result.isSuccess()).as(() -> "resume: " + result).isTrue();
         assertThat(calls.stream().filter(c -> isStart(c.command())).map(Call::host).sorted().toList())
             .as("exactly the nodes no earlier run started").containsExactly("203.0.113.11", "203.0.113.12");
+    }
+
+    /// N4: launched but never recorded (crash between the start and the ledger write). The ledger says
+    /// nothing, so the host guard is the only witness — resume must refuse by name and launch nothing else.
+    @Test
+    void resume_launchedButUnrecordedNode_isRefusedByTheHostGuard_andNothingElseIsLaunched() {
+        var state = BootstrapState.initialState(CLUSTER, "h", "now")
+                                  .withPhaseStatus(BootstrapPhase.PROVISION, BootstrapState.PhaseStatus.COMPLETED)
+                                  .withPhaseStatus(BootstrapPhase.COLLECT_ADDRESSES, BootstrapState.PhaseStatus.COMPLETED)
+                                  .withProvisionedNodeIds(EU)
+                                  .withCollectedAddresses(List.of("203.0.113.10", "203.0.113.11", "203.0.113.12"))
+                                  .withClusterSecret(SECRET);
+        var config = config(Map.of("eu-1", cloudSource(), "dc-1", sshSource()), RuntimeType.CONTAINER);
+        var ctx = ClusterBootstrapOrchestrator.resumeContext(config, state, List.of(), "");
+        var starts = new ConcurrentLinkedQueue<String>();
+        Fn3<Result<String>, String, String, SshConfig> ssh = (host, command, cfg) -> {
+            if (!isStart(command)) {
+                return Result.success("");
+            }
+
+            starts.add(host);
+
+            return host.equals("203.0.113.10")
+                   ? new BootstrapError.DeploymentFailed(host, "exit 17: " + BootstrapPhaseDeploy.ALREADY_PRESENT_MARKER).<String>result()
+                   : Result.success("");
+        };
+
+        var result = BootstrapPhaseDeploy.deployCloudSource(ctx,
+                                                            config.sources().get("eu-1"),
+                                                            sourceNameOrDefault("eu-1"),
+                                                            url -> Result.success("OK"),
+                                                            ssh,
+                                                            envWithKey());
+
+        result.onSuccess(_ -> org.junit.jupiter.api.Assertions.fail("must refuse"))
+              .onFailure(cause -> assertThat(cause).isInstanceOf(BootstrapError.NodeAlreadyStarted.class));
+        assertThat(List.copyOf(starts)).as("the refused start is the only one attempted").containsExactly("203.0.113.10");
+    }
+
+    /// N1: the ledger must survive into the state the phase-completion save writes.
+    @Test
+    void deployPhase_keepsTheStartedLedgerInTheStateItReturns() {
+        var ctx = multiSourceContext(RuntimeType.CONTAINER);
+
+        assertThat(BootstrapStatePersistence.save(ctx.state()).isSuccess()).isTrue();
+        Fn3<Result<String>, String, String, SshConfig> ssh = (host, command, cfg) -> Result.success("");
+        Fn4<Result<Unit>, String, String, String, SshConfig> scp = (local, host, remote, cfg) -> Result.unitResult();
+
+        var result = BootstrapPhaseDeploy.execute(ctx, url -> Result.success("OK"), ssh, scp, envWithKey());
+
+        assertThat(result.isSuccess()).as(() -> "deploy: " + result).isTrue();
+        assertThat(result.map(c -> c.state().startedNodeIds()).or(List.of()))
+            .as("what markPhaseCompleted saves")
+            .containsExactlyInAnyOrderElementsOf(concat(DC, EU));
     }
 
     @Test
