@@ -10,6 +10,7 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
@@ -272,10 +273,40 @@ public interface ScheduledTaskManager {
         }
 
         /// One fire in flight: when it started, whether the operator was told a tick was skipped for it, and how it ended.
+        ///
+        /// `state` is OPEN (no tick skipped yet), HELD (the operator was told) or CLOSED (resolved or given up). A skipped
+        /// tick and the fire's resolution race, so each DECISION and its observer call are one step under this fire's lock:
+        /// a hold is announced only while OPEN, a release only if the fire was HELD, and CLOSED is final. That gives exactly
+        /// one release per hold, never a hold after the close (a hold nothing would ever resolve is a false alarm), and a
+        /// hold always announced before its release.
         static final class FireInFlight {
+            private static final int OPEN = 0;
+            private static final int HELD = 1;
+            private static final int CLOSED = 2;
+
             final long startedAt = System.currentTimeMillis();
-            final AtomicBoolean held = new AtomicBoolean();
+            private final AtomicInteger state = new AtomicInteger(OPEN);
             volatile String outcome = "completed";
+
+            boolean isHeld() {
+                return state.get() == HELD;
+            }
+
+            synchronized Unit hold(Runnable announce) {
+                if (state.compareAndSet(OPEN, HELD)) {
+                    announce.run();
+                }
+
+                return Unit.unit();
+            }
+
+            synchronized Unit close(Runnable announceIfHeld) {
+                if (state.getAndSet(CLOSED) == HELD) {
+                    announceIfHeld.run();
+                }
+
+                return Unit.unit();
+            }
         }
 
         /// Takes the in-flight claim of `key` for a new fire, or reports that the previous fire still holds it.
@@ -292,12 +323,10 @@ public interface ScheduledTaskManager {
         /// Gives the claim up. When a tick was skipped for this fire and the operator was told, the fire's resolution is
         /// reported too.
         void release(ScheduledTaskKey key) {
-            Option.option(fires.remove(key))
-                  .filter(fire -> fire.held.get())
-                  .onPresent(fire -> observer.onFireReleased(key,
-                                                             fire.startedAt,
-                                                             System.currentTimeMillis() - fire.startedAt,
-                                                             fire.outcome));
+            Option.option(fires.remove(key)).onPresent(fire -> fire.close(() -> observer.onFireReleased(key,
+                                                                                                        fire.startedAt,
+                                                                                                        System.currentTimeMillis() - fire.startedAt,
+                                                                                                        fire.outcome)));
             inFlight.remove(key);
         }
 
@@ -316,17 +345,18 @@ public interface ScheduledTaskManager {
 
             fires.entrySet()
                  .stream()
-                 .filter(entry -> entry.getValue().held
-                                       .get())
+                 .filter(entry -> entry.getValue()
+                                       .isHeld())
                  .filter(entry -> !singleOnly || single.contains(entry.getKey()))
                  .toList()
                  .stream()
                  .filter(entry -> fires.remove(entry.getKey(),
                                                entry.getValue()))
-                 .forEach(entry -> observer.onFireReleased(entry.getKey(),
-                                                           entry.getValue().startedAt,
-                                                           System.currentTimeMillis() - entry.getValue().startedAt,
-                                                           FIRE_LEADERSHIP_LOST));
+                 .forEach(entry -> entry.getValue()
+                                        .close(() -> observer.onFireReleased(entry.getKey(),
+                                                                             entry.getValue().startedAt,
+                                                                             System.currentTimeMillis() - entry.getValue().startedAt,
+                                                                             FIRE_LEADERSHIP_LOST)));
         }
 
         /// How the fire ended, for the observer to report when the claim is released.
@@ -336,11 +366,9 @@ public interface ScheduledTaskManager {
 
         /// A tick found the claim taken: the first one for a fire tells the observer, the others only the state.
         void tickSkipped(ScheduledTaskKey key) {
-            Option.option(fires.get(key))
-                  .filter(fire -> fire.held.compareAndSet(false, true))
-                  .onPresent(fire -> observer.onFireHeld(key,
-                                                         fire.startedAt,
-                                                         System.currentTimeMillis() - fire.startedAt));
+            Option.option(fires.get(key)).onPresent(fire -> fire.hold(() -> observer.onFireHeld(key,
+                                                                                                fire.startedAt,
+                                                                                                System.currentTimeMillis() - fire.startedAt)));
         }
 
         void submit(ScheduledTaskStateKey key, ScheduledTaskStateValue value) {
