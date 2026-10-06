@@ -767,7 +767,8 @@ sealed interface BootstrapPhaseProvision {
                                        clusterName,
                                        composedConfig,
                                        ctx.sshPublicKeys(),
-                                       List.of());
+                                       List.of(),
+                                       BootstrapPhaseDeploy.discoveryAssembly(ctx.config()));
     }
 
     /// Applies a single candidate zone to a built spec as a placement hint. An empty or

@@ -358,6 +358,27 @@ class ClusterEventAggregatorTest {
         assertThat(events.get(1).severity()).isEqualTo(ClusterEvent.Severity.INFO);
     }
 
+    /// #1873: a ring rebuilt under an unchanged owner reaches the stream as an INFO event (the commit proves a restart, not a
+    /// loss), with the epochs and the offset the new epoch began at.
+    @Test
+    void streamLineageRestarted_reachesTheEventStream_asInfo_withTheEpochsAndTheStartOffset() {
+        var h = Harness.create();
+        h.aggregator().onStreamLineageRestarted(OperationalEvent.StreamLineageRestarted.streamLineageRestarted("orders", 2, "node-a", "1:1:1", "1:1:2", 7L));
+
+        var events = h.events();
+
+        assertThat(events).hasSize(1);
+        assertThat(events.get(0)).isInstanceOf(ClusterEvent.StreamLineageRestarted.class);
+        assertThat(events.get(0).type()).isEqualTo("STREAM_LINEAGE_RESTARTED");
+        assertThat(events.get(0).severity()).isEqualTo(ClusterEvent.Severity.INFO);
+        assertThat(events.get(0).details()).containsEntry("stream", "orders")
+                                           .containsEntry("partition", "2")
+                                           .containsEntry("owner", "node-a")
+                                           .containsEntry("oldEpoch", "1:1:1")
+                                           .containsEntry("newEpoch", "1:1:2")
+                                           .containsEntry("startOffset", "7");
+    }
+
     /// #1730 owner ruling, the cluster-wide path: EVERY node derives the failover event from the same committed
     /// ownership Put, and only the cluster-events partition owner publishes. The LEADER (which committed the refusal)
     /// is NOT that owner here, and the event still reaches the stream exactly once — on the owner.
@@ -1215,6 +1236,187 @@ class ClusterEventAggregatorTest {
             .containsExactly("orders[3]", "orders[4]", "orders[3]");
         assertThat(events.getLast().details()).containsEntry("suppressedSince", "999");
         assertThat(events.getFirst().details()).containsEntry("suppressedSince", "0");
+    }
+
+    private static final String CRON_TASK = "cache/org.example:my-slice:1.0.0/cleanup";
+
+    private static OperationalEvent.ScheduledTaskOutcomeUnknown unknownOutcome(String eventId, long fireAt) {
+        return OperationalEvent.ScheduledTaskOutcomeUnknown.scheduledTaskOutcomeUnknown(CRON_TASK, "node-a", fireAt, eventId);
+    }
+
+    private static OperationalEvent.ScheduledTaskOutcomeRestored restoredOutcome(String eventId, String outcome) {
+        return OperationalEvent.ScheduledTaskOutcomeRestored.scheduledTaskOutcomeRestored(CRON_TASK, "node-a", outcome, "late-answer", eventId);
+    }
+
+    private Harness harnessWithClock(AtomicLong physicalMillis) {
+        return Harness.create(Harness.defaultRetention(),
+                              OWNER,
+                              () -> false,
+                              LEADER,
+                              HlcClock.hlcClock(SELF, physicalMillis::get, Long.MAX_VALUE));
+    }
+
+    /// #1723: an UNKNOWN and its RESTORED reach the stream as typed events: WARNING, then INFO carrying the late
+    /// outcome and the fire time of the UNKNOWN it closes.
+    @Test
+    void scheduledTaskOutcome_unknownThenRestored_reachTheStream_withTaskFireTimeAndLateOutcome() {
+        var h = Harness.create();
+
+        h.aggregator().onScheduledTaskOutcomeUnknown(unknownOutcome("unknown-id", 777L));
+        h.aggregator().onScheduledTaskOutcomeRestored(restoredOutcome("restored-id", "executed"));
+
+        var events = h.events();
+
+        assertThat(events).hasSize(2);
+        assertThat(events.get(0)).isInstanceOf(ClusterEvent.ScheduledTaskOutcomeUnknown.class);
+        assertThat(events.get(0).type()).isEqualTo("SCHEDULED_TASK_OUTCOME_UNKNOWN");
+        assertThat(events.get(0).severity()).isEqualTo(ClusterEvent.Severity.WARNING);
+        assertThat(events.get(0).details()).containsEntry("task", CRON_TASK)
+                                           .containsEntry("node", "node-a")
+                                           .containsEntry("fireAt", "777")
+                                           .containsEntry("eventId", "unknown-id");
+        assertThat(events.get(1)).isInstanceOf(ClusterEvent.ScheduledTaskOutcomeRestored.class);
+        assertThat(events.get(1).type()).isEqualTo("SCHEDULED_TASK_OUTCOME_RESTORED");
+        assertThat(events.get(1).severity()).isEqualTo(ClusterEvent.Severity.INFO);
+        assertThat(events.get(1).details()).containsEntry("task", CRON_TASK)
+                                           .containsEntry("fireAt", "777")
+                                           .containsEntry("outcome", "executed")
+                                           .containsEntry("late", "true")
+                                           .containsEntry("eventId", "restored-id");
+    }
+
+    /// #1723 no false all-clear: a RESTORED whose UNKNOWN the window held back is never announced, and neither is the
+    /// held UNKNOWN once the sweep runs: the operator is told nothing about a condition that came and went inside the
+    /// window.
+    @Test
+    void scheduledTaskOutcome_unknownHeldByTheWindow_thenResolved_announcesNothing() {
+        var physicalMillis = new AtomicLong(1_000_000L);
+        var h = harnessWithClock(physicalMillis);
+
+        h.aggregator().onScheduledTaskOutcomeUnknown(unknownOutcome("first", 1L));
+        h.aggregator().onScheduledTaskOutcomeRestored(restoredOutcome("first-restored", "executed"));
+        physicalMillis.addAndGet(10_000L);
+        h.aggregator().onScheduledTaskOutcomeUnknown(unknownOutcome("second", 2L));
+        h.aggregator().onScheduledTaskOutcomeRestored(restoredOutcome("second-restored", "failed"));
+        physicalMillis.addAndGet(60_000L);
+        h.aggregator().announceHeldScheduledOutcomes();
+
+        assertThat(h.events()).as("the first pair only: the second was held, then resolved").hasSize(2);
+        assertThat(h.events().stream().map(event -> event.details().get("eventId")).toList())
+            .containsExactly("first", "first-restored");
+    }
+
+    /// #1723: an UNKNOWN the window held back that PERSISTS is announced once the window has closed, and its RESTORED
+    /// then follows. Before the window closes the sweep announces nothing.
+    @Test
+    void scheduledTaskOutcome_unknownHeldByTheWindow_stillUnknownAfterIt_isAnnouncedBySweep() {
+        var physicalMillis = new AtomicLong(1_000_000L);
+        var h = harnessWithClock(physicalMillis);
+
+        h.aggregator().onScheduledTaskOutcomeUnknown(unknownOutcome("first", 1L));
+        h.aggregator().onScheduledTaskOutcomeRestored(restoredOutcome("first-restored", "executed"));
+        physicalMillis.addAndGet(10_000L);
+        h.aggregator().onScheduledTaskOutcomeUnknown(unknownOutcome("second", 2L));
+        h.aggregator().announceHeldScheduledOutcomes();
+
+        assertThat(h.events()).as("inside the window the second UNKNOWN stays held").hasSize(2);
+
+        physicalMillis.addAndGet(50_000L);
+        h.aggregator().announceHeldScheduledOutcomes();
+        h.aggregator().announceHeldScheduledOutcomes();
+
+        var events = h.events();
+
+        assertThat(events).as("announced once the window closed, and only once").hasSize(3);
+        assertThat(events.getLast().details()).containsEntry("eventId", "second").containsEntry("fireAt", "2");
+
+        h.aggregator().onScheduledTaskOutcomeRestored(restoredOutcome("second-restored", "failed"));
+
+        assertThat(h.events()).hasSize(4);
+        assertThat(h.events().getLast().details()).containsEntry("outcome", "failed").containsEntry("fireAt", "2");
+    }
+
+    /// #1723 N1: the periodic edge. `AetherNode` schedules `evictIdleThrottleWindows` once a minute; it is what runs the
+    /// sweep that announces a held UNKNOWN, so the sweep must be reachable through it, not only when called directly.
+    @Test
+    void scheduledTaskOutcome_heldUnknown_isAnnouncedByThePeriodicEvictionTick() {
+        var physicalMillis = new AtomicLong(1_000_000L);
+        var h = harnessWithClock(physicalMillis);
+
+        h.aggregator().onScheduledTaskOutcomeUnknown(unknownOutcome("first", 1L));
+        h.aggregator().onScheduledTaskOutcomeRestored(restoredOutcome("first-restored", "executed"));
+        physicalMillis.addAndGet(10_000L);
+        h.aggregator().onScheduledTaskOutcomeUnknown(unknownOutcome("second", 2L));
+        physicalMillis.addAndGet(50_000L);
+        h.aggregator().evictIdleThrottleWindows();
+
+        assertThat(h.events()).hasSize(3);
+        assertThat(h.events().getLast().details()).containsEntry("eventId", "second");
+    }
+
+    /// A RESTORED because a LATER fire completed says so: `late` is false.
+    @Test
+    void scheduledTaskOutcome_restoredByALaterFire_isNotMarkedLate() {
+        var h = Harness.create();
+
+        h.aggregator().onScheduledTaskOutcomeUnknown(unknownOutcome("u", 5L));
+        h.aggregator().onScheduledTaskOutcomeRestored(OperationalEvent.ScheduledTaskOutcomeRestored.scheduledTaskOutcomeRestored(CRON_TASK,
+                                                                                                                                   "node-a",
+                                                                                                                                   "failed",
+                                                                                                                                   "later-fire",
+                                                                                                                                   "r"));
+
+        assertThat(h.events().getLast().details()).containsEntry("late", "false").containsEntry("outcome", "failed");
+        assertThat(h.events().getLast().summary()).contains("a later fire completed");
+    }
+
+    /// A RESTORED because the task was removed closes the operator's UNKNOWN, and frees the aggregator's entry: a task
+    /// registered again starts with nothing tracked (no inherited UNKNOWN, no unbounded growth).
+    @Test
+    void scheduledTaskOutcome_taskRemoved_closesTheUnknown_andFreesTheEntry() {
+        var physicalMillis = new AtomicLong(1_000_000L);
+        var h = harnessWithClock(physicalMillis);
+
+        h.aggregator().onScheduledTaskOutcomeUnknown(unknownOutcome("u1", 5L));
+        h.aggregator().onScheduledTaskOutcomeRestored(OperationalEvent.ScheduledTaskOutcomeRestored.scheduledTaskOutcomeRestored(CRON_TASK,
+                                                                                                                                   "node-a",
+                                                                                                                                   "unknown",
+                                                                                                                                   "task-removed",
+                                                                                                                                   "r1"));
+
+        assertThat(h.events()).hasSize(2);
+        assertThat(h.events().getLast().details()).containsEntry("reason", "task-removed").containsEntry("fireAt", "5");
+        assertThat(h.events().getLast().summary()).contains("removed");
+        assertThat(h.aggregator().trackedScheduledOutcomes()).as("nothing left tracked for the removed task").isZero();
+
+        physicalMillis.addAndGet(61_000L);
+        h.aggregator().onScheduledTaskOutcomeUnknown(unknownOutcome("u2", 99L));
+
+        assertThat(h.events()).as("the re-registered task's first UNKNOWN is announced afresh").hasSize(3);
+    }
+
+    /// #1723: a RESTORED nobody was told the UNKNOWN for is not an all-clear.
+    @Test
+    void scheduledTaskOutcome_restoredWithNoUnknown_isNotAnnounced() {
+        var h = Harness.create();
+
+        h.aggregator().onScheduledTaskOutcomeRestored(restoredOutcome("orphan", "executed"));
+
+        assertThat(h.events()).isEmpty();
+    }
+
+    /// Tasks are throttled independently: a flapping task does not hold back another's UNKNOWN.
+    @Test
+    void scheduledTaskOutcome_windowIsPerTask() {
+        var h = Harness.create();
+
+        h.aggregator().onScheduledTaskOutcomeUnknown(unknownOutcome("a", 1L));
+        h.aggregator().onScheduledTaskOutcomeUnknown(OperationalEvent.ScheduledTaskOutcomeUnknown.scheduledTaskOutcomeUnknown("cache/org.example:other:1.0.0/sweep",
+                                                                                                                              "",
+                                                                                                                              2L,
+                                                                                                                              "b"));
+
+        assertThat(h.events()).hasSize(2);
     }
 
     /// One millisecond short of the window is still inside it.

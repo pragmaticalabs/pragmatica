@@ -58,6 +58,19 @@ public interface ConsumerCursorStore {
         return commit(consumerGroup, streamName, partition, offset, assignmentEpoch);
     }
 
+    /// #1873 (KIP-320): the commit also records the owner epoch the cursor was read under, so a RESUME presents it to the
+    /// partition's owner and is validated like any read. The default discards it, correct only for a store that cannot
+    /// record one (the resume then carries no claim).
+    default Promise<CommitOutcome> commit(String consumerGroup,
+                                          String streamName,
+                                          int partition,
+                                          long offset,
+                                          Epoch assignmentEpoch,
+                                          RewindEpoch rewindEpoch,
+                                          Epoch ownerEpoch) {
+        return commit(consumerGroup, streamName, partition, offset, assignmentEpoch, rewindEpoch);
+    }
+
     /// #1271: the cursor as seen by a consumer admitted under `assignmentEpoch`. A store that records
     /// the epoch with the offset returns only a cursor written under THAT epoch — a node that regains a
     /// partition must not resume from a cursor it wrote in an earlier tenure, which can be ahead of the
@@ -78,13 +91,19 @@ public interface ConsumerCursorStore {
     /// A committed cursor and its rewind epoch. Ordered lexicographically `(epoch, offset)`: a rewind's
     /// `(epoch', fromOffset)` outranks every pre-rewind `(epoch, high)` however high, which is what
     /// lets a resume pick the rewound position over a stale local one.
-    record Cursor(long offset, RewindEpoch epoch) implements Comparable<Cursor> {
+    /// `ownerEpoch` is the owner epoch the cursor was read under (#1873), [Epoch#ZERO] when none was recorded; it travels
+    /// with the cursor and takes no part in the ordering.
+    record Cursor(long offset, RewindEpoch epoch, Epoch ownerEpoch) implements Comparable<Cursor> {
         public static Cursor cursor(long offset, RewindEpoch epoch) {
-            return new Cursor(offset, epoch);
+            return new Cursor(offset, epoch, Epoch.ZERO);
+        }
+
+        public static Cursor cursor(long offset, RewindEpoch epoch, Epoch ownerEpoch) {
+            return new Cursor(offset, epoch, ownerEpoch);
         }
 
         public static Cursor unrewound(long offset) {
-            return new Cursor(offset, RewindEpoch.NONE);
+            return new Cursor(offset, RewindEpoch.NONE, Epoch.ZERO);
         }
 
         @Override
