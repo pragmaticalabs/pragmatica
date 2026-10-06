@@ -126,9 +126,16 @@ public interface CoreVoterReconciler {
 
         return Option.from(swaps.entrySet()
                                 .stream()
-                                .filter(swap -> eligibleSwap(self, current, ready, swap.getKey(), swap.getValue()))
-                                .min(Comparator.comparing(swap -> swap.getKey().id())))
-                     .map(swap -> swapped(unpaired, swap.getKey(), swap.getValue()))
+                                .filter(swap -> eligibleSwap(self,
+                                                             current,
+                                                             ready,
+                                                             swap.getKey(),
+                                                             swap.getValue()))
+                                .min(Comparator.comparing(swap -> swap.getKey()
+                                                                      .id())))
+                     .map(swap -> swapped(unpaired,
+                                          swap.getKey(),
+                                          swap.getValue()))
                      .or(unpaired);
     }
 
@@ -137,8 +144,12 @@ public interface CoreVoterReconciler {
                                         Set<NodeId> ready,
                                         NodeId original,
                                         NodeId replacement) {
-        return !original.equals(self) && current.members().contains(original) && !current.members()
-                                                                                         .contains(replacement) && ready.contains(replacement);
+        return ! original.equals(self)
+               && current.members()
+                         .contains(original)
+               && !current.members()
+                          .contains(replacement)
+               && ready.contains(replacement);
     }
 
     private static List<NodeId> swapped(List<NodeId> voters, NodeId original, NodeId replacement) {

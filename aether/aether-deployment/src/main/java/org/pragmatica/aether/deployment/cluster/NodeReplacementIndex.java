@@ -7,6 +7,8 @@ package org.pragmatica.aether.deployment.cluster;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.Function;
+import java.util.function.Predicate;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
@@ -58,51 +60,66 @@ public final class NodeReplacementIndex {
     public synchronized Unit restore(Map<?, ?> snapshot) {
         var updated = new HashMap<NodeId, NodeReplacementValue>();
 
-        snapshot.forEach((key, value) -> {
-            if (key instanceof NodeReplacementKey pairing && value instanceof NodeReplacementValue replacement) {
-                updated.put(pairing.original(), replacement);
-            }
-        });
+        snapshot.forEach((key, value) -> collectPairing(updated, key, value));
         pairings = Map.copyOf(updated);
+
+        return Unit.unit();
+    }
+
+    private static Unit collectPairing(Map<NodeId, NodeReplacementValue> target, Object key, Object value) {
+        if (key instanceof NodeReplacementKey pairing && value instanceof NodeReplacementValue replacement) {
+            target.put(pairing.original(), replacement);
+        }
 
         return Unit.unit();
     }
 
     /// Nodes no surplus reaper may retire: every live pairing's replacement, and its original before `RETIRING_OLD`.
     public Set<NodeId> retirementProtected() {
-        return pairings.entrySet()
-                       .stream()
-                       .filter(entry -> isLive(entry.getValue().phase()))
-                       .flatMap(entry -> protectsOriginal(entry.getValue().phase())
-                                         ? Stream.of(entry.getKey(), entry.getValue().replacement())
-                                         : Stream.of(entry.getValue().replacement()))
-                       .collect(Collectors.toUnmodifiableSet());
+        var current = pairings;
+        var originals = originalsWhere(current, NodeReplacementIndex::protectsOriginal);
+        var replacements = replacementsWhere(current, NodeReplacementIndex::isLive);
+
+        return Stream.concat(originals.stream(),
+                             replacements.stream())
+                     .collect(Collectors.toUnmodifiableSet());
     }
 
     /// original → replacement for every pairing whose phase authorizes the voter swap.
     public Map<NodeId, NodeId> voterSwaps() {
-        return pairings.entrySet()
-                       .stream()
-                       .filter(entry -> authorizesSwap(entry.getValue().phase()))
-                       .collect(Collectors.toUnmodifiableMap(Map.Entry::getKey,
-                                                             entry -> entry.getValue().replacement()));
+        var current = pairings;
+
+        return originalsWhere(current, NodeReplacementIndex::authorizesSwap).stream()
+                             .collect(Collectors.toUnmodifiableMap(Function.identity(),
+                                                                   original -> current.get(original)
+                                                                                      .replacement()));
     }
 
     /// Replacements that are surge capacity, not surplus: a live pairing's replacement before `RETIRING_OLD`.
     public Set<NodeId> surgeReplacements() {
-        return pairings.values()
-                       .stream()
-                       .filter(value -> isLive(value.phase()) && protectsOriginal(value.phase()))
-                       .map(NodeReplacementValue::replacement)
-                       .collect(Collectors.toUnmodifiableSet());
+        return replacementsWhere(pairings, NodeReplacementIndex::protectsOriginal);
     }
 
     /// Originals whose replacement has taken over and that are now due for retirement.
     public Set<NodeId> retiringOriginals() {
+        return originalsWhere(pairings, NodeReplacementPhase.RETIRING_OLD::equals);
+    }
+
+    private static Set<NodeId> originalsWhere(Map<NodeId, NodeReplacementValue> pairings,
+                                              Predicate<NodeReplacementPhase> phase) {
         return pairings.entrySet()
                        .stream()
-                       .filter(entry -> entry.getValue().phase() == NodeReplacementPhase.RETIRING_OLD)
+                       .filter(entry -> phase.test(entry.getValue().phase()))
                        .map(Map.Entry::getKey)
+                       .collect(Collectors.toUnmodifiableSet());
+    }
+
+    private static Set<NodeId> replacementsWhere(Map<NodeId, NodeReplacementValue> pairings,
+                                                 Predicate<NodeReplacementPhase> phase) {
+        return pairings.values()
+                       .stream()
+                       .filter(value -> phase.test(value.phase()))
+                       .map(NodeReplacementValue::replacement)
                        .collect(Collectors.toUnmodifiableSet());
     }
 
@@ -113,8 +130,9 @@ public final class NodeReplacementIndex {
         };
     }
 
+    /// Live and not yet `RETIRING_OLD`: the original is still needed, and the replacement is still surge.
     private static boolean protectsOriginal(NodeReplacementPhase phase) {
-        return phase != NodeReplacementPhase.RETIRING_OLD;
+        return isLive(phase) && phase != NodeReplacementPhase.RETIRING_OLD;
     }
 
     private static boolean authorizesSwap(NodeReplacementPhase phase) {

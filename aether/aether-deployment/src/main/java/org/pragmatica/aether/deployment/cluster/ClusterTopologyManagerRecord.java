@@ -1414,10 +1414,8 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                                   List<InstanceInfo> actual,
                                                   int surplus,
                                                   long epoch) {
-        var victims = surplusWorkerVictims(actual.stream()
-                                                 .flatMap(instance -> instance.nodeId()
-                                                                              .stream())
-                                                 .toList(),
+        var victims = surplusWorkerVictims(actual.stream().flatMap(instance -> instance.nodeId()
+                                                                                       .stream()).toList(),
                                            surplus,
                                            nodeReplacements.get());
 
@@ -1451,12 +1449,8 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         var surge = ids(replacements.surgeReplacements());
         var retiring = ids(replacements.retiringOriginals());
         var protectedIds = ids(replacements.retirementProtected());
-        var counted = surplus - (int) nodeIds.stream()
-                                             .filter(surge::contains)
-                                             .count();
-        var retiringFirst = nodeIds.stream()
-                                   .filter(retiring::contains)
-                                   .sorted();
+        var counted = surplus - (int) nodeIds.stream().filter(surge::contains).count();
+        var retiringFirst = nodeIds.stream().filter(retiring::contains).sorted();
         var newestFirst = nodeIds.stream()
                                  .filter(id -> !retiring.contains(id) && !protectedIds.contains(id))
                                  .sorted(Comparator.<String> naturalOrder().reversed());
