@@ -165,10 +165,11 @@ class StreamErrorStatusTest {
         }
     }
 
-    /// `STREAMS_EVENTS` is its own read path (catalog lookup first, then the router): a stream the catalog knows but this node's
-    /// engine has not materialized is the engine's `StreamNotFound`, which must not reach the caller as a 500.
+    /// `STREAMS_EVENTS` is its own read path (catalog lookup first, then the router). When the catalog CONFIRMED the stream exists,
+    /// the engine's `StreamNotFound` means "not materialized on this node", not "unknown stream": 503, retry. (This test first
+    /// pinned 404 here, which encoded the defect: it told the caller a stream the catalog just confirmed does not exist.)
     @Test
-    void streamsEvents_answers404_whenTheCatalogKnowsTheStreamButTheEngineDoesNot() {
+    void streamsEvents_answers503_whenTheCatalogKnowsTheStreamButTheEngineDoesNot() {
         var manager = StreamPartitionManager.streamPartitionManager();
         var namespaces = org.pragmatica.aether.slice.stream.StreamNamespacesService.inMemory();
         var address = ResourceAddress.resourceAddress("ns", "orders", "1.0.0").unwrap();
@@ -182,7 +183,87 @@ class StreamErrorStatusTest {
 
             var failure = RouteProbe.failureOf(apiRoutes(manager, namespaces), ManagementRoute.STREAMS_EVENTS, List.of("ns", "orders", "1.0.0", "events"), Map.of());
 
+            assertThat(RouteProbe.problemStatus(failure)).isEqualTo(HttpStatus.SERVICE_UNAVAILABLE);
+        } finally {
+            manager.close();
+        }
+    }
+
+    /// An unregistered stream stays 404: the catalog is what says unknown.
+    @Test
+    void streamsEvents_answers404_whenTheCatalogDoesNotKnowTheStream() {
+        var manager = StreamPartitionManager.streamPartitionManager();
+
+        try {
+            var failure = RouteProbe.failureOf(apiRoutes(manager), ManagementRoute.STREAMS_EVENTS, List.of("ns", "orders", "1.0.0", "events"), Map.of());
+
             assertThat(RouteProbe.problemStatus(failure)).isEqualTo(HttpStatus.NOT_FOUND);
+        } finally {
+            manager.close();
+        }
+    }
+
+    /// M2: retention has rolled the stream's tail past offset 0. A read that supplied NO offset must start at the earliest
+    /// retained one; defaulting to 0 answered 410 to a caller who asked for nothing in particular. An EXPLICIT offset that
+    /// retention has reclaimed keeps its 410.
+    @Test
+    void streamsEvents_defaultRead_startsAtTheEarliestRetainedOffset_onARetentionRolledStream() {
+        withRolledStream((manager, namespaces) -> RouteProbe.run(apiRoutes(manager, namespaces), ManagementRoute.STREAMS_EVENTS, EVENTS_PATH, Map.of())
+                                                          .onFailure(cause -> fail("a default read must succeed, got: " + cause.message()))
+                                                          .onSuccess(value -> assertThat(value).isInstanceOfSatisfying(StreamApiRoutes.StreamEventsResponse.class,
+                                                                                                                       response -> assertThat(response.events()).isNotEmpty())));
+    }
+
+    @Test
+    void streamsEvents_explicitExpiredOffset_answers410() {
+        withRolledStream((manager, namespaces) -> assertThat(RouteProbe.problemStatus(RouteProbe.failureOf(apiRoutes(manager, namespaces),
+                                                                                                           ManagementRoute.STREAMS_EVENTS,
+                                                                                                           EVENTS_PATH,
+                                                                                                           Map.of("fromOffset", List.of("0")))))
+                .isEqualTo(HttpStatus.GONE));
+    }
+
+    @Test
+    void streamRead_defaultRead_startsAtTheEarliestRetainedOffset_onARetentionRolledStream() {
+        withRolledStream((manager, namespaces) -> RouteProbe.run(apiRoutes(manager, namespaces),
+                                                                 ManagementRoute.STREAM_READ,
+                                                                 List.of("ns", "orders", "1.0.0", "read", "0"),
+                                                                 Map.of())
+                                                          .onFailure(cause -> fail("a default read must succeed, got: " + cause.message()))
+                                                          .onSuccess(value -> assertThat(value).isInstanceOfSatisfying(StreamApiRoutes.ReadEventsResponse.class,
+                                                                                                                       response -> assertThat(response.events()).isNotEmpty())));
+    }
+
+    @Test
+    void streamRead_explicitExpiredOffset_answers410() {
+        withRolledStream((manager, namespaces) -> assertThat(RouteProbe.problemStatus(RouteProbe.failureOf(apiRoutes(manager, namespaces),
+                                                                                                           ManagementRoute.STREAM_READ,
+                                                                                                           List.of("ns", "orders", "1.0.0", "read", "0"),
+                                                                                                           Map.of("from", List.of("0")))))
+                .isEqualTo(HttpStatus.GONE));
+    }
+
+    private static final List<String> EVENTS_PATH = List.of("ns", "orders", "1.0.0", "events");
+
+    private static void withRolledStream(java.util.function.BiConsumer<StreamPartitionManager, org.pragmatica.aether.slice.stream.StreamNamespacesService> body) {
+        var manager = StreamPartitionManager.streamPartitionManager();
+        var namespaces = org.pragmatica.aether.slice.stream.StreamNamespacesService.inMemory();
+        var address = ResourceAddress.resourceAddress("ns", "orders", "1.0.0").unwrap();
+        var retention = RetentionPolicy.retentionPolicy(5, 1024 * 1024, 600_000);
+
+        try {
+            manager.createStream(StreamConfig.streamConfig(StreamManager.engineKey(address), 1, retention, "earliest")).onFailure(cause -> fail(cause.message()));
+            namespaces.registry()
+                      .register(org.pragmatica.aether.slice.stream.StreamRegistryEntry.operator(address, retention, java.time.Instant.now()))
+                      .onFailure(cause -> fail(cause.message()));
+
+            for (int i = 0; i < 30; i++) {
+                manager.publishLocal(StreamManager.engineKey(address), 0, ("event-" + i).getBytes(), System.currentTimeMillis())
+                       .onFailure(cause -> fail("publish: " + cause.message()));
+            }
+
+            assertThat(manager.partitionInfo(StreamManager.engineKey(address), 0).unwrap().tailOffset()).as("retention rolled the tail past 0").isGreaterThan(0);
+            body.accept(manager, namespaces);
         } finally {
             manager.close();
         }

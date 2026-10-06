@@ -46,6 +46,7 @@ import org.pragmatica.http.routing.RouteSource;
 import org.pragmatica.aether.stream.forward.StreamForwardError;
 import org.pragmatica.aether.stream.replication.ReplicationError;
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
@@ -595,26 +596,54 @@ public final class StreamApiRoutes implements RouteSource {
                                                    Option<Long> fromOpt,
                                                    Option<Integer> maxOpt,
                                                    Option<String> preferenceOpt) {
-        var from = fromOpt.or(0L);
         var max = maxOpt.or(DEFAULT_MAX_EVENTS);
         var preference = preferenceOpt.fold(() -> ReadPreference.GOVERNOR, StreamApiRoutes::parseReadPreference);
 
         return RequestParse.asRequest(ResourceAddress.resourceAddress(namespace, stream, version))
                            .async()
-                           .flatMap(addr -> readEventsAtPartition(addr, partition, from, max, preference));
+                           .flatMap(addr -> readEventsAtPartition(addr, partition, fromOpt, max, preference));
     }
 
     private Promise<ReadEventsResponse> readEventsAtPartition(ResourceAddress addr,
                                                               Integer partition,
-                                                              long fromOffset,
+                                                              Option<Long> fromOffset,
                                                               int maxEvents,
                                                               ReadPreference preference) {
-        return StreamErrorStatus.typed(streamReadRouter().read(StreamManager.engineKey(addr),
-                                                               partition,
-                                                               fromOffset,
-                                                               maxEvents,
-                                                               preference)).map(StreamApiRoutes::toReadEventsResponse);
+        return readFromRequestedOrEarliest(fromOffset,
+                                           from -> streamReadRouter().read(StreamManager.engineKey(addr),
+                                                                           partition,
+                                                                           from,
+                                                                           maxEvents,
+                                                                           preference)).map(window -> toReadEventsResponse(window.events()));
     }
+
+    /// Events read from `from`, which is where the caller asked to start or, when it asked for nothing, where the stream
+    /// starts NOW (#1921). A caller that supplied no offset must not be told its cursor expired: retention may have rolled the
+    /// tail past 0, so a default of 0 answered 410 to a request that named no offset. The engine's refusal carries the earliest
+    /// retained offset, and the read is retried once from there; an offset the caller supplied keeps its 410.
+    private static Promise<Window> readFromRequestedOrEarliest(Option<Long> requested,
+                                                               Fn1<Promise<List<RawEvent>>, Long> read) {
+        var from = requested.or(0L);
+
+        return StreamErrorStatus.typed(read.apply(from)
+                                           .<Window> fold(result -> result.fold(cause -> afterRefusal(requested,
+                                                                                                      cause,
+                                                                                                      read),
+                                                                                events -> Promise.success(new Window(from,
+                                                                                                                     events)))));
+    }
+
+    private static Promise<Window> afterRefusal(Option<Long> requested,
+                                                Cause cause,
+                                                Fn1<Promise<List<RawEvent>>, Long> read) {
+        return requested.isEmpty() && cause instanceof StreamError.CursorExpired expired
+               ? read.apply(expired.tailOffset())
+                     .map(events -> new Window(expired.tailOffset(),
+                                               events))
+               : cause.promise();
+    }
+
+    private record Window(long from, List<RawEvent> events) {}
 
     private static ReadEventsResponse toReadEventsResponse(List<RawEvent> events) {
         return ReadEventsResponse.readEventsResponse(events.stream().map(EventRecord::eventRecord).toList());
@@ -665,26 +694,43 @@ public final class StreamApiRoutes implements RouteSource {
                                                        String eventsLiteral,
                                                        Option<Long> fromOffset,
                                                        Option<Integer> maxEvents) {
-        var offset = fromOffset.or(0L);
         var limit = clampMaxEvents(maxEvents.or(DEFAULT_MAX_EVENTS));
 
         return RequestParse.asRequest(ResourceAddress.resourceAddress(namespace, stream, version))
                            .async()
-                           .flatMap(addr -> readEventsAtAddress(addr, offset, limit));
+                           .flatMap(addr -> readEventsAtAddress(addr, fromOffset, limit));
     }
 
-    private Promise<StreamEventsResponse> readEventsAtAddress(ResourceAddress addr, long fromOffset, int maxEvents) {
+    private Promise<StreamEventsResponse> readEventsAtAddress(ResourceAddress addr,
+                                                              Option<Long> fromOffset,
+                                                              int maxEvents) {
         var streamName = StreamManager.engineKey(addr);
 
         return RequestParse.asNotFound(namespacesService.lookup(addr)
                                                         .toResult(StreamRegistry.StreamRegistryError.General.NOT_FOUND))
                            .async()
-                           .flatMap(_ -> StreamErrorStatus.typed(streamReadRouter().read(streamName,
-                                                                                         0,
-                                                                                         fromOffset,
-                                                                                         maxEvents,
-                                                                                         ReadPreference.NEAREST)))
-                           .map(events -> buildEventsResponse(addr, events, fromOffset, maxEvents));
+                           .flatMap(_ -> readFromRequestedOrEarliest(fromOffset,
+                                                                     from -> notMaterializedHere(addr,
+                                                                                                 streamReadRouter().read(streamName,
+                                                                                                                         0,
+                                                                                                                         from,
+                                                                                                                         maxEvents,
+                                                                                                                         ReadPreference.NEAREST))))
+                           .map(window -> buildEventsResponse(addr,
+                                                              window.events(),
+                                                              window.from(),
+                                                              maxEvents));
+    }
+
+    /// The catalog has just CONFIRMED this stream exists, so the engine's `StreamNotFound` can only mean it is not materialized on
+    /// this node (config committed here, apply lagging; or metadata-only placement): 503, retry. Answering 404 told the caller
+    /// that a stream the catalog knows does not exist.
+    private static Promise<List<RawEvent>> notMaterializedHere(ResourceAddress addr, Promise<List<RawEvent>> read) {
+        return read.mapError(cause -> cause instanceof StreamError.StreamNotFound
+                                      ? new ManagementServerError.StreamRefused(HttpStatus.SERVICE_UNAVAILABLE,
+                                                                                Causes.cause("Stream " + addr.asString()
+                                                                                            + " is registered but not materialized on this node yet"))
+                                      : cause);
     }
 
     private static StreamEventsResponse buildEventsResponse(ResourceAddress addr,
