@@ -1659,7 +1659,7 @@ class ClusterEventAggregatorTest {
         assertThat(retention.mode()).isEqualTo(RetentionMode.ANY);
     }
 
-    // --- v-1923 probes (verification of #1923; not for merge) ---------------------------------------
+    // --- pins from the #1923 verification (#752) ---------------------------------------
     private Harness v1923Clocked(AtomicLong physicalMillis) {
         return Harness.create(Harness.defaultRetention(), OWNER, () -> false, LEADER,
                               HlcClock.hlcClock(SELF, physicalMillis::get, Long.MAX_VALUE));
@@ -1757,5 +1757,29 @@ class ClusterEventAggregatorTest {
         }
         assertThat(h.events()).as("one event per non-recovery code, the repeat throttled")
                               .hasSize(OperatorWarningCode.values().length - 1);
+    }
+
+    /// #752: a detach-found divergence is a POINT event with no recovery. Sharing the pass-found code, it opened a
+    /// record and consumed the window: a pass-found divergence 10 s later was throttled (never shown) and its repair was
+    /// then published against the detach event. As its own code it opens no record and has its own window.
+    @Test
+    void onOperatorWarning_detachFoundDivergence_opensNoRecord_andHidesNoPassDivergence() {
+        var t = new AtomicLong(1_000_000L);
+        var h = v1923Clocked(t);
+
+        h.aggregator().onOperatorWarning(OperatorWarning.operatorWarning(OperatorWarningCode.STREAM_CONSUMER_DETACH_FOUND_NOTHING,
+                                                                         "g:orders[0]",
+                                                                         "Detach ... found no subscription"));
+        t.addAndGet(10_000L);
+        h.aggregator().onOperatorWarning(OperatorWarning.operatorWarning(OperatorWarningCode.STREAM_CONSUMER_STATE_DIVERGED,
+                                                                         "g:orders[0]",
+                                                                         "held as attached, but the consumer runtime has no subscription"));
+        h.aggregator().onOperatorWarning(repaired("g:orders[0]"));
+
+        assertThat(h.events().stream().map(ClusterEvent::summary).toList())
+            .as("the repair must follow the pass-found divergence it closes, which must be shown")
+            .containsExactly("Detach ... found no subscription",
+                             "held as attached, but the consumer runtime has no subscription",
+                             "repaired g:orders[0]");
     }
 }

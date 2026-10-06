@@ -71,12 +71,16 @@ public enum OperatorWarningCode {
     /// fail; NODE_FAILED and the CRITICAL node-health alert are reserved for members that had.
     NODE_NEVER_JOINED("node-never-joined", "membership", WarningLevel.WARNING),
     /// A declarative stream consumer this node held as attached had no subscription in the consumer runtime (#752):
-    /// found by a reconcile pass, which forgets and re-attaches it, or by a detach, which then made no final cursor
-    /// flush. The partition was not consumed in between while this node reported it attached.
+    /// found by a reconcile pass, which forgets and re-attaches it. The partition was not consumed in between while this node reported it attached.
     STREAM_CONSUMER_STATE_DIVERGED("stream-consumer-state-diverged", "stream-consumer", WarningLevel.WARNING),
+    /// A detach or abandon of a declarative stream consumer found no subscription in the consumer runtime (#752): delivery
+    /// had already stopped and no final cursor flush was made. A point event with the state already reconciled, so it has no
+    /// recovery and, being its own code, opens no record for [#STREAM_CONSUMER_STATE_REPAIRED] and shares no throttle
+    /// window with [#STREAM_CONSUMER_STATE_DIVERGED].
+    STREAM_CONSUMER_DETACH_FOUND_NOTHING("stream-consumer-detach-found-nothing", "stream-consumer", WarningLevel.WARNING),
     /// The recovery of a [#STREAM_CONSUMER_STATE_DIVERGED] that a reconcile pass found (#752), same subject: the
-    /// consumer is attached again, or the partition is no longer assigned to this node. A divergence found by a detach
-    /// is a point event with the state already reconciled, so it gets no recovery event.
+    /// consumer is attached again, or the partition is no longer assigned to this node. A detach-found divergence is
+    /// [#STREAM_CONSUMER_DETACH_FOUND_NOTHING], a point event with no recovery.
     STREAM_CONSUMER_STATE_REPAIRED("stream-consumer-state-repaired",
                                    "stream-consumer",
                                    WarningLevel.INFO,

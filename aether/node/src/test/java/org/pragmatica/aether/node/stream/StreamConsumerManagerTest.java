@@ -1943,10 +1943,10 @@ class StreamConsumerManagerTest {
             manager.reconcile();
 
             assertThat(awaitWarnings(3)).extracting(OperatorWarning::code)
-                      .containsExactly(OperatorWarningCode.STREAM_CONSUMER_STATE_DIVERGED,
+                      .containsExactly(OperatorWarningCode.STREAM_CONSUMER_DETACH_FOUND_NOTHING,
                                        OperatorWarningCode.STREAM_CONSUMER_STATE_DIVERGED,
                                        OperatorWarningCode.STREAM_CONSUMER_STATE_REPAIRED);
-            assertThat(warnings.get(0).message()).contains("Detach of");
+            assertThat(warnings.get(0).message()).contains("Detach of").contains("point event; state already reconciled");
         }
 
         /// Red under "the detach failure is logged at DEBUG": nothing reaches the operator.
@@ -1973,7 +1973,7 @@ class StreamConsumerManagerTest {
             manager.abandonAll();
 
             assertThat(awaitWarnings(1)).singleElement()
-                      .satisfies(warning -> assertThat(warning.code()).isEqualTo(OperatorWarningCode.STREAM_CONSUMER_STATE_DIVERGED));
+                      .satisfies(warning -> assertThat(warning.code()).isEqualTo(OperatorWarningCode.STREAM_CONSUMER_DETACH_FOUND_NOTHING));
         }
 
         /// No false alert: ordinary passes and an ordinary stop agree with the runtime and raise nothing. The hand-off
@@ -2086,7 +2086,8 @@ class StreamConsumerManagerTest {
             }
 
             return warnings.stream()
-                           .filter(warning -> warning.code() == OperatorWarningCode.STREAM_CONSUMER_STATE_DIVERGED)
+                           .filter(warning -> warning.code() == OperatorWarningCode.STREAM_CONSUMER_STATE_DIVERGED
+                                              || warning.code() == OperatorWarningCode.STREAM_CONSUMER_DETACH_FOUND_NOTHING)
                            .toList();
         }
 

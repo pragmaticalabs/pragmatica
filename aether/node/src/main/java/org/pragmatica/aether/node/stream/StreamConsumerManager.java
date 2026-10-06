@@ -606,12 +606,15 @@ public interface StreamConsumerManager {
         /// forgotten either way, which is the state both sides now agree on. A point report with no recovery event:
         /// when it is raised nothing is left to repair.
         private void reportDetachFound(SubscriptionKey key, Cause cause) {
-            reportDiverged(key,
-                           "Detach of declarative stream consumer {}[{}] group={} found no subscription in the consumer runtime ({}): delivery for it had already stopped without a detach, and no final cursor flush was made, so the group resumes from its last committed cursor",
-                           key.streamName(),
-                           key.partition(),
-                           key.consumerGroup(),
-                           cause.message());
+            OperatorWarnings.raise(log,
+                                   operatorWarnings,
+                                   OperatorWarningCode.STREAM_CONSUMER_DETACH_FOUND_NOTHING,
+                                   subjectOf(key),
+                                   "Detach of declarative stream consumer {}[{}] group={} found no subscription in the consumer runtime ({}): delivery for it had already stopped without a detach, and no final cursor flush was made, so the group resumes from its last committed cursor (point event; state already reconciled)",
+                                   key.streamName(),
+                                   key.partition(),
+                                   key.consumerGroup(),
+                                   cause.message());
         }
 
         /// #1333, level-triggered: a subscription whose committed epoch is STRICTLY newer than the one its

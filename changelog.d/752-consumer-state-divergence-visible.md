@@ -6,15 +6,16 @@
   the same pass re-attaches it when it is still assigned here.
 - **A detach (or abandon) whose runtime call failed was logged at DEBUG, or not at all.** It can only fail as
   `CONSUMER_NOT_FOUND`, meaning the runtime had already lost the subscription and no final cursor flush was made.
-  Both cases now raise the operator warning `stream-consumer-state-diverged` (WARNING, subsystem `stream-consumer`,
-  subject `group:stream[partition]`): a log line plus a cluster event, through the node's operator-warning sink.
+  The detach case now raises the operator warning `stream-consumer-detach-found-nothing` (WARNING, subsystem
+  `stream-consumer`, subject `group:stream[partition]`, a point event with the state already reconciled): a log line
+  plus a cluster event, through the node's operator-warning sink. The pass-found case raises
+  `stream-consumer-state-diverged` (below the same way).
   `[verified: aether/node/src/test/java/org/pragmatica/aether/node/stream/StreamConsumerManagerTest.java]`
   (`StateDivergence`, against the recording runtime double; wiring pinned by `OperatorWarningWiringTest`). Ordinary
   passes and an ordinary stop raise nothing (same class).
 - **The divergence has a recovery event.** A divergence found by a reconcile pass is followed by one operator warning
   `stream-consumer-state-repaired` (same subject, INFO) once the consumer is attached again, or once the pass no
-  longer wants it on this node. A divergence found by a detach is a point event with the state already reconciled, and
-  has none. `[verified: same test class, StateDivergence]`
+  longer wants it on this node. A detach-found divergence has its own code and no recovery. `[verified: same test class, StateDivergence]`
 - **`WarningLevel.INFO`** is a new generic level of the operator-warning mechanism: logs at INFO, publishes at
   `ClusterEvent.Severity.INFO`. A code can name the code it is the recovery of; the aggregator publishes such a
   recovery only after an event of the code it closes is in the log for the same subject (held while that event is
