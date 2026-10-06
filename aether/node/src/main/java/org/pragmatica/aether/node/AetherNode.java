@@ -5563,6 +5563,15 @@ public interface AetherNode extends ManageableNode {
                                                      streamIsrAnnouncer::onOwnershipPut)
                                               .build()
                                               .asRouteEntries());
+        // #1723: a scheduled task's unknown fire outcome, and its late resolution, derived by every node from the committed
+        // task state; the aggregator publishes on the cluster-events owner only, throttled per task.
+        var scheduledTaskOutcomeAnnouncer = ScheduledTaskOutcomeAnnouncer.scheduledTaskOutcomeAnnouncer(delegateRouter::route);
+
+        allEntries.addAll(KVNotificationRouter.<AetherKey, AetherValue> builder(AetherKey.class)
+                                              .onPut(AetherKey.ScheduledTaskStateKey.class,
+                                                     scheduledTaskOutcomeAnnouncer::onStatePut)
+                                              .build()
+                                              .asRouteEntries());
         // #1555 sticky ownership: every node routes by the COMMITTED ownership record (HRW only before a record
         // exists); the leader's writer alone judges liveness (ReplicaSetController#desiredOwner). Backfill sources
         // from, and self-elects against, the same owner.
@@ -9143,6 +9152,10 @@ public interface AetherNode extends ManageableNode {
                                               eventAggregator::onStreamIsrRestored));
         entries.add(MessageRouter.Entry.route(OperationalEvent.StreamConfigChangeNotApplied.class,
                                               eventAggregator::onStreamConfigChangeNotApplied));
+        entries.add(MessageRouter.Entry.route(OperationalEvent.ScheduledTaskOutcomeUnknown.class,
+                                              eventAggregator::onScheduledTaskOutcomeUnknown));
+        entries.add(MessageRouter.Entry.route(OperationalEvent.ScheduledTaskOutcomeRestored.class,
+                                              eventAggregator::onScheduledTaskOutcomeRestored));
         entries.add(MessageRouter.Entry.route(OperationalEvent.BlueprintDeleted.class,
                                               eventAggregator::onBlueprintDeleted));
         entries.add(MessageRouter.Entry.route(OperationalEvent.DhtReplicationUnsettled.class,

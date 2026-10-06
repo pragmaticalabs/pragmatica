@@ -1217,6 +1217,128 @@ class ClusterEventAggregatorTest {
         assertThat(events.getFirst().details()).containsEntry("suppressedSince", "0");
     }
 
+    private static final String CRON_TASK = "cache/org.example:my-slice:1.0.0/cleanup";
+
+    private static OperationalEvent.ScheduledTaskOutcomeUnknown unknownOutcome(String eventId, long fireAt) {
+        return OperationalEvent.ScheduledTaskOutcomeUnknown.scheduledTaskOutcomeUnknown(CRON_TASK, "node-a", fireAt, eventId);
+    }
+
+    private static OperationalEvent.ScheduledTaskOutcomeRestored restoredOutcome(String eventId, String outcome) {
+        return OperationalEvent.ScheduledTaskOutcomeRestored.scheduledTaskOutcomeRestored(CRON_TASK, "node-a", outcome, eventId);
+    }
+
+    private Harness harnessWithClock(AtomicLong physicalMillis) {
+        return Harness.create(Harness.defaultRetention(),
+                              OWNER,
+                              () -> false,
+                              LEADER,
+                              HlcClock.hlcClock(SELF, physicalMillis::get, Long.MAX_VALUE));
+    }
+
+    /// #1723: an UNKNOWN and its RESTORED reach the stream as typed events: WARNING, then INFO carrying the late
+    /// outcome and the fire time of the UNKNOWN it closes.
+    @Test
+    void scheduledTaskOutcome_unknownThenRestored_reachTheStream_withTaskFireTimeAndLateOutcome() {
+        var h = Harness.create();
+
+        h.aggregator().onScheduledTaskOutcomeUnknown(unknownOutcome("unknown-id", 777L));
+        h.aggregator().onScheduledTaskOutcomeRestored(restoredOutcome("restored-id", "executed"));
+
+        var events = h.events();
+
+        assertThat(events).hasSize(2);
+        assertThat(events.get(0)).isInstanceOf(ClusterEvent.ScheduledTaskOutcomeUnknown.class);
+        assertThat(events.get(0).type()).isEqualTo("SCHEDULED_TASK_OUTCOME_UNKNOWN");
+        assertThat(events.get(0).severity()).isEqualTo(ClusterEvent.Severity.WARNING);
+        assertThat(events.get(0).details()).containsEntry("task", CRON_TASK)
+                                           .containsEntry("node", "node-a")
+                                           .containsEntry("fireAt", "777")
+                                           .containsEntry("eventId", "unknown-id");
+        assertThat(events.get(1)).isInstanceOf(ClusterEvent.ScheduledTaskOutcomeRestored.class);
+        assertThat(events.get(1).type()).isEqualTo("SCHEDULED_TASK_OUTCOME_RESTORED");
+        assertThat(events.get(1).severity()).isEqualTo(ClusterEvent.Severity.INFO);
+        assertThat(events.get(1).details()).containsEntry("task", CRON_TASK)
+                                           .containsEntry("fireAt", "777")
+                                           .containsEntry("outcome", "executed")
+                                           .containsEntry("late", "true")
+                                           .containsEntry("eventId", "restored-id");
+    }
+
+    /// #1723 no false all-clear: a RESTORED whose UNKNOWN the window held back is never announced, and neither is the
+    /// held UNKNOWN once the sweep runs: the operator is told nothing about a condition that came and went inside the
+    /// window.
+    @Test
+    void scheduledTaskOutcome_unknownHeldByTheWindow_thenResolved_announcesNothing() {
+        var physicalMillis = new AtomicLong(1_000_000L);
+        var h = harnessWithClock(physicalMillis);
+
+        h.aggregator().onScheduledTaskOutcomeUnknown(unknownOutcome("first", 1L));
+        h.aggregator().onScheduledTaskOutcomeRestored(restoredOutcome("first-restored", "executed"));
+        physicalMillis.addAndGet(10_000L);
+        h.aggregator().onScheduledTaskOutcomeUnknown(unknownOutcome("second", 2L));
+        h.aggregator().onScheduledTaskOutcomeRestored(restoredOutcome("second-restored", "failed"));
+        physicalMillis.addAndGet(60_000L);
+        h.aggregator().announceHeldScheduledOutcomes();
+
+        assertThat(h.events()).as("the first pair only: the second was held, then resolved").hasSize(2);
+        assertThat(h.events().stream().map(event -> event.details().get("eventId")).toList())
+            .containsExactly("first", "first-restored");
+    }
+
+    /// #1723: an UNKNOWN the window held back that PERSISTS is announced once the window has closed, and its RESTORED
+    /// then follows. Before the window closes the sweep announces nothing.
+    @Test
+    void scheduledTaskOutcome_unknownHeldByTheWindow_stillUnknownAfterIt_isAnnouncedBySweep() {
+        var physicalMillis = new AtomicLong(1_000_000L);
+        var h = harnessWithClock(physicalMillis);
+
+        h.aggregator().onScheduledTaskOutcomeUnknown(unknownOutcome("first", 1L));
+        h.aggregator().onScheduledTaskOutcomeRestored(restoredOutcome("first-restored", "executed"));
+        physicalMillis.addAndGet(10_000L);
+        h.aggregator().onScheduledTaskOutcomeUnknown(unknownOutcome("second", 2L));
+        h.aggregator().announceHeldScheduledOutcomes();
+
+        assertThat(h.events()).as("inside the window the second UNKNOWN stays held").hasSize(2);
+
+        physicalMillis.addAndGet(50_000L);
+        h.aggregator().announceHeldScheduledOutcomes();
+        h.aggregator().announceHeldScheduledOutcomes();
+
+        var events = h.events();
+
+        assertThat(events).as("announced once the window closed, and only once").hasSize(3);
+        assertThat(events.getLast().details()).containsEntry("eventId", "second").containsEntry("fireAt", "2");
+
+        h.aggregator().onScheduledTaskOutcomeRestored(restoredOutcome("second-restored", "failed"));
+
+        assertThat(h.events()).hasSize(4);
+        assertThat(h.events().getLast().details()).containsEntry("outcome", "failed").containsEntry("fireAt", "2");
+    }
+
+    /// #1723: a RESTORED nobody was told the UNKNOWN for is not an all-clear.
+    @Test
+    void scheduledTaskOutcome_restoredWithNoUnknown_isNotAnnounced() {
+        var h = Harness.create();
+
+        h.aggregator().onScheduledTaskOutcomeRestored(restoredOutcome("orphan", "executed"));
+
+        assertThat(h.events()).isEmpty();
+    }
+
+    /// Tasks are throttled independently: a flapping task does not hold back another's UNKNOWN.
+    @Test
+    void scheduledTaskOutcome_windowIsPerTask() {
+        var h = Harness.create();
+
+        h.aggregator().onScheduledTaskOutcomeUnknown(unknownOutcome("a", 1L));
+        h.aggregator().onScheduledTaskOutcomeUnknown(OperationalEvent.ScheduledTaskOutcomeUnknown.scheduledTaskOutcomeUnknown("cache/org.example:other:1.0.0/sweep",
+                                                                                                                              "",
+                                                                                                                              2L,
+                                                                                                                              "b"));
+
+        assertThat(h.events()).hasSize(2);
+    }
+
     /// One millisecond short of the window is still inside it.
     @Test
     void onOperatorWarning_justInsideTheWindow_isStillSuppressed() {

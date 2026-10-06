@@ -584,6 +584,9 @@ public interface SystemTags {
         pin(table, 1747, "org.pragmatica.aether.api.ClusterEvent.StreamIsrRestored");
         // a committed stream config lowering that is not applied online (#1883)
         pin(table, 1750, "org.pragmatica.aether.api.ClusterEvent.StreamConfigChangeNotApplied");
+        // a scheduled task with an unknown fire outcome / its late resolution (#1723)
+        pin(table, 1751, "org.pragmatica.aether.api.ClusterEvent.ScheduledTaskOutcomeUnknown");
+        pin(table, 1752, "org.pragmatica.aether.api.ClusterEvent.ScheduledTaskOutcomeRestored");
         pin(table, 2112, "org.pragmatica.aether.slice.kvstore.AetherKey.CommunityPlacementAvailabilityKey");
         pin(table, 2113, "org.pragmatica.aether.slice.kvstore.AetherValue.CommunityPlacementAvailabilityValue");
         // built-in artifact store versions index in consensus (#1778)

@@ -381,7 +381,9 @@ class ClusterEventCodecTest {
                        new StreamFailoverResolved(ts, sev, "StreamFailoverResolved", d),
                        new StreamIsrBelowMinimum(ts, sev, "StreamIsrBelowMinimum", d),
                        new StreamIsrRestored(ts, sev, "StreamIsrRestored", d),
-                       new StreamConfigChangeNotApplied(ts, sev, "StreamConfigChangeNotApplied", d));
+                       new StreamConfigChangeNotApplied(ts, sev, "StreamConfigChangeNotApplied", d),
+                       new ClusterEvent.ScheduledTaskOutcomeUnknown(ts, sev, "ScheduledTaskOutcomeUnknown", d),
+                       new ClusterEvent.ScheduledTaskOutcomeRestored(ts, sev, "ScheduledTaskOutcomeRestored", d));
     }
 
     /// Guards [#allClosedVariants] against silent drift.

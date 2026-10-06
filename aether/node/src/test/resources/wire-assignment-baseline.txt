@@ -82,6 +82,8 @@ SHAPE org.pragmatica.aether.api.ClusterEvent$QuorumLost (at:org.pragmatica.hlc.H
 SHAPE org.pragmatica.aether.api.ClusterEvent$ScaleCapped (at:org.pragmatica.hlc.HlcTimestamp,severity:org.pragmatica.aether.api.ClusterEvent$Severity,summary:java.lang.String,details:java.util.Map<java.lang.String, java.lang.String>)
 SHAPE org.pragmatica.aether.api.ClusterEvent$ScaleDown (at:org.pragmatica.hlc.HlcTimestamp,severity:org.pragmatica.aether.api.ClusterEvent$Severity,summary:java.lang.String,details:java.util.Map<java.lang.String, java.lang.String>)
 SHAPE org.pragmatica.aether.api.ClusterEvent$ScaleUp (at:org.pragmatica.hlc.HlcTimestamp,severity:org.pragmatica.aether.api.ClusterEvent$Severity,summary:java.lang.String,details:java.util.Map<java.lang.String, java.lang.String>)
+SHAPE org.pragmatica.aether.api.ClusterEvent$ScheduledTaskOutcomeRestored (at:org.pragmatica.hlc.HlcTimestamp,severity:org.pragmatica.aether.api.ClusterEvent$Severity,summary:java.lang.String,details:java.util.Map<java.lang.String, java.lang.String>)
+SHAPE org.pragmatica.aether.api.ClusterEvent$ScheduledTaskOutcomeUnknown (at:org.pragmatica.hlc.HlcTimestamp,severity:org.pragmatica.aether.api.ClusterEvent$Severity,summary:java.lang.String,details:java.util.Map<java.lang.String, java.lang.String>)
 SHAPE org.pragmatica.aether.api.ClusterEvent$SelfDrainInitiated (at:org.pragmatica.hlc.HlcTimestamp,severity:org.pragmatica.aether.api.ClusterEvent$Severity,summary:java.lang.String,details:java.util.Map<java.lang.String, java.lang.String>)
 SHAPE org.pragmatica.aether.api.ClusterEvent$SliceFailure (at:org.pragmatica.hlc.HlcTimestamp,severity:org.pragmatica.aether.api.ClusterEvent$Severity,summary:java.lang.String,details:java.util.Map<java.lang.String, java.lang.String>)
 SHAPE org.pragmatica.aether.api.ClusterEvent$StreamConfigChangeNotApplied (at:org.pragmatica.hlc.HlcTimestamp,severity:org.pragmatica.aether.api.ClusterEvent$Severity,summary:java.lang.String,details:java.util.Map<java.lang.String, java.lang.String>)
@@ -243,7 +245,7 @@ SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$PartitionRecoveryReason (k
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$PreviousVersionValue (artifactBase:org.pragmatica.aether.artifact.ArtifactBase,previousVersion:org.pragmatica.aether.artifact.Version,currentVersion:org.pragmatica.aether.artifact.Version,updatedAt:long,rollbackCount:int,lastRollbackAt:long,failedVersions:java.util.List<org.pragmatica.aether.artifact.Version>)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$ProvisioningSlotValue (spawnedAtMs:long,assignedNodeId:org.pragmatica.lang.Option<org.pragmatica.consensus.NodeId>,occupantEpoch:long,supersededNodeId:org.pragmatica.lang.Option<org.pragmatica.consensus.NodeId>)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$ScheduledTaskPauseValue (pausedAt:long)
-SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$ScheduledTaskStateValue (lastExecutionAt:long,nextFireAt:long,consecutiveFailures:int,totalExecutions:int,lastFailureMessage:java.lang.String,updatedAt:long,skippedOverlaps:int,lastOutcome:java.lang.String,unknownOutcomes:int)
+SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$ScheduledTaskStateValue (lastExecutionAt:long,nextFireAt:long,consecutiveFailures:int,totalExecutions:int,lastFailureMessage:java.lang.String,updatedAt:long,skippedOverlaps:int,lastOutcome:java.lang.String,unknownOutcomes:int,fireSeq:int)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$ScheduledTaskValue (registeredBy:org.pragmatica.consensus.NodeId,interval:java.lang.String,cron:java.lang.String,executionMode:org.pragmatica.aether.slice.ExecutionMode)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$SchemaMigrationLockValue (datasourceName:java.lang.String,heldBy:org.pragmatica.consensus.NodeId,acquiredAt:long,expiresAt:long,lockVersion:long)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$SchemaVersionValue (datasourceName:java.lang.String,currentVersion:int,lastMigration:java.lang.String,status:org.pragmatica.aether.slice.kvstore.AetherValue$SchemaStatus,artifactCoords:java.lang.String,owningBlueprint:org.pragmatica.aether.slice.blueprint.BlueprintId,attemptCount:int,updatedAt:long)
@@ -431,6 +433,8 @@ TAG  org.pragmatica.aether.api.ClusterEvent$QuorumLost 279
 TAG  org.pragmatica.aether.api.ClusterEvent$ScaleCapped 280
 TAG  org.pragmatica.aether.api.ClusterEvent$ScaleDown 281
 TAG  org.pragmatica.aether.api.ClusterEvent$ScaleUp 282
+TAG  org.pragmatica.aether.api.ClusterEvent$ScheduledTaskOutcomeRestored 1752
+TAG  org.pragmatica.aether.api.ClusterEvent$ScheduledTaskOutcomeUnknown 1751
 TAG  org.pragmatica.aether.api.ClusterEvent$SelfDrainInitiated 283
 TAG  org.pragmatica.aether.api.ClusterEvent$Severity 284
 TAG  org.pragmatica.aether.api.ClusterEvent$SliceFailure 285

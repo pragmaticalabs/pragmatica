@@ -40,6 +40,12 @@ class StreamFailoverAnnouncerWiringTest {
         assertThat(code).contains("MessageRouter.Entry.route(OperationalEvent.StreamIsrBelowMinimum.class,eventAggregator::onStreamIsrBelowMinimum)");
         assertThat(code).contains("MessageRouter.Entry.route(OperationalEvent.StreamIsrRestored.class,eventAggregator::onStreamIsrRestored)");
         assertThat(code).contains("MessageRouter.Entry.route(OperationalEvent.StreamConfigChangeNotApplied.class,eventAggregator::onStreamConfigChangeNotApplied)");
+        // #1723: a scheduled task's unknown fire outcome and its late resolution are derived from the committed task state
+        // on every node and reach the aggregator.
+        assertThat(code).contains("ScheduledTaskOutcomeAnnouncer.scheduledTaskOutcomeAnnouncer(delegateRouter::route);");
+        assertThat(code).contains(".onPut(AetherKey.ScheduledTaskStateKey.class,scheduledTaskOutcomeAnnouncer::onStatePut)");
+        assertThat(code).contains("MessageRouter.Entry.route(OperationalEvent.ScheduledTaskOutcomeUnknown.class,eventAggregator::onScheduledTaskOutcomeUnknown)");
+        assertThat(code).contains("MessageRouter.Entry.route(OperationalEvent.ScheduledTaskOutcomeRestored.class,eventAggregator::onScheduledTaskOutcomeRestored)");
     }
 
     private static String assemblyCode() {
