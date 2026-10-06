@@ -330,6 +330,149 @@ class DetachAwaitsInFlightAdvanceTest {
         assertThat(commits.getLast()).as("no commit below an earlier one: %s", commits).isEqualTo(highest);
     }
 
+    /// v-str-1914 probe R2 (F1b): A is held by a slow handler; B subscribes and unsubscribes before its fetch (its own
+    /// flush settles at once); C then subscribes and checkpoints far ahead; then A's handler completes. B's settled
+    /// flush must not release C past A's still-held one. Red under "the pending flush is REPLACED, not chained":
+    /// commits `[1000, 1]`, the group rewound.
+    @Test
+    void churnedSubscriptionDuringHeldFlush_committedCursorNeverMovesBackwards() throws InterruptedException {
+        var entered = new CountDownLatch(1);
+        var pending = Promise.<Unit>promise();
+        var delivered = new java.util.concurrent.atomic.AtomicLong(-1);
+
+        runtime.subscribe(STREAM, 0, ConsumerConfig.consumerConfig(GROUP), (_, _, _) -> {
+            entered.countDown();
+
+            return pending;
+        });
+        manager.publishLocal(STREAM, 0, "event-0".getBytes(UTF_8), 1000L);
+        assertThat(entered.await(5, TimeUnit.SECONDS)).isTrue();
+        runtime.unsubscribe(STREAM, 0, GROUP);
+        runtime.subscribe(STREAM, 0, ConsumerConfig.consumerConfig(GROUP), (_, _, _) -> Promise.unitPromise());
+        runtime.unsubscribe(STREAM, 0, GROUP);
+        runtime.subscribe(STREAM, 0, ConsumerConfig.consumerConfig(GROUP), (offset, _, _) -> {
+            delivered.set(offset);
+
+            return Promise.unitPromise();
+        });
+        for (var i = 1; i <= 1500; i++) {
+            manager.publishLocal(STREAM, 0, ("event-" + i).getBytes(UTF_8), 1000L + i);
+        }
+        Thread.sleep(200);
+        pending.succeed(unit());
+
+        var deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+
+        while (delivered.get() < 1500 && System.nanoTime() < deadline) {
+            Thread.sleep(5);
+        }
+        Thread.sleep(300);
+
+        var highest = commits.stream().mapToLong(Long::longValue).max().orElse(-1);
+
+        assertThat(delivered.get()).as("the last successor delivered the backlog").isEqualTo(1500L);
+        assertThat(commits.getFirst()).as("A's flush lands first, one past its completed event: %s", commits).isEqualTo(1L);
+        assertThat(commits.getLast()).as("no commit below an earlier one: %s", commits).isEqualTo(highest);
+    }
+
+    /// The bound survives chaining: a handler that never returns, then three same-key detach/re-subscribe rounds. The
+    /// held flush still settles at [ConsumerRuntimeState#DETACH_ADVANCE_BOUND] and the final successor starts after it
+    /// — not before (it would rewind), and not after N bounds (the chained flushes wait concurrently, not in series).
+    /// The upper limit carries 2 s of scheduling slack; [unverified: under load beyond that slack].
+    @Test
+    void chainedDetachesWithNeverReturningHandler_successorStartsAfterOneBound() throws InterruptedException {
+        var entered = new CountDownLatch(1);
+        var successorDelivered = new CountDownLatch(1);
+
+        runtime.subscribe(STREAM, 0, ConsumerConfig.consumerConfig(GROUP), (_, _, _) -> {
+            entered.countDown();
+
+            return Promise.promise();
+        });
+        manager.publishLocal(STREAM, 0, "event-0".getBytes(UTF_8), 1000L);
+        assertThat(entered.await(5, TimeUnit.SECONDS)).isTrue();
+
+        var start = System.nanoTime();
+
+        runtime.unsubscribe(STREAM, 0, GROUP);
+        for (var round = 0; round < 2; round++) {
+            runtime.subscribe(STREAM, 0, ConsumerConfig.consumerConfig(GROUP), (_, _, _) -> Promise.unitPromise());
+            runtime.unsubscribe(STREAM, 0, GROUP);
+        }
+        runtime.subscribe(STREAM, 0, ConsumerConfig.consumerConfig(GROUP), (_, _, _) -> {
+            successorDelivered.countDown();
+
+            return Promise.unitPromise();
+        });
+        assertThat(successorDelivered.await(8, TimeUnit.SECONDS)).isTrue();
+
+        var elapsedMs = (System.nanoTime() - start) / 1_000_000;
+        var boundMs = ConsumerRuntimeState.DETACH_ADVANCE_BOUND.millis();
+
+        assertThat(elapsedMs).as("the successor waited out the held flush").isGreaterThanOrEqualTo(boundMs);
+        assertThat(elapsedMs).as("chained flushes wait concurrently").isLessThan(boundMs + 2000);
+        assertThat(commits).as("the held flush committed the pre-delivery cursor at the bound").startsWith(0L);
+    }
+
+    /// v-str-1914 second window: the old consumer leaves the registry before its flush is registered, and a store whose
+    /// commit blocks the CALLER keeps the flush from being registered at all. A same-key subscription on another thread
+    /// in that gap must still wait for the flush. Red under "the gate is registered after the consumer is removed": the
+    /// successor's fetch runs while the commit is still blocked.
+    @Test
+    void resubscribeWhileDetachFlushBlocksItsCaller_fetchWaitsForTheCommit() throws InterruptedException {
+        var commitEntered = new CountDownLatch(1);
+        var releaseCommit = new CountDownLatch(1);
+        var fetches = new AtomicInteger();
+        var committed = new java.util.concurrent.atomic.AtomicBoolean();
+        var fetchedBeforeCommit = new java.util.concurrent.atomic.AtomicBoolean();
+        var successorFetched = new CountDownLatch(1);
+        var blocking = new ConsumerCursorStore() {
+            @Override
+            public Promise<CommitOutcome> commit(String consumerGroup, String streamName, int partition, long offset) {
+                commitEntered.countDown();
+                try {
+                    releaseCommit.await(10, TimeUnit.SECONDS);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+                committed.set(true);
+
+                return Promise.success(CommitOutcome.persisted());
+            }
+
+            @Override
+            public Promise<Option<Long>> fetch(String consumerGroup, String streamName, int partition) {
+                if (fetches.incrementAndGet() == 2) {
+                    fetchedBeforeCommit.set(!committed.get());
+                    successorFetched.countDown();
+                }
+
+                return Promise.success(Option.none());
+            }
+        };
+        var blockingRuntime = streamConsumerRuntime(manager, DeadLetterHandler.deadLetterHandler(), blocking);
+
+        try {
+            blockingRuntime.subscribe(STREAM, 0, ConsumerConfig.consumerConfig(GROUP), (_, _, _) -> Promise.unitPromise());
+            assertThat(fetches.get()).as("the first consumer fetched its cursor").isEqualTo(1);
+
+            var detacher = new Thread(() -> blockingRuntime.unsubscribe(STREAM, 0, GROUP));
+
+            detacher.start();
+            assertThat(commitEntered.await(5, TimeUnit.SECONDS)).as("the detach flush is blocked in the store").isTrue();
+            blockingRuntime.subscribe(STREAM, 0, ConsumerConfig.consumerConfig(GROUP), (_, _, _) -> Promise.unitPromise());
+            assertThat(fetches.get()).as("the successor has not fetched while the old flush is uncommitted").isEqualTo(1);
+
+            releaseCommit.countDown();
+            assertThat(successorFetched.await(5, TimeUnit.SECONDS)).as("the successor fetches once the flush settles").isTrue();
+            assertThat(fetchedBeforeCommit.get()).isFalse();
+            detacher.join(5000);
+        } finally {
+            releaseCommit.countDown();
+            blockingRuntime.close();
+        }
+    }
+
     private boolean awaitCommits(int count) throws InterruptedException {
         var deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
 

@@ -274,9 +274,13 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
     @Override
     public Result<Unit> unsubscribe(String streamName, int partition, String consumerGroup) {
         var key = ConsumerKey.consumerKey(streamName, partition, consumerGroup);
+        var gate = Promise.<CommitOutcome> promise();
+
+        holdUntilSettled(key, gate);
 
         return option(consumers.remove(key)).toResult(StreamError.General.CONSUMER_NOT_FOUND)
-                     .onSuccess(state -> cleanupConsumer(key, state))
+                     .onSuccess(state -> cleanupConsumer(key, state, gate))
+                     .onFailure(_ -> gate.succeed(CommitOutcome.persisted()))
                      .mapToUnit();
     }
 
@@ -295,18 +299,31 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
     /// — chained behind any periodic commit still in flight ([#flushCursorForKey]) — is the last commit
     /// this consumer ever makes. A consumer whose commit was already refused as `Fenced` (#1271) skips
     /// the flush: it is no longer the assignee, and the store would refuse it the same way.
-    private void cleanupConsumer(ConsumerKey key, ConsumerState state) {
+    private void cleanupConsumer(ConsumerKey key, ConsumerState state, Promise<CommitOutcome> gate) {
         detachWithoutFlush(key, state);
-        if (!state.isFenced()) {
-            holdUntilSettled(key, flushCursorForKey(key, state));
+        if (state.isFenced()) {
+            gate.succeed(CommitOutcome.persisted());
+            return;
+        }
+        try {
+            flushCursorForKey(key, state).withResult(gate::resolve);
+        } catch (RuntimeException e) {
+            gate.succeed(CommitOutcome.persisted());
+            throw e;
         }
     }
 
-    /// #1403 (v-str-1914 F1): registered before anything can chain behind it; removed once it settles — inline when it
-    /// already has — and only if it is still this key's latest flush.
-    private void holdUntilSettled(ConsumerKey key, Promise<CommitOutcome> flush) {
-        pendingDetachFlushes.put(key, flush);
-        flush.withResult(_ -> pendingDetachFlushes.remove(key, flush));
+    /// #1403 (v-str-1914 F1, R2): the gate is registered BEFORE the consumer leaves [#consumers], so a same-key
+    /// re-subscription that sees the key free also sees the gate — the flush itself is only issued after the removal,
+    /// and a store that blocks its caller would otherwise leave a window with neither. Chained behind any earlier
+    /// pending gate of the key, never replacing it: a later detach whose flush is already settled must not release a
+    /// successor while an earlier flush is still held. Removed once it settles, and only if still the key's latest.
+    private void holdUntilSettled(ConsumerKey key, Promise<CommitOutcome> gate) {
+        var held = pendingDetachFlushes.compute(key, (_, prev) -> prev == null
+                                                                  ? gate
+                                                                  : prev.fold(_ -> gate));
+
+        held.withResult(_ -> pendingDetachFlushes.remove(key, held));
     }
 
     private void detachWithoutFlush(ConsumerKey key, ConsumerState state) {
