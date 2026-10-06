@@ -225,9 +225,9 @@ public final class NodeLifecycleRoutes implements RouteSource {
             return readinessUnavailableError().promise();
         }
 
-        return NodeId.nodeId(nodeIdStr)
-                     .async()
-                     .flatMap(this::lifecycleEntryOrVerdict);
+        return RequestParse.asRequest(NodeId.nodeId(nodeIdStr))
+                           .async()
+                           .flatMap(this::lifecycleEntryOrVerdict);
     }
 
     private Promise<LifecycleEntry> lifecycleEntryOrVerdict(NodeId nodeId) {
@@ -260,9 +260,9 @@ public final class NodeLifecycleRoutes implements RouteSource {
     /// the target self-drains via its `DrainProcedure`. The CTM grace-terminate backstop reaps the
     /// container if it never self-exits. No `LifecycleWriter` write happens here.
     private Promise<TransitionResult> drainNode(String nodeIdStr) {
-        return NodeId.nodeId(nodeIdStr)
-                     .flatMap(node -> admitOperatorDrain(node, true))
-                     .async();
+        return RequestParse.asRequest(NodeId.nodeId(nodeIdStr))
+                           .flatMap(node -> admitOperatorDrain(node, true))
+                           .async();
     }
 
     /// One routes instance is installed per management server. Check and reserve synchronously:
@@ -402,9 +402,9 @@ public final class NodeLifecycleRoutes implements RouteSource {
     /// `drain` (the target self-drains then halts via its `DrainProcedure`); the CTM grace-terminate
     /// backstop reaps the container. No `LifecycleWriter` write happens here.
     private Promise<TransitionResult> shutdownNode(String nodeIdStr) {
-        return NodeId.nodeId(nodeIdStr)
-                     .flatMap(node -> admitOperatorDrain(node, false))
-                     .async();
+        return RequestParse.asRequest(NodeId.nodeId(nodeIdStr))
+                           .flatMap(node -> admitOperatorDrain(node, false))
+                           .async();
     }
 
     Promise<TransitionResult> shutdownNodeForTest(String nodeIdStr) {
@@ -442,9 +442,9 @@ public final class NodeLifecycleRoutes implements RouteSource {
     }
 
     private Result<PromoteNodeResponse> confirmImmutableRole(String nodeIdStr, String targetRole) {
-        return NodeId.nodeId(nodeIdStr)
-                     .flatMap(this::readCurrentRole)
-                     .flatMap(current -> matchingRoleResponse(nodeIdStr, current, targetRole));
+        return RequestParse.asRequest(NodeId.nodeId(nodeIdStr))
+                           .flatMap(this::readCurrentRole)
+                           .flatMap(current -> matchingRoleResponse(nodeIdStr, current, targetRole));
     }
 
     private Result<String> readCurrentRole(NodeId nodeId) {
