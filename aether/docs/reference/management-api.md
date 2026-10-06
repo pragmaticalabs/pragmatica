@@ -446,6 +446,7 @@ curl "http://localhost:8080/api/v1/events?sinceEpoch=3&sinceSeq=42"
 - `STREAM_FAILOVER_REFUSED` / `STREAM_FAILOVER_RESOLVED` -- a stream partition's owner is dead and no in-sync replica is live, so failover elected nobody (CRITICAL); then an owner was elected or the owner returned (INFO). `details`: `stream`, `partition`, `owner`, `isr`, `live`, `reason`. Raised once per committed transition, never per reconcile: the leader commits the refusal into the partition's ownership record with a guarded write, every node derives the event from that committed change, and only the cluster-events partition owner publishes it; see the failure almanac. At most once if no node owns the cluster-events partition at that moment (bootstrap, quorum loss): every node then drops it with a WARN and a counter, and the committed `failoverRefused` flag and the `NoInSyncReplica` partition status remain the record. The event carries a deterministic `details.eventId` (partition, ownership epoch and term, ISR version, refusal count) so two copies published by two nodes during a membership change read as one; the id includes the refusal count committed with the flag, so a recurring refusal is a new event.
 - `STREAM_CONFIG_CHANGE_NOT_APPLIED` -- a committed config for a running stream does not take effect over what the node enforces (WARNING): it lowers `confirmation_factor` or `replication_factor` (durability only increases online) or it has a different partition count (never re-shaped onto the existing rings). `details`: `stream`, `requestedConfirmationFactor`, `effectiveConfirmationFactor`, `reason` (the actual cause), `eventId`. Raised once per such committed config, compared with the enforced one, never for an adopted change (including a lowering that came with a replication-factor raise), a new life or a replayed Put; a point event, a later raise does not resolve it.
 - `STREAM_ISR_BELOW_MINIMUM` / `STREAM_ISR_RESTORED` -- a stream partition's committed in-sync set fell below its `confirmation_factor`, so acknowledged publishes to it are refused with `NOT_ENOUGH_REPLICAS` (WARNING); then it reached the factor again (INFO). `details`: `stream`, `partition`, `owner`, `isr`, `fenced`, `confirmationFactor`. Raised once per transition across the factor, never per ISR change (a committed config change that moves the enforced factor across the ISR size raises it too, with no ISR commit): every node derives it from the committed ownership record and only the cluster-events partition owner publishes it; `details.eventId` is derived from the committed record, so two copies published by two nodes during a membership change read as one. See the failure almanac.
+- `STREAM_LINEAGE_RESTARTED` -- a stream partition's owner began a new epoch WITHOUT a change of owner: its ring was rebuilt (a restart without a WAL, a lazy re-materialize, a re-created stream), so consumers that read the old epoch past `details.startOffset` re-read from it. Severity INFO: the commit proves a ring restarted, not that records were lost (activation may have pulled every record back from replicas); the loss witness is the per-node `OPERATOR_WARNING` `stream-consumer-rewound`. `details`: `stream`, `partition`, `owner`, `oldEpoch`, `newEpoch`, `startOffset`. Derived on every node from the committed ownership record and published once by the cluster-events owner; an owner change is `STREAM_FAILOVER_*`, not this event.
 - `OPERATOR_WARNING` -- a condition an operator needs to see, raised by the node that observed it (per-node fact, NOT leader-gated; see below). Severity WARNING or CRITICAL, fixed per code.
 
 The four community events are derived from committed records, so every node observes them and only the cluster-events owner publishes
@@ -467,7 +468,7 @@ changes surface as `LEADER_ELECTED`/`LEADER_LOST`; the current epoch is read on 
 
 `DEPARTURE_PUSH_INCOMPLETE` (severity `WARNING`, issue #427) is emitted by a gracefully-departing node when its bounded departure-push (which forwards every locally-held DHT chunk to its new replicas before the node halts) could not confirm all chunks reached a surviving replica within the drain grace window. Like `SELF_DRAIN_INITIATED` it is NOT leader-gated — the leaving node is the only source of truth for its own unpushed chunks. `details` carries `nodeId`, `keysAtRisk` (count of unconfirmed chunks), and `sampleKeys` (a bounded, comma-joined hex sample of the at-risk keys, for operator follow-up). Best-effort: the keys are named rather than silently lost, but if the publish does not land before `Runtime.halt(2)`, the event is lost.
 
-`OPERATOR_WARNING` (issue #1574) is one generic event for many conditions. Use `details.code` to identify the warning: it is a stable kebab-case identifier from the `OperatorWarningCode` catalogue, never renamed once shipped. Neither this endpoint nor `aether events` can filter on it (or on severity) yet, so fetch the feed and match `details.code` yourself. `details` also carries `subsystem`, `subject` (the peer, `stream[partition]` or `core` the warning is about), `nodeId` (the reporting node) and `suppressedSince`. `summary` is the exact message the node logged, and the node's log line carries the same text prefixed with `[code]`. Emission is throttled to one event per `(code, subject)` per 60 s per node; `suppressedSince` counts the occurrences held back since the previous event for that key, and the log line is written for every occurrence. A full window is consumed only by an event that is published: after a failed publish (bootstrap, replay) the key waits a 5 s retry window, then the next occurrence goes through and counts the lost one. A key whose publishes keep failing is attempted at most once per 5 s; the first success restores the 60 s window. A key idle for 120 s is evicted; if it still held occurrences back, one aggregate WARN log line reports their total. The node hands each warning to a bounded queue (256), so raising one never waits for the event log; a burst beyond that drops events (never log lines) and the next accepted warning logs how many were dropped. Current codes: `swim-kill-gate-held` (WARNING — SWIM is holding the death of a long-healthy peer that only this node accused), `core-absence-fence` (CRITICAL — a worker lost the core and is dissolving locally), `replica-fsync-failed` (WARNING — a replica withheld its ack because fsync failed; the owner does not count that copy), `node-never-joined` (WARNING — a configured core member died on this node's view without this node ever observing it reachable; it never joined, so no `NODE_FAILED` event or CRITICAL node-health alert is raised for it, issue #1835). Best-effort like every per-node event: during a partition or bootstrap the publish can be dropped, and the log line is then the only record.
+`OPERATOR_WARNING` (issue #1574) is one generic event for many conditions. Use `details.code` to identify the warning: it is a stable kebab-case identifier from the `OperatorWarningCode` catalogue, never renamed once shipped. Neither this endpoint nor `aether events` can filter on it (or on severity) yet, so fetch the feed and match `details.code` yourself. `details` also carries `subsystem`, `subject` (the peer, `stream[partition]` or `core` the warning is about), `nodeId` (the reporting node) and `suppressedSince`. `summary` is the exact message the node logged, and the node's log line carries the same text prefixed with `[code]`. Emission is throttled to one event per `(code, subject)` per 60 s per node; `suppressedSince` counts the occurrences held back since the previous event for that key, and the log line is written for every occurrence. A full window is consumed only by an event that is published: after a failed publish (bootstrap, replay) the key waits a 5 s retry window, then the next occurrence goes through and counts the lost one. A key whose publishes keep failing is attempted at most once per 5 s; the first success restores the 60 s window. A key idle for 120 s is evicted; if it still held occurrences back, one aggregate WARN log line reports their total. The node hands each warning to a bounded queue (256), so raising one never waits for the event log; a burst beyond that drops events (never log lines) and the next accepted warning logs how many were dropped. Current codes: `swim-kill-gate-held` (WARNING — SWIM is holding the death of a long-healthy peer that only this node accused), `core-absence-fence` (CRITICAL — a worker lost the core and is dissolving locally), `replica-fsync-failed` (WARNING — a replica withheld its ack because fsync failed; the owner does not count that copy), `node-never-joined` (WARNING — a configured core member died on this node's view without this node ever observing it reachable; it never joined, so no `NODE_FAILED` event or CRITICAL node-health alert is raised for it, issue #1835), `stream-event-exceeds-read-cap` (CRITICAL — a partition's owner promotion is refused because a peer answered its watermark probe with a page cut before its first event, which alone exceeds that peer's `maxReadResponseBytes`; raise the cap on that peer; `subject` is `stream[partition]`, issue #1431). Best-effort like every per-node event: during a partition or bootstrap the publish can be dropped, and the log line is then the only record.
 
 `DEPLOYMENT_FAILED` is emitted **once per (artifact, node) pair** whose deployment attempt failed — `ClusterEventAggregator.handleDeploymentFailed` fires on each node-artifact KV transition to `FAILED`, so a blueprint spread across N nodes that fails deterministically on all of them produces N separate events, each with its own `nodeId` in `details.nodeId` and the failure text in `details.reason`. Because `cluster-events` is a single replicated stream, all N events are visible from `GET /api/v1/events` on **any** node, not only the one that failed.
 
@@ -3604,9 +3605,15 @@ Initiate a cluster version upgrade. Phase 1 updates the version in the KV-Store 
 **Request:**
 ```json
 {
-  "targetVersion": "0.26.0"
+  "targetVersion": "0.26.0",
+  "expectedVersion": 7
 }
 ```
+
+| Field | Description |
+|-------|-------------|
+| `targetVersion` | Version to upgrade to. |
+| `expectedVersion` | Config version read from `GET /api/v1/cluster/config`; the request is rejected if it no longer matches (#1424, the same fence as `POST /api/v1/cluster/config` and `/cluster/scale`). Required: an omitted or `null` field is refused at decode time (HTTP 400, `Type mismatch: expected long`). An explicit `0` is not a wildcard: against a stored config it is refused as an unfenced overwrite. `aether cluster upgrade` reads the version from the same `GET /api/v1/cluster/config` that supplies the current version and sends it. **Breaking change for a client that omitted the field.** |
 
 **Response:**
 ```json
@@ -3623,6 +3630,12 @@ Initiate a cluster version upgrade. Phase 1 updates the version in the KV-Store 
   "error": "Cluster is already at version 0.26.0"
 }
 ```
+
+**Conflicts (HTTP 409, #1424).** `expectedVersion` no longer matches the stored config version
+(`VersionConflict`), or is an explicit `0` against a stored config (`UnfencedOverwrite`). A request for the
+version the cluster is already at answers "already at version" regardless of `expectedVersion`. Recovery:
+re-read `GET /api/v1/cluster/config` and re-issue with the fresh `expectedVersion`. The store-level
+RFC-0018 successor fence still rejects a write built on a stale read.
 
 **Conflicts (HTTP 409, changed 2026-09-04, #837).** No cluster config is stored yet (e.g. right
 after a `docker compose down -v` volume wipe and fresh bootstrap). An upgrade request cannot create
@@ -4793,6 +4806,12 @@ and names the field in `detail`; `500` is reserved for genuine server faults (#9
 `/api/v1/cluster/keys/revoke/{id}` (an unknown key is `404`; a key declared in node configuration is `409`),
 `/api/v1/ab-tests/create`, `/api/v1/blueprints/deploy` and `/api/v1/blueprints/publish`.
 
+The same applies to the read and operate routes' own refusals: an unknown A/B test, blueprint or unloaded slice
+is `404`; scaling a slice that belongs to no active blueprint, and applying a cluster config while the committed core leader
+is another node, are `409` (with no leader committed yet, an election in progress, the config route answers `503`); a missing stream name on a consumer-group join or leave, an unknown `layer` on
+`/api/v1/cluster/journal`, and a missing or malformed `epoch` or `timeout` on `/api/v1/cluster/await-quiesced`
+are `400`; the cluster-topology routes answer `503` while the topology manager is not on the node, and the stream tail route answers `501` (deferred) (#954).
+
 The `aether` CLI honors `--format json` on error paths: with `--format json` a failure is
 emitted to stderr as a structured `{"error":"<message>"}` object; otherwise the human-readable
 `Error: <message>` form is used.
@@ -5962,8 +5981,13 @@ partition's owner and on a non-owner that forwards the publish: the owner answer
 forwarder bounded-retries and then answers 503 too. The batch form reports the item `OUTCOME_UNKNOWN` with the cause —
 conservative, since nothing was written, but a batch item does not distinguish a refusal before the append from an
 unknown outcome after it; a retry with the same message ID is safe either way.
+The same `503` answers the other owner-side refusals that precede any append (#1944): the node has not applied the
+stream's committed config yet (`Stream config not yet visible on this node: <stream>`, typically a freshly started or
+replaced node), the owner has not finished promotion, or this node is not the committed owner. All three clear within
+seconds; retry. The mapping is an allow-list of pre-append refusals, not every transient cause: a timeout can follow a
+write and keeps its own status. No `Retry-After` header is set on this path.
 `[mechanism: ManagementServerError.PublishRetryable, StreamForwardHandler retryable floor refusal; pinned by
-StreamApiRoutesPublishPartitionTest, StreamForwardHandlerTest]`
+StreamApiRoutesPublishPartitionTest, StreamForwardHandlerTest, #1944 pins in StreamApiRoutesPublishPartitionTest]`
 
 When the stream's partition count cannot be determined — the auto-create guard could not
 materialize the stream locally (capacity exhausted, or `STRONG` consistency requiring AHSE

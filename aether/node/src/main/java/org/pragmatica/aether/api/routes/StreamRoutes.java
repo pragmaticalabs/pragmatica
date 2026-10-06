@@ -9,6 +9,7 @@ import java.util.Map;
 import java.util.function.Supplier;
 import java.util.stream.Stream;
 
+import org.pragmatica.aether.api.ManagementServerError;
 import org.pragmatica.aether.api.ManagementApiResponses.DeclarativeConsumerAssignment;
 import org.pragmatica.aether.api.ManagementApiResponses.DeclarativeConsumerDetail;
 import org.pragmatica.aether.api.ManagementApiResponses.DeclarativeConsumerPartition;
@@ -54,7 +55,7 @@ import org.pragmatica.lang.utils.Causes;
 
 
 public final class StreamRoutes implements RouteSource {
-    private static final Cause MISSING_STREAM_NAME = Causes.cause("Missing stream name");
+    private static final Cause MISSING_STREAM_NAME = new ManagementServerError.InvalidRequest("Missing stream name");
 
     /// The refusal carries the status the pre-auth path gate answers with (405, see
     /// `ManagementServer.rejectSystemStreamWrite`): a bare `Causes.cause` is not `HttpStatusAware`

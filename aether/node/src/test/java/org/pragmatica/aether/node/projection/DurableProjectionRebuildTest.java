@@ -443,7 +443,7 @@ class DurableProjectionRebuildTest {
 
     /// Between the mint and the put, a competing rebuild commits a rewind record under the SAME epoch.
     private final class RacingCursor implements Projection.ReplayCursor {
-        private final StreamCursorCheckpointValue competitor = new StreamCursorCheckpointValue(0L, 1L, selfToken(), 0L, 1L, 1L, true);
+        private final StreamCursorCheckpointValue competitor = new StreamCursorCheckpointValue(0L, 1L, selfToken(), 0L, 1L, 1L, true, Epoch.ZERO);
         private final Projection.ReplayCursor real;
 
         private RacingCursor(Projection.ReplayCursor real) {
