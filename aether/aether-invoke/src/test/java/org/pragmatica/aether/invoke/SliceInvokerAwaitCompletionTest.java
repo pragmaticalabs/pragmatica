@@ -5,7 +5,9 @@
 package org.pragmatica.aether.invoke;
 
 import java.nio.charset.StandardCharsets;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.stream.IntStream;
 
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.endpoint.EndpointRegistry;
@@ -122,6 +124,156 @@ class SliceInvokerAwaitCompletionTest {
                                                      .satisfies(c -> assertThat(c.message()).contains("departed")));
     }
 
+    /// #1723 (owner ruling N1): the response of a healthy task that runs longer than the invocation timeout arrives after
+    /// the fire was reported UNKNOWN. It is the fire's real outcome, so it resolves the unknown instead of being dropped.
+    @Test
+    @Timeout(30)
+    void lateSuccessResponse_resolvesTheUnknownOutcome_asCompleted() {
+        var unknown = timedOutFire();
+
+        assertThat(unknown.lateOutcome().isResolved()).as("nothing is known until the response arrives").isFalse();
+        assertThat(impl().lateCompletionCount()).as("the timed-out call is retained for its late response").isEqualTo(1);
+
+        invoker.onInvokeResponse(InvokeResponse.invokeResponse(HOST, network.sent.get().correlationId(), "r", true, new byte[0]));
+
+        assertThat(unknown.lateOutcome().await().isSuccess()).as("the callee completed the fire").isTrue();
+        assertThat(impl().lateCompletionCount()).as("a resolved call is no longer retained").isZero();
+    }
+
+    @Test
+    @Timeout(30)
+    void lateFailureResponse_resolvesTheUnknownOutcome_asFailed() {
+        var unknown = timedOutFire();
+
+        invoker.onInvokeResponse(InvokeResponse.invokeResponse(HOST,
+                                                               network.sent.get().correlationId(),
+                                                               "r",
+                                                               false,
+                                                               "callee blew up late".getBytes(StandardCharsets.UTF_8)));
+
+        unknown.lateOutcome()
+               .await()
+               .onSuccess(_ -> org.junit.jupiter.api.Assertions.fail("a late failure response is a failure"))
+               .onFailure(cause -> assertThat(cause.message()).contains("callee blew up late"));
+    }
+
+    /// v1873's probe, as a pin: three fires of a healthy long task, each answered late. The "unknown correlationId" WARN
+    /// is a protocol-anomaly line and must not be written for a completion-awaited request.
+    @Test
+    @Timeout(30)
+    void lateResponses_ofCompletionAwaitedFires_neverWarnAboutAnUnknownCorrelationId() throws Exception {
+        var warnings = new CopyOnWriteArrayList<String>();
+        var detach = LogCapture.warningsOf(Class.forName("org.pragmatica.aether.invoke.SliceInvokerImpl"), warnings);
+
+        try {
+            for (int fire = 0; fire < 3; fire++) {
+                timedOutFire();
+                invoker.onInvokeResponse(InvokeResponse.invokeResponse(HOST, network.sent.get().correlationId(), "r", true, new byte[0]));
+            }
+            // Positive control for the capture and for the line itself: a response nobody asked for still warns.
+            invoker.onInvokeResponse(InvokeResponse.invokeResponse(HOST, "never-sent", "r", true, new byte[0]));
+
+            assertThat(warnings.stream().filter(line -> line.contains("unknown correlationId")))
+                .as("only the response nobody asked for warns: %s", warnings)
+                .singleElement()
+                .satisfies(line -> assertThat(line).contains("never-sent"));
+        } finally {
+            detach.run();
+        }
+    }
+
+    /// The retention is bounded: one more timed-out fire than the capacity drops the OLDEST. Its late response is then
+    /// discarded without a WARN and its outcome stays unknown; the newest is still resolved.
+    @Test
+    @Timeout(60)
+    void retainedTimedOutFires_areBounded_theOldestIsDroppedAndItsLateResponseIsDiscardedQuietly() throws Exception {
+        var warnings = new CopyOnWriteArrayList<String>();
+        var detach = LogCapture.warningsOf(Class.forName("org.pragmatica.aether.invoke.SliceInvokerImpl"), warnings);
+
+        try {
+            var oldest = timedOutFire();
+            var oldestId = network.sent.get().correlationId();
+
+            network.all.clear();
+            // Fired together, so the whole batch times out in one timeout rather than one timeout each.
+            var batch = IntStream.range(0, SliceInvokerImpl.LATE_COMPLETION_CAPACITY)
+                                 .mapToObj(_ -> invoker.invokeAwaitingCompletion(ARTIFACT, METHOD, unit()))
+                                 .toList();
+            var unknowns = batch.stream()
+                                .map(fire -> fire.await().fold(cause -> (SliceInvokerError.CompletionUnknown) cause, _ -> null))
+                                .toList();
+
+            assertThat(unknowns).as("premise: every fire of the batch timed out").doesNotContainNull();
+            // Each retention is one map insert behind its fire's timeout; the oldest leaves with the last of them.
+            Thread.sleep(500);
+            assertThat(impl().lateCompletionCount()).isEqualTo(SliceInvokerImpl.LATE_COMPLETION_CAPACITY);
+
+            invoker.onInvokeResponse(InvokeResponse.invokeResponse(HOST, oldestId, "r", true, new byte[0]));
+            network.all.forEach(request -> invoker.onInvokeResponse(InvokeResponse.invokeResponse(HOST, request.correlationId(), "r", true, new byte[0])));
+
+            assertThat(unknowns).as("every retained fire is resolved")
+                                .allSatisfy(unknown -> assertThat(unknown.lateOutcome().await().isSuccess()).isTrue());
+            assertThat(oldest.lateOutcome().isResolved()).as("the dropped fire stays unknown").isFalse();
+            assertThat(warnings.stream().filter(line -> line.contains("unknown correlationId"))).isEmpty();
+        } finally {
+            detach.run();
+        }
+    }
+
+    /// A departed node sends no late response, so nothing is retained for it; the outcome stays unknown (it is not
+    /// turned into a failure: the callee may have completed the fire before it left).
+    @Test
+    @Timeout(30)
+    void retainedTimedOutFire_isDroppedWhenItsNodeDeparts_andStaysUnknown() {
+        var unknown = timedOutFire();
+
+        invoker.onNodeDeparture(HOST);
+
+        assertThat(impl().lateCompletionCount()).isZero();
+        assertThat(unknown.lateOutcome().isResolved()).isFalse();
+    }
+
+    /// A response that arrives IN TIME is not retained.
+    @Test
+    @Timeout(30)
+    void fireAnsweredInTime_retainsNothing() {
+        var completion = invoker.invokeAwaitingCompletion(ARTIFACT, METHOD, unit());
+
+        awaitSent();
+        invoker.onInvokeResponse(InvokeResponse.invokeResponse(HOST, network.sent.get().correlationId(), "r", true, new byte[0]));
+
+        assertThat(completion.await().isSuccess()).isTrue();
+        assertThat(impl().lateCompletionCount()).isZero();
+    }
+
+    /// Fires once, lets it time out, and returns its unknown outcome. `network.sent` holds that fire's request.
+    private SliceInvokerError.CompletionUnknown timedOutFire() {
+        var found = new AtomicReference<SliceInvokerError.CompletionUnknown>();
+        var retainedBefore = impl().lateCompletionCount();
+
+        network.sent.set(null);
+        invoker.invokeAwaitingCompletion(ARTIFACT, METHOD, unit())
+               .await()
+               .onSuccess(_ -> org.junit.jupiter.api.Assertions.fail("premise: the fire times out"))
+               .onFailure(cause -> found.set((SliceInvokerError.CompletionUnknown) cause));
+        // The caller sees the timeout a moment before the invoker has retained the call.
+        awaitRetained(Math.min(retainedBefore + 1, SliceInvokerImpl.LATE_COMPLETION_CAPACITY));
+
+        return found.get();
+    }
+
+    private void awaitRetained(int count) {
+        var deadline = System.currentTimeMillis() + 5_000L;
+
+        while (impl().lateCompletionCount() != count && System.currentTimeMillis() < deadline) {
+            Thread.onSpinWait();
+        }
+    }
+
+    private SliceInvokerImpl impl() {
+        return (SliceInvokerImpl) invoker;
+    }
+
     /// Control: the plain fire-and-forget `invoke` (durable-topic publish and the like) is unchanged and still resolves
     /// when the request is handed to the transport.
     @Test
@@ -142,11 +294,13 @@ class SliceInvokerAwaitCompletionTest {
 
     private static final class CapturingNetwork extends StubClusterNetwork {
         private final AtomicReference<InvokeRequest> sent = new AtomicReference<>();
+        private final CopyOnWriteArrayList<InvokeRequest> all = new CopyOnWriteArrayList<>();
 
         @Override
         public <M extends ProtocolMessage> Unit send(NodeId nodeId, M message) {
             if (message instanceof InvokeRequest request) {
                 sent.set(request);
+                all.add(request);
             }
 
             return unit();

@@ -667,12 +667,15 @@ public sealed interface AetherValue {
 
     /// The recorded state of a scheduled task (one row per task; per node for an ALL-mode task).
     ///
-    /// `lastOutcome` is the outcome of the most recent fire: [#OUTCOME_SUCCESS] (the callee completed it),
+    /// `lastOutcome` is the most recently LEARNED outcome of a fire: [#OUTCOME_SUCCESS] (the callee completed it),
     /// [#OUTCOME_FAILURE] (a failure response, or the callee's node departed), [#OUTCOME_UNKNOWN] (a REMOTE fire
     /// whose response did not arrive within the invocation timeout: the callee may have run it, completed it or not;
     /// nothing here can say which), or empty (no fire recorded since the field exists). An UNKNOWN outcome is neither
     /// an execution nor a failure: it does not count in `totalExecutions` and does not move `consecutiveFailures`
-    /// (the failure streak is neither reset nor extended); `unknownOutcomes` counts them (#1723).
+    /// (the failure streak is neither reset nor extended); `unknownOutcomes` counts them (#1723). A response that arrives
+    /// LATE resolves the fire it belongs to into the execution or the failure it was ([#lateSuccessState],
+    /// [#lateFailureState]) and takes it out of `unknownOutcomes`, which therefore counts the fires whose outcome was
+    /// never learned.
     record ScheduledTaskStateValue(long lastExecutionAt,
                                    long nextFireAt,
                                    int consecutiveFailures,
@@ -767,6 +770,39 @@ public sealed interface AetherValue {
                                                               OUTCOME_UNKNOWN,
                                                               p.unknownOutcomes() + 1))
                         .or(new ScheduledTaskStateValue(0, nextFireAt, 0, 0, "", now, 0, OUTCOME_UNKNOWN, 1));
+        }
+
+        /// A fire recorded as UNKNOWN whose callee answered LATE with success (#1723): it was an execution after all. Counted
+        /// in `totalExecutions`, the failure streak resets as for any success, and it leaves `unknownOutcomes`, which
+        /// counts the fires whose outcome was never learned. `nextFireAt` is the schedule's, so it carries over.
+        public static ScheduledTaskStateValue lateSuccessState(ScheduledTaskStateValue prior) {
+            var now = System.currentTimeMillis();
+
+            return new ScheduledTaskStateValue(now,
+                                               prior.nextFireAt(),
+                                               0,
+                                               prior.totalExecutions() + 1,
+                                               "",
+                                               now,
+                                               prior.skippedOverlaps(),
+                                               OUTCOME_SUCCESS,
+                                               Math.max(0, prior.unknownOutcomes() - 1));
+        }
+
+        /// A fire recorded as UNKNOWN whose callee answered LATE with a failure (#1723): a failure after all. It extends the
+        /// streak and leaves `unknownOutcomes`.
+        public static ScheduledTaskStateValue lateFailureState(ScheduledTaskStateValue prior, String failureMessage) {
+            var now = System.currentTimeMillis();
+
+            return new ScheduledTaskStateValue(now,
+                                               prior.nextFireAt(),
+                                               prior.consecutiveFailures() + 1,
+                                               prior.totalExecutions(),
+                                               failureMessage,
+                                               now,
+                                               prior.skippedOverlaps(),
+                                               OUTCOME_FAILURE,
+                                               Math.max(0, prior.unknownOutcomes() - 1));
         }
 
         /// Records a skipped fixed-rate fire (previous invocation still in flight). Preserves every

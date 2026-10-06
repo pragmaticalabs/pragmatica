@@ -606,6 +606,82 @@ class ScheduledTaskManagerTest {
             }
         }
 
+        /// #1723 (owner ruling N1): the callee's response arrives after the fire was recorded UNKNOWN. It is that fire's
+        /// real outcome: the fire becomes an execution, leaves `unknownOutcomes`, and the task leaves UNKNOWN.
+        @Test
+        void fixedRate_lateSuccessResponse_resolvesTheUnknownFire_intoAnExecution() {
+            var key = unknownTaskState(1);
+            var before = stateFor(key).unwrap();
+
+            stubInvoker.lateOutcomes.getFirst().succeed(Unit.unit());
+            awaitLate(key, v -> ScheduledTaskStateValue.OUTCOME_SUCCESS.equals(v.lastOutcome()));
+            var state = stateFor(key).unwrap();
+
+            assertThat(state.lastOutcome()).isEqualTo(ScheduledTaskStateValue.OUTCOME_SUCCESS);
+            assertThat(state.totalExecutions()).as("the late answer makes the fire an execution").isEqualTo(1);
+            assertThat(state.unknownOutcomes()).as("a resolved fire is no longer unknown").isEqualTo(before.unknownOutcomes() - 1);
+            assertThat(state.consecutiveFailures()).isZero();
+            assertThat(state.nextFireAt()).as("the schedule is untouched").isEqualTo(before.nextFireAt());
+        }
+
+        @Test
+        void fixedRate_lateFailureResponse_resolvesTheUnknownFire_intoAFailure() {
+            var key = unknownTaskState(1);
+            var before = stateFor(key).unwrap();
+
+            stubInvoker.lateOutcomes.getFirst().fail(() -> "callee failed late");
+            awaitLate(key, v -> ScheduledTaskStateValue.OUTCOME_FAILURE.equals(v.lastOutcome()));
+            var state = stateFor(key).unwrap();
+
+            assertThat(state.lastOutcome()).isEqualTo(ScheduledTaskStateValue.OUTCOME_FAILURE);
+            assertThat(state.consecutiveFailures()).as("the late answer makes the fire a failure").isEqualTo(1);
+            assertThat(state.lastFailureMessage()).isEqualTo("callee failed late");
+            assertThat(state.totalExecutions()).as("a failure is not an execution").isZero();
+            assertThat(state.unknownOutcomes()).isEqualTo(before.unknownOutcomes() - 1);
+        }
+
+        /// Only the answered fire is resolved: the others stay counted as unknown.
+        @Test
+        void fixedRate_lateResponse_resolvesOnlyItsOwnFire() {
+            var key = unknownTaskState(2);
+            var before = stateFor(key).unwrap();
+
+            stubInvoker.lateOutcomes.getFirst().succeed(Unit.unit());
+            awaitLate(key, v -> v.totalExecutions() == 1);
+            var state = stateFor(key).unwrap();
+
+            assertThat(state.totalExecutions()).isEqualTo(1);
+            assertThat(state.unknownOutcomes()).as("the unanswered fires stay unknown").isEqualTo(before.unknownOutcomes() - 1)
+                                               .isGreaterThanOrEqualTo(1);
+        }
+
+        /// The late outcome is applied on the promise's own thread: wait for the write, bounded. A resolution that never
+        /// comes leaves the state as it was, and the assertions that follow report it.
+        private void awaitLate(ScheduledTaskStateKey key, java.util.function.Predicate<ScheduledTaskStateValue> resolved) {
+            var deadline = System.currentTimeMillis() + 3_000L;
+
+            while (!stateFor(key).map(resolved::test).or(false) && System.currentTimeMillis() < deadline) {
+                settle(20);
+            }
+        }
+
+        /// Fires an ALL-mode task whose every fire times out until at least `fires` are recorded, then stops the timers.
+        /// Each fire's late outcome is in `stubInvoker.lateOutcomes`, in fire order.
+        private ScheduledTaskStateKey unknownTaskState(int fires) {
+            var key = ScheduledTaskStateKey.scheduledTaskStateKey("cache", artifact, method, self);
+
+            stubInvoker.unknownWithLateOutcome.set(true);
+            putTask("cache", artifact, method, self, "1s", ExecutionMode.ALL);
+            establishQuorum();
+            awaitTrue(() -> stateFor(key).map(v -> v.unknownOutcomes() >= fires)
+                                    .or(false),
+                      15000);
+            manager.stop();
+            assertThat(stateFor(key).unwrap().lastOutcome()).as("premise").isEqualTo(ScheduledTaskStateValue.OUTCOME_UNKNOWN);
+
+            return key;
+        }
+
         @Test
         void fixedRate_unknownOutcome_leavesTheFailureStreakAlone() {
             Cause boom = () -> "boom";
@@ -922,8 +998,22 @@ class ScheduledTaskManagerTest {
             completionFailure.set(cause);
         }
 
+        /// #1723 N1: when set, every completion-awaited fire times out (UNKNOWN) and its late outcome is kept here, in
+        /// fire order, for the test to settle as the callee's late response would.
+        final java.util.concurrent.atomic.AtomicBoolean unknownWithLateOutcome = new java.util.concurrent.atomic.AtomicBoolean();
+        final CopyOnWriteArrayList<Promise<Unit>> lateOutcomes = new CopyOnWriteArrayList<>();
+
         @Override
         public Promise<Unit> invokeAwaitingCompletion(Artifact slice, MethodName method, Object request) {
+            if (unknownWithLateOutcome.get()) {
+                var lateOutcome = Promise.<Unit> promise();
+
+                invocations.add(new InvocationRecord(slice, method, request));
+                lateOutcomes.add(lateOutcome);
+
+                return SliceInvokerError.CompletionUnknown.completionUnknown(slice, method, () -> "no response", lateOutcome).promise();
+            }
+
             return completionFailure.get()
                                     .fold(() -> invoke(slice, method, request),
                                           cause -> {

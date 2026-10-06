@@ -9,6 +9,7 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
+import java.util.function.Function;
 import java.util.function.Supplier;
 import java.util.stream.Stream;
 
@@ -365,6 +366,15 @@ public final class ScheduledTaskRoutes implements RouteSource {
                                                                      value.lastExecutionAt()));
     }
 
+    /// The callee's response arrived after the injected fire had been recorded as UNKNOWN: the row, as it is now, takes
+    /// the real outcome (#1723). A row that is gone has nothing to resolve.
+    private void resolveLateOutcome(ScheduledTaskStateKey stateKey,
+                                    Function<ScheduledTaskStateValue, ScheduledTaskStateValue> resolved) {
+        stateRegistry.stateFor(stateKey)
+                     .map(resolved)
+                     .onPresent(value -> nodeSupplier.get().apply(List.<KVCommand<AetherKey>>of(new KVCommand.Put<>(stateKey, value))));
+    }
+
     /// A fire that ended without a success. A timeout of a REMOTE fire says nothing about the callee, so its outcome is
     /// recorded as UNKNOWN and counted neither as an execution nor as a failure (#1723); anything else is a failure.
     private void writeFailureBestEffort(ScheduledTaskStateKey stateKey,
@@ -385,6 +395,13 @@ public final class ScheduledTaskRoutes implements RouteSource {
         KVCommand<AetherKey> command = new KVCommand.Put<>(stateKey, value);
 
         nodeSupplier.get().apply(List.of(command));
+        if (cause instanceof SliceInvokerError.CompletionUnknown unknown) {
+            unknown.lateOutcome()
+                   .onSuccess(_ -> resolveLateOutcome(stateKey, ScheduledTaskStateValue::lateSuccessState))
+                   .onFailure(late -> resolveLateOutcome(stateKey,
+                                                         state -> ScheduledTaskStateValue.lateFailureState(state,
+                                                                                                           late.message())));
+        }
     }
 
     /// Stable total-order over scheduled tasks so positional access into the response

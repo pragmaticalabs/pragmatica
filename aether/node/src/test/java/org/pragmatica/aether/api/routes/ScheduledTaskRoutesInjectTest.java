@@ -168,6 +168,65 @@ class ScheduledTaskRoutesInjectTest {
             assertEquals(0, written.getFirst().unknownOutcomes(), "a failure is not an unknown outcome");
             assertEquals("callee failed", written.getFirst().lastFailureMessage());
         }
+
+        /// #1723 (owner ruling N1): the callee's response arrives after the injected fire was recorded UNKNOWN. It is the
+        /// fire's real outcome and is written over the row: an execution, no longer counted as unknown.
+        @Test
+        void inject_lateSuccessResponse_resolvesTheUnknownFire_intoAnExecution() {
+            var lateOutcome = injectWithUnknownOutcome();
+
+            lateOutcome.succeed(Unit.unit());
+            var written = writtenStates();
+
+            assertEquals(2, written.size(), "the unknown write, then the resolution");
+            assertEquals(ScheduledTaskStateValue.OUTCOME_SUCCESS, written.getLast().lastOutcome());
+            assertEquals(1, written.getLast().totalExecutions(), "the late answer makes the fire an execution");
+            assertEquals(0, written.getLast().unknownOutcomes(), "a resolved fire is no longer unknown");
+        }
+
+        @Test
+        void inject_lateFailureResponse_resolvesTheUnknownFire_intoAFailure() {
+            var lateOutcome = injectWithUnknownOutcome();
+
+            lateOutcome.fail(org.pragmatica.lang.utils.Causes.cause("callee failed late"));
+            var written = writtenStates();
+
+            assertEquals(2, written.size(), "the unknown write, then the resolution");
+            assertEquals(ScheduledTaskStateValue.OUTCOME_FAILURE, written.getLast().lastOutcome());
+            assertEquals(1, written.getLast().consecutiveFailures(), "the late answer makes the fire a failure");
+            assertEquals("callee failed late", written.getLast().lastFailureMessage());
+            assertEquals(0, written.getLast().unknownOutcomes());
+        }
+
+        /// Injects a fire that times out, commits the UNKNOWN row it wrote (as the KV store would), and returns the
+        /// fire's late outcome for the test to settle.
+        private Promise<Unit> injectWithUnknownOutcome() {
+            registry.addTask(SECTION, ARTIFACT, METHOD);
+            var remoteLike = new RecordingInvoker();
+            var lateOutcome = Promise.<Unit> promise();
+
+            remoteLike.failure = org.pragmatica.aether.invoke.SliceInvokerError.CompletionUnknown.completionUnknown(Artifact.artifact(ARTIFACT).unwrap(), MethodName.methodName(METHOD).unwrap(), org.pragmatica.lang.utils.Causes.cause("timed out"), lateOutcome);
+            invokeInject(routesWith(remoteLike), new ScheduledTaskInjectRequest(SECTION, ARTIFACT, METHOD)).await();
+            var unknown = writtenStates();
+
+            assertEquals(1, unknown.size(), "premise: one state write");
+            assertEquals(ScheduledTaskStateValue.OUTCOME_UNKNOWN, unknown.getFirst().lastOutcome(), "premise");
+            node.commands.stream()
+                         .flatMap(List::stream)
+                         .filter(command -> command instanceof KVCommand.Put<?, ?> put && put.value() instanceof ScheduledTaskStateValue)
+                         .forEach(command -> stateRegistry.put((ScheduledTaskStateKey) ((KVCommand.Put<?, ?>) command).key(),
+                                                               (ScheduledTaskStateValue) ((KVCommand.Put<?, ?>) command).value()));
+
+            return lateOutcome;
+        }
+
+        private List<ScheduledTaskStateValue> writtenStates() {
+            return node.commands.stream()
+                                .flatMap(List::stream)
+                                .filter(command -> command instanceof KVCommand.Put<?, ?> put && put.value() instanceof ScheduledTaskStateValue)
+                                .map(command -> (ScheduledTaskStateValue) ((KVCommand.Put<?, ?>) command).value())
+                                .toList();
+        }
     }
 
     @Nested
