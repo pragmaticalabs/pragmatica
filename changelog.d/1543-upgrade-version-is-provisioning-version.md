@@ -6,9 +6,14 @@
   read back the target, so an unrewritable config is refused, never half-written) and stores the same version
   beside it, under the unchanged #1424 `expectedVersion` fence. A bootstrap seed with no committed TOML still moves
   only the stored version.
-- **An upgrade the pin would silently ignore is refused (HTTP 409 `UpgradeVersionPinned`).** When a runtime profile
-  used by a source role pins `image` (container runtime) or `jar_url` (JVM runtime), the renderer prefers the pin
-  over the version; the message names the profile(s).
+- **A literal pin the upgrade would silently ignore is refused (HTTP 409 `UpgradeVersionPinned`); a pin may carry
+  `{version}` to follow it.** When a runtime profile used by a source role pins `image` (container runtime) or
+  `jar_url` (JVM runtime), the renderer prefers the pin over the version. `{version}` in either field is now
+  substituted from `[cluster] version` at render time (replacement user data and the CLI bootstrap launch), and a
+  pin carrying it is not refused. The placeholder must be in the committed config: apply does not currently change
+  runtime-profile content. A CRLF config is refused with a message naming CRLF. The harness TOMLs
+  (`env/docker*`, `remote*`, `cloud-hetzner*`, `tests/cloud`) pin deliberate candidate/local artifacts that differ
+  from `cluster.version`, so they stay literal.
 - **`POST /api/v1/cluster/config` with a changed `[cluster] version` is refused with a typed 409
   `VersionChangeViaApply`** pointing at `aether cluster upgrade`, replacing the generic 501 "escalate rather than
   retry". Smallest correct change: the upgrade route is the single writer of the version; apply is not a second one.

@@ -2520,7 +2520,7 @@ Change the version the cluster provisions. The command rewrites `[cluster] versi
 aether cluster upgrade --version <X.Y.Z>
 ```
 
-The upgrade is refused (HTTP 409) when a runtime profile used by a source role pins `image` (container) or `jar_url` (JVM): the pin would win over the version, so nothing would change. Point the pin at the target artifact and `aether cluster apply` it, or drop the pin. A version change inside a file given to `aether cluster apply` is likewise refused, with a pointer back to this command — `cluster upgrade` is the only way to change the version.
+The upgrade is refused (HTTP 409) when a runtime profile used by a source role pins `image` (container) or `jar_url` (JVM) literally: the pin would win over the version, so nothing would change. Write the pin with `{version}` (`image = "registry/aether-node:{version}"`) and it follows the upgrade; the placeholder has to be in the config the cluster was bootstrapped with, since `aether cluster apply` does not currently change runtime-profile content. A version change inside a file given to `aether cluster apply` is likewise refused, with a pointer back to this command — `cluster upgrade` is the only way to change the version.
 
 `GET /api/v1/nodes/lifecycle` shows the `version` each node advertises.
 
