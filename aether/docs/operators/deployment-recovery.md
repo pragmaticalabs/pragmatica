@@ -113,9 +113,9 @@ A Docker `--restart unless-stopped` short-circuits steps 1–3, prevents step 4,
 ### 4.1 Bootstrap
 
 `aether cluster bootstrap` produces:
-- For Hetzner / AWS / GCP / Azure — VMs whose cloud-init runs `docker run --restart no aether-node ...` (current implementation as of `1.0.0-rc1`).
+- For Hetzner / AWS / GCP / Azure — VMs whose cloud-init runs `docker run --restart no aether-node ...` (current implementation as of `1.0.0-rc1`). When cores span several sources, cloud-init only installs and pulls; the bootstrap's SSH push performs the first start (`docker run`, no `docker rm -f`) and refuses a host that already holds an `aether-node` container (#1543). The bootstrap also renders `cluster.genesis_voters` — the provisioned initial core ids — into each initial core's config; replacements never carry it.
 - For docker / docker-compose test fixtures — `restart: "no"` on the aether-node service.
-- For JVM mode (`type = "jvm"`) — no container. Cloud-init installs an `aether-node.service` systemd unit with `Restart=no`, whose launcher (`/opt/aether/run-node.sh`) runs `exec java -XX:+ExitOnOutOfMemoryError …` (§4.5). The bootstrap's peer re-injection rewrites the unit's env file and runs `systemctl restart aether-node`; nothing pattern-matches a `java` process (#1021).
+- For JVM mode (`type = "jvm"`) — no container. Cloud-init installs an `aether-node.service` systemd unit with `Restart=no`, whose launcher (`/opt/aether/run-node.sh`) runs `exec java -XX:+ExitOnOutOfMemoryError …` (§4.5). When cores span several sources the cloud-init script only installs the unit; the bootstrap's SSH push then writes the final peers into the unit's env file and runs `systemctl start aether-node` — the node's one and only start. A host whose unit is already active or failed is refused with a typed error (a node id is launched once; destroy the cluster or replace the node). Nothing pattern-matches a `java` process (#1021, #1543).
 
 If you write your own deployment manifests (Kubernetes Pod spec, Nomad job, ECS task definition), apply the equivalent setting. See §5 for k8s.
 

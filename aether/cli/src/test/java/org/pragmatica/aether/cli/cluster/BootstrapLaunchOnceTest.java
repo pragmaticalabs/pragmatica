@@ -514,7 +514,9 @@ class BootstrapLaunchOnceTest {
                                                                 SECRET,
                                                                 CLUSTER,
                                                                 name -> null);
-        var active = runWithStub("systemctl", "[ \"$1\" = is-active ] && exit 0; [ \"$1\" = is-failed ] && exit 1; exit 0", command);
+        var active = runWithStub("systemctl",
+                                 "[ \"$1\" = is-active ] && [ \"$3\" = aether-node.service ] && exit 0; exit 1",
+                                 command);
 
         assertThat(active.exit()).isEqualTo(BootstrapPhaseDeploy.ALREADY_PRESENT_EXIT);
         assertThat(active.output()).contains(BootstrapPhaseDeploy.ALREADY_PRESENT_MARKER);
