@@ -358,6 +358,27 @@ class ClusterEventAggregatorTest {
         assertThat(events.get(1).severity()).isEqualTo(ClusterEvent.Severity.INFO);
     }
 
+    /// #1873: a ring rebuilt under an unchanged owner reaches the stream as an INFO event (the commit proves a restart, not a
+    /// loss), with the epochs and the offset the new epoch began at.
+    @Test
+    void streamLineageRestarted_reachesTheEventStream_asInfo_withTheEpochsAndTheStartOffset() {
+        var h = Harness.create();
+        h.aggregator().onStreamLineageRestarted(OperationalEvent.StreamLineageRestarted.streamLineageRestarted("orders", 2, "node-a", "1:1:1", "1:1:2", 7L));
+
+        var events = h.events();
+
+        assertThat(events).hasSize(1);
+        assertThat(events.get(0)).isInstanceOf(ClusterEvent.StreamLineageRestarted.class);
+        assertThat(events.get(0).type()).isEqualTo("STREAM_LINEAGE_RESTARTED");
+        assertThat(events.get(0).severity()).isEqualTo(ClusterEvent.Severity.INFO);
+        assertThat(events.get(0).details()).containsEntry("stream", "orders")
+                                           .containsEntry("partition", "2")
+                                           .containsEntry("owner", "node-a")
+                                           .containsEntry("oldEpoch", "1:1:1")
+                                           .containsEntry("newEpoch", "1:1:2")
+                                           .containsEntry("startOffset", "7");
+    }
+
     /// #1730 owner ruling, the cluster-wide path: EVERY node derives the failover event from the same committed
     /// ownership Put, and only the cluster-events partition owner publishes. The LEADER (which committed the refusal)
     /// is NOT that owner here, and the event still reaches the stream exactly once — on the owner.
