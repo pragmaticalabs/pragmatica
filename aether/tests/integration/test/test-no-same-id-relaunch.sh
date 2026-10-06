@@ -32,7 +32,13 @@ fail() { echo "  FAIL  $1"; FAIL=$((FAIL + 1)); }
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
 
-PATTERN='(^|[^_[:alnum:]])start_node([^_[:alnum:]]|$)|cloud_revive_vm|cloud_stop_vm|server poweron|restartNode|RestartNode|NodeRestarted|[.]restart\(|docker (compose [^|;]*)?(start|restart)([^_[:alnum:]-]|$)|COMPOSE (start|restart)|systemctl (re)?start|kubectl rollout restart'
+PATTERN='(^|[^_[:alnum:]])start_node([^_[:alnum:]]|$)|cloud_revive_vm|cloud_stop_vm|server poweron|restartNode|RestartNode|NodeRestarted|[.]restart\(|docker (compose [^|;]*)?(start|restart)([^_[:alnum:]-]|$)|COMPOSE (start|restart)|systemctl (re)?start|kubectl rollout restart|down -v && docker compose [^"]*up -d'
+
+# path|hit-text-regex|reason: excuses only the lines of that file matching the regex, so the rest of the
+# file stays under the census.
+ALLOW_TEXT=(
+  'aether/tests/integration/lib/cluster.sh|down -v && docker compose|#1543 part A2 / #1968: restart_all_nodes compose down/up is a whole-cluster same-id cold start until it restarts onto fresh ids with KV restore'
+)
 
 # path-suffix|reason. A line in an allow-listed file is excused; the file must still match (C2).
 ALLOW=(
@@ -55,23 +61,28 @@ census() {
         | tr '\n' '\0' | xargs -0 grep -nE "$PATTERN" /dev/null 2>/dev/null \
         | grep -vE '^[^:]+:[0-9]+:[[:space:]]*(#|//)' )
 }
-allowed() {  # <path> -> 0 when allow-listed
-    local p="$1" e
+allowed() {  # <path:line:text> -> 0 when allow-listed
+    local hit="$1" p e path rx
+    p="${hit%%:*}"
     for e in "${ALLOW[@]}"; do
         case "$p" in "${e%%|*}"*) return 0 ;; esac
+    done
+    for e in "${ALLOW_TEXT[@]}"; do
+        path="${e%%|*}"; rx="${e#*|}"; rx="${rx%%|*}"
+        [ "$p" = "$path" ] && printf '%s' "$hit" | grep -qE -- "$rx" && return 0
     done
     return 1
 }
 violations() {  # <root>
     census "$1" | while IFS= read -r hit; do
-        [ -n "$hit" ] && { allowed "${hit%%:*}" || printf '%s\n' "$hit"; }
+        [ -n "$hit" ] && { allowed "$hit" || printf '%s\n' "$hit"; }
     done
 }
 
 echo "== C. census"
 CENSUS_ALL=$(census "$REPO_ROOT")
 total=$(printf '%s\n' "$CENSUS_ALL" | grep -c .)
-v=$(printf '%s\n' "$CENSUS_ALL" | while IFS= read -r hit; do [ -n "$hit" ] && { allowed "${hit%%:*}" || printf '%s\n' "$hit"; }; done)
+v=$(printf '%s\n' "$CENSUS_ALL" | while IFS= read -r hit; do [ -n "$hit" ] && { allowed "$hit" || printf '%s\n' "$hit"; }; done)
 if [ -z "$v" ]; then ok "C1 no same-id relaunch outside ALLOW (${total} excused hit(s) scanned)"
 else fail "C1 same-id relaunch outside ALLOW:"; printf '%s\n' "$v" | sed 's/^/        /'; fi
 
@@ -79,6 +90,10 @@ stale=""
 for e in "${ALLOW[@]}"; do
     pfx="${e%%|*}"
     printf '%s\n' "$CENSUS_ALL" | grep -q "^${pfx}" || stale="${stale} ${pfx}"
+done
+for e in "${ALLOW_TEXT[@]}"; do
+    path="${e%%|*}"; rx="${e#*|}"; rx="${rx%%|*}"
+    printf '%s\n' "$CENSUS_ALL" | grep "^${path}:" | grep -qE -- "$rx" || stale="${stale} ${path}(${rx})"
 done
 if [ -z "$stale" ]; then ok "C2 every ALLOW entry still excuses a live hit"
 else fail "C2 stale ALLOW entr(ies), delete them:${stale}"; fi
@@ -106,6 +121,13 @@ printf '%s\n' 'start_node "$X"' > "$G/aether/script/demo-cluster.sh"; rm -f "$G/
 git -C "$G" add -A >/dev/null 2>&1
 [ -z "$(violations "$G")" ] && [ "$(census "$G" | wc -l | tr -d ' ')" = 1 ] \
     && ok "C3c an allow-listed file is census-visible but not a violation" || fail "C3c allow-list control failed"
+
+printf '%s\n' 'start_node "$X"' 'x; down -v && docker compose -f a.yml up -d' > "$G/aether/script/demo-cluster.sh"
+mkdir -p "$G/aether/tests/integration/lib"; printf '%s\n' 'start_node "$X"' 'r=$(x; down -v && docker compose -f a.yml up -d)' > "$G/aether/tests/integration/lib/cluster.sh"
+git -C "$G" add -A >/dev/null 2>&1
+vl=$(violations "$G")
+[ "$(printf '%s\n' "$vl" | grep -c .)" = 1 ] && printf '%s' "$vl" | grep -q 'cluster.sh:1:start_node' \
+    && ok "C3d text allow-list excuses only the compose cycle line; a start_node in the same file is still a violation" || fail "C3d text allow-list too broad: ${vl}"
 
 echo "== H. 02w cleanup"
 # Run the REAL cleanup() text from the suite against recording stubs.
