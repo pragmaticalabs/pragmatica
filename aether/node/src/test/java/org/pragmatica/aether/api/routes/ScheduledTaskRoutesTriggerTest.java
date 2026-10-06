@@ -152,6 +152,34 @@ class ScheduledTaskRoutesTriggerTest {
         }
     }
 
+    /// #1930: a callee hosted on THIS node is awaited to its end, as before the claim was extended: the route answers only
+    /// when the callee completed, and holds the claim until then. A remote callee is answered at dispatch (see above); this
+    /// is the branch that distinguishes the two, and without it the route would answer "triggered" for a local task that is
+    /// still running.
+    @Nested
+    class LocalCallee {
+        @Test
+        void trigger_awaitsALocalCalleeToItsEnd_andHoldsTheClaimUntilThen() {
+            registry.addTask(SECTION, ARTIFACT, METHOD);
+            var running = Promise.<Unit> promise();
+
+            invoker.local = true;
+            invoker.completion = running;
+            var key = ScheduledTaskKey.scheduledTaskKey(SECTION, artifact(ARTIFACT), new MethodName(METHOD));
+
+            var answer = routes().triggerForTest(SECTION, ARTIFACT, METHOD);
+
+            assertThat(answer.isResolved()).as("a local callee still running: the trigger has not answered").isFalse();
+            assertThat(manager.claimed).as("and still holds the claim").contains(key);
+
+            running.succeed(Unit.unit());
+
+            assertThat(answer.await().isSuccess()).as("answered once the callee completed").isTrue();
+            awaitReleased(key);
+            assertThat(manager.claimed).as("released once it completed").doesNotContain(key);
+        }
+    }
+
     @Nested
     class ConflictGuard {
         @Test
@@ -259,6 +287,7 @@ class ScheduledTaskRoutesTriggerTest {
     private static final class RecordingInvoker {
         final List<Invocation> invocations = new CopyOnWriteArrayList<>();
         volatile Promise<Unit> completion = Promise.success(Unit.unit());
+        volatile boolean local = false;
 
         SliceInvoker asSliceInvoker() {
             return (SliceInvoker) Proxy.newProxyInstance(
@@ -278,7 +307,7 @@ class ScheduledTaskRoutesTriggerTest {
                         return completion;
                     }
                     if ("hasLocalSlice".equals(method.getName())) {
-                        return Boolean.FALSE;
+                        return local;
                     }
                     throw new UnsupportedOperationException("Not implemented in test proxy: " + method.getName());
                 }

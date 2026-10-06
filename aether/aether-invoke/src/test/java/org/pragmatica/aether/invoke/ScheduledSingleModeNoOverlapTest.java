@@ -40,7 +40,7 @@ import org.junit.jupiter.api.Timeout;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.lang.Unit.unit;
 
-/// #1930: a SINGLE-mode task whose callee is REMOTE (the leader hosts nothing) must never overlap its own next fire. The
+/// #1930: a SINGLE-mode task whose callee is REMOTE (the leader hosts nothing) is not started again while this leader still has the previous fire in flight, up to the completion bound. The
 /// invoker below is the real one (invocation timeout 300 ms) over a network that records every request and answers only
 /// when the test says so; the scheduler is the real one on a 1 s fixed rate. The claim must stay held while the callee runs,
 /// whatever the invocation timeout, and be given up only when the callee completes, its node departs, or the scheduler's own
