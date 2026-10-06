@@ -85,6 +85,32 @@ sealed interface UserDataTemplate {
                          TomlDocument composedConfig,
                          List<SshPublicKey> sshPublicKeys,
                          List<String> peers) {
+        return render(config,
+                      source,
+                      role,
+                      nodeId,
+                      nodeIndex,
+                      clusterSecret,
+                      clusterName,
+                      composedConfig,
+                      sshPublicKeys,
+                      peers,
+                      true);
+    }
+
+    /// `startNode == false` renders install-only user data (#1543): the node is started later, once, by
+    /// the finalized-PEERS SSH push.
+    static String render(ClusterBootstrapConfig config,
+                         SourceProfile source,
+                         NodeRole role,
+                         String nodeId,
+                         int nodeIndex,
+                         String clusterSecret,
+                         ClusterName clusterName,
+                         TomlDocument composedConfig,
+                         List<SshPublicKey> sshPublicKeys,
+                         List<String> peers,
+                         boolean startNode) {
         return NodeUserDataRenderer.render(config,
                                            source,
                                            role,
@@ -94,7 +120,8 @@ sealed interface UserDataTemplate {
                                            clusterName,
                                            composedConfig,
                                            sshPublicKeys.stream().map(SshPublicKey::value).toList(),
-                                           peers);
+                                           peers,
+                                           startNode);
     }
 
     @Contract
