@@ -303,14 +303,11 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
         detachWithoutFlush(key, state);
         if (state.isFenced()) {
             gate.succeed(CommitOutcome.persisted());
+
             return;
         }
-        try {
-            flushCursorForKey(key, state).withResult(gate::resolve);
-        } catch (RuntimeException e) {
-            gate.succeed(CommitOutcome.persisted());
-            throw e;
-        }
+
+        flushCursorForKey(key, state).withResult(gate::resolve);
     }
 
     /// #1403 (v-str-1914 F1, R2): the gate is registered BEFORE the consumer leaves [#consumers], so a same-key
@@ -319,9 +316,10 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
     /// pending gate of the key, never replacing it: a later detach whose flush is already settled must not release a
     /// successor while an earlier flush is still held. Removed once it settles, and only if still the key's latest.
     private void holdUntilSettled(ConsumerKey key, Promise<CommitOutcome> gate) {
-        var held = pendingDetachFlushes.compute(key, (_, prev) -> prev == null
-                                                                  ? gate
-                                                                  : prev.fold(_ -> gate));
+        var held = pendingDetachFlushes.compute(key,
+                                                (_, prev) -> prev == null
+                                                             ? gate
+                                                             : prev.fold(_ -> gate));
 
         held.withResult(_ -> pendingDetachFlushes.remove(key, held));
     }
