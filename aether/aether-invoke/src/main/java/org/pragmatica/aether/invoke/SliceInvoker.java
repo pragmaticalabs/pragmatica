@@ -267,7 +267,8 @@ class SliceInvokerImpl implements SliceInvoker {
     /// #1723: completion-awaited calls that TIMED OUT, kept so a late response resolves their unknown outcome instead
     /// of being dropped. Insertion-ordered and bounded by [#LATE_COMPLETION_CAPACITY]: one more timed-out call drops
     /// the OLDEST retained one, whose late response is then discarded (DEBUG) and whose outcome stays unknown to its
-    /// caller. Entries also leave when their response arrives, when their target node departs and on [#stop].
+    /// caller. Entries also leave when their response arrives, when they outlive [#LATE_COMPLETION_TTL_MS], when their
+    /// target node departs and on [#stop].
     private final Map<String, LateCompletion> lateCompletions = Collections.synchronizedMap(new LinkedHashMap<>() {
         @Override
         protected boolean removeEldestEntry(Map.Entry<String, LateCompletion> eldest) {
@@ -285,6 +286,9 @@ class SliceInvokerImpl implements SliceInvoker {
     /// Most timed-out completion-awaited calls retained for a late response. Chosen, not measured: one entry per
     /// scheduled fire that timed out and has not been answered, so it bounds memory, not correctness.
     static final int LATE_COMPLETION_CAPACITY = 1024;
+    /// How long a timed-out fire is retained for a late response. Chosen, not measured: an hour is far past any
+    /// invocation timeout, and the capacity bounds memory whatever the TTL.
+    static final long LATE_COMPLETION_TTL_MS = 3_600_000L;
     /// Marks the correlationId of a completion-awaited request, so a response that matches nothing can be told from a
     /// protocol anomaly without any retained state: past the retention bound it is still an expected late answer.
     static final String COMPLETION_ID_PREFIX = "completion-";
@@ -298,7 +302,7 @@ class SliceInvokerImpl implements SliceInvoker {
                              SliceBridge senderBridge,
                              Option<Promise<Unit>> lateOutcome) {}
 
-    record LateCompletion(Promise<Unit> outcome, String requestId, NodeId targetNode) {}
+    record LateCompletion(Promise<Unit> outcome, String requestId, NodeId targetNode, long retainedAtMs) {}
 
     SliceInvokerImpl(NodeId self,
                      ClusterNetwork network,
@@ -322,9 +326,18 @@ class SliceInvokerImpl implements SliceInvoker {
     }
 
     private void cleanupStaleInvocations() {
-        var staleThreshold = System.currentTimeMillis() - (timeoutMs * 2);
+        var now = System.currentTimeMillis();
+        var staleThreshold = now - (timeoutMs * 2);
 
         pendingInvocations.entrySet().removeIf(entry -> isStaleAndCleanup(entry, staleThreshold));
+        expireLateCompletions(now);
+    }
+
+    /// Drops the retained timed-out fires older than [#LATE_COMPLETION_TTL_MS]: their late response is then discarded
+    /// like one past the capacity, and their outcome stays unknown. Runs with the stale-invocation cleanup, so a retained
+    /// fire lives at most the TTL plus one cleanup interval.
+    void expireLateCompletions(long nowMs) {
+        lateCompletions.values().removeIf(late -> nowMs - late.retainedAtMs() >= LATE_COMPLETION_TTL_MS);
     }
 
     private boolean isStaleAndCleanup(Map.Entry<String, PendingInvocation> entry, long staleThreshold) {
@@ -1123,7 +1136,8 @@ class SliceInvokerImpl implements SliceInvoker {
                .onPresent(lateOutcome -> lateCompletions.put(correlationId,
                                                              new LateCompletion(lateOutcome,
                                                                                 pending.requestId(),
-                                                                                pending.targetNode())));
+                                                                                pending.targetNode(),
+                                                                                System.currentTimeMillis())));
         if (pendingInvocations.remove(correlationId) == null) {
             lateCompletions.remove(correlationId);
         }

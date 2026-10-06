@@ -220,6 +220,28 @@ class SliceInvokerAwaitCompletionTest {
         }
     }
 
+    /// A retained fire older than the TTL is dropped by the cleanup sweep, and its late response is then discarded like
+    /// one past the capacity: the fire stays unknown. A younger one is kept.
+    @Test
+    @Timeout(30)
+    void retainedTimedOutFire_expiresAfterTheTtl_andItsLateResponseIsDiscarded() {
+        var unknown = timedOutFire();
+        var correlationId = network.sent.get().correlationId();
+        var retainedAt = System.currentTimeMillis();
+
+        assertThat(impl().lateCompletionCount()).as("premise: retained").isEqualTo(1);
+
+        impl().expireLateCompletions(retainedAt + SliceInvokerImpl.LATE_COMPLETION_TTL_MS - 60_000L);
+        assertThat(impl().lateCompletionCount()).as("younger than the TTL: kept").isEqualTo(1);
+
+        impl().expireLateCompletions(retainedAt + SliceInvokerImpl.LATE_COMPLETION_TTL_MS + 60_000L);
+        assertThat(impl().lateCompletionCount()).as("older than the TTL: dropped").isZero();
+
+        invoker.onInvokeResponse(InvokeResponse.invokeResponse(HOST, correlationId, "r", true, new byte[0]));
+
+        assertThat(unknown.lateOutcome().isResolved()).as("the expired fire stays unknown").isFalse();
+    }
+
     /// A departed node sends no late response, so nothing is retained for it; the outcome stays unknown (it is not
     /// turned into a failure: the callee may have completed the fire before it left).
     @Test

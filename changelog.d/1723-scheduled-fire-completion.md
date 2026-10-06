@@ -15,3 +15,12 @@
   Overlap of a single-mode task with its next tick after a timeout is pre-existing (#1930).
   [mechanism: `SliceInvokerAwaitCompletionTest` (not complete on enqueue; success only on a success response; callee failure and a lost
   message fail), `ScheduledTaskManagerTest` (callee failure after accept; unknown outcome recorded, not a failure or an execution, logged once; unknown leaves the streak alone), `ScheduledTaskRoutesInjectTest$CompletionOutcome`.]
+- **A late response resolves the unknown fire; entering and leaving the unknown state is announced.** `unknownOutcomes` is now a gauge:
+  a response that arrives after the timeout resolves its own fire into the execution or the failure it was and lowers the gauge, but
+  never overwrites the outcome of a NEWER fire (`fireSeq` in the task state orders them; `ScheduledTaskStateValue` gains it, wire baseline
+  re-recorded). The invoker keeps at most 1024 timed-out fires, each for about an hour, for a late answer (the oldest is dropped, its late answer discarded at
+  DEBUG and its fire stays UNKNOWN); a departed callee leaves its fire UNKNOWN, never a failure. The gauge crossing zero raises the cluster
+  events `SCHEDULED_TASK_OUTCOME_UNKNOWN` (WARNING) and `SCHEDULED_TASK_OUTCOME_RESTORED` (INFO), throttled per task (60 s); an UNKNOWN the
+  window held is announced after it only if still unknown, and a RESTORED never appears without its UNKNOWN.
+  [mechanism: `ScheduledTaskManagerTest$FireBehavior` (late success/failure, only its own fire, older fire never overwrites a newer one),
+  `SliceInvokerAwaitCompletionTest` (bound, marker, departed), `ScheduledTaskOutcomeAnnouncerTest`, `ClusterEventAggregatorTest` (held, swept, no orphan RESTORED).]
