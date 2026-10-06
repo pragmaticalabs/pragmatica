@@ -252,11 +252,7 @@ public sealed interface OperationalEvent extends Message.Local {
     /// not known whether the work ran ([ClusterEvent.ScheduledTaskOutcomeUnknown]). `task` is
     /// `section/artifact/method`, `node` the per-node row of an ALL-mode task (empty otherwise), `fireAt` when the fire
     /// was recorded.
-    record ScheduledTaskOutcomeUnknown(String task,
-                                       String node,
-                                       long fireAt,
-                                       String eventId,
-                                       long timestamp) implements OperationalEvent {
+    record ScheduledTaskOutcomeUnknown(String task, String node, long fireAt, String eventId, long timestamp) implements OperationalEvent {
         public static ScheduledTaskOutcomeUnknown scheduledTaskOutcomeUnknown(String task,
                                                                               String node,
                                                                               long fireAt,
@@ -272,11 +268,7 @@ public sealed interface OperationalEvent extends Message.Local {
 
     /// #1723: the last unknown fire of a scheduled task was answered late ([ClusterEvent.ScheduledTaskOutcomeRestored]).
     /// `outcome` is what that late answer said: `executed` or `failed`.
-    record ScheduledTaskOutcomeRestored(String task,
-                                        String node,
-                                        String outcome,
-                                        String eventId,
-                                        long timestamp) implements OperationalEvent {
+    record ScheduledTaskOutcomeRestored(String task, String node, String outcome, String eventId, long timestamp) implements OperationalEvent {
         public static ScheduledTaskOutcomeRestored scheduledTaskOutcomeRestored(String task,
                                                                                 String node,
                                                                                 String outcome,

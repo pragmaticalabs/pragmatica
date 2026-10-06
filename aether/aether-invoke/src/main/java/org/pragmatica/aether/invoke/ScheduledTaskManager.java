@@ -515,7 +515,10 @@ public interface ScheduledTaskManager {
 
                 unknown.lateOutcome()
                        .onSuccess(_ -> resolveLateSuccess(ctx, task, fireSeq))
-                       .onFailure(late -> resolveLateFailure(ctx, task, fireSeq, late.message()));
+                       .onFailure(late -> resolveLateFailure(ctx,
+                                                             task,
+                                                             fireSeq,
+                                                             late.message()));
             } else {
                 handleTaskFailure(ctx, task, cause.message(), nextFireAt);
             }

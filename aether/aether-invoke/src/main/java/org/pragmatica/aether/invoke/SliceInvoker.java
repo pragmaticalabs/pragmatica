@@ -264,6 +264,7 @@ class SliceInvokerImpl implements SliceInvoker {
     private final DeploymentManager deploymentManager;
     private final ConcurrentHashMap<String, PendingInvocation> pendingInvocations = new ConcurrentHashMap<>();
     private final Map<NodeId, Set<String>> pendingInvocationsByNode = new ConcurrentHashMap<>();
+
     /// #1723: completion-awaited calls that TIMED OUT, kept so a late response resolves their unknown outcome instead
     /// of being dropped. Insertion-ordered and bounded by [#LATE_COMPLETION_CAPACITY]: one more timed-out call drops
     /// the OLDEST retained one, whose late response is then discarded (DEBUG) and whose outcome stays unknown to its
@@ -275,6 +276,7 @@ class SliceInvokerImpl implements SliceInvoker {
             return size() > LATE_COMPLETION_CAPACITY;
         }
     });
+
     private final Map<String, CacheAffinityResolver> affinityResolvers = new ConcurrentHashMap<>();
 
     private final java.util.concurrent.atomic.AtomicBoolean stopped = new java.util.concurrent.atomic.AtomicBoolean(false);
@@ -336,8 +338,10 @@ class SliceInvokerImpl implements SliceInvoker {
     /// Drops the retained timed-out fires older than [#LATE_COMPLETION_TTL_MS]: their late response is then discarded
     /// like one past the capacity, and their outcome stays unknown. Runs with the stale-invocation cleanup, so a retained
     /// fire lives at most the TTL plus one cleanup interval.
-    void expireLateCompletions(long nowMs) {
+    Unit expireLateCompletions(long nowMs) {
         lateCompletions.values().removeIf(late -> nowMs - late.retainedAtMs() >= LATE_COMPLETION_TTL_MS);
+
+        return Unit.unit();
     }
 
     private boolean isStaleAndCleanup(Map.Entry<String, PendingInvocation> entry, long staleThreshold) {
@@ -1094,7 +1098,8 @@ class SliceInvokerImpl implements SliceInvoker {
 
     public org.pragmatica.lang.Unit onNodeDeparture(NodeId departedNode) {
         // A departed node sends no late response: nothing can resolve these, so their outcomes stay unknown.
-        lateCompletions.values().removeIf(late -> late.targetNode().equals(departedNode));
+        lateCompletions.values().removeIf(late -> late.targetNode()
+                                                      .equals(departedNode));
         Option.option(pendingInvocationsByNode.remove(departedNode))
               .filter(ids -> !ids.isEmpty())
               .onPresent(correlationIds -> retryPendingForDepartedNode(departedNode, correlationIds));

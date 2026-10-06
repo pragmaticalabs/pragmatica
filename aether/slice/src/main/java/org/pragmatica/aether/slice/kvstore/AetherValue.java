@@ -715,7 +715,8 @@ public sealed interface AetherValue {
 
         /// The sequence number the next recorded fire of this row takes.
         public static int nextFireSeq(Option<ScheduledTaskStateValue> prior) {
-            return prior.map(ScheduledTaskStateValue::fireSeq).or(0) + 1;
+            return prior.map(ScheduledTaskStateValue::fireSeq)
+                        .or(0) + 1;
         }
 
         public static ScheduledTaskStateValue successState(long nextFireAt,
@@ -784,14 +785,20 @@ public sealed interface AetherValue {
             var now = System.currentTimeMillis();
             var newest = prior.fireSeq() == fireSeq;
 
-            return new ScheduledTaskStateValue(newest ? now : prior.lastExecutionAt(),
+            return new ScheduledTaskStateValue(newest
+                                               ? now
+                                               : prior.lastExecutionAt(),
                                                prior.nextFireAt(),
-                                               newest ? 0 : prior.consecutiveFailures(),
+                                               newest
+                                               ? 0
+                                               : prior.consecutiveFailures(),
                                                prior.totalExecutions() + 1,
                                                prior.lastFailureMessage(),
                                                now,
                                                prior.skippedOverlaps(),
-                                               newest ? OUTCOME_SUCCESS : prior.lastOutcome(),
+                                               newest
+                                               ? OUTCOME_SUCCESS
+                                               : prior.lastOutcome(),
                                                Math.max(0, prior.unknownOutcomes() - 1),
                                                prior.fireSeq());
         }
@@ -805,14 +812,22 @@ public sealed interface AetherValue {
             var now = System.currentTimeMillis();
             var newest = prior.fireSeq() == fireSeq;
 
-            return new ScheduledTaskStateValue(newest ? now : prior.lastExecutionAt(),
+            return new ScheduledTaskStateValue(newest
+                                               ? now
+                                               : prior.lastExecutionAt(),
                                                prior.nextFireAt(),
-                                               newest ? prior.consecutiveFailures() + 1 : prior.consecutiveFailures(),
+                                               newest
+                                               ? prior.consecutiveFailures() + 1
+                                               : prior.consecutiveFailures(),
                                                prior.totalExecutions(),
-                                               newest ? failureMessage : prior.lastFailureMessage(),
+                                               newest
+                                               ? failureMessage
+                                               : prior.lastFailureMessage(),
                                                now,
                                                prior.skippedOverlaps(),
-                                               newest ? OUTCOME_FAILURE : prior.lastOutcome(),
+                                               newest
+                                               ? OUTCOME_FAILURE
+                                               : prior.lastOutcome(),
                                                Math.max(0, prior.unknownOutcomes() - 1),
                                                prior.fireSeq());
         }

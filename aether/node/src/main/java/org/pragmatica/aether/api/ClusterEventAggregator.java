@@ -185,7 +185,6 @@ public final class ClusterEventAggregator {
     /// Per-task window for the scheduled-task outcome events (#1723): the same 60 s mechanism, its own key space
     /// (`task@node`), so one flapping task cannot starve another and neither starves the operator warnings.
     private final ConcurrentHashMap<String, ThrottleWindow> scheduledOutcomeThrottle = new ConcurrentHashMap<>();
-
     /// What the operator can see of each task's unknown outcome, keyed like [#scheduledOutcomeThrottle]. One map, one
     /// entry per task, changed only through `compute`/`remove`, so "announce a held UNKNOWN" and "the outcome was
     /// resolved" cannot interleave into a published UNKNOWN that no RESTORED will ever follow.
@@ -1540,7 +1539,8 @@ public final class ClusterEventAggregator {
         var previous = scheduledOutcomes.putIfAbsent(key, entry);
 
         if (previous != null) {
-            LOG.debug("ClusterEventAggregator: ScheduledTaskOutcomeUnknown for {} repeats an outcome already tracked", key);
+            LOG.debug("ClusterEventAggregator: ScheduledTaskOutcomeUnknown for {} repeats an outcome already tracked",
+                      key);
 
             return;
         }
@@ -1577,8 +1577,7 @@ public final class ClusterEventAggregator {
         emit(new ClusterEvent.ScheduledTaskOutcomeRestored(hlcClock.now(),
                                                            Severity.INFO,
                                                            "Scheduled task " + event.task()
-                                                          + " resolved its unknown outcome: the late response says it "
-                                                          + event.outcome(),
+                                                          + " resolved its unknown outcome: the late response says it " + event.outcome(),
                                                            scheduledOutcomeDetails(event.task(),
                                                                                    event.node(),
                                                                                    unknown.fireAt(),
@@ -1597,8 +1596,10 @@ public final class ClusterEventAggregator {
 
         scheduledOutcomes.entrySet()
                          .stream()
-                         .filter(entry -> !entry.getValue().visible())
-                         .filter(entry -> windowClosed(scheduledOutcomeThrottle.get(entry.getKey()), now))
+                         .filter(entry -> !entry.getValue()
+                                                .visible())
+                         .filter(entry -> windowClosed(scheduledOutcomeThrottle.get(entry.getKey()),
+                                                       now))
                          .map(Map.Entry::getKey)
                          .toList()
                          .forEach(this::announceHeld);
@@ -1615,12 +1616,12 @@ public final class ClusterEventAggregator {
     private void announceHeld(String key) {
         var promoted = new AtomicReference<ScheduledOutcome>();
 
-        scheduledOutcomes.computeIfPresent(key, (_, held) -> held.visible()
-                                                            ? held
-                                                            : promote(held, promoted));
-        Option.option(promoted.get())
-              .onPresent(entry -> emitScheduledOutcomeUnknown(entry.unknown(),
-                                                              admit(scheduledOutcomeThrottle, key).suppressedBefore()));
+        scheduledOutcomes.computeIfPresent(key,
+                                           (_, held) -> held.visible()
+                                                        ? held
+                                                        : promote(held, promoted));
+        Option.option(promoted.get()).onPresent(entry -> emitScheduledOutcomeUnknown(entry.unknown(),
+                                                                                     admit(scheduledOutcomeThrottle, key).suppressedBefore()));
     }
 
     private static ScheduledOutcome promote(ScheduledOutcome held, AtomicReference<ScheduledOutcome> promoted) {

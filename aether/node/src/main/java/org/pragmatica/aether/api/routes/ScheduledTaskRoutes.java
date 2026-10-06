@@ -355,10 +355,10 @@ public final class ScheduledTaskRoutes implements RouteSource {
         var priorSkipped = priorState.map(ScheduledTaskStateValue::skippedOverlaps).or(0);
         var priorUnknown = priorState.map(ScheduledTaskStateValue::unknownOutcomes).or(0);
         var value = ScheduledTaskStateValue.successState(0,
-                                                        priorTotal + 1,
-                                                        priorSkipped,
-                                                        priorUnknown,
-                                                        ScheduledTaskStateValue.nextFireSeq(priorState));
+                                                         priorTotal + 1,
+                                                         priorSkipped,
+                                                         priorUnknown,
+                                                         ScheduledTaskStateValue.nextFireSeq(priorState));
         KVCommand<AetherKey> command = new KVCommand.Put<>(stateKey, value);
 
         return nodeSupplier.get()
@@ -372,11 +372,8 @@ public final class ScheduledTaskRoutes implements RouteSource {
 
     /// The callee's response arrived after the injected fire had been recorded as UNKNOWN: the row, as it is now, takes
     /// the real outcome (#1723). A row that is gone has nothing to resolve.
-    private void resolveLateOutcome(ScheduledTaskStateKey stateKey,
-                                    UnaryOperator<ScheduledTaskStateValue> resolved) {
-        stateRegistry.stateFor(stateKey)
-                     .map(resolved::apply)
-                     .onPresent(value -> writeLateOutcome(stateKey, value));
+    private void resolveLateOutcome(ScheduledTaskStateKey stateKey, UnaryOperator<ScheduledTaskStateValue> resolved) {
+        stateRegistry.stateFor(stateKey).map(resolved::apply).onPresent(value -> writeLateOutcome(stateKey, value));
     }
 
     private void writeLateOutcome(ScheduledTaskStateKey stateKey, ScheduledTaskStateValue value) {

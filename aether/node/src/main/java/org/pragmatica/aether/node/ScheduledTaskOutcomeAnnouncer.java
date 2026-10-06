@@ -58,20 +58,22 @@ public interface ScheduledTaskOutcomeAnnouncer {
 
         return Option.some(isUnknown
                            ? OperationalEvent.ScheduledTaskOutcomeUnknown.scheduledTaskOutcomeUnknown(task,
-                                                                                                    node,
-                                                                                                    after.updatedAt(),
-                                                                                                    "scheduled-outcome-unknown:" + key.asString()
-                                                                                                   + ":" + after.fireSeq())
-                           : OperationalEvent.ScheduledTaskOutcomeRestored.scheduledTaskOutcomeRestored(task,
                                                                                                       node,
-                                                                                                      lateOutcome(before, after),
-                                                                                                      "scheduled-outcome-restored:" + key.asString()
-                                                                                                     + ":" + after.fireSeq()));
+                                                                                                      after.updatedAt(),
+                                                                                                      "scheduled-outcome-unknown:" + key.asString()
+                                                                                                     + ":" + after.fireSeq())
+                           : OperationalEvent.ScheduledTaskOutcomeRestored.scheduledTaskOutcomeRestored(task,
+                                                                                                        node,
+                                                                                                        lateOutcome(before,
+                                                                                                                    after),
+                                                                                                        "scheduled-outcome-restored:" + key.asString()
+                                                                                                       + ":" + after.fireSeq()));
     }
 
     /// The late response made the fire an execution (counted) or a failure (not counted).
     private static String lateOutcome(Option<ScheduledTaskStateValue> before, ScheduledTaskStateValue after) {
-        return after.totalExecutions() > before.map(ScheduledTaskStateValue::totalExecutions).or(0)
+        return after.totalExecutions() > before.map(ScheduledTaskStateValue::totalExecutions)
+                                               .or(0)
                ? "executed"
                : "failed";
     }
