@@ -729,15 +729,16 @@ test_post_crash_liveness() {
 cleanup() {
     reap_creator
     rm -f "$ACKED_PRE" "$ACKED_DURING" 2>/dev/null
-    # Removing the BLUEPRINT is what actually stops the slice — undeploying the
-    # instance leaves the blueprint active and the controller re-places it.
-    api_delete "/api/v1/blueprints/${ENTITY_BP}" >/dev/null 2>&1 || true
 
     # The node we SIGKILLed never comes back under its own id (#1543: same-NodeId relaunch is
     # refused, and CTM has already DECOMMISSIONED it). Cluster B is `restart: "no"`, so nothing
     # resurrects the container either — the cluster returns to N through CTM auto-heal, which
     # provisions a replacement under a FRESH node id. `restore_cluster_baseline` waits for exactly
     # that (leader reachable, auto-heal on, circuit reset, scale to target, N healthy cores).
+    #
+    # It runs BEFORE the blueprint is removed: its slice gate needs a /api/v1/slices body with a
+    # "slices" list, and an emptied cluster answers `{}` — measured on bigboy, which made the gate fail
+    # for 120s on a cluster that was already whole.
     #
     # History: this cleanup once `docker start`ed the killed container because auto-heal appeared
     # not to heal (`deficit=1`, `lastReason=NONE_PROVISIONING`). That was #597 — AutoHealConfig.NO_CAP
@@ -748,6 +749,10 @@ cleanup() {
         restore_cluster_baseline \
             || log_warn "cleanup: cluster did not return to baseline via auto-heal after killing ${NODE_TO_KILL} — left at N-1"
     fi
+
+    # Removing the BLUEPRINT is what actually stops the slice — undeploying the
+    # instance leaves the blueprint active and the controller re-places it.
+    api_delete "/api/v1/blueprints/${ENTITY_BP}" >/dev/null 2>&1 || true
 }
 
 trap 'cleanup' EXIT

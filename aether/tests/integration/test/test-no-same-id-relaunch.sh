@@ -165,9 +165,9 @@ run_cleanup() {  # <kill_confirmed> ; prints the call record
 }
 rec=$(run_cleanup 1)
 members=$(sed -n 's/^MEMBERS=//p' "$rec")
-if grep -q '^restore_cluster_baseline$' "$rec" && ! grep -qE 'docker start|poweron|docker restart' "$rec" \
+if [ "$(grep -nE '^(restore_cluster_baseline|api_delete)' "$rec" | head -1 | cut -d: -f2)" = restore_cluster_baseline ] && grep -q '^restore_cluster_baseline$' "$rec" && ! grep -qE 'docker start|poweron|docker restart' "$rec" \
    && [ "$(echo $members | wc -w | tr -d ' ')" = 5 ] && echo " $members " | grep -q ' node-FRESH01 ' && ! echo " $members " | grep -q ' node-3 '; then
-    ok "H1 confirmed kill: restore_cluster_baseline, no docker start/poweron, 5 members incl. a NEW id, killed id gone"
+    ok "H1 confirmed kill: restore_cluster_baseline (before the blueprint is removed), no docker start/poweron, 5 members incl. a NEW id, killed id gone"
 else fail "H1 cleanup after a confirmed kill: $(tr '\n' '|' < "$rec")"; fi
 rec=$(run_cleanup 0)
 if ! grep -qE '^(restore_cluster_baseline|docker|hcloud|remote_exec)' "$rec"; then ok "H2 no confirmed kill: cleanup leaves the cluster alone"
