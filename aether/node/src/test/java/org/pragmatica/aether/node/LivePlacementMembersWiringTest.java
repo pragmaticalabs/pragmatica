@@ -106,8 +106,9 @@ class LivePlacementMembersWiringTest {
         // #1730: a partition with no live in-sync replica has no owner to report, so the controller's block joins it.
         assertThat(code).contains("streamPartitionManager.ownerBlockSource((stream,partition)->ownerActivation.blockOf(stream,partition).orElse(()->streamReplicaSetController.noInSyncReplica(stream,partition)));");
         // #1431: the alarm also reaches the node's operator-warning sink (an oversized peer event is its own warning); the
-        // window is still the argument after it — `OwnerActivation`'s `unreachableAlarmAfter`.
-        assertThat(code).contains("block->raiseOwnerPromotionBlock(operatorWarningSink,block),ownerPromotionAlarmWindow(config.timeouts().swim().suspectTimeout()));");
+        // window is still the argument after it — `OwnerActivation`'s `unreachableAlarmAfter`. #1873: the gate's constructor then
+        // takes the ring incarnation and the lineage commit (see EpochFetchWiringTest).
+        assertThat(code).contains("block->raiseOwnerPromotionBlock(operatorWarningSink,block),ownerPromotionAlarmWindow(config.timeouts().swim().suspectTimeout()),(stream,partition)->");
         assertThat(code).contains("returnsuspectTimeout.plus(suspectTimeout);");
         assertThat(code).as("v1555 F1: the overlap read is the production OwnerPeerReads.ownerRange the gate tests exercise")
                         .contains("OwnerPeerReads.ownerRange(config.self(),streamPartitionManager,streamTieredReader,streamForwardClient::readRemoteCatchup,STREAM_CATCHUP_BATCH_SIZE),block->raiseOwnerPromotionBlock(operatorWarningSink,block)");

@@ -502,8 +502,24 @@ class CursorStoreTest {
                                                          .flatMap(block -> block))
                                    .or(new byte[0]);
 
-            assertThat(rewritten).as("every fenced commit now writes the 40-byte block")
-                      .isEqualTo(CursorStore.encodeRewoundCursor(7L, TENURE, RewindEpoch.NONE));
+            assertThat(rewritten).as("every fenced commit now writes the 80-byte block (#1873: with the owner epoch, zero here)")
+                      .isEqualTo(CursorStore.encodeOwnedCursor(7L, TENURE, RewindEpoch.NONE, Epoch.ZERO));
+        }
+
+        /// #1873: the owner epoch a cursor was read under is stored beside it and read back, so a restart presents it to
+        /// the partition's owner; the layouts without it read as no claim.
+        @Test
+        void ownerEpoch_roundTrips_andOlderLayoutsReadAsNoClaim() {
+            var refName = CursorStore.buildRefName(GROUP, STREAM, PARTITION);
+            var owner = Epoch.epoch(1L, 2L, 3L);
+
+            store.commit(GROUP, STREAM, PARTITION, 7L, TENURE, RewindEpoch.NONE, owner).await();
+            assertThat(store.fetchCursor(GROUP, STREAM, PARTITION, TENURE).await())
+                .isEqualTo(Result.success(Option.some(Cursor.cursor(7L, RewindEpoch.NONE, owner))));
+
+            storage.putRef(refName, CursorStore.encodeRewoundCursor(9L, TENURE, RewindEpoch.NONE)).await();
+            assertThat(store.fetchCursor(GROUP, STREAM, PARTITION, TENURE).await())
+                .isEqualTo(Result.success(Option.some(Cursor.unrewound(9L))));
         }
 
         /// The 8-byte unfenced block (pull API) is a legitimate cursor for the unfenced `fetch` (#1271's
