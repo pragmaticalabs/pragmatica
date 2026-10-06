@@ -831,6 +831,8 @@ public final class ClusterEventAggregator {
     }
 
     private void onCondition(OperatorWarning warning, String key) {
+        // A recurrence makes a repair still held from replay stale: the tick must not publish it behind the new condition.
+        replayHeldRecoveries.remove(key);
         var window = admit(operatorWarningThrottle, key);
 
         if (!window.admitted()) {
@@ -870,6 +872,8 @@ public final class ClusterEventAggregator {
 
     /// A warning redelivery gave up on. If an attempt's outcome was unknown it may be in the log, so it is treated as
     /// landed: a recovery for it is less harmful than an alarm left open for good, and the condition really is repaired.
+    /// So a repair may appear without its warning only when the warning's delivery outcome was unknown; this avoids an
+    /// alarm left open forever.
     /// If it was definitely not delivered, a recovery held for it is dropped, except that an earlier published warning
     /// for the subject that is still open keeps its recovery.
     private void warningLost(String key, ThrottleWindow window, ClusterEventRedelivery.GiveUpOutcome outcome) {

@@ -1897,4 +1897,50 @@ class ClusterEventAggregatorTest {
         assertThat(h.aggregator().redeliveryDropped()).as("control: the warning was given up on").containsEntry("expired", 1L);
         assertThat(codes(h)).isEmpty();
     }
+
+    /// A repair held during replay is stale once the same subject's condition recurs before the tick: the tick must not
+    /// publish it, or the feed would end on "repaired" while the partition is diverged again.
+    @Test
+    void onOperatorWarning_recurrenceBetweenReplayEndAndTick_discardsTheHeldRepair() {
+        var replaying = new java.util.concurrent.atomic.AtomicBoolean(false);
+        var t = new AtomicLong(1_000_000L);
+        var h = Harness.create(Harness.defaultRetention(), OWNER, replaying::get, LEADER,
+                               HlcClock.hlcClock(SELF, t::get, Long.MAX_VALUE));
+
+        h.aggregator().onOperatorWarning(diverged("g:orders[0]"));
+        t.addAndGet(5_000L);
+        replaying.set(true);
+        h.aggregator().onOperatorWarning(repaired("g:orders[0]"));
+        replaying.set(false);
+        t.addAndGet(500L);
+        h.aggregator().onOperatorWarning(diverged("g:orders[0]"));
+        t.addAndGet(500L);
+        h.aggregator().redeliverDue();
+
+        assertThat(codes(h)).as("feed after D, R(held in replay), D(recurs before the tick), tick")
+                            .last().isEqualTo("stream-consumer-state-diverged");
+    }
+
+    /// The first attempt fails definitely and a RETRY reports an unknown outcome: the warning may still be in the log, so
+    /// give-up releases the held repair. Redelivery must carry the unknown outcome from a retry, not only the first attempt.
+    @Test
+    void onOperatorWarning_unknownOutcomeOnlyOnARetry_stillReleasesItsHeldRepair() {
+        var clock = new AtomicLong(1_000_000L);
+        var h = Harness.create(Harness.defaultRetention(), OWNER, () -> false, LEADER,
+                               HlcClock.hlcClock(SELF, clock::get, Long.MAX_VALUE));
+        var unknown = PublishOutcomeUnknown.FACTORY.apply(Causes.cause("owner died"));
+        var attempts = new java.util.concurrent.atomic.AtomicInteger();
+
+        h.aggregator().interceptPublish(_ -> attempts.getAndIncrement() == 0
+                                             ? Causes.cause("refused").promise()
+                                             : unknown.<org.pragmatica.lang.Unit>promise());
+        h.aggregator().onOperatorWarning(diverged("g:orders[0]"));
+        h.aggregator().onOperatorWarning(repaired("g:orders[0]"));
+        expireRedelivery(h, clock);
+        h.aggregator().interceptPublish(event -> h.publisher().get().publish(event));
+        clock.addAndGet(ClusterEventRedelivery.MAX_BACKOFF_MS);
+        h.aggregator().redeliverDue();
+
+        assertThat(codes(h)).containsExactly("stream-consumer-state-repaired");
+    }
 }
