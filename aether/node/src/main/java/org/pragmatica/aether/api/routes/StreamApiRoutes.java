@@ -613,8 +613,7 @@ public final class StreamApiRoutes implements RouteSource {
                                                                partition,
                                                                fromOffset,
                                                                maxEvents,
-                                                               preference))
-                                .map(StreamApiRoutes::toReadEventsResponse);
+                                                               preference)).map(StreamApiRoutes::toReadEventsResponse);
     }
 
     private static ReadEventsResponse toReadEventsResponse(List<RawEvent> events) {

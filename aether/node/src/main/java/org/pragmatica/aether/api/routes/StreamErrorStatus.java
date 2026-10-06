@@ -33,21 +33,12 @@ public final class StreamErrorStatus {
     public static HttpStatus statusOf(StreamError error) {
         return switch (error) {
             case StreamError.General general -> general(general);
-            case StreamError.EventTooLarge _, StreamError.PartitionOutOfRange _, StreamError.PartitionCeilingExceeded _,
-                 StreamError.RetentionCountUnindexable _, StreamError.RetentionBoundInvalid _,
-                 StreamError.PartitionCapExceeded _ -> HttpStatus.BAD_REQUEST;
+            case StreamError.EventTooLarge _, StreamError.PartitionOutOfRange _, StreamError.PartitionCeilingExceeded _, StreamError.RetentionCountUnindexable _, StreamError.RetentionBoundInvalid _, StreamError.PartitionCapExceeded _ -> HttpStatus.BAD_REQUEST;
             case StreamError.StreamNotFound _ -> HttpStatus.NOT_FOUND;
             case StreamError.ReplicationRefused _ -> HttpStatus.CONFLICT;
             case StreamError.CursorExpired _ -> HttpStatus.GONE;
-            case StreamError.StreamConfigNotYetVisible _, StreamError.MaterializeBudgetExceeded _, StreamError.ReshufflePaced _,
-                 StreamError.PartitionHeldNotMaterialized _, StreamError.StaleEpochAppend _, StreamError.StaleEpochRead _,
-                 StreamError.NotCurrentOwner _, StreamError.ReplicaQuarantined _, StreamError.NotOwnerAppend _,
-                 StreamError.OwnerNotActivated _, StreamError.OwnerCatchupPending _,
-                 StreamError.LinearizableRoundTimeout _ -> HttpStatus.SERVICE_UNAVAILABLE;
-            case StreamError.SeedRejected _, StreamError.WalReplayMismatch _, StreamError.WalHeadLost _,
-                 StreamError.RingIndexCorrupted _, StreamError.EventProcessingFailed _, StreamError.ProvenanceRegression _,
-                 StreamError.ProvenanceMismatch _, StreamError.ReplicaOffsetGap _,
-                 StreamError.ReplicaEntryConflict _ -> HttpStatus.INTERNAL_SERVER_ERROR;
+            case StreamError.StreamConfigNotYetVisible _, StreamError.MaterializeBudgetExceeded _, StreamError.ReshufflePaced _, StreamError.PartitionHeldNotMaterialized _, StreamError.StaleEpochAppend _, StreamError.StaleEpochRead _, StreamError.NotCurrentOwner _, StreamError.ReplicaQuarantined _, StreamError.NotOwnerAppend _, StreamError.OwnerNotActivated _, StreamError.OwnerCatchupPending _, StreamError.LinearizableRoundTimeout _ -> HttpStatus.SERVICE_UNAVAILABLE;
+            case StreamError.SeedRejected _, StreamError.WalReplayMismatch _, StreamError.WalHeadLost _, StreamError.RingIndexCorrupted _, StreamError.EventProcessingFailed _, StreamError.ProvenanceRegression _, StreamError.ProvenanceMismatch _, StreamError.ReplicaOffsetGap _, StreamError.ReplicaEntryConflict _ -> HttpStatus.INTERNAL_SERVER_ERROR;
         };
     }
 
@@ -56,8 +47,7 @@ public final class StreamErrorStatus {
             case EVENT_DROPPED, AHSE_REQUIRED_FOR_STRONG -> HttpStatus.BAD_REQUEST;
             case CONSUMER_NOT_FOUND -> HttpStatus.NOT_FOUND;
             case STREAM_ALREADY_EXISTS, CONSUMER_ALREADY_SUBSCRIBED -> HttpStatus.CONFLICT;
-            case BUFFER_CLOSED, STREAM_CLOSED, CONSUMER_RUNTIME_CLOSED, CONSUMER_STALLED, STREAM_MEMORY_EXCEEDED, SEALING_BEHIND,
-                 SEGMENT_TIER_FULL, BUFFER_FULL, CONSENSUS_PATH_UNAVAILABLE, PARTITION_NOT_LOCAL -> HttpStatus.SERVICE_UNAVAILABLE;
+            case BUFFER_CLOSED, STREAM_CLOSED, CONSUMER_RUNTIME_CLOSED, CONSUMER_STALLED, STREAM_MEMORY_EXCEEDED, SEALING_BEHIND, SEGMENT_TIER_FULL, BUFFER_FULL, CONSENSUS_PATH_UNAVAILABLE, PARTITION_NOT_LOCAL -> HttpStatus.SERVICE_UNAVAILABLE;
             case BUFFER_EMPTY, UNREADABLE_CONSISTENCY_MODE, STREAM_CONFIG_COMMIT_FAILED, RUN_DOES_NOT_FIT -> HttpStatus.INTERNAL_SERVER_ERROR;
         };
     }
