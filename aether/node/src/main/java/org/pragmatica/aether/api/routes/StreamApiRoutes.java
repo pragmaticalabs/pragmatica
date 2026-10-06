@@ -458,10 +458,7 @@ public final class StreamApiRoutes implements RouteSource {
     }
 
     private Result<StreamMetadataResponse> resolveLatest(String namespace, String stream, String latestLiteral) {
-        return RequestParse.asNotFound(namespacesService.resolve(namespace,
-                                                                 stream,
-                                                                 StreamVersionSpec.latest()))
-                           .flatMap(this::toMetadataResponse);
+        return RequestParse.asNotFound(namespacesService.resolve(namespace, stream, StreamVersionSpec.latest())).flatMap(this::toMetadataResponse);
     }
 
     Result<StreamMetadataResponse> streamMetadata(String namespace, String stream, String version) {
@@ -683,12 +680,12 @@ public final class StreamApiRoutes implements RouteSource {
         return RequestParse.asNotFound(namespacesService.lookup(addr)
                                                         .toResult(StreamRegistry.StreamRegistryError.General.NOT_FOUND))
                            .async()
-                                .flatMap(_ -> streamReadRouter().read(streamName,
-                                                                      0,
-                                                                      fromOffset,
-                                                                      maxEvents,
-                                                                      ReadPreference.NEAREST))
-                                .map(events -> buildEventsResponse(addr, events, fromOffset, maxEvents));
+                           .flatMap(_ -> streamReadRouter().read(streamName,
+                                                                 0,
+                                                                 fromOffset,
+                                                                 maxEvents,
+                                                                 ReadPreference.NEAREST))
+                           .map(events -> buildEventsResponse(addr, events, fromOffset, maxEvents));
     }
 
     private static StreamEventsResponse buildEventsResponse(ResourceAddress addr,

@@ -36,8 +36,7 @@ public final class RequestParse {
     }
 
     private static Cause typedNotFound(Cause cause) {
-        if (cause == StreamRegistryError.General.NOT_FOUND || cause == StreamRegistryError.General.NO_VERSIONS_REGISTERED
-            || cause instanceof StreamError.StreamNotFound) {
+        if (cause == StreamRegistryError.General.NOT_FOUND || cause == StreamRegistryError.General.NO_VERSIONS_REGISTERED || cause instanceof StreamError.StreamNotFound) {
             return new ManagementServerError.NotFound(cause.message());
         }
 

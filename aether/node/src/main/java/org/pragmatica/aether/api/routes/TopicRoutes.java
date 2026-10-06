@@ -262,13 +262,15 @@ public final class TopicRoutes implements RouteSource {
         return RequestParse.asRequest(ResourceAddress.resourceAddress(namespace, topic, version))
                            .flatMap(address -> decodeGroup(group).map(decoded -> rebuildGroup(DurableTopicNames.topicStream(address.asString()),
                                                                                               decoded)))
-                           .fold(cause -> cause.<RebuildResponse> promise(), promise -> promise);
+                           .fold(cause -> cause.<RebuildResponse> promise(),
+                                 promise -> promise);
     }
 
     /// `URLDecoder.decode` throws on a malformed escape (`%zz`, a trailing `%`); the group segment is caller input, so that
     /// is a 400 carrying the offending segment, not a throw out of the handler (#1921).
     private static Result<String> decodeGroup(String group) {
-        return Result.lift(_ -> new ManagementServerError.InvalidRequest("Malformed percent-escape in consumer group '" + group + "'"),
+        return Result.lift(_ -> new ManagementServerError.InvalidRequest("Malformed percent-escape in consumer group '" + group
+                                                                        + "'"),
                            () -> URLDecoder.decode(group, StandardCharsets.UTF_8));
     }
 

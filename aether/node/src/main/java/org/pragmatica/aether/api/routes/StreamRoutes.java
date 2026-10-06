@@ -346,9 +346,8 @@ public final class StreamRoutes implements RouteSource {
                                                             String stream,
                                                             String version,
                                                             String consumersLiteral) {
-        return RequestParse.asRequest(ResourceAddress.resourceAddress(namespace, stream, version))
-                           .flatMap(address -> RequestParse.asNotFound(streamManager().allPartitionInfo(StreamManager.engineKey(address)))
-                                                           .map(partitions -> new StreamConsumersResponse(address.asString(), partitions)));
+        return RequestParse.asRequest(ResourceAddress.resourceAddress(namespace, stream, version)).flatMap(address -> RequestParse.asNotFound(streamManager().allPartitionInfo(StreamManager.engineKey(address))).map(partitions -> new StreamConsumersResponse(address.asString(),
+                                                                                                                                                                                                                                                                partitions)));
     }
 
     /// #742 — same guard as `StreamApiRoutes#createStream(StreamCreateRequest)`, for the same reason: the target stream name is

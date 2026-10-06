@@ -1061,21 +1061,23 @@ class ManagementServerImpl implements ManagementServer {
 
     /// Package-visible pure decision behind [#refuseMalformedForwardParams], like [#answersPartitionLocally].
     static Option<Cause> malformedForwardParam(MatchedRoute matched) {
-        return switch (matched.route().target()) {
-            case RouteTarget.NodeIdParam(var paramIndex) -> paramAt(matched, paramIndex).flatMap(id -> NodeId.nodeId(id)
-                                                                                                          .fold(cause -> Option.some(new ManagementServerError.InvalidRequest("Invalid node id '" + id + "': "
-                                                                                                                                                                              + cause.message())),
-                                                                                                                _ -> Option.none()));
-            case RouteTarget.PartitionOwner(var partitionParamIndex) -> malformedPartitionOwnerParam(matched, partitionParamIndex);
+        return switch (matched.route()
+                              .target()) {
+            case RouteTarget.NodeIdParam(var paramIndex) -> paramAt(matched, paramIndex).flatMap(id -> NodeId.nodeId(id).fold(cause -> Option.some(new ManagementServerError.InvalidRequest("Invalid node id '" + id
+                                                                                                                                                                                           + "': " + cause.message())),
+                                                                                                                              _ -> Option.none()));
+            case RouteTarget.PartitionOwner(var partitionParamIndex) -> malformedPartitionOwnerParam(matched,
+                                                                                                     partitionParamIndex);
             default -> Option.none();
         };
     }
 
     private static Option<Cause> malformedPartitionOwnerParam(MatchedRoute matched, int partitionParamIndex) {
-        var partition = paramAt(matched, partitionParamIndex).flatMap(raw -> Result.lift(Causes::fromThrowable, () -> Integer.valueOf(raw))
-                                                                                  .fold(_ -> Option.some(new ManagementServerError.InvalidRequest("Invalid partition '" + raw
+        var partition = paramAt(matched, partitionParamIndex).flatMap(raw -> Result.lift(Causes::fromThrowable,
+                                                                                         () -> Integer.valueOf(raw))
+                                                                                   .fold(_ -> Option.some(new ManagementServerError.InvalidRequest("Invalid partition '" + raw
                                                                                                                                                   + "': not an integer")),
-                                                                                        _ -> Option.none()));
+                                                                                         _ -> Option.none()));
 
         return partition.isPresent()
                ? partition.map(cause -> (Cause) cause)
@@ -1083,10 +1085,11 @@ class ManagementServerImpl implements ManagementServer {
     }
 
     private static Option<Cause> malformedStreamAddress(MatchedRoute matched) {
-        return Option.all(matched.param("namespace"), matched.param("stream"), matched.param("version"))
-                     .flatMap((ns, stream, version) -> ResourceAddress.resourceAddress(ns, stream, version)
-                                                                      .fold(cause -> Option.some(new ManagementServerError.InvalidRequest(cause.message())),
-                                                                            _ -> Option.none()));
+        return Option.all(matched.param("namespace"),
+                          matched.param("stream"),
+                          matched.param("version"))
+                     .flatMap((ns, stream, version) -> ResourceAddress.resourceAddress(ns, stream, version).fold(cause -> Option.some(new ManagementServerError.InvalidRequest(cause.message())),
+                                                                                                                 _ -> Option.none()));
     }
 
     private static Option<String> paramAt(MatchedRoute matched, int index) {
