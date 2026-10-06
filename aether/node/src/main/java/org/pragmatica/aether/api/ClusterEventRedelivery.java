@@ -12,6 +12,7 @@ import java.util.TreeMap;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.function.LongSupplier;
 
@@ -63,6 +64,13 @@ final class ClusterEventRedelivery {
     static final long INITIAL_BACKOFF_MS = 1_000L;
     static final long MAX_BACKOFF_MS = 8_000L;
 
+    /// What redelivery knows about an event it gives up on: whether any attempt reported [PublishOutcomeUnknown], so the
+    /// event may be in the log although the publisher never confirmed it (#752).
+    enum GiveUpOutcome {
+        NOT_DELIVERED,
+        POSSIBLY_DELIVERED
+    }
+
     /// Why an event was given up on.
     enum DropReason {
         OVERFLOW,
@@ -76,14 +84,42 @@ final class ClusterEventRedelivery {
                            long firstFailedAt,
                            int attempts,
                            long nextAttemptAt,
-                           Runnable onGivenUp,
-                           Runnable onDelivered) {
-        static Pending pending(ClusterEvent event, long now, Runnable onGivenUp, Runnable onDelivered) {
-            return new Pending(event, now, 1, now + INITIAL_BACKOFF_MS, onGivenUp, onDelivered);
+                           Consumer<GiveUpOutcome> onGivenUp,
+                           Runnable onDelivered,
+                           boolean maybeLanded) {
+        static Pending pending(ClusterEvent event,
+                               long now,
+                               Consumer<GiveUpOutcome> onGivenUp,
+                               Runnable onDelivered,
+                               boolean maybeLanded) {
+            return new Pending(event, now, 1, now + INITIAL_BACKOFF_MS, onGivenUp, onDelivered, maybeLanded);
         }
 
         Pending failedAgain(long now) {
-            return new Pending(event, firstFailedAt, attempts + 1, now + backoff(attempts + 1), onGivenUp, onDelivered);
+            return new Pending(event,
+                               firstFailedAt,
+                               attempts + 1,
+                               now + backoff(attempts + 1),
+                               onGivenUp,
+                               onDelivered,
+                               maybeLanded);
+        }
+
+        /// This event after an attempt that failed with `cause`: it may be in the log once any attempt's outcome was unknown.
+        Pending afterFailure(Cause cause) {
+            return new Pending(event,
+                               firstFailedAt,
+                               attempts,
+                               nextAttemptAt,
+                               onGivenUp,
+                               onDelivered,
+                               maybeLanded || cause instanceof PublishOutcomeUnknown);
+        }
+
+        GiveUpOutcome outcome() {
+            return maybeLanded
+                   ? GiveUpOutcome.POSSIBLY_DELIVERED
+                   : GiveUpOutcome.NOT_DELIVERED;
         }
 
         boolean expiredAt(long now) {
@@ -138,14 +174,14 @@ final class ClusterEventRedelivery {
     @Contract
     void deliver(ClusterEvent event, Runnable onGivenUp) {
         deliver(event,
-                onGivenUp,
+                _ -> onGivenUp.run(),
                 () -> {});
     }
 
     /// As [#deliver(ClusterEvent, Runnable)], and runs `onDelivered` once if the event lands, whether on the first
     /// attempt or on a retry (#752: a recovery event is released only once the event it closes is known to be in the log).
     @Contract
-    void deliver(ClusterEvent event, Runnable onGivenUp, Runnable onDelivered) {
+    void deliver(ClusterEvent event, Consumer<GiveUpOutcome> onGivenUp, Runnable onDelivered) {
         accepted.incrementAndGet();
         attempt(event).onSuccess(_ -> onDelivered.run())
                .onFailure(cause -> onFirstFailure(event, cause, onGivenUp, onDelivered));
@@ -242,10 +278,15 @@ final class ClusterEventRedelivery {
                       .getSimpleName();
     }
 
-    private Unit onFirstFailure(ClusterEvent event, Cause cause, Runnable onGivenUp, Runnable onDelivered) {
+    private Unit onFirstFailure(ClusterEvent event,
+                                Cause cause,
+                                Consumer<GiveUpOutcome> onGivenUp,
+                                Runnable onDelivered) {
+        var pending = Pending.pending(event, clock.getAsLong(), onGivenUp, onDelivered, false).afterFailure(cause);
+
         return isPermanent(cause)
-               ? drop(DropReason.PERMANENT, event, onGivenUp)
-               : hold(Pending.pending(event, clock.getAsLong(), onGivenUp, onDelivered));
+               ? drop(DropReason.PERMANENT, pending)
+               : hold(pending);
     }
 
     /// Starts holding a newly failed event. When CAPACITY events are already held, the OLDEST waiting one is dropped
@@ -257,7 +298,7 @@ final class ClusterEventRedelivery {
                 var oldest = Option.option(waiting.pollFirst());
 
                 if (oldest.isEmpty()) {
-                    return drop(DropReason.OVERFLOW, pending.event(), pending.onGivenUp());
+                    return drop(DropReason.OVERFLOW, pending);
                 }
 
                 oldest.onPresent(entry -> dropHeld(DropReason.OVERFLOW, entry));
@@ -282,8 +323,9 @@ final class ClusterEventRedelivery {
         return unit();
     }
 
-    private Unit onRetryFailure(Pending pending, Cause cause) {
+    private Unit onRetryFailure(Pending attempted, Cause cause) {
         var now = clock.getAsLong();
+        var pending = attempted.afterFailure(cause);
 
         if (isPermanent(cause)) {
             return dropHeld(DropReason.PERMANENT, pending);
@@ -347,11 +389,13 @@ final class ClusterEventRedelivery {
     private Unit dropHeld(DropReason reason, Pending pending) {
         held.decrementAndGet();
 
-        return drop(reason, pending.event(), pending.onGivenUp());
+        return drop(reason, pending);
     }
 
-    private Unit drop(DropReason reason, ClusterEvent event, Runnable onGivenUp) {
-        onGivenUp.run();
+    private Unit drop(DropReason reason, Pending pending) {
+        var event = pending.event();
+
+        pending.onGivenUp().accept(pending.outcome());
         dropped.computeIfAbsent(reason, _ -> new AtomicLong()).incrementAndGet();
         synchronized (droppedTypesSinceReport) {
             droppedTypesSinceReport.merge(event.type() + "/" + reason.name(),

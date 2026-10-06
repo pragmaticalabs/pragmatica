@@ -271,6 +271,7 @@ public final class ClusterEventAggregator {
     private final AtomicLong ownerlessDrops = new AtomicLong();
     /// #1640: events whose publish did not land wait here and are retried.
     private final ClusterEventRedelivery redelivery;
+    private volatile Option<Function<ClusterEvent, Promise<Unit>>> publishHook = Option.none();
     /// #1653 round 2: stamps each event with `details.eventId` so a redelivered copy is recognised on read.
     private final ClusterEventIdentity identity = ClusterEventIdentity.clusterEventIdentity();
     private volatile int lastReadDuplicates;
@@ -673,6 +674,17 @@ public final class ClusterEventAggregator {
     /// throws, or when its promise fails. Each failure is logged once here; whether it is retried is
     /// [ClusterEventRedelivery]'s decision.
     private Promise<Unit> publishOnce(ClusterEvent event) {
+        return publishHook.map(hook -> hook.apply(event))
+                          .or(() -> publishViaPublisher(event));
+    }
+
+    /// Test seam: replaces the publish attempt, so a test can script outcomes the sealed publisher cannot produce, such
+    /// as [PublishOutcomeUnknown] (#752). Never set in production.
+    void interceptPublish(Function<ClusterEvent, Promise<Unit>> hook) {
+        publishHook = Option.some(hook);
+    }
+
+    private Promise<Unit> publishViaPublisher(ClusterEvent event) {
         return Option.option(publisherSupplier.get())
                      .map(publisher -> publishedBy(publisher, event))
                      .or(() -> unboundPublisher(event));
@@ -853,16 +865,23 @@ public final class ClusterEventAggregator {
     /// recovery never reaches the log without the warning it closes.
     private void deliverRecoverable(ClusterEvent event, String key, ThrottleWindow window) {
         awaitingDelivery.put(key, Option.none());
-        redelivery.deliver(stampedOrAsIs(event), () -> warningLost(key, window), () -> warningLanded(key));
+        redelivery.deliver(stampedOrAsIs(event), outcome -> warningLost(key, window, outcome), () -> warningLanded(key));
     }
 
-    /// A recovery held for the lost warning is released only if an earlier published warning for the subject is still
-    /// open, and dropped with it otherwise.
-    private void warningLost(String key, ThrottleWindow window) {
-        Option.option(awaitingDelivery.remove(key))
-              .flatMap(held -> held)
-              .filter(_ -> openRecoverable.contains(key))
-              .onPresent(recovery -> releaseHeldRecovery(key, recovery));
+    /// A warning redelivery gave up on. If an attempt's outcome was unknown it may be in the log, so it is treated as
+    /// landed: a recovery for it is less harmful than an alarm left open for good, and the condition really is repaired.
+    /// If it was definitely not delivered, a recovery held for it is dropped, except that an earlier published warning
+    /// for the subject that is still open keeps its recovery.
+    private void warningLost(String key, ThrottleWindow window, ClusterEventRedelivery.GiveUpOutcome outcome) {
+        if (outcome == ClusterEventRedelivery.GiveUpOutcome.POSSIBLY_DELIVERED) {
+            warningLanded(key);
+        } else {
+            Option.option(awaitingDelivery.remove(key))
+                  .flatMap(held -> held)
+                  .filter(_ -> openRecoverable.contains(key))
+                  .onPresent(recovery -> releaseHeldRecovery(key, recovery));
+        }
+
         shortenWindow(key, window);
     }
 

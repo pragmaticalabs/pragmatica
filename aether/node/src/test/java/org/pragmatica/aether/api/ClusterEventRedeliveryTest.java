@@ -149,6 +149,24 @@ class ClusterEventRedeliveryTest {
         assertThat(redelivery.dropped(PERMANENT)).isEqualTo(1L);
     }
 
+    /// #752: the give-up callback learns whether any attempt's outcome was unknown (the event may be in the log).
+    @Test
+    void giveUp_afterAnUnknownOutcome_reportsPossiblyDelivered_andAfterDefiniteFailuresNotDelivered() {
+        var outcomes = new ArrayList<ClusterEventRedelivery.GiveUpOutcome>();
+
+        fail(10_000, UNKNOWN);
+        redelivery.deliver(event("unknown"), outcomes::add, () -> {});
+        scriptedFailures.clear();
+        fail(10_000, Causes.cause("refused"));
+        redelivery.deliver(event("refused"), outcomes::add, () -> {});
+        for (long elapsed = 0; elapsed <= ClusterEventRedelivery.RETRY_HORIZON_MS + ClusterEventRedelivery.MAX_BACKOFF_MS; elapsed += ClusterEventRedelivery.MAX_BACKOFF_MS) {
+            advanceAndRedeliver(ClusterEventRedelivery.MAX_BACKOFF_MS);
+        }
+
+        assertThat(outcomes).containsExactly(ClusterEventRedelivery.GiveUpOutcome.POSSIBLY_DELIVERED,
+                                             ClusterEventRedelivery.GiveUpOutcome.NOT_DELIVERED);
+    }
+
     /// The horizon: an event not delivered within RETRY_HORIZON_MS of its first failure is dropped as expired.
     @Test
     void redeliver_pastTheHorizon_expiresAndCounts() {

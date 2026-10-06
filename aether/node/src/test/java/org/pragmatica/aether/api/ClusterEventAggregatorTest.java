@@ -16,6 +16,7 @@ import org.pragmatica.aether.slice.RetentionMode;
 import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.slice.stream.FrameworkStreamConsumer;
+import org.pragmatica.aether.slice.PublishOutcomeUnknown;
 import org.pragmatica.aether.slice.stream.FrameworkStreamPublisher;
 import org.pragmatica.aether.slice.stream.FrameworkStreamPublishers;
 import org.pragmatica.aether.slice.stream.SystemStreams;
@@ -38,6 +39,8 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.StreamPartitionOwnershipV
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.hlc.HlcTimestamp;
+import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.lang.Option;
 import org.pragmatica.serialization.FrameworkCodecs;
 import org.pragmatica.serialization.SliceCodec;
@@ -1844,4 +1847,54 @@ class ClusterEventAggregatorTest {
 
         assertThat(afterLanding).as("never ends on repaired while diverged").last().isEqualTo("stream-consumer-state-diverged");
         assertThat(codes(h)).as("the later repair still closes it").last().isEqualTo("stream-consumer-state-repaired");
-    }}
+    }
+
+    private void expireRedelivery(Harness h, AtomicLong clock) {
+        for (long elapsed = 0; elapsed <= ClusterEventRedelivery.RETRY_HORIZON_MS; elapsed += ClusterEventRedelivery.MAX_BACKOFF_MS) {
+            clock.addAndGet(ClusterEventRedelivery.MAX_BACKOFF_MS);
+            h.aggregator().redeliverDue();
+        }
+    }
+
+    /// A warning whose publish outcome was UNKNOWN may be in the log; when redelivery gives up on it, its held repair is
+    /// released rather than dropped, so the alarm is not left open for good.
+    @Test
+    void onOperatorWarning_warningGivenUpAfterAnUnknownOutcome_releasesItsHeldRepair() {
+        var clock = new AtomicLong(1_000_000L);
+        var h = Harness.create(Harness.defaultRetention(), OWNER, () -> false, LEADER,
+                               HlcClock.hlcClock(SELF, clock::get, Long.MAX_VALUE));
+        var unknown = PublishOutcomeUnknown.FACTORY.apply(Causes.cause("owner died"));
+
+        h.aggregator().interceptPublish(_ -> unknown.promise());
+
+        h.aggregator().onOperatorWarning(diverged("g:orders[0]"));
+        h.aggregator().onOperatorWarning(repaired("g:orders[0]"));
+        assertThat(h.aggregator().redeliveryWaiting()).as("control: both are held").isEqualTo(1);
+        expireRedelivery(h, clock);
+        h.aggregator().interceptPublish(event -> h.publisher().get().publish(event));
+        clock.addAndGet(ClusterEventRedelivery.MAX_BACKOFF_MS);
+        h.aggregator().redeliverDue();
+
+        assertThat(h.aggregator().redeliveryDropped()).as("control: the warning was given up on").containsEntry("expired", 1L);
+        assertThat(codes(h)).as("the repair of a possibly-shown warning is published").containsExactly("stream-consumer-state-repaired");
+    }
+
+    /// The same give-up after a DEFINITE non-delivery drops the held repair: the warning was never in the log.
+    @Test
+    void onOperatorWarning_warningGivenUpAfterADefiniteFailure_dropsItsHeldRepair() {
+        var clock = new AtomicLong(1_000_000L);
+        var h = Harness.create(Harness.defaultRetention(), OWNER, () -> false, LEADER,
+                               HlcClock.hlcClock(SELF, clock::get, Long.MAX_VALUE));
+        h.aggregator().interceptPublish(_ -> Causes.cause("refused").promise());
+
+        h.aggregator().onOperatorWarning(diverged("g:orders[0]"));
+        h.aggregator().onOperatorWarning(repaired("g:orders[0]"));
+        expireRedelivery(h, clock);
+        h.aggregator().interceptPublish(event -> h.publisher().get().publish(event));
+        clock.addAndGet(ClusterEventRedelivery.MAX_BACKOFF_MS);
+        h.aggregator().redeliverDue();
+
+        assertThat(h.aggregator().redeliveryDropped()).as("control: the warning was given up on").containsEntry("expired", 1L);
+        assertThat(codes(h)).isEmpty();
+    }
+}
