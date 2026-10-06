@@ -21,10 +21,10 @@ import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-/// #1723: the scheduled-task outcome events are derived from the COMMITTED task state. The condition is "the newest
-/// fire's outcome is UNKNOWN": a timed-out fire begins it; a later fire that completes, or the late answer of the newest
-/// fire, ends it. The count of unanswered fires (the gauge) is NOT the condition: a fire whose answer never comes would
-/// hold it up for good.
+/// #1723: the scheduled-task outcome events are derived from the COMMITTED task state. The condition is solely "the newest
+/// fire's outcome is UNKNOWN": a timed-out fire begins it; a later fire that completes, the late answer of the newest fire
+/// or the task's removal ends it. Nothing a live process must do is part of it, so a fire whose answer never comes (its
+/// node died, the leader changed) cannot hold it up.
 class ScheduledTaskOutcomeAnnouncerTest {
     private static final Artifact ARTIFACT = Artifact.artifact("org.example:my-slice:1.0.0").unwrap();
     private static final MethodName METHOD = MethodName.methodName("cleanup").unwrap();
@@ -37,87 +37,97 @@ class ScheduledTaskOutcomeAnnouncerTest {
     private final List<OperationalEvent> events = new ArrayList<>();
     private final ScheduledTaskOutcomeAnnouncer announcer = ScheduledTaskOutcomeAnnouncer.scheduledTaskOutcomeAnnouncer(events::add);
 
+    private static ScheduledTaskStateValue unknown(Option<ScheduledTaskStateValue> prior, long firedAt) {
+        return ScheduledTaskStateValue.unknownOutcomeState(prior, 0, firedAt);
+    }
+
+    private static ScheduledTaskStateValue success(Option<ScheduledTaskStateValue> prior, long firedAt) {
+        return ScheduledTaskStateValue.successState(prior, 0, firedAt);
+    }
+
     @Test
     void firstUnknownFire_announcesUnknown_withTaskAndFireTime() {
-        var unknown = ScheduledTaskStateValue.unknownOutcomeState(Option.none(), 0);
+        var first = unknown(Option.none(), 1_000L);
 
-        announcer.onStatePut(put(KEY, Option.none(), unknown));
+        announcer.onStatePut(put(KEY, Option.none(), first));
 
         assertThat(events).singleElement().isInstanceOfSatisfying(OperationalEvent.ScheduledTaskOutcomeUnknown.class, event -> {
             assertThat(event.task()).isEqualTo("cache/org.example:my-slice:1.0.0/cleanup");
             assertThat(event.node()).isEmpty();
-            assertThat(event.fireAt()).isEqualTo(unknown.updatedAt());
-            assertThat(event.eventId()).isEqualTo("scheduled-outcome-unknown:" + KEY.asString() + ":1");
+            assertThat(event.fireAt()).as("the FIRE's start time, not the time its timeout was recorded").isEqualTo(1_000L);
+            assertThat(event.eventId()).isEqualTo("scheduled-outcome-unknown:" + KEY.asString() + ":1:1000");
         });
     }
 
     @Test
     void perNodeRow_namesTheNode() {
-        announcer.onStatePut(put(NODE_KEY, Option.none(), ScheduledTaskStateValue.unknownOutcomeState(Option.none(), 0)));
+        announcer.onStatePut(put(NODE_KEY, Option.none(), unknown(Option.none(), 1_000L)));
 
         assertThat(events).singleElement().isInstanceOfSatisfying(OperationalEvent.ScheduledTaskOutcomeUnknown.class,
                                                                   event -> assertThat(event.node()).isEqualTo("node-a"));
     }
 
-    /// Nothing changes for the operator: more timeouts while already unknown, a skipped overlap, a definite fire on a
-    /// task that was not unknown.
+    /// Nothing changes for the operator: more timeouts while already unknown, a skipped overlap, a definite fire on a task
+    /// that was not unknown.
     @Test
     void conditionUnchanged_announcesNothing() {
-        var first = ScheduledTaskStateValue.unknownOutcomeState(Option.none(), 0);
-        var second = ScheduledTaskStateValue.unknownOutcomeState(Option.some(first), 0);
+        var first = unknown(Option.none(), 1_000L);
+        var second = unknown(Option.some(first), 2_000L);
         var skipped = ScheduledTaskStateValue.skippedOverlapState(Option.some(second), 5L);
 
         announcer.onStatePut(put(KEY, Option.some(first), second));
         announcer.onStatePut(put(KEY, Option.some(second), skipped));
-        announcer.onStatePut(put(KEY, Option.none(), ScheduledTaskStateValue.successState(Option.none(), 0)));
+        announcer.onStatePut(put(KEY, Option.none(), success(Option.none(), 3_000L)));
 
         assertThat(events).isEmpty();
     }
 
-    /// The defect this replaces encoded "a definite fire after an UNKNOWN announces nothing". A fire whose answer never
-    /// comes (departed callee, leader change, TTL, capacity, lost response) must not keep the task unknown through any
-    /// number of later completions: the FIRST later fire that completes ends it, once, and is not a late answer.
+    /// A fire whose answer never comes (its node died, the leader changed) must not keep the task unknown through any
+    /// number of later completions: the FIRST later fire that completes ends it, once, and it is not a late answer.
     @Test
-    void neverAnsweredUnknown_thenTenSuccesses_raisesOneRestored_notLate() {
-        var row = ScheduledTaskStateValue.unknownOutcomeState(Option.none(), 0);
+    void neverAnsweredUnknown_thenTenSuccesses_raisesOneRestored_afterTheFirst_notLate() {
+        var row = unknown(Option.none(), 1_000L);
 
         announcer.onStatePut(put(KEY, Option.none(), row));
         for (int i = 0; i < 10; i++) {
-            var next = ScheduledTaskStateValue.successState(Option.some(row), 0);
+            var next = success(Option.some(row), 2_000L + i);
 
             announcer.onStatePut(put(KEY, Option.some(row), next));
+            if (i == 0) {
+                assertThat(events).as("RESTORED after the FIRST success").hasSize(2);
+            }
             row = next;
         }
 
-        assertThat(row.unknownOutcomes()).as("premise: the unanswered fire is still counted").isEqualTo(1);
         assertThat(events).hasSize(2);
         assertThat(events.get(1)).isInstanceOfSatisfying(OperationalEvent.ScheduledTaskOutcomeRestored.class, event -> {
             assertThat(event.outcome()).isEqualTo("executed");
-            assertThat(event.late()).as("a later fire completed; nothing arrived late").isFalse();
-            assertThat(event.eventId()).isEqualTo("scheduled-outcome-restored:" + KEY.asString() + ":2");
+            assertThat(event.reason()).isEqualTo("later-fire");
+            assertThat(event.late()).isFalse();
+            assertThat(event.eventId()).isEqualTo("scheduled-outcome-restored:" + KEY.asString() + ":2:2000");
         });
     }
 
     @Test
     void laterFailure_endsTheCondition_asFailed_notLate() {
-        var unknown = ScheduledTaskStateValue.unknownOutcomeState(Option.none(), 0);
+        var first = unknown(Option.none(), 1_000L);
 
-        announcer.onStatePut(put(KEY, Option.none(), unknown));
-        announcer.onStatePut(put(KEY, Option.some(unknown), ScheduledTaskStateValue.failureState(Option.some(unknown), 0, "boom")));
+        announcer.onStatePut(put(KEY, Option.none(), first));
+        announcer.onStatePut(put(KEY, Option.some(first), ScheduledTaskStateValue.failureState(Option.some(first), 0, 2_000L, "boom")));
 
         assertThat(events).hasSize(2);
         assertThat(events.getLast()).isInstanceOfSatisfying(OperationalEvent.ScheduledTaskOutcomeRestored.class, event -> {
             assertThat(event.outcome()).isEqualTo("failed");
-            assertThat(event.late()).isFalse();
+            assertThat(event.reason()).isEqualTo("later-fire");
         });
     }
 
     /// A new timeout after a definite fire is a new UNKNOWN and is announced (the per-fire pair rule).
     @Test
     void freshTimeoutAfterADefiniteFire_isAnnouncedAgain() {
-        var f1 = ScheduledTaskStateValue.unknownOutcomeState(Option.none(), 0);
-        var f2 = ScheduledTaskStateValue.successState(Option.some(f1), 0);
-        var f3 = ScheduledTaskStateValue.unknownOutcomeState(Option.some(f2), 0);
+        var f1 = unknown(Option.none(), 1_000L);
+        var f2 = success(Option.some(f1), 2_000L);
+        var f3 = unknown(Option.some(f2), 3_000L);
 
         announcer.onStatePut(put(KEY, Option.none(), f1));
         announcer.onStatePut(put(KEY, Option.some(f1), f2));
@@ -126,28 +136,29 @@ class ScheduledTaskOutcomeAnnouncerTest {
         assertThat(events).extracting(event -> event.getClass().getSimpleName())
                           .containsExactly("ScheduledTaskOutcomeUnknown", "ScheduledTaskOutcomeRestored", "ScheduledTaskOutcomeUnknown");
         assertThat(events.getLast()).isInstanceOfSatisfying(OperationalEvent.ScheduledTaskOutcomeUnknown.class,
-                                                            event -> assertThat(event.eventId()).endsWith(":3"));
+                                                            event -> assertThat(event.eventId()).endsWith(":3:3000"));
     }
 
     @Test
     void lateSuccess_ofTheNewestFire_announcesRestored_asExecuted_andLate() {
-        var unknown = ScheduledTaskStateValue.unknownOutcomeState(Option.none(), 0);
-        var resolved = ScheduledTaskStateValue.lateSuccessState(unknown, unknown.fireSeq());
+        var first = unknown(Option.none(), 1_000L);
+        var resolved = ScheduledTaskStateValue.lateSuccessState(first, first.fireSeq());
 
-        announcer.onStatePut(put(KEY, Option.some(unknown), resolved));
+        announcer.onStatePut(put(KEY, Option.some(first), resolved));
 
         assertThat(events).singleElement().isInstanceOfSatisfying(OperationalEvent.ScheduledTaskOutcomeRestored.class, event -> {
             assertThat(event.outcome()).isEqualTo("executed");
+            assertThat(event.reason()).isEqualTo("late-answer");
             assertThat(event.late()).isTrue();
-            assertThat(event.eventId()).isEqualTo("scheduled-outcome-restored:" + KEY.asString() + ":1");
+            assertThat(event.eventId()).isEqualTo("scheduled-outcome-restored:" + KEY.asString() + ":1:1000");
         });
     }
 
     @Test
     void lateFailure_ofTheNewestFire_announcesRestored_asFailed_andLate() {
-        var unknown = ScheduledTaskStateValue.unknownOutcomeState(Option.none(), 0);
+        var first = unknown(Option.none(), 1_000L);
 
-        announcer.onStatePut(put(KEY, Option.some(unknown), ScheduledTaskStateValue.lateFailureState(unknown, unknown.fireSeq(), "late")));
+        announcer.onStatePut(put(KEY, Option.some(first), ScheduledTaskStateValue.lateFailureState(first, first.fireSeq(), "late")));
 
         assertThat(events).singleElement().isInstanceOfSatisfying(OperationalEvent.ScheduledTaskOutcomeRestored.class, event -> {
             assertThat(event.outcome()).isEqualTo("failed");
@@ -158,8 +169,8 @@ class ScheduledTaskOutcomeAnnouncerTest {
     /// An OLDER fire's late answer while the newest fire is still unknown changes nothing the operator sees.
     @Test
     void lateAnswerOfAnOlderFire_whileTheNewestIsUnknown_announcesNothing() {
-        var first = ScheduledTaskStateValue.unknownOutcomeState(Option.none(), 0);
-        var second = ScheduledTaskStateValue.unknownOutcomeState(Option.some(first), 0);
+        var first = unknown(Option.none(), 1_000L);
+        var second = unknown(Option.some(first), 2_000L);
 
         announcer.onStatePut(put(KEY, Option.some(second), ScheduledTaskStateValue.lateSuccessState(second, first.fireSeq())));
 
@@ -169,24 +180,77 @@ class ScheduledTaskOutcomeAnnouncerTest {
     /// An older fire's late failure after a newer success keeps the success: no event.
     @Test
     void olderFireLateFailure_afterNewerSuccess_announcesNothing() {
-        var unknown = ScheduledTaskStateValue.unknownOutcomeState(Option.none(), 0);
-        var newerSuccess = ScheduledTaskStateValue.successState(Option.some(unknown), 0);
+        var first = unknown(Option.none(), 1_000L);
+        var newerSuccess = success(Option.some(first), 2_000L);
 
         announcer.onStatePut(put(KEY,
                                  Option.some(newerSuccess),
-                                 ScheduledTaskStateValue.lateFailureState(newerSuccess, unknown.fireSeq(), "late")));
+                                 ScheduledTaskStateValue.lateFailureState(newerSuccess, first.fireSeq(), "late")));
 
         assertThat(events).isEmpty();
     }
 
-    /// Giving a fire up lowers the gauge and invents no outcome: the newest fire is still unknown, so nothing is announced.
+    /// The task is removed while its newest fire is unknown: the manager commits the cleared row, which closes the
+    /// operator's UNKNOWN as `task-removed`.
     @Test
-    void abandonedNewestFire_announcesNothing() {
-        var unknown = ScheduledTaskStateValue.unknownOutcomeState(Option.none(), 0);
+    void taskRemovedWithOpenUnknown_announcesRestored_taskRemoved() {
+        var first = unknown(Option.none(), 1_000L);
 
-        announcer.onStatePut(put(KEY, Option.some(unknown), ScheduledTaskStateValue.abandonedState(unknown)));
+        announcer.onStatePut(put(KEY, Option.none(), first));
+        announcer.onStatePut(put(KEY, Option.some(first), ScheduledTaskStateValue.conditionClearedState(first)));
 
-        assertThat(events).isEmpty();
+        assertThat(events).hasSize(2);
+        assertThat(events.getLast()).isInstanceOfSatisfying(OperationalEvent.ScheduledTaskOutcomeRestored.class, event -> {
+            assertThat(event.reason()).isEqualTo("task-removed");
+            assertThat(event.outcome()).isEqualTo("unknown");
+        });
+    }
+
+    /// A task registered again under the same key starts clean: the cleared row carries no UNKNOWN, so its first timeout
+    /// is announced as a new UNKNOWN, with an id that cannot repeat the first life's (the sequence continues, and the
+    /// fire's start time differs).
+    @Test
+    void reRegisteredTask_startsWithAFreshCondition_andNewIds() {
+        var first = unknown(Option.none(), 1_000L);
+        var cleared = ScheduledTaskStateValue.conditionClearedState(first);
+        var again = unknown(Option.some(cleared), 9_000L);
+
+        announcer.onStatePut(put(KEY, Option.none(), first));
+        announcer.onStatePut(put(KEY, Option.some(first), cleared));
+        announcer.onStatePut(put(KEY, Option.some(cleared), again));
+
+        var ids = events.stream().map(event -> switch (event) {
+            case OperationalEvent.ScheduledTaskOutcomeUnknown u -> u.eventId();
+            case OperationalEvent.ScheduledTaskOutcomeRestored r -> r.eventId();
+            default -> "other";
+        }).toList();
+
+        assertThat(events).extracting(event -> event.getClass().getSimpleName())
+                          .containsExactly("ScheduledTaskOutcomeUnknown", "ScheduledTaskOutcomeRestored", "ScheduledTaskOutcomeUnknown");
+        assertThat(ids).doesNotHaveDuplicates();
+    }
+
+    /// Two different transitions never share an id, even when the same sequence number is read twice: the id is the
+    /// kind, the row, the sequence and the fire's start time.
+    @Test
+    void everyTransitionHasItsOwnEventId() {
+        var f1 = unknown(Option.none(), 1_000L);
+        var f2 = success(Option.some(f1), 2_000L);
+        var f3 = unknown(Option.some(f2), 3_000L);
+        var f3Resolved = ScheduledTaskStateValue.lateFailureState(f3, f3.fireSeq(), "late");
+
+        announcer.onStatePut(put(KEY, Option.none(), f1));
+        announcer.onStatePut(put(KEY, Option.some(f1), f2));
+        announcer.onStatePut(put(KEY, Option.some(f2), f3));
+        announcer.onStatePut(put(KEY, Option.some(f3), f3Resolved));
+
+        var ids = events.stream().map(event -> switch (event) {
+            case OperationalEvent.ScheduledTaskOutcomeUnknown u -> u.eventId();
+            case OperationalEvent.ScheduledTaskOutcomeRestored r -> r.eventId();
+            default -> "other";
+        }).toList();
+
+        assertThat(ids).hasSize(4).doesNotHaveDuplicates();
     }
 
     private static ValuePut<ScheduledTaskStateKey, ScheduledTaskStateValue> put(ScheduledTaskStateKey key,

@@ -213,8 +213,7 @@ class SliceInvokerAwaitCompletionTest {
 
             assertThat(unknowns).as("every retained fire is resolved")
                                 .allSatisfy(unknown -> assertThat(unknown.lateOutcome().await().isSuccess()).isTrue());
-            assertThat(abandonCause(oldest)).as("the dropped fire is given up: its outcome is never learned, and it is not a failure")
-                                          .isInstanceOf(SliceInvokerError.OutcomeAbandoned.class);
+            assertThat(oldest.lateOutcome().isResolved()).as("the dropped fire stays unknown").isFalse();
             assertThat(warnings.stream().filter(line -> line.contains("unknown correlationId"))).isEmpty();
         } finally {
             detach.run();
@@ -240,7 +239,7 @@ class SliceInvokerAwaitCompletionTest {
 
         invoker.onInvokeResponse(InvokeResponse.invokeResponse(HOST, correlationId, "r", true, new byte[0]));
 
-        assertThat(abandonCause(unknown)).as("the expired fire is given up").isInstanceOf(SliceInvokerError.OutcomeAbandoned.class);
+        assertThat(unknown.lateOutcome().isResolved()).as("the expired fire stays unknown").isFalse();
     }
 
     /// A departed node sends no late response, so nothing is retained for it; the outcome stays unknown (it is not
@@ -253,8 +252,7 @@ class SliceInvokerAwaitCompletionTest {
         invoker.onNodeDeparture(HOST);
 
         assertThat(impl().lateCompletionCount()).isZero();
-        assertThat(abandonCause(unknown)).as("a departed callee is told as given up, never as a failure")
-                                         .isInstanceOf(SliceInvokerError.OutcomeAbandoned.class);
+        assertThat(unknown.lateOutcome().isResolved()).isFalse();
     }
 
     /// A response that arrives IN TIME is not retained.
@@ -329,10 +327,5 @@ class SliceInvokerAwaitCompletionTest {
 
             return unit();
         }
-    }
-
-    /// What settled the late outcome of a fire the invoker gave up: an [SliceInvokerError.OutcomeAbandoned] failure.
-    private static org.pragmatica.lang.Cause abandonCause(SliceInvokerError.CompletionUnknown unknown) {
-        return unknown.lateOutcome().await().fold(cause -> cause, _ -> null);
     }
 }

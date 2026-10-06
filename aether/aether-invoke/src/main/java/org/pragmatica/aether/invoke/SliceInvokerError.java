@@ -42,9 +42,8 @@ public sealed interface SliceInvokerError extends Cause {
     /// either an execution or a failure.
     ///
     /// `lateOutcome` settles if the callee's response arrives LATE: with success when the callee completed the call,
-    /// with the callee's failure otherwise. When the invoker gives the call up (see `SliceInvokerImpl.LATE_COMPLETION_CAPACITY`,
-    /// the TTL, a departed target, a stop) it settles as an [OutcomeAbandoned] failure: the outcome stays unknown and
-    /// will never be learned. It stays unsettled only while the call is retained and unanswered.
+    /// with the callee's failure otherwise. It never settles when no response arrives, or when the invoker no longer
+    /// retains the call (see `SliceInvokerImpl.LATE_COMPLETION_CAPACITY`): the outcome then stays unknown.
     record CompletionUnknown(Artifact artifact, MethodName method, Cause timeout, Promise<Unit> lateOutcome) implements SliceInvokerError {
         public static CompletionUnknown completionUnknown(Artifact artifact,
                                                           MethodName method,
@@ -64,21 +63,6 @@ public sealed interface SliceInvokerError extends Cause {
                  + ":" + method
                  + ": no response within the invocation timeout (" + timeout.message()
                  + ")";
-        }
-    }
-
-    /// #1723: a completion-awaited call that timed out is no longer retained by the invoker (capacity, TTL, its target
-    /// node departed, the invoker stopped), so no response can ever resolve it: its outcome will never be learned. It
-    /// settles `CompletionUnknown.lateOutcome` as a failure of THIS type, which is not a failure of the call: callers
-    /// must not count it as one.
-    record OutcomeAbandoned(String reason) implements SliceInvokerError {
-        public static OutcomeAbandoned outcomeAbandoned(String reason) {
-            return new OutcomeAbandoned(reason);
-        }
-
-        @Override
-        public String message() {
-            return "Outcome never learned: " + reason;
         }
     }
 

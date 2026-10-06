@@ -10,7 +10,6 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.function.Predicate;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ScheduledFuture;
 import java.util.stream.Collectors;
@@ -274,13 +273,7 @@ class SliceInvokerImpl implements SliceInvoker {
     private final Map<String, LateCompletion> lateCompletions = Collections.synchronizedMap(new LinkedHashMap<>() {
         @Override
         protected boolean removeEldestEntry(Map.Entry<String, LateCompletion> eldest) {
-            var full = size() > LATE_COMPLETION_CAPACITY;
-
-            if (full) {
-                abandon(eldest.getValue(), "no longer retained: capacity " + LATE_COMPLETION_CAPACITY);
-            }
-
-            return full;
+            return size() > LATE_COMPLETION_CAPACITY;
         }
     });
 
@@ -346,27 +339,9 @@ class SliceInvokerImpl implements SliceInvoker {
     /// like one past the capacity, and their outcome stays unknown. Runs with the stale-invocation cleanup, so a retained
     /// fire lives at most the TTL plus one cleanup interval.
     Unit expireLateCompletions(long nowMs) {
-        return abandonLateCompletions(late -> nowMs - late.retainedAtMs() >= LATE_COMPLETION_TTL_MS,
-                                      "no longer retained: older than " + LATE_COMPLETION_TTL_MS + " ms");
-    }
-
-    /// Removes the retained fires `which` selects and settles each one's late outcome as abandoned: no answer can reach a
-    /// fire the invoker no longer retains, and a caller waiting on it must be told rather than left waiting.
-    private Unit abandonLateCompletions(Predicate<LateCompletion> which, String reason) {
-        List<LateCompletion> dropped;
-
-        synchronized (lateCompletions) {
-            dropped = lateCompletions.values().stream().filter(which).toList();
-            lateCompletions.values().removeAll(dropped);
-        }
-
-        dropped.forEach(late -> abandon(late, reason));
+        lateCompletions.values().removeIf(late -> nowMs - late.retainedAtMs() >= LATE_COMPLETION_TTL_MS);
 
         return Unit.unit();
-    }
-
-    private static void abandon(LateCompletion late, String reason) {
-        late.outcome().resolve(SliceInvokerError.OutcomeAbandoned.outcomeAbandoned(reason).result());
     }
 
     private boolean isStaleAndCleanup(Map.Entry<String, PendingInvocation> entry, long staleThreshold) {
@@ -397,7 +372,7 @@ class SliceInvokerImpl implements SliceInvoker {
         pendingInvocations.forEach(this::cancelPendingInvocation);
         pendingInvocations.clear();
         pendingInvocationsByNode.clear();
-        abandonLateCompletions(_ -> true, "invoker stopped");
+        lateCompletions.clear();
         affinityResolvers.clear();
         var task = cleanupTask;
 
@@ -1122,11 +1097,9 @@ class SliceInvokerImpl implements SliceInvoker {
     }
 
     public org.pragmatica.lang.Unit onNodeDeparture(NodeId departedNode) {
-        // A departed node sends no late response: nothing can resolve these. Their outcomes stay unknown, never a failure:
-        // the callee may have completed the fire before it left. Their callers are told the outcome will never be learned.
-        abandonLateCompletions(late -> late.targetNode()
-                                           .equals(departedNode),
-                               "target node " + departedNode + " departed");
+        // A departed node sends no late response: nothing can resolve these, so their outcomes stay unknown.
+        lateCompletions.values().removeIf(late -> late.targetNode()
+                                                      .equals(departedNode));
         Option.option(pendingInvocationsByNode.remove(departedNode))
               .filter(ids -> !ids.isEmpty())
               .onPresent(correlationIds -> retryPendingForDepartedNode(departedNode, correlationIds));

@@ -849,6 +849,12 @@ public final class ClusterEventAggregator {
         return lastRaisedOperatorWarning;
     }
 
+    /// The tasks whose UNKNOWN the aggregator is tracking (published or held): it ends with the task's RESTORED,
+    /// including `task-removed`, so a removed task cannot leave an entry behind.
+    public int trackedScheduledOutcomes() {
+        return scheduledOutcomes.size();
+    }
+
     /// Operator-warning throttle keys currently held (observability for #1617 R3).
     public int operatorWarningThrottleKeys() {
         return operatorWarningThrottle.size();
@@ -1576,17 +1582,27 @@ public final class ClusterEventAggregator {
 
         emit(new ClusterEvent.ScheduledTaskOutcomeRestored(hlcClock.now(),
                                                            Severity.INFO,
-                                                           "Scheduled task " + event.task() + (event.late()
-                                                                                               ? " resolved its unknown outcome: the late response says it "
-                                                                                               : " is known again: a later fire completed and ") + event.outcome(),
+                                                           restoredSummary(event),
                                                            scheduledOutcomeDetails(event.task(),
                                                                                    event.node(),
                                                                                    unknown.fireAt(),
                                                                                    event.eventId(),
                                                                                    Map.of("outcome",
                                                                                           event.outcome(),
+                                                                                          "reason",
+                                                                                          event.reason(),
                                                                                           "late",
                                                                                           String.valueOf(event.late())))));
+    }
+
+    private static String restoredSummary(OperationalEvent.ScheduledTaskOutcomeRestored event) {
+        var task = "Scheduled task " + event.task();
+
+        return switch (event.reason()) {
+            case OperationalEvent.ScheduledTaskOutcomeRestored.LATE_ANSWER -> task + " resolved its unknown outcome: the late response says it " + event.outcome();
+            case OperationalEvent.ScheduledTaskOutcomeRestored.TASK_REMOVED -> task + " was removed while its outcome was unknown";
+            default -> task + " is known again: a later fire completed and " + event.outcome();
+        };
     }
 
     /// Publishes every UNKNOWN the window held back whose window has since closed and whose outcome is still unknown:

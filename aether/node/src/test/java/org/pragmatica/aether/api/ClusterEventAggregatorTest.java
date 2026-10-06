@@ -1224,7 +1224,7 @@ class ClusterEventAggregatorTest {
     }
 
     private static OperationalEvent.ScheduledTaskOutcomeRestored restoredOutcome(String eventId, String outcome) {
-        return OperationalEvent.ScheduledTaskOutcomeRestored.scheduledTaskOutcomeRestored(CRON_TASK, "node-a", outcome, true, eventId);
+        return OperationalEvent.ScheduledTaskOutcomeRestored.scheduledTaskOutcomeRestored(CRON_TASK, "node-a", outcome, "late-answer", eventId);
     }
 
     private Harness harnessWithClock(AtomicLong physicalMillis) {
@@ -1342,11 +1342,36 @@ class ClusterEventAggregatorTest {
         h.aggregator().onScheduledTaskOutcomeRestored(OperationalEvent.ScheduledTaskOutcomeRestored.scheduledTaskOutcomeRestored(CRON_TASK,
                                                                                                                                    "node-a",
                                                                                                                                    "failed",
-                                                                                                                                   false,
+                                                                                                                                   "later-fire",
                                                                                                                                    "r"));
 
         assertThat(h.events().getLast().details()).containsEntry("late", "false").containsEntry("outcome", "failed");
         assertThat(h.events().getLast().summary()).contains("a later fire completed");
+    }
+
+    /// A RESTORED because the task was removed closes the operator's UNKNOWN, and frees the aggregator's entry: a task
+    /// registered again starts with nothing tracked (no inherited UNKNOWN, no unbounded growth).
+    @Test
+    void scheduledTaskOutcome_taskRemoved_closesTheUnknown_andFreesTheEntry() {
+        var physicalMillis = new AtomicLong(1_000_000L);
+        var h = harnessWithClock(physicalMillis);
+
+        h.aggregator().onScheduledTaskOutcomeUnknown(unknownOutcome("u1", 5L));
+        h.aggregator().onScheduledTaskOutcomeRestored(OperationalEvent.ScheduledTaskOutcomeRestored.scheduledTaskOutcomeRestored(CRON_TASK,
+                                                                                                                                   "node-a",
+                                                                                                                                   "unknown",
+                                                                                                                                   "task-removed",
+                                                                                                                                   "r1"));
+
+        assertThat(h.events()).hasSize(2);
+        assertThat(h.events().getLast().details()).containsEntry("reason", "task-removed").containsEntry("fireAt", "5");
+        assertThat(h.events().getLast().summary()).contains("removed");
+        assertThat(h.aggregator().trackedScheduledOutcomes()).as("nothing left tracked for the removed task").isZero();
+
+        physicalMillis.addAndGet(61_000L);
+        h.aggregator().onScheduledTaskOutcomeUnknown(unknownOutcome("u2", 99L));
+
+        assertThat(h.events()).as("the re-registered task's first UNKNOWN is announced afresh").hasSize(3);
     }
 
     /// #1723: a RESTORED nobody was told the UNKNOWN for is not an all-clear.

@@ -21,15 +21,15 @@ import org.pragmatica.lang.Option;
 /// Derived from the COMMITTED task state, like [StreamIsrAnnouncer]: every node applies the same Put and derives the same
 /// event from its old and new value, and the cluster-events aggregator publishes only on the owner of the cluster-events
 /// partition. The condition is "the NEWEST fire's outcome is UNKNOWN" (`lastOutcome`): it begins with a fire that timed
-/// out and ends with a later fire that completed (RESTORED, not late) or the late answer of the newest fire (RESTORED,
-/// late). A commit that keeps it unchanged (another timed-out fire while unknown, the late answer of an OLDER fire, a
-/// skipped overlap, a gauge falling because a fire was given up) announces nothing: the committed outcome is the dedupe.
-/// Per-task flood control (the window, and holding an UNKNOWN that ends inside it) is the aggregator's.
+/// out and ends with a later fire that completed (RESTORED `later-fire`), the late answer of the newest fire (RESTORED
+/// `late-answer`) or the task's removal (RESTORED `task-removed`: the manager clears the open outcome when the task goes).
+/// A commit that keeps it unchanged (another timed-out fire while unknown, the late answer of an OLDER fire, a skipped
+/// overlap) announces nothing: the committed outcome is the dedupe. A fire whose answer never comes cannot hold the
+/// condition up: nothing a live process must do is part of it. Per-task flood control (the window, and holding an UNKNOWN
+/// that ends inside it) is the aggregator's.
 ///
-/// A removed task row raises no event (the condition is gone with the task). The condition ends only through a fire's
-/// completion: a task that stops firing while unknown stays unknown, and says so.
-///
-/// Every event carries a deterministic `eventId` (task row and its fire sequence), so two nodes that both pass the
+/// Every event carries a deterministic `eventId` (task row, its fire sequence and the fire's start time: the sequence
+/// never goes backwards, and the start time tells apart a row's lives), so two nodes that both pass the
 /// events-owner gate during a membership change publish ONE event as far as every reader that de-duplicates by `eventId`
 /// is concerned.
 public interface ScheduledTaskOutcomeAnnouncer {
@@ -56,33 +56,40 @@ public interface ScheduledTaskOutcomeAnnouncer {
 
         var task = key.configSection() + "/" + key.artifact().asString() + "/" + key.methodName().name();
         var node = key.node().map(NodeId::id).or("");
+        var id = key.asString() + ":" + after.fireSeq() + ":" + after.newestFireAt();
 
         return Option.some(isUnknown
                            ? OperationalEvent.ScheduledTaskOutcomeUnknown.scheduledTaskOutcomeUnknown(task,
                                                                                                       node,
-                                                                                                      after.updatedAt(),
-                                                                                                      "scheduled-outcome-unknown:" + key.asString()
-                                                                                                     + ":" + after.fireSeq())
+                                                                                                      after.newestFireAt(),
+                                                                                                      "scheduled-outcome-unknown:" + id)
                            : OperationalEvent.ScheduledTaskOutcomeRestored.scheduledTaskOutcomeRestored(task,
                                                                                                         node,
                                                                                                         outcomeOf(after),
-                                                                                                        lateAnswer(before,
-                                                                                                                   after),
-                                                                                                        "scheduled-outcome-restored:" + key.asString()
-                                                                                                       + ":" + after.fireSeq()));
+                                                                                                        reasonOf(before,
+                                                                                                                 after),
+                                                                                                        "scheduled-outcome-restored:" + id));
     }
 
-    /// The outcome the task now records for its newest fire: an execution or a failure.
+    /// The outcome the task now records for its newest fire: an execution or a failure; none when it was cleared.
     private static String outcomeOf(ScheduledTaskStateValue after) {
-        return ScheduledTaskStateValue.OUTCOME_SUCCESS.equals(after.lastOutcome())
-               ? "executed"
-               : "failed";
+        return switch (after.lastOutcome()) {
+            case ScheduledTaskStateValue.OUTCOME_SUCCESS -> "executed";
+            case ScheduledTaskStateValue.OUTCOME_FAILURE -> "failed";
+            default -> "unknown";
+        };
     }
 
-    /// A late answer is the only commit that both ends the condition and lowers the gauge; a later fire's completion
-    /// carries the gauge over.
-    private static boolean lateAnswer(Option<ScheduledTaskStateValue> before, ScheduledTaskStateValue after) {
-        return after.unknownOutcomes() < before.map(ScheduledTaskStateValue::unknownOutcomes)
-                                               .or(0);
+    /// A late answer is the only commit that ends the condition and raises `lateResolutions`; a cleared outcome is the
+    /// task's removal; anything else is a later fire completing.
+    private static String reasonOf(Option<ScheduledTaskStateValue> before, ScheduledTaskStateValue after) {
+        if (after.lastOutcome().isEmpty()) {
+            return OperationalEvent.ScheduledTaskOutcomeRestored.TASK_REMOVED;
+        }
+
+        return after.lateResolutions() > before.map(ScheduledTaskStateValue::lateResolutions)
+                                               .or(0)
+               ? OperationalEvent.ScheduledTaskOutcomeRestored.LATE_ANSWER
+               : OperationalEvent.ScheduledTaskOutcomeRestored.LATER_FIRE;
     }
 }

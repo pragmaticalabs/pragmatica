@@ -333,6 +333,46 @@ class ScheduledTaskManagerTest {
             assertThat(manager.activeTimerCount()).isEqualTo(1);
         }
 
+        /// #1723: the task is removed while its newest fire is unknown: the open outcome is cleared with it (the committed
+        /// change tells the operator `task-removed`), the counters and the sequence stay, and a task registered again
+        /// starts with a fresh condition instead of inheriting the UNKNOWN.
+        @Test
+        void registryChange_taskRemoved_withOpenUnknown_clearsTheOutcome_keepingTheCounters() {
+            var stateKey = ScheduledTaskStateKey.scheduledTaskStateKey("cache", artifact, method, self);
+            var unknownRow = ScheduledTaskStateValue.unknownOutcomeState(Option.none(), 0, 1_000L);
+
+            stateMap.put(stateKey, unknownRow);
+            putTask("cache", artifact, method, self, "30s", ExecutionMode.ALL);
+            establishQuorum();
+            var remove = new KVCommand.Remove<ScheduledTaskKey>(ScheduledTaskKey.scheduledTaskKey("cache", artifact, method));
+
+            registry.onScheduledTaskRemove(new org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove<>(remove,
+                                                                                                                      Option.none()));
+            var cleared = stateMap.get(stateKey);
+
+            assertThat(cleared.outcomeUnknown()).as("the open UNKNOWN ends with the task").isFalse();
+            assertThat(cleared.lastOutcome()).isEmpty();
+            assertThat(cleared.completionTimeouts()).as("the history stays").isEqualTo(unknownRow.completionTimeouts());
+            assertThat(cleared.fireSeq()).as("the sequence continues").isEqualTo(unknownRow.fireSeq());
+        }
+
+        /// A removal with nothing unknown writes nothing.
+        @Test
+        void registryChange_taskRemoved_withoutOpenUnknown_writesNothing() {
+            var stateKey = ScheduledTaskStateKey.scheduledTaskStateKey("cache", artifact, method, self);
+
+            stateMap.put(stateKey, ScheduledTaskStateValue.successState(Option.none(), 0, 1_000L));
+            putTask("cache", artifact, method, self, "30s", ExecutionMode.ALL);
+            establishQuorum();
+            var writesBefore = stateWrites.size();
+            var remove = new KVCommand.Remove<ScheduledTaskKey>(ScheduledTaskKey.scheduledTaskKey("cache", artifact, method));
+
+            registry.onScheduledTaskRemove(new org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove<>(remove,
+                                                                                                                      Option.none()));
+
+            assertThat(stateWrites).hasSize(writesBefore);
+        }
+
         @Test
         void registryChange_taskRemoved_cancelsTimer() {
             putTask("cache", artifact, method, self, "30s", ExecutionMode.ALL);
@@ -573,7 +613,7 @@ class ScheduledTaskManagerTest {
         }
 
         /// #1723 (CTO ruling): a remote fire that times out has an UNKNOWN outcome, recorded as such: not an execution,
-        /// not a failure (the failure streak is neither extended nor reset), counted in `unknownOutcomes`, and logged once
+        /// not a failure (the failure streak is neither extended nor reset), counted in `completionTimeouts`, and logged once
         /// per transition into the state, not per fire. A later completed fire leaves the state and is logged once.
         @Test
         void fixedRate_remoteFireWithNoResponse_recordsUnknown_notAFailureNotAnExecution_andLogsOnce() throws Exception {
@@ -588,7 +628,7 @@ class ScheduledTaskManagerTest {
                 establishQuorum();
                 var key = ScheduledTaskStateKey.scheduledTaskStateKey("cache", artifact, method, self);
 
-                awaitTrue(() -> stateFor(key).map(v -> v.unknownOutcomes() >= 3)
+                awaitTrue(() -> stateFor(key).map(v -> v.completionTimeouts() >= 3)
                                         .or(false),
                           15000);
                 manager.stop();
@@ -599,7 +639,7 @@ class ScheduledTaskManagerTest {
                 assertThat(state.consecutiveFailures()).as("unknown is not a failure").isZero();
                 assertThat(state.lastFailureMessage()).as("no failure was recorded").isEmpty();
                 assertThat(warnings.stream().filter(message -> message.contains("outcome UNKNOWN")))
-                    .as("logged once per transition into UNKNOWN, not per fire (%d fires)", state.unknownOutcomes())
+                    .as("logged once per transition into UNKNOWN, not per fire (%d fires)", state.completionTimeouts())
                     .hasSize(1);
             } finally {
                 detach.run();
@@ -607,7 +647,7 @@ class ScheduledTaskManagerTest {
         }
 
         /// #1723 (owner ruling N1): the callee's response arrives after the fire was recorded UNKNOWN. It is that fire's
-        /// real outcome: the fire becomes an execution, leaves `unknownOutcomes`, and the task leaves UNKNOWN.
+        /// real outcome: the fire becomes an execution, is counted in `lateResolutions`, and the task leaves UNKNOWN.
         @Test
         void fixedRate_lateSuccessResponse_resolvesTheUnknownFire_intoAnExecution() {
             var key = unknownTaskState(1);
@@ -619,7 +659,8 @@ class ScheduledTaskManagerTest {
 
             assertThat(state.lastOutcome()).isEqualTo(ScheduledTaskStateValue.OUTCOME_SUCCESS);
             assertThat(state.totalExecutions()).as("the late answer makes the fire an execution").isEqualTo(1);
-            assertThat(state.unknownOutcomes()).as("a resolved fire is no longer unknown").isEqualTo(before.unknownOutcomes() - 1);
+            assertThat(state.lateResolutions()).as("a late answer is counted").isEqualTo(before.lateResolutions() + 1);
+            assertThat(state.completionTimeouts()).as("the timeout total is monotonic").isEqualTo(before.completionTimeouts());
             assertThat(state.consecutiveFailures()).isZero();
             assertThat(state.nextFireAt()).as("the schedule is untouched").isEqualTo(before.nextFireAt());
         }
@@ -637,7 +678,7 @@ class ScheduledTaskManagerTest {
             assertThat(state.consecutiveFailures()).as("the late answer makes the fire a failure").isEqualTo(1);
             assertThat(state.lastFailureMessage()).isEqualTo("callee failed late");
             assertThat(state.totalExecutions()).as("a failure is not an execution").isZero();
-            assertThat(state.unknownOutcomes()).isEqualTo(before.unknownOutcomes() - 1);
+            assertThat(state.lateResolutions()).isEqualTo(before.lateResolutions() + 1);
         }
 
         /// Only the answered fire is resolved: the others stay counted as unknown.
@@ -651,8 +692,8 @@ class ScheduledTaskManagerTest {
             var state = stateFor(key).unwrap();
 
             assertThat(state.totalExecutions()).isEqualTo(1);
-            assertThat(state.unknownOutcomes()).as("the unanswered fires stay unknown").isEqualTo(before.unknownOutcomes() - 1)
-                                               .isGreaterThanOrEqualTo(1);
+            assertThat(state.lateResolutions()).as("only the answered fire is resolved").isEqualTo(1);
+            assertThat(state.completionTimeouts()).as("the unanswered fires stay counted as timeouts").isGreaterThanOrEqualTo(2);
         }
 
         /// #1723 ordering by FIRE: an older fire's late answer resolves ITS fire (the gauge falls) but never overwrites
@@ -662,14 +703,14 @@ class ScheduledTaskManagerTest {
         void fixedRate_olderFireLateFailure_afterNewerFireSucceeded_keepsTheNewerSuccess() {
             var key = unknownTaskState(1);
             var unknown = stateFor(key).unwrap();
-            var newer = ScheduledTaskStateValue.successState(Option.some(unknown), unknown.nextFireAt());
+            var newer = ScheduledTaskStateValue.successState(Option.some(unknown), unknown.nextFireAt(), unknown.newestFireAt() + 1);
 
             stateMap.put(key, newer);
             stubInvoker.lateOutcomes.getFirst().fail(() -> "old fire failed late");
-            awaitLate(key, v -> v.unknownOutcomes() < newer.unknownOutcomes());
+            awaitLate(key, v -> v.lateResolutions() > newer.lateResolutions());
             var state = stateFor(key).unwrap();
 
-            assertThat(state.unknownOutcomes()).as("the old fire is resolved: the gauge falls").isEqualTo(newer.unknownOutcomes() - 1);
+            assertThat(state.lateResolutions()).as("the old fire is resolved: counted").isEqualTo(newer.lateResolutions() + 1);
             assertThat(state.lastOutcome()).as("the newer fire's definite outcome stands").isEqualTo(ScheduledTaskStateValue.OUTCOME_SUCCESS);
             assertThat(state.consecutiveFailures()).as("an older failure does not extend the newer streak").isZero();
             assertThat(state.totalExecutions()).isEqualTo(newer.totalExecutions());
@@ -681,37 +722,17 @@ class ScheduledTaskManagerTest {
         void fixedRate_olderFireLateSuccess_afterNewerFireFailed_keepsTheNewerFailure() {
             var key = unknownTaskState(1);
             var unknown = stateFor(key).unwrap();
-            var newer = ScheduledTaskStateValue.failureState(Option.some(unknown), unknown.nextFireAt(), "newer failed");
+            var newer = ScheduledTaskStateValue.failureState(Option.some(unknown), unknown.nextFireAt(), unknown.newestFireAt() + 1, "newer failed");
 
             stateMap.put(key, newer);
             stubInvoker.lateOutcomes.getFirst().succeed(Unit.unit());
-            awaitLate(key, v -> v.unknownOutcomes() < newer.unknownOutcomes());
+            awaitLate(key, v -> v.lateResolutions() > newer.lateResolutions());
             var state = stateFor(key).unwrap();
 
             assertThat(state.lastOutcome()).isEqualTo(ScheduledTaskStateValue.OUTCOME_FAILURE);
             assertThat(state.consecutiveFailures()).as("an older success does not reset the newer streak").isEqualTo(newer.consecutiveFailures());
             assertThat(state.lastFailureMessage()).isEqualTo("newer failed");
             assertThat(state.totalExecutions()).as("it still executed").isEqualTo(newer.totalExecutions() + 1);
-        }
-
-        /// #1723 B1: a fire the invoker gives up (capacity, TTL, a departed callee, a stop) leaves the gauge for the
-        /// never-learned counter. Nothing is invented: not an execution, not a failure, the newest fire stays UNKNOWN.
-        @Test
-        void fixedRate_abandonedFire_leavesTheGauge_forTheNeverLearnedCounter_inventingNoOutcome() {
-            var key = unknownTaskState(1);
-            var before = stateFor(key).unwrap();
-
-            stubInvoker.lateOutcomes.getLast().fail(SliceInvokerError.OutcomeAbandoned.outcomeAbandoned("test"));
-            awaitLate(key, v -> v.unknownOutcomes() < before.unknownOutcomes());
-            var state = stateFor(key).unwrap();
-
-            assertThat(state.unknownOutcomes()).as("the gauge drops").isEqualTo(before.unknownOutcomes() - 1);
-            assertThat(state.outcomesNeverLearned()).as("and the fire is counted as never learned").isEqualTo(before.outcomesNeverLearned() + 1);
-            assertThat(state.completionTimeouts()).as("the timeout total is monotonic").isEqualTo(before.completionTimeouts());
-            assertThat(state.completionTimeouts()).isGreaterThanOrEqualTo(before.unknownOutcomes());
-            assertThat(state.lastOutcome()).as("the newest fire is still unknown").isEqualTo(ScheduledTaskStateValue.OUTCOME_UNKNOWN);
-            assertThat(state.totalExecutions()).as("not an execution").isZero();
-            assertThat(state.consecutiveFailures()).as("not a failure").isZero();
         }
 
         /// The late outcome is applied on the promise's own thread: wait for the write, bounded. A resolution that never
@@ -732,7 +753,7 @@ class ScheduledTaskManagerTest {
             stubInvoker.unknownWithLateOutcome.set(true);
             putTask("cache", artifact, method, self, "1s", ExecutionMode.ALL);
             establishQuorum();
-            awaitTrue(() -> stateFor(key).map(v -> v.unknownOutcomes() >= fires)
+            awaitTrue(() -> stateFor(key).map(v -> v.completionTimeouts() >= fires)
                                     .or(false),
                       15000);
             manager.stop();
@@ -754,7 +775,7 @@ class ScheduledTaskManagerTest {
                                     .or(false),
                       4000);
             stubInvoker.setCompletionFailure(Option.some(SliceInvokerError.CompletionUnknown.completionUnknown(artifact, method, () -> "no response")));
-            awaitTrue(() -> stateFor(key).map(v -> v.unknownOutcomes() >= 1)
+            awaitTrue(() -> stateFor(key).map(v -> v.completionTimeouts() >= 1)
                                     .or(false),
                       4000);
             manager.stop();

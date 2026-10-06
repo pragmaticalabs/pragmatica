@@ -273,6 +273,7 @@ public interface ScheduledTaskManager {
 
         private void handleTaskRemoved(ScheduledTaskKey key) {
             TaskOps.cancelTimer(ctx, key);
+            TaskOps.clearOpenConditions(ctx, key, fsm.current() instanceof Leading);
         }
 
         private boolean shouldRunInCurrentState(ScheduledTask task) {
@@ -495,24 +496,32 @@ public interface ScheduledTaskManager {
         }
 
         private static Promise<Unit> executeTask(Context ctx, ScheduledTask task, LongSupplier nextFireAtSupplier) {
+            var firedAt = System.currentTimeMillis();
+
             return ctx.invoker.invokeAwaitingCompletion(task.artifact(),
                                                         task.methodName(),
                                                         Unit.unit())
                               .onSuccess(_ -> writeSuccessState(ctx,
                                                                 task,
-                                                                nextFireAtSupplier.getAsLong()))
+                                                                nextFireAtSupplier.getAsLong(),
+                                                                firedAt))
                               .onFailure(cause -> recordFailedFire(ctx,
                                                                    task,
                                                                    cause,
-                                                                   nextFireAtSupplier.getAsLong()));
+                                                                   nextFireAtSupplier.getAsLong(),
+                                                                   firedAt));
         }
 
         /// A fire that ended without a success. A timeout of a REMOTE fire ([SliceInvokerError.CompletionUnknown]) says
         /// nothing about the callee: the outcome is UNKNOWN, recorded as such and counted neither as an execution nor as a
         /// failure. Every other failure (a failure response, a departed node, a request that could not be sent) is one.
-        private static void recordFailedFire(Context ctx, ScheduledTask task, Cause cause, long nextFireAt) {
+        private static void recordFailedFire(Context ctx,
+                                             ScheduledTask task,
+                                             Cause cause,
+                                             long nextFireAt,
+                                             long firedAt) {
             if (cause instanceof SliceInvokerError.CompletionUnknown unknown) {
-                var written = writeUnknownOutcomeState(ctx, task, cause.message(), nextFireAt);
+                var written = writeUnknownOutcomeState(ctx, task, cause.message(), nextFireAt, firedAt);
                 var fireSeq = written.fireSeq();
 
                 unknown.lateOutcome()
@@ -523,27 +532,16 @@ public interface ScheduledTaskManager {
                        .onFailure(late -> resolveLate(ctx,
                                                       task,
                                                       written,
-                                                      base -> lateFailureOrAbandoned(task, base, fireSeq, late)));
+                                                      base -> lateFailure(task, base, fireSeq, late)));
             } else {
-                handleTaskFailure(ctx, task, cause.message(), nextFireAt);
+                handleTaskFailure(ctx, task, cause.message(), nextFireAt, firedAt);
             }
         }
 
-        /// The invoker gave the fire up (a [SliceInvokerError.OutcomeAbandoned]): its outcome is never learned, which is
-        /// not a failure of the call. Any other failure is the callee's own late failure.
-        private static ScheduledTaskStateValue lateFailureOrAbandoned(ScheduledTask task,
-                                                                      ScheduledTaskStateValue base,
-                                                                      int fireSeq,
-                                                                      Cause late) {
-            if (late instanceof SliceInvokerError.OutcomeAbandoned) {
-                log.warn("Scheduled task {}.{} unknown outcome will never be learned: {}",
-                         task.configSection(),
-                         task.methodName().name(),
-                         late.message());
-
-                return ScheduledTaskStateValue.abandonedState(base);
-            }
-
+        private static ScheduledTaskStateValue lateFailure(ScheduledTask task,
+                                                           ScheduledTaskStateValue base,
+                                                           int fireSeq,
+                                                           Cause late) {
             log.warn("Scheduled task {}.{} failed (late response): {}",
                      task.configSection(),
                      task.methodName().name(),
@@ -552,42 +550,54 @@ public interface ScheduledTaskManager {
             return ScheduledTaskStateValue.lateFailureState(base, fireSeq, late.message());
         }
 
-        private static void handleTaskFailure(Context ctx, ScheduledTask task, String message, long nextFireAt) {
+        private static void handleTaskFailure(Context ctx,
+                                              ScheduledTask task,
+                                              String message,
+                                              long nextFireAt,
+                                              long firedAt) {
             log.warn("Scheduled task {}.{} failed: {}",
                      task.configSection(),
                      task.methodName().name(),
                      message);
-            writeFailureState(ctx, task, message, nextFireAt);
+            writeFailureState(ctx, task, message, nextFireAt, firedAt);
         }
 
-        private static void writeSuccessState(Context ctx, ScheduledTask task, long nextFireAt) {
-            var key = stateKeyFor(ctx, task);
-            var prior = ctx.stateReader.apply(key);
-
-            logOutcomeTransitionOut(task, prior);
-            ctx.stateWriter.accept(new KVCommand.Put<>(key, ScheduledTaskStateValue.successState(prior, nextFireAt)));
-        }
-
-        private static void writeFailureState(Context ctx, ScheduledTask task, String message, long nextFireAt) {
+        private static void writeSuccessState(Context ctx, ScheduledTask task, long nextFireAt, long firedAt) {
             var key = stateKeyFor(ctx, task);
             var prior = ctx.stateReader.apply(key);
 
             logOutcomeTransitionOut(task, prior);
             ctx.stateWriter.accept(new KVCommand.Put<>(key,
-                                                       ScheduledTaskStateValue.failureState(prior, nextFireAt, message)));
+                                                       ScheduledTaskStateValue.successState(prior, nextFireAt, firedAt)));
+        }
+
+        private static void writeFailureState(Context ctx,
+                                              ScheduledTask task,
+                                              String message,
+                                              long nextFireAt,
+                                              long firedAt) {
+            var key = stateKeyFor(ctx, task);
+            var prior = ctx.stateReader.apply(key);
+
+            logOutcomeTransitionOut(task, prior);
+            ctx.stateWriter.accept(new KVCommand.Put<>(key,
+                                                       ScheduledTaskStateValue.failureState(prior,
+                                                                                            nextFireAt,
+                                                                                            firedAt,
+                                                                                            message)));
         }
 
         /// The outcome is UNKNOWN (#1723). Logged ONCE per transition into the unknown state, not per fire: a task that
-        /// keeps timing out is counted in `unknownOutcomes`, and the log line says so; the line for leaving the state is
+        /// keeps timing out is counted in `completionTimeouts`, and the log line says so; the line for leaving the state is
         /// [#logOutcomeTransitionOut].
         private static ScheduledTaskStateValue writeUnknownOutcomeState(Context ctx,
                                                                         ScheduledTask task,
                                                                         String message,
-                                                                        long nextFireAt) {
+                                                                        long nextFireAt,
+                                                                        long firedAt) {
             var key = stateKeyFor(ctx, task);
             var prior = ctx.stateReader.apply(key);
-            var alreadyUnknown = prior.map(state -> ScheduledTaskStateValue.OUTCOME_UNKNOWN.equals(state.lastOutcome()))
-                                      .or(false);
+            var alreadyUnknown = prior.map(ScheduledTaskStateValue::outcomeUnknown).or(false);
 
             if (!alreadyUnknown) {
                 log.warn("Scheduled task {}.{} outcome UNKNOWN: {} (not counted as an execution or a failure; further unknown"
@@ -597,18 +607,18 @@ public interface ScheduledTaskManager {
                          message);
             }
 
-            var value = ScheduledTaskStateValue.unknownOutcomeState(prior, nextFireAt);
+            var value = ScheduledTaskStateValue.unknownOutcomeState(prior, nextFireAt, firedAt);
 
             ctx.stateWriter.accept(new KVCommand.Put<>(key, value));
 
             return value;
         }
 
-        /// A late answer for (or the abandonment of) the fire that wrote `written`. Applied to the row as it is NOW, whatever
-        /// was recorded since (a newer fire's outcome stands, see [ScheduledTaskStateValue#lateSuccessState]), except that a
-        /// row older than the fire itself (its UNKNOWN commit not yet visible) is replaced by `written` as the base
-        /// ([ScheduledTaskStateValue#resolutionBase]): the sequence never goes backwards and the gauge is lowered against a
-        /// count that includes this fire. A row that is gone (the task was removed) has nothing to resolve.
+        /// A late answer for the fire that wrote `written`. Applied to the row as it is NOW, whatever was recorded since (a
+        /// newer fire's outcome stands, see [ScheduledTaskStateValue#lateSuccessState]), except that a row older than the
+        /// fire itself (its UNKNOWN commit not yet visible) is replaced by `written` as the base
+        /// ([ScheduledTaskStateValue#resolutionBase]): the sequence never goes backwards. A row that is gone (the task was
+        /// removed) has nothing to resolve.
         private static void resolveLate(Context ctx,
                                         ScheduledTask task,
                                         ScheduledTaskStateValue written,
@@ -636,6 +646,32 @@ public interface ScheduledTaskManager {
             }
 
             ctx.stateWriter.accept(new KVCommand.Put<>(key, resolved));
+        }
+
+        /// The task is gone: an open UNKNOWN condition ends with it, so a task registered again under the same key starts
+        /// with a fresh condition instead of inheriting an UNKNOWN (#1723). The counters, the sequence and the history
+        /// stay; only the unknown outcome is cleared, and that committed change is what tells the operator
+        /// (`task-removed`). This node's own ALL-mode row is cleared by this node; the unscoped SINGLE-mode row, shared by
+        /// every node, only by the leader.
+        static void clearOpenConditions(Context ctx, ScheduledTaskKey key, boolean leader) {
+            clearOpenCondition(ctx,
+                               ScheduledTaskStateKey.scheduledTaskStateKey(key.configSection(),
+                                                                           key.artifact(),
+                                                                           key.methodName(),
+                                                                           ctx.self));
+            if (leader) {
+                clearOpenCondition(ctx,
+                                   ScheduledTaskStateKey.scheduledTaskStateKey(key.configSection(),
+                                                                               key.artifact(),
+                                                                               key.methodName()));
+            }
+        }
+
+        private static void clearOpenCondition(Context ctx, ScheduledTaskStateKey stateKey) {
+            ctx.stateReader.apply(stateKey)
+                           .filter(ScheduledTaskStateValue::outcomeUnknown)
+                           .onPresent(row -> ctx.stateWriter.accept(new KVCommand.Put<>(stateKey,
+                                                                                        ScheduledTaskStateValue.conditionClearedState(row))));
         }
 
         /// A fire that completed (success or failure) after the task had been UNKNOWN: the outcome is known again.

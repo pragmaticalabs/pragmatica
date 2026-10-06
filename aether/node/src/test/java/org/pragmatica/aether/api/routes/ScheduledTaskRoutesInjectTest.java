@@ -144,7 +144,7 @@ class ScheduledTaskRoutesInjectTest {
             assertEquals(ScheduledTaskStateValue.OUTCOME_UNKNOWN, written.getFirst().lastOutcome());
             assertEquals(0, written.getFirst().consecutiveFailures(), "unknown is not a failure");
             assertEquals(0, written.getFirst().totalExecutions(), "unknown is not an execution");
-            assertEquals(1, written.getFirst().unknownOutcomes());
+            assertEquals(1, written.getFirst().completionTimeouts());
         }
 
         /// The failure half of the same rule: a callee that answered with a failure is recorded as a FAILURE (the streak
@@ -165,7 +165,7 @@ class ScheduledTaskRoutesInjectTest {
             assertEquals(1, written.size(), "one state write");
             assertEquals(ScheduledTaskStateValue.OUTCOME_FAILURE, written.getFirst().lastOutcome());
             assertEquals(1, written.getFirst().consecutiveFailures(), "a failure moves the streak");
-            assertEquals(0, written.getFirst().unknownOutcomes(), "a failure is not an unknown outcome");
+            assertEquals(0, written.getFirst().completionTimeouts(), "a failure is not a timeout");
             assertEquals("callee failed", written.getFirst().lastFailureMessage());
         }
 
@@ -181,7 +181,7 @@ class ScheduledTaskRoutesInjectTest {
             assertEquals(2, written.size(), "the unknown write, then the resolution");
             assertEquals(ScheduledTaskStateValue.OUTCOME_SUCCESS, written.getLast().lastOutcome());
             assertEquals(1, written.getLast().totalExecutions(), "the late answer makes the fire an execution");
-            assertEquals(0, written.getLast().unknownOutcomes(), "a resolved fire is no longer unknown");
+            assertEquals(1, written.getLast().lateResolutions(), "a late answer is counted");
         }
 
         @Test
@@ -195,7 +195,7 @@ class ScheduledTaskRoutesInjectTest {
             assertEquals(ScheduledTaskStateValue.OUTCOME_FAILURE, written.getLast().lastOutcome());
             assertEquals(1, written.getLast().consecutiveFailures(), "the late answer makes the fire a failure");
             assertEquals("callee failed late", written.getLast().lastFailureMessage());
-            assertEquals(0, written.getLast().unknownOutcomes());
+            assertEquals(1, written.getLast().lateResolutions());
         }
 
         /// Injects a fire that times out, commits the UNKNOWN row it wrote (as the KV store would), and returns the

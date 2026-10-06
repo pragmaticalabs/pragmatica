@@ -266,21 +266,30 @@ public sealed interface OperationalEvent extends Message.Local {
         }
     }
 
-    /// #1723: a scheduled task's newest fire is no longer unknown ([ClusterEvent.ScheduledTaskOutcomeRestored]): either its
-    /// late answer arrived (`late`, and `outcome` is what it said) or a LATER fire completed (`late` false, and `outcome`
-    /// is that fire's). `outcome` is `executed` or `failed`.
+    /// #1723: a scheduled task's newest fire is no longer unknown ([ClusterEvent.ScheduledTaskOutcomeRestored]). `reason`
+    /// says why: `late-answer` (the newest fire's late response arrived; `outcome` is what it said), `later-fire` (a
+    /// later fire completed; `outcome` is that fire's) or `task-removed` (the task was removed with its outcome still
+    /// unknown; `outcome` is `unknown`). `outcome` is otherwise `executed` or `failed`.
     record ScheduledTaskOutcomeRestored(String task,
                                         String node,
                                         String outcome,
-                                        boolean late,
+                                        String reason,
                                         String eventId,
                                         long timestamp) implements OperationalEvent {
+        public static final String LATE_ANSWER = "late-answer";
+        public static final String LATER_FIRE = "later-fire";
+        public static final String TASK_REMOVED = "task-removed";
+
         public static ScheduledTaskOutcomeRestored scheduledTaskOutcomeRestored(String task,
                                                                                 String node,
                                                                                 String outcome,
-                                                                                boolean late,
+                                                                                String reason,
                                                                                 String eventId) {
-            return new ScheduledTaskOutcomeRestored(task, node, outcome, late, eventId, System.currentTimeMillis());
+            return new ScheduledTaskOutcomeRestored(task, node, outcome, reason, eventId, System.currentTimeMillis());
+        }
+
+        public boolean late() {
+            return LATE_ANSWER.equals(reason);
         }
 
         public String key() {

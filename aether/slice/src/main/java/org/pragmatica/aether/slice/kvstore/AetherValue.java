@@ -673,16 +673,17 @@ public sealed interface AetherValue {
     /// nothing here can say which), or empty (no fire recorded since the field exists). An UNKNOWN outcome is neither
     /// an execution nor a failure: it does not count in `totalExecutions` and does not move `consecutiveFailures`
     /// (the failure streak is neither reset nor extended). The task is "unknown" exactly while its newest fire's outcome
-    /// is UNKNOWN: a later definite fire ends that, and so does the late answer of the newest fire (#1723).
+    /// is UNKNOWN ([#outcomeUnknown]): a later definite fire ends that, and so does the late answer of the newest fire.
+    /// Nothing that must be done by a live process is part of that condition, so no node dying can leave it stuck.
     ///
-    /// `unknownOutcomes` is a GAUGE of the fires whose outcome is currently unknown: a timed-out fire raises it; it falls
-    /// when that fire's response arrives LATE ([#lateSuccessState], [#lateFailureState], which resolve the fire into the
-    /// execution or the failure it was) or when the fire is given up ([#abandonedState]: the invoker no longer retains it,
-    /// so no answer can come). `outcomesNeverLearned` counts the fires given up and `completionTimeouts` every fire that
-    /// timed out: both monotonic, so a fire leaving the gauge never disappears from the record.
+    /// `completionTimeouts` and `lateResolutions` are MONOTONIC counters: every fire that timed out, and every timed-out
+    /// fire whose response arrived late. Their difference approximates the fires whose outcome was never learned (it
+    /// also holds the fires still waiting for their answer, and the answers a leader change lost): an estimate, not a
+    /// gauge, deliberately: a gauge only a live process can lower sticks forever once that process is gone.
     ///
-    /// `fireSeq` numbers the fires recorded in this row, newest highest, and never goes backwards. A late resolution
-    /// resolves ITS OWN fire (counts, gauge) but changes `lastOutcome` only if its fire is still the newest.
+    /// `fireSeq` numbers the fires recorded in this row, newest highest, and never goes backwards; `newestFireAt` is when
+    /// that newest fire started. A late resolution resolves ITS OWN fire (counts) but changes `lastOutcome` only if its
+    /// fire is still the newest.
     record ScheduledTaskStateValue(long lastExecutionAt,
                                    long nextFireAt,
                                    int consecutiveFailures,
@@ -691,10 +692,10 @@ public sealed interface AetherValue {
                                    long updatedAt,
                                    int skippedOverlaps,
                                    String lastOutcome,
-                                   int unknownOutcomes,
                                    int fireSeq,
-                                   int outcomesNeverLearned,
-                                   int completionTimeouts) implements AetherValue {
+                                   long newestFireAt,
+                                   int completionTimeouts,
+                                   int lateResolutions) implements AetherValue {
         public static final String OUTCOME_SUCCESS = "SUCCESS";
         public static final String OUTCOME_FAILURE = "FAILURE";
         public static final String OUTCOME_UNKNOWN = "UNKNOWN";
@@ -732,8 +733,10 @@ public sealed interface AetherValue {
                         .or(0) + 1;
         }
 
-        /// A fire that completed: an execution, the streak reset, the next fire sequence. Carries every counter over.
-        public static ScheduledTaskStateValue successState(Option<ScheduledTaskStateValue> prior, long nextFireAt) {
+        /// A fire (started at `firedAt`) that completed: an execution, the streak reset, the next fire sequence.
+        public static ScheduledTaskStateValue successState(Option<ScheduledTaskStateValue> prior,
+                                                           long nextFireAt,
+                                                           long firedAt) {
             var now = System.currentTimeMillis();
 
             return new ScheduledTaskStateValue(now,
@@ -744,15 +747,16 @@ public sealed interface AetherValue {
                                                now,
                                                prior.map(ScheduledTaskStateValue::skippedOverlaps).or(0),
                                                OUTCOME_SUCCESS,
-                                               prior.map(ScheduledTaskStateValue::unknownOutcomes).or(0),
                                                nextFireSeq(prior),
-                                               prior.map(ScheduledTaskStateValue::outcomesNeverLearned).or(0),
-                                               prior.map(ScheduledTaskStateValue::completionTimeouts).or(0));
+                                               firedAt,
+                                               prior.map(ScheduledTaskStateValue::completionTimeouts).or(0),
+                                               prior.map(ScheduledTaskStateValue::lateResolutions).or(0));
         }
 
-        /// A fire that failed: the streak extended, not an execution, the next fire sequence.
+        /// A fire (started at `firedAt`) that failed: the streak extended, not an execution, the next fire sequence.
         public static ScheduledTaskStateValue failureState(Option<ScheduledTaskStateValue> prior,
                                                            long nextFireAt,
+                                                           long firedAt,
                                                            String failureMessage) {
             var now = System.currentTimeMillis();
 
@@ -764,18 +768,19 @@ public sealed interface AetherValue {
                                                now,
                                                prior.map(ScheduledTaskStateValue::skippedOverlaps).or(0),
                                                OUTCOME_FAILURE,
-                                               prior.map(ScheduledTaskStateValue::unknownOutcomes).or(0),
                                                nextFireSeq(prior),
-                                               prior.map(ScheduledTaskStateValue::outcomesNeverLearned).or(0),
-                                               prior.map(ScheduledTaskStateValue::completionTimeouts).or(0));
+                                               firedAt,
+                                               prior.map(ScheduledTaskStateValue::completionTimeouts).or(0),
+                                               prior.map(ScheduledTaskStateValue::lateResolutions).or(0));
         }
 
-        /// A REMOTE fire whose outcome is unknown (no response within the invocation timeout). Everything else carries over
-        /// from `prior` unchanged: not an execution, not a failure, so `totalExecutions` and `consecutiveFailures` stay as
-        /// they were; the outcome, the gauge, the timeout total and the timestamps move. `lastFailureMessage` is left
-        /// alone: it still describes the last real failure. The fire takes [#nextFireSeq].
+        /// A REMOTE fire (started at `firedAt`) whose outcome is unknown (no response within the invocation timeout).
+        /// Everything else carries over from `prior` unchanged: not an execution, not a failure, so `totalExecutions` and
+        /// `consecutiveFailures` stay as they were; the outcome, the timeout total and the timestamps move.
+        /// `lastFailureMessage` is left alone: it still describes the last real failure. The fire takes [#nextFireSeq].
         public static ScheduledTaskStateValue unknownOutcomeState(Option<ScheduledTaskStateValue> prior,
-                                                                  long nextFireAt) {
+                                                                  long nextFireAt,
+                                                                  long firedAt) {
             var now = System.currentTimeMillis();
             var seq = nextFireSeq(prior);
 
@@ -787,18 +792,29 @@ public sealed interface AetherValue {
                                                               now,
                                                               p.skippedOverlaps(),
                                                               OUTCOME_UNKNOWN,
-                                                              p.unknownOutcomes() + 1,
                                                               seq,
-                                                              p.outcomesNeverLearned(),
-                                                              p.completionTimeouts() + 1))
-                        .or(new ScheduledTaskStateValue(0, nextFireAt, 0, 0, "", now, 0, OUTCOME_UNKNOWN, 1, seq, 0, 1));
+                                                              firedAt,
+                                                              p.completionTimeouts() + 1,
+                                                              p.lateResolutions()))
+                        .or(new ScheduledTaskStateValue(0,
+                                                        nextFireAt,
+                                                        0,
+                                                        0,
+                                                        "",
+                                                        now,
+                                                        0,
+                                                        OUTCOME_UNKNOWN,
+                                                        seq,
+                                                        firedAt,
+                                                        1,
+                                                        0));
         }
 
         /// The row a resolution of the fire numbered `written.fireSeq()` is applied to. A resolution can arrive before the
         /// commit of that fire's own UNKNOWN row is visible; then `row` is older than the fire and applying the
-        /// resolution to it would write the sequence BACKWARDS and lower the gauge against a count that does not yet include
-        /// this fire. `written`, the row the fire submitted, is then the base: it commits first and the resolution follows
-        /// it. Otherwise the row is current and is the base, whatever was recorded since.
+        /// resolution to it would write the sequence BACKWARDS. `written`, the row the fire submitted, is then the base: it
+        /// commits first and the resolution follows it. Otherwise the row is current and is the base, whatever was
+        /// recorded since.
         public static ScheduledTaskStateValue resolutionBase(ScheduledTaskStateValue row,
                                                              ScheduledTaskStateValue written) {
             return row.fireSeq() >= written.fireSeq()
@@ -806,8 +822,25 @@ public sealed interface AetherValue {
                    : written;
         }
 
+        /// The task was removed while its newest fire was unknown: the condition ends with the task, so a task registered
+        /// again under the same key does not inherit it. Everything else, the sequence included, is kept.
+        public static ScheduledTaskStateValue conditionClearedState(ScheduledTaskStateValue base) {
+            return new ScheduledTaskStateValue(base.lastExecutionAt(),
+                                               base.nextFireAt(),
+                                               base.consecutiveFailures(),
+                                               base.totalExecutions(),
+                                               base.lastFailureMessage(),
+                                               System.currentTimeMillis(),
+                                               base.skippedOverlaps(),
+                                               "",
+                                               base.fireSeq(),
+                                               base.newestFireAt(),
+                                               base.completionTimeouts(),
+                                               base.lateResolutions());
+        }
+
         /// The fire numbered `fireSeq`, recorded as UNKNOWN, was answered LATE with success (#1723): it was an execution
-        /// after all. It is counted in `totalExecutions` and leaves the gauge. When it is still the NEWEST fire it also
+        /// after all. It is counted in `totalExecutions` and `lateResolutions`. When it is still the NEWEST fire it also
         /// becomes the last outcome and resets the failure streak, as any success does; when a newer fire has been
         /// recorded since, that fire's outcome stands.
         public static ScheduledTaskStateValue lateSuccessState(ScheduledTaskStateValue base, int fireSeq) {
@@ -828,15 +861,15 @@ public sealed interface AetherValue {
                                                newest
                                                ? OUTCOME_SUCCESS
                                                : base.lastOutcome(),
-                                               Math.max(0, base.unknownOutcomes() - 1),
                                                base.fireSeq(),
-                                               base.outcomesNeverLearned(),
-                                               base.completionTimeouts());
+                                               base.newestFireAt(),
+                                               base.completionTimeouts(),
+                                               base.lateResolutions() + 1);
         }
 
         /// The fire numbered `fireSeq`, recorded as UNKNOWN, was answered LATE with a failure (#1723): a failure after all.
-        /// It leaves the gauge. When it is still the NEWEST fire it also becomes the last outcome and extends the streak;
-        /// when a newer fire has been recorded since, that fire's outcome and the streak stand.
+        /// It is counted in `lateResolutions`. When it is still the NEWEST fire it also becomes the last outcome and
+        /// extends the streak; when a newer fire has been recorded since, that fire's outcome and the streak stand.
         public static ScheduledTaskStateValue lateFailureState(ScheduledTaskStateValue base,
                                                                int fireSeq,
                                                                String failureMessage) {
@@ -859,29 +892,10 @@ public sealed interface AetherValue {
                                                newest
                                                ? OUTCOME_FAILURE
                                                : base.lastOutcome(),
-                                               Math.max(0, base.unknownOutcomes() - 1),
                                                base.fireSeq(),
-                                               base.outcomesNeverLearned(),
-                                               base.completionTimeouts());
-        }
-
-        /// A fire recorded as UNKNOWN that no answer can ever resolve (the invoker no longer retains it: capacity, TTL,
-        /// the callee's node departed, the invoker stopped). Its outcome is never learned: it leaves the gauge for
-        /// `outcomesNeverLearned`. Nothing is invented: `lastOutcome` stays UNKNOWN if this was the newest fire, and no
-        /// execution or failure is counted.
-        public static ScheduledTaskStateValue abandonedState(ScheduledTaskStateValue base) {
-            return new ScheduledTaskStateValue(base.lastExecutionAt(),
-                                               base.nextFireAt(),
-                                               base.consecutiveFailures(),
-                                               base.totalExecutions(),
-                                               base.lastFailureMessage(),
-                                               System.currentTimeMillis(),
-                                               base.skippedOverlaps(),
-                                               base.lastOutcome(),
-                                               Math.max(0, base.unknownOutcomes() - 1),
-                                               base.fireSeq(),
-                                               base.outcomesNeverLearned() + 1,
-                                               base.completionTimeouts());
+                                               base.newestFireAt(),
+                                               base.completionTimeouts(),
+                                               base.lateResolutions() + 1);
         }
 
         /// Records a skipped fixed-rate fire (previous invocation still in flight). Preserves every
@@ -897,10 +911,10 @@ public sealed interface AetherValue {
                                                               skippedAt,
                                                               p.skippedOverlaps() + 1,
                                                               p.lastOutcome(),
-                                                              p.unknownOutcomes(),
                                                               p.fireSeq(),
-                                                              p.outcomesNeverLearned(),
-                                                              p.completionTimeouts()))
+                                                              p.newestFireAt(),
+                                                              p.completionTimeouts(),
+                                                              p.lateResolutions()))
                         .or(new ScheduledTaskStateValue(0, 0, 0, 0, "", skippedAt, 1));
         }
     }
