@@ -849,6 +849,33 @@ class BootstrapPhaseDeployCloudSshRestartTest {
 
     // --- Bug 16-B: image comes from RuntimeProfile when set, falls back to derived otherwise ---
 
+    /// #1543 part C: `{version}` in the runtime profile's image follows `[cluster] version` on the CLI re-launch too,
+    /// never reaching `docker run` as a literal.
+    @Test
+    void deployCloudSource_imagePlaceholder_isSubstitutedWithTheClusterVersion() {
+        var ctx = contextWithRuntimeImage(cloudSource(), "registry/aether-node:{version}");
+        var commands = new ConcurrentLinkedQueue<String>();
+        Fn3<Result<String>, String, String, SshConfig> sshExec = (host, command, config) -> {
+            commands.add(command);
+            return Result.success("");
+        };
+
+        var result = BootstrapPhaseDeploy.deployCloudSource(ctx,
+                                                            ctx.config().sources().get("eu-1"),
+                                                            sourceNameOrDefault("eu-1"),
+                                                            alwaysHealthy(),
+                                                            sshExec,
+                                                            envWithKey("/home/op/.ssh/aether_id_ed25519"));
+
+        assertTrue(result.isSuccess(), () -> "Cloud deploy must succeed; got: " + result);
+        var dockerCommands = commands.stream().filter(c -> c.startsWith("docker")).toList();
+        assertFalse(dockerCommands.isEmpty(), "CONTROL: docker run commands were issued");
+        for (var cmd : dockerCommands) {
+            assertTrue(cmd.endsWith("registry/aether-node:" + CLUSTER_VERSION), () -> "Substituted image expected. Got: " + cmd);
+            assertFalse(cmd.contains("{version}"), () -> "Literal placeholder must never reach docker. Got: " + cmd);
+        }
+    }
+
     @Test
     void deployCloudSource_imageFromRuntimeProfile_whenConfigured() {
         // Bug 16-B: image must come from [runtime.default].image, not derived from cluster.version.

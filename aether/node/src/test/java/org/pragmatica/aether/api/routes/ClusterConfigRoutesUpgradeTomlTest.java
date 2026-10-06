@@ -152,6 +152,15 @@ class ClusterConfigRoutesUpgradeTomlTest {
     }
 
     @Test
+    void upgrade_whenTheJarPinCarriesThePlaceholder_succeeds_andTheReplacementRendersTheTargetJar() {
+        var toml = JAR_PINNED.replace("aether-node-1.0.0.jar", "v{version}/aether-node.jar");
+        var store = storeWith(committed(toml, 1));
+
+        assertThat(upgrade(store, "1.1.0", 1).isSuccess()).isTrue();
+        assertThat(render(committed(store))).contains("https://h/v1.1.0/aether-node.jar").doesNotContain("{version}");
+    }
+
+    @Test
     void upgrade_whenARoleProfilePinsTheImage_isRefusedWith409_andWritesNothing() {
         var store = storeWith(committed(IMAGE_PINNED, 1));
         var result = upgrade(store, "1.1.0", 1);
