@@ -209,6 +209,9 @@ public interface ScheduledTaskManager {
         final Map<ScheduledTaskStateKey, ScheduledTaskStateValue> submitted = new ConcurrentHashMap<>();
         final TimeSpan completionBound;
         final ScheduledFireObserver observer;
+
+        static final String FIRE_LEADERSHIP_LOST = "leadership-lost";
+
         /// The fire each claimed key is running (#1930), so a skipped tick can say how long it has been in flight.
         final Map<ScheduledTaskKey, FireInFlight> fires = new ConcurrentHashMap<>();
         final Map<ScheduledTaskKey, ScheduledFuture<?>> activeTimers = new ConcurrentHashMap<>();
@@ -298,6 +301,34 @@ public interface ScheduledTaskManager {
             inFlight.remove(key);
         }
 
+        /// This node stops running tasks (it lost leadership, or its scheduler stops): the fires it announced as held are told
+        /// to the observer as released with `leadership-lost`, and the records dropped, so an operator is never left with a hold
+        /// nothing will ever resolve (#1930). A fire nobody was told about is not reported. `singleOnly` limits it to
+        /// SINGLE-mode tasks, which are the leader's; ALL-mode fires run on without leadership.
+        void announceFiresLost(boolean singleOnly) {
+            var single = registry.allTasks()
+                                 .stream()
+                                 .filter(task -> task.executionMode() == ExecutionMode.SINGLE)
+                                 .map(task -> ScheduledTaskKey.scheduledTaskKey(task.configSection(),
+                                                                                task.artifact(),
+                                                                                task.methodName()))
+                                 .collect(java.util.stream.Collectors.toSet());
+
+            fires.entrySet()
+                 .stream()
+                 .filter(entry -> entry.getValue().held
+                                       .get())
+                 .filter(entry -> !singleOnly || single.contains(entry.getKey()))
+                 .toList()
+                 .stream()
+                 .filter(entry -> fires.remove(entry.getKey(),
+                                               entry.getValue()))
+                 .forEach(entry -> observer.onFireReleased(entry.getKey(),
+                                                           entry.getValue().startedAt,
+                                                           System.currentTimeMillis() - entry.getValue().startedAt,
+                                                           FIRE_LEADERSHIP_LOST));
+        }
+
         /// How the fire ended, for the observer to report when the claim is released.
         void noteOutcome(ScheduledTaskKey key, String outcome) {
             Option.option(fires.get(key)).onPresent(fire -> fire.outcome = outcome);
@@ -377,6 +408,7 @@ public interface ScheduledTaskManager {
         @Override
         public void onExit() {
             TaskOps.cancelAllTimers(ctx);
+            ctx.announceFiresLost(true);
         }
 
         @Override
@@ -401,6 +433,7 @@ public interface ScheduledTaskManager {
         public void onEntry() {
             log.info("Node {} entering Stopped — all scheduled tasks cancelled", ctx.self);
             TaskOps.cancelAllTimers(ctx);
+            ctx.announceFiresLost(false);
         }
 
         @Override

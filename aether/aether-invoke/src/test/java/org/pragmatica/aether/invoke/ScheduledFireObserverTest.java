@@ -58,6 +58,7 @@ class ScheduledFireObserverTest {
     private final Artifact artifact = Artifact.artifact("org.example:my-slice:1.0.0").unwrap();
     private final MethodName method = MethodName.methodName("cleanup").unwrap();
     private ScheduledTaskManager manager;
+    private ScheduledTaskManagerTest.TestLeaderManager leaders;
 
     private void start() {
         manager = ScheduledTaskManager.scheduledTaskManager(registry,
@@ -92,7 +93,6 @@ class ScheduledFireObserverTest {
         awaitTrue(() -> invocations.size() >= 1);
         // at least three more ticks arrive while the fire is still running
         Thread.sleep(3_300);
-        manager.stop();
 
         assertThat(invocations).as("premise: only the one fire ran, every later tick was skipped").hasSize(1);
         assertThat(held).as("ONE held event for the fire, not one per skipped tick").hasSize(1);
@@ -105,6 +105,7 @@ class ScheduledFireObserverTest {
         assertThat(released).as("the recovery, once").hasSize(1);
         assertThat(released.getFirst().outcome()).isEqualTo("executed");
         assertThat(released.getFirst().fireStartedAt()).as("of the same fire").isEqualTo(held.getFirst().fireStartedAt());
+        manager.stop();
     }
 
     /// A failed fire and an unknown one are reported as such.
@@ -180,5 +181,80 @@ class ScheduledFireObserverTest {
 
         assertThat(held).hasSize(1);
         assertThat(released).singleElement().extracting(Released::outcome).isEqualTo("completed");
+    }
+
+    private void startSingleModeAsLeader() {
+        leaders = new ScheduledTaskManagerTest.TestLeaderManager(self);
+        manager = ScheduledTaskManager.scheduledTaskManager(registry,
+                                                            stub,
+                                                            self,
+                                                            _ -> {},
+                                                            _ -> Option.none(),
+                                                            leaders,
+                                                            ScheduledTaskManager.DEFAULT_COMPLETION_BOUND,
+                                                            observer);
+        registry.onScheduledTaskPut(new ValuePut<>(new KVCommand.Put<>(ScheduledTaskKey.scheduledTaskKey("cache", artifact, method),
+                                                                       ScheduledTaskValue.intervalTask(self, "1s", ExecutionMode.SINGLE)),
+                                                   Option.none()));
+        manager.onQuorumStateChange(ClusterStateNotification.active());
+        leaders.setLeader(true);
+        manager.onLeaderChange(org.pragmatica.consensus.leader.LeaderNotification.leaderChange(Option.some(self), true));
+    }
+
+    /// The owner's event rule: a hold nothing will ever resolve is a stale alarm. The leader loses leadership while the fire
+    /// it announced as held is still running: that hold is released once, as `leadership-lost`, and the fire's own later
+    /// completion adds nothing (its record is gone).
+    @Test
+    void leadershipLost_whileAHeldFireIsRunning_releasesItOnce_asLeadershipLost() throws Exception {
+        var running = Promise.<Unit> promise();
+
+        stub.heldCompletion.set(running);
+        startSingleModeAsLeader();
+        awaitTrue(() -> !held.isEmpty());
+
+        leaders.setLeader(false);
+        manager.onLeaderChange(org.pragmatica.consensus.leader.LeaderNotification.leaderChange(Option.none(), false));
+
+        assertThat(released).as("exactly one release for the held fire").hasSize(1);
+        assertThat(released.getFirst().outcome()).isEqualTo("leadership-lost");
+        assertThat(released.getFirst().fireStartedAt()).isEqualTo(held.getFirst().fireStartedAt());
+
+        running.succeed(Unit.unit());
+        Thread.sleep(300);
+        manager.stop();
+
+        assertThat(released).as("the fire's own completion does not release it a second time").hasSize(1);
+    }
+
+    /// No release for a fire that was never announced as held: the leader loses leadership before any tick was skipped.
+    @Test
+    void leadershipLost_beforeAnyTickWasSkipped_releasesNothing() throws Exception {
+        var running = Promise.<Unit> promise();
+
+        stub.heldCompletion.set(running);
+        startSingleModeAsLeader();
+        awaitTrue(() -> invocations.size() >= 1);
+
+        leaders.setLeader(false);
+        manager.onLeaderChange(org.pragmatica.consensus.leader.LeaderNotification.leaderChange(Option.none(), false));
+        running.succeed(Unit.unit());
+        Thread.sleep(300);
+        manager.stop();
+
+        assertThat(held).as("premise: no tick had been skipped").isEmpty();
+        assertThat(released).as("no release for a hold nobody was told about").isEmpty();
+    }
+
+    /// A scheduler that stops releases its announced holds too.
+    @Test
+    void schedulerStopped_whileAHeldFireIsRunning_releasesItAsLeadershipLost() throws Exception {
+        var running = Promise.<Unit> promise();
+
+        stub.heldCompletion.set(running);
+        startSingleModeAsLeader();
+        awaitTrue(() -> !held.isEmpty());
+        manager.stop();
+
+        assertThat(released).singleElement().extracting(Released::outcome).isEqualTo("leadership-lost");
     }
 }
