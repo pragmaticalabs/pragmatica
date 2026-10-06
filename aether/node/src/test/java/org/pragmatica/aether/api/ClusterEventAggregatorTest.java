@@ -1660,7 +1660,7 @@ class ClusterEventAggregatorTest {
     }
 
     // --- pins from the #1923 verification (#752) ---------------------------------------
-    private Harness v1923Clocked(AtomicLong physicalMillis) {
+    private Harness clocked(AtomicLong physicalMillis) {
         return Harness.create(Harness.defaultRetention(), OWNER, () -> false, LEADER,
                               HlcClock.hlcClock(SELF, physicalMillis::get, Long.MAX_VALUE));
     }
@@ -1670,7 +1670,7 @@ class ClusterEventAggregatorTest {
     @Test
     void onOperatorWarning_divergedAgainAfterAShownRepair_isShown() {
         var t = new AtomicLong(1_000_000L);
-        var h = v1923Clocked(t);
+        var h = clocked(t);
 
         h.aggregator().onOperatorWarning(diverged("g:orders[0]"));
         t.addAndGet(1_000L);
@@ -1685,7 +1685,7 @@ class ClusterEventAggregatorTest {
     @Test
     void onOperatorWarning_twoSubjects_pairIndependently() {
         var t = new AtomicLong(1_000_000L);
-        var h = v1923Clocked(t);
+        var h = clocked(t);
 
         h.aggregator().onOperatorWarning(diverged("g:s[0]"));
         h.aggregator().onOperatorWarning(diverged("g:s[1]"));
@@ -1710,7 +1710,7 @@ class ClusterEventAggregatorTest {
     @Test
     void onOperatorWarning_divergedReRaisedWhileOpen_thenOneRepair() {
         var t = new AtomicLong(1_000_000L);
-        var h = v1923Clocked(t);
+        var h = clocked(t);
 
         h.aggregator().onOperatorWarning(diverged("g:orders[0]"));
         t.addAndGet(10_000L);
@@ -1726,7 +1726,7 @@ class ClusterEventAggregatorTest {
     @Test
     void onOperatorWarning_repairAfterTheThrottleKeyWasEvicted_isPublished() {
         var t = new AtomicLong(1_000_000L);
-        var h = v1923Clocked(t);
+        var h = clocked(t);
 
         h.aggregator().onOperatorWarning(diverged("g:orders[0]"));
         t.addAndGet(130_000L);
@@ -1745,7 +1745,7 @@ class ClusterEventAggregatorTest {
         assertThat(java.util.Arrays.stream(OperatorWarningCode.values()).filter(OperatorWarningCode::hasRecovery).toList())
             .containsExactly(OperatorWarningCode.STREAM_CONSUMER_STATE_DIVERGED);
         var t = new AtomicLong(1_000_000L);
-        var h = v1923Clocked(t);
+        var h = clocked(t);
 
         for (var code : OperatorWarningCode.values()) {
             if (code.recoveryOf().isPresent()) {
@@ -1765,7 +1765,7 @@ class ClusterEventAggregatorTest {
     @Test
     void onOperatorWarning_detachFoundDivergence_opensNoRecord_andHidesNoPassDivergence() {
         var t = new AtomicLong(1_000_000L);
-        var h = v1923Clocked(t);
+        var h = clocked(t);
 
         h.aggregator().onOperatorWarning(OperatorWarning.operatorWarning(OperatorWarningCode.STREAM_CONSUMER_DETACH_FOUND_NOTHING,
                                                                          "g:orders[0]",
@@ -1782,4 +1782,63 @@ class ClusterEventAggregatorTest {
                              "held as attached, but the consumer runtime has no subscription",
                              "repaired g:orders[0]");
     }
-}
+
+    // --- pins from the #1923 round-2 verification (#752) ---------------------------------------------
+    /// A shown diverged, then its repair arrives during a snapshot/resync replay. The repaired of a shown diverged is not
+    /// swallowed: replay used to suppress the repair after it had consumed the open mark, so the diverged stayed open
+    /// for good.
+    @Test
+    void onOperatorWarning_repairDuringReplay_ofAShownWarning_isNotSwallowed() {
+        var replaying = new java.util.concurrent.atomic.AtomicBoolean(false);
+        var h = Harness.create(Harness.defaultRetention(), OWNER, replaying::get, LEADER,
+                               HlcClock.hlcClock(SELF, () -> 1_000_000L, Long.MAX_VALUE));
+
+        h.aggregator().onOperatorWarning(diverged("g:orders[0]"));
+        assertThat(codes(h)).as("control: the warning is shown").containsExactly("stream-consumer-state-diverged");
+        replaying.set(true);
+        h.aggregator().onOperatorWarning(repaired("g:orders[0]"));
+        replaying.set(false);
+        h.aggregator().onOperatorWarning(repaired("g:orders[0]"));
+
+        assertThat(codes(h)).as("a shown diverged is eventually closed").contains("stream-consumer-state-repaired");
+    }
+
+    /// A repair raised during replay is released exactly once on the first tick after it, with no second raise needed.
+    @Test
+    void onOperatorWarning_repairDuringReplay_isReleasedOnTheNextTickAfterIt_once() {
+        var replaying = new java.util.concurrent.atomic.AtomicBoolean(false);
+        var h = Harness.create(Harness.defaultRetention(), OWNER, replaying::get, LEADER,
+                               HlcClock.hlcClock(SELF, () -> 1_000_000L, Long.MAX_VALUE));
+
+        h.aggregator().onOperatorWarning(diverged("g:orders[0]"));
+        replaying.set(true);
+        h.aggregator().onOperatorWarning(repaired("g:orders[0]"));
+        h.aggregator().redeliverDue();
+        assertThat(codes(h)).as("control: still replaying, so the repair is held").containsExactly("stream-consumer-state-diverged");
+        replaying.set(false);
+        h.aggregator().redeliverDue();
+        h.aggregator().redeliverDue();
+        h.aggregator().onOperatorWarning(repaired("g:orders[0]"));
+
+        assertThat(codes(h)).containsExactly("stream-consumer-state-diverged", "stream-consumer-state-repaired");
+    }
+
+    /// D1 held for redelivery, its repair held (clearing the window), then a recurrence D2 is admitted before D1
+    /// lands. The held repair is overwritten. The feed must not END on a false state: it ends on diverged, which is true.
+    @Test
+    void onOperatorWarning_recurrenceWhileTheRepairIsHeld_feedEndsTruthfully() throws InterruptedException {
+        var h = Harness.create();
+        var publisher = h.publisher().getAndSet(null);
+
+        h.aggregator().onOperatorWarning(diverged("g:orders[0]"));
+        h.aggregator().onOperatorWarning(repaired("g:orders[0]"));
+        h.aggregator().onOperatorWarning(diverged("g:orders[0]"));
+        h.publisher().set(publisher);
+        Thread.sleep(ClusterEventRedelivery.INITIAL_BACKOFF_MS + 100);
+        h.aggregator().redeliverDue();
+        var afterLanding = codes(h);
+        h.aggregator().onOperatorWarning(repaired("g:orders[0]"));
+
+        assertThat(afterLanding).as("never ends on repaired while diverged").last().isEqualTo("stream-consumer-state-diverged");
+        assertThat(codes(h)).as("the later repair still closes it").last().isEqualTo("stream-consumer-state-repaired");
+    }}

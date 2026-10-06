@@ -186,8 +186,10 @@ public final class ClusterEventAggregator {
     /// A recovery is published exactly when its key is here, so it never appears without the warning it closes and is
     /// never throttled away from one an operator saw. Bounded by the (code, subject) pairs the node can raise.
     private final Set<String> openRecoverable = ConcurrentHashMap.newKeySet();
-
     /// Warnings with a recovery that are admitted but not yet in the log, each holding the recovery that arrived meanwhile.
+    /// Recoveries raised during snapshot/resync replay, by the key of the warning they close, released after it (#752).
+    private final ConcurrentHashMap<String, ClusterEvent> replayHeldRecoveries = new ConcurrentHashMap<>();
+
     private final ConcurrentHashMap<String, Option<ClusterEvent>> awaitingDelivery = new ConcurrentHashMap<>();
 
     /// Throttle window shared by {@link #onStreamMemoryExceeded} (60s per `(streamName, phase)`, spec
@@ -699,6 +701,7 @@ public final class ClusterEventAggregator {
     /// #1640: re-sends the cluster events whose publish has not landed yet and are due. `AetherNode` calls it
     /// once a second.
     public Unit redeliverDue() {
+        releaseReplayHeldRecoveries();
         redelivery.redeliver(false);
 
         return Unit.unit();
@@ -894,6 +897,13 @@ public final class ClusterEventAggregator {
             return;
         }
 
+        if (replayingCheck.getAsBoolean()) {
+            holdDuringReplay(closedKey, event);
+
+            return;
+        }
+
+        replayHeldRecoveries.remove(closedKey);
         if (!openRecoverable.remove(closedKey)) {
             LOG.debug("ClusterEventAggregator: refusing OperatorWarning {} for {}, no published warning is open",
                       warning.code().code(),
@@ -902,14 +912,35 @@ public final class ClusterEventAggregator {
             return;
         }
 
-        operatorWarningThrottle.remove(closedKey);
-        lastRaisedOperatorWarning = Option.some(event);
-        if (replayingCheck.getAsBoolean()) {
-            LOG.debug("ClusterEventAggregator: snapshot/resync replay in progress — suppressing local emit of {}", event);
+        publishRecovery(closedKey, event);
+    }
 
+    /// A shown warning must get its recovery, but replay suppresses local emits. So during replay the recovery is held
+    /// and the open mark is left alone; [#releaseReplayHeldRecoveries] publishes it on the first tick after replay.
+    private void holdDuringReplay(String closedKey, ClusterEvent recovery) {
+        if (openRecoverable.contains(closedKey)) {
+            replayHeldRecoveries.put(closedKey, recovery);
+            LOG.debug("ClusterEventAggregator: snapshot/resync replay in progress — holding {} until it ends", recovery);
+        }
+    }
+
+    private void releaseReplayHeldRecoveries() {
+        if (replayingCheck.getAsBoolean()) {
             return;
         }
 
+        replayHeldRecoveries.keySet().forEach(this::releaseReplayHeld);
+    }
+
+    private void releaseReplayHeld(String closedKey) {
+        Option.option(replayHeldRecoveries.remove(closedKey))
+              .filter(_ -> openRecoverable.remove(closedKey))
+              .onPresent(recovery -> publishRecovery(closedKey, recovery));
+    }
+
+    private void publishRecovery(String closedKey, ClusterEvent event) {
+        operatorWarningThrottle.remove(closedKey);
+        lastRaisedOperatorWarning = Option.some(event);
         redelivery.deliver(stampedOrAsIs(event));
     }
 
