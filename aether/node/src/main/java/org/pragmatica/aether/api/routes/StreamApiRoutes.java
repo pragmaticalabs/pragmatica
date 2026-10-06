@@ -674,7 +674,7 @@ public final class StreamApiRoutes implements RouteSource {
     }
 
     private Promise<StreamEventsResponse> readEventsAtAddress(ResourceAddress addr, long fromOffset, int maxEvents) {
-        var streamName = addr.asString();
+        var streamName = StreamManager.engineKey(addr);
 
         return RequestParse.asNotFound(namespacesService.lookup(addr)
                                                         .toResult(StreamRegistry.StreamRegistryError.General.NOT_FOUND))

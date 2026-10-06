@@ -188,6 +188,37 @@ class StreamErrorStatusTest {
         }
     }
 
+    /// `STREAMS_EVENTS` must read the engine by `StreamManager#engineKey`, not the address string: the two differ only for the
+    /// `system` namespace, where the engine keys the stream by its bare name. Read by the address string it answered the
+    /// engine's StreamNotFound for a stream that exists.
+    @Test
+    void streamsEvents_readsASystemStream_underItsBareEngineKey() {
+        var manager = StreamPartitionManager.streamPartitionManager();
+        var namespaces = org.pragmatica.aether.slice.stream.StreamNamespacesService.inMemory();
+        var address = ResourceAddress.resourceAddress(ResourceAddress.SYSTEM_NAMESPACE, "cluster-events", "1.0.0").unwrap();
+
+        try {
+            manager.createStream(StreamConfig.streamConfig(StreamManager.engineKey(address),
+                                                           1,
+                                                           RetentionPolicy.retentionPolicy(10_000, 1024 * 1024, 600_000),
+                                                           "earliest"))
+                   .onFailure(cause -> fail(cause.message()));
+            namespaces.registry()
+                      .register(org.pragmatica.aether.slice.stream.StreamRegistryEntry.operator(address,
+                                                                                               RetentionPolicy.retentionPolicy(10_000, 1024 * 1024, 600_000),
+                                                                                               java.time.Instant.now()))
+                      .onFailure(cause -> fail("register: " + cause.message()));
+
+            RouteProbe.run(apiRoutes(manager, namespaces),
+                           ManagementRoute.STREAMS_EVENTS,
+                           List.of(ResourceAddress.SYSTEM_NAMESPACE, "cluster-events", "1.0.0", "events"),
+                           Map.of())
+                      .onFailure(cause -> fail("a system stream must be readable by its address, got: " + cause.message()));
+        } finally {
+            manager.close();
+        }
+    }
+
     private static StreamPartitionManager streamWith2Partitions() {
         var manager = StreamPartitionManager.streamPartitionManager();
         var engineKey = StreamManager.engineKey(ResourceAddress.resourceAddress("ns", "orders", "1.0.0").unwrap());
