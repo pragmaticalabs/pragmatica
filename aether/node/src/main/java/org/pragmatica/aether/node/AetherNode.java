@@ -1492,6 +1492,26 @@ public interface AetherNode extends ManageableNode {
         };
     }
 
+    /// #1873 (KIP-320): how an owner commits where its epoch begins, before it is activated: a guarded write of the exact
+    /// committed record, witnessed by the committed leader, that records the start at `start` and, when its ring was
+    /// rebuilt, first takes the next ownership term. Refusal is not a failed promise (the applier answers it with a result),
+    /// so the activation re-reads the record and checks the start landed.
+    static OwnerActivation.LineageCommit streamLineageCommit(Supplier<Option<LeaderValue>> committedLeader,
+                                                             java.util.function.Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> applier,
+                                                             HlcClock clock) {
+        return (stream, partition, current, start, restarted) -> committedLeader.get()
+                                                                                .fold(() -> OwnerActivation.ActivationError.LINEAGE_NOT_COMMITTED.<Unit> promise(),
+                                                                                      leader -> applier.apply(List.of(StreamPartitionOwnershipWriter.guardedOwnershipWrite(leader,
+                                                                                                                                                                           stream,
+                                                                                                                                                                           partition,
+                                                                                                                                                                           Option.some(current),
+                                                                                                                                                                           restarted
+                                                                                                                                                                           ? current.restarted(start,
+                                                                                                                                                                                               clock.now())
+                                                                                                                                                                           : current.withEpochStart(start))))
+                                                                                                       .mapToUnit());
+    }
+
     /// #1730: the partitions this node owns AND serves (activated for the committed record), with their record and
     /// appended head — the ISR monitor's input.
     static List<IsrMonitor.Owned> ownedPartitions(StreamPartitionManager manager,
@@ -5555,12 +5575,16 @@ public interface AetherNode extends ManageableNode {
         // the cluster-events aggregator publishes only on its partition owner, so it reaches the stream exactly once.
         var streamFailoverAnnouncer = StreamFailoverAnnouncer.streamFailoverAnnouncer(() -> streamIsrInputs(clusterEventsControllerRef).liveMembers(),
                                                                                       delegateRouter::route);
+        // #1873: and for an owner beginning a new epoch of its own (its ring was rebuilt).
+        var streamLineageAnnouncer = StreamLineageAnnouncer.streamLineageAnnouncer(delegateRouter::route);
 
         allEntries.addAll(KVNotificationRouter.<AetherKey, AetherValue> builder(AetherKey.class)
                                               .onPut(AetherKey.StreamPartitionOwnershipKey.class,
                                                      streamFailoverAnnouncer::onOwnershipPut)
                                               .onPut(AetherKey.StreamPartitionOwnershipKey.class,
                                                      streamIsrAnnouncer::onOwnershipPut)
+                                              .onPut(AetherKey.StreamPartitionOwnershipKey.class,
+                                                     streamLineageAnnouncer::onOwnershipPut)
                                               .build()
                                               .asRouteEntries());
         // #1555 sticky ownership: every node routes by the COMMITTED ownership record (HRW only before a record
@@ -5649,8 +5673,19 @@ public interface AetherNode extends ManageableNode {
                                                                                                 block),
                                                               ownerPromotionAlarmWindow(config.timeouts()
                                                                                               .swim()
-                                                                                              .suspectTimeout()));
-
+                                                                                              .suspectTimeout()),
+                                                              (stream, partition) -> streamPartitionManager.ringIncarnation(stream,
+                                                                                                                            partition)
+                                                                                                           .or(-1L),
+                                                              streamLineageCommit(() -> kvStore.getTyped(LeaderKey.INSTANCE,
+                                                                                                         LeaderValue.class),
+                                                                                  clusterCommandApplier,
+                                                                                  hlcClock));
+        // #1873 (KIP-320): every consumer read is checked, on the node that serves it, against the partition's COMMITTED epoch
+        // starts; this is where that node reads them.
+        streamPartitionManager.ownershipRecords((stream, partition) -> kvStore.getTyped(StreamPartitionOwnershipKey.streamPartitionOwnershipKey(stream,
+                                                                                                                                                partition),
+                                                                                        StreamPartitionOwnershipValue.class));
         streamPartitionManager.ownerServeGate(ownerActivation::admit);
         // #1730: a partition with no live in-sync replica has no owner to report a block, so the controller reports it.
         streamPartitionManager.ownerBlockSource((stream, partition) -> ownerActivation.blockOf(stream, partition)
@@ -5853,12 +5888,14 @@ public interface AetherNode extends ManageableNode {
         var streamConsumerRuntime = StreamConsumerRuntime.streamConsumerRuntime(streamPartitionManager,
                                                                                 streamDeadLetterSink,
                                                                                 streamClusterCursorStore,
-                                                                                (stream, partition, fromOffset, maxEvents) -> streamReadRouter.read(stream,
-                                                                                                                                                    partition,
-                                                                                                                                                    fromOffset,
-                                                                                                                                                    maxEvents,
-                                                                                                                                                    ReadPreference.GOVERNOR),
-                                                                                streamReadRouter::ownerBounds);
+                                                                                StreamConsumerRuntime.validatingReader((stream, partition, fromOffset, maxEvents) -> streamReadRouter.read(stream,
+                                                                                                                                                                                           partition,
+                                                                                                                                                                                           fromOffset,
+                                                                                                                                                                                           maxEvents,
+                                                                                                                                                                                           ReadPreference.GOVERNOR),
+                                                                                                                       streamReadRouter::readValidated));
+
+        streamConsumerRuntime.operatorWarnings(operatorWarningSink);
         var streamConsumerOwnership = streamConsumerOwnership(streamPartitionManager, streamReplicaSetController);
         var consumerAssignmentAuthority = StreamConsumerManager.AssignmentAuthority.assignmentAuthority(committedConsumerAssignments,
                                                                                                         ConsumerAssignmentWriter.consumerAssignmentWriter(isLeaderSupplier,
@@ -9143,6 +9180,8 @@ public interface AetherNode extends ManageableNode {
                                               eventAggregator::onStreamIsrBelowMinimum));
         entries.add(MessageRouter.Entry.route(OperationalEvent.StreamIsrRestored.class,
                                               eventAggregator::onStreamIsrRestored));
+        entries.add(MessageRouter.Entry.route(OperationalEvent.StreamLineageRestarted.class,
+                                              eventAggregator::onStreamLineageRestarted));
         entries.add(MessageRouter.Entry.route(OperationalEvent.StreamConfigChangeNotApplied.class,
                                               eventAggregator::onStreamConfigChangeNotApplied));
         entries.add(MessageRouter.Entry.route(OperationalEvent.BlueprintDeleted.class,
