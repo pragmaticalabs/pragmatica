@@ -62,6 +62,9 @@ class EmberOrdinaryFailoverNoFalseAlertTest {
     private static final Duration REQUEST_TIMEOUT = Duration.ofSeconds(30);
     private static final long LEADER_BUDGET_MS = 90_000L;
     private static final long ISR_BUDGET_MS = 60_000L;
+    private static final int REFUSAL_RETRY_ATTEMPTS = 20;
+    private static final long REFUSAL_RETRY_BUDGET_MS = 20_000L;
+    private static final long REFUSAL_RETRY_PAUSE_MS = 500L;
     private static final long FAILOVER_BUDGET_MS = 240_000L;
     private static final long SAMPLE_AFTER_FIRST_ACK_MS = 15_000L;
     private static final int STREAMS = 6;
@@ -111,7 +114,7 @@ class EmberOrdinaryFailoverNoFalseAlertTest {
         for (var i = 0; i < 20; i++) {
             var payload = "before-" + i;
 
-            assertThat(publishResponse(anyLiveMgmtPort(ownerId), chosen.name(), payload)).as("publish %s before the kill", payload).startsWith("2");
+            assertThat(publishRetryingRefusal(ownerId, chosen.name(), payload)).as("publish %s before the kill", payload).startsWith("2");
             acked.add(payload);
         }
 
@@ -171,7 +174,7 @@ class EmberOrdinaryFailoverNoFalseAlertTest {
         for (var i = 0; i < 10; i++) {
             var payload = "later-" + i;
 
-            assertThat(publishResponse(anyLiveMgmtPort(ownerId), chosen.name(), payload)).as("publish %s after the failover", payload).startsWith("2");
+            assertThat(publishRetryingRefusal(ownerId, chosen.name(), payload)).as("publish %s after the failover", payload).startsWith("2");
             acked.add(payload);
         }
 
@@ -263,6 +266,27 @@ class EmberOrdinaryFailoverNoFalseAlertTest {
                       .findFirst()
                       .map(EmberCluster.NodeStatus::mgmtPort)
                       .orElseThrow();
+    }
+
+    /// The one refusal a publish documents as safe to repeat: `503 ... refused before writing, retry` (#1944: a stream config this
+    /// node has not applied yet, an owner mid-promotion, a node that is not the committed owner). Nothing reached the log, so
+    /// the retry cannot duplicate a record. Any other answer -- a 2xx, a 500, a timeout (`-1`), any other 503 -- is returned
+    /// as is, so a real failure still fails the test. Bounded: at most [#REFUSAL_RETRY_ATTEMPTS] attempts and
+    /// [#REFUSAL_RETRY_BUDGET_MS] ms in total, [#REFUSAL_RETRY_PAUSE_MS] ms apart; the port is chosen again each attempt.
+    private String publishRetryingRefusal(String excluded, String name, String payload) {
+        var deadline = System.currentTimeMillis() + REFUSAL_RETRY_BUDGET_MS;
+        var response = publishResponse(anyLiveMgmtPort(excluded), name, payload);
+
+        for (var attempt = 1; attempt < REFUSAL_RETRY_ATTEMPTS && isRetryableRefusal(response) && System.currentTimeMillis() < deadline; attempt++) {
+            sleepQuietly(REFUSAL_RETRY_PAUSE_MS);
+            response = publishResponse(anyLiveMgmtPort(excluded), name, payload);
+        }
+
+        return response;
+    }
+
+    private static boolean isRetryableRefusal(String response) {
+        return response.startsWith("503") && response.contains("refused before writing, retry");
     }
 
     private boolean publish(int mgmtPort, String name, String payload) {
