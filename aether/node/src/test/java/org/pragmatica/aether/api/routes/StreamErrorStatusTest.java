@@ -165,6 +165,29 @@ class StreamErrorStatusTest {
         }
     }
 
+    /// `STREAMS_EVENTS` is its own read path (catalog lookup first, then the router): a stream the catalog knows but this node's
+    /// engine has not materialized is the engine's `StreamNotFound`, which must not reach the caller as a 500.
+    @Test
+    void streamsEvents_answers404_whenTheCatalogKnowsTheStreamButTheEngineDoesNot() {
+        var manager = StreamPartitionManager.streamPartitionManager();
+        var namespaces = org.pragmatica.aether.slice.stream.StreamNamespacesService.inMemory();
+        var address = ResourceAddress.resourceAddress("ns", "orders", "1.0.0").unwrap();
+
+        try {
+            namespaces.registry()
+                      .register(org.pragmatica.aether.slice.stream.StreamRegistryEntry.operator(address,
+                                                                                               RetentionPolicy.retentionPolicy(10_000, 1024 * 1024, 600_000),
+                                                                                               java.time.Instant.now()))
+                      .onFailure(cause -> fail(cause.message()));
+
+            var failure = RouteProbe.failureOf(apiRoutes(manager, namespaces), ManagementRoute.STREAMS_EVENTS, List.of("ns", "orders", "1.0.0", "events"), Map.of());
+
+            assertThat(RouteProbe.problemStatus(failure)).isEqualTo(HttpStatus.NOT_FOUND);
+        } finally {
+            manager.close();
+        }
+    }
+
     private static StreamPartitionManager streamWith2Partitions() {
         var manager = StreamPartitionManager.streamPartitionManager();
         var engineKey = StreamManager.engineKey(ResourceAddress.resourceAddress("ns", "orders", "1.0.0").unwrap());
@@ -176,6 +199,11 @@ class StreamErrorStatusTest {
     }
 
     private static Stream<org.pragmatica.http.routing.Route<?>> apiRoutes(StreamPartitionManager manager) {
+        return apiRoutes(manager, org.pragmatica.aether.slice.stream.StreamNamespacesService.inMemory());
+    }
+
+    private static Stream<org.pragmatica.http.routing.Route<?>> apiRoutes(StreamPartitionManager manager,
+                                                                         org.pragmatica.aether.slice.stream.StreamNamespacesService namespaces) {
         var node = (ManageableNode) java.lang.reflect.Proxy.newProxyInstance(ManageableNode.class.getClassLoader(),
                                                                              new Class[]{ManageableNode.class},
                                                                              (_, method, _) -> {
@@ -189,7 +217,7 @@ class StreamErrorStatusTest {
                                                                                  throw new UnsupportedOperationException(method.getName());
                                                                              });
 
-        return StreamApiRoutes.streamApiRoutes(() -> node, org.pragmatica.aether.slice.stream.StreamNamespacesService.inMemory(), ConsumerGroupCoordinator.noOp(), null)
+        return StreamApiRoutes.streamApiRoutes(() -> node, namespaces, ConsumerGroupCoordinator.noOp(), null)
                               .routes();
     }
 
