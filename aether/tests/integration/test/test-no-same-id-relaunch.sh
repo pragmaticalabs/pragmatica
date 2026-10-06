@@ -39,8 +39,9 @@ PATTERN='(^|[^_[:alnum:]])start_node([^_[:alnum:]]|$)|cloud_revive_vm|cloud_stop
 ALLOW=(
   'aether/script/demo-cluster.sh|start_node|first start of a demo cluster, not a relaunch'
   'aether/script/rolling-aether-upgrade.sh|systemctl restart|docker restart|kubectl rollout restart|#1543 part F replaces the script with `aether cluster upgrade --wait`'
-  'aether/cli/src/main/java/org/pragmatica/aether/cli/cluster/BootstrapPhaseDeploy.java|restartNodesWithFinalPeers|systemctl restart|#1543 part B: launch-once bootstrap'
-  'aether/cli/src/test/java/org/pragmatica/aether/cli/cluster/BootstrapPhaseDeployCloudSshRestartTest.java|systemctl restart|#1543 part B: pins the code above'
+  'aether/cli/src/main/java/org/pragmatica/aether/cli/cluster/BootstrapPhaseDeploy.java|&& systemctl start " [+] NodeUserDataRenderer[.]JVM_UNIT_NAME;|#1959 guarded FIRST start: refuses an ever-started node (C4 pins the guard)'
+  'aether/cli/src/test/java/org/pragmatica/aether/cli/cluster/BootstrapLaunchOnceTest.java|systemctl (start|restart)|docker (run|restart)|refusal seam: asserts the #1959 guard and that no restart is ever issued'
+  'aether/cli/src/test/java/org/pragmatica/aether/cli/cluster/BootstrapPhaseDeployCloudSshRestartTest.java|systemctl start|asserts the guarded first-start command shape (#1959)'
   'aether/aether-config/src/main/java/org/pragmatica/aether/config/cluster/NodeUserDataRenderer.java|systemctl start|FIRST start in cloud-init (never enabled)'
   'aether/cli/src/test/java/org/pragmatica/aether/cli/cluster/UserDataTemplatePeersTest.java|systemctl start|asserts the cloud-init first start above'
   'aether/tests/cloud/deploy-cloud.sh|systemctl start docker|`systemctl start docker` on a fresh VM, not an aether node'
@@ -133,6 +134,18 @@ for e in "${ALLOW[@]}"; do
 done
 if [ -z "$stale" ]; then ok "C2 every ALLOW entry still excuses a live hit"
 else fail "C2 stale ALLOW entr(ies), delete them:${stale}"; fi
+
+# C4 the excuse above holds only while the guard does: a `systemctl start` is a FIRST start only if the command
+# refuses a node that was ever started (live unit state AND the durable marker, checked before the start).
+BPD="aether/cli/src/main/java/org/pragmatica/aether/cli/cluster/BootstrapPhaseDeploy.java"
+guard_ok() {  # <file>
+    grep -q '\[ -e " + JVM_STARTED_MARKER' "$1" 2>/dev/null && grep -q 'exit " + ALREADY_PRESENT_EXIT' "$1" 2>/dev/null \
+        && grep -q 'touch " + JVM_STARTED_MARKER' "$1" 2>/dev/null
+}
+if guard_ok "$REPO_ROOT/$BPD"; then ok "C4 the guarded-first-start (started marker checked, exit 17, marker written before start) is intact"
+else fail "C4 the #1959 start-once guard is gone from $BPD: its systemctl start is a relaunch again"; fi
+mkdir -p "$WORK/nog"; sed 's/\[ -e " + JVM_STARTED_MARKER/[ -f " + X/' "$REPO_ROOT/$BPD" > "$WORK/nog/B.java"
+guard_ok "$WORK/nog/B.java" && fail "C4b control: a guard with the marker check removed still passes" || ok "C4b control: removing the started-marker check turns C4 red"
 
 # C3 controls on a scratch repo: every pattern alternative detected, comments ignored, allow-list honoured.
 G="$WORK/g"; mkdir -p "$G/aether/tests/integration/lib" "$G/aether/script"
