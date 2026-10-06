@@ -7,6 +7,7 @@ package org.pragmatica.aether.stream;
 import java.util.List;
 
 import org.pragmatica.aether.slice.ConsumerConfig;
+import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.stream.consumer.TransactionalCursorCommit;
 import org.pragmatica.aether.slice.generation.RewindEpoch;
 import org.pragmatica.aether.stream.segment.ConsumerCursorStore;
@@ -15,6 +16,7 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.utility.warning.OperatorWarningSink;
 
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.some;
@@ -141,6 +143,11 @@ public interface StreamConsumerRuntime extends AutoCloseable {
         KEEP_UNTIL_UNSUBSCRIBED
     }
 
+    /// Late-bind where a consumer's re-seek after a replaced lineage is reported to the operator (#1873). The default ignores
+    /// it: a runtime without a node behind it only logs.
+    @Contract
+    default void operatorWarnings(OperatorWarningSink sink) {}
+
     @FunctionalInterface
     interface ConsumerCallback {
         Promise<Unit> onEvent(long offset, byte[] payload, long timestamp);
@@ -159,6 +166,51 @@ public interface StreamConsumerRuntime extends AutoCloseable {
                                                        int partition,
                                                        long fromOffset,
                                                        int maxEvents);
+
+        /// The consumer's read (#1730 phase 2 / #1873, KIP-320): the same read, carrying the owner epoch the consumer last
+        /// read under, answered with the events and the epoch they were served under, or with the typed
+        /// [StreamError.EpochDiverged] when the cursor belongs to a replaced lineage. The default is a plain read that
+        /// reports no epoch, which never diverges: a reader without an owner behind it has no lineage to be checked against.
+        default Promise<StreamPartitionManager.EpochRead> readFrom(String streamName,
+                                                                   int partition,
+                                                                   long fromOffset,
+                                                                   int maxEvents,
+                                                                   Epoch consumerEpoch) {
+            return read(streamName, partition, fromOffset, maxEvents).map(events -> new StreamPartitionManager.EpochRead(events,
+                                                                                                                         Epoch.ZERO));
+        }
+    }
+
+    /// A reader that validates against the owner's epoch (#1730 phase 2 / #1873): `plain` for the unvalidated read,
+    /// `validated` for the consumer's.
+    @FunctionalInterface
+    interface ValidatedRead {
+        Promise<StreamPartitionManager.EpochRead> read(String streamName,
+                                                       int partition,
+                                                       long fromOffset,
+                                                       int maxEvents,
+                                                       Epoch consumerEpoch);
+    }
+
+    static PartitionReader validatingReader(PartitionReader plain, ValidatedRead validated) {
+        return new PartitionReader() {
+            @Override
+            public Promise<List<OffHeapRingBuffer.RawEvent>> read(String streamName,
+                                                                  int partition,
+                                                                  long fromOffset,
+                                                                  int maxEvents) {
+                return plain.read(streamName, partition, fromOffset, maxEvents);
+            }
+
+            @Override
+            public Promise<StreamPartitionManager.EpochRead> readFrom(String streamName,
+                                                                      int partition,
+                                                                      long fromOffset,
+                                                                      int maxEvents,
+                                                                      Epoch consumerEpoch) {
+                return validated.read(streamName, partition, fromOffset, maxEvents, consumerEpoch);
+            }
+        };
     }
 
     /// The default reader: this node's own ring, and nothing else.
@@ -168,22 +220,6 @@ public interface StreamConsumerRuntime extends AutoCloseable {
                                                                                             fromOffset,
                                                                                             maxEvents)
                                                                                  .async();
-    }
-
-    /// What the partition a consumer reads holds right now, asked of the node that ASSIGNS its offsets (#1441).
-    /// A resumed cursor above `visibleHead + 1` points past the log, and the offsets between will be assigned
-    /// to records the consumer would never read; [ConsumerRuntimeState] clamps it.
-    @FunctionalInterface
-    interface PartitionBounds {
-        Promise<VisibleBounds> bounds(String streamName, int partition);
-    }
-
-    /// The default bounds: this node's own ring, the one [#localPartitionReader] reads. Fails while the ring is
-    /// not materialized here.
-    static PartitionBounds localPartitionBounds(StreamPartitionManager partitionManager) {
-        return (streamName, partition) -> partitionManager.visibleBounds(streamName, partition)
-                                                          .toResult(StreamError.General.PARTITION_NOT_LOCAL)
-                                                          .async();
     }
 
     @FunctionalInterface
@@ -223,21 +259,5 @@ public interface StreamConsumerRuntime extends AutoCloseable {
                                                        ConsumerCursorStore cursorStore,
                                                        PartitionReader reader) {
         return new ConsumerRuntimeState(partitionManager, deadLetterHandler, some(cursorStore), none(), reader);
-    }
-
-    /// The production overload (#1441): the routed reader, and the bounds of the partition as its owner reports
-    /// them, so a resumed cursor is checked against the head the owner will assign offsets above.
-    static StreamConsumerRuntime streamConsumerRuntime(StreamPartitionManager partitionManager,
-                                                       DeadLetterHandler deadLetterHandler,
-                                                       ConsumerCursorStore cursorStore,
-                                                       PartitionReader reader,
-                                                       PartitionBounds bounds) {
-        return new ConsumerRuntimeState(partitionManager,
-                                        deadLetterHandler,
-                                        some(cursorStore),
-                                        none(),
-                                        reader,
-                                        some(bounds),
-                                        ConsumerRuntimeState.DEAD_LETTER_APPEND_TIMEOUT);
     }
 }
