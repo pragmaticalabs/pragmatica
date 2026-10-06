@@ -6,7 +6,10 @@ package org.pragmatica.aether.config.cluster;
 
 import java.util.List;
 import java.util.Map;
+import java.util.stream.IntStream;
+import java.util.stream.Stream;
 
+import org.pragmatica.aether.environment.SourceName;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.aether.config.ConfigKeyLive;
@@ -67,6 +70,34 @@ public record ClusterBootstrapConfig(@ConfigKeyLive("#693: parsed but never read
                       .flatMap(s -> Option.option(s.roles().get(NodeRole.CORE)).stream())
                       .mapToInt(ClusterBootstrapConfig::roleSize)
                       .sum();
+    }
+
+    /// #1543 — the ids of the INITIAL cores this bootstrap provisions, `<source>-core-<index>`, the same
+    /// minting `BootstrapPhaseProvision` uses. Rendered as `cluster.genesis_voters` so a CLI-bootstrapped
+    /// cluster forms exactly one epoch-0 configuration. Empty — render nothing — when a core-bearing
+    /// source is DOCKER or FORGE: their node ids are not minted by this scheme, so naming them would
+    /// make genesis wait for ids that never announce.
+    public List<String> initialCoreIds() {
+        var coreSources = sources.entrySet()
+                                 .stream()
+                                 .sorted(Map.Entry.comparingByKey())
+                                 .filter(entry -> Option.option(entry.getValue().roles().get(NodeRole.CORE)).isPresent())
+                                 .toList();
+        var unnameable = coreSources.stream()
+                                    .anyMatch(entry -> entry.getValue()
+                                                            .type() == SourceType.DOCKER || entry.getValue()
+                                                                                                 .type() == SourceType.FORGE);
+
+        return unnameable
+               ? List.of()
+               : coreSources.stream()
+                            .flatMap(entry -> coreIds(SourceName.sourceNameOrDefault(entry.getKey()),
+                                                      entry.getValue().roles().get(NodeRole.CORE)))
+                            .toList();
+    }
+
+    private static Stream<String> coreIds(SourceName sourceName, RoleSubTable core) {
+        return IntStream.range(0, roleSize(core)).mapToObj(index -> sourceName.value() + "-core-" + index);
     }
 
     private static int roleSize(RoleSubTable role) {

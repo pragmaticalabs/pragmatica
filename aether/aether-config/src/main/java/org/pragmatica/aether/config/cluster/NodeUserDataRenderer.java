@@ -100,6 +100,35 @@ public sealed interface NodeUserDataRenderer {
                          TomlDocument composedConfig,
                          List<String> sshAuthorizedKeys,
                          List<String> peers) {
+        return render(config,
+                      source,
+                      role,
+                      nodeId,
+                      nodeIndex,
+                      clusterSecret,
+                      clusterName,
+                      composedConfig,
+                      sshAuthorizedKeys,
+                      peers,
+                      true);
+    }
+
+    /// #1543 — `startNode == false` renders an INSTALL-ONLY script: docker/JVM, image or jar, composed
+    /// config, env file and unit are all laid down, but the node process is not started. The CLI
+    /// bootstrap uses it when cores span several sources: PEERS are not final at create time, so the
+    /// finalized-PEERS SSH push performs the node's one and only start instead of re-launching a node
+    /// that already ran under the same id.
+    static String render(ClusterBootstrapConfig config,
+                         SourceProfile source,
+                         NodeRole role,
+                         String nodeId,
+                         int nodeIndex,
+                         String clusterSecret,
+                         ClusterName clusterName,
+                         TomlDocument composedConfig,
+                         List<String> sshAuthorizedKeys,
+                         List<String> peers,
+                         boolean startNode) {
         var ports = config.operations().ports();
         var runtimeProfile = resolveRuntimeProfile(config, source, role);
         var isContainer = isContainerRuntime(runtimeProfile);
@@ -122,7 +151,11 @@ public sealed interface NodeUserDataRenderer {
         if (isContainer) {
             appendDockerInstall(sb);
             appendComposedConfig(sb, composedConfig);
-            appendContainerRun(sb, clusterName, nodeId, role, source);
+            if (startNode) {
+                appendContainerRun(sb, clusterName, nodeId, role, source);
+            } else {
+                appendContainerPullOnly(sb);
+            }
         } else {
             appendJvmInstall(sb,
                              resolveJarUrl(runtimeProfile,
@@ -132,10 +165,11 @@ public sealed interface NodeUserDataRenderer {
                          clusterName,
                          role,
                          source,
-                         runtimeProfile.flatMap(RuntimeProfile::jvmArgs).or(""));
+                         runtimeProfile.flatMap(RuntimeProfile::jvmArgs).or(""),
+                         startNode);
         }
 
-        appendReadinessSignal(sb, nodeId, ports.cluster(), ports.management());
+        appendReadinessSignal(sb, nodeId, ports.cluster(), ports.management(), startNode);
 
         return sb.toString();
     }
@@ -252,6 +286,13 @@ public sealed interface NodeUserDataRenderer {
         // every local user / on-box process.
         sb.append("chown 1000:1000 /opt/aether/config/aether.toml\n");
         sb.append("chmod 600 /opt/aether/config/aether.toml\n\n");
+    }
+
+    private static void appendContainerPullOnly(StringBuilder sb) {
+        sb.append("# --- Pull only: the CLI's finalized-PEERS push starts the node (#1543) ---\n");
+        sb.append("if ! docker image inspect \"${AETHER_IMAGE}\" >/dev/null 2>&1; then\n");
+        sb.append("    docker pull \"${AETHER_IMAGE}\"\n");
+        sb.append("fi\n\n");
     }
 
     private static void appendContainerRun(StringBuilder sb,
@@ -444,10 +485,11 @@ public sealed interface NodeUserDataRenderer {
                                      ClusterName clusterName,
                                      NodeRole role,
                                      SourceProfile source,
-                                     String jvmArgs) {
+                                     String jvmArgs,
+                                     boolean startNode) {
         appendJvmEnvFile(sb, clusterName, role, source);
         appendJvmLauncher(sb, jvmArgs);
-        appendJvmUnit(sb);
+        appendJvmUnit(sb, startNode);
     }
 
     /// The env file systemd reads. Two heredocs on purpose:
@@ -531,8 +573,10 @@ public sealed interface NodeUserDataRenderer {
     /// unit must not start on boot while the id is fixed (`aether/docs/operators/deployment-recovery.md` §2.3 and
     /// §4.4). The container path already runs
     /// `docker run --restart no` for the same reason.
-    private static void appendJvmUnit(StringBuilder sb) {
-        sb.append("# --- Install and start the aether-node systemd unit ---\n");
+    private static void appendJvmUnit(StringBuilder sb, boolean startNode) {
+        sb.append(startNode
+                  ? "# --- Install and start the aether-node systemd unit ---\n"
+                  : "# --- Install the aether-node systemd unit (the CLI push starts it, #1543) ---\n");
         sb.append("# Restart=no is deliberate: Aether uses terminal-removal membership and CTM auto-heal\n");
         sb.append("# owns recovery. The unit exists so a dead node is VISIBLE (systemctl status /\n");
         sb.append("# journalctl -u aether-node), not so it comes back. See docs/operators/deployment-recovery.md.\n");
@@ -540,7 +584,11 @@ public sealed interface NodeUserDataRenderer {
         sb.append(SystemdUnitTemplate.generateDefault());
         sb.append("AETHER_UNIT\n");
         sb.append("systemctl daemon-reload\n");
-        sb.append("systemctl start ").append(JVM_UNIT_NAME).append("\n\n");
+        if (startNode) {
+            sb.append("systemctl start ").append(JVM_UNIT_NAME).append("\n");
+        }
+
+        sb.append("\n");
     }
 
     private static Unit appendEnvFileLine(StringBuilder sb, String name, String value) {
@@ -549,11 +597,17 @@ public sealed interface NodeUserDataRenderer {
         return Unit.unit();
     }
 
-    private static void appendReadinessSignal(StringBuilder sb, String nodeId, int clusterPort, int managementPort) {
+    private static void appendReadinessSignal(StringBuilder sb,
+                                              String nodeId,
+                                              int clusterPort,
+                                              int managementPort,
+                                              boolean startNode) {
         sb.append("# --- Signal readiness ---\n");
         sb.append("echo \"Aether node ")
           .append(nodeId)
-          .append(" starting on ports: cluster=")
+          .append(startNode
+                  ? " starting on ports: cluster="
+                  : " installed, awaiting start on ports: cluster=")
           .append(clusterPort)
           .append(", mgmt=")
           .append(managementPort)

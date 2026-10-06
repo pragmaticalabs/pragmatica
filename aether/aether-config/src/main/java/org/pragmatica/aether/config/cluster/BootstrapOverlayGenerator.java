@@ -54,7 +54,22 @@ public interface BootstrapOverlayGenerator {
                                 Option<String> clusterSecret,
                                 NodeRole role,
                                 List<Long> sshKeyIds) {
-        var fixed = Stream.of(Option.some(clusterSection(config)),
+        return overlay(config, source, nodeIndex, apiKey, dockerGid, clusterSecret, role, sshKeyIds, List.of());
+    }
+
+    /// #1543 — `genesisVoters` is the provisioned INITIAL core ids a CLI bootstrap renders as
+    /// `cluster.genesis_voters` (owner ruling, session 28). A CTM replacement passes none: it joins the
+    /// formed electorate through the Rabia §4 add command (#1526) and must never carry a genesis roster.
+    static TomlDocument overlay(ClusterBootstrapConfig config,
+                                SourceProfile source,
+                                int nodeIndex,
+                                Option<String> apiKey,
+                                Option<String> dockerGid,
+                                Option<String> clusterSecret,
+                                NodeRole role,
+                                List<Long> sshKeyIds,
+                                List<String> genesisVoters) {
+        var fixed = Stream.of(Option.some(clusterSection(config, genesisVoters)),
                               Option.some(clusterPortsSection(config)),
                               cloudSection(source),
                               cloudCredentialsSection(source),
@@ -81,7 +96,7 @@ public interface BootstrapOverlayGenerator {
         return Map.copyOf(ordered);
     }
 
-    private static Section clusterSection(ClusterBootstrapConfig config) {
+    private static Section clusterSection(ClusterBootstrapConfig config, List<String> genesisVoters) {
         var values = new LinkedHashMap<String, Object>();
 
         values.put("name",
@@ -95,6 +110,9 @@ public interface BootstrapOverlayGenerator {
         values.put("nodes", config.derivedCoreCount());
         values.put("tls",
                    config.operations().tls().autoGenerate());
+        if (!genesisVoters.isEmpty()) {
+            values.put("genesis_voters", String.join(",", genesisVoters));
+        }
 
         return Section.section("cluster", values);
     }

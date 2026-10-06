@@ -28,12 +28,14 @@ import org.pragmatica.aether.environment.SourceName;
 import org.pragmatica.config.toml.TomlDocument;
 import org.pragmatica.config.toml.TomlWriter;
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Functions.Fn3;
 import org.pragmatica.lang.Functions.Fn4;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.utils.Causes;
 
 import static org.pragmatica.aether.cli.cluster.BootstrapPhase.DEPLOY_RUNTIME;
 import static org.pragmatica.aether.environment.SourceName.sourceNameOrDefault;
@@ -125,7 +127,7 @@ sealed interface BootstrapPhaseDeploy {
                                              Fn1<String, String> envLookup) {
         return switch (source.type()) {
             case CLOUD -> deployCloudSource(ctx, source, sourceName, healthCheck, sshExec, envLookup);
-            case SSH -> deploySshSource(ctx, source, sourceName, sshExec, scpExec, envLookup);
+            case SSH -> deploySshSource(ctx, source, sourceName, healthCheck, sshExec, scpExec, envLookup);
             case FORGE -> deployForgeSource(sourceName);
             case DOCKER -> deployDockerSource(sourceName);
         };
@@ -200,17 +202,18 @@ sealed interface BootstrapPhaseDeploy {
             return awaitFormationViaLabels(ctx, source, sourceName);
         }
 
-        var restartResult = restartNodesWithFinalPeers(ctx,
-                                                       source,
-                                                       sourceName,
-                                                       sourceNodes,
-                                                       sshExec,
-                                                       envLookup,
-                                                       preflightTimeoutMs,
-                                                       preflightPollMs);
+        var startResult = startNodesWithFinalPeers(ctx,
+                                                   source,
+                                                   sourceName,
+                                                   sourceNodes,
+                                                   healthCheck,
+                                                   sshExec,
+                                                   envLookup,
+                                                   preflightTimeoutMs,
+                                                   preflightPollMs);
 
-        if (restartResult.isFailure()) {
-            return restartResult;
+        if (startResult.isFailure()) {
+            return startResult;
         }
 
         var mgmtPort = ctx.config().operations().ports().management();
@@ -313,14 +316,15 @@ sealed interface BootstrapPhaseDeploy {
     }
 
     @SuppressWarnings("JBCT-EX-01")
-    private static Result<Unit> restartNodesWithFinalPeers(BootstrapContext ctx,
-                                                           SourceProfile source,
-                                                           SourceName sourceName,
-                                                           List<ProvisionedNode> sourceNodes,
-                                                           Fn3<Result<String>, String, String, SshConfig> sshExec,
-                                                           Fn1<String, String> envLookup,
-                                                           long preflightTimeoutMs,
-                                                           long preflightPollMs) {
+    private static Result<Unit> startNodesWithFinalPeers(BootstrapContext ctx,
+                                                         SourceProfile source,
+                                                         SourceName sourceName,
+                                                         List<ProvisionedNode> sourceNodes,
+                                                         Fn1<Result<String>, String> healthCheck,
+                                                         Fn3<Result<String>, String, String, SshConfig> sshExec,
+                                                         Fn1<String, String> envLookup,
+                                                         long preflightTimeoutMs,
+                                                         long preflightPollMs) {
         var sshConfigResult = buildCloudSshConfig(source, envLookup);
 
         if (sshConfigResult.isFailure()) {
@@ -349,12 +353,22 @@ sealed interface BootstrapPhaseDeploy {
                            ? "JVMs"
                            : "containers";
 
-        System.out.printf("  [%s/cloud] Re-launching aether-node %s on %d host(s) with finalized PEERS=%s%n",
+        System.out.printf("  [%s/cloud] Starting aether-node %s (first and only start) on %d host(s) with finalized PEERS=%s%n",
                           sourceName,
                           runtimeLabel,
                           sourceNodes.size(),
                           peers);
         for (var node : sourceNodes) {
+            var skip = alreadyStartedAndHealthy(ctx, node, healthCheck);
+
+            if (skip.isFailure()) {
+                return skip.map(_ -> Unit.unit());
+            }
+
+            if (skip.unwrap()) {
+                continue;
+            }
+
             var roleResult = BootstrapPhaseProvision.nodeRole(node.nodeId(), sourceName);
 
             if (roleResult.isFailure()) {
@@ -363,39 +377,41 @@ sealed interface BootstrapPhaseDeploy {
 
             var role = roleResult.unwrap();
             var command = isJvm
-                          ? buildJvmRestartCommand(node.nodeId(),
-                                                   role,
-                                                   sourceName,
-                                                   source.knownZone(),
-                                                   clusterPort,
-                                                   managementPort,
-                                                   peers,
-                                                   clusterSecret,
-                                                   clusterName,
-                                                   envLookup)
-                          : buildRestartCommand(resolveContainerImage(ctx, source),
-                                                clusterName,
-                                                node.nodeId(),
-                                                role,
-                                                sourceName,
-                                                source.knownZone(),
-                                                clusterPort,
-                                                managementPort,
-                                                peers,
-                                                clusterSecret,
-                                                envLookup);
+                          ? buildJvmStartCommand(node.nodeId(),
+                                                 role,
+                                                 sourceName,
+                                                 source.knownZone(),
+                                                 clusterPort,
+                                                 managementPort,
+                                                 peers,
+                                                 clusterSecret,
+                                                 clusterName,
+                                                 envLookup)
+                          : buildStartCommand(resolveContainerImage(ctx, source),
+                                              clusterName,
+                                              node.nodeId(),
+                                              role,
+                                              sourceName,
+                                              source.knownZone(),
+                                              clusterPort,
+                                              managementPort,
+                                              peers,
+                                              clusterSecret,
+                                              envLookup);
             var result = sshExec.apply(node.publicIp(), command, sshConfig);
 
             if (result.isFailure()) {
-                return new BootstrapError.DeploymentFailed(node.publicIp(), failureReason(isJvm, result)).result();
+                return startFailure(node, failureReason(isJvm, result), result).result();
             }
+
+            recordStarted(ctx, node);
         }
 
         var doneLabel = isJvm
                         ? "JVM(s)"
                         : "container(s)";
 
-        System.out.printf("  [%s/cloud] All %d %s restarted with finalized PEERS%n",
+        System.out.printf("  [%s/cloud] All %d %s started with finalized PEERS%n",
                           sourceName,
                           sourceNodes.size(),
                           doneLabel);
@@ -405,10 +421,74 @@ sealed interface BootstrapPhaseDeploy {
 
     private static String failureReason(boolean isJvm, Result<String> result) {
         var prefix = isJvm
-                     ? "Failed to restart aether-node JVM with finalized PEERS: "
-                     : "Failed to restart aether-node container with finalized PEERS: ";
+                     ? "Failed to start aether-node JVM with finalized PEERS: "
+                     : "Failed to start aether-node container with finalized PEERS: ";
 
         return prefix + result.fold(c -> c.message(), v -> v);
+    }
+
+    /// #1543 — printed by the start guard when the host already holds an `aether-node` (container
+    /// present in any state, or the unit active/failed). Matching it in the ssh output is what turns
+    /// "the guard refused" into a typed [BootstrapError.NodeAlreadyStarted], not a generic failure.
+    String ALREADY_PRESENT_MARKER = "AETHER_NODE_ALREADY_PRESENT";
+    int ALREADY_PRESENT_EXIT = 17;
+
+    /// A node id is launched ONCE (#1543): the first start is the only start. `--resume` consults the
+    /// persisted per-node started ledger — a started node that answers its health check is skipped
+    /// (`true`), a started node that does not is refused by name rather than relaunched under the same
+    /// id (`NodeAlreadyStarted`), and a node never started proceeds (`false`).
+    static Result<Boolean> alreadyStartedAndHealthy(BootstrapContext ctx,
+                                                    ProvisionedNode node,
+                                                    Fn1<Result<String>, String> healthCheck) {
+        if (!ctx.state().startedNodeIds().contains(node.nodeId())) {
+            return Result.success(false);
+        }
+
+        var mgmtPort = ctx.config().operations().ports().management();
+        var scheme = ctx.config().operations().tls().autoGenerate()
+                     ? "https"
+                     : "http";
+
+        if (isHealthy(node, mgmtPort, scheme, healthCheck)) {
+            System.out.printf("  [%s] already started and healthy — skipping (a node id is launched once)%n",
+                              node.nodeId());
+
+            return Result.success(true);
+        }
+
+        return new BootstrapError.NodeAlreadyStarted(node.nodeId(),
+                                                     "an earlier run started it and it is not answering " + scheme
+                                                    + "://" + node.publicIp()
+                                                    + ":" + mgmtPort
+                                                    + "/health/live").result();
+    }
+
+    /// Records the start in the persisted ledger the moment it succeeded, so a failure on a LATER node
+    /// still leaves this one recorded. A ledger that cannot be written is a WARN, not an abort: the node
+    /// is already running, and failing here would not un-start it.
+    @Contract
+    private static void recordStarted(BootstrapContext ctx, ProvisionedNode node) {
+        var _ = BootstrapStatePersistence.appendStartedNode(ctx.config().cluster().name(),
+                                                            node.nodeId())
+                                         .onFailure(cause -> System.err.printf("  WARN: node %s was started but NOT recorded in the bootstrap ledger — %s."
+                                                                              + " A later --resume cannot tell it was started; do not re-run bootstrap against this cluster.%n",
+                                                                               node.nodeId(),
+                                                                               cause.message()));
+    }
+
+    private static Cause startFailure(ProvisionedNode node, String reason, Result<String> result) {
+        return result.fold(cause -> classifyStartFailure(node, reason, cause),
+                           _ -> new BootstrapError.DeploymentFailed(node.publicIp(), reason));
+    }
+
+    private static Cause classifyStartFailure(ProvisionedNode node, String reason, Cause cause) {
+        return cause.message()
+                    .contains(ALREADY_PRESENT_MARKER)
+               ? new BootstrapError.NodeAlreadyStarted(node.nodeId(),
+                                                       "an aether-node already exists on " + node.publicIp()
+                                                      + " (" + reason
+                                                      + ")")
+               : new BootstrapError.DeploymentFailed(node.publicIp(), reason);
     }
 
     static boolean isJvmRuntime(BootstrapContext ctx, SourceProfile source) {
@@ -476,32 +556,36 @@ sealed interface BootstrapPhaseDeploy {
         return Result.unitResult();
     }
 
-    static String buildRestartCommand(String image,
-                                      ClusterName clusterName,
-                                      String nodeId,
-                                      NodeRole role,
-                                      SourceName source,
-                                      Option<String> zone,
-                                      int clusterPort,
-                                      int managementPort,
-                                      String peers,
-                                      String clusterSecret) {
-        return buildRestartCommand(image,
-                                   clusterName,
-                                   nodeId,
-                                   role,
-                                   source,
-                                   zone,
-                                   clusterPort,
-                                   managementPort,
-                                   peers,
-                                   clusterSecret,
-                                   System::getenv);
+    static String buildStartCommand(String image,
+                                    ClusterName clusterName,
+                                    String nodeId,
+                                    NodeRole role,
+                                    SourceName source,
+                                    Option<String> zone,
+                                    int clusterPort,
+                                    int managementPort,
+                                    String peers,
+                                    String clusterSecret) {
+        return buildStartCommand(image,
+                                 clusterName,
+                                 nodeId,
+                                 role,
+                                 source,
+                                 zone,
+                                 clusterPort,
+                                 managementPort,
+                                 peers,
+                                 clusterSecret,
+                                 System::getenv);
     }
 
-    /// Re-launch the container with the finalized PEERS. CRITICAL: this re-launch RECREATES the
-    /// container that actually runs, so it MUST carry the SAME host-env-derived identity allow-list
-    /// the cloud-init start emitted ([UserDataTemplate#emitIdentityEnv]) — otherwise
+    /// Start the container, ONCE, with the finalized PEERS (#1543). The cloud-init script of a
+    /// multi-core-source cluster only installs, so this is the node's FIRST start — never a re-launch.
+    /// The guard in front refuses a host that already holds an `aether-node` container in ANY state:
+    /// relaunching it would be a same-NodeId restart, which membership refuses (terminal removal), so the
+    /// old `docker rm -f aether-node || true` that made a re-run "idempotent" is gone. CRITICAL: this start
+    /// creates the container that actually runs, so it MUST carry the SAME host-env-derived identity allow-list
+    /// the install-only cloud-init would otherwise have emitted ([UserDataTemplate#emitIdentityEnv]) — otherwise
     /// AETHER_INSECURE_DEV_MODE and the rest of [ClusterIdentityEnv#IDENTITY_VARS] silently drop,
     /// the C2 security gate fails, and the health poll never succeeds. AETHER_CLUSTER_SECRET is
     /// emitted explicitly from the finalized `clusterSecret` param and EXCLUDED from the allow-list
@@ -511,18 +595,20 @@ sealed interface BootstrapPhaseDeploy {
     /// operators filter tiers by, and the `AETHER_ROLE` the identity pass emits from the same value
     /// is the SWIM role label, the only worker classifier. A literal `core` here did not merely
     /// mislabel a non-core node, it reclassified it.
-    static String buildRestartCommand(String image,
-                                      ClusterName clusterName,
-                                      String nodeId,
-                                      NodeRole role,
-                                      SourceName source,
-                                      Option<String> zone,
-                                      int clusterPort,
-                                      int managementPort,
-                                      String peers,
-                                      String clusterSecret,
-                                      Fn1<String, String> envLookup) {
-        return "docker rm -f aether-node 2>/dev/null || true"
+    static String buildStartCommand(String image,
+                                    ClusterName clusterName,
+                                    String nodeId,
+                                    NodeRole role,
+                                    SourceName source,
+                                    Option<String> zone,
+                                    int clusterPort,
+                                    int managementPort,
+                                    String peers,
+                                    String clusterSecret,
+                                    Fn1<String, String> envLookup) {
+        return "if docker ps -a --format '{{.Names}}' | grep -qx aether-node; then echo " + ALREADY_PRESENT_MARKER
+             + " >&2; exit " + ALREADY_PRESENT_EXIT
+             + "; fi"
              + " && docker run -d --name aether-node --restart no --network host"
              + " -l aether-cluster=" + clusterName.value()
              + " -l aether-node-id=" + nodeId
@@ -571,33 +657,35 @@ sealed interface BootstrapPhaseDeploy {
 
     static String JVM_JAR_PATH = "/opt/aether/aether-node.jar";
 
-    static String buildJvmRestartCommand(String nodeId,
-                                         NodeRole role,
-                                         SourceName source,
-                                         Option<String> zone,
-                                         int clusterPort,
-                                         int managementPort,
-                                         String peers,
-                                         String clusterSecret,
-                                         ClusterName clusterName) {
-        return buildJvmRestartCommand(nodeId,
-                                      role,
-                                      source,
-                                      zone,
-                                      clusterPort,
-                                      managementPort,
-                                      peers,
-                                      clusterSecret,
-                                      clusterName,
-                                      System::getenv);
+    static String buildJvmStartCommand(String nodeId,
+                                       NodeRole role,
+                                       SourceName source,
+                                       Option<String> zone,
+                                       int clusterPort,
+                                       int managementPort,
+                                       String peers,
+                                       String clusterSecret,
+                                       ClusterName clusterName) {
+        return buildJvmStartCommand(nodeId,
+                                    role,
+                                    source,
+                                    zone,
+                                    clusterPort,
+                                    managementPort,
+                                    peers,
+                                    clusterSecret,
+                                    clusterName,
+                                    System::getenv);
     }
 
-    /// JVM re-launch with finalized PEERS. Same env-parity requirement as the container path
-    /// ([#buildRestartCommand]): the cluster-identity allow-list (minus AETHER_CLUSTER_SECRET,
-    /// written explicitly) is re-emitted so the relaunched JVM inherits the same identity + dev-mode
-    /// posture the cloud-init start wrote. `envLookup` is injectable for unit testing.
+    /// JVM start, ONCE, with finalized PEERS (#1543). Same env-parity requirement as the container path
+    /// ([#buildStartCommand]): the cluster-identity allow-list (minus AETHER_CLUSTER_SECRET,
+    /// written explicitly) is written into the env file so the JVM carries the identity + dev-mode
+    /// posture the install-only cloud-init would have set. `envLookup` is injectable for unit testing.
+    /// The unit is only STARTED here, never restarted: the guard refuses a unit that is active, activating or
+    /// failed, i.e. one that has already run under this node id.
     ///
-    /// #1021 — this rewrites the node's systemd env file and restarts the unit. It used to
+    /// #1021 — this rewrites the node's systemd env file and starts the unit. It used to
     /// `pkill -f '^java -jar /opt/aether/aether-node.jar'` and re-launch a bare `nohup java`, which
     /// had two defects beyond the missing supervisor:
     ///  - **It matched processes by command line.** The anchor `^java -jar <jar>` was added because
@@ -613,17 +701,22 @@ sealed interface BootstrapPhaseDeploy {
     /// The env file is rewritten whole rather than appended to, so a re-run cannot leave two
     /// AETHER_PEERS lines with the stale one last. `0600` is re-applied on every write: the file
     /// carries AETHER_CLUSTER_SECRET.
-    static String buildJvmRestartCommand(String nodeId,
-                                         NodeRole role,
-                                         SourceName source,
-                                         Option<String> zone,
-                                         int clusterPort,
-                                         int managementPort,
-                                         String peers,
-                                         String clusterSecret,
-                                         ClusterName clusterName,
-                                         Fn1<String, String> envLookup) {
-        return "install -d -m 0755 " + NodeUserDataRenderer.JVM_ENV_DIR
+    static String buildJvmStartCommand(String nodeId,
+                                       NodeRole role,
+                                       SourceName source,
+                                       Option<String> zone,
+                                       int clusterPort,
+                                       int managementPort,
+                                       String peers,
+                                       String clusterSecret,
+                                       ClusterName clusterName,
+                                       Fn1<String, String> envLookup) {
+        return "if systemctl is-active --quiet " + NodeUserDataRenderer.JVM_UNIT_NAME
+             + " || systemctl is-failed --quiet " + NodeUserDataRenderer.JVM_UNIT_NAME
+             + "; then echo " + ALREADY_PRESENT_MARKER
+             + " >&2; exit " + ALREADY_PRESENT_EXIT
+             + "; fi"
+             + " && install -d -m 0755 " + NodeUserDataRenderer.JVM_ENV_DIR
              + " && touch " + NodeUserDataRenderer.JVM_ENV_FILE_PATH
              + " && chmod 600 " + NodeUserDataRenderer.JVM_ENV_FILE_PATH
              + " && printf '%s\\n'"
@@ -638,7 +731,7 @@ sealed interface BootstrapPhaseDeploy {
              + " 'AETHER_PEERS=" + peers
              + "'"
              + " > " + NodeUserDataRenderer.JVM_ENV_FILE_PATH
-             + " && systemctl restart " + NodeUserDataRenderer.JVM_UNIT_NAME;
+             + " && systemctl start " + NodeUserDataRenderer.JVM_UNIT_NAME;
     }
 
     /// Space-prefixed `'VAR=value'` printf operands for the cluster-identity allow-list (minus
@@ -796,6 +889,22 @@ sealed interface BootstrapPhaseDeploy {
                                         Fn3<Result<String>, String, String, SshConfig> sshExec,
                                         Fn4<Result<Unit>, String, String, String, SshConfig> scpExec,
                                         Fn1<String, String> envLookup) {
+        return deploySshSource(ctx, source, sourceName, _ -> NO_HEALTH_CHECK.result(), sshExec, scpExec, envLookup);
+    }
+
+    Cause NO_HEALTH_CHECK = Causes.cause("no health check supplied");
+
+    /// #1543 — the SSH source STARTS each node once: no `docker rm -f`, and a host that already runs an
+    /// `aether-node` is refused with a typed error. `healthCheck` is consulted only for a node the
+    /// persisted ledger says an earlier run started (`--resume`).
+    @SuppressWarnings({"JBCT-PAT-01", "JBCT-EX-01"})
+    static Result<Unit> deploySshSource(BootstrapContext ctx,
+                                        SourceProfile source,
+                                        SourceName sourceName,
+                                        Fn1<Result<String>, String> healthCheck,
+                                        Fn3<Result<String>, String, String, SshConfig> sshExec,
+                                        Fn4<Result<Unit>, String, String, String, SshConfig> scpExec,
+                                        Fn1<String, String> envLookup) {
         var sshConfig = buildSshConfig(source);
         var clusterName = ctx.config().cluster().name();
         var peersValue = String.join(",", buildThreePartPeers(ctx));
@@ -806,6 +915,17 @@ sealed interface BootstrapPhaseDeploy {
 
         for (var node : ctx.nodes()) {
             if (!node.serverId().equals("ssh") || !BootstrapPhaseProvision.belongsTo(node.nodeId(), sourceName)) {
+                nodeIndex++;
+                continue;
+            }
+
+            var skip = alreadyStartedAndHealthy(ctx, node, healthCheck);
+
+            if (skip.isFailure()) {
+                return skip.map(_ -> Unit.unit());
+            }
+
+            if (skip.unwrap()) {
                 nodeIndex++;
                 continue;
             }
@@ -840,9 +960,11 @@ sealed interface BootstrapPhaseDeploy {
                                                                                                                                                                   scpExec))));
 
             if (result.isFailure()) {
-                return result;
+                return result.fold(cause -> classifyStartFailure(node, cause.message(), cause).result(),
+                                   Result::success);
             }
 
+            recordStarted(ctx, node);
             nodeIndex++;
         }
 
@@ -879,10 +1001,11 @@ sealed interface BootstrapPhaseDeploy {
                      .value();
     }
 
-    /// One launch line, built from the SAME builder the cloud re-launch uses ([#buildRestartCommand]),
+    /// One launch line, built from the SAME builder the cloud start uses ([#buildStartCommand]),
     /// so role label, `AETHER_ROLE`, node id, identity allow-list and image are threaded once. The
     /// prefix creates the config dir (the scp before it needs it) and pulls the resolved image; the
-    /// `docker rm -f … || true` inside the builder makes a re-run on the same host idempotent.
+    /// builder's guard REFUSES a host that already holds an `aether-node` — a re-run is never an
+    /// "idempotent" relaunch (#1543), because that would be a same-NodeId restart.
     static String buildSshStartCommand(String image,
                                        ClusterName clusterName,
                                        String nodeId,
@@ -895,17 +1018,17 @@ sealed interface BootstrapPhaseDeploy {
                                        String clusterSecret,
                                        Fn1<String, String> envLookup) {
         return "mkdir -p /opt/aether/config && docker pull " + image
-             + " && " + buildRestartCommand(image,
-                                            clusterName,
-                                            nodeId,
-                                            role,
-                                            source,
-                                            zone,
-                                            clusterPort,
-                                            managementPort,
-                                            peers,
-                                            clusterSecret,
-                                            envLookup);
+             + " && " + buildStartCommand(image,
+                                          clusterName,
+                                          nodeId,
+                                          role,
+                                          source,
+                                          zone,
+                                          clusterPort,
+                                          managementPort,
+                                          peers,
+                                          clusterSecret,
+                                          envLookup);
     }
 
     @SuppressWarnings("JBCT-EX-01")
