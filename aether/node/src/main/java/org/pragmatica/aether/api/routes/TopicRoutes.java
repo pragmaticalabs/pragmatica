@@ -263,7 +263,8 @@ public final class TopicRoutes implements RouteSource {
                                              String rebuildLiteral,
                                              String group) {
         return RequestParse.asRequest(ResourceAddress.resourceAddress(namespace, topic, version))
-                           .flatMap(address -> decodeGroup(group).flatMap(decoded -> knownGroupOnKnownTopic(address.asString(), decoded)))
+                           .flatMap(address -> decodeGroup(group).flatMap(decoded -> knownGroupOnKnownTopic(address.asString(),
+                                                                                                            decoded)))
                            .fold(cause -> cause.<RebuildResponse> promise(),
                                  promise -> promise);
     }
@@ -273,7 +274,7 @@ public final class TopicRoutes implements RouteSource {
         var topicStream = DurableTopicNames.topicStream(topicAddress);
 
         return knownTopic(topicAddress).flatMap(_ -> knownGroup(topicStream, group))
-                                       .map(known -> rebuildGroup(topicStream, known));
+                         .map(known -> rebuildGroup(topicStream, known));
     }
 
     /// 404 for a topic this node can see no trace of: neither a committed stream config in its KV view nor the stream
@@ -301,7 +302,8 @@ public final class TopicRoutes implements RouteSource {
                            .streamConsumerManager()
                            .topicGroupStatuses(topicStream)
                            .stream()
-                           .anyMatch(status -> status.consumerGroup().equals(group))
+                           .anyMatch(status -> status.consumerGroup()
+                                                     .equals(group))
                ? Result.success(group)
                : new ManagementServerError.NotFound("Consumer group '" + group + "' not found on " + topicStream).result();
     }
