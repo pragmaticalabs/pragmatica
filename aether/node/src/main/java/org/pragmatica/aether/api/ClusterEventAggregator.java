@@ -182,11 +182,11 @@ public final class ClusterEventAggregator {
     /// The key is `code:subject`. It is unambiguous because a code is kebab-case and never contains `:`,
     /// which `OperatorWarningCodeTest` enforces.
     private final ConcurrentHashMap<String, ThrottleWindow> operatorWarningThrottle = new ConcurrentHashMap<>();
-
     /// Throttle keys of operator warnings that were published and whose recovery code has not been raised since (#752).
     /// A recovery is published exactly when its key is here, so it never appears without the warning it closes and is
     /// never throttled away from one an operator saw. Bounded by the (code, subject) pairs the node can raise.
     private final Set<String> openRecoverable = ConcurrentHashMap.newKeySet();
+
     /// Warnings with a recovery that are admitted but not yet in the log, each holding the recovery that arrived meanwhile.
     private final ConcurrentHashMap<String, Option<ClusterEvent>> awaitingDelivery = new ConcurrentHashMap<>();
 

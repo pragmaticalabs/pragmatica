@@ -137,7 +137,9 @@ final class ClusterEventRedelivery {
     /// short retry window only when its event is really lost).
     @Contract
     void deliver(ClusterEvent event, Runnable onGivenUp) {
-        deliver(event, onGivenUp, () -> {});
+        deliver(event,
+                onGivenUp,
+                () -> {});
     }
 
     /// As [#deliver(ClusterEvent, Runnable)], and runs `onDelivered` once if the event lands, whether on the first
@@ -270,8 +272,7 @@ final class ClusterEventRedelivery {
 
     private void retry(Pending pending) {
         retried.incrementAndGet();
-        attempt(pending.event()).onSuccess(_ -> retryLanded(pending))
-               .onFailure(cause -> onRetryFailure(pending, cause));
+        attempt(pending.event()).onSuccess(_ -> retryLanded(pending)).onFailure(cause -> onRetryFailure(pending, cause));
     }
 
     private Unit retryLanded(Pending pending) {
