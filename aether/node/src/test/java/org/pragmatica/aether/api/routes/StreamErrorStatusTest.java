@@ -60,6 +60,7 @@ class StreamErrorStatusTest {
 
         all.put(new StreamError.EventTooLarge(10, 5), HttpStatus.BAD_REQUEST);
         all.put(new StreamError.CursorExpired(1, 5), HttpStatus.GONE);
+        all.put(new StreamError.EpochDiverged(EPOCH, 3, 3), HttpStatus.CONFLICT);
         all.put(new StreamError.SeedRejected(1, 2), HttpStatus.INTERNAL_SERVER_ERROR);
         all.put(new StreamError.WalReplayMismatch("s", 0, WAL, 1, 3), HttpStatus.INTERNAL_SERVER_ERROR);
         all.put(new StreamError.WalHeadLost("s", 0, WAL, 1, 3), HttpStatus.INTERNAL_SERVER_ERROR);

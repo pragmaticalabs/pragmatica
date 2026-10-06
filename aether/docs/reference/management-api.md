@@ -4821,7 +4821,7 @@ A malformed integer path or query parameter (`partition=abc`, `max=abc`) and a m
 |---|---|---|
 | `400` | the request is wrong | `PartitionOutOfRange`, `EventTooLarge`, `EVENT_DROPPED`, `AHSE_REQUIRED_FOR_STRONG`, `PartitionCeilingExceeded`, `RetentionCountUnindexable`, `RetentionBoundInvalid`, `PartitionCapExceeded` |
 | `404` | unknown to this node's engine | `StreamNotFound`, `CONSUMER_NOT_FOUND` |
-| `409` | conflicts with what exists | `STREAM_ALREADY_EXISTS`, `CONSUMER_ALREADY_SUBSCRIBED`, `ReplicationRefused` |
+| `409` | conflicts with what exists | `STREAM_ALREADY_EXISTS`, `CONSUMER_ALREADY_SUBSCRIBED`, `ReplicationRefused`, `EpochDiverged` (a cursor from a replaced owner lineage) |
 | `410` | the cursor's offset was reclaimed by retention (a judgement call: the offset was valid) | `CursorExpired` |
 | `503` | retry later or elsewhere | `PARTITION_NOT_LOCAL`, `PartitionHeldNotMaterialized`, `MaterializeBudgetExceeded`, `ReshufflePaced`, `STREAM_MEMORY_EXCEEDED`, `SEGMENT_TIER_FULL`, `SEALING_BEHIND`, `BUFFER_FULL`, `StreamConfigNotYetVisible`, the ownership and epoch refusals (`NotOwnerAppend`, `OwnerNotActivated`, `NotCurrentOwner`, `StaleEpochAppend`, `StaleEpochRead`, `OwnerCatchupPending`, `LinearizableRoundTimeout`, `ReplicaQuarantined`), the closed and stalled signals, `CONSENSUS_PATH_UNAVAILABLE` |
 | `500` | engine integrity or an internal signal | `WalReplayMismatch`, `WalHeadLost`, `STREAM_CONFIG_COMMIT_FAILED`, `RingIndexCorrupted`, `EventProcessingFailed`, `SeedRejected`, `ProvenanceRegression`, `ProvenanceMismatch`, `ReplicaOffsetGap`, `ReplicaEntryConflict`, `UNREADABLE_CONSISTENCY_MODE`, `BUFFER_EMPTY`, `RUN_DOES_NOT_FIT` |

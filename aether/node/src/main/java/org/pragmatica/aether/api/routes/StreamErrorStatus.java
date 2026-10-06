@@ -19,7 +19,8 @@ import org.pragmatica.lang.Result;
 /// The classes, and the question each answers for the caller:
 /// - 400, the request itself is wrong (a partition the stream does not have, an event or a bound the engine cannot take);
 /// - 404, the stream or consumer group is unknown to this node's engine;
-/// - 409, the request conflicts with what exists;
+/// - 409, the request conflicts with what exists (an `EpochDiverged` cursor: the partition's owner replaced the lineage it belongs
+///   to; marked guess, since the management routes carry no cursor epoch and it should not arise there);
 /// - 410, the cursor named an offset retention has already reclaimed [marked guess: 410 over 400/416, because the offset WAS valid];
 /// - 503, retry later or elsewhere: a capacity shortage, a partition this node does not hold or has not materialized yet, an
 ///   ownership or epoch disagreement that membership will resolve;
@@ -35,7 +36,7 @@ public final class StreamErrorStatus {
             case StreamError.General general -> general(general);
             case StreamError.EventTooLarge _, StreamError.PartitionOutOfRange _, StreamError.PartitionCeilingExceeded _, StreamError.RetentionCountUnindexable _, StreamError.RetentionBoundInvalid _, StreamError.PartitionCapExceeded _ -> HttpStatus.BAD_REQUEST;
             case StreamError.StreamNotFound _ -> HttpStatus.NOT_FOUND;
-            case StreamError.ReplicationRefused _ -> HttpStatus.CONFLICT;
+            case StreamError.ReplicationRefused _, StreamError.EpochDiverged _ -> HttpStatus.CONFLICT;
             case StreamError.CursorExpired _ -> HttpStatus.GONE;
             case StreamError.StreamConfigNotYetVisible _, StreamError.MaterializeBudgetExceeded _, StreamError.ReshufflePaced _, StreamError.PartitionHeldNotMaterialized _, StreamError.StaleEpochAppend _, StreamError.StaleEpochRead _, StreamError.NotCurrentOwner _, StreamError.ReplicaQuarantined _, StreamError.NotOwnerAppend _, StreamError.OwnerNotActivated _, StreamError.OwnerCatchupPending _, StreamError.LinearizableRoundTimeout _ -> HttpStatus.SERVICE_UNAVAILABLE;
             case StreamError.SeedRejected _, StreamError.WalReplayMismatch _, StreamError.WalHeadLost _, StreamError.RingIndexCorrupted _, StreamError.EventProcessingFailed _, StreamError.ProvenanceRegression _, StreamError.ProvenanceMismatch _, StreamError.ReplicaOffsetGap _, StreamError.ReplicaEntryConflict _ -> HttpStatus.INTERNAL_SERVER_ERROR;
