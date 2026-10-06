@@ -1213,6 +1213,15 @@ public sealed interface AetherKey extends StructuredKey permits AetherKey.Cluste
         }
     }
 
+    /// #1543: the pairing of a node being replaced (`original`) with the fresh-id node replacing it. Runtime
+    /// state: an in-flight replacement names nodes a restored cluster no longer has.
+    record NodeReplacementKey(NodeId original) implements RuntimeKey {
+        @Override
+        public String asString() {
+            return "node-replacement/" + original.id();
+        }
+    }
+
     record CommunityPlacementAvailabilityKey(String communityId, String source, Option<String> zone) implements RuntimeKey {
         @Override
         public String asString() {

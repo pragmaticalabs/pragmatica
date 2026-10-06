@@ -31,6 +31,7 @@ ENUM org.pragmatica.aether.slice.kvstore.AetherValue$CapacityReservationPhase DI
 ENUM org.pragmatica.aether.slice.kvstore.AetherValue$ClusterPhase COLD_BOOT=0,NORMAL=1,RECOVERING=2,UNKNOWN=3
 ENUM org.pragmatica.aether.slice.kvstore.AetherValue$DeploymentOutcomeStatus SUCCEEDED=0,FAILED=1,ROLLED_BACK=2,IN_PROGRESS=3,UNKNOWN=4
 ENUM org.pragmatica.aether.slice.kvstore.AetherValue$DhtReplicationStage APPLYING=0,WRITERS_SWITCHED=1,SETTLED=2,UNKNOWN=3
+ENUM org.pragmatica.aether.slice.kvstore.AetherValue$NodeReplacementPhase PROVISIONING=0,JOINING=1,SWAPPING=2,CANARY=3,DRAINING_OLD=4,RETIRING_OLD=5,DONE=6,ROLLED_BACK=7,FAILED_KEPT_BOTH=8,UNKNOWN=9
 ENUM org.pragmatica.aether.slice.kvstore.AetherValue$PartitionRecoveryReasonKind NO_CANDIDATE=0,HISTORY_MISSING=1,HISTORY_INCOMPLETE=2,MARKED_DIVERGED=3,DIVERGED=4,LOSS_BUDGET=5,CONTESTED=6,CARRIED_OVER=7,LOCAL_MISMATCH=8,DIVERGED_LATE_JOINER=9,UNKNOWN=10
 ENUM org.pragmatica.aether.slice.kvstore.AetherValue$PartitionRecoveryState CONSISTENT=0,FLAGGED=1,RESOLVED=2,UNKNOWN=3
 ENUM org.pragmatica.aether.slice.kvstore.AetherValue$PlacementOperationPhase RESERVED=0,CREATE_REQUESTED=1,AWAITING_READY=2,DRAIN_REQUESTED=3,DRAINED=4,TERMINATING=5,COMPLETE=6,CREATE_UNCERTAIN=7,DRAIN_UNCERTAIN=8,BLOCKED=9,UNKNOWN=10
@@ -174,6 +175,7 @@ SHAPE org.pragmatica.aether.slice.kvstore.AetherKey$JoinDeadlineKey (nodeId:org.
 SHAPE org.pragmatica.aether.slice.kvstore.AetherKey$LogLevelKey (loggerName:java.lang.String)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherKey$NodeArtifactKey (nodeId:org.pragmatica.consensus.NodeId,artifact:org.pragmatica.aether.artifact.Artifact)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherKey$NodePlacementKey (nodeId:org.pragmatica.consensus.NodeId)
+SHAPE org.pragmatica.aether.slice.kvstore.AetherKey$NodeReplacementKey (original:org.pragmatica.consensus.NodeId)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherKey$NodeRoutesKey (nodeId:org.pragmatica.consensus.NodeId,artifact:org.pragmatica.aether.artifact.Artifact)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherKey$ObservabilityConfigKey (artifactBase:java.lang.String,methodName:java.lang.String)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherKey$PreviousVersionKey (artifactBase:org.pragmatica.aether.artifact.ArtifactBase)
@@ -238,6 +240,7 @@ SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$JoinDeadlineValue (deadlin
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$LogLevelValue (loggerName:java.lang.String,level:java.lang.String,updatedAt:long)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$NodeArtifactValue (state:org.pragmatica.aether.slice.SliceState,failureReason:org.pragmatica.lang.Option<java.lang.String>,fatal:boolean,instanceNumber:int,methods:java.util.List<java.lang.String>,transitionedAt:long)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$NodePlacementValue (sourceName:java.lang.String,observedZone:org.pragmatica.lang.Option<java.lang.String>,providerInstanceId:java.lang.String)
+SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$NodeReplacementValue (replacement:org.pragmatica.consensus.NodeId,role:java.lang.String,phase:org.pragmatica.aether.slice.kvstore.AetherValue$NodeReplacementPhase,phaseDeadlineMs:long)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$NodeRoutesValue (routes:java.util.List<org.pragmatica.aether.slice.kvstore.AetherValue$NodeRoutesValue$RouteEntry>,observedCoreEpoch:org.pragmatica.aether.slice.generation.Epoch)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$NodeRoutesValue$RouteEntry (httpMethod:java.lang.String,pathPrefix:java.lang.String,sliceMethod:java.lang.String,state:java.lang.String,weight:int,registeredAt:long,security:java.lang.String,declaredSecurity:java.lang.String,pathArity:int,spacers:java.util.List<java.lang.String>)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$ObservabilityConfigValue (artifactBase:java.lang.String,methodName:java.lang.String,logging:boolean,metrics:boolean,spans:boolean,tracing:boolean,depth:int,updatedAt:long)
@@ -539,6 +542,7 @@ TAG  org.pragmatica.aether.slice.kvstore.AetherKey$JoinDeadlineKey 1111
 TAG  org.pragmatica.aether.slice.kvstore.AetherKey$LogLevelKey 1112
 TAG  org.pragmatica.aether.slice.kvstore.AetherKey$NodeArtifactKey 1113
 TAG  org.pragmatica.aether.slice.kvstore.AetherKey$NodePlacementKey 1676
+TAG  org.pragmatica.aether.slice.kvstore.AetherKey$NodeReplacementKey 2129
 TAG  org.pragmatica.aether.slice.kvstore.AetherKey$NodeRoutesKey 1114
 TAG  org.pragmatica.aether.slice.kvstore.AetherKey$ObservabilityConfigKey 1115
 TAG  org.pragmatica.aether.slice.kvstore.AetherKey$PreviousVersionKey 1116
@@ -608,6 +612,8 @@ TAG  org.pragmatica.aether.slice.kvstore.AetherValue$JoinDeadlineValue 1625
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$LogLevelValue 1626
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$NodeArtifactValue 1627
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$NodePlacementValue 1677
+TAG  org.pragmatica.aether.slice.kvstore.AetherValue$NodeReplacementPhase 2131
+TAG  org.pragmatica.aether.slice.kvstore.AetherValue$NodeReplacementValue 2130
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$NodeRoutesValue 1628
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$NodeRoutesValue$RouteEntry 1629
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$ObservabilityConfigValue 1630

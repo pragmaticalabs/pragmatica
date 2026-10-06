@@ -79,4 +79,32 @@ class CoreCandidateRetirementTest {
         assertThat(AetherNode.retirementRefusal(Option.some(new MemberDescriptor(Option.none(), "governor", "primary")),
                                                 ELECTORATE, Set.of(DEAD), ORIGINAL, true, DEAD).isPresent()).isTrue();
     }
+    /// #1543 rule 1: a fresh replacement that is not yet a voter is today's genuine surplus (see
+    /// `genuinelySurplusCandidateCanRetireWhenInstalledRosterIsReady`) and is reaped within a second. Paired as
+    /// the incoming replacement of a live NodeReplacement record, it is not an excluded core.
+    @Test void excludedCores_skipThePairedReplacement() {
+        var counted = Set.of(A, B, C, REPLACEMENT);
+
+        assertThat(AetherNode.excludedCores(counted, ORIGINAL, ORIGINAL, counted, Set.of())).containsExactly(REPLACEMENT);
+        assertThat(AetherNode.excludedCores(counted, ORIGINAL, ORIGINAL, counted, Set.of(REPLACEMENT))).isEmpty();
+    }
+
+    /// The swapped-out original is protected until its pairing reaches RETIRING_OLD; other exclusions are unaffected.
+    @Test void excludedCores_skipOnlyProtectedNodes() {
+        var installed = Set.of(A, C, REPLACEMENT);
+        var counted = Set.of(A, B, C, REPLACEMENT, DEAD);
+        var history = Set.of(A, B, C, DEAD);
+
+        assertThat(AetherNode.excludedCores(counted, installed, history, installed, Set.of(B))).containsExactly(DEAD);
+        assertThat(AetherNode.excludedCores(counted, installed, history, installed, Set.of())).containsExactlyInAnyOrder(B, DEAD);
+    }
+
+    /// The backstop every CTM drain consults (the LeaderReconciler surplus drain picks a fresh ephemeral core first).
+    @Test void retirementRefusal_pairedNode_isRefusedWithReason_unpairedVerdictUnchanged() {
+        assertThat(AetherNode.retirementRefusal(Set.of(REPLACEMENT), TRACKED_CORE, ELECTORATE, ORIGINAL, ORIGINAL, true, REPLACEMENT).or(""))
+            .contains("node replacement");
+        assertThat(AetherNode.retirementRefusal(Set.of(REPLACEMENT), TRACKED_WORKER, Option.none(), Set.of(), Set.of(), true, REPLACEMENT).isPresent())
+            .isTrue();
+        assertThat(AetherNode.retirementRefusal(Set.of(), TRACKED_CORE, ELECTORATE, ORIGINAL, ORIGINAL, true, REPLACEMENT).isEmpty()).isTrue();
+    }
 }

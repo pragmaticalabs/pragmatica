@@ -66,6 +66,7 @@ import org.pragmatica.aether.deployment.cluster.BlueprintService;
 import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager;
 import org.pragmatica.aether.deployment.cluster.ClusterTopologyManager;
 import org.pragmatica.aether.deployment.cluster.CoreVoterReconciler;
+import org.pragmatica.aether.deployment.cluster.NodeReplacementIndex;
 import org.pragmatica.aether.deployment.cluster.CommunityRetirementIndex;
 import org.pragmatica.aether.node.backup.BackupGenesis;
 import org.pragmatica.aether.node.backup.BackupRestoreCoordinator;
@@ -3082,11 +3083,14 @@ public interface AetherNode extends ManageableNode {
         // NodeReportedState.DRAINING (metrics pong) — late-bound like the READY ref, since the
         // pong fan + self-state holder are constructed further below.
         var communityRetirements = CommunityRetirementIndex.communityRetirementIndex();
+        var nodeReplacements = NodeReplacementIndex.nodeReplacementIndex();
         // Snapshot replay emits only changed KV entries. Leadership must also be refreshed when
         // an unchanged committed LeaderValue survives a voter handoff that cleared local leadership.
         clusterNode.onStateRestored(() -> refreshCommittedLeader(kvStore, clusterNode.leaderManager()));
         clusterNode.onStateRestored(() -> restoreRetirementIndex(kvStore, communityRetirements));
         restoreRetirementIndex(kvStore, communityRetirements);
+        clusterNode.onStateRestored(() -> nodeReplacements.restore(kvStore.snapshot()));
+        nodeReplacements.restore(kvStore.snapshot());
         // #1777 track 1: restored state is when the committed `[replication]` / `[cache]` factors become readable —
         // or are known to be absent, which means the built-in ones. Later commits re-resolve through the
         // ClusterConfigKey put below.
@@ -3105,6 +3109,7 @@ public interface AetherNode extends ManageableNode {
                                                                                           clusterNode,
                                                                                           membershipFsmRef::get,
                                                                                           kvStore,
+                                                                                          nodeReplacements,
                                                                                           readyCoreCandidates(stableCdmReadyNodesSupplier.get(),
                                                                                                               membershipFsmRef::get));
         // #241 (worker-membership-spec §4.1 / D2): the CDM resolves a joining worker's membership
@@ -3415,9 +3420,11 @@ public interface AetherNode extends ManageableNode {
         clusterTopologyManager.setGenesisVoters(() -> clusterNode.genesisVoters()
                                                                  .map(VoterConfiguration::members)
                                                                  .or(List.of()));
+        clusterTopologyManager.setNodeReplacements(nodeReplacements);
         clusterTopologyManager.setRetirementRefusal(node -> retirementRefusal(clusterNode,
                                                                               membershipFsmRef::get,
                                                                               deploymentMap,
+                                                                              nodeReplacements,
                                                                               readyCoreCandidates(stableCdmReadyNodesSupplier.get(),
                                                                                                   membershipFsmRef::get),
                                                                               node));
@@ -3446,12 +3453,14 @@ public interface AetherNode extends ManageableNode {
                                                                                                     membershipFsmRef::get).stream()
                                                                                                    .filter(coreAdmission::isAllowed)
                                                                                                    .collect(Collectors.toUnmodifiableSet()),
+                                                                          nodeReplacements::voterSwaps,
                                                                           clusterNode::reconfigure);
 
         periodicTasks.defer(() -> SharedScheduler.scheduleAtFixedRate(() -> coreVoterReconciler.reconcile()
                                                                                                .flatMap(_ -> retireExcludedCores(clusterNode,
                                                                                                                                  membershipFsmRef::get,
                                                                                                                                  kvStore,
+                                                                                                                                 nodeReplacements,
                                                                                                                                  deploymentMap,
                                                                                                                                  clusterTopologyManager,
                                                                                                                                  readyCoreCandidates(stableCdmReadyNodesSupplier.get(),
@@ -4071,6 +4080,14 @@ public interface AetherNode extends ManageableNode {
                                                                (ValueRemove<AetherKey.CommunityPlacementOperationKey, AetherValue.CommunityPlacementOperationValue> remove) -> communityRetirements.remove(remove.cause()
                                                                                                                                                                                                                  .key()
                                                                                                                                                                                                                  .communityId()))
+                                                     .onPut(AetherKey.NodeReplacementKey.class,
+                                                            (ValuePut<AetherKey.NodeReplacementKey, AetherValue.NodeReplacementValue> put) -> nodeReplacements.put(put.cause()
+                                                                                                                                                                      .key(),
+                                                                                                                                                                   put.cause()
+                                                                                                                                                                      .value()))
+                                                     .onRemove(AetherKey.NodeReplacementKey.class,
+                                                               (ValueRemove<AetherKey.NodeReplacementKey, AetherValue.NodeReplacementValue> remove) -> nodeReplacements.remove(remove.cause()
+                                                                                                                                                                                     .key()))
                                                      .onPut(AetherKey.NodePlacementKey.class,
                                                             (ValuePut<AetherKey.NodePlacementKey, AetherValue.NodePlacementValue> put) -> retryPlacedWorker(put,
                                                                                                                                                             membershipFsmRef::get,
@@ -8293,10 +8310,11 @@ public interface AetherNode extends ManageableNode {
                                                     RabiaNode<KVCommand<AetherKey>> cluster,
                                                     Supplier<MembershipFsm> membership,
                                                     KVStore<AetherKey, AetherValue> store,
+                                                    NodeReplacementIndex replacements,
                                                     Set<NodeId> ready) {
         var combined = new HashSet<>(planned);
 
-        combined.addAll(excludedCoreNodes(cluster, membership, store, ready));
+        combined.addAll(excludedCoreNodes(cluster, membership, store, replacements, ready));
 
         return Set.copyOf(combined);
     }
@@ -8304,6 +8322,7 @@ public interface AetherNode extends ManageableNode {
     private static Set<NodeId> excludedCoreNodes(RabiaNode<KVCommand<AetherKey>> cluster,
                                                  Supplier<MembershipFsm> membership,
                                                  KVStore<AetherKey, AetherValue> store,
+                                                 NodeReplacementIndex replacements,
                                                  Set<NodeId> ready) {
         var desired = store.getTyped(AetherKey.ClusterConfigKey.CURRENT, AetherValue.ClusterConfigValue.class)
                            .map(AetherValue.ClusterConfigValue::coreCount)
@@ -8312,19 +8331,31 @@ public interface AetherNode extends ManageableNode {
         return cluster.retirementSafeVoters()
                       .filter(voters -> voters.members()
                                               .size() == desired)
-                      .flatMap(voters -> Option.option(membership.get()).map(fsm -> fsm.coreCountedMembers()
-                                                                                       .stream()
-                                                                                       .filter(node -> retirementEligibleCore(node,
-                                                                                                                              Set.copyOf(voters.members()),
-                                                                                                                              cluster.verifiedVoterHistoryIds(),
-                                                                                                                              ready))
-                                                                                       .collect(Collectors.toUnmodifiableSet())))
+                      .flatMap(voters -> Option.option(membership.get()).map(fsm -> excludedCores(fsm.coreCountedMembers(),
+                                                                                                  Set.copyOf(voters.members()),
+                                                                                                  cluster.verifiedVoterHistoryIds(),
+                                                                                                  ready,
+                                                                                                  replacements.retirementProtected())))
                       .or(Set.of());
+    }
+
+    /// The counted cores outside the installed roster that may be retired — minus every node a live #1543
+    /// replacement pairing protects, so a fresh +1 replacement is not reaped as surplus before it is voted in.
+    static Set<NodeId> excludedCores(Collection<NodeId> coreCounted,
+                                     Set<NodeId> installed,
+                                     Set<NodeId> history,
+                                     Set<NodeId> ready,
+                                     Set<NodeId> replacementProtected) {
+        return coreCounted.stream()
+                          .filter(node -> !replacementProtected.contains(node))
+                          .filter(node -> retirementEligibleCore(node, installed, history, ready))
+                          .collect(Collectors.toUnmodifiableSet());
     }
 
     private static Promise<Unit> retireExcludedCores(RabiaNode<KVCommand<AetherKey>> cluster,
                                                      Supplier<MembershipFsm> membership,
                                                      KVStore<AetherKey, AetherValue> store,
+                                                     NodeReplacementIndex replacements,
                                                      DeploymentMap deployments,
                                                      ClusterTopologyManager topology,
                                                      Set<NodeId> ready) {
@@ -8334,7 +8365,7 @@ public interface AetherNode extends ManageableNode {
 
         var work = Promise.unitPromise();
 
-        for (var node : excludedCoreNodes(cluster, membership, store, ready)) {
+        for (var node : excludedCoreNodes(cluster, membership, store, replacements, ready)) {
             if (deployments.byNode(node).isEmpty()) {
                 work = work.flatMap(_ -> topology.drainNode(node, DrainReason.OVERPROVISION_SCALE_DOWN));
             }
@@ -8375,16 +8406,32 @@ public interface AetherNode extends ManageableNode {
     private static Option<String> retirementRefusal(RabiaNode<KVCommand<AetherKey>> cluster,
                                                     Supplier<MembershipFsm> membership,
                                                     DeploymentMap deploymentMap,
+                                                    NodeReplacementIndex replacements,
                                                     Set<NodeId> ready,
                                                     NodeId node) {
         return Option.option(membership.get()).fold(() -> Option.some("membership view not available"),
-                                                    fsm -> retirementRefusal(fsm.memberDescriptor(node),
+                                                    fsm -> retirementRefusal(replacements.retirementProtected(),
+                                                                             fsm.memberDescriptor(node),
                                                                              cluster.retirementSafeVoters()
                                                                                     .map(voters -> Set.copyOf(voters.members())),
                                                                              cluster.verifiedVoterHistoryIds(),
                                                                              ready,
                                                                              deploymentMap.byNode(node).isEmpty(),
                                                                              node));
+    }
+
+    /// #1543: a node a live replacement pairing protects is refused first, whatever its role — the backstop for
+    /// every drain that reaches the CTM (the `LeaderReconciler` surplus drain picks a fresh ephemeral core first).
+    static Option<String> retirementRefusal(Set<NodeId> replacementProtected,
+                                            Option<MemberDescriptor> descriptor,
+                                            Option<Set<NodeId>> installedVoters,
+                                            Set<NodeId> history,
+                                            Set<NodeId> ready,
+                                            boolean deploymentsEmpty,
+                                            NodeId node) {
+        return replacementProtected.contains(node)
+               ? Option.some("paired in an in-flight node replacement")
+               : retirementRefusal(descriptor, installedVoters, history, ready, deploymentsEmpty, node);
     }
 
     /// A tracked worker or spot is retirable. Everything else is judged by the core rule: a tracked core, and a node

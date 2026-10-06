@@ -6,6 +6,7 @@ package org.pragmatica.aether.deployment.cluster;
 
 import java.util.Comparator;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.BooleanSupplier;
@@ -29,6 +30,10 @@ import org.pragmatica.lang.io.TimeSpan;
 /// Leader-driven and serial: a new target is requested only while the installed roster is settled —
 /// `settled` (the engine's retirement-safe roster) reports it only when no reconfiguration is pending
 /// and every member added by the last applied change has caught up past that change's slot R.
+///
+/// #1543: a committed replacement pairing (original → replacement) whose phase authorizes the swap lets a ready
+/// replacement displace its original — one member out, one in, the voter count unchanged — once the roster is
+/// otherwise healthy. Without a pairing the selection is exactly the unpaired one.
 public interface CoreVoterReconciler {
     Promise<Unit> reconcile();
 
@@ -38,6 +43,7 @@ public interface CoreVoterReconciler {
                                                    Supplier<Option<VoterConfiguration>> settled,
                                                    IntSupplier desired,
                                                    Supplier<Set<NodeId>> readyCoreCandidates,
+                                                   Supplier<Map<NodeId, NodeId>> voterSwaps,
                                                    Function<ClusterConfig, Promise<Unit>> reconfigure) {
         record reconciler(NodeId self,
                           BooleanSupplier leader,
@@ -45,6 +51,7 @@ public interface CoreVoterReconciler {
                           Supplier<Option<VoterConfiguration>> settled,
                           IntSupplier desired,
                           Supplier<Set<NodeId>> readyCoreCandidates,
+                          Supplier<Map<NodeId, NodeId>> voterSwaps,
                           Function<ClusterConfig, Promise<Unit>> reconfigure,
                           AtomicBoolean running) implements CoreVoterReconciler {
             @Override
@@ -60,7 +67,7 @@ public interface CoreVoterReconciler {
             }
 
             private Promise<Unit> reconcileInstalled(VoterConfiguration current) {
-                var target = selectVoters(self, current, readyCoreCandidates.get(), desired.getAsInt());
+                var target = selectVoters(self, current, readyCoreCandidates.get(), desired.getAsInt(), voterSwaps.get());
 
                 if (target.isEmpty() || Set.copyOf(target).equals(Set.copyOf(current.members())) || settled.get()
                                                                                                            .filter(current::equals)
@@ -80,6 +87,7 @@ public interface CoreVoterReconciler {
                               settled,
                               desired,
                               readyCoreCandidates,
+                              voterSwaps,
                               reconfigure,
                               new AtomicBoolean());
     }
@@ -100,6 +108,45 @@ public interface CoreVoterReconciler {
         return candidates.size() == desired
                ? candidates
                : List.of();
+    }
+
+    /// The unpaired selection, then at most ONE authorized swap applied to it — and only when that selection leaves
+    /// the roster unchanged, so a swap never rides along with a heal and every reconfiguration changes one seat.
+    /// The leader's own seat is never swapped (`rank(self)=0`): the leader is replaced last, by drain.
+    static List<NodeId> selectVoters(NodeId self,
+                                     VoterConfiguration current,
+                                     Set<NodeId> ready,
+                                     int desired,
+                                     Map<NodeId, NodeId> swaps) {
+        var unpaired = selectVoters(self, current, ready, desired);
+
+        if (unpaired.isEmpty() || !Set.copyOf(unpaired).equals(Set.copyOf(current.members()))) {
+            return unpaired;
+        }
+
+        return Option.from(swaps.entrySet()
+                                .stream()
+                                .filter(swap -> eligibleSwap(self, current, ready, swap.getKey(), swap.getValue()))
+                                .min(Comparator.comparing(swap -> swap.getKey().id())))
+                     .map(swap -> swapped(unpaired, swap.getKey(), swap.getValue()))
+                     .or(unpaired);
+    }
+
+    private static boolean eligibleSwap(NodeId self,
+                                        VoterConfiguration current,
+                                        Set<NodeId> ready,
+                                        NodeId original,
+                                        NodeId replacement) {
+        return !original.equals(self) && current.members().contains(original) && !current.members()
+                                                                                         .contains(replacement) && ready.contains(replacement);
+    }
+
+    private static List<NodeId> swapped(List<NodeId> voters, NodeId original, NodeId replacement) {
+        return voters.stream()
+                     .map(node -> node.equals(original)
+                                  ? replacement
+                                  : node)
+                     .toList();
     }
 
     private static int rank(NodeId node, NodeId self, Set<NodeId> existing, Set<NodeId> ready) {

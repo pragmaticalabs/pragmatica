@@ -120,6 +120,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                     AtomicReference<Option<CommunityPlacementReconciler>> communityPlacement,
                                     AtomicReference<Supplier<List<NodeId>>> genesisVoters,
                                     AtomicReference<Function<NodeId, Option<String>>> retirementRefusal,
+                                    AtomicReference<NodeReplacementIndex> nodeReplacements,
                                     AtomicReference<HierarchyStateWriter> hierarchyWriter,
                                     ConcurrentHashMap<NodeId, Long> pendingDrains,
                                     org.pragmatica.lang.concurrent.CancellableTask workerTopologyPolling) implements ClusterTopologyManager {
@@ -249,6 +250,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                                 new AtomicReference<>(Option.none()),
                                                 new AtomicReference<>(List::of),
                                                 new AtomicReference<>(_ -> Option.some(NO_RETIREMENT_CHECK)),
+                                                new AtomicReference<>(NodeReplacementIndex.nodeReplacementIndex()),
                                                 new AtomicReference<>(HierarchyStateWriter.unavailable()),
                                                 new ConcurrentHashMap<>(),
                                                 org.pragmatica.lang.concurrent.CancellableTask.cancellableTask());
@@ -271,6 +273,13 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     @Override
     public org.pragmatica.lang.Unit setRetirementRefusal(Function<NodeId, Option<String>> refusal) {
         retirementRefusal.set(refusal);
+
+        return org.pragmatica.lang.Unit.unit();
+    }
+
+    @Override
+    public org.pragmatica.lang.Unit setNodeReplacements(NodeReplacementIndex index) {
+        nodeReplacements.set(index);
 
         return org.pragmatica.lang.Unit.unit();
     }
@@ -1399,20 +1408,26 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                             + "-" + ordinal).unwrap();
     }
 
-    /// Newest first (REQ-SCALE-03 ordering by id: minted `-r<base36-clock>` ids sort after
-    /// bootstrap `-<index>` ids, and later mints sort after earlier ones). An instance without a
-    /// node-id label cannot be terminated through the node-id path and is skipped — pre-#579
-    /// orphans are the cloud reaper's job, not the reconciler's.
+    /// An instance without a node-id label cannot be terminated through the node-id path and is
+    /// skipped — pre-#579 orphans are the cloud reaper's job, not the reconciler's.
     private Promise<Unit> terminateSurplusWorkers(AetherValue.TopologyEntry entry,
                                                   List<InstanceInfo> actual,
                                                   int surplus,
                                                   long epoch) {
-        var victims = actual.stream()
-                            .flatMap(instance -> instance.nodeId()
-                                                         .stream())
-                            .sorted(Comparator.<String> naturalOrder().reversed())
-                            .limit(surplus)
-                            .toList();
+        var victims = surplusWorkerVictims(actual.stream()
+                                                 .flatMap(instance -> instance.nodeId()
+                                                                              .stream())
+                                                 .toList(),
+                                           surplus,
+                                           nodeReplacements.get());
+
+        if (victims.size() < surplus) {
+            log.info("CTM: worker topology {}/{} — {} of the surplus is an in-flight node replacement, not terminated",
+                     entry.sourceName(),
+                     entry.role(),
+                     surplus - victims.size());
+        }
+
         var pass = Promise.unitPromise();
 
         for (var victim : victims) {
@@ -1426,6 +1441,35 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         }
 
         return pass;
+    }
+
+    /// Newest first (REQ-SCALE-03 ordering by id: minted `-r<base36-clock>` ids sort after bootstrap
+    /// `-<index>` ids, and later mints sort after earlier ones). #1543: a live replacement before
+    /// `RETIRING_OLD` is surge, not surplus, so it shrinks the surplus instead of becoming its victim;
+    /// an original due for retirement is taken first; and no node a live pairing protects is chosen.
+    static List<String> surplusWorkerVictims(List<String> nodeIds, int surplus, NodeReplacementIndex replacements) {
+        var surge = ids(replacements.surgeReplacements());
+        var retiring = ids(replacements.retiringOriginals());
+        var protectedIds = ids(replacements.retirementProtected());
+        var counted = surplus - (int) nodeIds.stream()
+                                             .filter(surge::contains)
+                                             .count();
+        var retiringFirst = nodeIds.stream()
+                                   .filter(retiring::contains)
+                                   .sorted();
+        var newestFirst = nodeIds.stream()
+                                 .filter(id -> !retiring.contains(id) && !protectedIds.contains(id))
+                                 .sorted(Comparator.<String> naturalOrder().reversed());
+
+        return Stream.concat(retiringFirst, newestFirst)
+                     .limit(Math.max(0, counted))
+                     .toList();
+    }
+
+    private static Set<String> ids(Set<NodeId> nodes) {
+        return nodes.stream()
+                    .map(NodeId::id)
+                    .collect(Collectors.toUnmodifiableSet());
     }
 
     /// Render the replacement node's cloud-init user-data so a CTM-provisioned (cloud) replacement

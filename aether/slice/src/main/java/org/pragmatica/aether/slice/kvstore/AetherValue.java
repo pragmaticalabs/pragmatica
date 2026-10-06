@@ -2764,6 +2764,29 @@ public sealed interface AetherValue {
         UNKNOWN
     }
 
+    /// #1543: `replacement` is the fresh-id node taking over from the key's original. Leader-committed;
+    /// `phaseDeadlineMs` bounds the current phase so every replacement ends in a terminal phase.
+    record NodeReplacementValue(NodeId replacement,
+                                String role,
+                                NodeReplacementPhase phase,
+                                long phaseDeadlineMs) implements AetherValue, org.pragmatica.cluster.state.kvstore.LeaderAuthorized {}
+
+    /// #1543 replacement steps. `DONE` and `ROLLED_BACK` are terminal and inert; `FAILED_KEPT_BOTH` is terminal
+    /// and keeps both nodes until an operator settles it.
+    @Codec
+    enum NodeReplacementPhase {
+        PROVISIONING,
+        JOINING,
+        SWAPPING,
+        CANARY,
+        DRAINING_OLD,
+        RETIRING_OLD,
+        DONE,
+        ROLLED_BACK,
+        FAILED_KEPT_BOTH,
+        UNKNOWN
+    }
+
     /// A definitive no-create refusal. The operation itself is the exclusive recovery-probe token.
     record CommunityPlacementAvailabilityValue(String policyIdentity,
                                                String sourceBinding,
