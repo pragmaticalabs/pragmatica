@@ -982,6 +982,9 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// to a replaced lineage is refused with the typed [StreamError.EpochDiverged] naming where the new lineage began,
     /// instead of reading on from offsets the consumer's lineage no longer owns. Partitions with no committed ownership
     /// record (legacy, unit, a first owner before the leader minted one) are served unvalidated, as before.
+    /// A copy that is not the owner and has not been compared with its owner (B5, [#servedIfVerified]) holds back what it
+    /// has at and above the committed epoch's start on this path as on the unvalidated one: the epoch check says where a
+    /// lineage began, not that this copy holds the lineage that followed.
     public Result<EpochRead> readServing(String streamName,
                                          int partition,
                                          long fromOffset,
@@ -991,8 +994,11 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                                           partition,
                                                                           fromOffset,
                                                                           consumerEpoch))
-                            .flatMap(epoch -> readLocal(streamName, partition, fromOffset, maxEvents).map(events -> new EpochRead(events,
-                                                                                                                                  epoch)));
+                            .flatMap(epoch -> readLocal(streamName, partition, fromOffset, maxEvents).flatMap(events -> servedIfVerified(streamName,
+                                                                                                                                         partition,
+                                                                                                                                         fromOffset,
+                                                                                                                                         events))
+                                                       .map(events -> new EpochRead(events, epoch)));
     }
 
     private Result<Epoch> admitted(String streamName, int partition, long fromOffset, Epoch consumerEpoch) {
