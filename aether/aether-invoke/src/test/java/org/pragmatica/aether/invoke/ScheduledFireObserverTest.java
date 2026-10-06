@@ -257,4 +257,22 @@ class ScheduledFireObserverTest {
 
         assertThat(released).singleElement().extracting(Released::outcome).isEqualTo("leadership-lost");
     }
+
+    /// ALL-mode fires are not the leader's: losing leadership leaves them alone, but a scheduler that STOPS releases every
+    /// announced hold, whatever the mode.
+    @Test
+    void allModeHeldFire_isLeftAloneByLeadershipLoss_butReleasedWhenTheSchedulerStops() throws Exception {
+        var running = Promise.<Unit> promise();
+
+        stub.heldCompletion.set(running);
+        start();
+        awaitTrue(() -> !held.isEmpty());
+        manager.onLeaderChange(org.pragmatica.consensus.leader.LeaderNotification.leaderChange(Option.none(), false));
+
+        assertThat(released).as("an ALL-mode fire does not depend on leadership").isEmpty();
+
+        manager.stop();
+
+        assertThat(released).singleElement().extracting(Released::outcome).isEqualTo("leadership-lost");
+    }
 }
