@@ -511,10 +511,11 @@ public interface ScheduledTaskManager {
         /// failure. Every other failure (a failure response, a departed node, a request that could not be sent) is one.
         private static void recordFailedFire(Context ctx, ScheduledTask task, Cause cause, long nextFireAt) {
             if (cause instanceof SliceInvokerError.CompletionUnknown unknown) {
-                writeUnknownOutcomeState(ctx, task, cause.message(), nextFireAt);
+                var fireSeq = writeUnknownOutcomeState(ctx, task, cause.message(), nextFireAt);
+
                 unknown.lateOutcome()
-                       .onSuccess(_ -> resolveLateSuccess(ctx, task))
-                       .onFailure(late -> resolveLateFailure(ctx, task, late.message()));
+                       .onSuccess(_ -> resolveLateSuccess(ctx, task, fireSeq))
+                       .onFailure(late -> resolveLateFailure(ctx, task, fireSeq, late.message()));
             } else {
                 handleTaskFailure(ctx, task, cause.message(), nextFireAt);
             }
@@ -534,7 +535,11 @@ public interface ScheduledTaskManager {
             var priorTotal = prior.map(ScheduledTaskStateValue::totalExecutions).or(0);
             var priorSkipped = prior.map(ScheduledTaskStateValue::skippedOverlaps).or(0);
             var priorUnknown = prior.map(ScheduledTaskStateValue::unknownOutcomes).or(0);
-            var value = ScheduledTaskStateValue.successState(nextFireAt, priorTotal + 1, priorSkipped, priorUnknown);
+            var value = ScheduledTaskStateValue.successState(nextFireAt,
+                                                             priorTotal + 1,
+                                                             priorSkipped,
+                                                             priorUnknown,
+                                                             ScheduledTaskStateValue.nextFireSeq(prior));
 
             logOutcomeTransitionOut(task, prior);
             ctx.stateWriter.accept(new KVCommand.Put<>(key, value));
@@ -552,7 +557,8 @@ public interface ScheduledTaskManager {
                                                              priorTotal,
                                                              priorSkipped,
                                                              message,
-                                                             priorUnknown);
+                                                             priorUnknown,
+                                                             ScheduledTaskStateValue.nextFireSeq(prior));
 
             logOutcomeTransitionOut(task, prior);
             ctx.stateWriter.accept(new KVCommand.Put<>(key, value));
@@ -561,7 +567,7 @@ public interface ScheduledTaskManager {
         /// The outcome is UNKNOWN (#1723). Logged ONCE per transition into the unknown state, not per fire: a task that
         /// keeps timing out is counted in `unknownOutcomes`, and the log line says so; the line for leaving the state is
         /// [#logOutcomeTransitionOut].
-        private static void writeUnknownOutcomeState(Context ctx, ScheduledTask task, String message, long nextFireAt) {
+        private static int writeUnknownOutcomeState(Context ctx, ScheduledTask task, String message, long nextFireAt) {
             var key = stateKeyFor(ctx, task);
             var prior = ctx.stateReader.apply(key);
             var alreadyUnknown = prior.map(state -> ScheduledTaskStateValue.OUTCOME_UNKNOWN.equals(state.lastOutcome()))
@@ -575,24 +581,27 @@ public interface ScheduledTaskManager {
                          message);
             }
 
-            ctx.stateWriter.accept(new KVCommand.Put<>(key,
-                                                       ScheduledTaskStateValue.unknownOutcomeState(prior, nextFireAt)));
+            var value = ScheduledTaskStateValue.unknownOutcomeState(prior, nextFireAt);
+
+            ctx.stateWriter.accept(new KVCommand.Put<>(key, value));
+
+            return value.fireSeq();
         }
 
-        /// The callee's response arrived after the fire had been recorded as UNKNOWN: the fire was an execution after all.
-        /// Written against the row as it is NOW, whatever was recorded since; a row that is gone (the task was removed)
-        /// has nothing to resolve.
-        private static void resolveLateSuccess(Context ctx, ScheduledTask task) {
+        /// The callee's response arrived after fire `fireSeq` had been recorded as UNKNOWN: the fire was an execution after
+        /// all. Written against the row as it is NOW, whatever was recorded since (a newer fire's outcome stands, see
+        /// [ScheduledTaskStateValue#lateSuccessState]); a row that is gone (the task was removed) has nothing to resolve.
+        private static void resolveLateSuccess(Context ctx, ScheduledTask task, int fireSeq) {
             var key = stateKeyFor(ctx, task);
             var prior = ctx.stateReader.apply(key);
 
             logOutcomeTransitionOut(task, prior);
-            prior.map(ScheduledTaskStateValue::lateSuccessState)
+            prior.map(state -> ScheduledTaskStateValue.lateSuccessState(state, fireSeq))
                  .onPresent(value -> ctx.stateWriter.accept(new KVCommand.Put<>(key, value)));
         }
 
         /// The late response was a failure: the fire failed after all.
-        private static void resolveLateFailure(Context ctx, ScheduledTask task, String message) {
+        private static void resolveLateFailure(Context ctx, ScheduledTask task, int fireSeq, String message) {
             var key = stateKeyFor(ctx, task);
             var prior = ctx.stateReader.apply(key);
 
@@ -601,7 +610,7 @@ public interface ScheduledTaskManager {
                      task.methodName().name(),
                      message);
             logOutcomeTransitionOut(task, prior);
-            prior.map(state -> ScheduledTaskStateValue.lateFailureState(state, message))
+            prior.map(state -> ScheduledTaskStateValue.lateFailureState(state, fireSeq, message))
                  .onPresent(value -> ctx.stateWriter.accept(new KVCommand.Put<>(key, value)));
         }
 

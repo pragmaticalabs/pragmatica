@@ -176,7 +176,7 @@ class ScheduledTaskRoutesInjectTest {
             var lateOutcome = injectWithUnknownOutcome();
 
             lateOutcome.succeed(Unit.unit());
-            var written = writtenStates();
+            var written = awaitWrittenStates(2);
 
             assertEquals(2, written.size(), "the unknown write, then the resolution");
             assertEquals(ScheduledTaskStateValue.OUTCOME_SUCCESS, written.getLast().lastOutcome());
@@ -189,7 +189,7 @@ class ScheduledTaskRoutesInjectTest {
             var lateOutcome = injectWithUnknownOutcome();
 
             lateOutcome.fail(org.pragmatica.lang.utils.Causes.cause("callee failed late"));
-            var written = writtenStates();
+            var written = awaitWrittenStates(2);
 
             assertEquals(2, written.size(), "the unknown write, then the resolution");
             assertEquals(ScheduledTaskStateValue.OUTCOME_FAILURE, written.getLast().lastOutcome());
@@ -218,6 +218,22 @@ class ScheduledTaskRoutesInjectTest {
                                                                (ScheduledTaskStateValue) ((KVCommand.Put<?, ?>) command).value()));
 
             return lateOutcome;
+        }
+
+        /// The late outcome is applied on the promise's own thread: wait for the write, bounded.
+        private List<ScheduledTaskStateValue> awaitWrittenStates(int count) {
+            var deadline = System.currentTimeMillis() + 3_000L;
+
+            while (writtenStates().size() < count && System.currentTimeMillis() < deadline) {
+                try {
+                    Thread.sleep(20);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    break;
+                }
+            }
+
+            return writtenStates();
         }
 
         private List<ScheduledTaskStateValue> writtenStates() {

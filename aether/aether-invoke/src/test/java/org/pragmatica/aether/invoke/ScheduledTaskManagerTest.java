@@ -613,7 +613,7 @@ class ScheduledTaskManagerTest {
             var key = unknownTaskState(1);
             var before = stateFor(key).unwrap();
 
-            stubInvoker.lateOutcomes.getFirst().succeed(Unit.unit());
+            stubInvoker.lateOutcomes.getLast().succeed(Unit.unit());
             awaitLate(key, v -> ScheduledTaskStateValue.OUTCOME_SUCCESS.equals(v.lastOutcome()));
             var state = stateFor(key).unwrap();
 
@@ -629,7 +629,7 @@ class ScheduledTaskManagerTest {
             var key = unknownTaskState(1);
             var before = stateFor(key).unwrap();
 
-            stubInvoker.lateOutcomes.getFirst().fail(() -> "callee failed late");
+            stubInvoker.lateOutcomes.getLast().fail(() -> "callee failed late");
             awaitLate(key, v -> ScheduledTaskStateValue.OUTCOME_FAILURE.equals(v.lastOutcome()));
             var state = stateFor(key).unwrap();
 
@@ -653,6 +653,55 @@ class ScheduledTaskManagerTest {
             assertThat(state.totalExecutions()).isEqualTo(1);
             assertThat(state.unknownOutcomes()).as("the unanswered fires stay unknown").isEqualTo(before.unknownOutcomes() - 1)
                                                .isGreaterThanOrEqualTo(1);
+        }
+
+        /// #1723 ordering by FIRE: an older fire's late answer resolves ITS fire (the gauge falls) but never overwrites
+        /// the outcome a NEWER fire recorded. The newer fire is the row as written by a fire that succeeded after the
+        /// older one timed out.
+        @Test
+        void fixedRate_olderFireLateFailure_afterNewerFireSucceeded_keepsTheNewerSuccess() {
+            var key = unknownTaskState(1);
+            var unknown = stateFor(key).unwrap();
+            var newer = ScheduledTaskStateValue.successState(unknown.nextFireAt(),
+                                                             unknown.totalExecutions() + 1,
+                                                             unknown.skippedOverlaps(),
+                                                             unknown.unknownOutcomes(),
+                                                             unknown.fireSeq() + 1);
+
+            stateMap.put(key, newer);
+            stubInvoker.lateOutcomes.getFirst().fail(() -> "old fire failed late");
+            awaitLate(key, v -> v.unknownOutcomes() < newer.unknownOutcomes());
+            var state = stateFor(key).unwrap();
+
+            assertThat(state.unknownOutcomes()).as("the old fire is resolved: the gauge falls").isEqualTo(newer.unknownOutcomes() - 1);
+            assertThat(state.lastOutcome()).as("the newer fire's definite outcome stands").isEqualTo(ScheduledTaskStateValue.OUTCOME_SUCCESS);
+            assertThat(state.consecutiveFailures()).as("an older failure does not extend the newer streak").isZero();
+            assertThat(state.totalExecutions()).isEqualTo(newer.totalExecutions());
+        }
+
+        /// The mirror: an older fire's late SUCCESS does not overwrite a newer fire's definite failure, but it still
+        /// counts as an execution.
+        @Test
+        void fixedRate_olderFireLateSuccess_afterNewerFireFailed_keepsTheNewerFailure() {
+            var key = unknownTaskState(1);
+            var unknown = stateFor(key).unwrap();
+            var newer = ScheduledTaskStateValue.failureState(unknown.nextFireAt(),
+                                                             unknown.consecutiveFailures() + 1,
+                                                             unknown.totalExecutions(),
+                                                             unknown.skippedOverlaps(),
+                                                             "newer failed",
+                                                             unknown.unknownOutcomes(),
+                                                             unknown.fireSeq() + 1);
+
+            stateMap.put(key, newer);
+            stubInvoker.lateOutcomes.getFirst().succeed(Unit.unit());
+            awaitLate(key, v -> v.unknownOutcomes() < newer.unknownOutcomes());
+            var state = stateFor(key).unwrap();
+
+            assertThat(state.lastOutcome()).isEqualTo(ScheduledTaskStateValue.OUTCOME_FAILURE);
+            assertThat(state.consecutiveFailures()).as("an older success does not reset the newer streak").isEqualTo(newer.consecutiveFailures());
+            assertThat(state.lastFailureMessage()).isEqualTo("newer failed");
+            assertThat(state.totalExecutions()).as("it still executed").isEqualTo(newer.totalExecutions() + 1);
         }
 
         /// The late outcome is applied on the promise's own thread: wait for the write, bounded. A resolution that never
