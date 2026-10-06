@@ -4812,6 +4812,7 @@ is another node, are `409` (with no leader committed yet, an election in progres
 are `400`; the cluster-topology routes answer `503` while the topology manager is not on the node, and the stream tail route answers `501` (deferred) (#954).
 
 A caller-supplied id that cannot be parsed (a blueprint id, an artifact coordinate, a version, a node id) is `400` on every management route, and a refusal that several typed failures funnel into answers their common status when they agree (#1921).
+A malformed integer path or query parameter (`partition=abc`, `max=abc`) and a malformed percent-escape in a topic group name are `400`; an unknown stream, topic version or consumer group on the stream routes is `404`; a malformed node id, partition or stream address on a route that is forwarded to another node is `400` before anything is forwarded, while a well-formed node id naming no connected node is `503` (#1921).
 
 The `aether` CLI honors `--format json` on error paths: with `--format json` a failure is
 emitted to stderr as a structured `{"error":"<message>"}` object; otherwise the human-readable
