@@ -176,12 +176,22 @@ public interface ScheduledTaskManager {
         /// tie: it carries every write this manager has made since).
         Option<ScheduledTaskStateValue> currentRow(ScheduledTaskStateKey key) {
             var committed = stateReader.apply(key);
+            var mine = Option.option(submitted.get(key));
 
-            return Option.option(submitted.get(key))
-                         .filter(mine -> committed.map(row -> mine.fireSeq() >= row.fireSeq())
-                                                  .or(true))
-                         .fold(() -> committed,
-                               Option::some);
+            mine.filter(own -> caughtUp(own, committed)).onPresent(own -> submitted.remove(key, own));
+
+            return mine.filter(own -> !caughtUp(own, committed))
+                       .filter(own -> committed.map(row -> own.fireSeq() >= row.fireSeq())
+                                               .or(true))
+                       .fold(() -> committed,
+                             Option::some);
+        }
+
+        /// The commit has caught up with what this manager submitted: the committed row IS it, or a newer fire's. The
+        /// entry has nothing left to protect and is dropped, so the map stays as small as the writes in flight.
+        private static boolean caughtUp(ScheduledTaskStateValue own, Option<ScheduledTaskStateValue> committed) {
+            return committed.map(row -> row.equals(own) || row.fireSeq() > own.fireSeq())
+                            .or(false);
         }
 
         void submit(ScheduledTaskStateKey key, ScheduledTaskStateValue value) {
@@ -709,6 +719,14 @@ public interface ScheduledTaskManager {
                                                 .filter(ScheduledTaskStateValue::outcomeUnknown)
                                                 .onPresent(row -> ctx.submit(stateKey,
                                                                              ScheduledTaskStateValue.nodeDepartedState(row))));
+            // The departed node's rows are never written by anyone again.
+            ctx.registry.allTasks()
+                        .stream()
+                        .map(task -> ScheduledTaskStateKey.scheduledTaskStateKey(task.configSection(),
+                                                                                 task.artifact(),
+                                                                                 task.methodName(),
+                                                                                 departed))
+                        .forEach(ctx.submitted::remove);
         }
 
         private static void clearOpenCondition(Context ctx, ScheduledTaskStateKey stateKey) {
@@ -716,6 +734,8 @@ public interface ScheduledTaskManager {
                .filter(ScheduledTaskStateValue::outcomeUnknown)
                .onPresent(row -> ctx.submit(stateKey,
                                             ScheduledTaskStateValue.conditionClearedState(row)));
+            // The task is gone: nothing fires on this row any more, so nothing in flight needs protecting.
+            ctx.submitted.remove(stateKey);
         }
 
         /// A fire that completed (success or failure) after the task had been UNKNOWN: the outcome is known again.
@@ -814,6 +834,16 @@ public interface ScheduledTaskManager {
         @Override
         public int activeTimerCount() {
             return ctx.activeTimers.size();
+        }
+
+        /// Rows this manager submitted that the commit has not yet caught up with (test seam).
+        int submittedRowCount() {
+            return ctx.submitted.size();
+        }
+
+        /// The row decisions build on (test seam).
+        Option<ScheduledTaskStateValue> currentRowFor(ScheduledTaskStateKey key) {
+            return ctx.currentRow(key);
         }
 
         @Override

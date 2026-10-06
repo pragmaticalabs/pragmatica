@@ -355,6 +355,7 @@ class ScheduledTaskManagerTest {
             assertThat(cleared.lastOutcome()).isEmpty();
             assertThat(cleared.completionTimeouts()).as("the history stays").isEqualTo(unknownRow.completionTimeouts());
             assertThat(cleared.fireSeq()).as("the sequence continues").isEqualTo(unknownRow.fireSeq());
+            assertThat(((ScheduledTaskManager.ScheduledTaskManagerAdapter) manager).submittedRowCount()).as("nothing in flight is kept for a removed task").isZero();
         }
 
         /// A removal with nothing unknown writes nothing.
@@ -383,6 +384,7 @@ class ScheduledTaskManagerTest {
             assertThat(stateMap.get(goneKey).lastOutcome()).isEqualTo(ScheduledTaskStateValue.OUTCOME_NODE_DEPARTED);
             assertThat(stateMap.get(goneKey).completionTimeouts()).as("history stays").isEqualTo(unknownRow.completionTimeouts());
             assertThat(stateMap.get(otherKey).outcomeUnknown()).as("another node's row is untouched").isTrue();
+            assertThat(((ScheduledTaskManager.ScheduledTaskManagerAdapter) manager).submittedRowCount()).as("nothing in flight is kept for a departed node's row").isZero();
         }
 
         @Test

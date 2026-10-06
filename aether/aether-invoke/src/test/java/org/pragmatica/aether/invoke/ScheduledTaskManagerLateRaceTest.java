@@ -70,6 +70,53 @@ class ScheduledTaskManagerLateRaceTest {
         assertThat(submitted.get(1).completionTimeouts()).as("both timeouts are counted").isEqualTo(2);
     }
 
+    /// The last-submitted rows protect only what is in flight: once the commit has caught up (the committed row is the
+    /// submitted one, or a newer fire's) the entry is dropped, so the map cannot grow with the task count over time. While
+    /// the commit LAGS the entry stays.
+    @Test
+    void submittedRow_isDropped_onceTheCommitCatchesUp_andKeptWhileItLags() throws Exception {
+        var registry = ScheduledTaskRegistry.scheduledTaskRegistry();
+        var stub = new ScheduledTaskManagerTest.StubSliceInvoker(new CopyOnWriteArrayList<>(), Option.none());
+        var self = new NodeId("node-self");
+        var artifact = Artifact.artifact("org.example:my-slice:1.0.0").unwrap();
+        var method = MethodName.methodName("cleanup").unwrap();
+        var key = ScheduledTaskStateKey.scheduledTaskStateKey("cache", artifact, method, self);
+        var committed = new ConcurrentHashMap<ScheduledTaskStateKey, ScheduledTaskStateValue>();
+        var submitted = new CopyOnWriteArrayList<ScheduledTaskStateValue>();
+        Consumer<KVCommand<AetherKey>> writer = command -> {
+            if (command instanceof KVCommand.Put<AetherKey, ?> put && put.value() instanceof ScheduledTaskStateValue value) {
+                submitted.add(value);
+            }
+        };
+        var manager = (ScheduledTaskManager.ScheduledTaskManagerAdapter) ScheduledTaskManager.scheduledTaskManager(registry,
+                                                                                                                  stub,
+                                                                                                                  self,
+                                                                                                                  writer,
+                                                                                                                  k -> Option.option(committed.get(k)),
+                                                                                                                  new ScheduledTaskManagerTest.TestLeaderManager(self));
+
+        stub.unknownWithLateOutcome.set(true);
+        registry.onScheduledTaskPut(new ValuePut<>(new KVCommand.Put<>(ScheduledTaskKey.scheduledTaskKey("cache", artifact, method),
+                                                                       ScheduledTaskValue.intervalTask(self, "1s", ExecutionMode.ALL)),
+                                                   Option.none()));
+        manager.onQuorumStateChange(ClusterStateNotification.active());
+        var deadline = System.currentTimeMillis() + 6_000;
+
+        while (submitted.isEmpty() && System.currentTimeMillis() < deadline) {
+            Thread.sleep(10);
+        }
+        manager.stop();
+
+        assertThat(submitted).isNotEmpty();
+        assertThat(manager.currentRowFor(key).or((ScheduledTaskStateValue) null)).as("the commit lags: the submitted row is what decisions build on").isEqualTo(submitted.getLast());
+        assertThat(manager.submittedRowCount()).as("kept while the commit lags").isEqualTo(1);
+
+        committed.put(key, submitted.getLast());
+
+        assertThat(manager.currentRowFor(key).or((ScheduledTaskStateValue) null)).as("caught up: the committed row").isEqualTo(submitted.getLast());
+        assertThat(manager.submittedRowCount()).as("the entry is gone once the commit caught up").isZero();
+    }
+
     /// F2b: fire 1 times out and its UNKNOWN commits; fire 2 FAILS and its row is submitted but not yet committed; then
     /// fire 1's late success arrives. The committed row still says "fire 1 is the newest", but this manager has already
     /// submitted fire 2's row: the resolution must build on THAT (the newer, by sequence), so fire 2's failure is not
