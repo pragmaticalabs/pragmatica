@@ -1600,6 +1600,7 @@ public final class ClusterEventAggregator {
 
         return switch (event.reason()) {
             case OperationalEvent.ScheduledTaskOutcomeRestored.LATE_ANSWER -> task + " resolved its unknown outcome: the late response says it " + event.outcome();
+            case OperationalEvent.ScheduledTaskOutcomeRestored.NODE_DEPARTED -> task + " is closed: the node that fired it left the cluster while its outcome was unknown";
             case OperationalEvent.ScheduledTaskOutcomeRestored.TASK_REMOVED -> task + " was removed while its outcome was unknown";
             default -> task + " is known again: a later fire completed and " + event.outcome();
         };

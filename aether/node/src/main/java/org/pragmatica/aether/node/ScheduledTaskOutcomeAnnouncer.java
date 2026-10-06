@@ -87,6 +87,10 @@ public interface ScheduledTaskOutcomeAnnouncer {
             return OperationalEvent.ScheduledTaskOutcomeRestored.TASK_REMOVED;
         }
 
+        if (ScheduledTaskStateValue.OUTCOME_NODE_DEPARTED.equals(after.lastOutcome())) {
+            return OperationalEvent.ScheduledTaskOutcomeRestored.NODE_DEPARTED;
+        }
+
         return after.lateResolutions() > before.map(ScheduledTaskStateValue::lateResolutions)
                                                .or(0)
                ? OperationalEvent.ScheduledTaskOutcomeRestored.LATE_ANSWER

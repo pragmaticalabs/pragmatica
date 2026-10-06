@@ -699,6 +699,8 @@ public sealed interface AetherValue {
         public static final String OUTCOME_SUCCESS = "SUCCESS";
         public static final String OUTCOME_FAILURE = "FAILURE";
         public static final String OUTCOME_UNKNOWN = "UNKNOWN";
+        /// The row of a per-node (ALL-mode) task whose node left the cluster for good while its newest fire was unknown.
+        public static final String OUTCOME_NODE_DEPARTED = "NODE_DEPARTED";
 
         /// A row with no recorded outcome (the shape every row had before outcomes were recorded).
         public ScheduledTaskStateValue(long lastExecutionAt,
@@ -810,21 +812,31 @@ public sealed interface AetherValue {
                                                         0));
         }
 
-        /// The row a resolution of the fire numbered `written.fireSeq()` is applied to. A resolution can arrive before the
-        /// commit of that fire's own UNKNOWN row is visible; then `row` is older than the fire and applying the
-        /// resolution to it would write the sequence BACKWARDS. `written`, the row the fire submitted, is then the base: it
-        /// commits first and the resolution follows it. Otherwise the row is current and is the base, whatever was
-        /// recorded since.
+        /// The row a resolution is applied to: the newer, by `fireSeq`, of the committed `row` and `submitted`, the last row
+        /// the resolving manager itself wrote (the submitted one on a tie: it carries every write since). The writer is
+        /// asynchronous, so the committed row can lag what the manager has already decided: before the commit of this
+        /// fire's own UNKNOWN, or of a NEWER fire's outcome. Applying the resolution to the lagging row would write the
+        /// sequence BACKWARDS and, for an older fire's answer, overwrite the newer fire's outcome.
         public static ScheduledTaskStateValue resolutionBase(ScheduledTaskStateValue row,
-                                                             ScheduledTaskStateValue written) {
-            return row.fireSeq() >= written.fireSeq()
+                                                             ScheduledTaskStateValue submitted) {
+            return row.fireSeq() > submitted.fireSeq()
                    ? row
-                   : written;
+                   : submitted;
         }
 
         /// The task was removed while its newest fire was unknown: the condition ends with the task, so a task registered
         /// again under the same key does not inherit it. Everything else, the sequence included, is kept.
         public static ScheduledTaskStateValue conditionClearedState(ScheduledTaskStateValue base) {
+            return cleared(base, "");
+        }
+
+        /// The node that fired a per-node row left the cluster for good while its newest fire was unknown: nothing will
+        /// ever write that row again, so the condition ends with the node ([#OUTCOME_NODE_DEPARTED]). Everything else is kept.
+        public static ScheduledTaskStateValue nodeDepartedState(ScheduledTaskStateValue base) {
+            return cleared(base, OUTCOME_NODE_DEPARTED);
+        }
+
+        private static ScheduledTaskStateValue cleared(ScheduledTaskStateValue base, String outcome) {
             return new ScheduledTaskStateValue(base.lastExecutionAt(),
                                                base.nextFireAt(),
                                                base.consecutiveFailures(),
@@ -832,7 +844,7 @@ public sealed interface AetherValue {
                                                base.lastFailureMessage(),
                                                System.currentTimeMillis(),
                                                base.skippedOverlaps(),
-                                               "",
+                                               outcome,
                                                base.fireSeq(),
                                                base.newestFireAt(),
                                                base.completionTimeouts(),

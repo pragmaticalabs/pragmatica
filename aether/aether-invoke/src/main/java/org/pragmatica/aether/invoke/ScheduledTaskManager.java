@@ -19,6 +19,7 @@ import java.util.function.UnaryOperator;
 
 import org.pragmatica.aether.invoke.ScheduledTaskRegistry.ScheduledTask;
 import org.pragmatica.aether.slice.ExecutionMode;
+import org.pragmatica.consensus.topology.MembershipDecision;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ScheduledTaskKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ScheduledTaskStateKey;
@@ -69,6 +70,13 @@ public interface ScheduledTaskManager {
     /// the per-node lifecycle-projection layer was removed in the membership-v2 finale. Default no-op
     /// so the route-test stubs that implement this interface stay compilable.
     default void onDrainInitiated() {}
+
+    /// A node left the cluster for good (the committed membership decision, never a transient suspicion): the LEADER closes
+    /// the open UNKNOWN of every per-node (ALL-mode) row that node was firing, because nothing will ever write those rows
+    /// again (#1723). Default no-op so the route-test stubs that implement this interface stay compilable.
+    default void onNodeRemoved(MembershipDecision.NodeRemoved event) {}
+
+    default void onNodeDecommissioned(MembershipDecision.NodeDecommissioned event) {}
 
     int activeTimerCount();
     void stop();
@@ -128,6 +136,11 @@ public interface ScheduledTaskManager {
         final Consumer<KVCommand<AetherKey>> stateWriter;
         final Function<ScheduledTaskStateKey, Option<ScheduledTaskStateValue>> stateReader;
         final LeaderManager leaderManager;
+        /// The last row THIS manager submitted per state key. The writer is asynchronous consensus and the reader the
+        /// COMMITTED registry, so for a few milliseconds after a write the committed row is older than what this manager
+        /// already decided. Every decision that builds on "the row" (the next fire's prior, a late resolution) builds on
+        /// the newer of the two by `fireSeq`, so a row in flight is never overwritten with an older fire's.
+        final Map<ScheduledTaskStateKey, ScheduledTaskStateValue> submitted = new ConcurrentHashMap<>();
         final Map<ScheduledTaskKey, ScheduledFuture<?>> activeTimers = new ConcurrentHashMap<>();
         final Set<ScheduledTaskKey> inFlight = ConcurrentHashMap.newKeySet();
         final AtomicLong quorumSequence = new AtomicLong(0);
@@ -157,6 +170,23 @@ public interface ScheduledTaskManager {
             this.following = new Following(this);
             this.leading = new Leading(this);
             this.stopped = new Stopped(this);
+        }
+
+        /// The newer, by `fireSeq`, of the committed row and the last row this manager submitted (the submitted one on a
+        /// tie: it carries every write this manager has made since).
+        Option<ScheduledTaskStateValue> currentRow(ScheduledTaskStateKey key) {
+            var committed = stateReader.apply(key);
+
+            return Option.option(submitted.get(key))
+                         .filter(mine -> committed.map(row -> mine.fireSeq() >= row.fireSeq())
+                                                  .or(true))
+                         .fold(() -> committed,
+                               Option::some);
+        }
+
+        void submit(ScheduledTaskStateKey key, ScheduledTaskStateValue value) {
+            submitted.put(key, value);
+            stateWriter.accept(new KVCommand.Put<>(key, value));
         }
     }
 
@@ -401,10 +431,10 @@ public interface ScheduledTaskManager {
 
         private static void recordSkippedOverlap(Context ctx, ScheduledTask task) {
             var key = stateKeyFor(ctx, task);
-            var prior = ctx.stateReader.apply(key);
+            var prior = ctx.currentRow(key);
             var value = ScheduledTaskStateValue.skippedOverlapState(prior, System.currentTimeMillis());
 
-            ctx.stateWriter.accept(new KVCommand.Put<>(key, value));
+            ctx.submit(key, value);
             log.warn("Scheduled task {}.{} skipped fire: previous execution still in flight",
                      task.configSection(),
                      task.methodName().name());
@@ -564,11 +594,10 @@ public interface ScheduledTaskManager {
 
         private static void writeSuccessState(Context ctx, ScheduledTask task, long nextFireAt, long firedAt) {
             var key = stateKeyFor(ctx, task);
-            var prior = ctx.stateReader.apply(key);
+            var prior = ctx.currentRow(key);
 
             logOutcomeTransitionOut(task, prior);
-            ctx.stateWriter.accept(new KVCommand.Put<>(key,
-                                                       ScheduledTaskStateValue.successState(prior, nextFireAt, firedAt)));
+            ctx.submit(key, ScheduledTaskStateValue.successState(prior, nextFireAt, firedAt));
         }
 
         private static void writeFailureState(Context ctx,
@@ -577,14 +606,10 @@ public interface ScheduledTaskManager {
                                               long nextFireAt,
                                               long firedAt) {
             var key = stateKeyFor(ctx, task);
-            var prior = ctx.stateReader.apply(key);
+            var prior = ctx.currentRow(key);
 
             logOutcomeTransitionOut(task, prior);
-            ctx.stateWriter.accept(new KVCommand.Put<>(key,
-                                                       ScheduledTaskStateValue.failureState(prior,
-                                                                                            nextFireAt,
-                                                                                            firedAt,
-                                                                                            message)));
+            ctx.submit(key, ScheduledTaskStateValue.failureState(prior, nextFireAt, firedAt, message));
         }
 
         /// The outcome is UNKNOWN (#1723). Logged ONCE per transition into the unknown state, not per fire: a task that
@@ -596,7 +621,7 @@ public interface ScheduledTaskManager {
                                                                         long nextFireAt,
                                                                         long firedAt) {
             var key = stateKeyFor(ctx, task);
-            var prior = ctx.stateReader.apply(key);
+            var prior = ctx.currentRow(key);
             var alreadyUnknown = prior.map(ScheduledTaskStateValue::outcomeUnknown).or(false);
 
             if (!alreadyUnknown) {
@@ -609,16 +634,15 @@ public interface ScheduledTaskManager {
 
             var value = ScheduledTaskStateValue.unknownOutcomeState(prior, nextFireAt, firedAt);
 
-            ctx.stateWriter.accept(new KVCommand.Put<>(key, value));
+            ctx.submit(key, value);
 
             return value;
         }
 
-        /// A late answer for the fire that wrote `written`. Applied to the row as it is NOW, whatever was recorded since (a
-        /// newer fire's outcome stands, see [ScheduledTaskStateValue#lateSuccessState]), except that a row older than the
-        /// fire itself (its UNKNOWN commit not yet visible) is replaced by `written` as the base
-        /// ([ScheduledTaskStateValue#resolutionBase]): the sequence never goes backwards. A row that is gone (the task was
-        /// removed) has nothing to resolve.
+        /// A late answer for the fire that wrote `written`. Applied to the newer, by `fireSeq`, of the committed row and the
+        /// last row this manager submitted ([ScheduledTaskStateValue#resolutionBase]): a newer fire's outcome stands (see
+        /// [ScheduledTaskStateValue#lateSuccessState]) even while its row is still in flight, and the sequence never goes
+        /// backwards. A row that is gone (the task was removed) has nothing to resolve.
         private static void resolveLate(Context ctx,
                                         ScheduledTask task,
                                         ScheduledTaskStateValue written,
@@ -626,7 +650,8 @@ public interface ScheduledTaskManager {
             var key = stateKeyFor(ctx, task);
 
             ctx.stateReader.apply(key)
-                           .map(row -> ScheduledTaskStateValue.resolutionBase(row, written))
+                           .map(row -> ScheduledTaskStateValue.resolutionBase(row,
+                                                                              Option.option(ctx.submitted.get(key)).or(written)))
                            .onPresent(base -> writeResolved(ctx,
                                                             task,
                                                             key,
@@ -645,7 +670,7 @@ public interface ScheduledTaskManager {
                          task.methodName().name());
             }
 
-            ctx.stateWriter.accept(new KVCommand.Put<>(key, resolved));
+            ctx.submit(key, resolved);
         }
 
         /// The task is gone: an open UNKNOWN condition ends with it, so a task registered again under the same key starts
@@ -667,11 +692,30 @@ public interface ScheduledTaskManager {
             }
         }
 
+        /// The leader closes the open UNKNOWN of the per-node rows `departed` was firing (`node-departed`).
+        static void closeDepartedNodeRows(Context ctx, NodeId departed, boolean leader) {
+            if (!leader) {
+                return;
+            }
+
+            ctx.registry.allTasks()
+                        .stream()
+                        .filter(task -> task.executionMode() == ExecutionMode.ALL)
+                        .map(task -> ScheduledTaskStateKey.scheduledTaskStateKey(task.configSection(),
+                                                                                 task.artifact(),
+                                                                                 task.methodName(),
+                                                                                 departed))
+                        .forEach(stateKey -> ctx.currentRow(stateKey)
+                                                .filter(ScheduledTaskStateValue::outcomeUnknown)
+                                                .onPresent(row -> ctx.submit(stateKey,
+                                                                             ScheduledTaskStateValue.nodeDepartedState(row))));
+        }
+
         private static void clearOpenCondition(Context ctx, ScheduledTaskStateKey stateKey) {
-            ctx.stateReader.apply(stateKey)
-                           .filter(ScheduledTaskStateValue::outcomeUnknown)
-                           .onPresent(row -> ctx.stateWriter.accept(new KVCommand.Put<>(stateKey,
-                                                                                        ScheduledTaskStateValue.conditionClearedState(row))));
+            ctx.currentRow(stateKey)
+               .filter(ScheduledTaskStateValue::outcomeUnknown)
+               .onPresent(row -> ctx.submit(stateKey,
+                                            ScheduledTaskStateValue.conditionClearedState(row)));
         }
 
         /// A fire that completed (success or failure) after the task had been UNKNOWN: the outcome is known again.
@@ -748,6 +792,16 @@ public interface ScheduledTaskManager {
             } else {
                 fsm.dispatch(new ClusterFsmEvent.QuorumDisappeared());
             }
+        }
+
+        @Override
+        public void onNodeRemoved(MembershipDecision.NodeRemoved event) {
+            TaskOps.closeDepartedNodeRows(ctx, event.nodeId(), fsm.current() instanceof Leading);
+        }
+
+        @Override
+        public void onNodeDecommissioned(MembershipDecision.NodeDecommissioned event) {
+            TaskOps.closeDepartedNodeRows(ctx, event.nodeId(), fsm.current() instanceof Leading);
         }
 
         @Override

@@ -24,8 +24,9 @@
   never a failure. `ScheduledTaskStateValue` gains `fireSeq`, `newestFireAt`, `completionTimeouts` and `lateResolutions` (wire
   baseline re-recorded; an older-shaped row refuses the whole snapshot decode, pre-GA no migration).
   The task is unknown while its NEWEST fire's outcome is UNKNOWN: that raises the cluster event `SCHEDULED_TASK_OUTCOME_UNKNOWN`
-  (WARNING), and a later fire that completes, the late answer of the newest fire or the task's removal raises
-  `SCHEDULED_TASK_OUTCOME_RESTORED` (INFO; `reason`). Removing a task clears its open UNKNOWN, so a task registered again starts
+  (WARNING), and a later fire that completes, the late answer of the newest fire, the task's removal or the committed removal of the
+  node that fired a per-node row raises `SCHEDULED_TASK_OUTCOME_RESTORED` (INFO; `reason`). The manager builds every decision on the newer, by
+  sequence, of the committed row and the last row it submitted, so an older fire's late answer cannot overwrite a newer fire's row still in flight. Removing a task clears its open UNKNOWN, so a task registered again starts
   fresh. Throttled per task (60 s); an UNKNOWN the window held is announced after it only if still unknown, and a RESTORED never
   appears without its UNKNOWN.
   [mechanism: `ScheduledTaskManagerTest$FireBehavior`, `$RegistryChange` and `ScheduledTaskManagerLateRaceTest` (late, ordering, the

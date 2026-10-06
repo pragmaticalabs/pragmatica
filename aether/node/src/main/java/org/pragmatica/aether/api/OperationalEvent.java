@@ -269,7 +269,8 @@ public sealed interface OperationalEvent extends Message.Local {
     /// #1723: a scheduled task's newest fire is no longer unknown ([ClusterEvent.ScheduledTaskOutcomeRestored]). `reason`
     /// says why: `late-answer` (the newest fire's late response arrived; `outcome` is what it said), `later-fire` (a
     /// later fire completed; `outcome` is that fire's) or `task-removed` (the task was removed with its outcome still
-    /// unknown; `outcome` is `unknown`). `outcome` is otherwise `executed` or `failed`.
+    /// unknown; `outcome` is `unknown`) or `node-departed` (the per-node row's node left the cluster for good while it
+    /// was unknown; `outcome` is `unknown`). `outcome` is otherwise `executed` or `failed`.
     record ScheduledTaskOutcomeRestored(String task,
                                         String node,
                                         String outcome,
@@ -279,6 +280,7 @@ public sealed interface OperationalEvent extends Message.Local {
         public static final String LATE_ANSWER = "late-answer";
         public static final String LATER_FIRE = "later-fire";
         public static final String TASK_REMOVED = "task-removed";
+        public static final String NODE_DEPARTED = "node-departed";
 
         public static ScheduledTaskOutcomeRestored scheduledTaskOutcomeRestored(String task,
                                                                                 String node,

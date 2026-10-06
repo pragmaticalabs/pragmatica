@@ -206,6 +206,23 @@ class ScheduledTaskOutcomeAnnouncerTest {
         });
     }
 
+    /// A per-node row whose node left for good while unknown: the leader commits the closed row, which ends the operator's
+    /// UNKNOWN as `node-departed` (the alarm would otherwise be stale forever: nothing writes that row again).
+    @Test
+    void nodeDepartedWithOpenUnknown_announcesRestored_nodeDeparted() {
+        var first = unknown(Option.none(), 1_000L);
+
+        announcer.onStatePut(put(NODE_KEY, Option.none(), first));
+        announcer.onStatePut(put(NODE_KEY, Option.some(first), ScheduledTaskStateValue.nodeDepartedState(first)));
+
+        assertThat(events).hasSize(2);
+        assertThat(events.getLast()).isInstanceOfSatisfying(OperationalEvent.ScheduledTaskOutcomeRestored.class, event -> {
+            assertThat(event.reason()).isEqualTo("node-departed");
+            assertThat(event.outcome()).isEqualTo("unknown");
+            assertThat(event.node()).isEqualTo("node-a");
+        });
+    }
+
     /// A task registered again under the same key starts clean: the cleared row carries no UNKNOWN, so its first timeout
     /// is announced as a new UNKNOWN, with an id that cannot repeat the first life's (the sequence continues, and the
     /// fire's start time differs).

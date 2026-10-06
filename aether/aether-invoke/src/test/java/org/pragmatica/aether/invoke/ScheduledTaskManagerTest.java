@@ -33,6 +33,7 @@ import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.leader.LeaderManager;
 import org.pragmatica.consensus.leader.LeaderNotification;
+import org.pragmatica.consensus.topology.MembershipDecision;
 import org.pragmatica.consensus.topology.ClusterStateNotification;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
@@ -357,6 +358,33 @@ class ScheduledTaskManagerTest {
         }
 
         /// A removal with nothing unknown writes nothing.
+        /// #1723: a per-node (ALL-mode) row whose node left the cluster for good while its newest fire was unknown will never
+        /// be written again: the LEADER closes it on the committed removal (the announcer turns that into RESTORED
+        /// `node-departed`). A follower writes nothing; a node with no open UNKNOWN is left alone.
+        @Test
+        void nodeRemoved_leaderClosesTheDepartedNodesOpenUnknown_followerDoesNot() {
+            var gone = new NodeId("node-gone");
+            var goneKey = ScheduledTaskStateKey.scheduledTaskStateKey("cache", artifact, method, gone);
+            var otherKey = ScheduledTaskStateKey.scheduledTaskStateKey("cache", artifact, method, new NodeId("node-other"));
+            var unknownRow = ScheduledTaskStateValue.unknownOutcomeState(Option.none(), 0, 1_000L);
+
+            stateMap.put(goneKey, unknownRow);
+            stateMap.put(otherKey, unknownRow);
+            putTask("cache", artifact, method, self, "30s", ExecutionMode.ALL);
+            establishQuorum();
+            var departed = new MembershipDecision.NodeRemoved(gone, java.util.List.of(), 1L, org.pragmatica.hlc.HlcTimestamp.ZERO);
+
+            manager.onNodeRemoved(departed);
+            assertThat(stateMap.get(goneKey).outcomeUnknown()).as("a follower writes nothing").isTrue();
+
+            becomeLeader();
+            manager.onNodeRemoved(departed);
+
+            assertThat(stateMap.get(goneKey).lastOutcome()).isEqualTo(ScheduledTaskStateValue.OUTCOME_NODE_DEPARTED);
+            assertThat(stateMap.get(goneKey).completionTimeouts()).as("history stays").isEqualTo(unknownRow.completionTimeouts());
+            assertThat(stateMap.get(otherKey).outcomeUnknown()).as("another node's row is untouched").isTrue();
+        }
+
         @Test
         void registryChange_taskRemoved_withoutOpenUnknown_writesNothing() {
             var stateKey = ScheduledTaskStateKey.scheduledTaskStateKey("cache", artifact, method, self);
