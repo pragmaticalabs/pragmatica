@@ -33,6 +33,11 @@ public sealed interface ClusterUpgradeToml {
     /// exactly `targetVersion`: a TOML whose version is not a plain `version = "…"` line in `[cluster]`
     /// (inherited from a template, single-quoted, …) is refused rather than half-rewritten.
     static Result<String> withVersion(String toml, String targetVersion) {
+        if (toml.indexOf('\r') >= 0) {
+            return new ClusterConfigError.ParseFailed("Committed config uses CRLF line endings, which the version rewrite does not handle; "
+                                                     + "re-apply it with LF line endings, then retry the upgrade").result();
+        }
+
         if (!SAFE_VERSION.matcher(targetVersion).matches()) {
             return new ClusterConfigError.ParseFailed("Target version '" + targetVersion
                                                      + "' is not a valid version string").result();
@@ -42,8 +47,8 @@ public sealed interface ClusterUpgradeToml {
     }
 
     /// Names (sorted, distinct) of the runtime profiles referenced by a source role whose launch artifact is
-    /// pinned: `image` for container runtimes, `jar_url` for JVM runtimes — exactly the field
-    /// [NodeUserDataRenderer] prefers over the version-derived default.
+    /// pinned LITERALLY: `image` for container runtimes, `jar_url` for JVM runtimes — exactly the field
+    /// [NodeUserDataRenderer] prefers over the version-derived default. A pin carrying `{version}` follows the version.
     static List<String> pinnedRuntimeProfiles(ClusterBootstrapConfig config) {
         return referencedRuntimeRefs(config).stream()
                                     .filter(ref -> isPinned(config, ref))

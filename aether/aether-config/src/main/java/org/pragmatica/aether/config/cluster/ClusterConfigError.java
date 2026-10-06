@@ -320,9 +320,10 @@ public sealed interface ClusterConfigError extends Cause, HttpStatusAware {
         public String message() {
             return "Refusing to upgrade to " + targetVersion
                  + ": runtime profile(s) " + profiles
-                 + " pin image/jar_url, so replacements would keep booting the pinned artifact and ignore the "
-                 + "version. Update the pin to the " + targetVersion
-                 + " artifact in the TOML and run 'aether cluster apply', or remove the pin.";
+                 + " pin image/jar_url literally, so replacements would keep booting the pinned artifact and ignore the "
+                 + "version. Use {version} in the pin (image = \"registry/aether-node:{version}\") to let it follow upgrades. "
+                 + "The pin must be declared that way in the config the cluster was bootstrapped with: 'aether cluster apply' "
+                 + "does not currently change runtime-profile content";
         }
 
         @Override

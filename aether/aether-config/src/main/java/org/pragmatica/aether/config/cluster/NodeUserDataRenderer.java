@@ -64,7 +64,7 @@ public sealed interface NodeUserDataRenderer {
     }
 
     static String resolveJarUrl(Option<RuntimeProfile> profile, String version) {
-        return profile.flatMap(RuntimeProfile::jarUrl)
+        return profile.flatMap(p -> p.jarUrlFor(version))
                       .or("https://github.com/" + JAR_REPO_PATH
                          + "/releases/download/" + deriveJarTag(version)
                          + "/aether-node.jar");
@@ -103,7 +103,7 @@ public sealed interface NodeUserDataRenderer {
         var ports = config.operations().ports();
         var runtimeProfile = resolveRuntimeProfile(config, source, role);
         var isContainer = isContainerRuntime(runtimeProfile);
-        var image = runtimeProfile.flatMap(RuntimeProfile::image)
+        var image = runtimeProfile.flatMap(p -> p.imageFor(config.cluster().version()))
                                   .or("ghcr.io/pragmaticalabs/aether-node:" + config.cluster().version());
         var peersValue = String.join(",", peers);
         var sb = new StringBuilder();

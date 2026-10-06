@@ -118,6 +118,38 @@ class ClusterUpgradeTomlTest {
         assertThat(pinned(toml("[runtime.node]\ntype = \"container\"\nimage = \"registry/x:1.0.0\"", ""))).isEmpty();
     }
 
+    @Test
+    void pinnedRuntimeProfiles_aPinCarryingThePlaceholderFollowsTheVersion_isNotPinned() {
+        assertThat(pinned(toml("[runtime.node]\ntype = \"container\"\nimage = \"registry/x:{version}\"", "runtime = \"node\""))).isEmpty();
+        assertThat(pinned(toml("[runtime.bare-metal]\ntype = \"jvm\"\njar_url = \"https://h/v{version}/x.jar\"",
+                               "runtime = \"bare-metal\""))).isEmpty();
+    }
+
+    @Test
+    void render_placeholderInImage_isSubstitutedFromClusterVersion() {
+        var tomlText = toml("[runtime.node]\ntype = \"container\"\nimage = \"registry/x:{version}\"", "runtime = \"node\"");
+        var upgraded = ClusterUpgradeToml.withVersion(tomlText, "1.1.0").unwrap();
+
+        assertThat(render(tomlText)).contains("registry/x:1.0.0");
+        assertThat(render(upgraded)).contains("registry/x:1.1.0").doesNotContain("{version}");
+    }
+
+    @Test
+    void render_placeholderInJarUrl_isSubstitutedFromClusterVersion() {
+        var tomlText = toml("[runtime.bare-metal]\ntype = \"jvm\"\njar_url = \"https://h/v{version}/x.jar\"", "runtime = \"bare-metal\"");
+        var upgraded = ClusterUpgradeToml.withVersion(tomlText, "1.1.0").unwrap();
+
+        assertThat(render(upgraded)).contains("https://h/v1.1.0/x.jar").doesNotContain("{version}");
+    }
+
+    @Test
+    void withVersion_crlfConfig_isRefusedWithAMessageNamingCrlf() {
+        var result = ClusterUpgradeToml.withVersion(toml("", "").replace("\n", "\r\n"), "1.1.0");
+
+        assertThat(result.isFailure()).isTrue();
+        result.onFailure(cause -> assertThat(cause.message()).contains("CRLF"));
+    }
+
     private static List<String> pinned(String toml) {
         return ClusterUpgradeToml.pinnedRuntimeProfiles(ClusterBootstrapConfigParser.parse(toml).unwrap());
     }

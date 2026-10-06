@@ -141,6 +141,16 @@ class ClusterConfigRoutesUpgradeTomlTest {
         assertThat(render(committed(store))).contains("/releases/download/v1.1.0/aether-node.jar");
     }
 
+    /// A pin written with `{version}` follows the upgrade: it is accepted, and the replacement renders the target.
+    @Test
+    void upgrade_whenThePinCarriesThePlaceholder_succeeds_andTheReplacementRendersTheTarget() {
+        var toml = IMAGE_PINNED.replace("aether-node:1.0.0", "aether-node:{version}");
+        var store = storeWith(committed(toml, 1));
+
+        assertThat(upgrade(store, "1.1.0", 1).isSuccess()).isTrue();
+        assertThat(render(committed(store))).contains("registry/aether-node:1.1.0");
+    }
+
     @Test
     void upgrade_whenARoleProfilePinsTheImage_isRefusedWith409_andWritesNothing() {
         var store = storeWith(committed(IMAGE_PINNED, 1));

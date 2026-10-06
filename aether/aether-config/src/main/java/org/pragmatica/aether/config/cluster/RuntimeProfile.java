@@ -38,11 +38,25 @@ public record RuntimeProfile(@ConfigKeyLive("#693: parsed but never read — Clu
         return type == RuntimeType.CONTAINER || type == RuntimeType.DOCKER || type == RuntimeType.MANAGED_CONTAINER;
     }
 
-    /// True when the launch artifact this profile selects is an explicit pin, so `[cluster] version` cannot
-    /// change what a replacement boots (#1543 part C).
+    /// Placeholder a pin may carry to follow `[cluster] version` (#1543 part C): `image = "registry/node:{version}"`.
+    public static final String VERSION_PLACEHOLDER = "{version}";
+
+    /// `image` with [#VERSION_PLACEHOLDER] replaced by the cluster version.
+    public Option<String> imageFor(String clusterVersion) {
+        return image.map(value -> value.replace(VERSION_PLACEHOLDER, clusterVersion));
+    }
+
+    /// `jar_url` with [#VERSION_PLACEHOLDER] replaced by the cluster version.
+    public Option<String> jarUrlFor(String clusterVersion) {
+        return jarUrl.map(value -> value.replace(VERSION_PLACEHOLDER, clusterVersion));
+    }
+
+    /// True when the launch artifact this profile selects is a LITERAL pin, so `[cluster] version` cannot change
+    /// what a replacement boots (#1543 part C). A pin carrying [#VERSION_PLACEHOLDER] follows the version.
     public boolean pinsArtifact() {
-        return isContainer()
-               ? image.isPresent()
-               : jarUrl.isPresent();
+        return (isContainer()
+                ? image
+                : jarUrl).filter(value -> !value.contains(VERSION_PLACEHOLDER))
+                         .isPresent();
     }
 }
