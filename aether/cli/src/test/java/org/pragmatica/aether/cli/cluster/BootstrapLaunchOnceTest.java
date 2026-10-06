@@ -523,6 +523,27 @@ class BootstrapLaunchOnceTest {
         assertThat(command.indexOf("exit 17")).as("the guard precedes every write").isLessThan(command.indexOf("install -d"));
     }
 
+    /// J1: a unit in the `failed` state — `is-active` false, `is-failed` true — is refused on its own clause.
+    @Test
+    void jvmStartGuard_refusesAFailedUnit() throws Exception {
+        var command = BootstrapPhaseDeploy.buildJvmStartCommand("eu-1-core-0",
+                                                                NodeRole.CORE,
+                                                                sourceNameOrDefault("eu-1"),
+                                                                Option.empty(),
+                                                                7000,
+                                                                8080,
+                                                                "eu-1-core-0:203.0.113.10:7000",
+                                                                SECRET,
+                                                                CLUSTER,
+                                                                name -> null);
+        var failed = runWithStub("systemctl",
+                                 "[ \"$1\" = is-failed ] && [ \"$3\" = aether-node.service ] && exit 0; exit 1",
+                                 command);
+
+        assertThat(failed.exit()).isEqualTo(BootstrapPhaseDeploy.ALREADY_PRESENT_EXIT);
+        assertThat(failed.output()).contains(BootstrapPhaseDeploy.ALREADY_PRESENT_MARKER);
+    }
+
     /// N2: a cleanly exited unit is `inactive`, not active or failed — only its activation HISTORY says it ran.
     /// A never-run unit (installed by cloud-init, empty timestamp) is NOT refused by the history clause.
     @Test
@@ -835,6 +856,54 @@ class BootstrapLaunchOnceTest {
         assertThat(result.map(c -> c.state().startedNodeIds()).or(List.of()))
             .as("what markPhaseCompleted saves")
             .containsExactlyInAnyOrderElementsOf(concat(DC, EU));
+    }
+
+    /// R1: through `resumeFromState` itself — the resumed context handed to the phase chain must carry the
+    /// rebuilt nodes, and the real DEPLOY phase run on it must start exactly the not-yet-started ones. A test
+    /// of `resumeContext` alone cannot see a `resumeFromState` that stops calling it.
+    @Test
+    void resumeFromState_handsTheDeployPhaseTheRehydratedNodes() {
+        var state = BootstrapState.initialState(CLUSTER, "h", "now")
+                                  .withPhaseStatus(BootstrapPhase.PROVISION, BootstrapState.PhaseStatus.COMPLETED)
+                                  .withPhaseStatus(BootstrapPhase.COLLECT_ADDRESSES, BootstrapState.PhaseStatus.COMPLETED)
+                                  .withPhaseStatus(BootstrapPhase.DEPLOY_RUNTIME, BootstrapState.PhaseStatus.FAILED)
+                                  .withProvisionedNodeIds(EU)
+                                  .withCollectedAddresses(List.of("203.0.113.10", "203.0.113.11", "203.0.113.12"))
+                                  .withStartedNodeId("eu-1-core-0")
+                                  .withClusterSecret(SECRET);
+        var config = config(Map.of("eu-1", cloudSource(), "dc-1", sshSource()), RuntimeType.CONTAINER);
+        var starts = new ConcurrentLinkedQueue<String>();
+        Fn3<Result<String>, String, String, SshConfig> ssh = (host, command, cfg) -> {
+            if (isStart(command)) {
+                starts.add(host);
+            }
+
+            return Result.success("");
+        };
+        Fn4<Result<Unit>, String, String, String, SshConfig> scp = (local, host, remote, cfg) -> Result.unitResult();
+        var seen = new ConcurrentLinkedQueue<BootstrapContext>();
+
+        var _ = ClusterBootstrapOrchestrator.resumeFromState(config,
+                                                             state,
+                                                             List.of(),
+                                                             "",
+                                                             ctx -> {
+                                                                 seen.add(ctx);
+                                                                 BootstrapPhaseDeploy.deployCloudSource(ctx,
+                                                                                                        config.sources().get("eu-1"),
+                                                                                                        sourceNameOrDefault("eu-1"),
+                                                                                                        url -> Result.success("OK"),
+                                                                                                        ssh,
+                                                                                                        envWithKey());
+
+                                                                 return BootstrapError.DeploymentFailed.class.cast(
+                                                                     new BootstrapError.DeploymentFailed("test", "chain stub")).<ClusterBootstrapOrchestrator.BootstrapResult>result();
+                                                             });
+
+        assertThat(seen).hasSize(1);
+        assertThat(seen.peek().nodes().stream().map(ProvisionedNode::nodeId).toList()).containsExactlyElementsOf(EU);
+        assertThat(List.copyOf(starts)).as("DEPLOY starts exactly the not-yet-started nodes")
+                                       .containsExactlyInAnyOrder("203.0.113.11", "203.0.113.12");
     }
 
     @Test

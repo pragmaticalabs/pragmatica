@@ -148,9 +148,19 @@ public sealed interface ClusterBootstrapOrchestrator permits ClusterBootstrapOrc
                                                            BootstrapState state,
                                                            List<SshPublicKey> sshPublicKeys,
                                                            String rawTomlContent) {
+        return resumeFromState(config, state, sshPublicKeys, rawTomlContent, ClusterBootstrapOrchestrator::runPhaseChain);
+    }
+
+    /// `chain` is the phase runner the resumed context is handed to — production passes [#runPhaseChain];
+    /// a test passes a capturing one, so what the DEPLOY phase would SEE on resume is observable.
+    static Result<BootstrapResult> resumeFromState(ClusterBootstrapConfig config,
+                                                   BootstrapState state,
+                                                   List<SshPublicKey> sshPublicKeys,
+                                                   String rawTomlContent,
+                                                   Function<BootstrapContext, Result<BootstrapResult>> chain) {
         System.out.println("Resuming bootstrap for cluster '" + state.clusterName() + "' from persisted state");
 
-        return runPhaseChain(resumeContext(config, state, sshPublicKeys, rawTomlContent));
+        return chain.apply(resumeContext(config, state, sshPublicKeys, rawTomlContent));
     }
 
     static BootstrapContext resumeContext(ClusterBootstrapConfig config,
