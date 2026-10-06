@@ -25,6 +25,7 @@ import org.pragmatica.aether.management.route.ManagementRoute;
 import org.pragmatica.aether.node.ManageableNode;
 import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.StreamConfig;
+import org.pragmatica.aether.slice.resource.ResourceAddress;
 import org.pragmatica.aether.slice.kvstore.AetherKey.StreamConfigKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.StreamConfigValue;
 import org.pragmatica.aether.stream.StreamCreateOutcome;
@@ -148,7 +149,10 @@ public final class StreamRoutes implements RouteSource {
                          ManagementRoutes.<StreamHydrationResponse> route(ManagementRoute.STREAM_HYDRATION).toJson(this::streamHydration),
                          ManagementRoutes.<DeclarativeConsumersResponse> route(ManagementRoute.STREAM_DECLARATIVE_CONSUMERS).toJson(this::declarativeConsumers),
                          ManagementRoutes.<StreamConsumersResponse> route(ManagementRoute.STREAM_CONSUMERS)
-                                         .withPath(PathParameter.aString())
+                                         .withPath(PathParameter.aString(),
+                                                   PathParameter.aString(),
+                                                   PathParameter.aString(),
+                                                   PathParameter.spacer("consumers"))
                                          .toResult(this::streamConsumers)
                                          .asJson(),
                          ManagementRoutes.<GroupStatusResponse> route(ManagementRoute.CONSUMER_GROUP_JOIN)
@@ -335,9 +339,16 @@ public final class StreamRoutes implements RouteSource {
                                                                                                                                                            "latest")));
     }
 
-    private Result<StreamConsumersResponse> streamConsumers(String name) {
-        return RequestParse.asNotFound(streamManager().allPartitionInfo(name))
-                           .map(partitions -> new StreamConsumersResponse(name, partitions));
+    /// `GET /streams/{namespace}/{stream}/{version}/consumers` -- the route's path carries the whole catalog address, so the
+    /// engine is asked by the key that address maps to, the same one the catalog-scoped stream routes use (#1921). `consumersLiteral`
+    /// binds the trailing `spacer("consumers")` segment, which `RequestContext.matchPath` binds positionally like any other slot.
+    private Result<StreamConsumersResponse> streamConsumers(String namespace,
+                                                            String stream,
+                                                            String version,
+                                                            String consumersLiteral) {
+        return RequestParse.asRequest(ResourceAddress.resourceAddress(namespace, stream, version))
+                           .flatMap(address -> RequestParse.asNotFound(streamManager().allPartitionInfo(StreamManager.engineKey(address)))
+                                                           .map(partitions -> new StreamConsumersResponse(address.asString(), partitions)));
     }
 
     /// #742 — same guard as `StreamApiRoutes#createStream(StreamCreateRequest)`, for the same reason: the target stream name is
