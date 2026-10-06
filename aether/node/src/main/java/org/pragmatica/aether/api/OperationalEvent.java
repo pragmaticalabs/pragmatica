@@ -248,6 +248,57 @@ public sealed interface OperationalEvent extends Message.Local {
         }
     }
 
+    /// #1723: a scheduled task's newest fire has an UNKNOWN outcome (no response within the invocation timeout), so it is
+    /// not known whether the work ran ([ClusterEvent.ScheduledTaskOutcomeUnknown]). `task` is
+    /// `section/artifact/method`, `node` the per-node row of an ALL-mode task (empty otherwise), `fireAt` when the fire
+    /// was recorded.
+    record ScheduledTaskOutcomeUnknown(String task, String node, long fireAt, String eventId, long timestamp) implements OperationalEvent {
+        public static ScheduledTaskOutcomeUnknown scheduledTaskOutcomeUnknown(String task,
+                                                                              String node,
+                                                                              long fireAt,
+                                                                              String eventId) {
+            return new ScheduledTaskOutcomeUnknown(task, node, fireAt, eventId, System.currentTimeMillis());
+        }
+
+        /// The key the aggregator pairs this event with its [ScheduledTaskOutcomeRestored] by.
+        public String key() {
+            return task + "@" + node;
+        }
+    }
+
+    /// #1723: a scheduled task's newest fire is no longer unknown ([ClusterEvent.ScheduledTaskOutcomeRestored]). `reason`
+    /// says why: `late-answer` (the newest fire's late response arrived; `outcome` is what it said), `later-fire` (a
+    /// later fire completed; `outcome` is that fire's) or `task-removed` (the task was removed with its outcome still
+    /// unknown; `outcome` is `unknown`) or `node-departed` (the per-node row's node left the cluster for good while it
+    /// was unknown; `outcome` is `unknown`). `outcome` is otherwise `executed` or `failed`.
+    record ScheduledTaskOutcomeRestored(String task,
+                                        String node,
+                                        String outcome,
+                                        String reason,
+                                        String eventId,
+                                        long timestamp) implements OperationalEvent {
+        public static final String LATE_ANSWER = "late-answer";
+        public static final String LATER_FIRE = "later-fire";
+        public static final String TASK_REMOVED = "task-removed";
+        public static final String NODE_DEPARTED = "node-departed";
+
+        public static ScheduledTaskOutcomeRestored scheduledTaskOutcomeRestored(String task,
+                                                                                String node,
+                                                                                String outcome,
+                                                                                String reason,
+                                                                                String eventId) {
+            return new ScheduledTaskOutcomeRestored(task, node, outcome, reason, eventId, System.currentTimeMillis());
+        }
+
+        public boolean late() {
+            return LATE_ANSWER.equals(reason);
+        }
+
+        public String key() {
+            return task + "@" + node;
+        }
+    }
+
     /// #1873: a stream partition's owner began a new epoch of the SAME owner (its ring was rebuilt: a restart without a WAL, a
     /// lazy re-materialize, a re-created stream), so consumers that read the old epoch past `startOffset` are told to re-read
     /// from it ([ClusterEvent.StreamLineageRestarted]). A fact about the committed record, not a loss: the owner may have pulled
