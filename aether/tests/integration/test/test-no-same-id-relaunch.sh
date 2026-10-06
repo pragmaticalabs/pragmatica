@@ -32,7 +32,7 @@ fail() { echo "  FAIL  $1"; FAIL=$((FAIL + 1)); }
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
 
-PATTERN='(^|[^_[:alnum:]])start_node([^_[:alnum:]]|$)|cloud_revive_vm|cloud_stop_vm|server poweron|restartNode|RestartNode|NodeRestarted|[.]restart\(|docker (compose [^|;]*)?(start|restart)([^_[:alnum:]-]|$)|COMPOSE (start|restart)|systemctl (re)?start|kubectl rollout restart|down -v && docker compose [^"]*up -d'
+PATTERN='(^|[^_[:alnum:]])start_node([^_[:alnum:]]|$)|cloud_revive_vm|cloud_stop_vm|server poweron|restartNode|RestartNode|NodeRestarted|[.]restart\(|docker (compose [^|;]*)?(start|restart)([^_[:alnum:]-]|$)|COMPOSE (start|restart)|systemctl (re)?start|kubectl rollout restart|down -v && docker compose [^"]*up -d|void restartCluster[(]'
 
 # path|hit-text-regex|reason: excuses only the lines of that file matching the regex, so the rest of the
 # file stays under the census.
@@ -48,6 +48,10 @@ ALLOW=(
   'aether/cli/src/test/java/org/pragmatica/aether/cli/cluster/BootstrapPhaseDeployCloudSshRestartTest.java|#1543 part B: pins the code above'
   'aether/aether-config/src/main/java/org/pragmatica/aether/config/cluster/NodeUserDataRenderer.java|FIRST start in cloud-init (`systemctl start`, never enabled)'
   'aether/cli/src/test/java/org/pragmatica/aether/cli/cluster/UserDataTemplatePeersTest.java|asserts the cloud-init first start above'
+  'aether/docker/scaling-test/k6/chaos-controller.sh|#1968: the soak compose has no docker.sock/auto-heal wiring, so its stop/start chaos stays until that compose can heal under fresh ids'
+  'aether/forge/forge-tests/src/test/java/org/pragmatica/aether/forge/StreamCrashDurabilityTest.java|owner question: data durability across a whole-cluster restart onto fresh nodes (#1968)'
+  'aether/forge/forge-tests/src/test/java/org/pragmatica/aether/forge/MultiPartitionCrashDurabilityTest.java|owner question: data durability across a whole-cluster restart onto fresh nodes (#1968)'
+  'aether/forge/forge-tests/src/test/java/org/pragmatica/aether/forge/DurableEntityTimerDurabilityTest.java|owner question: data durability across a whole-cluster restart onto fresh nodes (#1968)'
   'aether/tests/cloud/deploy-cloud.sh|`systemctl start docker` on a fresh VM, not an aether node'
   'integrations/dht/src/test/java/org/pragmatica/dht/|in-process DHT unit cluster restart (no NodeId lifecycle, no aether runtime)'
 )

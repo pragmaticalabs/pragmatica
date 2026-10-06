@@ -9,8 +9,6 @@
   auto-heal, which provisions the replacement under a fresh id. The docker-mode "auto-heal does not heal"
   (`deficit=1`, `NONE_PROVISIONING`) that motivated the old `docker start` was #597, long fixed; `NONE_PROVISIONING`
   means a provision is PERMITTED.
-- `aether/docker/scaling-test/k6/chaos-controller.sh` kills a node and waits for the auto-heal replacement instead
-  of stopping and starting the same container.
 - Pinned by `tests/integration/test/test-no-same-id-relaunch.sh` (census with an allow-list that fails when stale,
   plus the real 02w `cleanup()` against recording stubs). [unverified: the whole-cluster restart (`restart_all_nodes`
   compose cycle, Forge `StreamCrashDurability`/`MultiPartitionCrashDurability`/`DurableEntityTimerDurability`
