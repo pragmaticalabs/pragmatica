@@ -361,7 +361,7 @@ public enum ManagementRoute {
     // above for "hydration"/"declarative-consumers": a real namespace literally named "namespaces" would
     // be shadowed by these two routes ahead of STREAMS_VERSIONS_LIST's `{namespace}` branch.
     STREAM_NAMESPACES_LIST(GET, "/streams/namespaces", List.of(), LOCAL),
-    STREAM_NAMESPACES_GET(GET, "/streams/namespaces", List.of("namespace"), LOCAL),
+    STREAM_NAMESPACES_GET(GET, "/streams/namespaces", List.of("address"), LOCAL),
     SCHEDULED_TASKS_LIST(GET, "/scheduled-tasks", List.of(), LEADER),
     SCHEDULED_TASKS_BY_SECTION(GET, "/scheduled-tasks", List.of("section"), LEADER),
     SCHEDULED_TASK_STATE(GET, "/scheduled-tasks/state", List.of("section", "artifact", "methodName"), LEADER),

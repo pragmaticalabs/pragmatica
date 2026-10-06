@@ -403,6 +403,12 @@ class ManagementServerImpl implements ManagementServer {
         installVersioningMetricsSink(nodeSupplier, observability);
     }
 
+    /// Package-visible so a test can ask the router this server actually assembled which handler each declared route resolves to
+    /// (#1921). Not a second assembly: the same instance `dispatchManagementRequest` calls.
+    ManagementRouter router() {
+        return router;
+    }
+
     /// #198 §11.1: install the AetherMetrics-backed versioning sink into the node's
     /// `HttpRoutePublisher` so versioned-request / deprecated / missing-header counters reach the
     /// Micrometer registry owned here. No-op when the app HTTP server has no publisher.

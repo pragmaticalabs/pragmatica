@@ -5,17 +5,22 @@
 package org.pragmatica.aether.api.routes;
 
 import java.lang.reflect.Proxy;
+import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Stream;
 
 import org.pragmatica.aether.management.route.ManagementRoute;
 import org.pragmatica.aether.node.ManageableNode;
+import org.pragmatica.aether.slice.RetentionPolicy;
+import org.pragmatica.aether.slice.resource.ResourceAddress;
 import org.pragmatica.aether.slice.stream.StreamNamespacesService;
+import org.pragmatica.aether.slice.stream.StreamRegistryEntry;
 import org.pragmatica.aether.slice.stream.StreamRegistry;
 import org.pragmatica.aether.stream.StreamError;
 import org.pragmatica.aether.stream.StreamPartitionManager;
 import org.pragmatica.aether.stream.consumer.ConsumerGroupCoordinator;
+import org.pragmatica.http.HttpMethod;
 import org.pragmatica.http.HttpStatus;
 import org.pragmatica.http.routing.Route;
 import org.pragmatica.lang.Cause;
@@ -53,7 +58,37 @@ class ManagementStreamNotFoundStatusTest {
     void streamNamespacesGet_answers404_whenTheStreamIsNotRegistered() {
         var routes = StreamNamespacesRoutes.streamNamespacesRoutes(StreamNamespacesService.inMemory()).routes();
 
-        assertThat(statusOf(routes, ManagementRoute.STREAM_NAMESPACES_GET, ADDRESS)).isEqualTo(HttpStatus.NOT_FOUND);
+        assertThat(statusOf(routes, ManagementRoute.STREAM_NAMESPACES_GET, List.of("ns:orders:1.0.0"))).isEqualTo(HttpStatus.NOT_FOUND);
+    }
+
+    /// The route's path carries ONE segment, the full `namespace:stream:version` address; the earlier handler registered three and
+    /// could not be reached over HTTP at all. A path the real matcher delivers must find a registered stream.
+    @Test
+    void streamNamespacesGet_returnsTheEntry_whenTheAddressNamesARegisteredStream() {
+        var service = StreamNamespacesService.inMemory();
+        var address = ResourceAddress.resourceAddress("ns", "orders", "1.0.0").unwrap();
+
+        service.registry()
+               .register(StreamRegistryEntry.operator(address, RetentionPolicy.retentionPolicy(10_000, 1024 * 1024, 600_000), Instant.now()))
+               .onFailure(cause -> org.junit.jupiter.api.Assertions.fail(cause.message()));
+
+        var matched = ManagementRoute.match(HttpMethod.GET, "/api/v1/streams/namespaces/ns:orders:1.0.0").unwrap();
+
+        assertThat(matched.route()).isEqualTo(ManagementRoute.STREAM_NAMESPACES_GET);
+
+        RouteProbe.run(StreamNamespacesRoutes.streamNamespacesRoutes(service).routes(),
+                       matched.route(),
+                       matched.route().paramNames().stream().map(matched.params()::get).toList(),
+                       Map.of())
+                  .onFailure(cause -> org.junit.jupiter.api.Assertions.fail("a registered stream must be reachable: " + cause.message()))
+                  .onSuccess(value -> assertThat(value).isInstanceOf(StreamNamespacesRoutes.StreamNamespacesEntryResponse.class));
+    }
+
+    @Test
+    void streamNamespacesGet_answers400_whenTheAddressIsMalformed() {
+        var routes = StreamNamespacesRoutes.streamNamespacesRoutes(StreamNamespacesService.inMemory()).routes();
+
+        assertThat(statusOf(routes, ManagementRoute.STREAM_NAMESPACES_GET, List.of("not-an-address"))).isEqualTo(HttpStatus.BAD_REQUEST);
     }
 
     @Test

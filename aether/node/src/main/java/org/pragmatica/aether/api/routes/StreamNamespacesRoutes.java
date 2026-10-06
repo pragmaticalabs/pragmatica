@@ -60,9 +60,7 @@ public final class StreamNamespacesRoutes implements RouteSource {
     public Stream<Route<?>> routes() {
         return Stream.of(ManagementRoutes.<StreamNamespacesListResponse> route(ManagementRoute.STREAM_NAMESPACES_LIST).toJson(this::listAll),
                          ManagementRoutes.<StreamNamespacesEntryResponse> route(ManagementRoute.STREAM_NAMESPACES_GET)
-                                         .withPath(PathParameter.aString(),
-                                                   PathParameter.aString(),
-                                                   PathParameter.aString())
+                                         .withPath(PathParameter.aString())
                                          .toResult(this::lookupEntry)
                                          .asJson());
     }
@@ -73,8 +71,11 @@ public final class StreamNamespacesRoutes implements RouteSource {
         return new StreamNamespacesListResponse(entries);
     }
 
-    private Result<StreamNamespacesEntryResponse> lookupEntry(String namespace, String stream, String version) {
-        return RequestParse.asRequest(ResourceAddress.resourceAddress(namespace, stream, version))
+    /// `GET /streams/namespaces/{address}`: the route's path carries ONE segment, the full `namespace:stream:version` address
+    /// (`ResourceAddress#asString`). The handler used to register three path parameters against that one-segment template, so the
+    /// route could not be reached over HTTP at all (#1921).
+    private Result<StreamNamespacesEntryResponse> lookupEntry(String addressText) {
+        return RequestParse.asRequest(ResourceAddress.resourceAddress(addressText))
                            .flatMap(address -> RequestParse.asNotFound(service.lookup(address)
                                                                               .toResult(StreamRegistry.StreamRegistryError.General.NOT_FOUND)))
                            .map(StreamRegistryEntryDto::fromEntry)
