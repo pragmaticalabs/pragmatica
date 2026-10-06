@@ -13,6 +13,7 @@ import java.sql.SQLTransactionRollbackException;
 import java.util.List;
 
 import org.pragmatica.aether.resource.db.DatabaseConnectorConfig;
+import org.pragmatica.aether.resource.db.DatabaseType;
 import org.pragmatica.aether.resource.db.DatabaseConnectorError;
 import org.pragmatica.aether.resource.db.jooq.JooqConnector;
 import org.pragmatica.lang.Option;
@@ -48,7 +49,7 @@ public final class JdbcJooqConnector implements JooqConnector {
     }
 
     public static JdbcJooqConnector jdbcJooqConnector(DatabaseConnectorConfig config, DataSource dataSource) {
-        var dialect = JooqConnector.mapDialect(config.effectiveType());
+        var dialect = JooqConnector.mapDialect(config.effectiveType(DatabaseConnectorConfig.Transport.JDBC));
 
         return new JdbcJooqConnector(config, dataSource, dialect);
     }
@@ -92,6 +93,11 @@ public final class JdbcJooqConnector implements JooqConnector {
     @Override
     public DatabaseConnectorConfig config() {
         return config;
+    }
+
+    @Override
+    public DatabaseType databaseType() {
+        return config.effectiveType(DatabaseConnectorConfig.Transport.JDBC);
     }
 
     @Override

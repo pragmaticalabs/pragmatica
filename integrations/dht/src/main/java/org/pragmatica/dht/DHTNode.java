@@ -25,6 +25,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
+import java.util.function.LongSupplier;
 import java.util.stream.IntStream;
 import java.util.zip.CRC32;
 
@@ -32,11 +33,13 @@ import org.pragmatica.consensus.NodeId;
 import org.pragmatica.dht.DHTMessage.Readiness;
 import org.pragmatica.dht.storage.StorageEngine;
 import org.pragmatica.hlc.HlcClock;
+import org.pragmatica.hlc.HlcTimestamp;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.io.TimeSpan;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -70,6 +73,9 @@ public final class DHTNode {
     private final AtomicLong caughtUpVersion = new AtomicLong(NO_CHANGE);
 
     private final AtomicReference<Consumer<Long>> caughtUpListener = new AtomicReference<>(_ -> {});
+
+    /// When this node last dropped a replication-change floor (wall clock), or `Long.MIN_VALUE` if never (#1777 track 3).
+    private final AtomicLong settledAtMillis = new AtomicLong(Long.MIN_VALUE);
 
     /// The version no replication change carries.
     public static final long NO_CHANGE = -1L;
@@ -114,6 +120,25 @@ public final class DHTNode {
     /// them. The rest are unconfirmed and lengthen the boot walk ([#previousHolders]).
     private final Set<NodeId> heardFrom = ConcurrentHashMap.newKeySet();
     private final AtomicLong belowHighWaterCopies = new AtomicLong();
+
+    /// How long a tombstone is kept (#1777 track 3): the cluster's committed `[replication] tombstone_retention`.
+    private final AtomicReference<TimeSpan> tombstoneRetention = new AtomicReference<>(DEFAULT_TOMBSTONE_RETENTION);
+
+    /// Wall-clock time in milliseconds, comparable with the HLC physical time a tombstone is stamped with.
+    private final AtomicReference<LongSupplier> wallClock = new AtomicReference<>(System::currentTimeMillis);
+    /// When this node stopped replicating each partition it still holds copies of (#1777 track 3): a stray copy
+    /// is dropped once it is older than the stray horizon, before any tombstone that could supersede it may go.
+    private final ConcurrentHashMap<Integer, Long> lostAt = new ConcurrentHashMap<>();
+    /// When a node last LEFT each partition's replica set in this node's view (#1777 track 3): a tombstone is not
+    /// collected until every holder displaced by a ring change has dropped its stray copy.
+    private final ConcurrentHashMap<Integer, Long> holderLeftAt = new ConcurrentHashMap<>();
+    /// When each partition last had a full agreement round: every co-replica SERVING with an equal digest.
+    private final ConcurrentHashMap<Integer, Long> agreedAt = new ConcurrentHashMap<>();
+    private final AtomicLong collectedTombstones = new AtomicLong();
+    private final AtomicLong purgedStrayPartitions = new AtomicLong();
+
+    /// The default tombstone retention (owner ruling 2026-10-03, #1777): one hour.
+    public static final TimeSpan DEFAULT_TOMBSTONE_RETENTION = TimeSpan.timeSpan(1).hours();
 
     private DHTNode(NodeId nodeId,
                     StorageEngine storage,
@@ -270,7 +295,7 @@ public final class DHTNode {
     public void settleReplicationChange(long version) {
         synchronized (placementLock) {
             settledVersion.accumulateAndGet(version, Math::max);
-            quorumFloor.set(quorumFloor.get().filter(floor -> floor.version() > settledVersion.get()));
+            keepFloorIf(floor -> floor.version() > settledVersion.get());
         }
     }
 
@@ -286,8 +311,28 @@ public final class DHTNode {
             settledVersion.accumulateAndGet(version, Math::max);
             var covered = !factorsDiffer(config.get(), settled);
 
-            quorumFloor.set(quorumFloor.get().filter(floor -> !covered && floor.version() > settledVersion.get()));
+            keepFloorIf(floor -> !covered && floor.version() > settledVersion.get());
         }
+    }
+
+    /// Drop the floor unless `keep` holds for it, and remember when a floor was dropped: the tombstone collector waits a
+    /// margin past that point, for every replica to have stopped holding strays back (#1777 track 3).
+    private void keepFloorIf(java.util.function.Predicate<QuorumFloor> keep) {
+        var held = quorumFloor.get();
+        var kept = held.filter(keep);
+
+        quorumFloor.set(kept);
+        if (held.isPresent() && kept.isEmpty()) {
+            settledAtMillis.set(nowMillis());
+        }
+    }
+
+    /// Whether no replication change is unsettled here, and none was settled after `cutoffMillis` (#1777 track 3). While
+    /// a change is unsettled a stray copy may still be the only home of a write a slower node acked at the old quorum,
+    /// which the writers-switched catch-up has yet to pull, so strays are kept and tombstones wait.
+    boolean replicationSettledSince(long cutoffMillis) {
+        return quorumFloor.get()
+                          .isEmpty() && settledAtMillis.get() <= cutoffMillis;
     }
 
     /// The replication change this node has applied, which its puts are stamped with (#1777 R1c).
@@ -467,6 +512,7 @@ public final class DHTNode {
                 }
 
                 forgetLost(after);
+                recordPlacementChange(before, after);
             }
 
             replicationResolved.set(true);
@@ -533,6 +579,7 @@ public final class DHTNode {
 
             markGained(before, after);
             forgetLost(after);
+            recordPlacementChange(before, after);
         }
 
         noteCaughtUp();
@@ -693,6 +740,29 @@ public final class DHTNode {
         return after.contains(nodeId) && !before.contains(nodeId);
     }
 
+    /// Record, per partition, a stray copy this node now holds (it stopped replicating the partition) and a holder
+    /// that left the replica set — the two facts the tombstone horizon is ordered against (#1777 track 3).
+    private void recordPlacementChange(List<List<NodeId>> before, List<List<NodeId>> after) {
+        var now = nowMillis();
+
+        IntStream.range(0, Partition.MAX_PARTITIONS).forEach(index -> recordPlacementChange(index,
+                                                                                            before.get(index),
+                                                                                            after.get(index),
+                                                                                            now));
+    }
+
+    private void recordPlacementChange(int index, List<NodeId> before, List<NodeId> after, long now) {
+        if (after.contains(nodeId)) {
+            lostAt.remove(index);
+        } else if (before.contains(nodeId)) {
+            lostAt.put(index, now);
+        }
+
+        if (!after.containsAll(before)) {
+            holderLeftAt.put(index, now);
+        }
+    }
+
     /// Get a value from local storage.
     public Promise<Option<byte[]>> getLocal(byte[] key) {
         return storage.get(key);
@@ -766,19 +836,42 @@ public final class DHTNode {
     /// Handle a get request (for message routing integration). The reply carries this node's
     /// [Readiness] for the key's partition, so the reader can discount an absent answer from a replica
     /// that is still catching up (#1777 track 2).
+    ///
+    /// The reply carries the stamp of the entry held — a value or a tombstone (#1777 track 3) — so the reader keeps
+    /// the newest answer. A store that cannot be read answers "no entry", which votes only from a SERVING replica,
+    /// exactly as before.
     @Contract
     public void handleGetRequest(DHTMessage.GetRequest request, Consumer<DHTMessage.GetResponse> responseHandler) {
         var readiness = readinessFor(request.key());
 
-        storage.get(request.key())
-               .onSuccess(value -> responseHandler.accept(new DHTMessage.GetResponse(request.requestId(),
-                                                                                     nodeId,
-                                                                                     value,
-                                                                                     readiness)))
+        storage.getEntry(request.key())
+               .onSuccess(entry -> responseHandler.accept(getResponse(request.requestId(),
+                                                                      entry,
+                                                                      readiness)))
                .onFailure(_ -> responseHandler.accept(new DHTMessage.GetResponse(request.requestId(),
                                                                                  nodeId,
                                                                                  Option.none(),
                                                                                  readiness)));
+    }
+
+    private DHTMessage.GetResponse getResponse(String requestId,
+                                               Option<DHTMessage.KeyValue> entry,
+                                               Readiness readiness) {
+        return entry.map(kv -> new DHTMessage.GetResponse(requestId,
+                                                          nodeId,
+                                                          kv.tombstone()
+                                                          ? Option.none()
+                                                          : Option.some(kv.value()),
+                                                          readiness,
+                                                          kv.tombstone(),
+                                                          kv.version(),
+                                                          kv.epochIncarnation(),
+                                                          kv.epochTerm(),
+                                                          kv.epochCounter()))
+                    .or(() -> new DHTMessage.GetResponse(requestId,
+                                                         nodeId,
+                                                         Option.none(),
+                                                         readiness));
     }
 
     /// Handle a put request (for message routing integration).
@@ -858,17 +951,54 @@ public final class DHTNode {
                                                                                      false)));
     }
 
-    /// Handle a remove request (for message routing integration).
+    /// Handle a remove request: store a tombstone stamped with the remover's version and owner epoch, fenced like a
+    /// put (#1777 track 3). A fence refusal is reported as such, so a remove that loses its quorum to fences is
+    /// indeterminate, as a put is.
     @Contract
     public void handleRemoveRequest(DHTMessage.RemoveRequest request,
                                     Consumer<DHTMessage.RemoveResponse> responseHandler) {
-        storage.remove(request.key())
+        // #1777 R1c: the replication-change fence, as for a put — a tombstone is a write
+        if (!acceptsWrites()) {
+            responseHandler.accept(new DHTMessage.RemoveResponse(request.requestId(), nodeId, false, false, false, true));
+
+            return;
+        }
+
+        if (request.replicationVersion() < replicationFence.get()) {
+            responseHandler.accept(new DHTMessage.RemoveResponse(request.requestId(), nodeId, false, false, true, false));
+
+            return;
+        }
+        // as for a put: an owner-epoch fence still answers fenced; otherwise a write of OUR OWN to this key is in flight (v1882 r12)
+        if (localWritePending(request.key()) && !storage.belowHighWater(request.key(),
+                                                                        request.epochIncarnation(),
+                                                                        request.epochTerm(),
+                                                                        request.epochCounter())) {
+            responseHandler.accept(new DHTMessage.RemoveResponse(request.requestId(),
+                                                                 nodeId,
+                                                                 false,
+                                                                 false,
+                                                                 false,
+                                                                 false,
+                                                                 true));
+
+            return;
+        }
+
+        storage.removeVersioned(request.key(),
+                                request.version(),
+                                request.epochIncarnation(),
+                                request.epochTerm(),
+                                request.epochCounter())
                .onSuccess(found -> responseHandler.accept(new DHTMessage.RemoveResponse(request.requestId(),
                                                                                         nodeId,
                                                                                         found)))
-               .onFailure(_ -> responseHandler.accept(new DHTMessage.RemoveResponse(request.requestId(),
-                                                                                    nodeId,
-                                                                                    false)));
+               .onFailure(cause -> responseHandler.accept(new DHTMessage.RemoveResponse(request.requestId(),
+                                                                                        nodeId,
+                                                                                        false,
+                                                                                        cause instanceof DHTError.StaleEpochWrite,
+                                                                                        false,
+                                                                                        false)));
     }
 
     /// Handle an exists request (for message routing integration), carrying this node's [Readiness] for
@@ -878,15 +1008,29 @@ public final class DHTNode {
                                     Consumer<DHTMessage.ExistsResponse> responseHandler) {
         var readiness = readinessFor(request.key());
 
-        storage.exists(request.key())
-               .onSuccess(exists -> responseHandler.accept(new DHTMessage.ExistsResponse(request.requestId(),
-                                                                                         nodeId,
-                                                                                         exists,
-                                                                                         readiness)))
+        storage.getEntry(request.key())
+               .onSuccess(entry -> responseHandler.accept(existsResponse(request.requestId(),
+                                                                         entry,
+                                                                         readiness)))
                .onFailure(_ -> responseHandler.accept(new DHTMessage.ExistsResponse(request.requestId(),
                                                                                     nodeId,
                                                                                     false,
                                                                                     readiness)));
+    }
+
+    private DHTMessage.ExistsResponse existsResponse(String requestId,
+                                                     Option<DHTMessage.KeyValue> entry,
+                                                     Readiness readiness) {
+        return entry.map(kv -> new DHTMessage.ExistsResponse(requestId,
+                                                             nodeId,
+                                                             !kv.tombstone(),
+                                                             readiness,
+                                                             kv.tombstone(),
+                                                             kv.version(),
+                                                             kv.epochIncarnation(),
+                                                             kv.epochTerm(),
+                                                             kv.epochCounter()))
+                    .or(() -> new DHTMessage.ExistsResponse(requestId, nodeId, false, readiness));
     }
 
     /// Handle a digest request: compute digest for the requested partition range and respond, with this
@@ -903,7 +1047,7 @@ public final class DHTNode {
         storage.entriesForPartition(ring, partition)
                .onSuccess(entries -> responseHandler.accept(new DHTMessage.DigestResponse(request.requestId(),
                                                                                           nodeId,
-                                                                                          computeDigest(entries),
+                                                                                          digestOf(entries),
                                                                                           readiness)))
                .onFailure(_ -> responseHandler.accept(new DHTMessage.DigestResponse(request.requestId(),
                                                                                     nodeId,
@@ -981,16 +1125,152 @@ public final class DHTNode {
                                                                                                         .allMatch(Result::isSuccess));
     }
 
+    /// A tombstone copy is applied like a value copy (#1777 track 3), except that an EXPIRED one never creates an
+    /// entry: it still supersedes a stale value it meets, but its holders may already have collected it, and
+    /// re-creating it here would bounce it between replicas forever.
     private Promise<Boolean> applyReplica(DHTMessage.KeyValue kv) {
         var belowHighWater = storage.belowHighWater(kv.key(), kv.epochIncarnation(), kv.epochTerm(), kv.epochCounter());
 
-        return storage.putReplica(kv.key(),
-                                  kv.value(),
-                                  kv.version(),
-                                  kv.epochIncarnation(),
-                                  kv.epochTerm(),
-                                  kv.epochCounter())
+        return storage.putReplica(kv,
+                                  !expiredTombstone(kv))
                       .onSuccess(written -> noteBelowHighWater(kv, written && belowHighWater));
+    }
+
+    /// Whether `kv` is a tombstone older than the tombstone retention, by its own stamp's HLC physical time.
+    public boolean expiredTombstone(DHTMessage.KeyValue kv) {
+        return kv.tombstone() && HlcTimestamp.physicalMillis(kv.version()) <= expiryCutoffMillis(nowMillis());
+    }
+
+    /// The HLC physical time at or before which a tombstone stamped is expired as of `atMillis`.
+    long expiryCutoffMillis(long atMillis) {
+        return atMillis - tombstoneRetention.get()
+                                            .millis();
+    }
+
+    /// The digest this node compares a partition by: every live entry and every tombstone not yet expired by its
+    /// own stamp (#1777 track 3). Expiry is read from the stamp, not from whether this node has collected the
+    /// tombstone, so a replica that has collected it and one that has not compute the same digest.
+    public byte[] digestOf(List<DHTMessage.KeyValue> entries) {
+        var cutoff = expiryCutoffMillis(nowMillis());
+
+        return computeDigest(entries.stream()
+                                    .filter(kv -> !kv.tombstone() || HlcTimestamp.physicalMillis(kv.version()) > cutoff)
+                                    .toList());
+    }
+
+    /// The cluster's committed tombstone retention (#1777 track 3), applied live.
+    @Contract
+    public void resolveTombstoneRetention(TimeSpan retention) {
+        tombstoneRetention.set(retention);
+    }
+
+    public TimeSpan tombstoneRetention() {
+        return tombstoneRetention.get();
+    }
+
+    long nowMillis() {
+        return wallClock.get()
+                        .getAsLong();
+    }
+
+    /// Test seam: the wall clock tombstone ages and horizons are measured with.
+    @Contract
+    void useWallClock(LongSupplier clock) {
+        wallClock.set(clock);
+    }
+
+    /// Partitions this node stopped replicating at or before `cutoffMillis` and still holds copies of.
+    List<Partition> strayPartitionsSince(long cutoffMillis) {
+        return lostAt.entrySet()
+                     .stream()
+                     .filter(e -> e.getValue() <= cutoffMillis)
+                     .map(e -> Partition.at(e.getKey()))
+                     .toList();
+    }
+
+    /// Drop a stray partition's copies, values and tombstones alike (#1777 track 3, the stray horizon).
+    Promise<Integer> dropStray(Partition partition) {
+        lostAt.remove(partition.value());
+
+        return storage.dropPartition(ring, partition)
+                      .onSuccess(dropped -> notePurgedStray(partition, dropped));
+    }
+
+    @Contract
+    private void notePurgedStray(Partition partition, int dropped) {
+        purgedStrayPartitions.incrementAndGet();
+        log.info("Dropped {} stray entries of partition {}: this node stopped replicating it more than the stray "
+                + "horizon ago",
+                 dropped,
+                 partition.value());
+    }
+
+    /// Whether no holder has left `partition`'s replica set since `cutoffMillis` in this node's view.
+    boolean holderSetStableSince(Partition partition, long cutoffMillis) {
+        return Option.option(holderLeftAt.get(partition.value()))
+                     .filter(leftAt -> leftAt > cutoffMillis)
+                     .isEmpty();
+    }
+
+    @Contract
+    void noteAgreement(Partition partition, long atMillis) {
+        agreedAt.put(partition.value(), atMillis);
+    }
+
+    /// Collect `partition`'s tombstones stamped at or before `cutoffMillis` (#1777 track 3).
+    Promise<Integer> collectTombstones(Partition partition, long cutoffMillis) {
+        return storage.collectTombstones(ring, partition, cutoffMillis)
+                      .onSuccess(collectedTombstones::addAndGet);
+    }
+
+    /// Tombstones held now (#1777 track 3, a gauge).
+    public long tombstoneCount() {
+        return storage.tombstoneCount();
+    }
+
+    /// Tombstones collected since start (#1777 track 3).
+    public long collectedTombstoneCount() {
+        return collectedTombstones.get();
+    }
+
+    /// Stray partitions dropped since start (#1777 track 3).
+    public long purgedStrayPartitionCount() {
+        return purgedStrayPartitions.get();
+    }
+
+    /// Partitions this node replicates that have not had a full agreement round — every co-replica SERVING with an
+    /// equal digest — within `window` (#1777 track 3). A partition that cannot agree cannot collect its tombstones:
+    /// a co-replica is silent, diverged or catching up.
+    public int unagreedPartitions(TimeSpan window) {
+        var cutoff = nowMillis() - window.millis();
+        var replicationFactor = config.get().effectiveReplicationFactor(ring.nodeCount());
+
+        return (int) IntStream.range(0, Partition.MAX_PARTITIONS)
+                              .filter(index -> ring.nodesFor(Partition.at(index),
+                                                             replicationFactor)
+                                                   .contains(nodeId))
+                              .filter(index -> Option.option(agreedAt.get(index))
+                                                     .filter(at -> at > cutoff)
+                                                     .isEmpty())
+                              .count();
+    }
+
+    /// This node was REMOVED from the cluster while alive — a committed removal it did not ask for, e.g. after a
+    /// pause or a partition (#1777 track 3, owner ruling 2026-10-03). Its store is not current with any tombstone
+    /// issued since it was cut off, and a node that rejoins holding it could resurrect removed values, so the store
+    /// is dropped: the node rejoins empty, exactly as a restarted one does, and catches up through the gate.
+    @Contract
+    public void discardStoreAfterSelfRemoval() {
+        synchronized (placementLock) {
+            var dropped = storage.size();
+            var _ = storage.clear();
+
+            lostAt.clear();
+            catchUp.pendingPartitions().forEach(catchUp::markServing);
+            log.warn("This node was removed from the DHT ring while running: dropped its {} stored entries; it "
+                    + "rejoins empty and catches up",
+                     dropped);
+        }
     }
 
     /// Copies applied below this node's owner-epoch high-water since start (#1818, the owner's fence ruling):
@@ -1023,8 +1303,12 @@ public final class DHTNode {
         return longToBytes(crc.getValue());
     }
 
+    /// A kind byte separates a tombstone from a live entry with an empty value (#1777 track 3).
     private static void updateCrc(CRC32 crc, DHTMessage.KeyValue kv) {
         crc.update(kv.key());
+        crc.update(kv.tombstone()
+                   ? 1
+                   : 0);
         crc.update(kv.value());
     }
 

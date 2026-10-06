@@ -1939,6 +1939,20 @@ public interface AetherNode extends ManageableNode {
 
     /// #1555: a partition whose owner promotion waits for an operator (a divergent peer, or members unreachable
     /// past the alarm window). The gate raises each distinct block once.
+    ///
+    /// #1431: a peer whose event exceeds its read cap is raised as its own CRITICAL operator warning (a log line plus
+    /// a cluster event), naming the partition, the peer and the offset — never as an unreachable member.
+    private static Unit raiseOwnerPromotionBlock(OperatorWarningSink sink, OwnerActivation.ActivationBlock block) {
+        return block instanceof OwnerActivation.ActivationBlock.PeerEventExceedsReadCap oversized
+               ? OperatorWarnings.raise(LOG,
+                                        sink,
+                                        OperatorWarningCode.STREAM_EVENT_EXCEEDS_READ_CAP,
+                                        oversized.streamName() + "[" + oversized.partition() + "]",
+                                        "{}",
+                                        oversized.message())
+               : raiseOwnerPromotionBlock(block);
+    }
+
     private static Unit raiseOwnerPromotionBlock(OwnerActivation.ActivationBlock block) {
         // TODO(#1574): raise as a CRITICAL OperatorWarning once #1574 merges. Until then the operator-visible
         // surfaces are this WARN and the partition status read (`ownerActivationBlock` on STREAM_REPLICAS).
@@ -2481,6 +2495,8 @@ public interface AetherNode extends ManageableNode {
                 spokesmanPingLoop.stop();
                 Option.option(governorAnnouncerHolder.get()).onPresent(GovernorAnnouncer::stop);
                 streamRetentionEnforcer.close();
+                // The webhook forwarder owns a JDK HttpClient (a selector thread) when webhooks are enabled.
+                alertManager.closeForwarder();
                 observabilityBaseline.sampler().onPresent(AdaptiveSampler::stop);
                 discoveryProvider.onPresent(this::deregisterFromDiscovery);
                 // #642: the cluster-deployment FSM's fixed-rate reconcile timer is cancelled only by
@@ -5629,7 +5645,8 @@ public interface AetherNode extends ManageableNode {
                                                                                         streamTieredReader,
                                                                                         streamForwardClient::readRemoteCatchup,
                                                                                         STREAM_CATCHUP_BATCH_SIZE),
-                                                              AetherNode::raiseOwnerPromotionBlock,
+                                                              block -> raiseOwnerPromotionBlock(operatorWarningSink,
+                                                                                                block),
                                                               ownerPromotionAlarmWindow(config.timeouts()
                                                                                               .swim()
                                                                                               .suspectTimeout()));
@@ -6611,7 +6628,9 @@ public interface AetherNode extends ManageableNode {
         var resolved = declared.isFullReplication()
                        ? Result.success(declared)
                        : declared.withFactors(defaults.replicationFactor(), defaults.confirmationFactor());
-
+        // #1777 track 3: the tombstone retention is cluster-wide, like the factors — every replica must agree
+        // which tombstones have expired, since the anti-entropy digest leaves expired ones out
+        dhtNode.resolveTombstoneRetention(defaults.tombstoneRetention());
         resolved.onSuccess(dht -> logIfReplicationChanged(dhtNode, dht))
                 .onSuccess(dht -> dhtNode.resolveReplication(dht, version))
                 .onFailure(cause -> LOG.error("DHT replication factors refused: {}",
@@ -6660,7 +6679,11 @@ public interface AetherNode extends ManageableNode {
                                                           replication.confirmationFactor(),
                                                           ReplicationDefaultsConfig.BUILT_IN.clusterEventsConfirmationFactor(),
                                                           replication.cacheReplicationFactor(),
-                                                          replication.cacheConfirmationFactor()),
+                                                          replication.cacheConfirmationFactor(),
+
+        // a worker is never a ring member and holds no DHT data, so it
+        // keeps no tombstones and the retention is inert there (#1777)
+        ReplicationDefaultsConfig.DEFAULT_TOMBSTONE_RETENTION),
                             replication.configVersion(),
                             dhtNode,
                             declared,
