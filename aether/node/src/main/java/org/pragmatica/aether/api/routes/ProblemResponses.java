@@ -11,6 +11,7 @@ import org.pragmatica.http.ContentType;
 import org.pragmatica.http.HttpStatus;
 import org.pragmatica.http.HttpStatusAware;
 import org.pragmatica.http.ProblemDetail;
+import org.pragmatica.http.routing.ParameterError;
 import org.pragmatica.http.server.ResponseWriter;
 import org.pragmatica.json.JsonMapper;
 import org.pragmatica.lang.Cause;
@@ -91,12 +92,16 @@ public final class ProblemResponses {
         return "application/problem+json";
     }
 
-    /// A cause's own status, or -- for a composite, which `Result.all` / `Result.allOf` hand back when several typed failures
+    /// A cause's own status, a routing-layer [ParameterError] (a path or query value the caller got wrong: 400, #1921), or -- for a composite, which `Result.all` / `Result.allOf` hand back when several typed failures
     /// funnel together -- the one status every member agrees on (#1921). Members that disagree, an empty composite and any other
     /// untyped cause stay 500: the funnel then names a mixed failure, and 500 is the conservative answer for it.
     private static HttpStatus resolveStatus(Cause cause) {
         if (cause instanceof HttpStatusAware ha) {
             return ha.httpStatus();
+        }
+
+        if (cause instanceof ParameterError) {
+            return HttpStatus.BAD_REQUEST;
         }
 
         if (cause instanceof Causes.CompositeCause composite) {
