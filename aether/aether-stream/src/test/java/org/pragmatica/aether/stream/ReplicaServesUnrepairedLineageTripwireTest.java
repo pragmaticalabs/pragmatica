@@ -14,12 +14,14 @@ import org.pragmatica.aether.stream.replication.ReplicaSetController.Role;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.hlc.HlcTimestamp;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Result;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.junit.jupiter.api.Assertions.fail;
 import static org.pragmatica.aether.stream.StreamPartitionManager.streamPartitionManager;
 
@@ -40,17 +42,35 @@ class ReplicaServesUnrepairedLineageTripwireTest {
 
     @AfterEach
     void tearDown() {
-        manager.close();
+        if (manager != null) {
+            manager.close();
+        }
     }
 
     @Test
     void aReplicaHoldingTheOldLineage_doesNotServeItUnderTheNewEpoch() {
-        assertThat(rereadAfterDivergence()).noneMatch(payload -> payload.startsWith("old-"));
+        assertRefusedAsNotVerified(rereadAfterDivergence(), "old-");
+    }
+
+    /// The refusal must be the B5 gate's typed cause: any other refusal (an owner not activated, a stale epoch) would also keep the old
+    /// lineage out of the answer, and would pass these tests without B5 doing anything.
+    private static void assertRefusedAsNotVerified(Result<StreamPartitionManager.EpochRead> read, String oldPrefix) {
+        assertThat(read.isFailure()).as("the unverified copy refuses the re-read, got %s", read).isTrue();
+        read.onFailure(cause -> assertThat(cause).as("the refusal is B5's, not another cause").isInstanceOf(StreamError.ReplicaNotVerified.class));
+        read.onSuccess(served -> assertThat(served.events()).noneMatch(event -> new String(event.data(), UTF_8).startsWith(oldPrefix)));
+    }
+
+    /// Control for the assertion above: a refusal for a different reason fails it.
+    @Test
+    void aRefusalForAnotherCause_failsTheNotVerifiedAssertion() {
+        var other = new StreamError.OwnerNotActivated(STREAM, PARTITION).<StreamPartitionManager.EpochRead> result();
+
+        assertThatThrownBy(() -> assertRefusedAsNotVerified(other, "old-")).isInstanceOf(AssertionError.class);
     }
 
     /// A replica holds the OLD lineage at 0..4 (not yet truncated); the committed record says E2 began at 3. A consumer at
     /// E1/cursor 5 is correctly diverged to 3, re-reads with E2, and gets whatever the replica serves.
-    private List<String> rereadAfterDivergence() {
+    private Result<StreamPartitionManager.EpochRead> rereadAfterDivergence() {
         manager = streamPartitionManager();
         manager.placementRoleSupplier((_, _) -> Role.REPLICA);
         manager.ownerEpochSource((_, _) -> record.get().map(StreamPartitionOwnershipValue::ownerEpoch).or(Epoch.ZERO));
@@ -71,20 +91,15 @@ class ReplicaServesUnrepairedLineageTripwireTest {
         manager.ownershipRecords((_, _) -> record.get());
         assertThat(manager.readServing(STREAM, PARTITION, 5L, 10, E1).isFailure()).as("control: the cursor is diverged to 3").isTrue();
 
-        return manager.readServing(STREAM, PARTITION, 3L, 10, e2.ownerEpoch())
-                      .map(read -> read.events()
-                                       .stream()
-                                       .map(event -> new String(event.data(), UTF_8))
-                                       .toList())
-                      .or(List.of());
+        return manager.readServing(STREAM, PARTITION, 3L, 10, e2.ownerEpoch());
     }
 
     @Test
     void aDemotedOwner_doesNotServeItsOldTailUnderTheNewEpoch() {
-        assertThat(demotedOwnerReread()).noneMatch(payload -> payload.startsWith("x-old-"));
+        assertRefusedAsNotVerified(demotedOwnerReread(), "x-old-");
     }
 
-    private List<String> demotedOwnerReread() {
+    private Result<StreamPartitionManager.EpochRead> demotedOwnerReread() {
         var role = new java.util.concurrent.atomic.AtomicReference<>(Role.OWNER);
 
         manager = streamPartitionManager(Long.MAX_VALUE);
@@ -103,8 +118,6 @@ class ReplicaServesUnrepairedLineageTripwireTest {
                                                            .withEpochStart(5L)));
         assertThat(manager.readServing(STREAM, PARTITION, 7L, 10, E1).isFailure()).as("control: the cursor is diverged to 5").isTrue();
 
-        return manager.readServing(STREAM, PARTITION, 5L, 10, e2)
-                      .map(read -> read.events().stream().map(event -> new String(event.data(), UTF_8)).toList())
-                      .or(List.of());
+        return manager.readServing(STREAM, PARTITION, 5L, 10, e2);
     }
 }
