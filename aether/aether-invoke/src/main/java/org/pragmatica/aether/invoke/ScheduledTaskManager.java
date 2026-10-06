@@ -172,8 +172,8 @@ public interface ScheduledTaskManager {
             this.stopped = new Stopped(this);
         }
 
-        /// The newer, by `fireSeq`, of the committed row and the last row this manager submitted (the COMMITTED one on a
-        /// tie).
+        /// The newer, by `fireSeq`, of the committed row and the last row this manager submitted (the submitted one on a
+        /// tie: it carries every write this manager has made since).
         Option<ScheduledTaskStateValue> currentRow(ScheduledTaskStateKey key) {
             var committed = stateReader.apply(key);
             var mine = Option.option(submitted.get(key));
@@ -181,16 +181,16 @@ public interface ScheduledTaskManager {
             mine.filter(own -> caughtUp(own, committed)).onPresent(own -> submitted.remove(key, own));
 
             return mine.filter(own -> !caughtUp(own, committed))
+                       .filter(own -> committed.map(row -> own.fireSeq() >= row.fireSeq())
+                                               .or(true))
                        .fold(() -> committed,
                              Option::some);
         }
 
-        /// The commit has caught up with what this manager submitted: the committed row is at the submitted fire or a newer
-        /// one. On an EQUAL sequence the committed row wins, because another node may have written that sequence's row
-        /// (a removal clear, a departed-node close) and must not be shadowed by this manager's older view of it. The entry
-        /// then has nothing left to protect and is dropped, so the map stays as small as the writes in flight.
+        /// The commit has caught up with what this manager submitted: the committed row IS it, or a newer fire's. The
+        /// entry has nothing left to protect and is dropped, so the map stays as small as the writes in flight.
         private static boolean caughtUp(ScheduledTaskStateValue own, Option<ScheduledTaskStateValue> committed) {
-            return committed.map(row -> row.fireSeq() >= own.fireSeq())
+            return committed.map(row -> row.equals(own) || row.fireSeq() > own.fireSeq())
                             .or(false);
         }
 

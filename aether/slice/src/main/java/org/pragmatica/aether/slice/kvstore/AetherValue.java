@@ -813,14 +813,13 @@ public sealed interface AetherValue {
         }
 
         /// The row a resolution is applied to: the newer, by `fireSeq`, of the committed `row` and `submitted`, the last row
-        /// the resolving manager itself wrote (the COMMITTED one on a tie: another node may have written that sequence's
-        /// row, and it must not be shadowed). The writer is
+        /// the resolving manager itself wrote (the submitted one on a tie: it carries every write since). The writer is
         /// asynchronous, so the committed row can lag what the manager has already decided: before the commit of this
         /// fire's own UNKNOWN, or of a NEWER fire's outcome. Applying the resolution to the lagging row would write the
         /// sequence BACKWARDS and, for an older fire's answer, overwrite the newer fire's outcome.
         public static ScheduledTaskStateValue resolutionBase(ScheduledTaskStateValue row,
                                                              ScheduledTaskStateValue submitted) {
-            return row.fireSeq() >= submitted.fireSeq()
+            return row.fireSeq() > submitted.fireSeq()
                    ? row
                    : submitted;
         }
