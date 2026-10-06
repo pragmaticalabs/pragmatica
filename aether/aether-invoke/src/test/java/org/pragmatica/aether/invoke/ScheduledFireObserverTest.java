@@ -275,4 +275,27 @@ class ScheduledFireObserverTest {
 
         assertThat(released).singleElement().extracting(Released::outcome).isEqualTo("leadership-lost");
     }
+
+    /// Losing leadership releases the LEADER's holds only: with an ALL-mode and a SINGLE-mode fire both held, only the
+    /// SINGLE-mode one is released.
+    @Test
+    void leadershipLost_releasesOnlyTheSingleModeHold_notTheAllModeOne() throws Exception {
+        var running = Promise.<Unit> promise();
+        var refresh = MethodName.methodName("refresh").unwrap();
+
+        stub.heldCompletion.set(running);
+        startSingleModeAsLeader();
+        registry.onScheduledTaskPut(new ValuePut<>(new KVCommand.Put<>(ScheduledTaskKey.scheduledTaskKey("cache", artifact, refresh),
+                                                                       ScheduledTaskValue.intervalTask(self, "1s", ExecutionMode.ALL)),
+                                                   Option.none()));
+        awaitTrue(() -> held.size() >= 2);
+
+        assertThat(held).as("premise: both fires are held").hasSize(2);
+
+        leaders.setLeader(false);
+        manager.onLeaderChange(org.pragmatica.consensus.leader.LeaderNotification.leaderChange(Option.none(), false));
+
+        assertThat(released).as("only the single-mode (leader's) hold is released").hasSize(1);
+        manager.stop();
+    }
 }
