@@ -7,3 +7,4 @@
   and is still reported. [mechanism: the KV applier dispatches ValuePut only for an accepted put, inside its apply;
   pinned in-JVM on the real applier by `DurableProjectionRebuildTest.rewindCommitted_thenOvertaken…`, not
   multi-node]
+  [residual, owner ruling 2026-10-05 option (b)] A competing rewind whose record is byte-identical to the loser's (same token, same epoch, same offset, same-millisecond `commitTimestamp`) satisfies the loser's witness, so the loser reports Success. The read-back arm has had the same limit since rev1369. Accepted without a wire change (no attemptNonce).
