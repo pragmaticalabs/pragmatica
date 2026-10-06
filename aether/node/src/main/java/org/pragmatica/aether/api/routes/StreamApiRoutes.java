@@ -508,7 +508,7 @@ public final class StreamApiRoutes implements RouteSource {
                                                     String partitionsLiteral,
                                                     Integer partition) {
         return RequestParse.asRequest(ResourceAddress.resourceAddress(namespace, stream, version))
-                           .flatMap(addr -> RequestParse.asNotFound(streamManager().partitionInfo(StreamManager.engineKey(addr),
+                           .flatMap(addr -> StreamErrorStatus.typed(streamManager().partitionInfo(StreamManager.engineKey(addr),
                                                                                                   partition)))
                            .map(PartitionDetail::partitionDetail);
     }
@@ -609,12 +609,12 @@ public final class StreamApiRoutes implements RouteSource {
                                                               long fromOffset,
                                                               int maxEvents,
                                                               ReadPreference preference) {
-        return streamReadRouter().read(StreamManager.engineKey(addr),
-                                       partition,
-                                       fromOffset,
-                                       maxEvents,
-                                       preference)
-                               .map(StreamApiRoutes::toReadEventsResponse);
+        return StreamErrorStatus.typed(streamReadRouter().read(StreamManager.engineKey(addr),
+                                                               partition,
+                                                               fromOffset,
+                                                               maxEvents,
+                                                               preference))
+                                .map(StreamApiRoutes::toReadEventsResponse);
     }
 
     private static ReadEventsResponse toReadEventsResponse(List<RawEvent> events) {
@@ -680,11 +680,11 @@ public final class StreamApiRoutes implements RouteSource {
         return RequestParse.asNotFound(namespacesService.lookup(addr)
                                                         .toResult(StreamRegistry.StreamRegistryError.General.NOT_FOUND))
                            .async()
-                           .flatMap(_ -> streamReadRouter().read(streamName,
-                                                                 0,
-                                                                 fromOffset,
-                                                                 maxEvents,
-                                                                 ReadPreference.NEAREST))
+                           .flatMap(_ -> StreamErrorStatus.typed(streamReadRouter().read(streamName,
+                                                                                         0,
+                                                                                         fromOffset,
+                                                                                         maxEvents,
+                                                                                         ReadPreference.NEAREST)))
                            .map(events -> buildEventsResponse(addr, events, fromOffset, maxEvents));
     }
 

@@ -346,7 +346,7 @@ public final class StreamRoutes implements RouteSource {
                                                             String stream,
                                                             String version,
                                                             String consumersLiteral) {
-        return RequestParse.asRequest(ResourceAddress.resourceAddress(namespace, stream, version)).flatMap(address -> RequestParse.asNotFound(streamManager().allPartitionInfo(StreamManager.engineKey(address))).map(partitions -> new StreamConsumersResponse(address.asString(),
+        return RequestParse.asRequest(ResourceAddress.resourceAddress(namespace, stream, version)).flatMap(address -> StreamErrorStatus.typed(streamManager().allPartitionInfo(StreamManager.engineKey(address))).map(partitions -> new StreamConsumersResponse(address.asString(),
                                                                                                                                                                                                                                                                 partitions)));
     }
 
