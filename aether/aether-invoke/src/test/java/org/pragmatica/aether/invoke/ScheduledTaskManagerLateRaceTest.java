@@ -117,6 +117,53 @@ class ScheduledTaskManagerLateRaceTest {
         assertThat(manager.submittedRowCount()).as("the entry is gone once the commit caught up").isZero();
     }
 
+    /// On an EQUAL sequence the committed row wins: another node's removal-clear or departed-node close of that
+    /// sequence's row must not be shadowed by this manager's older view of it.
+    @Test
+    void equalFireSeq_theCommittedRowWins_overTheSubmittedOne() throws Exception {
+        var registry = ScheduledTaskRegistry.scheduledTaskRegistry();
+        var stub = new ScheduledTaskManagerTest.StubSliceInvoker(new CopyOnWriteArrayList<>(), Option.none());
+        var self = new NodeId("node-self");
+        var artifact = Artifact.artifact("org.example:my-slice:1.0.0").unwrap();
+        var method = MethodName.methodName("cleanup").unwrap();
+        var key = ScheduledTaskStateKey.scheduledTaskStateKey("cache", artifact, method, self);
+        var committed = new ConcurrentHashMap<ScheduledTaskStateKey, ScheduledTaskStateValue>();
+        var submitted = new CopyOnWriteArrayList<ScheduledTaskStateValue>();
+        Consumer<KVCommand<AetherKey>> writer = command -> {
+            if (command instanceof KVCommand.Put<AetherKey, ?> put && put.value() instanceof ScheduledTaskStateValue value) {
+                submitted.add(value);
+            }
+        };
+        var manager = (ScheduledTaskManager.ScheduledTaskManagerAdapter) ScheduledTaskManager.scheduledTaskManager(registry,
+                                                                                                                  stub,
+                                                                                                                  self,
+                                                                                                                  writer,
+                                                                                                                  k -> Option.option(committed.get(k)),
+                                                                                                                  new ScheduledTaskManagerTest.TestLeaderManager(self));
+
+        stub.unknownWithLateOutcome.set(true);
+        registry.onScheduledTaskPut(new ValuePut<>(new KVCommand.Put<>(ScheduledTaskKey.scheduledTaskKey("cache", artifact, method),
+                                                                       ScheduledTaskValue.intervalTask(self, "1s", ExecutionMode.ALL)),
+                                                   Option.none()));
+        manager.onQuorumStateChange(ClusterStateNotification.active());
+        var deadline = System.currentTimeMillis() + 6_000;
+
+        while (submitted.isEmpty() && System.currentTimeMillis() < deadline) {
+            Thread.sleep(10);
+        }
+        manager.stop();
+
+        var mine = submitted.getFirst();
+        var theirs = ScheduledTaskStateValue.nodeDepartedState(mine);
+
+        committed.put(key, theirs);
+
+        assertThat(theirs.fireSeq()).as("premise: the same sequence").isEqualTo(mine.fireSeq());
+        assertThat(manager.currentRowFor(key).or((ScheduledTaskStateValue) null)).as("the committed row wins the tie").isEqualTo(theirs);
+        assertThat(ScheduledTaskStateValue.resolutionBase(theirs, mine)).as("and is the base of a resolution").isEqualTo(theirs);
+        assertThat(manager.submittedRowCount()).as("the submitted entry is dropped at committed >= submitted").isZero();
+    }
+
     /// F2b: fire 1 times out and its UNKNOWN commits; fire 2 FAILS and its row is submitted but not yet committed; then
     /// fire 1's late success arrives. The committed row still says "fire 1 is the newest", but this manager has already
     /// submitted fire 2's row: the resolution must build on THAT (the newer, by sequence), so fire 2's failure is not
