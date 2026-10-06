@@ -81,12 +81,13 @@ class ManagementTopicExistenceStatusTest {
         }
     }
 
+    /// The topic carries a DIFFERENT declared group, so an empty status list cannot be what makes this 404.
     @Test
     void topicsGroupRebuild_answers404_whenTheTopicExistsButTheGroupIsUnknown() {
         var manager = managerWithTopic();
 
         try {
-            var failure = RouteProbe.failureOf(routes(manager, statuses()), ManagementRoute.TOPICS_GROUP_REBUILD, path("rebuild", GROUP), Map.of());
+            var failure = RouteProbe.failureOf(routes(manager, statuses(status("other#onEvent"))), ManagementRoute.TOPICS_GROUP_REBUILD, path("rebuild", GROUP), Map.of());
 
             assertThat(RouteProbe.problemStatus(failure)).isEqualTo(HttpStatus.NOT_FOUND);
         } finally {
