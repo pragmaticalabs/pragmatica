@@ -336,8 +336,8 @@ public final class StreamRoutes implements RouteSource {
     }
 
     private Result<StreamConsumersResponse> streamConsumers(String name) {
-        return streamManager().allPartitionInfo(name)
-                            .map(partitions -> new StreamConsumersResponse(name, partitions));
+        return RequestParse.asNotFound(streamManager().allPartitionInfo(name))
+                           .map(partitions -> new StreamConsumersResponse(name, partitions));
     }
 
     /// #742 — same guard as `StreamApiRoutes#createStream(StreamCreateRequest)`, for the same reason: the target stream name is

@@ -458,16 +458,16 @@ public final class StreamApiRoutes implements RouteSource {
     }
 
     private Result<StreamMetadataResponse> resolveLatest(String namespace, String stream, String latestLiteral) {
-        return namespacesService.resolve(namespace,
-                                         stream,
-                                         StreamVersionSpec.latest())
-                                .flatMap(this::toMetadataResponse);
+        return RequestParse.asNotFound(namespacesService.resolve(namespace,
+                                                                 stream,
+                                                                 StreamVersionSpec.latest()))
+                           .flatMap(this::toMetadataResponse);
     }
 
     Result<StreamMetadataResponse> streamMetadata(String namespace, String stream, String version) {
         return RequestParse.asRequest(ResourceAddress.resourceAddress(namespace, stream, version))
-                           .flatMap(addr -> namespacesService.lookup(addr)
-                                                             .toResult(StreamRegistry.StreamRegistryError.General.NOT_FOUND))
+                           .flatMap(addr -> RequestParse.asNotFound(namespacesService.lookup(addr)
+                                                                                     .toResult(StreamRegistry.StreamRegistryError.General.NOT_FOUND)))
                            .flatMap(this::toMetadataResponse);
     }
 
@@ -511,8 +511,8 @@ public final class StreamApiRoutes implements RouteSource {
                                                     String partitionsLiteral,
                                                     Integer partition) {
         return RequestParse.asRequest(ResourceAddress.resourceAddress(namespace, stream, version))
-                           .flatMap(addr -> streamManager().partitionInfo(StreamManager.engineKey(addr),
-                                                                          partition))
+                           .flatMap(addr -> RequestParse.asNotFound(streamManager().partitionInfo(StreamManager.engineKey(addr),
+                                                                                                  partition)))
                            .map(PartitionDetail::partitionDetail);
     }
 
@@ -680,9 +680,9 @@ public final class StreamApiRoutes implements RouteSource {
     private Promise<StreamEventsResponse> readEventsAtAddress(ResourceAddress addr, long fromOffset, int maxEvents) {
         var streamName = addr.asString();
 
-        return namespacesService.lookup(addr)
-                                .toResult(StreamRegistry.StreamRegistryError.General.NOT_FOUND)
-                                .async()
+        return RequestParse.asNotFound(namespacesService.lookup(addr)
+                                                        .toResult(StreamRegistry.StreamRegistryError.General.NOT_FOUND))
+                           .async()
                                 .flatMap(_ -> streamReadRouter().read(streamName,
                                                                       0,
                                                                       fromOffset,

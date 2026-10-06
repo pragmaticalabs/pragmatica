@@ -75,8 +75,8 @@ public final class StreamNamespacesRoutes implements RouteSource {
 
     private Result<StreamNamespacesEntryResponse> lookupEntry(String namespace, String stream, String version) {
         return RequestParse.asRequest(ResourceAddress.resourceAddress(namespace, stream, version))
-                           .flatMap(address -> service.lookup(address)
-                                                      .toResult(StreamRegistry.StreamRegistryError.General.NOT_FOUND))
+                           .flatMap(address -> RequestParse.asNotFound(service.lookup(address)
+                                                                                    .toResult(StreamRegistry.StreamRegistryError.General.NOT_FOUND)))
                            .map(StreamRegistryEntryDto::fromEntry)
                            .map(StreamNamespacesEntryResponse::new);
     }
