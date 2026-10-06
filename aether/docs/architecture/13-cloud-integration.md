@@ -186,7 +186,6 @@ graph LR
     subgraph Actions["NodeAction"]
         Start["StartNode(ProvisionSpec)"]
         Stop["StopNode(NodeId)"]
-        Restart["RestartNode(NodeId)"]
         Migrate["MigrateSlices(src, dst)"]
     end
 

@@ -30,7 +30,6 @@ public interface NodeLifecycleManager {
     Promise<ActionResult> executeAction(NodeAction action);
     Promise<InstanceInfo> provisionNode(ProvisionSpec spec);
     Promise<Unit> terminateNode(NodeId nodeId);
-    Promise<Unit> restartNode(NodeId nodeId);
     boolean isCloudManaged();
 
     /// Retry accounting for durable no-create evidence after its placement operation consumed it.
@@ -138,7 +137,6 @@ record NodeLifecycleManagerRecord(Option<ComputeProvider> computeProvider,
         return switch (action) {
             case NodeAction.StartNode startNode -> provisionNode(startNode.spec()).map(ActionResult.NodeStarted::new);
             case NodeAction.StopNode stopNode -> terminateNode(stopNode.nodeId()).map(_ -> new ActionResult.NodeStopped(stopNode.nodeId()));
-            case NodeAction.RestartNode restartNode -> restartNode(restartNode.nodeId()).map(_ -> new ActionResult.NodeRestarted(restartNode.nodeId()));
             case NodeAction.MigrateSlices _ -> EnvironmentError.operationNotSupported("migrateSlices").promise();
         };
     }
@@ -238,12 +236,6 @@ record NodeLifecycleManagerRecord(Option<ComputeProvider> computeProvider,
     }
 
     @Override
-    public Promise<Unit> restartNode(NodeId nodeId) {
-        return computeProvider.fold(() -> EnvironmentError.operationNotSupported("restartNode: no ComputeProvider").promise(),
-                                    provider -> lookupAndRestart(provider, nodeId));
-    }
-
-    @Override
     public boolean isCloudManaged() {
         return computeProvider.isPresent();
     }
@@ -281,16 +273,6 @@ record NodeLifecycleManagerRecord(Option<ComputeProvider> computeProvider,
                      .anyMatch(label -> !label.equals(name.value()));
     }
 
-    private Promise<Unit> lookupAndRestart(ComputeProvider provider, NodeId nodeId) {
-        return provider.listInstances(Map.of(NODE_ID_TAG,
-                                             nodeId.id()))
-                       .map(this::ownInstances)
-                       .flatMap(instances -> restartMatchedInstance(provider, nodeId, instances))
-                       .onFailure(cause -> log.warn("Failed to look up cloud instance for restart of node {}: {}",
-                                                    nodeId,
-                                                    cause.message()));
-    }
-
     private Promise<Unit> terminateMatchedInstance(ComputeProvider provider,
                                                    NodeId nodeId,
                                                    List<InstanceInfo> instances) {
@@ -316,22 +298,6 @@ record NodeLifecycleManagerRecord(Option<ComputeProvider> computeProvider,
         }
 
         return logMismatch("terminate", nodeId, instances.size());
-    }
-
-    private Promise<Unit> restartMatchedInstance(ComputeProvider provider,
-                                                 NodeId nodeId,
-                                                 List<InstanceInfo> instances) {
-        if (instances.size() == 1) {
-            var instanceId = instances.getFirst().id();
-
-            log.info("Restarting cloud instance {} for node {}", instanceId.value(), nodeId);
-
-            return provider.restart(instanceId)
-                           .onSuccess(_ -> log.info("Cloud instance {} restarted successfully",
-                                                    instanceId.value()));
-        }
-
-        return logMismatch("restart", nodeId, instances.size());
     }
 
     private static Promise<Unit> logMismatch(String operation, NodeId nodeId, int count) {
@@ -399,7 +365,6 @@ record SourceNodeLifecycleManager(SourceComputeRegistry registry,
         return switch (action) {
             case NodeAction.StartNode start -> provisionNode(start.spec()).map(ActionResult.NodeStarted::new);
             case NodeAction.StopNode stop -> terminateNode(stop.nodeId()).map(_ -> new ActionResult.NodeStopped(stop.nodeId()));
-            case NodeAction.RestartNode restart -> restartNode(restart.nodeId()).map(_ -> new ActionResult.NodeRestarted(restart.nodeId()));
             case NodeAction.MigrateSlices _ -> EnvironmentError.operationNotSupported("migrateSlices").promise();
         };
     }
@@ -490,12 +455,6 @@ record SourceNodeLifecycleManager(SourceComputeRegistry registry,
     public Promise<Unit> terminateNode(NodeId nodeId, SourceName source) {
         return forSource(source).async()
                         .flatMap(manager -> manager.terminateNode(nodeId));
-    }
-
-    @Override
-    public Promise<Unit> restartNode(NodeId nodeId) {
-        return forNode(nodeId).async()
-                      .flatMap(manager -> manager.restartNode(nodeId));
     }
 
     @Override

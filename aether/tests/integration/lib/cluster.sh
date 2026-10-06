@@ -2248,9 +2248,8 @@ _cloud_transport_ports() {
 #
 # This is the AUTO-HEAL kill path: every suite caller (02-chaos/*, 02z-killonly,
 # 12-network swim/quic, 13-edge-cases, self-drain-quorum-loss) expects the node to
-# be GONE and a brand-new replacement to be provisioned by CTM auto-heal — NO test
-# revives the same node after a kill (start_node / cloud_revive_vm have zero suite
-# callers; see start_node's header). So a hard DELETE is the faithful "node gone"
+# be GONE and a brand-new replacement to be provisioned by CTM auto-heal — a killed
+# node is never revived under its old id (#1543). So a hard DELETE is the faithful "node gone"
 # model: peers observe the VM vanish via SWIM timeout → NODE_FAILED → CTM auto-heal,
 # AND the account's server quota is freed.
 #
@@ -2260,9 +2259,6 @@ _cloud_transport_ports() {
 # leader's provisionReplacement fails repeatedly (observed priorFailureCount=41) so
 # auto-heal can never rebuild the cluster — it sat at 3/5 for 45 min. Deleting the
 # victim keeps the quota clear so each replacement provision has headroom.
-#
-# Same-node restart (poweroff/keep) is provided by the separate cloud_stop_vm /
-# cloud_revive_vm pair for any test that genuinely needs the original VM back.
 #
 # Idempotent: deleting an already-gone server id (server-id resolution fails because
 # the VM no longer exists) is a no-op-with-warning, NOT a failure — a double-kill or a
@@ -2306,128 +2302,15 @@ cloud_kill_vm() {
                 # (concurrent auto-heal). Treat as success — the VM is gone either way.
                 if printf '%s' "$out" | grep -qiE 'not found|does not exist'; then
                     log_warn "cloud_kill_vm: server ${sid} (node '${node_id}') already gone at delete time (idempotent no-op)"
-                    _cloud_record_deleted_vm "$node_id" "$sid"
                     return 0
                 fi
                 log_fail "cloud_kill_vm: hcloud server delete ${sid} (node '${node_id}') failed (rc=${rc}): ${out}"
                 return "$rc"
             fi
-            _cloud_record_deleted_vm "$node_id" "$sid"
             return 0
             ;;
         *)
             log_fail "cloud_kill_vm: provider '${CLOUD_PROVIDER}' not implemented (only 'hetzner')"
-            return 2
-            ;;
-    esac
-}
-
-# cloud_stop_vm <node_id> — abrupt VM power-off WITHOUT deleting (provider API).
-#
-# Non-destructive sibling of cloud_kill_vm, paired with cloud_revive_vm: a hard
-# poweroff (NOT graceful shutdown) so peers observe the node vanish via SWIM timeout,
-# while the VM (and its identity) is PRESERVED so cloud_revive_vm can power it back on
-# for a same-node rejoin. Use this — not cloud_kill_vm — in any test that calls
-# start_node / cloud_revive_vm on the SAME node afterwards. (No such suite exists
-# today; this primitive keeps the stop/revive contract available for restart_all_nodes'
-# best-effort seed power-on and any future same-identity-restart test.)
-# Resolves the VM by server-id (seed OR CTM replacement). Idempotent for an
-# already-stopped server. Returns non-zero with a clear log on a real provider error.
-cloud_stop_vm() {
-    local node_id="${1:-}"
-    if [ -z "$node_id" ]; then
-        log_fail "cloud_stop_vm: node id argument is required"
-        return 2
-    fi
-    case "${CLOUD_PROVIDER:-hetzner}" in
-        hetzner)
-            if ! command -v hcloud >/dev/null 2>&1; then
-                log_fail "cloud_stop_vm: hcloud CLI not found (required for provider 'hetzner')"
-                return 2
-            fi
-            local sid
-            sid=$(cloud_server_id "$node_id") || {
-                log_fail "cloud_stop_vm: could not resolve server id for '${node_id}' (cannot power off)"
-                return 1
-            }
-            log_info "cloud_stop_vm: powering off ${node_id} (hetzner server ${sid})"
-            local out rc
-            out=$(hcloud server poweroff "$sid" 2>&1); rc=$?
-            if [ "$rc" -ne 0 ]; then
-                log_fail "cloud_stop_vm: hcloud server poweroff ${sid} (node '${node_id}') failed (rc=${rc}): ${out}"
-                return "$rc"
-            fi
-            return 0
-            ;;
-        *)
-            log_fail "cloud_stop_vm: provider '${CLOUD_PROVIDER}' not implemented (only 'hetzner')"
-            return 2
-            ;;
-    esac
-}
-
-# cloud_revive_vm <node_id> — power a previously-STOPPED VM back on (provider API).
-#
-# Partner of cloud_stop_vm (NOT cloud_kill_vm — kill DELETES the VM, which cannot be
-# revived). Intended for tests that need same-identity rejoin. NOTE: by the time this
-# runs, CTM auto-heal may already have DECOMMISSIONED the node and provisioned a
-# replacement — in which case the revived VM rejoins as a stale identity and the
-# cluster sees a transient N+1 state (same caveat as start_node's docker path).
-# Prefer waiting on CTM auto-heal for normal recovery; use this only when the test
-# explicitly stopped the VM (cloud_stop_vm) and needs the original back.
-cloud_revive_vm() {
-    local node_id="${1:-}"
-    if [ -z "$node_id" ]; then
-        log_fail "cloud_revive_vm: node id argument is required"
-        return 2
-    fi
-    case "${CLOUD_PROVIDER:-hetzner}" in
-        hetzner)
-            if ! command -v hcloud >/dev/null 2>&1; then
-                log_fail "cloud_revive_vm: hcloud CLI not found (required for provider 'hetzner')"
-                return 2
-            fi
-            # A VM this run deleted through cloud_kill_vm cannot be revived and its address no longer resolves (rc 3 below would be
-            # a counted FAIL for the harness's own deletion). The record says so: nothing to do, the baseline scale-up restores N.
-            local deleted_sid
-            if deleted_sid=$(_cloud_deleted_vm_server "$node_id"); then
-                log_info "cloud_revive_vm: '${node_id}' was deleted by this run's cloud kill (hetzner server ${deleted_sid}); restored by the baseline scale-up, not revived (no-op)"
-                return 0
-            fi
-            local sid sid_rc
-            sid=$(cloud_server_id "$node_id" 2>/dev/null); sid_rc=$?
-            case "$sid_rc" in
-                0) ;;
-                1)
-                    # No live server holds the address → the VM was DELETED (cloud_kill_vm) and CTM
-                    # auto-heal has provisioned a replacement that carries the load. In the
-                    # best-effort recovery model (restart_all_nodes ignores this rc), reviving
-                    # a deleted node is a benign no-op — mirror cloud_kill_vm's idempotent
-                    # not-found path (log_warn + return 0) so it does NOT emit a spurious
-                    # [FAIL] that records an otherwise-passing recovery test as FAIL. A STOPPED
-                    # VM (cloud_stop_vm) still resolves, so the stop/revive contract is intact:
-                    # this path only triggers for a genuinely deleted node.
-                    log_warn "cloud_revive_vm: no server resolves for '${node_id}' — already deleted/replaced (idempotent no-op)"
-                    return 0
-                    ;;
-                *)
-                    # rc 3 = UNKNOWN (address unresolvable / hcloud list failed): the VM may exist and be stopped.
-                    # Never read as "deleted"; a visible failure, counted once.
-                    log_fail "cloud_revive_vm: cannot tell whether '${node_id}' has a VM (cloud_server_id rc=${sid_rc}: address unresolvable or hcloud list failed); NOT powered on and NOT assumed deleted"
-                    return 1
-                    ;;
-            esac
-            log_info "cloud_revive_vm: powering on ${node_id} (hetzner server ${sid})"
-            local out rc
-            out=$(hcloud server poweron "$sid" 2>&1); rc=$?
-            if [ "$rc" -ne 0 ]; then
-                log_fail "cloud_revive_vm: hcloud server poweron ${sid} (node '${node_id}') failed (rc=${rc}): ${out}"
-                return "$rc"
-            fi
-            return 0
-            ;;
-        *)
-            log_fail "cloud_revive_vm: provider '${CLOUD_PROVIDER}' not implemented (only 'hetzner')"
             return 2
             ;;
     esac
@@ -3495,9 +3378,9 @@ _cloud_reap_after_confirmed_drain() {
 ## has halted (`--restart no` on all launch paths, by design — a self-fenced
 ## node must never auto-return on VM reboot), so there is no leader and no CTM
 ## (CTM itself runs on a leader that no longer exists) to auto-heal, and
-## `cloud_revive_vm` is poweron-only — a no-op against a VM that is still
+## a poweron would be a no-op against a VM that is still
 ## powered ON (self-drain halts the container/JVM, not the VM) or against a VM
-## the chaos-kill primitive already DELETED. Cloud-init also does not re-run on
+## the chaos-kill primitive already DELETED — and same-NodeId revival is not supported (#1543). Cloud-init also does not re-run on
 ## an already-provisioned VM, so there is no lighter-weight recovery available.
 ##
 ## NEVER touches the shared test-PG VM or its firewall (tools/pg-firewall.sh):
@@ -3609,26 +3492,14 @@ restart_all_nodes() {
     capture_before_destructive "restart_all_nodes"
     if [ "$CLOUD_MODE" = "true" ]; then
         # Cloud has NO single Docker host and NO docker-compose project — each node
-        # is its own VM. The old SSH-based `docker restart` / JVM pkill+relaunch loop
-        # could not reach CTM-provisioned replacement VMs (no operator SSH key), and
-        # there is nothing to "compose up". Recovery model on cloud:
-        #   1. Power any powered-off seed VMs back on (cloud_revive_vm, best-effort —
-        #      a still-running VM's poweron is a harmless no-op; a CTM-replaced node
-        #      may no longer have a same-id VM, which is fine — its replacement is
-        #      already carrying the load).
-        #   2. Let CTM auto-heal + SWIM converge, then wait on the SAME mgmt-API
-        #      readiness barriers the docker path uses (node count, leader, quiesce,
-        #      ready). The mgmt API is reachable for every node regardless of SSH key.
-        # We deliberately do NOT hard-fail when a seed VM cannot be revived: on cloud
-        # the operational invariant is "N healthy cores" (CTM may satisfy it with
-        # replacements), which the readiness barriers below assert authoritatively.
-        local i node_id
-        for i in $(seq 1 "${NODE_COUNT:-5}"); do
-            node_id=$(to_node_id "node-${i}" 2>/dev/null || true)
-            [ -z "$node_id" ] && continue
-            cloud_revive_vm "$node_id" 2>/dev/null \
-                || log_info "restart_all_nodes: cloud_revive_vm ${node_id} did not power on a VM (already running or CTM-replaced — proceeding)"
-        done
+        # is its own VM. There is nothing to "compose up", and a powered-off or killed
+        # seed is never powered back on: a node id returns only by being REPLACED under
+        # a fresh id (#1543 — same-NodeId relaunch is refused). Recovery model on cloud:
+        # let CTM auto-heal + SWIM converge, then wait on the SAME mgmt-API readiness
+        # barriers the docker path uses (node count, leader, quiesce, ready). The mgmt
+        # API is reachable for every node regardless of SSH key. The operational
+        # invariant is "N healthy cores" (CTM satisfies it with replacements), which
+        # the readiness barriers below assert authoritatively.
         # Re-pin the mgmt endpoint to a live core, then wait on readiness via the API.
         _refresh_mgmt_entry_point || log_warn "restart_all_nodes: no live endpoint to re-pin (proceeding with ${CLUSTER_ENDPOINT})"
         local floor=$(( ${NODE_COUNT:-5} - 1 ))
@@ -3835,9 +3706,10 @@ restart_all_nodes() {
         restart_out=$(remote_exec "docker rm -f \$(docker ps -aq --filter name='aether-b-node-') 2>/dev/null || true; cd ~ && docker compose -f docker-compose-b.yml down -v && docker compose -f docker-compose-b.yml up -d" 2>&1)
         restart_rc=$?
     else
-        # Fallback for non-standard cluster names — best-effort start of exited containers.
-        restart_out=$(remote_exec "docker rm -f \$(docker ps -a -q --filter label=aether.provisioned-by=ctm) 2>/dev/null; docker ps -a --filter 'name=${prefix}' --filter 'status=exited' -q | xargs -r docker start" 2>&1)
-        restart_rc=$?
+        # Non-standard cluster names have no compose project to cycle, and starting the exited
+        # containers again would relaunch the same NodeIds (#1543) — refuse instead of reviving.
+        restart_out="restart_all_nodes: no compose project for cluster name '${prefix}' (only aether-b-node- is cycled); relaunching exited containers under their old NodeIds is not supported"
+        restart_rc=1
     fi
     if [ "$restart_rc" -ne 0 ]; then
         log_fail "restart_all_nodes: compose cycle returned rc=${restart_rc}. Output: ${restart_out}"
@@ -3995,44 +3867,6 @@ kill_node() {
         if [ -n "$kill_out" ] && ! echo "$kill_out" | grep -q "^${name}$"; then
             log_warn "kill_node: docker kill ${name} output: ${kill_out}"
         fi
-    fi
-}
-
-# DEPRECATED for chaos-test recovery — prefer waiting for CTM auto-heal via
-# `wait_for "${target} ON_DUTY healthy cores" ...` or `restore_cluster_baseline`.
-# Restarting the killed container brings the original NodeId back, but the
-# cluster has already DECOMMISSIONED that ID (single-writer rule on
-# NodeLifecycleKey) and CTM has provisioned a replacement — the cluster sees
-# the restarted container as a stale identity and the test ends up in a
-# "killed+restarted+replaced" 6-node state.
-#
-# Kept callable for tests that genuinely need same-ID rejoin semantics
-# (currently 15-delegation/test-02-reassignment.sh, which restarts a scaling
-# node before it has been DECOMMISSIONED).
-start_node() {
-    local node_id="$1"
-    log_info "Starting node: ${node_id}"
-    if [ "$CLOUD_MODE" = "true" ]; then
-        # Provider-API revive: power the node's VM back on (cloud_revive_vm). Replaces
-        # the old SSH-based JVM-replay / `docker start`, which could not reach
-        # CTM-provisioned replacement VMs. NOTE: CTM auto-heal may already have
-        # DECOMMISSIONED this node and provisioned a replacement by now — in which
-        # case the revived VM rejoins as a stale identity (transient N+1). For normal
-        # chaos recovery prefer waiting on CTM auto-heal (restore_cluster_baseline);
-        # this same-identity revive is for tests that explicitly need the original
-        # VM back. See cloud_revive_vm's header for the full caveat.
-        if ! cloud_revive_vm "$node_id"; then
-            log_fail "start_node: cloud VM poweron of '${node_id}' failed"
-            return 1
-        fi
-    else
-        # NodeId == container_name (post-migration) — see kill_node for rationale.
-        local name="$node_id"
-        # Capture stderr — `2>/dev/null` previously hid failures (container not found,
-        # docker daemon error, race with rm). Caller checks $? for success/failure.
-        local start_out
-        start_out=$(remote_exec "docker start ${name}" 2>&1) \
-            || { log_warn "start_node: docker start ${name} failed: ${start_out}"; return 1; }
     fi
 }
 
@@ -4591,8 +4425,7 @@ restore_cluster_baseline() {
     # return 1, which left cluster B unrecoverable for every subsequent suite in
     # the run -- the 2026-05-22 cascade (02-chaos 0p/6f → 03-scaling 0p/3f → ...)
     # originated here. restart_all_nodes is provider-aware: docker/remote run a
-    # compose down/up cycle; cloud powers powered-off VMs back on (cloud_revive_vm)
-    # and waits on CTM auto-heal + mgmt-API readiness (there is no compose project on
+    # compose down/up cycle; cloud waits on CTM auto-heal (fresh-id replacements; no VM is powered back on) + mgmt-API readiness (there is no compose project on
     # cloud — the old `docker compose ... aether-b-network` path is a no-op there and
     # failed with `No resource found for project aether`).
     # Reliability gate reads through the BOUNDED curl path (cluster_leader_http), never the

@@ -1119,7 +1119,7 @@ fi
 # subprocess, while ENV_TYPE itself was later set to "cloud".
 #
 # That split the harness in half: functions branching on ENV_TYPE took cloud paths, and
-# the six that branch on CLOUD_MODE (kill_node, start_node, restart_all_nodes, ...) took
+# the six that branch on CLOUD_MODE (kill_node, restart_all_nodes, ...) took
 # DOCKER paths on a cloud run. Measured 2026-09-18: restore_cluster_baseline escalated to
 # restart_all_nodes, which ran a docker-compose cycle over SSH to the remote host, timed
 # out, and declared a merely-degraded cloud cluster "unrecoverable" — hard-skipping
@@ -1161,8 +1161,7 @@ on_exit() {
     # This run's scratch state (endpoint memory), keyed by AETHER_RUN_ID so only ours. Removed on
     # EVERY exit path: it is useless to any later run, so preserving clusters is no reason to keep it.
     rm -f "${TMPDIR:-/tmp}/aether-live-endpoint-"*"-${AETHER_RUN_ID:-norun}" \
-          "${TMPDIR:-/tmp}/aether-pin-dead-"*"-${AETHER_RUN_ID:-norun}" \
-          "${TMPDIR:-/tmp}/aether-deleted-vms-${AETHER_RUN_ID:-norun}" 2>/dev/null
+          "${TMPDIR:-/tmp}/aether-pin-dead-"*"-${AETHER_RUN_ID:-norun}" 2>/dev/null
     if [ "$SKIP_TEARDOWN" = false ]; then
         if [ -n "$KEEP_ON_FAILURE_FLAG" ] && [ "$rc" -ne 0 ]; then
             preserve_on_failure "$rc"

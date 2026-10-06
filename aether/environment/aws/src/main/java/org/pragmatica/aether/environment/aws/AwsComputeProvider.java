@@ -143,11 +143,6 @@ public record AwsComputeProvider(AwsClient client, AwsEnvironmentConfig config) 
     }
 
     @Override
-    public Promise<Unit> restart(InstanceId id) {
-        return client.rebootInstances(List.of(id.value()));
-    }
-
-    @Override
     public Promise<Unit> applyTags(InstanceId id, Map<String, String> tags) {
         return client.createTags(List.of(id.value()),
                                  tags);

@@ -27,10 +27,6 @@ public interface ComputeProvider {
     Promise<List<InstanceInfo>> listInstances();
     Promise<InstanceInfo> instanceStatus(InstanceId instanceId);
 
-    default Promise<Unit> restart(InstanceId id) {
-        return EnvironmentError.operationNotSupported("restart").promise();
-    }
-
     default Promise<Unit> applyTags(InstanceId id, Map<String, String> tags) {
         return EnvironmentError.operationNotSupported("applyTags").promise();
     }

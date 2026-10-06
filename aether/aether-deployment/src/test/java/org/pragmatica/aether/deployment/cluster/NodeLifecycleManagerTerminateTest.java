@@ -119,26 +119,7 @@ class NodeLifecycleManagerTerminateTest {
         assertThat(provider.terminated).containsExactly("i-1");
     }
 
-    /// The same lookup feeds restart and instancesForNode: they must not reach another cluster's VM either.
-    @Test
-    void restartNode_nodeIdSharedAcrossClusters_restartsOnlyThisClustersInstance() {
-        var provider = new RecordingProvider(List.of(instanceIn("i-a", NODE, "aether-cluster", "cluster-a"),
-                                                     instanceIn("i-b", NODE, "aether-cluster", "cluster-b")));
-
-        scopedTo("cluster-a", provider).restartNode(NODE).await();
-
-        assertThat(provider.restarted).containsExactly("i-a");
-    }
-
-    @Test
-    void restartNode_onlyMatchBelongsToAnotherCluster_restartsNothing() {
-        var provider = new RecordingProvider(List.of(instanceIn("i-b", NODE, "aether-cluster", "cluster-b")));
-
-        scopedTo("cluster-a", provider).restartNode(NODE).await();
-
-        assertThat(provider.restarted).isEmpty();
-    }
-
+    /// The same lookup feeds instancesForNode: it must not reach another cluster's VM either.
     @Test
     void instancesForNode_excludesAnotherClustersInstance() {
         var provider = new RecordingProvider(List.of(instanceIn("i-a", NODE, "aether-cluster", "cluster-a"),
@@ -194,13 +175,6 @@ class NodeLifecycleManagerTerminateTest {
         @Override
         public Promise<Unit> terminate(InstanceId instanceId) {
             terminated.add(instanceId.value());
-
-            return Promise.success(Unit.unit());
-        }
-
-        @Override
-        public Promise<Unit> restart(InstanceId instanceId) {
-            restarted.add(instanceId.value());
 
             return Promise.success(Unit.unit());
         }

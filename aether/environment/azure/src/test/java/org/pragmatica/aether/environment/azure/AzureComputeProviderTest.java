@@ -246,22 +246,6 @@ class AzureComputeProviderTest {
     }
 
     @Nested
-    class RestartTests {
-
-        @Test
-        void restart_success_callsRestartVm() {
-            testClient.restartVmResponse = Promise.success(Unit.unit());
-
-            provider.restart(new InstanceId("my-vm"))
-                    .await()
-                    .onFailure(cause -> assertThat(cause).isNull())
-                    .onSuccess(unit -> assertThat(unit).isNotNull());
-
-            assertThat(testClient.lastRestartedVmName).isEqualTo("my-vm");
-        }
-    }
-
-    @Nested
     class ApplyTagsTests {
 
         @Test

@@ -160,12 +160,6 @@ public record GcpComputeProvider(GcpClient client, GcpEnvironmentConfig config) 
     }
 
     @Override
-    public Promise<Unit> restart(InstanceId id) {
-        return client.resetInstance(id.value())
-                     .mapToUnit();
-    }
-
-    @Override
     public Promise<Unit> applyTags(InstanceId id, Map<String, String> tags) {
         return client.getInstance(id.value())
                      .flatMap(instance -> setLabelsOnInstance(id.value(),

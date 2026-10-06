@@ -733,20 +733,20 @@ cleanup() {
     # instance leaves the blueprint active and the controller re-places it.
     api_delete "/api/v1/blueprints/${ENTITY_BP}" >/dev/null 2>&1 || true
 
-    # Bring back the node we SIGKILLed, or the cluster is left permanently short.
+    # The node we SIGKILLed never comes back under its own id (#1543: same-NodeId relaunch is
+    # refused, and CTM has already DECOMMISSIONED it). Cluster B is `restart: "no"`, so nothing
+    # resurrects the container either — the cluster returns to N through CTM auto-heal, which
+    # provisions a replacement under a FRESH node id. `restore_cluster_baseline` waits for exactly
+    # that (leader reachable, auto-heal on, circuit reset, scale to target, N healthy cores).
     #
-    # Cluster B is `restart: "no"` — the policy that makes `docker kill` authoritative — so
-    # nothing resurrects the container on its own. `restore_cluster_baseline` escalates to a
-    # full `restart_all_nodes` ONLY when no leader is reachable via the management API; after a
-    # single-node kill the leader is perfectly fine, so it instead waits out its whole budget on
-    # a node that can never return. Observed: `deficit=1`, `lastReason=NONE_PROVISIONING`,
-    # "cluster WHOLE" timing out at 917s, and the harness declaring cluster B unrecoverable —
-    # which SKIPS every remaining destructive suite. 02w happens to run last in
-    # CLUSTER_B_SUITES, so nothing was actually skipped, but a suite that depends on its own
-    # position in the list to be harmless is one reorder away from poisoning the run.
+    # History: this cleanup once `docker start`ed the killed container because auto-heal appeared
+    # not to heal (`deficit=1`, `lastReason=NONE_PROVISIONING`). That was #597 — AutoHealConfig.NO_CAP
+    # initialised after DEFAULT, so every provision NPE'd silently; `NONE_PROVISIONING` means a
+    # provision is PERMITTED. Fixed and live-verified (replacement at t=41s); pinned by
+    # AutoHealConfigStaticInitTest.
     if [ "$KILL_CONFIRMED" -eq 1 ] && [ -n "$NODE_TO_KILL" ]; then
-        start_node "$NODE_TO_KILL" \
-            || log_warn "cleanup: could not restart ${NODE_TO_KILL} — cluster left at N-1"
+        restore_cluster_baseline \
+            || log_warn "cleanup: cluster did not return to baseline via auto-heal after killing ${NODE_TO_KILL} — left at N-1"
     fi
 }
 

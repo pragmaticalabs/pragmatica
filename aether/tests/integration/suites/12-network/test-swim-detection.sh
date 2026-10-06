@@ -78,7 +78,7 @@ test_swim_detection_time() {
 test_recovery_after_detection() {
     # Recovery is CTM's job — we already asserted SWIM detected the departure.
     # Assert the post-recovery invariant via the operator-visible signal: 5
-    # healthy cores. Do NOT call `start_node "$KILLED_VICTIM"` — the killed node
+    # healthy cores. Do NOT relaunch the killed node under its old id (#1543) — it
     # has left membership, CTM has provisioned a replacement, and restarting the
     # original would leave the cluster in a stale-identity 6-node state.
     if ! wait_for "5 healthy cores after SWIM detection" \

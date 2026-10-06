@@ -671,22 +671,6 @@ class HetznerComputeProviderTest {
     }
 
     @Nested
-    class RestartTests {
-
-        @Test
-        void restart_success_callsReboot() {
-            testClient.rebootServerResponse = Promise.success(Unit.unit());
-
-            provider.restart(new InstanceId("42"))
-                    .await()
-                    .onFailure(cause -> assertThat(cause).isNull())
-                    .onSuccess(unit -> assertThat(unit).isNotNull());
-
-            assertThat(testClient.lastRebootServerId).isEqualTo(42L);
-        }
-    }
-
-    @Nested
     class ApplyTagsTests {
 
         @Test

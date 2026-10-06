@@ -99,7 +99,6 @@ class CapacityRefusalRecoveryTest {
             @Override public Promise<List<InstanceInfo>> listInstances(Map<String, String> filter, SourceName source, String binding) { return Promise.success(List.of()); }
             @Override public Promise<Unit> terminateNode(NodeId node, SourceName source, String binding) { return Promise.unitPromise(); }
             @Override public Promise<Unit> terminateNode(NodeId node) { return Promise.unitPromise(); }
-            @Override public Promise<Unit> restartNode(NodeId node) { return Promise.unitPromise(); }
             @Override public Promise<ActionResult> executeAction(NodeAction action) { return Causes.cause("unused").promise(); }
             @Override public org.pragmatica.lang.Result<String> sourceBinding(SourceName source) { return org.pragmatica.lang.Result.success("binding"); }
             @Override public boolean isCloudManaged() { return true; }
