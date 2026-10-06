@@ -107,6 +107,11 @@ public final class OffHeapRingBuffer implements AutoCloseable {
         floorAllocAdmit = _ -> true;
     }
 
+    /// Hands out each ring's [#incarnation] (#1730 phase 2): within one process no two rings share one, so a ring that was
+    /// rebuilt is told from the one it replaced.
+    private static final AtomicLong INCARNATIONS = new AtomicLong();
+
+    private final long incarnation = INCARNATIONS.incrementAndGet();
     private final Arena arena;
     private final MemorySegment controlSegment;
     private final List<MemorySegment> dataSegments;
@@ -208,6 +213,12 @@ public final class OffHeapRingBuffer implements AutoCloseable {
         this.reserve = reserve;
         this.release = release;
         this.accountedBytes = accountedBytes;
+    }
+
+    /// Which ring this is, for the life of the process: a partition whose ring was rebuilt (a restart, a re-created
+    /// stream, a re-materialization) answers a different number, whatever offsets it resumed from.
+    public long incarnation() {
+        return incarnation;
     }
 
     public static OffHeapRingBuffer offHeapRingBuffer(long capacity, long dataRegionSize) {

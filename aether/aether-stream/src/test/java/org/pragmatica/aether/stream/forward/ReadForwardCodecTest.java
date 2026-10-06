@@ -6,6 +6,7 @@ package org.pragmatica.aether.stream.forward;
 
 import java.util.List;
 
+import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.stream.VisibleBounds;
 import org.pragmatica.aether.stream.forward.StreamForwardMessage.ReadForward;
 import org.pragmatica.aether.stream.forward.StreamForwardMessage.ReadForwardResponse;
@@ -102,6 +103,36 @@ class ReadForwardCodecTest {
         assertThat(roundTripResponse(consumerAnswer).historyVouched()).isFalse();
         assertThat(roundTripResponse(logLessReplicaAnswer).historyVouched()).isTrue();
         assertThat(roundTripResponse(logLessReplicaAnswer).history()).isEmpty();
+    }
+
+    /// #1873 added the owner epoch a consumer read carries; the codec is positional, so each pin is whole-record equality and
+    /// the epoch is a value that cannot be mistaken for the zero default.
+    @Test
+    void validatedReadForward_roundTrips_withTheConsumersEpoch() {
+        var original = ReadForward.validatedReadForward(SENDER, "corr-8", "orders", 3, 42L, 100, Epoch.epoch(7L, 8L, 9L));
+
+        assertThat(roundTrip(original)).isEqualTo(original);
+        assertThat(roundTrip(original).consumerEpoch()).isEqualTo(Epoch.epoch(7L, 8L, 9L));
+        assertThat(roundTrip(readForward(SENDER, "corr-8", "orders", 3, 42L, 100)).consumerEpoch()).as("a plain read claims no epoch").isEqualTo(Epoch.ZERO);
+    }
+
+    @Test
+    void readForwardResponse_roundTrips_theOwnerEpochAndTheTypedDivergence() {
+        var served = ReadForwardResponse.successResponse(SENDER, "corr-9", List.of()).withOwnerEpoch(Epoch.epoch(7L, 8L, 9L));
+        var diverged = ReadForwardResponse.epochDivergedResponse(SENDER, "corr-10", Epoch.epoch(7L, 8L, 10L), 3L, 3L, "replaced");
+        var inexact = ReadForwardResponse.epochDivergedResponse(SENDER, "corr-11", Epoch.epoch(7L, 8L, 10L), 0L, 2L, "folded history: the loss is proven only from 2");
+
+        assertThat(roundTripResponse(served)).isEqualTo(served);
+        assertThat(roundTripResponse(served).ownerEpoch()).isEqualTo(Epoch.epoch(7L, 8L, 9L));
+        assertThat(roundTripResponse(served).epochDiverged()).isFalse();
+        assertThat(roundTripResponse(diverged)).isEqualTo(diverged);
+        assertThat(roundTripResponse(diverged).epochDiverged()).isTrue();
+        assertThat(roundTripResponse(diverged).divergenceResumeAt()).isEqualTo(3L);
+        assertThat(roundTripResponse(diverged).success()).isFalse();
+        assertThat(roundTripResponse(diverged).divergenceLossFrom()).isEqualTo(3L);
+        assertThat(roundTripResponse(inexact)).isEqualTo(inexact);
+        assertThat(roundTripResponse(inexact).divergenceResumeAt()).as("the conservative bound").isZero();
+        assertThat(roundTripResponse(inexact).divergenceLossFrom()).as("where the loss is proven crosses the wire, apart from the resume").isEqualTo(2L);
     }
 
     private static ReadForwardResponse roundTripResponse(ReadForwardResponse original) {

@@ -245,6 +245,9 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// #1730 phase 2: where a replica's divergent-tail truncation is reported to the operator, late-bound
     /// ([#operatorWarnings(OperatorWarningSink)]); log-only until then.
     private volatile OperatorWarningSink operatorWarnings = OperatorWarningSink.logOnly();
+    /// #1730 phase 2 / #1873: the committed ownership records a validated consumer read is checked against, late-bound
+    /// ([#ownershipRecords(OwnerActivation.OwnershipRecordSource)]); none until wired.
+    private volatile OwnerActivation.OwnershipRecordSource ownershipRecords = (_, _) -> Option.none();
     /// #1596: the reasons this process has already raised, `stream#partition#kind#evidence`, so a condition met on
     /// every append raises one transaction, not one per append. A raise that fails is forgotten and retried at the
     /// next occurrence.
@@ -968,6 +971,45 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                                .isStrictlyAfter(epoch)
                                          ? known
                                          : new EpochTrust(epoch, true));
+    }
+
+    /// What a validated consumer read returns: the events and the owner epoch they were served under (#1730 phase 2 /
+    /// #1873), which the consumer adopts.
+    public record EpochRead(List<OffHeapRingBuffer.RawEvent> events, Epoch ownerEpoch) {}
+
+    /// [#readServing(String, int, long, int)] for a CONSUMER that last read under `consumerEpoch` (#1730 phase 2 / #1873,
+    /// KIP-320): after the owner gate, the cursor is checked against the committed epoch starts, and a cursor that belongs
+    /// to a replaced lineage is refused with the typed [StreamError.EpochDiverged] naming where the new lineage began,
+    /// instead of reading on from offsets the consumer's lineage no longer owns. Partitions with no committed ownership
+    /// record (legacy, unit, a first owner before the leader minted one) are served unvalidated, as before.
+    public Result<EpochRead> readServing(String streamName,
+                                         int partition,
+                                         long fromOffset,
+                                         int maxEvents,
+                                         Epoch consumerEpoch) {
+        return ownerRoleGate(streamName, partition).flatMap(_ -> admitted(streamName,
+                                                                          partition,
+                                                                          fromOffset,
+                                                                          consumerEpoch))
+                            .flatMap(epoch -> readLocal(streamName, partition, fromOffset, maxEvents).map(events -> new EpochRead(events,
+                                                                                                                                  epoch)));
+    }
+
+    private Result<Epoch> admitted(String streamName, int partition, long fromOffset, Epoch consumerEpoch) {
+        return ownershipRecords.committed(streamName, partition)
+                               .fold(() -> Result.success(Epoch.ZERO),
+                                     record -> EpochValidation.admit(streamName,
+                                                                     partition,
+                                                                     record,
+                                                                     consumerEpoch,
+                                                                     fromOffset));
+    }
+
+    /// Late-bind the committed ownership records (#1730 phase 2 / #1873): `AetherNode` wires the node's applied KV state.
+    /// Until then a validated read finds no record and is served unvalidated. Set once at wiring.
+    @Contract
+    public void ownershipRecords(OwnerActivation.OwnershipRecordSource source) {
+        this.ownershipRecords = source;
     }
 
     private Result<Unit> ownerRoleGate(String streamName, int partition) {
@@ -2161,6 +2203,13 @@ public final class StreamPartitionManager implements AutoCloseable {
         return option(divergedAt.get(new PartitionRef(streamName, partition)));
     }
 
+    /// The incarnation of the ring serving `(streamName, partition)` on this node, or [Option#none] when none is built
+    /// (#1730 phase 2): an owner that re-activates with the SAME incarnation kept its offsets, one with another rebuilt
+    /// them and may assign again what it assigned before.
+    public Option<Long> ringIncarnation(String streamName, int partition) {
+        return partitionBuffer(streamName, partition).map(OffHeapRingBuffer::incarnation);
+    }
+
     /// This manager's quarantine record as the backfill orchestrator consumes it (#1505 F2/R3). Its promotion guard
     /// runs under [#quarantineLock], the same lock that records a divergence.
     public QuarantineView quarantineView() {
@@ -2640,9 +2689,23 @@ public final class StreamPartitionManager implements AutoCloseable {
         return ownerWriteAdmission.remoteCommittedOwner(streamName, partition)
                                   .map(owner -> new StreamError.NotOwnerAppend(streamName, partition, owner).<Unit> result())
                                   .or(Result::unitResult)
+                                  .flatMap(_ -> ensureOwnerRing(streamName, partition))
                                   .flatMap(_ -> ownerServeGate.admit(streamName, partition))
                                   .flatMap(_ -> ensureReplicaFloor(streamName, partition, minAcks))
                                   .flatMap(_ -> ensureSegmentTierRoom());
+    }
+
+    /// The ring an owner write enters exists BEFORE the owner gate runs (#1873): the gate commits where the epoch begins, which is
+    /// an offset of that ring, so it refuses a partition with no ring ([OwnerActivation.ActivationError#NO_RING]). The append
+    /// path's own lazy materialization runs only after admission, so without this a write that raced ahead of the
+    /// reconcile tick would be refused until the tick built the ring. Only the placement OWNER builds it here, exactly as the
+    /// append's safety valve does.
+    private Result<Unit> ensureOwnerRing(String streamName, int partition) {
+        return option(streams.get(streamName)).toResult(new StreamError.StreamNotFound(streamName))
+                     .flatMap(entry -> entry.ringFor(partition)
+                                            .isPresent() || placementRoleSupplier.roleFor(streamName, partition) != Role.OWNER
+                                       ? Result.unitResult()
+                                       : resolveAppendTarget(streamName, partition, entry).mapToUnit());
     }
 
     /// #1604: refuse an owner write while the durable segment tier is at or above

@@ -992,7 +992,11 @@ public sealed interface ManagementApiResponses {
                                 int newCount,
                                 long configVersion) {}
 
-    record UpgradeRequest(String targetVersion) {}
+    /// `expectedVersion` is the committed `configVersion` the operator read before asking (#1424), the same
+    /// optimistic fence apply-config and scale carry. A primitive `long`, so an omitted or `null` field is
+    /// refused at decode (400) rather than read as the `0` wildcard; an explicit `0` against a populated config
+    /// is refused as an unfenced overwrite (409). BREAKING for a client that omitted it.
+    record UpgradeRequest(String targetVersion, long expectedVersion) {}
 
     record UpgradeResponse(String status, String from, String to) {}
 

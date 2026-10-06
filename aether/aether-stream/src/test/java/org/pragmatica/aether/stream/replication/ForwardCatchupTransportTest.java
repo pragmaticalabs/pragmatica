@@ -395,6 +395,40 @@ class ForwardCatchupTransportTest {
         assertThat(result.isFailure()).isTrue();
     }
 
+    /// #1431: a page the source cut at its byte cap is shorter than `batchSize` but is NOT the head. Treating it as
+    /// the head ends the pull below the owner's head and promotes the replica CAUGHT_UP there. Red under "ignore
+    /// `truncated`": the pull stops after the first page with 2 of 5 events.
+    @Test
+    void requestCatchup_byteCappedShortPage_keepsPagingToTheHead() {
+        // 5 events, batch 4, the source's byte cap fits 2 per page ⇒ cut pages [0,1], [2,3], then [4] uncut.
+        var source = new FakeForwardSource(eventsFrom(0, 5), 2);
+        var transport = forwardCatchupTransport(source, 4);
+
+        var response = transport.requestCatchup(SOURCE, catchupRequest(SOURCE, STREAM, PARTITION, 0L))
+                                .await()
+                                .or((ReplicationMessage.CatchupResponse) null);
+
+        assertThat(response).isNotNull();
+        assertThat(response.payloads()).hasSize(5);
+        assertThat(response.toOffset()).as("the owner's head, not the first cut page's end").isEqualTo(4L);
+        assertThat(source.reads().get()).isEqualTo(3);
+    }
+
+    /// #1431: a cut page with no event at all (the event at the cursor alone exceeds the cap) can never progress.
+    /// Paging on would re-read the same cursor forever; reporting it as the head would promote below it. Fail.
+    @Test
+    void requestCatchup_cutPageWithNoEvent_failsInsteadOfLoopingOrPromoting() {
+        var source = new FakeForwardSource(eventsFrom(0, 3), 0);
+        var transport = forwardCatchupTransport(source, 4);
+
+        var result = transport.requestCatchup(SOURCE, catchupRequest(SOURCE, STREAM, PARTITION, 0L))
+                              .await();
+
+        assertThat(result.isFailure()).isTrue();
+        result.onFailure(cause -> assertThat(cause.message()).contains("maxReadResponseBytes"));
+        assertThat(source.reads().get()).isEqualTo(1);
+    }
+
     private static List<RawEventDto> eventsFrom(long startOffset, int count) {
         var events = new ArrayList<RawEventDto>(count);
         for (var i = 0; i < count; i++) {
@@ -409,14 +443,25 @@ class ForwardCatchupTransportTest {
         private final List<RawEventDto> events;
         private final AtomicInteger reads = new AtomicInteger(0);
         private final AtomicInteger catchupReads = new AtomicInteger(0);
+        private final int capPerPage;
         private volatile boolean vouched;
 
         private FakeForwardSource(List<RawEventDto> events) {
-            this(events, true);
+            this(events, Integer.MAX_VALUE, true);
         }
 
         private FakeForwardSource(List<RawEventDto> events, boolean vouched) {
+            this(events, Integer.MAX_VALUE, vouched);
+        }
+
+        /// `capPerPage` models the owner's byte cap: a page holding more events is cut there and marked truncated.
+        private FakeForwardSource(List<RawEventDto> events, int capPerPage) {
+            this(events, capPerPage, true);
+        }
+
+        private FakeForwardSource(List<RawEventDto> events, int capPerPage, boolean vouched) {
             this.events = List.copyOf(events);
+            this.capPerPage = capPerPage;
             this.vouched = vouched;
         }
 
@@ -459,7 +504,8 @@ class ForwardCatchupTransportTest {
                              .filter(event -> event.offset() >= fromOffset)
                              .limit(maxEvents)
                              .toList();
-            return Promise.success(new ReadForwardResult(page, false, Option.none(), List.of(), vouched));
+            var cut = page.size() > capPerPage;
+            return Promise.success(new ReadForwardResult(cut ? page.subList(0, capPerPage) : page, cut, Option.none(), List.of(), vouched));
         }
 
         @Override public void onPublishForwardResponse(PublishForwardResponse response) {}
