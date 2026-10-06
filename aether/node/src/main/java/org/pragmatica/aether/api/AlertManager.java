@@ -160,6 +160,12 @@ public class AlertManager {
         this.alertForwarder = Option.option(forwarder);
     }
 
+    /// Release the bound forwarder's webhook client, if any. Called once from `AetherNode.stop()`.
+    public Promise<Unit> closeForwarder() {
+        return alertForwarder.map(AlertForwarder::close)
+                             .or(Promise.unitPromise());
+    }
+
     /// Construct the forwarder from config and bind it, as ONE production expression.
     ///
     /// This exists so a test can call the same expression production calls instead of re-typing
