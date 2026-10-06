@@ -58,6 +58,35 @@ class StreamConsumersByAddressTest {
         }
     }
 
+    /// The engine key differs from the address string only in the `system` namespace, where it is the BARE name
+    /// (`StreamManager#engineKey`). A lookup by `address.asString()` finds nothing there, and no other test addresses a system stream
+    /// through this route.
+    @Test
+    void streamConsumers_findsASystemStream_underItsBareEngineKey() {
+        var manager = StreamPartitionManager.streamPartitionManager();
+
+        try {
+            var address = ResourceAddress.resourceAddress(ResourceAddress.SYSTEM_NAMESPACE, "cluster-events", "1.0.0").unwrap();
+
+            assertThat(StreamManager.engineKey(address)).isEqualTo("cluster-events");
+            manager.createStream(StreamConfig.streamConfig("cluster-events",
+                                                           1,
+                                                           RetentionPolicy.retentionPolicy(10_000, 1024 * 1024, 600_000),
+                                                           "earliest"))
+                   .onFailure(cause -> fail(cause.message()));
+
+            RouteProbe.run(routes(manager),
+                           ManagementRoute.STREAM_CONSUMERS,
+                           List.of(ResourceAddress.SYSTEM_NAMESPACE, "cluster-events", VERSION, "consumers"),
+                           Map.of())
+                      .onFailure(cause -> fail("a system stream must be reachable by its address, got: " + cause.message()))
+                      .onSuccess(value -> assertThat(value).isInstanceOfSatisfying(StreamRoutes.StreamConsumersResponse.class,
+                                                                                   response -> assertThat(response.partitions()).hasSize(1)));
+        } finally {
+            manager.close();
+        }
+    }
+
     @Test
     void streamConsumers_answers400_whenTheVersionIsMalformed() {
         var manager = StreamPartitionManager.streamPartitionManager();
