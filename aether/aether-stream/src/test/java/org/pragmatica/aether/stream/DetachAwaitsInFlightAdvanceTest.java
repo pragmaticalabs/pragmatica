@@ -444,6 +444,68 @@ class DetachAwaitsInFlightAdvanceTest {
         assertThat(commits).as("the held flush committed the pre-delivery cursor at the bound").startsWith(0L);
     }
 
+    /// v-str-1914 UU: unsubscribes of an already-unsubscribed key (NOT_FOUND) while A's flush is held must release their
+    /// own count and nothing more. Red under "the NOT_FOUND path never releases": the count never reaches zero, so the
+    /// successor stays gated for good and delivers nothing.
+    @Test
+    void repeatedUnsubscribeOfUnknownKeyDuringHeldFlush_successorStillStartsAndCursorNeverMovesBackwards() throws InterruptedException {
+        var entered = new CountDownLatch(1);
+        var pending = Promise.<Unit>promise();
+        var delivered = new java.util.concurrent.atomic.AtomicLong(-1);
+
+        runtime.subscribe(STREAM, 0, ConsumerConfig.consumerConfig(GROUP), (_, _, _) -> {
+            entered.countDown();
+
+            return pending;
+        });
+        manager.publishLocal(STREAM, 0, "event-0".getBytes(UTF_8), 1000L);
+        assertThat(entered.await(5, TimeUnit.SECONDS)).isTrue();
+        runtime.unsubscribe(STREAM, 0, GROUP);
+        assertThat(runtime.unsubscribe(STREAM, 0, GROUP).isFailure()).isTrue();
+        assertThat(runtime.unsubscribe(STREAM, 0, GROUP).isFailure()).isTrue();
+        runtime.subscribe(STREAM, 0, ConsumerConfig.consumerConfig(GROUP), (offset, _, _) -> {
+            delivered.set(offset);
+
+            return Promise.unitPromise();
+        });
+        for (var i = 1; i <= 1500; i++) {
+            manager.publishLocal(STREAM, 0, ("event-" + i).getBytes(UTF_8), 1000L + i);
+        }
+        Thread.sleep(200);
+        pending.succeed(unit());
+
+        var deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+
+        while (delivered.get() < 1500 && System.nanoTime() < deadline) {
+            Thread.sleep(5);
+        }
+        Thread.sleep(300);
+
+        var highest = commits.stream().mapToLong(Long::longValue).max().orElse(-1);
+
+        assertThat(delivered.get()).as("the successor started and delivered the backlog; commits=%s", commits).isEqualTo(1500L);
+        assertThat(commits.getFirst()).as("A's flush lands first: %s", commits).isEqualTo(1L);
+        assertThat(commits.getLast()).as("no commit below an earlier one: %s", commits).isEqualTo(highest);
+    }
+
+    /// v-str-1914 NF: an unsubscribe of an unknown key with nothing pending leaves no pending entry behind. Observed
+    /// through behaviour, not the private map: a leaked count would gate the next subscription of that key forever.
+    /// Red under "the NOT_FOUND path never releases": the subscription below never delivers.
+    @Test
+    void unsubscribeOfUnknownKey_leavesNoPendingDetach_nextSubscriptionDelivers() throws InterruptedException {
+        var delivered = new CountDownLatch(1);
+
+        assertThat(runtime.unsubscribe(STREAM, 0, GROUP).isFailure()).isTrue();
+        runtime.subscribe(STREAM, 0, ConsumerConfig.consumerConfig(GROUP), (_, _, _) -> {
+            delivered.countDown();
+
+            return Promise.unitPromise();
+        });
+        manager.publishLocal(STREAM, 0, "event-0".getBytes(UTF_8), 1000L);
+
+        assertThat(delivered.await(5, TimeUnit.SECONDS)).as("the key is not gated by a leaked pending detach").isTrue();
+    }
+
     /// v-str-1914 second window: the old consumer leaves the registry before its flush is registered, and a store whose
     /// commit blocks the CALLER keeps the flush from being registered at all. A same-key subscription on another thread
     /// in that gap must still wait for the flush. Red under "the gate is registered after the consumer is removed": the
