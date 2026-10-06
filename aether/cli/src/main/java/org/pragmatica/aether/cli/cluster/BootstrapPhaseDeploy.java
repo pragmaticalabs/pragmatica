@@ -443,6 +443,11 @@ sealed interface BootstrapPhaseDeploy {
     /// #1543 — printed by the start guard when the host already holds an `aether-node` (container
     /// present in any state, or the unit active/failed). Matching it in the ssh output is what turns
     /// "the guard refused" into a typed [BootstrapError.NodeAlreadyStarted], not a generic failure.
+    /// #1543 — DURABLE "this node id has been started" signal for the JVM path. `ActiveEnterTimestamp` is
+    /// in-memory systemd state and is lost on a host reboot, so the start command also writes this file BEFORE
+    /// starting the unit and the guard refuses when it exists. Written first on purpose: a crash between the
+    /// write and the start fails closed (refuse) rather than open (relaunch).
+    String JVM_STARTED_MARKER = NodeUserDataRenderer.JVM_ENV_DIR + "/node.started";
     String ALREADY_PRESENT_MARKER = "AETHER_NODE_ALREADY_PRESENT";
     int ALREADY_PRESENT_EXIT = 17;
 
@@ -730,6 +735,8 @@ sealed interface BootstrapPhaseDeploy {
              + " || systemctl is-failed --quiet " + NodeUserDataRenderer.JVM_UNIT_NAME
              + " || [ -n \"$(systemctl show -p ActiveEnterTimestamp --value " + NodeUserDataRenderer.JVM_UNIT_NAME
              + ")\" ]"
+             + " || [ -e " + JVM_STARTED_MARKER
+             + " ]"
              + "; then echo " + ALREADY_PRESENT_MARKER
              + " >&2; exit " + ALREADY_PRESENT_EXIT
              + "; fi"
@@ -748,6 +755,7 @@ sealed interface BootstrapPhaseDeploy {
              + " 'AETHER_PEERS=" + peers
              + "'"
              + " > " + NodeUserDataRenderer.JVM_ENV_FILE_PATH
+             + " && touch " + JVM_STARTED_MARKER
              + " && systemctl start " + NodeUserDataRenderer.JVM_UNIT_NAME;
     }
 

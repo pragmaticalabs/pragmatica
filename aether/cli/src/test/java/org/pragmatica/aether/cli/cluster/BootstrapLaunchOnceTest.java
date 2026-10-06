@@ -544,6 +544,54 @@ class BootstrapLaunchOnceTest {
         assertThat(failed.output()).contains(BootstrapPhaseDeploy.ALREADY_PRESENT_MARKER);
     }
 
+    /// Reboot gap: systemd's activation history is memory, so after a reboot a previously run, inactive unit
+    /// reports no timestamp. The durable marker is then the only witness. The stub reports NOTHING (not
+    /// active, not failed, empty timestamp); only the marker file says the node ran.
+    @Test
+    void jvmStartGuard_refusesWhenOnlyTheDurableMarkerRemains() throws Exception {
+        var marker = Files.createTempFile("node-started-", "");
+
+        try {
+            var command = BootstrapPhaseDeploy.buildJvmStartCommand("eu-1-core-0",
+                                                                    NodeRole.CORE,
+                                                                    sourceNameOrDefault("eu-1"),
+                                                                    Option.empty(),
+                                                                    7000,
+                                                                    8080,
+                                                                    "eu-1-core-0:203.0.113.10:7000",
+                                                                    SECRET,
+                                                                    CLUSTER,
+                                                                    name -> null)
+                                                .replace(BootstrapPhaseDeploy.JVM_STARTED_MARKER, marker.toString());
+            var rebooted = runWithStub("systemctl", "[ \"$1\" = show ] && exit 0; exit 1", command);
+
+            assertThat(command).as("the marker path was substituted in the guard").contains(marker.toString());
+            assertThat(rebooted.exit()).isEqualTo(BootstrapPhaseDeploy.ALREADY_PRESENT_EXIT);
+            assertThat(rebooted.output()).contains(BootstrapPhaseDeploy.ALREADY_PRESENT_MARKER);
+        } finally {
+            Files.deleteIfExists(marker);
+        }
+    }
+
+    @Test
+    void jvmStartCommand_writesTheMarkerBeforeStartingTheUnit() {
+        var command = BootstrapPhaseDeploy.buildJvmStartCommand("eu-1-core-0",
+                                                                NodeRole.CORE,
+                                                                sourceNameOrDefault("eu-1"),
+                                                                Option.empty(),
+                                                                7000,
+                                                                8080,
+                                                                "eu-1-core-0:203.0.113.10:7000",
+                                                                SECRET,
+                                                                CLUSTER,
+                                                                name -> null);
+
+        assertThat(command.indexOf("touch " + BootstrapPhaseDeploy.JVM_STARTED_MARKER))
+            .as("marker written, and written before the start")
+            .isPositive()
+            .isLessThan(command.indexOf("systemctl start"));
+    }
+
     /// N2: a cleanly exited unit is `inactive`, not active or failed — only its activation HISTORY says it ran.
     /// A never-run unit (installed by cloud-init, empty timestamp) is NOT refused by the history clause.
     @Test
