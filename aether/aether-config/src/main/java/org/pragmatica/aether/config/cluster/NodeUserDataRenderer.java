@@ -63,8 +63,22 @@ public sealed interface NodeUserDataRenderer {
         return "v" + version + "-candidate";
     }
 
+    /// Placeholder a runtime profile's `image` / `jar_url` may carry to follow `[cluster] version` (#1543 part C).
+    String VERSION_PLACEHOLDER = "{version}";
+
+    static String withVersion(String pin, String clusterVersion) {
+        return pin.replace(VERSION_PLACEHOLDER, clusterVersion);
+    }
+
+    /// The profile's `image` with [#VERSION_PLACEHOLDER] replaced by the cluster version.
+    static Option<String> pinnedImage(RuntimeProfile profile, String clusterVersion) {
+        return profile.image()
+                      .map(image -> withVersion(image, clusterVersion));
+    }
+
     static String resolveJarUrl(Option<RuntimeProfile> profile, String version) {
-        return profile.flatMap(p -> p.jarUrlFor(version))
+        return profile.flatMap(p -> p.jarUrl()
+                                     .map(url -> withVersion(url, version)))
                       .or("https://github.com/" + JAR_REPO_PATH
                          + "/releases/download/" + deriveJarTag(version)
                          + "/aether-node.jar");
@@ -132,7 +146,8 @@ public sealed interface NodeUserDataRenderer {
         var ports = config.operations().ports();
         var runtimeProfile = resolveRuntimeProfile(config, source, role);
         var isContainer = isContainerRuntime(runtimeProfile);
-        var image = runtimeProfile.flatMap(p -> p.imageFor(config.cluster().version()))
+        var image = runtimeProfile.flatMap(p -> pinnedImage(p,
+                                                            config.cluster().version()))
                                   .or("ghcr.io/pragmaticalabs/aether-node:" + config.cluster().version());
         var peersValue = String.join(",", peers);
         var sb = new StringBuilder();

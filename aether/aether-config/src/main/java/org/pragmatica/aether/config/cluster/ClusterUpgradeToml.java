@@ -67,9 +67,18 @@ public sealed interface ClusterUpgradeToml {
                      .collect(Collectors.toSet());
     }
 
+    /// True when the launch artifact the profile selects (`image` for container runtimes, `jar_url` otherwise) is a
+    /// literal, i.e. carries no [NodeUserDataRenderer#VERSION_PLACEHOLDER].
+    private static boolean pinsLiterally(RuntimeProfile profile) {
+        return (profile.isContainer()
+                ? profile.image()
+                : profile.jarUrl()).filter(value -> !value.contains(NodeUserDataRenderer.VERSION_PLACEHOLDER))
+                                   .isPresent();
+    }
+
     private static boolean isPinned(ClusterBootstrapConfig config, String runtimeRef) {
         return Option.option(config.runtimes().get(runtimeRef))
-                     .filter(RuntimeProfile::pinsArtifact)
+                     .filter(ClusterUpgradeToml::pinsLiterally)
                      .isPresent();
     }
 

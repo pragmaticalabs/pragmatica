@@ -871,7 +871,7 @@ class BootstrapPhaseDeployCloudSshRestartTest {
                                                             envWithKey("/home/op/.ssh/aether_id_ed25519"));
 
         assertTrue(result.isSuccess(), () -> "Cloud deploy must succeed; got: " + result);
-        var dockerCommands = commands.stream().filter(c -> c.startsWith("docker")).toList();
+        var dockerCommands = commands.stream().filter(c -> c.contains("docker run")).toList();
         assertFalse(dockerCommands.isEmpty(), "CONTROL: docker run commands were issued");
         for (var cmd : dockerCommands) {
             assertTrue(cmd.endsWith("registry/aether-node:" + CLUSTER_VERSION), () -> "Substituted image expected. Got: " + cmd);

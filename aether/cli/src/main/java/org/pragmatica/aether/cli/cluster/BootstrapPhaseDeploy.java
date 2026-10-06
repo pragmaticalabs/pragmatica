@@ -786,7 +786,8 @@ sealed interface BootstrapPhaseDeploy {
     }
 
     static String resolveContainerImage(BootstrapContext ctx, SourceProfile source) {
-        return resolveRuntimeProfile(ctx, source).flatMap(profile -> profile.imageFor(clusterVersion(ctx)))
+        return resolveRuntimeProfile(ctx, source).flatMap(profile -> NodeUserDataRenderer.pinnedImage(profile,
+                                                                                                      clusterVersion(ctx)))
                                     .or(derivedImage(ctx));
     }
 
@@ -1024,7 +1025,9 @@ sealed interface BootstrapPhaseDeploy {
                                                       + "; only CONTAINER can be launched over SSH in this release (#1090)").result();
         }
 
-        return Result.success(profile.flatMap(p -> p.imageFor(clusterVersion(ctx))).or(derivedImage(ctx)));
+        return Result.success(profile.flatMap(p -> NodeUserDataRenderer.pinnedImage(p,
+                                                                                    clusterVersion(ctx)))
+                                     .or(derivedImage(ctx)));
     }
 
     private static String sourceNameOf(SourceProfile source) {
