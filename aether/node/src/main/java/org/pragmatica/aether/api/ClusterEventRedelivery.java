@@ -71,18 +71,19 @@ final class ClusterEventRedelivery {
     }
 
     /// One waiting event. `attempts` counts failed publishes so far; `nextAttemptAt` is when it is next due;
-    /// `onGivenUp` runs if redelivery finally drops it.
+    /// `onGivenUp` runs if redelivery finally drops it, `onDelivered` if a retry lands.
     private record Pending(ClusterEvent event,
                            long firstFailedAt,
                            int attempts,
                            long nextAttemptAt,
-                           Runnable onGivenUp) {
-        static Pending pending(ClusterEvent event, long now, Runnable onGivenUp) {
-            return new Pending(event, now, 1, now + INITIAL_BACKOFF_MS, onGivenUp);
+                           Runnable onGivenUp,
+                           Runnable onDelivered) {
+        static Pending pending(ClusterEvent event, long now, Runnable onGivenUp, Runnable onDelivered) {
+            return new Pending(event, now, 1, now + INITIAL_BACKOFF_MS, onGivenUp, onDelivered);
         }
 
         Pending failedAgain(long now) {
-            return new Pending(event, firstFailedAt, attempts + 1, now + backoff(attempts + 1), onGivenUp);
+            return new Pending(event, firstFailedAt, attempts + 1, now + backoff(attempts + 1), onGivenUp, onDelivered);
         }
 
         boolean expiredAt(long now) {
@@ -136,8 +137,16 @@ final class ClusterEventRedelivery {
     /// short retry window only when its event is really lost).
     @Contract
     void deliver(ClusterEvent event, Runnable onGivenUp) {
+        deliver(event, onGivenUp, () -> {});
+    }
+
+    /// As [#deliver(ClusterEvent, Runnable)], and runs `onDelivered` once if the event lands, whether on the first
+    /// attempt or on a retry (#752: a recovery event is released only once the event it closes is known to be in the log).
+    @Contract
+    void deliver(ClusterEvent event, Runnable onGivenUp, Runnable onDelivered) {
         accepted.incrementAndGet();
-        attempt(event).onFailure(cause -> onFirstFailure(event, cause, onGivenUp));
+        attempt(event).onSuccess(_ -> onDelivered.run())
+               .onFailure(cause -> onFirstFailure(event, cause, onGivenUp, onDelivered));
     }
 
     /// Re-sends every due event (or every waiting event when `all`, used when the partition's owner changes).
@@ -231,10 +240,10 @@ final class ClusterEventRedelivery {
                       .getSimpleName();
     }
 
-    private Unit onFirstFailure(ClusterEvent event, Cause cause, Runnable onGivenUp) {
+    private Unit onFirstFailure(ClusterEvent event, Cause cause, Runnable onGivenUp, Runnable onDelivered) {
         return isPermanent(cause)
                ? drop(DropReason.PERMANENT, event, onGivenUp)
-               : hold(Pending.pending(event, clock.getAsLong(), onGivenUp));
+               : hold(Pending.pending(event, clock.getAsLong(), onGivenUp, onDelivered));
     }
 
     /// Starts holding a newly failed event. When CAPACITY events are already held, the OLDEST waiting one is dropped
@@ -261,8 +270,15 @@ final class ClusterEventRedelivery {
 
     private void retry(Pending pending) {
         retried.incrementAndGet();
-        attempt(pending.event()).onSuccess(_ -> held.decrementAndGet())
+        attempt(pending.event()).onSuccess(_ -> retryLanded(pending))
                .onFailure(cause -> onRetryFailure(pending, cause));
+    }
+
+    private Unit retryLanded(Pending pending) {
+        held.decrementAndGet();
+        pending.onDelivered().run();
+
+        return unit();
     }
 
     private Unit onRetryFailure(Pending pending, Cause cause) {

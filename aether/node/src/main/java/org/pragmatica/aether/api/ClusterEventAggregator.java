@@ -187,6 +187,8 @@ public final class ClusterEventAggregator {
     /// A recovery is published exactly when its key is here, so it never appears without the warning it closes and is
     /// never throttled away from one an operator saw. Bounded by the (code, subject) pairs the node can raise.
     private final Set<String> openRecoverable = ConcurrentHashMap.newKeySet();
+    /// Warnings with a recovery that are admitted but not yet in the log, each holding the recovery that arrived meanwhile.
+    private final ConcurrentHashMap<String, Option<ClusterEvent>> awaitingDelivery = new ConcurrentHashMap<>();
 
     /// Throttle window shared by {@link #onStreamMemoryExceeded} (60s per `(streamName, phase)`, spec
     /// §4.5c) and {@link #onOperatorWarning} (60s per `(code, subject)`, #1574).
@@ -218,11 +220,6 @@ public final class ClusterEventAggregator {
         /// A new window opened at `now` by an admitted call, closing one that held back `suppressedBefore`.
         static ThrottleWindow throttleWindow(long now, long suppressedBefore) {
             return new ThrottleWindow(now, EVENT_THROTTLE_MS, now, 0, true, suppressedBefore);
-        }
-
-        /// The state of a call that was refused outright, with no window behind it.
-        static ThrottleWindow refused(long now) {
-            return new ThrottleWindow(now, 0, now, 0, false, 0);
         }
 
         /// The same window with one more suppressed call.
@@ -811,10 +808,15 @@ public final class ClusterEventAggregator {
     @Contract
     public void onOperatorWarning(OperatorWarning warning) {
         var key = throttleKey(warning.code(), warning.subject());
-        var recovery = warning.code().recoveryOf();
-        var window = recovery.isPresent()
-                     ? recoveryWindow(recovery.unwrap(), warning)
-                     : admit(operatorWarningThrottle, key);
+
+        warning.code()
+               .recoveryOf()
+               .onPresent(closes -> onRecovery(warning, closes))
+               .onEmpty(() -> onCondition(warning, key));
+    }
+
+    private void onCondition(OperatorWarning warning, String key) {
+        var window = admit(operatorWarningThrottle, key);
 
         if (!window.admitted()) {
             LOG.debug("ClusterEventAggregator: suppressing throttled OperatorWarning {} for {}",
@@ -824,14 +826,7 @@ public final class ClusterEventAggregator {
             return;
         }
 
-        if (warning.code().hasRecovery()) {
-            openRecoverable.add(key);
-        }
-
-        var event = new ClusterEvent.OperatorWarning(hlcClock.now(),
-                                                     severityOf(warning.code().level()),
-                                                     warning.message(),
-                                                     operatorWarningDetails(warning, window.suppressedBefore()));
+        var event = warningEvent(warning, window.suppressedBefore());
 
         lastRaisedOperatorWarning = Option.some(event);
         if (replayingCheck.getAsBoolean()) {
@@ -843,7 +838,86 @@ public final class ClusterEventAggregator {
         // #1653: through redelivery, like every other event, so a publish to a dying owner is held and re-sent rather
         // than lost. The window is shortened only if redelivery finally gives up on it: a failure it retries past is
         // not a gap, and shortening on it would admit a second event while the first is still being delivered.
-        redelivery.deliver(stampedOrAsIs(event), () -> shortenWindow(key, window));
+        if (warning.code().hasRecovery()) {
+            deliverRecoverable(event, key, window);
+        } else {
+            redelivery.deliver(stampedOrAsIs(event), () -> shortenWindow(key, window));
+        }
+    }
+
+    /// #752: a warning that has a recovery is "shown" only once it is in the log. Until then a recovery that arrives is
+    /// held in `awaitingDelivery` and released when the warning lands, or dropped with it if redelivery gives up, so a
+    /// recovery never reaches the log without the warning it closes.
+    private void deliverRecoverable(ClusterEvent event, String key, ThrottleWindow window) {
+        awaitingDelivery.put(key, Option.none());
+        redelivery.deliver(stampedOrAsIs(event), () -> warningLost(key, window), () -> warningLanded(key));
+    }
+
+    /// A recovery held for the lost warning is released only if an earlier published warning for the subject is still
+    /// open, and dropped with it otherwise.
+    private void warningLost(String key, ThrottleWindow window) {
+        Option.option(awaitingDelivery.remove(key))
+              .flatMap(held -> held)
+              .filter(_ -> openRecoverable.contains(key))
+              .onPresent(recovery -> releaseHeldRecovery(key, recovery));
+        shortenWindow(key, window);
+    }
+
+    /// The mark is opened before the held recovery is looked up, so a recovery arriving between the two finds it open.
+    private void warningLanded(String key) {
+        openRecoverable.add(key);
+        Option.option(awaitingDelivery.remove(key))
+              .flatMap(held -> held)
+              .onPresent(recovery -> releaseHeldRecovery(key, recovery));
+    }
+
+    private void releaseHeldRecovery(String key, ClusterEvent recovery) {
+        openRecoverable.remove(key);
+        redelivery.deliver(stampedOrAsIs(recovery));
+    }
+
+    /// A recovery is published iff the warning it closes was published for the same subject and is still open, and it
+    /// closes it. It has no window of its own: one published warning allows one recovery. Publishing it also ends the
+    /// warning's throttle window, so a condition that recurs right after its recovery is shown again rather than
+    /// throttled behind a "repaired" that is no longer true (#752).
+    private void onRecovery(OperatorWarning warning, OperatorWarningCode closes) {
+        var closedKey = throttleKey(closes, warning.subject());
+        var event = warningEvent(warning, 0);
+        var held = Option.option(awaitingDelivery.computeIfPresent(closedKey, (_, _) -> Option.some(event)));
+
+        if (held.isPresent()) {
+            operatorWarningThrottle.remove(closedKey);
+            LOG.debug("ClusterEventAggregator: holding OperatorWarning {} for {} until the warning it closes is delivered",
+                      warning.code().code(),
+                      warning.subject());
+
+            return;
+        }
+
+        if (!openRecoverable.remove(closedKey)) {
+            LOG.debug("ClusterEventAggregator: refusing OperatorWarning {} for {}, no published warning is open",
+                      warning.code().code(),
+                      warning.subject());
+
+            return;
+        }
+
+        operatorWarningThrottle.remove(closedKey);
+        lastRaisedOperatorWarning = Option.some(event);
+        if (replayingCheck.getAsBoolean()) {
+            LOG.debug("ClusterEventAggregator: snapshot/resync replay in progress — suppressing local emit of {}", event);
+
+            return;
+        }
+
+        redelivery.deliver(stampedOrAsIs(event));
+    }
+
+    private ClusterEvent.OperatorWarning warningEvent(OperatorWarning warning, long suppressedSince) {
+        return new ClusterEvent.OperatorWarning(hlcClock.now(),
+                                                severityOf(warning.code().level()),
+                                                warning.message(),
+                                                operatorWarningDetails(warning, suppressedSince));
     }
 
     /// Observability: the operator-warning event this node most recently admitted for publication,
@@ -906,35 +980,19 @@ public final class ClusterEventAggregator {
 
     /// Shortens `window` to a retry window if it is still the key's current window. A later window is left alone.
     private Unit shortenWindow(String key, ThrottleWindow window) {
-        operatorWarningThrottle.computeIfPresent(key, (_, current) -> shortenedIfCurrent(current, window, key));
+        operatorWarningThrottle.computeIfPresent(key, (_, current) -> shortenedIfCurrent(current, window));
 
         return Unit.unit();
     }
 
-    /// A window whose event was not published leaves nothing for a recovery to close, so the open mark goes with it.
-    private ThrottleWindow shortenedIfCurrent(ThrottleWindow current, ThrottleWindow admitted, String key) {
-        if (current.openedAt() != admitted.openedAt()) {
-            return current;
-        }
-
-        openRecoverable.remove(key);
-
-        return current.shortenedForRetry();
+    private static ThrottleWindow shortenedIfCurrent(ThrottleWindow current, ThrottleWindow admitted) {
+        return current.openedAt() == admitted.openedAt()
+               ? current.shortenedForRetry()
+               : current;
     }
 
     private static String throttleKey(OperatorWarningCode code, String subject) {
         return code.code() + ":" + subject;
-    }
-
-    /// A recovery is admitted iff the warning it closes was published for the same subject and is still open, and it
-    /// closes it. It has no window of its own: one published warning allows one recovery, so a second window could only
-    /// hold back a recovery whose warning an operator saw.
-    private ThrottleWindow recoveryWindow(OperatorWarningCode closes, OperatorWarning recovery) {
-        var now = hlcClock.now().physicalMillis();
-
-        return openRecoverable.remove(throttleKey(closes, recovery.subject()))
-               ? ThrottleWindow.throttleWindow(now, 0)
-               : ThrottleWindow.refused(now);
     }
 
     private static Severity severityOf(WarningLevel level) {

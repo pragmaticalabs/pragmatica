@@ -1254,10 +1254,12 @@ class ClusterEventAggregatorTest {
         assertThat(codes(h)).containsExactly("stream-consumer-state-diverged");
     }
 
-    /// #752: a warning held back by the flood guard shows the operator nothing, so its recovery is held back with it.
-    /// Independent windows published the second recovery here (its own window was free) without its warning.
+    /// #752: a recovery ends its warning's throttle window. D, R, then the condition recurs 10 s later: the recurrence is
+    /// shown, and so is its recovery. The earlier version of this test expected [D, R] here: it held the recurrence back
+    /// behind the first window, so a stuck recurrence left the feed's last word at "repaired" while the partition was
+    /// consumed by nobody (a false all-clear), and it encoded that as the specification.
     @Test
-    void onOperatorWarning_recoveryOfAThrottledWarning_isNotPublished() {
+    void onOperatorWarning_recurrenceAfterAShownRecovery_isShown_andSoIsItsRecovery() {
         var physicalMillis = new AtomicLong(1_000_000L);
         var h = Harness.create(Harness.defaultRetention(), OWNER, () -> false, LEADER,
                                HlcClock.hlcClock(SELF, physicalMillis::get, Long.MAX_VALUE));
@@ -1270,7 +1272,66 @@ class ClusterEventAggregatorTest {
         physicalMillis.addAndGet(60_000L);
         h.aggregator().onOperatorWarning(repaired("g:orders[0]"));
 
+        assertThat(codes(h)).containsExactly("stream-consumer-state-diverged",
+                                             "stream-consumer-state-repaired",
+                                             "stream-consumer-state-diverged",
+                                             "stream-consumer-state-repaired");
+    }
+
+    /// #752: a repeat of an open warning is still throttled, and its one recovery is still published.
+    @Test
+    void onOperatorWarning_repeatOfAnOpenWarning_isThrottled_andClosedByOneRecovery() {
+        var physicalMillis = new AtomicLong(1_000_000L);
+        var h = Harness.create(Harness.defaultRetention(), OWNER, () -> false, LEADER,
+                               HlcClock.hlcClock(SELF, physicalMillis::get, Long.MAX_VALUE));
+
+        h.aggregator().onOperatorWarning(diverged("g:orders[0]"));
+        physicalMillis.addAndGet(10_000L);
+        h.aggregator().onOperatorWarning(diverged("g:orders[0]"));
+        h.aggregator().onOperatorWarning(repaired("g:orders[0]"));
+
         assertThat(codes(h)).containsExactly("stream-consumer-state-diverged", "stream-consumer-state-repaired");
+    }
+
+    /// #752: the recovery is released only after its warning is in the log. Here the warning's first publish fails and
+    /// the recovery arrives while it is held: the recovery waits, and follows the warning once the retry lands.
+    @Test
+    void onOperatorWarning_recoveryWhileItsWarningIsHeldForRedelivery_followsTheWarning() throws InterruptedException {
+        var h = Harness.create();
+        var publisher = h.publisher().getAndSet(null);
+
+        h.aggregator().onOperatorWarning(diverged("g:orders[0]"));
+        h.aggregator().onOperatorWarning(repaired("g:orders[0]"));
+        h.publisher().set(publisher);
+        assertThat(codes(h)).as("control: nothing is in the log yet").isEmpty();
+        Thread.sleep(ClusterEventRedelivery.INITIAL_BACKOFF_MS + 100);
+        h.aggregator().redeliverDue();
+
+        assertThat(codes(h)).containsExactly("stream-consumer-state-diverged", "stream-consumer-state-repaired");
+    }
+
+    /// #752: a warning that redelivery gives up on was never shown, so a recovery held for it is dropped, and the log
+    /// never carries a recovery without its warning. Without the hold, the recovery was published at once and the
+    /// warning then lost to overflow.
+    @Test
+    void onOperatorWarning_recoveryWhoseWarningIsGivenUp_isNotPublished() throws InterruptedException {
+        var h = Harness.create();
+        var publisher = h.publisher().getAndSet(null);
+
+        h.aggregator().onOperatorWarning(diverged("g:orders[0]"));
+        h.aggregator().onOperatorWarning(repaired("g:orders[0]"));
+        for (int i = 0; i < ClusterEventRedelivery.CAPACITY; i++) {
+            h.aggregator().onOperatorWarning(fsyncFailed("orders[" + i + "]"));
+        }
+        assertThat(h.aggregator().redeliveryDropped()).as("control: the diverged event was dropped by overflow")
+                                                      .containsEntry("overflow", 1L);
+        h.publisher().set(publisher);
+        Thread.sleep(ClusterEventRedelivery.INITIAL_BACKOFF_MS + 100);
+        h.aggregator().redeliverDue();
+
+        assertThat(codes(h)).as("the held fsync warnings landed (control), and neither diverged nor repaired did")
+                            .isNotEmpty()
+                            .doesNotContain("stream-consumer-state-diverged", "stream-consumer-state-repaired");
     }
 
     /// #752: the recovery of a published warning is published even when it comes late. Independent windows swallowed
@@ -1596,5 +1657,105 @@ class ClusterEventAggregatorTest {
         assertThat(retention.maxBytes()).isEqualTo(64L * 1024 * 1024);
         assertThat(retention.maxAgeMs()).isEqualTo(24L * 60 * 60 * 1000);
         assertThat(retention.mode()).isEqualTo(RetentionMode.ANY);
+    }
+
+    // --- v-1923 probes (verification of #1923; not for merge) ---------------------------------------
+    private Harness v1923Clocked(AtomicLong physicalMillis) {
+        return Harness.create(Harness.defaultRetention(), OWNER, () -> false, LEADER,
+                              HlcClock.hlcClock(SELF, physicalMillis::get, Long.MAX_VALUE));
+    }
+
+    /// PA1: diverged, repaired (shown), diverged again 10 s later and NOT repaired (stuck). The operator's feed must not
+    /// end on "repaired" while the subject is diverged. Expected RED at head if the throttle hides the second diverged.
+    @Test
+    void onOperatorWarning_divergedAgainAfterAShownRepair_isShown() {
+        var t = new AtomicLong(1_000_000L);
+        var h = v1923Clocked(t);
+
+        h.aggregator().onOperatorWarning(diverged("g:orders[0]"));
+        t.addAndGet(1_000L);
+        h.aggregator().onOperatorWarning(repaired("g:orders[0]"));
+        t.addAndGet(10_000L);
+        h.aggregator().onOperatorWarning(diverged("g:orders[0]"));
+
+        assertThat(codes(h)).as("feed after D, R, D(stuck)").last().isEqualTo("stream-consumer-state-diverged");
+    }
+
+    /// PA2: two subjects interleaved, across a window boundary: each recovery pairs with its own subject only.
+    @Test
+    void onOperatorWarning_twoSubjects_pairIndependently() {
+        var t = new AtomicLong(1_000_000L);
+        var h = v1923Clocked(t);
+
+        h.aggregator().onOperatorWarning(diverged("g:s[0]"));
+        h.aggregator().onOperatorWarning(diverged("g:s[1]"));
+        h.aggregator().onOperatorWarning(repaired("g:s[1]"));
+        h.aggregator().onOperatorWarning(repaired("g:s[1]"));
+        h.aggregator().onOperatorWarning(repaired("g:s[0]"));
+        t.addAndGet(70_000L);
+        h.aggregator().onOperatorWarning(diverged("g:s[0]"));
+        h.aggregator().onOperatorWarning(repaired("g:s[1]"));
+        h.aggregator().onOperatorWarning(repaired("g:s[0]"));
+
+        assertThat(h.events().stream().map(e -> e.details().get("code") + "@" + e.details().get("subject")).toList())
+            .containsExactly("stream-consumer-state-diverged@g:s[0]",
+                             "stream-consumer-state-diverged@g:s[1]",
+                             "stream-consumer-state-repaired@g:s[1]",
+                             "stream-consumer-state-repaired@g:s[0]",
+                             "stream-consumer-state-diverged@g:s[0]",
+                             "stream-consumer-state-repaired@g:s[0]");
+    }
+
+    /// PA3: diverged re-raised while open and inside its window (throttled), then repaired: exactly one recovery.
+    @Test
+    void onOperatorWarning_divergedReRaisedWhileOpen_thenOneRepair() {
+        var t = new AtomicLong(1_000_000L);
+        var h = v1923Clocked(t);
+
+        h.aggregator().onOperatorWarning(diverged("g:orders[0]"));
+        t.addAndGet(10_000L);
+        h.aggregator().onOperatorWarning(diverged("g:orders[0]"));
+        t.addAndGet(10_000L);
+        h.aggregator().onOperatorWarning(repaired("g:orders[0]"));
+        h.aggregator().onOperatorWarning(repaired("g:orders[0]"));
+
+        assertThat(codes(h)).containsExactly("stream-consumer-state-diverged", "stream-consumer-state-repaired");
+    }
+
+    /// PA4: the recovery arrives after the warning's throttle window was evicted as idle: still published.
+    @Test
+    void onOperatorWarning_repairAfterTheThrottleKeyWasEvicted_isPublished() {
+        var t = new AtomicLong(1_000_000L);
+        var h = v1923Clocked(t);
+
+        h.aggregator().onOperatorWarning(diverged("g:orders[0]"));
+        t.addAndGet(130_000L);
+        h.aggregator().evictIdleThrottleWindows();
+        assertThat(h.aggregator().operatorWarningThrottleKeys()).as("control: the window was evicted").isZero();
+        h.aggregator().onOperatorWarning(repaired("g:orders[0]"));
+
+        assertThat(codes(h)).containsExactly("stream-consumer-state-diverged", "stream-consumer-state-repaired");
+    }
+
+    /// PA5: the pairing touches exactly one pair of codes; every other code keeps the plain 60 s throttle.
+    @Test
+    void onOperatorWarning_onlyTheDivergencePairIsPaired_otherCodesUnchanged() {
+        assertThat(java.util.Arrays.stream(OperatorWarningCode.values()).filter(c -> c.recoveryOf().isPresent()).toList())
+            .containsExactly(OperatorWarningCode.STREAM_CONSUMER_STATE_REPAIRED);
+        assertThat(java.util.Arrays.stream(OperatorWarningCode.values()).filter(OperatorWarningCode::hasRecovery).toList())
+            .containsExactly(OperatorWarningCode.STREAM_CONSUMER_STATE_DIVERGED);
+        var t = new AtomicLong(1_000_000L);
+        var h = v1923Clocked(t);
+
+        for (var code : OperatorWarningCode.values()) {
+            if (code.recoveryOf().isPresent()) {
+                continue;
+            }
+            h.aggregator().onOperatorWarning(OperatorWarning.operatorWarning(code, "x", "m"));
+            t.addAndGet(1_000L);
+            h.aggregator().onOperatorWarning(OperatorWarning.operatorWarning(code, "x", "m"));
+        }
+        assertThat(h.events()).as("one event per non-recovery code, the repeat throttled")
+                              .hasSize(OperatorWarningCode.values().length - 1);
     }
 }

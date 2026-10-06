@@ -17,8 +17,9 @@
   has none. `[verified: same test class, StateDivergence]`
 - **`WarningLevel.INFO`** is a new generic level of the operator-warning mechanism: logs at INFO, publishes at
   `ClusterEvent.Severity.INFO`. A code can name the code it is the recovery of; the aggregator publishes such a
-  recovery only after a published event of the code it closes for the same subject, once per event, outside the 60 s
-  window. `[verified: ClusterEventAggregatorTest onOperatorWarning_recovery*, OperatorWarningsTest, OperatorWarningCodeTest]`
+  recovery only after an event of the code it closes is in the log for the same subject (held while that event is
+  redelivered, dropped with it), once per event, outside the 60 s window; a recovery also ends the closed code's
+  throttle window, so a recurrence is shown. `[verified: ClusterEventAggregatorTest onOperatorWarning_recovery*, OperatorWarningsTest, OperatorWarningCodeTest]`
 - **The quorum-loss abandon could raise the divergence warning falsely.** `abandonAll` did not take the pass lock, so
   it could run while a reconcile pass was between recording a subscription as attached and subscribing it in the
   runtime: the abandon found nothing to remove and reported a divergence that did not exist, and the pass then
