@@ -379,6 +379,7 @@ class NodeLifecycleRoutesSliceFloorTest {
         pendingDrains.add(node(1));
         breach(routes.drainNodeForTest(node(2).id()).await());
 
+        fsm.onSwimDeparted(node(2), 2L);
         routes.onMemberDeparted(node(2));
 
         var raised = awaitWarnings(2);
@@ -397,8 +398,10 @@ class NodeLifecycleRoutesSliceFloorTest {
         var routes = routes();
         host(slice("a", 3, 2), node(1), node(2), node(3));
         pendingDrains.add(node(1));
-        routes.onMemberDeparted(node(3));
         breach(routes.drainNodeForTest(node(2).id()).await());
+        fsm.onSwimDeparted(node(3), 2L);
+        routes.onMemberDeparted(node(3));
+        fsm.onSwimDeparted(node(2), 2L);
         routes.onMemberDeparted(node(2));
         routes.onMemberDeparted(node(2));
 
@@ -501,6 +504,31 @@ class NodeLifecycleRoutesSliceFloorTest {
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         }
+    }
+
+    /// F5: the departure task runs asynchronously, behind the monitor. A member that died and REJOINED under the same id
+    /// before the task ran is present again, so reporting "left the membership" for it is a false all-clear. The task
+    /// re-checks membership under the monitor. Deterministic: this thread holds the (reentrant) monitor, so the task is
+    /// provably queued behind it while the member dies, rejoins and is refused again.
+    @Test
+    void departureTaskForAMemberThatRejoinedBeforeItRan_raisesNoFalseRecovery() {
+        var routes = routes();
+        host(slice("a", 3, 2), node(1), node(2), node(3));
+        pendingDrains.add(node(1));
+        breach(routes.drainNodeForTest(node(2).id()).await());
+
+        synchronized (routes) {
+            fsm.onSwimDeparted(node(2), 2L);
+            assertThat(fsm.memberStates()).as("control: the member died").containsEntry(node(2), "Dead");
+            routes.onMemberDeparted(node(2));
+            fsm.onSwimHealthy(node(2), 3L);
+            assertThat(fsm.memberStates().get(node(2))).as("control: it rejoined under the same id").isNotEqualTo("Dead");
+            breach(routes.drainNodeForTest(node(2).id()).await());
+        }
+
+        assertThat(settledWarnings()).as("the live member is not reported as having left")
+                                     .extracting(OperatorWarning::code)
+                                     .containsExactly(OperatorWarningCode.SLICE_FLOOR_DRAIN_REFUSED);
     }
 
     @Test

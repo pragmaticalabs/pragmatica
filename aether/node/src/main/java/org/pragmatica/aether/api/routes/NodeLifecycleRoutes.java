@@ -492,7 +492,14 @@ public final class NodeLifecycleRoutes implements RouteSource {
 
     @SuppressWarnings("JBCT-RET-01")
     private synchronized void closeRefusalOnDeparture(NodeId node) {
-        sliceFloor.onPresent(floor -> raiseFloorRecovery(floor, node, "drain", "the node left the membership"));
+        // The departure was handed off asynchronously, so by the time this runs the member may have rejoined under the same
+        // id (Dead is retained and a higher-incarnation healthy report re-arms it). Judge "left" NOW, under the monitor, not
+        // by the edge that queued this task: a live member must not be reported as having left.
+        var tracked = nodeSupplier.get().membershipFsm().memberStates();
+
+        if (hasLeftMembership(tracked, node.id())) {
+            sliceFloor.onPresent(floor -> raiseFloorRecovery(floor, node, "drain", "the node left the membership"));
+        }
     }
 
     /// A refused target that has since left the membership will never be admitted, so its refusal would stay open in
