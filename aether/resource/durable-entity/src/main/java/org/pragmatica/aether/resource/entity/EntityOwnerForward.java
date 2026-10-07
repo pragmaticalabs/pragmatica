@@ -110,17 +110,16 @@ public interface EntityOwnerForward {
     /// to carry back.
     Promise<Unit> forwardCancelTimer(NodeId owner, String keyspace, byte[] key, String token);
 
-    /// A refusal that crossed the forward wire. `failureType` is the OWNER-side cause's simple class
-    /// name, carried explicitly because the wire otherwise flattens causes to message strings — and a
-    /// forwarded duplicate-create that surfaced as a generic failure instead of `EntityAlreadyExists`
-    /// reads as an unexplained error to every consumer that matches on the type (02w counts acked
-    /// creates exactly that way). The entity reconstructs the typed [EntityError] variants it knows;
-    /// anything else keeps this carrier, whose message names the owner's reason verbatim.
-    /// A forward that provably never delivered its command: this node's transport refused the send (no peer state,
-    /// dead connection) or the caller's budget was already spent, so nothing reached the owner and nothing was applied.
-    /// Safe to retry blindly, hence [Cause.Transient]: an app route answers 503 and a caller that retries on
-    /// [Cause#isTransient] re-resolves the owner instead of treating the refusal as final (#1973). Distinct from a forward
-    /// that TIMED OUT after the send, whose outcome is unknown and which stays non-transient.
+    /// A forward that never left this node: its command can be neither applied nor delivered later, so a retry is safe
+    /// (#1973). Produced when the transport refuses the send (`NoPeerState`, `ConnectionDead`, `BackpressureRefused`,
+    /// `EncodeFailed`) or the caller's budget is already spent, and when the owner refuses an arrived-expired command before
+    /// touching the entity.
+    ///
+    /// The guarantee holds because of two mechanisms, and both are needed: the send is reported as refused only when the
+    /// transport did not write the frame, and an entity forward frame is [org.pragmatica.consensus.net.NoOfflineBuffering],
+    /// so a frame that finds its connection dead or absent is DROPPED rather than held in the peer's offline buffer and
+    /// delivered on reattach after the caller was told it was not sent. [Cause.Transient]: an app route answers 503 with
+    /// "safe to retry" in the body. Contrast [ForwardTimedOut], where the command WAS sent and the outcome is unknown.
     record ForwardNotSent(String detail) implements Cause.Transient {
         @Override
         public String message() {
@@ -139,6 +138,12 @@ public interface EntityOwnerForward {
         }
     }
 
+    /// A refusal that crossed the forward wire. `failureType` is the OWNER-side cause's simple class
+    /// name, carried explicitly because the wire otherwise flattens causes to message strings — and a
+    /// forwarded duplicate-create that surfaced as a generic failure instead of `EntityAlreadyExists`
+    /// reads as an unexplained error to every consumer that matches on the type (02w counts acked
+    /// creates exactly that way). The entity reconstructs the typed [EntityError] variants it knows;
+    /// anything else keeps this carrier, whose message names the owner's reason verbatim.
     record ForwardRefused(String failureType, String ownerMessage) implements Cause {
         @Override
         public String message() {
