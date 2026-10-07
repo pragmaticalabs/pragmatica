@@ -296,6 +296,32 @@ class ByteCappedPeerGateTest {
         assertThat(resolved).singleElement().isInstanceOf(OwnerActivation.ActivationBlock.PeerEventExceedsReadCap.class);
     }
 
+    /// #1937 F5: a peer that was cut before its first event goes SILENT instead. The unreachable wait has its own slot, so it does not
+    /// replace the oversized block; the oversized condition has ended all the same and must be resolved, or its CRITICAL stays open
+    /// and the status read keeps naming a peer that is no longer oversized. Red when the oversized block is only ended by activation.
+    @Test
+    void oversizedPeerGoesSilent_theOversizedBlockIsResolved_andTheUnreachableOneIsRaised() {
+        wire(StreamForwardHandler.DEFAULT_MAX_READ_RESPONSE_BYTES);
+        var silent = new java.util.concurrent.atomic.AtomicBoolean(false);
+        var gate = gateOverPeers(List.of(PEER),
+                                 (_, _, _) -> silent.get()
+                                              ? org.pragmatica.lang.utils.Causes.cause("no answer").promise()
+                                              : new OwnerPeerReads.EventExceedsReadCap(4L).promise());
+
+        gate.activate(STREAM, PARTITION).await();
+        silent.set(true);
+        gate.activate(STREAM, PARTITION).await();
+        gate.activate(STREAM, PARTITION).await();
+
+        assertThat(resolved).as("the oversized block ended, once").singleElement()
+                            .isInstanceOf(OwnerActivation.ActivationBlock.PeerEventExceedsReadCap.class);
+        assertThat(alarms).extracting(block -> block.getClass().getSimpleName())
+                          .containsExactly("PeerEventExceedsReadCap", "HoldersUnreachable");
+        assertThat(gate.blockOf(STREAM, PARTITION).or((OwnerActivation.ActivationBlock) null))
+            .as("the status read now names the unreachable wait, not the stale oversized peer")
+            .isInstanceOf(OwnerActivation.ActivationBlock.HoldersUnreachable.class);
+    }
+
     private OwnerActivation gateOverPeers(List<NodeId> peers, org.pragmatica.aether.stream.replication.ReplicaWatermarkProbe probe) {
         OwnerActivation.RecordRange ranges = (node, stream, partition, from, to) ->
             OwnerPeerReads.appendedRange(OwnerPeerReads.localPages(peer, Option.none()), node, stream, partition, from, to, 1024);

@@ -736,6 +736,17 @@ its effect. Retry such calls only with an idempotency key or server-side dedup, 
 API documents as pre-execution. `PublishOutcomeUnknown` stays 500 precisely because its outcome is
 unknown and it is not retry-safe without a message ID.
 
+**Entity owner-forward refusals (#1973): two different 503s, told apart by the body.** A durable-entity operation on a node that
+is not the key's owner is forwarded to the owner. Both of these answer **503** (they are `Cause.Transient`):
+
+| Cause | Body says | Guarantee |
+|-------|-----------|-----------|
+| `EntityOwnerForward.ForwardNotSent` | "refused at send ... the owner was never reached and nothing was applied; safe to retry" (also "request budget exhausted — the command was never sent") | The command **never left this node** (the transport refused the send, or the caller's budget was already spent): nothing was applied, a retry is safe. |
+| `EntityOwnerForward.ForwardTimedOut` | "timed out after the send — outcome unknown: the owner may have applied the command ... retry only an idempotent operation" | The command **was sent** and no answer came in time: the owner may or may not have applied it. A blind retry of a non-idempotent command can repeat its effect. |
+
+`ForwardNotSent` is the only one a client or harness may retry blindly; the 02w harness allow-lists exactly that failure type. A slice that
+reports causes as data (the test fixture does) shows them as `failureType` `ForwardNotSent` / `ForwardTimedOut`.
+
 Which mapping wins: an explicit mapping to a status **other than 500** is kept. An explicit `500`
 mapping of a transient cause still answers 503, because the runtime cannot tell an explicit 500 from the
 generated `default` 500. A failure that is not classified transient (including a transient cause hidden
