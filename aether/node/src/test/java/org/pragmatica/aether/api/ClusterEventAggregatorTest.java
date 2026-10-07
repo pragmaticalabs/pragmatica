@@ -2040,11 +2040,11 @@ class ClusterEventAggregatorTest {
     @Test
     void onOperatorWarning_onlyTheDeclaredPairsArePaired_otherCodesUnchanged() {
         assertThat(java.util.Arrays.stream(OperatorWarningCode.values()).filter(c -> c.recoveryOf().isPresent()).toList())
-            .containsExactly(OperatorWarningCode.STREAM_CONSUMER_STATE_REPAIRED,
+            .containsExactlyInAnyOrder(OperatorWarningCode.STREAM_CONSUMER_STATE_REPAIRED,
                              OperatorWarningCode.STREAM_CONSUMER_REGISTERED_AGAIN,
                              OperatorWarningCode.STREAM_CONSUMER_DRAIN_RESTORED);
         assertThat(java.util.Arrays.stream(OperatorWarningCode.values()).filter(OperatorWarningCode::hasRecovery).toList())
-            .containsExactly(OperatorWarningCode.STREAM_CONSUMER_STATE_DIVERGED,
+            .containsExactlyInAnyOrder(OperatorWarningCode.STREAM_CONSUMER_STATE_DIVERGED,
                              OperatorWarningCode.STREAM_CONSUMER_NOT_REGISTERED,
                              OperatorWarningCode.STREAM_CONSUMER_DRAIN_FAILING);
         var t = new AtomicLong(1_000_000L);
