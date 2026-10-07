@@ -96,7 +96,7 @@ class CommunityObservabilityForgeTest {
                .untilAsserted(() -> assertThat(communityEvents(community)).filteredOn(CommunityMemberLeft.class::isInstance)
                                                                          .extracting(event -> event.details().get("nodeId"))
                                                                          .containsExactly(victim.id()));
-        assertThat(directive(victim)).as("the killed worker's activation directive is removed").isEmpty();
+        assertThat(directive(victim).isPresent()).as("the killed worker's activation directive is removed").isFalse();
         assertThat(roster(community)).as("the killed worker leaves the committed roster").doesNotContain(victim);
         // Recovery: a replacement worker makes the community whole again, and the transition is announced.
         var replacement = LifecycleAwait.nodeSettled("admit replacement worker", cluster, cluster.addWorkerNode());

@@ -89,6 +89,21 @@ class MembershipWorkerDeathTest {
         assertThat(state(membership, id)).isEqualTo("Member");
     }
 
+    /// Control for the veto test above: the same sequence WITHOUT the evidence after the FAULTY edge ends
+    /// DEAD, so the veto test's "still a MEMBER" cannot be a vacuous pass.
+    @Test
+    void workerFaulty_withEvidenceOnlyBeforeTheFaultyEdge_isEvicted() {
+        var membership = fsm();
+        var id = new NodeId("worker-3");
+
+        membership.onGovernorHealthy(id, "community", new NodeId("governor"), 1, 1, worker());
+        membership.onSwimFaulty(id, 1);
+
+        assertThat(awaitTrue(() -> "Dead".equals(state(membership, id)), 3_000))
+            .as("evidence that predates the FAULTY edge does not veto it; state=%s", state(membership, id))
+            .isTrue();
+    }
+
     /// The waiver is for workers and spots only. A core is dialed, so its liveness plane exists and must
     /// still be required: SWIM-FAULTY alone must never kill a core.
     @Test
