@@ -18,9 +18,11 @@ package org.pragmatica.consensus.net;
 /// Marker for an outbound message that must NEVER be held in a peer's offline buffer for delivery after a reconnect.
 ///
 /// The offline buffer re-delivers a frame on reattach with no time limit. That is right for state-convergence traffic
-/// (consensus, SWIM, DHT anti-entropy), which tolerates a late or repeated frame. It is wrong for a request whose caller
-/// is told the outcome at send time and then gives up: a late delivery applies a command after the caller was told it
-/// was not sent (#1973, the entity owner-forward). A marked message that finds no live connection is DROPPED and the
+/// that tolerates a late or repeated frame (SWIM, DHT anti-entropy, consensus proposals and votes, which are keyed by
+/// slot). It is wrong for a request whose caller is told the outcome at send time and then gives up: a late delivery
+/// applies a command after the caller was told it was not sent (#1973, the entity owner-forward). It is also wrong for
+/// a frame whose late delivery changes state because its identity is not slot-keyed: Rabia's `NewBatch` (#2011) carries
+/// a content-hashed batch that a late copy re-queues after it committed. A marked message that finds no live connection is DROPPED and the
 /// send reports a not-sent [WriteOutcome], so the caller's refusal is true.
 ///
 /// Unmarked messages keep the buffering unchanged.
