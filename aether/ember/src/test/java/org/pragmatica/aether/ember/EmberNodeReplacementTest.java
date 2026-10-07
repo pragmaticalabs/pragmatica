@@ -194,6 +194,27 @@ class EmberNodeReplacementTest {
         assertThat(cluster.getNode(victim.self().id()).isPresent()).as("the old node is still running").isTrue();
     }
 
+    /// The instrument can fail: a sampler that never reports a violation proves nothing. Here the electorate is shrunk ON
+    /// PURPOSE (a plain reconfiguration to two members, no replacement involved) while the sampler expects three, and the
+    /// sampler must report it.
+    @Test
+    @Timeout(300)
+    void controlTheVoterSamplerReportsADeliberatelyShrunkElectorate() {
+        start(3, "rpc");
+        var leader = awaitLeader();
+        var watch = Watch.begin(this, 3);
+        var kept = new ArrayList<>(installedVoters(leader));
+
+        kept.remove(followerOf(leader).self());
+        runtime(leader).reconfigure(new org.pragmatica.consensus.rabia.ClusterConfig(kept)).await(START_BOUND);
+        awaitCondition("the electorate shrank to two", () -> installedVoters(leader).size() == 2);
+        sleep(500);
+        var result = watch.finish();
+
+        assertThat(result.voterViolations()).as("the sampler saw the shrink").isNotEmpty();
+        assertThat(result.voterViolations().getFirst()).contains("2 voters");
+    }
+
     // ---- scenario plumbing -------------------------------------------------------------------------------------------
 
     private void start(int size, String prefix) {
