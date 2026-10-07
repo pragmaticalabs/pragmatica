@@ -46,6 +46,8 @@ class DrainPassEscapeRunTest {
     private final AtomicBoolean throwing = new AtomicBoolean(true);
     private final AtomicBoolean failingRead = new AtomicBoolean();
     private final AtomicInteger clockReadsUntilCancel = new AtomicInteger();
+    /// Only the thread that armed the countdown counts clock reads: the poll tick reads the clock concurrently.
+    private final java.util.concurrent.atomic.AtomicReference<Thread> armedThread = new java.util.concurrent.atomic.AtomicReference<>();
     private final java.util.concurrent.atomic.AtomicReference<Runnable> atClockRead = new java.util.concurrent.atomic.AtomicReference<>(() -> {});
     /// Runs inside a read, on the pass's own thread, before it throws: how a test cancels the consumer mid-pass.
     private final java.util.concurrent.atomic.AtomicReference<Runnable> duringRead = new java.util.concurrent.atomic.AtomicReference<>(() -> {});
@@ -80,7 +82,8 @@ class DrainPassEscapeRunTest {
     /// The runtime's clock. Armed, it runs `atClockRead` on the Nth read from now: how a test lands a cancel at an exact
     /// point inside the escape bookkeeping, without sleeping.
     private long now() {
-        if (clockReadsUntilCancel.get() > 0 && clockReadsUntilCancel.decrementAndGet() == 0) {
+        if (Thread.currentThread() == armedThread.get() && clockReadsUntilCancel.get() > 0
+            && clockReadsUntilCancel.decrementAndGet() == 0) {
             atClockRead.get().run();
         }
 
@@ -228,7 +231,10 @@ class DrainPassEscapeRunTest {
         }
         assertThat(warnings).as("control: the alert is not yet raised").isEmpty();
         atClockRead.set(() -> runtime.unsubscribe(NOT_LOCAL, 0, GROUP));
-        duringRead.set(() -> clockReadsUntilCancel.set(2));
+        duringRead.set(() -> {
+            armedThread.set(Thread.currentThread());
+            clockReadsUntilCancel.set(2);
+        });
         runScheduled();
         awaitWarnings(2);
         settle();
