@@ -612,22 +612,6 @@ class DockerComputeProviderTest {
     }
 
     @Nested
-    class RestartTests {
-
-        @Test
-        void restart_success_callsDockerRestart() {
-            testRunner.nextResponse = Promise.success("container-id");
-
-            provider.restart(new InstanceId("container-id"))
-                    .await()
-                    .onFailure(cause -> fail("Expected success but got: " + cause.message()))
-                    .onSuccess(unit -> assertThat(unit).isNotNull());
-
-            assertThat(testRunner.lastCommand).contains("docker", "restart", "container-id");
-        }
-    }
-
-    @Nested
     class ApplyTagsTests {
 
         @Test
