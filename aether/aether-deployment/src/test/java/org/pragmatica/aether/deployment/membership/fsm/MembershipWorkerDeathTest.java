@@ -146,6 +146,69 @@ class MembershipWorkerDeathTest {
             .isTrue();
     }
 
+    /// (c) Slow but alive: the death signal arrives and the governor's evidence follows late — inside the
+    /// window (production cadence is the 1 s ping interval against a 15 s window). Never DEAD, even when the
+    /// signal repeats.
+    @Test
+    void slowButAliveWorker_evidenceInsideTheWindow_isNeverEvicted() throws InterruptedException {
+        var membership = fsm();
+        var id = new NodeId("worker-slow");
+        var governor = new NodeId("governor");
+
+        membership.onGovernorHealthy(id, "community", governor, 1, 1, worker());
+        for (int round = 0; round < 4; round++) {
+            membership.onSwimFaulty(id, 1);
+            membership.onLivenessGone(id);
+            Thread.sleep(BACKSTOP_MS * 2 / 3);
+            membership.onGovernorHealthy(id, "community", governor, 1, 1, worker());
+        }
+
+        assertThat(state(membership, id)).as("each late report landed inside the window").isEqualTo("Member");
+    }
+
+    /// (d) Partitioned but alive: evidence stops and the death signal holds, so the worker IS evicted after the
+    /// window. DEAD is terminal for the identity — when the partition heals, the worker's evidence is REFUSED
+    /// (boot-token gate), it stays DEAD, and it must rejoin under a new NodeId.
+    @Test
+    void partitionedWorker_evictedAfterTheWindow_andRefusedWhenItHeals() {
+        var membership = fsm();
+        var id = new NodeId("worker-partitioned");
+        var governor = new NodeId("governor");
+
+        membership.onGovernorHealthy(id, "community", governor, 1, 1, worker());
+        membership.onSwimFaulty(id, 1);
+        assertThat(awaitTrue(() -> "Dead".equals(state(membership, id)), 3_000)).isTrue();
+        var refusedBefore = membership.refusedProcessEvidenceCount();
+
+        membership.onGovernorHealthy(id, "community", governor, 1, 1, worker());
+        membership.onWorkerAdmissionHealthy(id, 1, worker());
+
+        assertThat(state(membership, id)).as("healing does not resurrect a dead identity").isEqualTo("Dead");
+        assertThat(membership.refusedProcessEvidenceCount()).as("the late evidence is refused, and counted").isGreaterThan(refusedBefore);
+    }
+
+    /// (e) The community governor dies: evidence stops for EVERY worker. With no death signal on any plane,
+    /// nobody is evicted — staleness alone never kills. A worker that then really dies (a signal for it
+    /// alone) is the only one evicted.
+    @Test
+    void governorDeath_silencesEvidenceForAll_butEvictsNoWorkerWithoutADeathSignal() {
+        var membership = fsm();
+        var governor = new NodeId("governor");
+        var workers = java.util.List.of(new NodeId("w-a"), new NodeId("w-b"), new NodeId("w-c"));
+
+        workers.forEach(w -> membership.onGovernorHealthy(w, "community", governor, 1, 1, worker()));
+        workers.forEach(w -> membership.onSwimHealthy(w, 1));
+
+        assertThat(awaitTrue(() -> workers.stream().anyMatch(w -> "Dead".equals(state(membership, w))), 3 * BACKSTOP_MS))
+            .as("silence is not a death signal").isFalse();
+
+        membership.onSwimFaulty(workers.get(0), 1);
+
+        assertThat(awaitTrue(() -> "Dead".equals(state(membership, workers.get(0))), 3_000)).isTrue();
+        assertThat(state(membership, workers.get(1))).isEqualTo("Member");
+        assertThat(state(membership, workers.get(2))).isEqualTo("Member");
+    }
+
     /// The waiver is for workers and spots only. A core is dialed, so its liveness plane exists and must
     /// still be required: SWIM-FAULTY alone must never kill a core.
     @Test
