@@ -112,7 +112,10 @@ public interface CoreVoterReconciler {
 
     /// The unpaired selection, then at most ONE authorized swap applied to it — and only when that selection leaves
     /// the roster unchanged, so a swap never rides along with a heal and every reconfiguration changes one seat.
-    /// The leader's own seat is never swapped (`rank(self)=0`): the leader is replaced last, by drain.
+    /// The leader's own seat MAY be swapped (#1543 E): at minimum topology draining a voter is refused by the disruption
+    /// budget, so the old leader leaves the electorate by this one-out-one-in reconfiguration (the size stays N), a
+    /// successor is elected by the ordinary Rabia election, and the drain that follows passes because the old node no longer
+    /// votes. The unpaired selection still ranks the leader first, so a heal never displaces it.
     static List<NodeId> selectVoters(NodeId self,
                                      VoterConfiguration current,
                                      Set<NodeId> ready,
@@ -144,8 +147,7 @@ public interface CoreVoterReconciler {
                                         Set<NodeId> ready,
                                         NodeId original,
                                         NodeId replacement) {
-        return ! original.equals(self)
-               && current.members()
+        return current.members()
                          .contains(original)
                && !current.members()
                           .contains(replacement)

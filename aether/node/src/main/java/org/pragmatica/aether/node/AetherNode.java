@@ -68,6 +68,9 @@ import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager;
 import org.pragmatica.aether.deployment.cluster.ClusterTopologyManager;
 import org.pragmatica.aether.deployment.cluster.CoreVoterReconciler;
 import org.pragmatica.aether.deployment.cluster.NodeReplacementIndex;
+import org.pragmatica.aether.deployment.cluster.NodeReplacementPlanner;
+import org.pragmatica.aether.deployment.cluster.NodeReplacementService;
+import org.pragmatica.aether.environment.ProvisionContext;
 import org.pragmatica.aether.deployment.cluster.CommunityRetirementIndex;
 import org.pragmatica.aether.node.backup.BackupGenesis;
 import org.pragmatica.aether.node.backup.BackupRestoreCoordinator;
@@ -454,6 +457,9 @@ public interface AetherNode extends ManageableNode {
     ConsumerGroupCoordinator consumerGroupCoordinator();
     ConsumerGroupRegistry consumerGroupRegistry();
     StreamNamespacesService streamNamespacesService();
+
+    /// #1543 E: begin, inspect and settle node replacements (the leader drives the phases).
+    NodeReplacementService nodeReplacementService();
     Fn1<Result<NodeId>, TaskGroup> taskGroupOwnerResolver();
     Map<String, StorageFactory.StorageSetup> storageSetups();
     Option<CertificateRenewalScheduler> certRenewalScheduler();
@@ -2407,7 +2413,8 @@ public interface AetherNode extends ManageableNode {
                           Runnable streamReplicationShutdown,
                           // #903: the provider whose shared (unattributed) scope only node shutdown
                           // can close.
-                          Option<SpiResourceProvider> spiResourceProvider) implements AetherNode {
+                          Option<SpiResourceProvider> spiResourceProvider,
+                          NodeReplacementService nodeReplacementService) implements AetherNode {
             private static final Logger log = LoggerFactory.getLogger(aetherNode.class);
 
             @Override
@@ -4839,6 +4846,40 @@ public interface AetherNode extends ManageableNode {
         // membership-layer reconciler keeps no hard dependency on the deployment FSM.
         leaderReconciler.setOwnsActiveSlices(SliceOwnershipQuery.ownsActiveSlices(kvStore));
         leaderReconciler.setSliceDrainGuard(SliceOwnershipQuery.minAvailableDrainGuard(kvStore));
+        // #1543 E: the replacement reconciler (leader-driven, resumes from the committed records) and its service.
+        var replacementWiring = NodeReplacementWiring.wire(new NodeReplacementWiring.Inputs(config.self(),
+                                                                                           isLeaderSupplier,
+                                                                                           kvStore,
+                                                                                           commands -> clusterNode.apply(commands),
+                                                                                           nodeReplacements,
+                                                                                           membershipFsmRef::get,
+                                                                                           clusterNode::voterConfiguration,
+                                                                                           clusterNode::retirementSafeVoters,
+                                                                                           () -> readyCoreCandidates(stableCdmReadyNodesSupplier.get(),
+                                                                                                                     membershipFsmRef::get).stream()
+                                                                                                                    .filter(coreAdmission::isAllowed)
+                                                                                                                    .collect(Collectors.toUnmodifiableSet()),
+                                                                                           id -> clusterNode.topologyManager()
+                                                                                                            .get(id)
+                                                                                                            .flatMap(info -> Option.option(info.labels().get(NodeInfo.LABEL_VERSION)))
+                                                                                                            .or(""),
+                                                                                           clusterTopologyManager,
+                                                                                           id -> managementServerRef.get()
+                                                                                                                    .fold(() -> Promise.success(NodeReplacementWiring.DrainOutcome.blocked("management server not ready")),
+                                                                                                                          server -> server.admitReplacementDrain(id)
+                                                                                                                                          .<NodeReplacementWiring.DrainOutcome> map(_ -> NodeReplacementWiring.DrainOutcome.admitted())
+                                                                                                                                          .recover(cause -> NodeReplacementWiring.DrainOutcome.blocked(cause.message()))),
+                                                                                           () -> ProvisionContext.coreNodeNamePrefix(clusterNameSupplier.get()),
+                                                                                           id -> dhtNode.ring().nodes().contains(id),
+                                                                                           operatorWarningSink,
+                                                                                           System::currentTimeMillis,
+                                                                                           NodeReplacementPlanner.Timings.defaults()));
+
+        periodicTasks.defer(() -> SharedScheduler.scheduleAtFixedRate(() -> replacementWiring.reconciler()
+                                                                                             .reconcile()
+                                                                                             .onFailure(cause -> LOG.warn("Node replacement reconciliation: {}",
+                                                                                                                          cause.message())),
+                                                                      TimeSpan.timeSpan(1).seconds()));
         swimHealthDetector.addObservationListener(presenceSampler::onSwimObservation);
         // E2 Phase 1.5 — symmetric "surplus appeared" trigger: a SWIM HealthyObserved
         // signals a peer became reachable; if the leader is in surplus the reconcile
@@ -6444,7 +6485,8 @@ public interface AetherNode extends ManageableNode {
                                   kvBackupService,
                                   leaderTerm,
                                   streamReplicationShutdown,
-                                  resourceProviderSetup.spiProvider());
+                                  resourceProviderSetup.spiProvider(),
+                                  replacementWiring.service());
 
         nodeDeploymentManager.setShutdownCallback(node::stop);
         // #634-4, the periodic half (owner-ruled: on-read + periodic alert). The watch binds the three
@@ -6670,7 +6712,8 @@ public interface AetherNode extends ManageableNode {
                                                                         kvBackupService,
                                                                         leaderTerm,
                                                                         streamReplicationShutdown,
-                                                                        resourceProviderSetup.spiProvider());
+                                                                        resourceProviderSetup.spiProvider(),
+                                  replacementWiring.service());
                                               }
 
                                                   return node;

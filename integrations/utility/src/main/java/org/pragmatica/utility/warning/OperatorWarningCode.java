@@ -93,6 +93,15 @@ public enum OperatorWarningCode {
     /// The recovery of a [#SLICE_FLOOR_DRAIN_REFUSED], same subject (#1720): a drain or shutdown for a target that was
     /// earlier refused by the slice floor has now been admitted (the floor cleared, or the operator forced it). INFO,
     /// published only after a published refusal for that target, and it clears the refusal's throttle window (#752).
+    NODE_REPLACEMENT_STARTED("node-replacement-started", "replacement", WarningLevel.INFO),
+    NODE_REPLACEMENT_COMPLETED("node-replacement-completed", "replacement", WarningLevel.INFO, NODE_REPLACEMENT_STARTED),
+    NODE_REPLACEMENT_ROLLED_BACK("node-replacement-rolled-back", "replacement", WarningLevel.WARNING, NODE_REPLACEMENT_STARTED),
+    NODE_REPLACEMENT_JOIN_OVERDUE("node-replacement-join-overdue", "replacement", WarningLevel.WARNING),
+    NODE_REPLACEMENT_JOINED("node-replacement-joined", "replacement", WarningLevel.INFO, NODE_REPLACEMENT_JOIN_OVERDUE),
+    NODE_REPLACEMENT_DRAIN_BLOCKED("node-replacement-drain-blocked", "replacement", WarningLevel.WARNING),
+    NODE_REPLACEMENT_DRAIN_UNBLOCKED("node-replacement-drain-unblocked", "replacement", WarningLevel.INFO, NODE_REPLACEMENT_DRAIN_BLOCKED),
+    NODE_REPLACEMENT_FAILED_KEPT_BOTH("node-replacement-failed-kept-both", "replacement", WarningLevel.WARNING),
+    NODE_REPLACEMENT_SETTLED("node-replacement-settled", "replacement", WarningLevel.INFO, NODE_REPLACEMENT_FAILED_KEPT_BOTH),
     SLICE_FLOOR_DRAIN_ADMITTED("slice-floor-drain-admitted", "deployment", WarningLevel.INFO, SLICE_FLOOR_DRAIN_REFUSED),
     /// A replica of a `confirmation_factor` 1 stream cut its divergent tail back to the last offset it shares with its
     /// owner (#1730 phase 2). With that factor the acknowledgement was the old owner's alone, so the discarded offsets

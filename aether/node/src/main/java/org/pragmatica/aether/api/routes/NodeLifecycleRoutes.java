@@ -40,6 +40,7 @@ import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.utility.warning.OperatorWarningCode;
 import org.pragmatica.utility.warning.OperatorWarningSink;
@@ -470,6 +471,13 @@ public final class NodeLifecycleRoutes implements RouteSource {
                                    nodeId,
                                    how);
         }
+    }
+
+    /// #1543 E: the old node's drain in a replacement goes through the SAME admission as `POST /nodes/drain` (readiness, the
+    /// core disruption budget, #1720's slice floor), and is never forced. Success means the drain command was enqueued; a
+    /// refusal is the cause the operator would have received.
+    public Promise<Unit> admitReplacementDrain(NodeId node) {
+        return Promise.resolved(admitOperatorDrain(node, true, false).map(_ -> Unit.unit()));
     }
 
     /// The transition itself: the membership FSM confirmed `node` DEAD on this node. A target refused by the slice floor
