@@ -377,6 +377,32 @@ class ClusterTopologyManagerWorkerReconcileTest {
         assertThat(lifecycleManager.provisionedNodeIds()).isEmpty();
     }
 
+    /// #1543 rule 3 through the reconcile pass: a paired +1 replacement is surge, so the pass retires
+    /// nothing; once the pairing reaches RETIRING_OLD the paired original is the one retired.
+    @Test
+    void reconcile_workerSurplus_honoursTheReplacementPairingSetOnTheCtm() {
+        var requested = captureRetirementRequests();
+        var pairings = NodeReplacementIndex.nodeReplacementIndex();
+        var pairing = new org.pragmatica.aether.slice.kvstore.AetherKey.NodeReplacementKey(new NodeId("primary-worker-1"));
+        ctm.setNodeReplacements(pairings);
+        seedTopology(entry("primary", "core", 3), entry("primary", "worker", 2));
+        lifecycleManager.preExisting(workerInstance("primary", "primary-worker-0"),
+                                     workerInstance("primary", "primary-worker-1"),
+                                     workerInstance("primary", "primary-worker-rzzz-0"));
+        pairings.put(pairing, new AetherValue.NodeReplacementValue(new NodeId("primary-worker-rzzz-0"), "worker",
+                                                                   AetherValue.NodeReplacementPhase.JOINING, 0L));
+        ctm.activate();
+
+        ctm.reconcileWorkerTopology();
+        assertThat(requested).isEmpty();
+
+        pairings.put(pairing, new AetherValue.NodeReplacementValue(new NodeId("primary-worker-rzzz-0"), "worker",
+                                                                   AetherValue.NodeReplacementPhase.RETIRING_OLD, 0L));
+        ctm.reconcileWorkerTopology();
+        assertThat(requested).containsExactly("primary-worker-1");
+        assertThat(lifecycleManager.terminatedNodeIds()).isEmpty();
+    }
+
     /// Defect A's scale-down consequence, on the reconciler's OWN mints rather than on inventory the
     /// test planted: with the label round-trip broken, surplus was structurally unreachable —
     /// `actual` was always empty, so `terminateSurplusWorkers` had no victims to choose from and a
