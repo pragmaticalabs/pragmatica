@@ -18,6 +18,7 @@ import org.pragmatica.aether.node.entityforward.EntityForwardMessage.EntityGetFo
 import org.pragmatica.aether.node.entityforward.EntityForwardMessage.EntityScheduleTimerForward;
 import org.pragmatica.aether.node.entityforward.EntityForwardMessage.EntityScheduleTimerForwardResponse;
 import org.pragmatica.aether.resource.entity.EntityForwardRegistry;
+import org.pragmatica.aether.resource.entity.EntityOwnerForward;
 import org.pragmatica.aether.node.entityforward.EntityForwardMessage.EntityUpdateForward;
 import org.pragmatica.aether.node.entityforward.EntityForwardMessage.EntityUpdateForwardResponse;
 import org.pragmatica.consensus.NodeId;
@@ -87,6 +88,53 @@ class EntityForwardServiceTest {
             .as("the caller must learn the owner was never reached, not wait out a timeout")
             .contains("refused at send")
             .contains("ConnectionDead");
+    }
+
+    /// #1973: a send the transport refused delivered nothing, so the refusal is a TYPED transient (safe to retry), for
+    /// every refusal kind. Untyped, a caller or the 02w harness read it as a final failure and stopped retrying.
+    @Test
+    void forwardGet_sendRefused_isATypedTransientRefusal_forEveryRefusalKind() {
+        for (var refusal : List.of(new WriteOutcome.NoPeerState(OWNER), new WriteOutcome.ConnectionDead(OWNER))) {
+            sender.refuseWith(refusal);
+
+            var result = service.forwardGet(OWNER, "orders", bytes("k1")).await();
+
+            assertThat(result.isFailure()).as(refusal.toString()).isTrue();
+            result.onFailure(cause -> {
+                assertThat(cause).as(refusal.toString()).isInstanceOf(EntityOwnerForward.ForwardNotSent.class);
+                assertThat(cause.isTransient()).as(refusal.toString()).isTrue();
+                assertThat(cause.message()).contains("safe to retry");
+            });
+        }
+    }
+
+    /// #1973: an exhausted budget refuses before anything is sent, so it is the same typed transient.
+    @Test
+    void forwardCreate_underExhaustedBudget_isATypedTransientRefusal() {
+        var result = Deadline.runWith(Deadline.fromWireMillis(0),
+                                      () -> service.forwardCreate(OWNER, "orders", bytes("k1"), bytes("5")))
+                             .await();
+
+        result.onSuccess(_ -> org.junit.jupiter.api.Assertions.fail("expected a refusal"))
+              .onFailure(cause -> {
+                  assertThat(cause).isInstanceOf(EntityOwnerForward.ForwardNotSent.class);
+                  assertThat(cause.isTransient()).isTrue();
+              });
+    }
+
+    /// #1973 control: a forward that WAS sent and then timed out has an unknown outcome (the owner may have applied it), so
+    /// it is deliberately NOT transient: a blind retry can double-apply. It answers 500 at an app route, not 503.
+    @Test
+    void forwardCreate_timedOutAfterTheSend_staysNonTransient() {
+        var shortService = entityForwardService(SELF, sender, TimeSpan.timeSpan(50).millis());
+        var result = shortService.forwardCreate(OWNER, "orders", bytes("k1"), bytes("5")).await();
+
+        assertThat(sender.messageCount()).as("control: the command was sent").isEqualTo(1);
+        result.onSuccess(_ -> org.junit.jupiter.api.Assertions.fail("expected a timeout"))
+              .onFailure(cause -> {
+                  assertThat(cause.isTransient()).isFalse();
+                  assertThat(cause.message()).contains("timed out").contains("outcome unknown");
+              });
     }
 
     /// A raced or late response for a fast-failed correlation resolves nothing and throws nothing.

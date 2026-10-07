@@ -1126,6 +1126,7 @@ final class PartitionFencedDurableEntity<K, S, C extends Mutator<S>> implements 
             case "StorageUnavailable" -> new EntityError.StorageUnavailable(String.valueOf(key), cause);
             case "OwnerTransitioning", "OwnershipNotYetCommitted", "FoldInProgress" -> new EntityError.OwnerTransitioning(String.valueOf(key),
                                                                                                                           ownerMessage);
+            case "ForwardBudgetExhausted" -> new EntityOwnerForward.ForwardNotSent("entity owner-forward for key '" + key + "' refused by the owner, which did not touch the entity: " + ownerMessage + " — nothing was applied; safe to retry with a fresh budget");
             default -> cause;
         }
                : cause;

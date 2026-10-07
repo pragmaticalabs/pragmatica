@@ -116,6 +116,18 @@ public interface EntityOwnerForward {
     /// reads as an unexplained error to every consumer that matches on the type (02w counts acked
     /// creates exactly that way). The entity reconstructs the typed [EntityError] variants it knows;
     /// anything else keeps this carrier, whose message names the owner's reason verbatim.
+    /// A forward that provably never delivered its command: this node's transport refused the send (no peer state,
+    /// dead connection) or the caller's budget was already spent, so nothing reached the owner and nothing was applied.
+    /// Safe to retry blindly, hence [Cause.Transient]: an app route answers 503 and a caller that retries on
+    /// [Cause#isTransient] re-resolves the owner instead of treating the refusal as final (#1973). Distinct from a forward
+    /// that TIMED OUT after the send, whose outcome is unknown and which stays non-transient.
+    record ForwardNotSent(String detail) implements Cause.Transient {
+        @Override
+        public String message() {
+            return detail;
+        }
+    }
+
     record ForwardRefused(String failureType, String ownerMessage) implements Cause {
         @Override
         public String message() {
