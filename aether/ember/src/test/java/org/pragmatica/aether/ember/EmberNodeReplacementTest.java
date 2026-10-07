@@ -194,6 +194,65 @@ class EmberNodeReplacementTest {
         assertThat(cluster.getNode(victim.self().id()).isPresent()).as("the old node is still running").isTrue();
     }
 
+    /// #1543 E2: a WORKER is replaced with no voter swap at all. The electorate is sampled on every node and must stay the
+    /// same three cores throughout, the phases never include SWAPPING, the old worker is retired and the replacement is a
+    /// worker.
+    @Test
+    @Timeout(600)
+    void replaceAWorker_swapsNoVoter_retiresTheOldWorker_andTheReplacementIsAWorker() {
+        start(3, "rpw");
+        var leader = awaitLeader();
+        var worker = cluster.addWorkerNode().await(START_BOUND).unwrap();
+
+        awaitCondition("the worker is ready", () -> cluster.getNode(worker.id()).filter(AetherNode::isReady).isPresent());
+        var cores = installedVoters(leader);
+        var watch = Watch.begin(this, 3).watching(worker);
+
+        leader.nodeReplacementService().begin(worker, "").await(START_BOUND).onFailure(cause -> throwBecause(cause.message()));
+        awaitTerminal(worker);
+        var result = watch.finish();
+        var record = recordOf(worker);
+
+        assertThat(record.phase()).as("reason: %s", record.reason()).isEqualTo(NodeReplacementPhase.DONE);
+        assertThat(record.role()).isEqualTo("worker");
+        assertThat(result.phases()).as("a worker never swaps a seat").doesNotContain(NodeReplacementPhase.SWAPPING);
+        assertThat(result.phases()).contains(NodeReplacementPhase.CANARY, NodeReplacementPhase.DONE);
+        assertThat(result.voterViolations()).as("the electorate is untouched on every sample").isEmpty();
+        assertThat(installedVoters(awaitLeader())).as("the same cores vote").isEqualTo(cores);
+        awaitCondition("the old worker is gone", () -> cluster.getNode(worker.id()).isEmpty());
+        assertThat(cluster.getNode(record.replacement().id()).isPresent()).as("the replacement runs").isTrue();
+        assertThat(installedVoters(awaitLeader())).as("the replacement is a worker, not a voter").doesNotContain(record.replacement());
+    }
+
+    /// #1543 E2, EXTERNAL mode: the operator names a fresh id and starts that core itself. The leader provisions nothing;
+    /// the same phase machine swaps its seat in. An id that is already a member is refused.
+    @Test
+    @Timeout(600)
+    void externalReplacement_operatorStartsTheChosenCore_andThePhasesCompleteWithoutTheLeaderProvisioning() {
+        start(3, "rpx");
+        var leader = awaitLeader();
+        var victim = followerOf(leader).self();
+        var chosen = NodeId.nodeId("rpx-ext-9").unwrap();
+        var refusal = leader.nodeReplacementService().beginExternal(victim, leader.self(), "").await(START_BOUND);
+
+        assertThat(refusal.isFailure()).as("a member id is not a fresh id").isTrue();
+        var watch = Watch.begin(this, 3).watching(victim);
+        var begun = leader.nodeReplacementService().beginExternal(victim, chosen, "").await(START_BOUND);
+
+        begun.onFailure(cause -> throwBecause(cause.message()));
+        assertThat(begun.unwrap().mode()).isEqualTo(NodeReplacementValue.MODE_EXTERNAL);
+        sleep(2_000);
+        assertThat(cluster.getNode(chosen.id()).isEmpty()).as("the leader did not start the node itself").isTrue();
+        cluster.addCoreNode(chosen.id()).await(START_BOUND).onFailure(cause -> throwBecause(cause.message()));
+        awaitTerminal(victim);
+        var result = watch.finish();
+
+        assertThat(recordOf(victim).phase()).as("reason: %s", recordOf(victim).reason()).isEqualTo(NodeReplacementPhase.DONE);
+        assertThat(recordOf(victim).replacement()).isEqualTo(chosen);
+        assertThat(result.voterViolations()).as("installed voters == 3 on every sample").isEmpty();
+        assertOldGone_newVotes(victim, 3);
+    }
+
     /// The instrument can fail: a sampler that never reports a violation proves nothing. Here the electorate is shrunk ON
     /// PURPOSE (a plain reconfiguration to two members, no replacement involved) while the sampler expects three, and the
     /// sampler must report it.

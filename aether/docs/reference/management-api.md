@@ -54,6 +54,7 @@ Roles are hierarchical: ADMIN has all OPERATOR permissions, and OPERATOR has all
 | Blueprint deploy (from artifact) | OPERATOR | `POST /api/v1/blueprints/deploy` |
 | Blueprint validate | ADMIN | `POST /api/v1/blueprints/validate` |
 | Node drain | OPERATOR | `POST /api/v1/nodes/drain/{id}` |
+| Node replacement | OPERATOR | `POST /api/v1/nodes/replace/{id}`, `POST /api/v1/nodes/replacements/settle/{id}` |
 | Scaling | OPERATOR | `POST /api/v1/scale` |
 | Schema operations | OPERATOR | `POST /api/v1/schema/*` |
 | Deployment strategies | OPERATOR | `POST /api/v1/deploy`, `POST /api/v1/deploy/promote/*`, `POST /api/v1/deploy/rollback/*`, `POST /api/v1/deploy/complete/*`, `POST /api/v1/ab-tests/*` |
@@ -4455,6 +4456,9 @@ separate, still in-flight consolidation effort (spec §3.2–§3.3) owns that su
 | GET | `/api/v1/nodes/lifecycle/{id}` | Node Lifecycle |
 | POST | `/api/v1/nodes/drain/{id}` | Node Lifecycle |
 | POST | `/api/v1/nodes/shutdown/{id}` | Node Lifecycle |
+| POST | `/api/v1/nodes/replace/{id}` | Node Lifecycle |
+| GET | `/api/v1/nodes/replacements` | Node Lifecycle |
+| POST | `/api/v1/nodes/replacements/settle/{id}` | Node Lifecycle |
 | GET | `/api/v1/scheduled-tasks` | Scheduled Tasks |
 | GET | `/api/v1/scheduled-tasks/{section}` | Scheduled Tasks |
 | POST | `/api/v1/scheduled-tasks/pause/{section}/{artifact}/{methodName}` | Scheduled Tasks |
@@ -4600,6 +4604,32 @@ Enqueue a graceful shutdown for a node via the membership-v2 DRAIN-command chann
   "message": "Shutdown command enqueued; target will self-drain then halt via heartbeat DRAIN command"
 }
 ```
+
+### POST /api/v1/nodes/replace/{id}
+
+Start replacing a node with a fresh-id node (#1543): the replacement joins, the old node's seat (core) is swapped to it, a
+canary confirms it, then the old node drains and retires. The old node is never restarted under its own id. Route target is
+`LEADER`, authorization OPERATOR; one replacement runs at a time.
+
+Body: `{"replacement": "<fresh node id>", "targetVersion": "<version>"}`. Both fields are optional. Without `replacement` the
+leader provisions the new node (CTM mode); with it the operator starts that id itself (EXTERNAL mode) and the leader commits
+its admission together with the replacement record. `targetVersion` is the version the replacement must run before it is kept.
+Cores and workers are supported; a worker replacement swaps no voter seat.
+
+**Response:** the committed record: `original`, `replacement`, `role`, `phase`, `mode`, `source`, `targetVersion`, `attempt`,
+`reason`, `phaseDeadlineMs`, `epoch`. `404` unknown node; `400` unsupported role; `409` another replacement in progress, the
+chosen id is already a member/paired/reserved, or the record changed concurrently.
+
+### GET /api/v1/nodes/replacements
+
+Every replacement record, ordered by original node id, with the fields above. `phase` is one of `PROVISIONING`, `JOINING`,
+`SWAPPING`, `CANARY`, `DRAINING_OLD`, `RETIRING_OLD`, `DONE`, `REVERTING`, `ROLLED_BACK`, `FAILED_KEPT_BOTH`.
+
+### POST /api/v1/nodes/replacements/settle/{id}
+
+Settle a replacement that stopped in `FAILED_KEPT_BOTH` (both nodes kept). Body `{"outcome": "keep-new"}` finishes retiring the
+old node; `{"outcome": "roll-back"}` gives the new node up. `400` for any other outcome; `409` when the replacement is not in
+`FAILED_KEPT_BOTH`.
 
 ### POST /api/v1/nodes/promote/{id}
 
