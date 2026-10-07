@@ -53,4 +53,39 @@ class ConfigLoaderBackupEnvTest {
         assertThat(load("", Map.of())).as("control: no section and no environment").isNull();
         assertThat(load("", Map.of("AETHER_BACKUP_PATH", "/p"))).as("a path alone does not enable it").isNull();
     }
+
+    /// A blank variable (a compose file's `AETHER_BACKUP_REMOTE: ""`) is unset, so it can neither clear a TOML value nor disable it.
+    @Test
+    void aBlankVariableIsUnset_itNeitherClearsNorDisablesTheToml() {
+        var backup = load("[backup]\nenabled = true\npath = \"/toml/path\"\nremote = \"toml-remote\"\nrestore = \"fresh\"\n",
+                          Map.of("AETHER_BACKUP_ENABLED", "  ", "AETHER_BACKUP_PATH", "", "AETHER_BACKUP_REMOTE", " ", "AETHER_BACKUP_RESTORE", ""));
+
+        assertThat(backup).isEqualTo(BackupConfig.backupConfig(true, "/toml/path", "toml-remote", BackupConfig.RestoreMode.FRESH));
+    }
+
+    /// Env silently beating a deliberate TOML change is logged once per overriding key, naming the key and both sources and never a value.
+    @Test
+    void anEnvironmentValueThatDiffersFromTheToml_isReportedByKeyAndSource_neverByValue() {
+        var notices = new java.util.ArrayList<String>();
+        var doc = TomlParser.parse("[backup]\nenabled = true\npath = \"/toml/path\"\nremote = \"https://user:secret@host/r.git\"\n").unwrap();
+
+        ConfigLoader.backupConfigFrom(doc,
+                                      Map.of("AETHER_BACKUP_PATH", "/env/path",
+                                             "AETHER_BACKUP_REMOTE", "https://user:secret@host/r.git",
+                                             "AETHER_BACKUP_RESTORE", "fresh")::get,
+                                      notices::add);
+
+        assertThat(notices).as("path differs; remote is equal; restore has no TOML value to override").hasSize(1);
+        assertThat(notices.getFirst()).contains("[backup] path", "AETHER_BACKUP_PATH", "node TOML").doesNotContain("/env/path", "/toml/path", "secret");
+    }
+
+    @Test
+    void noOverrideNotice_whenTheEnvironmentAgreesOrOnlyFillsAGap() {
+        var notices = new java.util.ArrayList<String>();
+        var doc = TomlParser.parse("[backup]\nenabled = true\npath = \"/p\"\n").unwrap();
+
+        ConfigLoader.backupConfigFrom(doc, Map.of("AETHER_BACKUP_PATH", "/p", "AETHER_BACKUP_REMOTE", "r")::get, notices::add);
+
+        assertThat(notices).isEmpty();
+    }
 }

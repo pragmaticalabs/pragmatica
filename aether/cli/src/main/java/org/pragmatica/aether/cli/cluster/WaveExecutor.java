@@ -204,7 +204,7 @@ public final class WaveExecutor {
                                                                            int count,
                                                                            SourceProfile source,
                                                                            ClusterName clusterName) {
-        return ProviderResolver.resolveDockerCompute().flatMap(compute -> provisionViaCompute(compute,
+        return ProviderResolver.resolveDockerCompute(source).flatMap(compute -> provisionViaCompute(compute,
                                                                                               sourceName,
                                                                                               role,
                                                                                               count,

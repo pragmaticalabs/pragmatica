@@ -445,25 +445,44 @@ public final class ConfigLoader {
     /// `[backup]` (#1532/#1533), each key overridable by its `AETHER_BACKUP_*` environment variable (#1968): a node minted
     /// without a TOML of its own (a Docker replacement) receives the backup configuration from its provisioner's
     /// environment, and an env-only compose cluster configures it the same way. Environment wins per key, as `AETHER_API_KEYS`
-    /// does. Empty when the merged `enabled` is false.
+    /// does, and a blank variable counts as unset. A key the environment sets to a DIFFERENT value than the TOML is logged at
+    /// startup (key and source only, never the values: a remote can carry a credential). Empty when the merged `enabled` is false.
+    static Option<BackupConfig> backupConfigFrom(TomlDocument doc, org.pragmatica.lang.Functions.Fn1<String, String> env) {
+        return backupConfigFrom(doc, env, notice -> log.warn("{}", notice));
+    }
+
     static Option<BackupConfig> backupConfigFrom(TomlDocument doc,
-                                                 org.pragmatica.lang.Functions.Fn1<String, String> env) {
-        var enabled = envValue(env, ClusterIdentityEnv.BACKUP_ENABLED).orElse(doc.getString("backup", "enabled"))
-                              .map(ConfigLoader::toBooleanValue)
-                              .or(false);
+                                                 org.pragmatica.lang.Functions.Fn1<String, String> env,
+                                                 java.util.function.Consumer<String> overrideNotice) {
+        var enabled = backupKey(doc, env, ClusterIdentityEnv.BACKUP_ENABLED, "enabled", overrideNotice).map(ConfigLoader::toBooleanValue)
+                                                                                                       .or(false);
 
         if (!enabled) {
             return Option.empty();
         }
 
-        var path = envValue(env, ClusterIdentityEnv.BACKUP_PATH).orElse(doc.getString("backup", "path")).or("");
-        var remote = envValue(env, ClusterIdentityEnv.BACKUP_REMOTE).orElse(doc.getString("backup", "remote")).or("");
-        var restore = BackupConfig.RestoreMode.restoreMode(envValue(env, ClusterIdentityEnv.BACKUP_RESTORE).orElse(doc.getString("backup",
-                                                                                                                                 "restore"))
+        var path = backupKey(doc, env, ClusterIdentityEnv.BACKUP_PATH, "path", overrideNotice).or("");
+        var remote = backupKey(doc, env, ClusterIdentityEnv.BACKUP_REMOTE, "remote", overrideNotice).or("");
+        var restore = BackupConfig.RestoreMode.restoreMode(backupKey(doc, env, ClusterIdentityEnv.BACKUP_RESTORE, "restore", overrideNotice)
                                                                    .or("auto")).getOrThrow(IllegalArgumentException::new,
                                                                                            "invalid [backup]");
 
         return Option.some(BackupConfig.backupConfig(true, path, remote, restore));
+    }
+
+    /// One `[backup]` key: the environment's value when set, else the TOML's. The notice names the key and BOTH sources, not values.
+    private static Option<String> backupKey(TomlDocument doc,
+                                            org.pragmatica.lang.Functions.Fn1<String, String> env,
+                                            String envName,
+                                            String tomlKey,
+                                            java.util.function.Consumer<String> overrideNotice) {
+        var fromEnv = envValue(env, envName);
+        var fromToml = doc.getString("backup", tomlKey);
+
+        fromEnv.flatMap(value -> fromToml.filter(toml -> !toml.strip().equals(value.strip())))
+               .onPresent(_ -> overrideNotice.accept("[backup] " + tomlKey + ": the environment variable " + envName
+                                                    + " overrides the value in the node TOML; remove one of them to end the ambiguity"));
+        return fromEnv.orElse(fromToml);
     }
 
     private static Option<String> envValue(org.pragmatica.lang.Functions.Fn1<String, String> env, String name) {

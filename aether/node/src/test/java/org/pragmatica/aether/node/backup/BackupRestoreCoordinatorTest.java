@@ -145,6 +145,45 @@ class BackupRestoreCoordinatorTest {
             assertThat(codes()).containsExactly(Code.BACKUP_CONFIG_MISSING, Code.BACKUP_CONFIG_RESTORED);
         }
 
+        /// The false-alert guard: the warning is for a leader that has NO backup source. One that has it, over the same committed decision,
+        /// must stay silent (a CRITICAL on a healthy backup would train operators to ignore the code).
+        @Test
+        void aLeaderWithABackupSource_overACommittedBackupDecision_raisesNothing() {
+            commitMarker(BackupRestoreOutcome.RESTORED);
+            var coordinator = coordinator(Option.some(source(Option.none(), RestoreMode.AUTO)));
+
+            coordinator.activate();
+            coordinator.deactivate();
+
+            assertThat(codes()).doesNotContain(Code.BACKUP_CONFIG_MISSING, Code.BACKUP_CONFIG_RESTORED);
+        }
+
+        /// A node that stops while it leads without a backup can never lead again, so its CRITICAL's recovery is raised on the way
+        /// down (AetherNode.stop calls this before the event layer goes). Once, however the stop and a leadership loss interleave.
+        @Test
+        void aNodeStoppingWhileItLeadsWithoutBackup_raisesTheRecoveryOnce() {
+            commitMarker(BackupRestoreOutcome.RESTORED);
+            var coordinator = coordinator(Option.none());
+
+            coordinator.activate();
+            coordinator.onNodeStopping();
+            coordinator.deactivate();
+            coordinator.onNodeStopping();
+
+            assertThat(codes()).containsExactly(Code.BACKUP_CONFIG_MISSING, Code.BACKUP_CONFIG_RESTORED);
+        }
+
+        @Test
+        void aNodeStoppingThatNeverWarned_raisesNoRecovery() {
+            commitMarker(BackupRestoreOutcome.DISABLED);
+            var coordinator = coordinator(Option.none());
+
+            coordinator.activate();
+            coordinator.onNodeStopping();
+
+            assertThat(codes()).isEmpty();
+        }
+
         @Test
         void aCommittedClusterConfigurationThatEnablesBackup_isEnoughToWarn() {
             commitClusterConfig("""

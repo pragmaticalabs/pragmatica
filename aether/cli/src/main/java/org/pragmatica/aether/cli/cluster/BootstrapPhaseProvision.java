@@ -429,7 +429,7 @@ sealed interface BootstrapPhaseProvision {
     private static Result<List<ProvisionedNode>> provisionDockerSource(SourceName sourceName,
                                                                        SourceProfile source,
                                                                        ClusterName clusterName) {
-        return ProviderResolver.resolveDockerCompute().flatMap(compute -> provisionWithCompute(compute,
+        return ProviderResolver.resolveDockerCompute(source).flatMap(compute -> provisionWithCompute(compute,
                                                                                                sourceName,
                                                                                                source,
                                                                                                clusterName));

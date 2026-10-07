@@ -115,12 +115,28 @@ put `[backup]` in the source's `node_config` (`[source.<name>.node_config.backup
 section. The renderer also provides the directory the repository needs: a container node gets the host directory
 `/opt/aether/backups` (owned by the in-container `aether` user) bind-mounted at `[backup] path`, so the repository outlives the
 container; a JVM node gets `path` created on the host before it starts. A **Docker** node has no node TOML of its own: its
-`[backup]` is the four variables `AETHER_BACKUP_ENABLED`, `AETHER_BACKUP_PATH`, `AETHER_BACKUP_REMOTE` and `AETHER_BACKUP_RESTORE`
-(each overrides the same TOML key), which the Docker provider forwards from the leader's environment to every replacement,
-together with a per-node volume for the repository (mounted at `/data` when `path` is under it, else at `path`).
-`[unverified: a Docker leader whose [backup] comes from its TOML rather than the environment does not forward it; the Docker harness
-is environment-only]` `[unverified: nodes started by the CLI's own first-start command (BootstrapPhaseDeploy) still mount no backup
-volume; only replacements and the cloud-init install path do]`
+`[backup]` is the four variables `AETHER_BACKUP_ENABLED`, `AETHER_BACKUP_PATH`, `AETHER_BACKUP_REMOTE` and `AETHER_BACKUP_RESTORE`,
+which the Docker provider hands to every replacement from the leader's EFFECTIVE `[backup]` (its TOML or its environment, whichever it
+runs on), together with a per-node volume for the repository (mounted at `/data` when `path` is under it, else at `path`).
+`[verified: MainEffectiveBackupTest, DockerComputeProviderTest]`
+
+**Every way a node is started carries it.** The CLI's own first-start command (`aether cluster bootstrap`) gives a cloud or SSH
+node the same host directory (`/opt/aether/backups`, bind-mounted at `[backup] path`; a JVM node gets `path` created) and the
+Docker provisioner hands a Docker source's `[source.<name>.node_config.backup]` to the nodes it starts.
+`[verified: BootstrapPhaseDeployCloudSshRestartTest, BootstrapPhaseDeploySshSourceTest, ProviderResolverTest]`
+Without the mount a container node cannot write its repository at all (the image has no writable `/var/aether`).
+
+**Precedence: the environment beats the TOML, key by key.** `AETHER_BACKUP_ENABLED/PATH/REMOTE/RESTORE` each override the same
+`[backup]` key; a blank variable counts as unset (it cannot clear a TOML value). A stale variable in a node's process environment
+therefore silently beats a deliberate TOML change, so the node logs one WARN line per key at startup when the environment value
+differs from the TOML value (the key and both sources, never the values: a remote can carry a credential).
+`[verified: ConfigLoaderBackupEnvTest]`
+
+**The dead node's volume is kept on purpose.** A Docker replacement mounts `<container name>-backup`; the node that died keeps its
+own volume, and nothing removes it (old volumes are meant to be reattached, which belongs to the #1569 storage adoption, not this
+change). The repository on the backup REMOTE, not the node's local copy, is what a restore reads. To reclaim a volume you are sure
+you will not need: `docker volume rm <dead-node-container-name>-backup` (it refuses while a container still mounts it). A cloud host's
+`/opt/aether/backups` goes with the VM.
 
 **A leader without `[backup]` over a committed backup is loud, not silent.** If this node becomes leader with no `[backup]` while the
 cluster's committed state says the backup is in use (a committed restore decision other than DISABLED, or a committed cluster
@@ -228,7 +244,7 @@ mode; a remote that needs credentials the process does not hold fails, and the b
 | `BACKUP_GATED` | The head belongs to another lineage | Restore it, or `aether backup declare-genesis` to make this cluster the head |
 | `BACKUP_FORKED` | Another cluster (a different incarnation id) holds the head at this cluster's own lineage and incarnation (two clusters restored from the same backup) | Retire one cluster; run `aether backup declare-genesis` on the one whose state continues |
 | `backup-config-missing` (cluster event, `OPERATOR_WARNING`) | This leader has no `[backup]` while the committed state says the backup is in use; nothing is backed up while it leads (#1968) | Restart it with the cluster's `[backup]` (or `AETHER_BACKUP_*`), or move leadership |
-| `backup-config-restored` (INFO) | The leader that lacked `[backup]` no longer leads | None; a new leader without `[backup]` raises the warning again |
+| `backup-config-restored` (INFO) | The leader that lacked `[backup]` no longer leads, or its node is stopping (graceful stop, drain, self-fence) | None; a new leader without `[backup]` raises the warning again. A crash (`kill -9`, power loss, OOM kill) cannot raise it: that node's `backup-config-missing` then stays the last event for the code, and only another node's event layer could close it, which the event design does not allow. Treat a `backup-config-missing` whose node is gone as closed |
 | `BACKUP_HEAD_AHEAD` | The head of this lineage stayed ahead of this cluster for > 30 s; nothing is backed up meanwhile | If the warning names a **higher incarnation**, another cluster took over this lineage's backup (a `declare-genesis` or a later restore) and this cluster will never write again: stop it or point its `[backup]` elsewhere. At the **same** incarnation, a later revision of this cluster holds the head; it writes again once its revision passes the head's |
 | `BACKUP_HEAD_REPLACED` | This cluster's state replaced a newer head | The replaced commit is in git history; inspect it |
 | `BACKUP_REMOTE_UNREADABLE` | The head cannot be decoded | Repair or move the head |

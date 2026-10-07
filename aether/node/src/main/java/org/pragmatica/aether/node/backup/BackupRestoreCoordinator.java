@@ -201,6 +201,14 @@ public final class BackupRestoreCoordinator {
         }
     }
 
+    /// #1968: the node is stopping (graceful stop, drain, self-fence). A leader without `[backup]` raised a CRITICAL that only
+    /// this node's own event layer can close, so ending the term here, before the event layer goes down, is the last chance to
+    /// raise its recovery. A crash (`kill -9`) cannot be answered in-process; see the backup runbook.
+    @Contract
+    public void onNodeStopping() {
+        deactivate();
+    }
+
     @Contract
     void activate() {
         if (!leader.compareAndSet(false, true)) {
@@ -241,7 +249,7 @@ public final class BackupRestoreCoordinator {
     private void recoverBackupMissing() {
         if (missingReported.compareAndSet(true, false)) {
             warnings.emit(BackupWarning.backupWarning(Code.BACKUP_CONFIG_RESTORED,
-                                                      "this node no longer leads, so its missing [backup] no longer stops the cluster's backup;"
+                                                      "this node no longer leads (or is stopping), so its missing [backup] no longer stops the cluster's backup;"
                                                      + " a leader that also lacks [backup] raises backup-config-missing again"));
         }
     }

@@ -10,7 +10,9 @@ import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
 
+import org.pragmatica.aether.config.BackupConfig;
 import org.pragmatica.aether.config.cluster.NodeRole;
+import org.pragmatica.aether.config.cluster.NodeUserDataRenderer;
 import org.pragmatica.aether.config.cluster.RoleSubTable;
 import org.pragmatica.aether.config.cluster.SourceProfile;
 import org.pragmatica.aether.environment.ClusterName;
@@ -287,8 +289,37 @@ public final class ProviderResolver {
         return Option.option(source.roles().get(NodeRole.CORE)).flatMap(RoleSubTable::instanceType);
     }
 
+    /// The Docker provider for provisioning a source's nodes (#1968): the source's `node_config` `[backup]` is handed to it as the
+    /// `AETHER_BACKUP_*` entries of the compute map, the way a running leader hands its effective backup to the provider that mints
+    /// replacements, so the nodes it starts carry the same backup (a Docker node has no node TOML of its own).
+    public static Result<ComputeProvider> resolveDockerCompute(SourceProfile source) {
+        return lookupFactory("docker").flatMap(factory -> factory.create(dockerCloudConfig(backupEnvironment(source))))
+                            .flatMap(ProviderResolver::extractCompute);
+    }
+
+    /// The source's `[backup]` as `AETHER_BACKUP_*`; empty when the source has none, it is disabled, or it has no path.
+    static Map<String, String> backupEnvironment(SourceProfile source) {
+        return source.nodeConfig()
+                     .flatMap(doc -> NodeUserDataRenderer.backupPath(doc)
+                                                         .map(path -> BackupConfig.backupConfig(true,
+                                                                                                path,
+                                                                                                doc.getString("backup", "remote")
+                                                                                                   .map(String::strip)
+                                                                                                   .or(""),
+                                                                                                doc.getString("backup", "restore")
+                                                                                                   .flatMap(raw -> BackupConfig.RestoreMode.restoreMode(raw)
+                                                                                                                               .option())
+                                                                                                   .or(BackupConfig.RestoreMode.AUTO))))
+                     .map(BackupConfig::asEnvironment)
+                     .or(Map.of());
+    }
+
     private static CloudConfig dockerCloudConfig() {
-        return new CloudConfig("docker", Map.of(), Map.of(), Map.of(), Map.of(), Map.of(), Map.of());
+        return dockerCloudConfig(Map.of());
+    }
+
+    private static CloudConfig dockerCloudConfig(Map<String, String> compute) {
+        return new CloudConfig("docker", Map.of(), Map.copyOf(compute), Map.of(), Map.of(), Map.of(), Map.of());
     }
 
     private static BootstrapError.ProvisionFailed factoryNotFound(String providerName) {
