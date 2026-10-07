@@ -87,45 +87,51 @@ class EmberNodeReplacementTest {
     @Test
     @Timeout(600)
     void replaceAFollower_atThreeCores_keepsThreeVotersOnEverySample_andLosesNoAckedWrite() {
-        start(3, "rpf");
-        var leader = awaitLeader();
-        var victim = followerOf(leader);
-        var watch = Watch.begin(this, 3).watching(victim.self());
-
-        leader.nodeReplacementService().begin(victim.self(), "").await(START_BOUND).onFailure(cause -> throwBecause(cause.message()));
-        awaitTerminal(victim.self());
-        var result = watch.finish();
-
-        assertThat(recordOf(victim.self()).phase()).isEqualTo(NodeReplacementPhase.DONE);
-        assertThat(result.voterViolations()).as("installed voters == 3 on every sample").isEmpty();
-        assertThat(result.voterSamples()).as("the sampler really looked: voting-node samples").isGreaterThan(100);
-        assertThat(result.phases()).as("the phases walked, in order").contains(NodeReplacementPhase.SWAPPING, NodeReplacementPhase.CANARY, NodeReplacementPhase.DONE);
-        assertThat(result.lostAckedWrites()).as("acked writes missing from the final KV").isEmpty();
-        assertThat(result.acked()).as("the writer made progress").isGreaterThan(5);
-        assertOldGone_newVotes(victim.self());
+        replaceAndVerify(3, false, "rpf");
     }
 
     @Test
     @Timeout(600)
     void replaceTheLeader_atThreeCores_swapsItsSeat_electsASuccessor_andLosesNoAckedWrite() {
-        start(3, "rpl");
+        replaceAndVerify(3, true, "rpl");
+    }
+
+    @Test
+    @Timeout(900)
+    void replaceAFollower_atFiveCores_keepsFiveVotersOnEverySample_andLosesNoAckedWrite() {
+        replaceAndVerify(5, false, "rpf5");
+    }
+
+    @Test
+    @Timeout(900)
+    void replaceTheLeader_atFiveCores_swapsItsSeat_electsASuccessor_andLosesNoAckedWrite() {
+        replaceAndVerify(5, true, "rpl5");
+    }
+
+    /// Replace one core (the leader or a follower) while sampling every voting node's installed electorate and committing
+    /// writes; then check the outcome. `size` is the electorate size N that must hold on EVERY sample.
+    private void replaceAndVerify(int size, boolean replaceLeader, String prefix) {
+        start(size, prefix);
         var leader = awaitLeader();
-        var oldLeader = leader.self();
-        var watch = Watch.begin(this, 3).watching(oldLeader);
+        var victim = replaceLeader ? leader : followerOf(leader);
+        var victimId = victim.self();
+        var watch = Watch.begin(this, size).watching(victimId);
 
-        leader.nodeReplacementService().begin(oldLeader, "").await(START_BOUND).onFailure(cause -> throwBecause(cause.message()));
-        awaitTerminal(oldLeader);
+        leader.nodeReplacementService().begin(victimId, "").await(START_BOUND).onFailure(cause -> throwBecause(cause.message()));
+        awaitTerminal(victimId);
         var result = watch.finish();
-        var successor = awaitLeader();
 
-        assertThat(recordOf(oldLeader).phase()).isEqualTo(NodeReplacementPhase.DONE);
-        assertThat(successor.self()).as("a successor was elected").isNotEqualTo(oldLeader);
-        assertThat(result.voterViolations()).as("installed voters == 3 on every sample").isEmpty();
+        assertThat(recordOf(victimId).phase()).isEqualTo(NodeReplacementPhase.DONE);
+        assertThat(result.voterViolations()).as("installed voters == %d on every sample", size).isEmpty();
         assertThat(result.voterSamples()).as("the sampler really looked: voting-node samples").isGreaterThan(100);
-        assertThat(result.phases()).as("the phases walked").contains(NodeReplacementPhase.SWAPPING, NodeReplacementPhase.DONE);
+        assertThat(result.phases()).as("the phases walked").contains(NodeReplacementPhase.SWAPPING, NodeReplacementPhase.CANARY, NodeReplacementPhase.DONE);
         assertThat(result.lostAckedWrites()).as("acked writes missing from the final KV").isEmpty();
         assertThat(result.acked()).as("the writer made progress").isGreaterThan(5);
-        assertOldGone_newVotes(oldLeader);
+        assertOldGone_newVotes(victimId, size);
+
+        if (replaceLeader) {
+            assertThat(awaitLeader().self()).as("a successor was elected").isNotEqualTo(victimId);
+        }
     }
 
     @Test
@@ -248,11 +254,15 @@ class EmberNodeReplacementTest {
     }
 
     private void assertOldGone_newVotes(NodeId old) {
+        assertOldGone_newVotes(old, 3);
+    }
+
+    private void assertOldGone_newVotes(NodeId old, int size) {
         var survivor = awaitLeader();
         var replacement = recordOf(old).replacement();
 
         awaitCondition("the replacement votes and the old node does not", () -> installedVoters(survivor).contains(replacement) && !installedVoters(survivor).contains(old));
-        assertThat(installedVoters(survivor)).hasSize(3);
+        assertThat(installedVoters(survivor)).hasSize(size);
         awaitCondition("the old node is gone from the cluster", () -> cluster.getNode(old.id()).isEmpty());
     }
 
