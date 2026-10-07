@@ -7,6 +7,8 @@ package org.pragmatica.aether.node.backup;
 import java.util.List;
 
 import org.junit.jupiter.api.Test;
+import org.pragmatica.aether.node.backup.BackupPreflight.GitProbeTimedOut;
+import org.pragmatica.lang.io.TimeSpan;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -32,5 +34,17 @@ class BackupPreflightTest {
 
         assertThat(result.isFailure()).isTrue();
         result.onFailure(cause -> assertThat(cause.message()).contains("[backup]").contains("exit 3").contains("broken"));
+    }
+
+    /// A git that hangs is refused with a typed cause naming the timeout, never accepted (v-2001 mutation X4 was 0 red).
+    @Test
+    void gitThatTimesOut_refusesTheBoot_withATypedTimeoutCause() {
+        var result = BackupPreflight.requireGit(List.of("sleep", "30"), TimeSpan.timeSpan(300).millis());
+
+        assertThat(result.isFailure()).isTrue();
+        result.onFailure(cause -> {
+            assertThat(cause).isInstanceOf(GitProbeTimedOut.class);
+            assertThat(cause.message()).contains("[backup]").contains("timed out");
+        });
     }
 }

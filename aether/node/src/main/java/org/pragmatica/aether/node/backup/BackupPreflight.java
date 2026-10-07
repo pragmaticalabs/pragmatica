@@ -36,30 +36,45 @@ public sealed interface BackupPreflight {
                                                                               GitUnavailable::new);
     }
 
+    /// The probe did not answer within its bound: a `git` that hangs is refused, never accepted.
+    record GitProbeTimedOut(TimeSpan limit, String message) implements Cause {
+        static GitProbeTimedOut gitProbeTimedOut(TimeSpan limit) {
+            return new GitProbeTimedOut(limit,
+                                        "[backup] is enabled but git did not answer within " + limit + " (timed out). "
+                                        + "The backup repository shells out to git: fix or replace the git on this node, "
+                                        + "or set [backup] enabled = false");
+        }
+    }
+
     /// Succeeds when `git --version` runs and exits 0; otherwise a [GitUnavailable] cause.
     static Result<Unit> requireGit() {
-        return requireGit(GIT_VERSION);
+        return requireGit(GIT_VERSION, PROBE_TIMEOUT);
     }
 
     /// The probe with the command given, so a test can stand in a missing or failing git.
     static Result<Unit> requireGit(List<String> command) {
-        return run(command).flatMap(BackupPreflight::exitedCleanly);
+        return requireGit(command, PROBE_TIMEOUT);
     }
 
-    private static Result<Probe> run(List<String> command) {
+    /// The probe with the command and its bound given, so a test can stand in a git that hangs.
+    static Result<Unit> requireGit(List<String> command, TimeSpan timeout) {
+        return run(command, timeout).flatMap(BackupPreflight::exitedCleanly);
+    }
+
+    private static Result<Probe> run(List<String> command, TimeSpan timeout) {
         return Result.lift(BackupPreflight::unavailable,
                            () -> new ProcessBuilder(command).redirectErrorStream(true)
                                                             .start())
-                     .flatMap(BackupPreflight::collect);
+                     .flatMap(process -> collect(process, timeout));
     }
 
-    private static Result<Probe> collect(Process process) {
+    private static Result<Probe> collect(Process process, TimeSpan timeout) {
         return Result.lift(BackupPreflight::unavailable,
-                           () -> process.waitFor(PROBE_TIMEOUT.millis(),
+                           () -> process.waitFor(timeout.millis(),
                                                  TimeUnit.MILLISECONDS))
                      .flatMap(finished -> finished
                                           ? completed(process)
-                                          : timedOut(process));
+                                          : timedOut(process, timeout));
     }
 
     private static Result<Probe> completed(Process process) {
@@ -69,10 +84,10 @@ public sealed interface BackupPreflight {
                                                       StandardCharsets.UTF_8).strip()));
     }
 
-    private static Result<Probe> timedOut(Process process) {
+    private static Result<Probe> timedOut(Process process, TimeSpan timeout) {
         process.destroyForcibly();
 
-        return success(new Probe(-1, "no answer within " + PROBE_TIMEOUT));
+        return GitProbeTimedOut.gitProbeTimedOut(timeout).result();
     }
 
     private static Cause unavailable(Throwable cause) {
