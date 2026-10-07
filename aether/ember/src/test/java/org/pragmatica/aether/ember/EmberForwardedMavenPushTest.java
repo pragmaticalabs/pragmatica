@@ -156,6 +156,9 @@ class EmberForwardedMavenPushTest {
         EXPECTED_STATUS.put("/repository/org/aether/probe1983/probe/1.0.0/probe-1.0.0.pom", 200);
         EXPECTED_STATUS.put("/repository/org/aether/probe1983/probe/1.0.0/probe-1.0.0.pom.sha1", 201);
         EXPECTED_STATUS.put("/repository/org/aether/probe1983/probe/maven-metadata.xml", 200);
+        // The forwarded two-segment-group metadata shape (`org/probe1983`): measured 200 through every node.
+        EXPECTED_STATUS.put("/repository/org/probe1983/probe/maven-metadata.xml", 200);
+        EXPECTED_STATUS.put("/repository/org/probe1983/probe/maven-metadata.xml.sha1", 200);
     }
     private static final int CLIENT_NODES = CLUSTER_SIZE;
     private static final String PUSH_PATH = EXPECTED_STATUS.keySet().iterator().next();
