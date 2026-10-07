@@ -2,7 +2,7 @@
 
 Terra compiles the same slice sources as Aether into a single-process application. The implementation provides typed construction, blueprint selection, scoped resources, existing interceptor wrappers, ephemeral in-process pub-sub, and startup database migrations. It starts no Aether node.
 
-The [specification](SPEC.md) distinguishes the implemented compiler and migration contracts from the next milestones: production HTTP hosting and executable distribution assembly. PostgreSQL startup is exercised with the unchanged ecommerce InventoryService.
+The [specification](SPEC.md) records the implemented compiler, migration, and HTTP hosting contracts. Executable distribution assembly is the next milestone. PostgreSQL startup is exercised with the unchanged ecommerce InventoryService.
 
 ## Existing examples
 
@@ -48,7 +48,7 @@ A publication invokes every handler in its subscriber snapshot and waits for all
 
 Publication is admitted only after all slices and subscriptions are ready. Closing rejects new publications, drains accepted deliveries, then releases resources in reverse construction order. Callers must stop other entry points before closing; arbitrary direct calls are not automatically drained. Handlers that never complete prevent a graceful drain.
 
-Streams, schedules, durable entities/topics, transitive reactive methods, context-carrying subscribers, and live configuration callbacks are refused. The existing generated typed HTTP routers work, but a production listener, authentication policy, route composition, and HTTP draining remain separate work.
+Streams, schedules, durable entities/topics, transitive reactive methods, context-carrying subscribers, and live configuration callbacks are refused. The HTTP host below supplies listener lifecycle, authentication, route composition, and draining for the generated typed routers.
 
 ## Database startup
 
@@ -75,3 +75,8 @@ mvn -pl terra/examples test -Dterra.test.jdbcUrl='jdbc:postgresql://localhost:54
 ```
 
 Without that property, the PostgreSQL test is explicitly skipped. The proof covers InventoryService SQL calls, a schema query during factory construction, restart idempotence, checksum and ownership refusal, and transactional DDL/history rollback. Unit tests separately pin startup failure and queue retention across caller timeouts and cleanup failure.
+
+
+## HTTP hosting
+
+The `terra-http` module hosts the generated routers over HTTP/1.1 or TLS and owns graceful application shutdown. It supports path/header API version selection, API-key and JWT authentication, route policy enforcement, and health probes. See [the host guide](http/README.md) for configuration, ownership, and drain semantics. `TerraCatalogHttpTest` drives the unchanged Catalog source through real listeners in both versioning modes, including JSON, CSV, binary payloads, and typed failures.

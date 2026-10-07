@@ -9,6 +9,11 @@
     <name>Existing examples compiled for Terra</name>
     <dependencies>
         <dependency>
+            <groupId>org.pragmatica-lite</groupId>
+            <artifactId>terra-http</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
             <groupId>com.zaxxer</groupId>
             <artifactId>HikariCP</artifactId>
             <version>7.0.2</version>
