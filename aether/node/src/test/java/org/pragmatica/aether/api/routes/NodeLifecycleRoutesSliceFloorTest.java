@@ -348,6 +348,28 @@ class NodeLifecycleRoutesSliceFloorTest {
         assertThat(raised.get(1).message()).contains("left the membership");
     }
 
+    /// A DEPARTING target has not left: it is still a tracked member, just not a counted one. Re-requesting its shutdown
+    /// is the same refusal four times, so one refusal event, and no "left the membership" recovery (a false all-clear
+    /// that the next refusal would re-open, alternating for as long as the operator retries).
+    @Test
+    void refusedTargetThatIsDeparting_hasNotLeft_soRetriesRaiseOneRefusalAndNoRecovery() {
+        var routes = routes();
+        host(slice("a", 3, 2), node(1), node(2), node(3));
+        pendingDrains.add(node(1));
+        breach(routes.shutdownNodeForTest(node(2).id()).await());
+        fsm.onDrainRequested(node(2));
+        assertThat(fsm.memberStates()).as("control: node-2 is tracked, DEPARTING, and not counted")
+                                      .containsEntry(node(2), "Departing");
+        assertThat(fsm.countedMembers()).doesNotContain(node(2));
+
+        for (int i = 0; i < 4; i++) {
+            breach(routes.shutdownNodeForTest(node(2).id()).await());
+        }
+
+        assertThat(settledWarnings()).extracting(OperatorWarning::code)
+                                     .containsExactly(OperatorWarningCode.SLICE_FLOOR_DRAIN_REFUSED);
+    }
+
     @Test
     void refusalMessage_namesTheCliFlag_asWellAsTheQueryParameter() {
         host(slice("a", 3, 2), node(1), node(2), node(3));

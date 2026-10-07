@@ -392,7 +392,7 @@ public final class NodeLifecycleRoutes implements RouteSource {
                                                              boolean force) {
         var remaining = new HashSet<>(nodeSupplier.get().membershipFsm().countedMembers());
 
-        closeRefusalsOfDepartedTargets(floor, remaining);
+        closeRefusalsOfDepartedTargets(floor);
         remaining.removeAll(pendingDrainsSupplier.get());
         remaining.remove(node);
         var breaches = floor.violations().apply(node, remaining);
@@ -465,14 +465,22 @@ public final class NodeLifecycleRoutes implements RouteSource {
 
     /// A refused target that has since left the membership will never be admitted, so its refusal would stay open in
     /// the event feed for good: close it with the recovery event, naming why, and forget the target.
-    private void closeRefusalsOfDepartedTargets(SliceFloor floor, Set<NodeId> members) {
-        var departed = floorRefusedTargets.stream()
-                                          .filter(refused -> members.stream()
-                                                                    .noneMatch(member -> member.id()
-                                                                                               .equals(refused)))
-                                          .toList();
+    private void closeRefusalsOfDepartedTargets(SliceFloor floor) {
+        var tracked = nodeSupplier.get().membershipFsm().memberStates();
+        var departed = floorRefusedTargets.stream().filter(refused -> hasLeftMembership(tracked, refused)).toList();
 
         departed.forEach(refused -> raiseFloorRecovery(floor, refused, "drain", "the node left the membership"));
+    }
+
+    /// Left means gone from the membership view: untracked, or DEAD. A DEPARTING member is still tracked, still there,
+    /// and a shutdown re-requested against it is the same refusal again, not a recovery. [#countedMembers] would call it
+    /// gone, because it excludes DEPARTING.
+    private static boolean hasLeftMembership(Map<NodeId, String> tracked, String nodeId) {
+        return tracked.entrySet()
+                      .stream()
+                      .noneMatch(entry -> entry.getKey()
+                                               .id()
+                                               .equals(nodeId) && !MEMBERSHIP_DEAD.equals(entry.getValue()));
     }
 
     private Result<org.pragmatica.lang.Unit> checkDrainReadiness(NodeId node, boolean requireReady) {
