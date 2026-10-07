@@ -69,6 +69,67 @@ class RabiaReorderedDeliveryTest {
         }
     }
 
+    /// #2011: a voter that learns a slot's Decision before the originator's NewBatch arrives used to put the
+    /// committed batch back into its queue; it was proposed and committed a second time on every voter.
+    @Test
+    void newBatchDeliveredAfterItsDecision_isNotCommittedASecondTime() {
+        var cluster = new ScheduledCluster(3, 0);
+        clusters.add(cluster);
+        cluster.start();
+        var batch = Batch.create(cluster.machines.getFirst().serializer(), List.of(new TestCommand("acked-once")));
+        cluster.engines.forEach(engine -> engine.handleNewBatch(new NewBatch<>(cluster.members.getFirst(), batch)));
+        cluster.pumpUntil(() -> cluster.machines.stream().allMatch(machine -> machine.getProcessedCommands().size() == 1));
+        cluster.settle();
+
+        cluster.engines.forEach(engine -> engine.handleNewBatch(new NewBatch<>(cluster.members.getFirst(), batch)));
+        cluster.settle();
+        cluster.pumpUntil(() -> cluster.pending.isEmpty() && cluster.emitted.isEmpty());
+        cluster.settle();
+
+        cluster.machines.forEach(machine -> assertThat(machine.getProcessedCommands()).as("applied exactly once")
+                                                                                         .containsExactly(new TestCommand("acked-once")));
+        cluster.engines.forEach(engine -> assertThat(engine.pendingBatchCountForTesting()).as("the stale delivery is not queued").isZero());
+    }
+
+    /// The guard must not swallow a legitimate later submission of identical commands: it has a new correlation id.
+    @Test
+    void identicalCommandsSubmittedAgainAfterCommit_commitAgain() {
+        var cluster = new ScheduledCluster(3, 0);
+        clusters.add(cluster);
+        cluster.start();
+        cluster.allowIdenticalCommands = true;
+        var commands = List.of(new TestCommand("same-commands"));
+        var first = cluster.engines.getFirst().apply(commands);
+        cluster.pumpUntil(first::isResolved);
+        cluster.settle();
+
+        var second = cluster.engines.getFirst().apply(commands);
+        cluster.pumpUntil(() -> second.isResolved() && cluster.machines.stream().allMatch(machine -> machine.getProcessedCommands().size() >= 2));
+        cluster.settle();
+
+        assertThat(second.await(timeSpan(3).seconds()).isSuccess()).isTrue();
+        cluster.machines.forEach(machine -> assertThat(machine.getProcessedCommands()).hasSize(2));
+    }
+
+    /// The Propose path (`learnProposedBatch`) is guarded too: a proposal carrying an already-committed batch does not
+    /// re-enter the queue.
+    @Test
+    void proposalCarryingACommittedBatch_isNotRequeued() {
+        var cluster = new ScheduledCluster(3, 0);
+        clusters.add(cluster);
+        cluster.start();
+        var batch = Batch.create(cluster.machines.getFirst().serializer(), List.of(new TestCommand("committed-then-proposed")));
+        cluster.engines.forEach(engine -> engine.handleNewBatch(new NewBatch<>(cluster.members.getFirst(), batch)));
+        cluster.pumpUntil(() -> cluster.machines.stream().allMatch(machine -> machine.getProcessedCommands().size() == 1));
+        cluster.settle();
+        var engine = cluster.engines.get(2);
+
+        engine.processPropose(new Propose<>(cluster.members.get(1), engine.currentPhaseForTesting(), batch));
+        cluster.settle();
+
+        assertThat(engine.pendingBatchCountForTesting()).isZero();
+    }
+
     @Test
     void advancingSnapshotDoesNotReproposeCoveredRequestsAndReportsUnknownOutcome() {
         var cluster = new ScheduledCluster(3, 0);
@@ -823,6 +884,8 @@ class RabiaReorderedDeliveryTest {
         private java.util.function.Predicate<Delivery> held = _ -> false;
         private final Random random;
         private volatile boolean splitHealth;
+        /// A test that SUBMITS identical commands twice expects them applied twice (#2011).
+        private volatile boolean allowIdenticalCommands;
 
         ScheduledCluster(int size, int seed) { this(size, seed, size); }
 
@@ -1023,7 +1086,9 @@ class RabiaReorderedDeliveryTest {
             var longest = logs.stream().max(java.util.Comparator.comparingInt(List::size)).orElse(List.of());
             for (var log : logs) {
                 assertThat(log).containsExactlyElementsOf(longest.subList(0, log.size()));
-                assertThat(log).doesNotHaveDuplicates();
+                if (!allowIdenticalCommands) {
+                    assertThat(log).doesNotHaveDuplicates();
+                }
             }
         }
 
