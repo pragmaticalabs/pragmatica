@@ -9,6 +9,7 @@ import java.io.UncheckedIOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.regex.Pattern;
 import java.util.stream.Stream;
 
 import org.junit.jupiter.api.Test;
@@ -27,8 +28,20 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// ROLLED_BACK. Those cannot be written in D — with no producer they would pass vacuously, which is worse than
 /// not having them.
 class NodeReplacementProducerTripwireTest {
-    private static final String CONSTRUCTION = "new NodeReplacementValue(";
-    private static final String DECLARATION = "record NodeReplacementValue(";
+    /// Matches a construction whether the type is simple or qualified (`new AetherValue.NodeReplacementValue(`,
+    /// `new org.….AetherValue.NodeReplacementValue (`) — a literal-only match missed the qualified form.
+    static final Pattern CONSTRUCTION = Pattern.compile("new\\s+([\\w.]+\\.)?NodeReplacementValue\\s*\\(");
+    private static final Pattern DECLARATION = Pattern.compile("record\\s+NodeReplacementValue\\s*\\(");
+
+    /// The instrument's own control: both construction forms match, the declaration and a bare mention do not.
+    @Test
+    void constructionPattern_matchesSimpleAndQualifiedForms_only() {
+        assertThat(CONSTRUCTION.matcher("var v = new NodeReplacementValue(id, role, phase, 0L);").find()).isTrue();
+        assertThat(CONSTRUCTION.matcher("new AetherValue.NodeReplacementValue (id, role, phase, 0L)").find()).isTrue();
+        assertThat(CONSTRUCTION.matcher("new org.pragmatica.aether.slice.kvstore.AetherValue.NodeReplacementValue(").find()).isTrue();
+        assertThat(CONSTRUCTION.matcher("record NodeReplacementValue(NodeId replacement").find()).isFalse();
+        assertThat(CONSTRUCTION.matcher("value instanceof NodeReplacementValue replacement").find()).isFalse();
+    }
 
     @Test
     void nodeReplacementValue_hasNoProductionProducerYet_deleteMeWhenPartELands() {
@@ -59,9 +72,9 @@ class NodeReplacementProducerTripwireTest {
         }
     }
 
-    private static boolean contains(Path path, String text) {
+    private static boolean contains(Path path, Pattern pattern) {
         try {
-            return Files.readString(path).contains(text);
+            return pattern.matcher(Files.readString(path)).find();
         } catch (IOException e) {
             throw new UncheckedIOException(e);
         }
