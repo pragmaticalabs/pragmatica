@@ -137,6 +137,28 @@ class HttpRoutePublisherSiblingRoutePolicyTest {
         }
     }
 
+    /// #1206: the committed route entry carries where each literal sits, not only that literals exist, so whoever reads the table
+    /// (the collision announcer) can tell `/orders/{id}/admin` from a route whose literal sits elsewhere.
+    @Test
+    void publishedEntry_carriesTheLiteralsPosition() {
+        var cluster = new SilentCluster();
+        var publisher = HttpRoutePublisher.httpRoutePublisher(SELF, cluster);
+
+        publishInto(publisher, ADMIN_ORDERS, new SiblingRouteSliceRoutes.AdminOrdersSlice());
+
+        var entry = cluster.applied.stream()
+                                   .map(command -> ((org.pragmatica.cluster.state.kvstore.KVCommand.Put<?, ?>) command).value())
+                                   .map(org.pragmatica.aether.slice.kvstore.AetherValue.NodeRoutesValue.class::cast)
+                                   .findFirst()
+                                   .orElseThrow()
+                                   .routes()
+                                   .getFirst();
+
+        assertThat(entry.spacers()).containsExactly("admin");
+        assertThat(entry.spacerSlots()).as("the literal is the second trailing segment").containsExactly(1);
+        assertThat(entry.pathArity()).isEqualTo(2);
+    }
+
     private static final Artifact PUBLIC_ORDERS = Artifact.artifact("org.example:orders-public:1.0.0").unwrap();
     private static final Artifact ADMIN_ORDERS = Artifact.artifact("org.example:orders-admin:1.0.0").unwrap();
 
@@ -196,6 +218,8 @@ class HttpRoutePublisherSiblingRoutePolicyTest {
     }
 
     private static final class SilentCluster implements ClusterNode<KVCommand<AetherKey>> {
+        final List<KVCommand<AetherKey>> applied = new java.util.concurrent.CopyOnWriteArrayList<>();
+
         @Override
         public NodeId self() {
             return SELF;
@@ -219,6 +243,8 @@ class HttpRoutePublisherSiblingRoutePolicyTest {
         @Override
         @SuppressWarnings("unchecked")
         public <R> Promise<List<R>> apply(List<KVCommand<AetherKey>> commands) {
+            applied.addAll(commands);
+
             return (Promise<List<R>>) (Promise<?>) Promise.success(List.of());
         }
     }

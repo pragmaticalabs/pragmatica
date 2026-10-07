@@ -40,6 +40,11 @@ class RouteCollisionAnnouncerTest {
         return new RouteEntry(method, prefix, "handle", state, 100, registeredAt, "PUBLIC", "PUBLIC", arity, List.of());
     }
 
+    /// A route whose literals are `spacers`, at `slots` among the trailing segments.
+    private static RouteEntry shaped(String prefix, int arity, List<String> spacers, List<Integer> slots) {
+        return new RouteEntry("GET", prefix, "handle", "ACTIVE", 100, 10, "PUBLIC", "PUBLIC", arity, spacers, slots);
+    }
+
     private static NodeRoutesValue routes(RouteEntry... entries) {
         return NodeRoutesValue.nodeRoutesValue(List.of(entries), Epoch.ZERO);
     }
@@ -128,5 +133,20 @@ class RouteCollisionAnnouncerTest {
         put(key(N1, "org.b:two:1.0.0"), routes(route("GET", "/api/x/", 0, 20, "DRAINING")));
 
         assertThat(events).isEmpty();
+    }
+
+    /// Two routes that differ ONLY in where a literal sits are two routes to the runtime (`/a/{id}/b/{x}` and `/a/{id}/{x}/b`
+    /// share prefix, arity and literals), so claiming both from two artifacts is not a collision, while the very same shape is.
+    @Test
+    void routesDifferingOnlyInTheSpacerPosition_raiseNoCollision_andTheSameShapeDoes() {
+        put(key(N1, "org.a:one:1.0.0"), routes(shaped("/a/", 3, List.of("b"), List.of(1))));
+        put(key(N1, "org.b:two:1.0.0"), routes(shaped("/a/", 3, List.of("b"), List.of(2))));
+
+        assertThat(events).as("same prefix, arity and literals, different literal position").isEmpty();
+
+        put(key(N2, "org.c:three:1.0.0"), routes(shaped("/a/", 3, List.of("b"), List.of(1))));
+
+        assertThat(events).singleElement().isInstanceOfSatisfying(OperationalEvent.RoutePrefixCollision.class,
+                                                                  event -> assertThat(event.artifacts()).containsExactly("org.a:one", "org.c:three"));
     }
 }

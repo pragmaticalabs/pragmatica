@@ -14,6 +14,7 @@ import java.util.function.Consumer;
 import java.util.stream.Collectors;
 
 import org.pragmatica.aether.api.OperationalEvent;
+import org.pragmatica.aether.http.handler.RouteIdentity;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeRoutesKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeRoutesValue;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
@@ -53,9 +54,6 @@ public interface RouteCollisionAnnouncer {
         return new Tracker(sink);
     }
 
-    /// A route as the router keys it: method, normalized prefix and shape.
-    record RouteIdentity(String method, String prefix, int arity, List<String> spacers) {}
-
     final class Tracker implements RouteCollisionAnnouncer {
         private final Consumer<OperationalEvent> sink;
         /// What each (node, artifact) entry currently contributes.
@@ -74,10 +72,11 @@ public interface RouteCollisionAnnouncer {
                           .routes()
                           .stream()
                           .filter(entry -> "ACTIVE".equals(entry.state()))
-                          .collect(Collectors.toMap(entry -> new RouteIdentity(entry.httpMethod().toUpperCase(),
-                                                                               entry.pathPrefix(),
-                                                                               entry.pathArity(),
-                                                                               entry.spacers()),
+                          .collect(Collectors.toMap(entry -> RouteIdentity.routeIdentity(entry.httpMethod(),
+                                                                                         entry.pathPrefix(),
+                                                                                         entry.pathArity(),
+                                                                                         entry.spacers(),
+                                                                                         entry.spacerSlots()),
                                                     NodeRoutesValue.RouteEntry::registeredAt,
                                                     Math::max));
 
@@ -160,6 +159,7 @@ public interface RouteCollisionAnnouncer {
                  + ":" + route.prefix()
                  + ":" + route.arity()
                  + ":" + String.join("+", route.spacers())
+                 + ":" + route.spacerSlots()
                  + ":" + String.join(",", claim.bases())
                  + ":" + claim.newestRegisteredAt();
         }

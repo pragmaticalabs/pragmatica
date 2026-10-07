@@ -3653,7 +3653,10 @@ public interface AetherNode extends ManageableNode {
                                                                  repository,
                                                                  artifactStore,
                                                                  resourceProviderSetup.nodeComposite(),
-                                                                 operatorWarningSink);
+                                                                 operatorWarningSink,
+                                                                 config.appHttp()
+                                                                       .apiVersioningDetection()
+                                                                       .isHeaderMode());
         // #1640: a cluster event whose publish did not land (the partition's owner died with it) waits in the
         // aggregator and is re-sent once a second until it lands or its horizon passes.
         periodicTasks.defer(() -> SharedScheduler.scheduleAtFixedRate(eventAggregator::redeliverDue,

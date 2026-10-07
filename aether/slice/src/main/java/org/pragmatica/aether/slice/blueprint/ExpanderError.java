@@ -69,33 +69,48 @@ public sealed interface ExpanderError extends Cause {
 
     /// One colliding route: `method` and the `path` template (path parameters normalized) declared by BOTH `first` and
     /// `second`, which are the lexically ordered artifact coordinates.
-    record RouteCollision(String method, String path, String first, String second, String storedBlueprint) {
-        public static RouteCollision routeCollision(String method, String path, String first, String second) {
-            return new RouteCollision(method, path, first, second, "");
+    record RouteCollision(String method,
+                          String path,
+                          String otherPath,
+                          String first,
+                          String second,
+                          String storedBlueprint) {
+        /// Two slices of the blueprint being published; `path` and `otherPath` are the templates they declare.
+        public static RouteCollision routeCollision(String method,
+                                                    String path,
+                                                    String otherPath,
+                                                    String first,
+                                                    String second) {
+            return new RouteCollision(method, path, otherPath, first, second, "");
         }
 
         /// `first` is the slice of the blueprint being published, `second` the slice of the ALREADY-STORED blueprint
         /// `storedBlueprint`.
         public static RouteCollision conflictWithStored(String method,
                                                         String path,
+                                                        String otherPath,
                                                         String first,
                                                         String second,
                                                         String storedBlueprint) {
-            return new RouteCollision(method, path, first, second, storedBlueprint);
+            return new RouteCollision(method, path, otherPath, first, second, storedBlueprint);
+        }
+
+        private String templates() {
+            return path.equals(otherPath)
+                   ? method + " " + path
+                   : method + " " + path + " and " + method + " " + otherPath + " (the same route)";
         }
 
         public String describe() {
             if (!storedBlueprint.isEmpty()) {
-                return method
-                     + " " + path
+                return templates()
                      + " is declared by slice " + first
                      + " of this blueprint and by slice " + second
                      + " of the stored blueprint " + storedBlueprint
                      + " (one of them would activate, report healthy and serve nothing)";
             }
 
-            return method
-                 + " " + path
+            return templates()
                  + " is declared by both " + first
                  + " and " + second
                  + " (one of them would activate, report healthy and serve nothing)";
