@@ -68,7 +68,11 @@ class OperatorWarningWiringTest {
     /// #1431: the owner gate's block alarm reaches this node's sink, so an oversized peer event is an operator event.
     @Test
     void assembly_givesTheSinkToTheOwnerPromotionBlockAlarm() {
-        assertThat(assemblyCode()).contains("block->raiseOwnerPromotionBlock(operatorWarningSink,block),");
+        var code = assemblyCode();
+
+        assertThat(code).as("link 1: the assembly hands the sink to the alarm").contains("ownerPromotionAlarm(operatorWarningSink),ownerPromotionAlarmWindow(");
+        assertThat(code).as("link 2: the alarm's raise reaches the sink-taking raiser")
+                        .contains("publicUnitraise(OwnerActivation.ActivationBlockblock){returnraiseOwnerPromotionBlock(sink,block);}");
     }
 
     /// `AetherNode.java` with line comments removed and all whitespace stripped. An unreadable file fails loudly,
