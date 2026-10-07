@@ -143,6 +143,12 @@ public interface ManagementServer {
     /// slice-facing interceptors instead of each factory fabricating its own disconnected one.
     MeterRegistry meterRegistry();
 
+    /// A member's departure was confirmed on this node (the FSM's DEAD edge). Lets the operator-drain routes close the
+    /// slice-floor refusal they raised for it (#1720): a refused target that departs gets its recovery on the
+    /// transition, not at the next floor check of some other target.
+    @SuppressWarnings("JBCT-RET-01")
+    void onMemberDeparted(NodeId node);
+
     @SuppressWarnings("JBCT-RET-01")
     void onHttpForwardRequest(HttpForwardRequest request);
 
@@ -173,7 +179,8 @@ public interface ManagementServer {
                                              Option<Serializer> serializer,
                                              Option<Deserializer> deserializer,
                                              Consumer<NodeId> drainCommandSink,
-                                             Supplier<Set<NodeId>> pendingDrainsSupplier) {
+                                             Supplier<Set<NodeId>> pendingDrainsSupplier,
+                                             NodeLifecycleRoutes.SliceFloor sliceFloor) {
         return new ManagementServerImpl(port,
                                         nodeSupplier,
                                         entityCheckpointDriver,
@@ -198,7 +205,8 @@ public interface ManagementServer {
                                         serializer,
                                         deserializer,
                                         drainCommandSink,
-                                        pendingDrainsSupplier);
+                                        pendingDrainsSupplier,
+                                        sliceFloor);
     }
 }
 
@@ -241,6 +249,8 @@ class ManagementServerImpl implements ManagementServer {
 
     private final Consumer<NodeId> drainCommandSink;
     private final Supplier<Set<NodeId>> pendingDrainsSupplier;
+    private final NodeLifecycleRoutes.SliceFloor sliceFloor;
+    private final NodeLifecycleRoutes nodeLifecycleRoutes;
 
     private final AtomicReference<Option<HttpForwarder>> mgmtForwarderRef = new AtomicReference<>(Option.empty());
 
@@ -290,7 +300,9 @@ class ManagementServerImpl implements ManagementServer {
                          Option<org.pragmatica.serialization.Serializer> serializer,
                          Option<org.pragmatica.serialization.Deserializer> deserializer,
                          Consumer<NodeId> drainCommandSink,
-                         Supplier<Set<NodeId>> pendingDrainsSupplier) {
+                         Supplier<Set<NodeId>> pendingDrainsSupplier,
+                         NodeLifecycleRoutes.SliceFloor sliceFloor) {
+        this.sliceFloor = sliceFloor;
         this.port = port;
         this.nodeSupplier = nodeSupplier;
         this.alertManager = alertManager;
@@ -343,7 +355,11 @@ class ManagementServerImpl implements ManagementServer {
         routeSources.add(MetricsRoutes.metricsRoutes(nodeSupplier, observability));
         routeSources.add(DeployRoutes.deployRoutes(nodeSupplier));
         routeSources.add(AbTestRoutes.abTestRoutes(nodeSupplier));
-        routeSources.add(NodeLifecycleRoutes.nodeLifecycleRoutes(nodeSupplier, drainCommandSink, pendingDrainsSupplier));
+        this.nodeLifecycleRoutes = NodeLifecycleRoutes.nodeLifecycleRoutes(nodeSupplier,
+                                                                           drainCommandSink,
+                                                                           pendingDrainsSupplier,
+                                                                           sliceFloor);
+        routeSources.add(nodeLifecycleRoutes);
         routeSources.add(ScheduledTaskRoutes.scheduledTaskRoutes(scheduledTaskRegistry,
                                                                  scheduledTaskManager,
                                                                  nodeSupplier,
@@ -1455,6 +1471,12 @@ class ManagementServerImpl implements ManagementServer {
         ensureMgmtForwarder().onPresent(fwd -> fwd.onHttpForwardResponse(response));
     }
 
+    @Override
+    @SuppressWarnings("JBCT-RET-01")
+    public void onMemberDeparted(NodeId node) {
+        nodeLifecycleRoutes.onMemberDeparted(node);
+    }
+
     @SuppressWarnings({"JBCT-RET-01", "JBCT-PAT-01"})
     @Override
     public void onHttpForwardRequest(HttpForwardRequest request) {
@@ -1521,7 +1543,9 @@ class ManagementServerImpl implements ManagementServer {
                 return;
             }
 
-            if (validateManagementSecurity(serverCtx, responseCapture, context.path(), method.unwrap()).isFailure()) {
+            var validated = validateManagementSecurity(serverCtx, responseCapture, context.path(), method.unwrap());
+
+            if (validated.isFailure()) {
                 responseCapture.completion()
                                .onSuccess(responseData -> sendManagementForwardSuccess(network,
                                                                                        request,
@@ -1533,7 +1557,31 @@ class ManagementServerImpl implements ManagementServer {
 
                 return;
             }
+            // #1983: the context this owner just validated is bound for the dispatch, exactly as the node that took the
+            // client call binds it (handleRequest), so a handler reading the principal or its role sees the caller whether
+            // the request arrived locally or forwarded. Discarding it left every reader on ANONYMOUS.
+            validated.onSuccess(sc -> ScopedValue.where(SecurityContextHolder.scopedValue(),
+                                                        sc)
+                                                 .run(() -> dispatchValidatedManagementForward(context,
+                                                                                               request,
+                                                                                               network,
+                                                                                               ser,
+                                                                                               serverCtx,
+                                                                                               responseCapture)));
+
+            return;
         }
+
+        dispatchValidatedManagementForward(context, request, network, ser, serverCtx, responseCapture);
+    }
+
+    @SuppressWarnings("JBCT-PAT-01")
+    private void dispatchValidatedManagementForward(HttpRequestContext context,
+                                                    HttpForwardRequest request,
+                                                    ClusterNetwork network,
+                                                    Serializer ser,
+                                                    ForwardedRequestContext serverCtx,
+                                                    ForwardedResponseWriter responseCapture) {
         // #1039 receive-side owner guard. A forwarded request is dispatched by `router.handle` right
         // below and never re-enters `dispatchManagementRequest`, so `tryForwardIfNotPartitionOwner`
         // does NOT run on this node — without this check a receiver that disagrees with the sender
