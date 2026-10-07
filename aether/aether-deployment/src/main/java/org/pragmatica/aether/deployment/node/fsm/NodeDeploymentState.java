@@ -100,6 +100,8 @@ import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.statemachine.FsmState;
 import org.pragmatica.statemachine.TransitionRequest;
+import org.pragmatica.utility.warning.OperatorWarningCode;
+import org.pragmatica.utility.warning.OperatorWarnings;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -1566,7 +1568,10 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
         }
 
         private Promise<Unit> doUnpublishStreamSubscriptions(Artifact artifact, Slice slice) {
-            var entries = readStreamSubscriptionsFromManifest(artifact, slice);
+            var entries = readStreamSubscriptions(artifact,
+                                                  slice,
+                                                  (entry, cause) -> logUnresolvedOnRemoval(artifact, entry, cause),
+                                                  entry -> {});
 
             if (entries.isEmpty()) {
                 return Promise.unitPromise();
@@ -1602,9 +1607,32 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
                                                        boolean batchMode,
                                                        String eventType) {}
 
-        @SuppressWarnings("JBCT-EX-01")
+        /// The registering read: a consumer that cannot be resolved here is one that will receive nothing, so it is raised
+        /// (#1935). Only the publish path may use it; removal re-reads the same manifest for a slice that is going away.
         private List<StreamSubscriptionManifestEntry> readStreamSubscriptionsFromManifest(Artifact artifact,
                                                                                           Slice slice) {
+            return readStreamSubscriptions(artifact,
+                                           slice,
+                                           (entry, cause) -> raiseConsumerNotRegistered(artifact, entry, cause),
+                                           entry -> raiseConsumerRegisteredAgain(artifact, entry));
+        }
+
+        /// Removal of a consumer that never resolved has nothing to remove and nothing for an operator to do: raising
+        /// "could NOT be registered" there would be a false CRITICAL on every deactivation of the slice.
+        private void logUnresolvedOnRemoval(Artifact artifact, ReactiveManifestEntry entry, Cause cause) {
+            ctx.clearUnregisteredConsumer(consumerSubject(artifact, entry));
+            log.debug("Declarative stream consumer {}.{} on section [{}] was never resolved, nothing to unpublish: {}",
+                      artifact,
+                      entry.method(),
+                      entry.config(),
+                      cause.message());
+        }
+
+        @SuppressWarnings("JBCT-EX-01")
+        private List<StreamSubscriptionManifestEntry> readStreamSubscriptions(Artifact artifact,
+                                                                              Slice slice,
+                                                                              java.util.function.BiConsumer<ReactiveManifestEntry, Cause> onUnresolved,
+                                                                              java.util.function.Consumer<ReactiveManifestEntry> onResolved) {
             var reactive = readReactiveBindingsFromManifest(artifact, slice);
             var result = new ArrayList<StreamSubscriptionManifestEntry>();
 
@@ -1619,11 +1647,8 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
                                                                                                                                                                     method,
                                                                                                                                                                     batchMode,
                                                                                                                                                                     eventType)))
-                                     .onFailure(cause -> log.error("Declarative stream consumer {}.{} on section [{}] could NOT be registered — it will receive nothing: {}",
-                                                                   artifact,
-                                                                   entry.method(),
-                                                                   entry.config(),
-                                                                   cause.message()))
+                                     .onSuccess(_ -> onResolved.accept(entry))
+                                     .onFailure(cause -> onUnresolved.accept(entry, cause))
                                      .option()
                                      .onPresent(result::add);
                 }
@@ -1653,6 +1678,52 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
         /// [BlueprintStreamAddresses#engineKeyFor] against the same bindings map, so the property this
         /// method was written to hold — a consumer resolves to exactly the stream its publisher writes
         /// to — survives the change rather than being re-established by coincidence.
+        /// #1935: a declared consumer that cannot be registered receives nothing, and the slice activates anyway,
+        /// so the log line alone left an operator with a healthy-looking slice and a silent consumer. It is now also
+        /// an operator warning (CRITICAL `stream-consumer-not-registered`) naming the slice, method, stream section
+        /// and cause, raised on this node's event log; the aggregator throttles it per (code, subject).
+        ///
+        /// The slice still ACTIVATES: that is a choice. One unregistered consumer must not take down the slice's
+        /// other entry points (routes, other consumers, scheduled tasks), the failure is per-entry and the cause is
+        /// usually configuration the operator can correct without redeploying code, and failing activation would
+        /// put the whole slice into the retry loop for a condition a retry cannot fix. The cost, accepted here, is a
+        /// slice that reports healthy while a consumer is dead; the warning is what makes that visible. There is no
+        /// slice-status field for an activated-with-caveat condition, so none is added.
+        private void raiseConsumerNotRegistered(Artifact artifact, ReactiveManifestEntry entry, Cause cause) {
+            ctx.markUnregisteredConsumer(consumerSubject(artifact, entry));
+            OperatorWarnings.raise(log,
+                                   ctx.operatorWarnings(),
+                                   OperatorWarningCode.STREAM_CONSUMER_NOT_REGISTERED,
+                                   consumerSubject(artifact, entry),
+                                   "Declarative stream consumer {}.{} on section [{}] could NOT be registered, it will receive nothing: {}",
+                                   artifact,
+                                   entry.method(),
+                                   entry.config(),
+                                   cause.message());
+        }
+
+        private static String consumerSubject(Artifact artifact, ReactiveManifestEntry entry) {
+            return artifact + "." + entry.method() + "[" + entry.config() + "]";
+        }
+
+        /// The resolved counterpart (#1935): raised only when `stream-consumer-not-registered` was raised for this same
+        /// consumer and it now registers, so an operator who saw the CRITICAL also sees it end. A consumer that always
+        /// registered, or one whose slice was removed in between, raises nothing.
+        private void raiseConsumerRegisteredAgain(Artifact artifact, ReactiveManifestEntry entry) {
+            var subject = consumerSubject(artifact, entry);
+
+            if (ctx.clearUnregisteredConsumer(subject)) {
+                OperatorWarnings.raise(log,
+                                       ctx.operatorWarnings(),
+                                       OperatorWarningCode.STREAM_CONSUMER_REGISTERED_AGAIN,
+                                       subject,
+                                       "Declarative stream consumer {}.{} on section [{}] is registered again",
+                                       artifact,
+                                       entry.method(),
+                                       entry.config());
+            }
+        }
+
         /// The consumer needs only the stream's NAME, which is the section's last segment: `StreamConfigParser`
         /// accepts no `name` key, so the name never came from the section's contents. It used to bind the whole
         /// `StreamConfig` through the generic record binder just to read `name` back, which refuses a documented

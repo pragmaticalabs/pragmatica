@@ -21,6 +21,7 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.LongSupplier;
 
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.dht.DHTMessage.Readiness;
@@ -51,9 +52,17 @@ final class CatchUpRound {
     private final long startedNanos;
     private final ConcurrentHashMap<NodeId, Answer> answers = new ConcurrentHashMap<>();
     private final Set<NodeId> outstandingPulls = ConcurrentHashMap.newKeySet();
-    private final AtomicBoolean decided = new AtomicBoolean();
-    /// When the round decided, so a round whose pulls are still landing is kept for a bounded while.
-    private final AtomicLong decidedAtNanos = new AtomicLong();
+    /// The monotonic clock the round's ages are read from: `System.nanoTime` in production, a manual clock in a test.
+    private final LongSupplier clock;
+
+    /// The stamp of a round that has not decided. `System.nanoTime` may legally return any value, negative ones included, so
+    /// no ordinary reading can be the sentinel: it is the one value a clock reading of a decision is never taken to be.
+    private static final long UNDECIDED = Long.MIN_VALUE;
+
+    /// When the round decided, so a round whose pulls are still landing is kept for a bounded while. [#UNDECIDED] means
+    /// undecided, and the decision and its stamp are ONE atomic step: a reader can never observe "decided" without the time
+    /// it decided at (two separate fields let a tick that landed between them read a stamp of 0 and replace the round).
+    private final AtomicLong decidedAtNanos = new AtomicLong(UNDECIDED);
     private final AtomicBoolean anchorless = new AtomicBoolean();
 
     private CatchUpRound(long id,
@@ -61,21 +70,23 @@ final class CatchUpRound {
                          Partition partition,
                          Set<NodeId> sources,
                          Set<NodeId> anchors,
-                         long startedNanos) {
+                         LongSupplier clock) {
         this.id = id;
         this.generation = generation;
         this.partition = partition;
         this.sources = Set.copyOf(sources);
         this.anchors = Set.copyOf(anchors);
-        this.startedNanos = startedNanos;
+        this.clock = clock;
+        this.startedNanos = clock.getAsLong();
     }
 
     static CatchUpRound catchUpRound(long id,
                                      long generation,
                                      Partition partition,
                                      Set<NodeId> sources,
-                                     Set<NodeId> anchors) {
-        return new CatchUpRound(id, generation, partition, sources, anchors, System.nanoTime());
+                                     Set<NodeId> anchors,
+                                     LongSupplier clock) {
+        return new CatchUpRound(id, generation, partition, sources, anchors, clock);
     }
 
     /// The pending spell this round was started for.
@@ -96,7 +107,7 @@ final class CatchUpRound {
     }
 
     boolean olderThan(long ageNanos) {
-        return System.nanoTime() - startedNanos > ageNanos;
+        return clock.getAsLong() - startedNanos > ageNanos;
     }
 
     boolean anchorless() {
@@ -116,17 +127,13 @@ final class CatchUpRound {
 
     /// Whether this round decided less than `ageNanos` ago — its pulls may still be landing (#1777, K5).
     boolean decidedWithin(long ageNanos) {
-        return decided.get() && System.nanoTime() - decidedAtNanos.get() <= ageNanos;
+        var decidedAt = decidedAtNanos.get();
+
+        return decidedAt != UNDECIDED && clock.getAsLong() - decidedAt <= ageNanos;
     }
 
     private boolean claimDecision() {
-        if (!decided.compareAndSet(false, true)) {
-            return false;
-        }
-
-        decidedAtNanos.set(System.nanoTime());
-
-        return true;
+        return decidedAtNanos.compareAndSet(UNDECIDED, clock.getAsLong());
     }
 
     /// Decide on the answers in hand, for a round some source never answered (#1777, H2): allowed only when at
