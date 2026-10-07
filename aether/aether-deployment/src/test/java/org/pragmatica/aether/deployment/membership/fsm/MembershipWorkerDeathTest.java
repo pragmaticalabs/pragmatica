@@ -16,9 +16,9 @@ import org.junit.jupiter.api.Test;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
-/// #1717 — a core holds no transport link to a worker, so the liveness half of the death co-confirmation
-/// can never speak for it; a force-killed worker stayed SUSPECT for good. For an explicit non-core role
-/// SWIM-FAULTY alone arms the eviction backstop, and evidence inside the window vetoes it.
+/// #1717 — a worker has only one reliable death plane on a core (no transport link in the hierarchy, or no
+/// SWIM probe history when killed young), so requiring both left a force-killed worker SUSPECT for good. For
+/// an explicit non-core role EITHER plane arms the eviction backstop, and evidence inside the window vetoes it.
 class MembershipWorkerDeathTest {
     private static final long BACKSTOP_MS = 300;
 
@@ -87,6 +87,48 @@ class MembershipWorkerDeathTest {
             .as("evidence of life inside the window vetoes the eviction; state=%s", state(membership, id))
             .isFalse();
         assertThat(state(membership, id)).isEqualTo("Member");
+    }
+
+    /// The other plane: a worker killed before SWIM ever probed it (as in TerminatedWorkerGhostTest) produces
+    /// a transport disconnect and no SWIM-FAULTY at all.
+    @Test
+    void killedWorker_livenessGoneWithoutAnySwimFaulty_reachesDead() {
+        var membership = fsm();
+        var id = new NodeId("worker-4");
+
+        membership.onWorkerAdmissionHealthy(id, 1, worker());
+        membership.onPeerDisconnected(id);
+        membership.onLivenessGone(id);
+
+        assertThat(awaitTrue(() -> "Dead".equals(state(membership, id)), 3_000))
+            .as("transport-gone alone is enough for a worker; state=%s", state(membership, id))
+            .isTrue();
+    }
+
+    @Test
+    void worker_livenessGone_butGovernorKeepsReportingIt_isNeverEvicted() {
+        var membership = fsm();
+        var id = new NodeId("worker-5");
+        var governor = new NodeId("governor");
+
+        membership.onGovernorHealthy(id, "community", governor, 1, 1, worker());
+        membership.onLivenessGone(id);
+        membership.onGovernorHealthy(id, "community", governor, 1, 1, worker());
+
+        assertThat(awaitTrue(() -> "Dead".equals(state(membership, id)), 3 * BACKSTOP_MS)).isFalse();
+        assertThat(state(membership, id)).isEqualTo("Member");
+    }
+
+    /// A core needs BOTH planes: a transport drop alone must never kill it either.
+    @Test
+    void core_livenessGoneAlone_isNeverEvicted() {
+        var membership = fsm();
+        var id = new NodeId("core-2");
+
+        membership.seed(java.util.Set.of(id));
+        membership.onLivenessGone(id);
+
+        assertThat(awaitTrue(() -> "Dead".equals(state(membership, id)), 3 * BACKSTOP_MS)).isFalse();
     }
 
     /// Control for the veto test above: the same sequence WITHOUT the evidence after the FAULTY edge ends
