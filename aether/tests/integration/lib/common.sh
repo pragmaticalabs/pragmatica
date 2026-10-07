@@ -134,6 +134,18 @@ _log_prefix() {
     fi
 }
 
+# deadline_in <seconds>: the absolute `$SECONDS` value a poll loop compares against, reached NO SOONER than <seconds> of wall time from now.
+# `$((SECONDS + N))` is not that: `$SECONDS` counts whole seconds from integer boundaries of the shell's own clock, so it expires after
+# anywhere in (N-1, N] seconds, and a short budget (an 8s node-removal wait, a 5s partition hold) can lose most of a second, or all of
+# it for N=1 (#1887: a 1s stub deadline expired after one slow call). This one is in [N, N+1). A budget of 0 stays "already expired".
+deadline_in() {
+    if [ "${1:-0}" -gt 0 ] 2>/dev/null; then
+        echo $((SECONDS + $1 + 1))
+    else
+        echo "$SECONDS"
+    fi
+}
+
 log_info()  { echo -e "${GREEN}[INFO]${NC}  $(_log_prefix)$1"; }
 log_warn()  { echo -e "${YELLOW}[WARN]${NC}  $(_log_prefix)$1"; }
 log_error() { echo -e "${RED}[ERROR]${NC} $1"; }

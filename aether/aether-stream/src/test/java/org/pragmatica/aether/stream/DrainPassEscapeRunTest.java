@@ -220,10 +220,70 @@ class DrainPassEscapeRunTest {
 
     /// The consumer is cancelled between the escape that reaches the threshold being counted and its alert being raised:
     /// the cancel hook then finds the run unreported and only logs, so only the recheck after the raise can end the alert.
-    /// Deterministic: the clock seam, armed from inside the read, runs the cancel on the second clock read of the escape
-    /// bookkeeping, which is after the escape is counted and before it is reported.
+    /// Deterministic: the clock seam, armed from inside the read, runs the cancel on the Nth clock read of the escape
+    /// bookkeeping. Read 2 is after the escape is counted and before it is reported.
     @Test
     void aConsumerCancelledAfterTheThresholdEscapeIsCounted_stillGetsTheRecovery() throws InterruptedException {
+        cancelAtClockReadOfTheThresholdEscape(2);
+
+        assertThat(warnings.stream().map(OperatorWarning::code).toList())
+                .containsExactly(OperatorWarningCode.STREAM_CONSUMER_DRAIN_FAILING, OperatorWarningCode.STREAM_CONSUMER_DRAIN_RESTORED);
+    }
+
+    /// Read 3 is while the alert's message is being built: the cancel lands after the run is marked reported and before
+    /// the alert is raised. The sink must still see the failure first and the recovery exactly once, never
+    /// [restored, failing, restored] (the hook's recovery before the failure, then the recheck's second one), and never
+    /// [restored, failing] (a failure with nothing left to end it).
+    @Test
+    void aConsumerCancelledWhileTheAlertIsBeingBuilt_getsTheFailureThenOneRecovery() throws InterruptedException {
+        cancelAtClockReadOfTheThresholdEscape(3);
+
+        assertThat(warnings.stream().map(OperatorWarning::code).toList())
+                .containsExactly(OperatorWarningCode.STREAM_CONSUMER_DRAIN_FAILING, OperatorWarningCode.STREAM_CONSUMER_DRAIN_RESTORED);
+    }
+
+    /// The cancel is two steps: its flag is set while the alert is being built (clock read 3), and its hook runs inside the
+    /// recheck itself, on the recheck's own clock read (read 4), after the alert was raised and marked. The hook then
+    /// raises the recovery and the recheck must not raise a second one: `endEscapeRun()` reports the run as reported only
+    /// to whichever gets there first. Without that guard the sink sees [failing, restored, restored].
+    @Test
+    void aCancelWhoseHookRunsInsideTheRecheck_raisesTheRecoveryOnce() throws Exception {
+        subscribe(NOT_LOCAL);
+        awaitEscapes(1);
+        for (var escape = 2; escape < ConsumerRuntimeState.ESCAPES_BEFORE_WARNING; escape++) {
+            resumeAndAwaitEscapes(escape);
+        }
+        var field = ConsumerRuntimeState.class.getDeclaredField("consumers");
+
+        field.setAccessible(true);
+
+        var state = (ConsumerRuntimeState.ConsumerState) ((java.util.concurrent.ConcurrentHashMap<?, ?>) field.get(runtime)).values()
+                                                                                                                         .iterator()
+                                                                                                                         .next();
+        var steps = new AtomicInteger();
+
+        atClockRead.set(() -> {
+            if (steps.incrementAndGet() == 1) {
+                state.cancel();
+                clockReadsUntilCancel.set(1);
+            } else {
+                runtime.unsubscribe(NOT_LOCAL, 0, GROUP);
+            }
+        });
+        duringRead.set(() -> {
+            armedThread.set(Thread.currentThread());
+            clockReadsUntilCancel.set(3);
+        });
+        runScheduled();
+        awaitWarnings(2);
+        settle();
+
+        assertThat(steps.get()).as("control: both steps ran, so the hook really landed inside the recheck").isEqualTo(2);
+        assertThat(warnings.stream().map(OperatorWarning::code).toList())
+                .containsExactly(OperatorWarningCode.STREAM_CONSUMER_DRAIN_FAILING, OperatorWarningCode.STREAM_CONSUMER_DRAIN_RESTORED);
+    }
+
+    private void cancelAtClockReadOfTheThresholdEscape(int clockRead) throws InterruptedException {
         subscribe(NOT_LOCAL);
         awaitEscapes(1);
         for (var escape = 2; escape < ConsumerRuntimeState.ESCAPES_BEFORE_WARNING; escape++) {
@@ -233,14 +293,11 @@ class DrainPassEscapeRunTest {
         atClockRead.set(() -> runtime.unsubscribe(NOT_LOCAL, 0, GROUP));
         duringRead.set(() -> {
             armedThread.set(Thread.currentThread());
-            clockReadsUntilCancel.set(2);
+            clockReadsUntilCancel.set(clockRead);
         });
         runScheduled();
         awaitWarnings(2);
         settle();
-
-        assertThat(warnings.stream().map(OperatorWarning::code).toList())
-                .containsExactly(OperatorWarningCode.STREAM_CONSUMER_DRAIN_FAILING, OperatorWarningCode.STREAM_CONSUMER_DRAIN_RESTORED);
     }
 
     private void reportFailingRun() throws InterruptedException {

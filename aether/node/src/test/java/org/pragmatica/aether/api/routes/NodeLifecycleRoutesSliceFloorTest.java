@@ -1,0 +1,798 @@
+// SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
+package org.pragmatica.aether.api.routes;
+
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Nested;
+import org.junit.jupiter.api.Test;
+import org.pragmatica.aether.deployment.membership.fsm.MembershipFsm;
+import org.pragmatica.aether.deployment.membership.view.MembershipView;
+import org.pragmatica.aether.metrics.ClusterSyncCollector;
+import org.pragmatica.aether.metrics.NodeReportedState;
+import org.pragmatica.aether.node.ManageableNode;
+import org.pragmatica.aether.slice.kvstore.AetherKey;
+import org.pragmatica.aether.slice.kvstore.AetherValue;
+import org.pragmatica.cluster.state.kvstore.KVStore;
+import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.net.NodeInfo;
+import org.pragmatica.http.HttpError;
+import org.pragmatica.http.HttpStatus;
+import org.pragmatica.lang.Option;
+import org.pragmatica.messaging.MessageRouter;
+import org.pragmatica.net.tcp.NodeAddress;
+
+import java.lang.reflect.Proxy;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.stream.Collectors;
+import java.util.stream.IntStream;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.fail;
+
+
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
+
+import org.pragmatica.aether.artifact.Artifact;
+import org.pragmatica.aether.artifact.ArtifactBase;
+import org.pragmatica.aether.artifact.Version;
+import org.pragmatica.aether.deployment.cluster.SliceOwnershipQuery;
+import org.pragmatica.aether.management.route.ManagementRoute;
+import org.pragmatica.aether.slice.SliceState;
+import org.pragmatica.aether.slice.kvstore.AetherKey.NodeArtifactKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
+import org.pragmatica.aether.slice.kvstore.AetherValue.NodeArtifactValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
+import org.pragmatica.cluster.state.kvstore.KVCommand;
+import org.pragmatica.http.HttpStatusAware;
+import org.pragmatica.http.routing.RequestContext;
+import org.pragmatica.http.routing.Route;
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.type.TypeToken;
+import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.utility.warning.OperatorWarning;
+import org.pragmatica.utility.warning.OperatorWarningCode;
+import org.pragmatica.utility.warning.OperatorWarningSink;
+
+
+/// #1720: operator drain and shutdown bypassed the slice `minAvailable` floor that the automatic drain honours
+/// (#1488). The pins run the REAL KV-backed guard ([SliceOwnershipQuery#minAvailableDrainViolations]) against a real
+/// KV store, through the real routes: a drain or shutdown that would leave a hosted slice below its floor is a typed 409
+/// naming the slice and counts; `force` overrides and is then never silent (an operator warning); concurrent admissions
+/// are serialised so two requests cannot both pass against one pending-drains snapshot.
+class NodeLifecycleRoutesSliceFloorTest {
+    private static final Version V1 = Version.version("1.0.0").unwrap();
+    private static final String SLICE_A = "org.example:a:1.0.0";
+    private static final String SLICE_B = "org.example:b:1.0.0";
+
+    private static final int INTENDED_SIZE = 5;
+
+    private final List<OperatorWarning> warnings = new CopyOnWriteArrayList<>();
+
+    private final Set<NodeId> pendingDrains = new LinkedHashSet<>();
+    private final List<String> routedEvents = new CopyOnWriteArrayList<>();
+
+    private KVStore<AetherKey, AetherValue> kvStore;
+    private MembershipFsm fsm;
+    private Set<NodeId> allPresent;
+    private Set<NodeId> installedVoters;
+
+    @BeforeEach
+    void setUp() {
+        var router = MessageRouter.DelegateRouter.delegate();
+        router.quiesce();
+        kvStore = new KVStore<>(router, noopSerializer(), null);
+        fsm = fsmAllCore(presentMembers());
+        allPresent = presentMembers();
+        installedVoters = presentMembers();
+    }
+
+    /// No-op serializer: this test seeds the KV store directly (not via consensus dedup), so
+    /// the content-based batch id is irrelevant — an empty encoding satisfies `createBatch`.
+    private static org.pragmatica.serialization.Serializer noopSerializer() {
+        return new org.pragmatica.serialization.Serializer() {
+            @Override
+            public <T> void write(io.netty.buffer.ByteBuf byteBuf, T object) {}
+        };
+    }
+
+    private NodeId node(int index) {
+        return new NodeId("node-" + index);
+    }
+
+    private NodeId worker(int index) {
+        return new NodeId("worker-" + index);
+    }
+
+    private Set<NodeId> presentMembers() {
+        return IntStream.rangeClosed(1, INTENDED_SIZE)
+                        .mapToObj(this::node)
+                        .collect(Collectors.toCollection(LinkedHashSet::new));
+    }
+
+    private NodeLifecycleRoutes routes() {
+        return routes(pendingDrains::add);
+    }
+
+    private NodeLifecycleRoutes routes(java.util.function.Consumer<NodeId> sink) {
+        return NodeLifecycleRoutes.nodeLifecycleRoutes(this::nodeProxy,
+                                                       sink,
+                                                       () -> Set.copyOf(pendingDrains),
+                                                       NodeLifecycleRoutes.SliceFloor.sliceFloor(SliceOwnershipQuery.minAvailableDrainViolations(kvStore),
+                                                                                                 OperatorWarningSink.handingOffTo(warnings::add)));
+    }
+
+    private Artifact slice(String name, int instances, int minAvailable) {
+        var artifact = ArtifactBase.artifactBase("org.example:" + name).unwrap().withVersion(V1);
+
+        apply(new KVCommand.Put<>(SliceTargetKey.sliceTargetKey(artifact.base()),
+                                  SliceTargetValue.sliceTargetValue(V1, instances, minAvailable, Option.none())));
+
+        return artifact;
+    }
+
+    private void host(Artifact artifact, NodeId... nodes) {
+        for (var node : nodes) {
+            apply(new KVCommand.Put<>(NodeArtifactKey.nodeArtifactKey(node, artifact),
+                                      NodeArtifactValue.nodeArtifactValue(SliceState.ACTIVE)));
+        }
+    }
+
+    private void apply(KVCommand<AetherKey> command) {
+        kvStore.process(kvStore.createBatch(List.of(command)));
+    }
+
+    private static NodeLifecycleRoutes.SliceFloorBreached breach(org.pragmatica.lang.Result<?> result) {
+        assertThat(result.isFailure()).as("expected a refusal, got " + result).isTrue();
+        var holder = new java.util.concurrent.atomic.AtomicReference<org.pragmatica.lang.Cause>();
+
+        result.onFailure(holder::set);
+        assertThat(holder.get()).isInstanceOf(NodeLifecycleRoutes.SliceFloorBreached.class);
+
+        return (NodeLifecycleRoutes.SliceFloorBreached) holder.get();
+    }
+
+    private MembershipView membershipView() {
+        var snapshot = new LinkedHashMap<NodeId, MembershipView.MemberView>();
+        allPresent.forEach(peer -> snapshot.put(peer, new MembershipView.MemberView(peer, null)));
+
+        return new MembershipView() {
+            @Override
+            public Map<NodeId, MemberView> snapshot() {
+                return Map.copyOf(snapshot);
+            }
+
+            @Override
+            public Option<MemberView> get(NodeId peer) {
+                return Option.option(snapshot.get(peer));
+            }
+        };
+    }
+
+    /// All present members report READY so an admitted drain flows through the READY gate and
+    /// succeeds — proving the budget guard did NOT reject (rather than being masked by a later guard).
+    private ClusterSyncCollector metricsCollector() {
+        var states = allPresent.stream()
+                               .collect(Collectors.toMap(peer -> peer, _ -> NodeReportedState.READY));
+        return (ClusterSyncCollector) Proxy.newProxyInstance(
+            ClusterSyncCollector.class.getClassLoader(),
+            new Class[]{ClusterSyncCollector.class},
+            (_, method, _) -> switch (method.getName()) {
+                case "reportedStates" -> Map.copyOf(states);
+                case "hasAuthoritativeReadiness" -> Boolean.TRUE;
+                default -> throw new UnsupportedOperationException("Not implemented: " + method.getName());
+            });
+    }
+
+    private ManageableNode nodeProxy() {
+        return (ManageableNode) Proxy.newProxyInstance(
+            ManageableNode.class.getClassLoader(),
+            new Class[]{ManageableNode.class},
+            (_, method, args) -> switch (method.getName()) {
+                case "membershipView" -> membershipView();
+                case "metricsCollector" -> metricsCollector();
+                case "coreNodeIds" -> installedVoters;
+                case "initialTopology" -> presentMembers().stream().toList();
+                case "membershipFsm" -> fsm;
+                case "kvStore" -> kvStore;
+                case "route" -> recordRoute(args);
+                default -> throw new UnsupportedOperationException("Not implemented in test proxy: " + method.getName());
+            });
+    }
+
+    private Object recordRoute(Object[] args) {
+        routedEvents.add(String.valueOf(args[0]));
+        return null;
+    }
+
+    private static MembershipFsm fsmAllCore(Set<NodeId> ids) {
+        var fsm = MembershipFsm.membershipFsm();
+
+        ids.forEach(id -> promoteCore(fsm, id));
+
+        return fsm;
+    }
+
+    private static MembershipFsm fsmWithWorkers(Set<NodeId> cores, Set<NodeId> workers) {
+        var fsm = fsmAllCore(cores);
+
+        workers.forEach(id -> promoteWorker(fsm, id));
+
+        return fsm;
+    }
+
+    private static void promoteCore(MembershipFsm fsm, NodeId id) {
+        fsm.onSwimHealthy(id, 1L);
+        fsm.onMemberDescriptor(labeledInfo(id, Map.of(NodeInfo.LABEL_ROLE, "core")));
+    }
+
+    private static void promoteWorker(MembershipFsm fsm, NodeId id) {
+        fsm.onSwimHealthy(id, 1L);
+        fsm.onMemberDescriptor(labeledInfo(id, Map.of(NodeInfo.LABEL_ROLE, "worker")));
+    }
+
+    private static NodeInfo labeledInfo(NodeId id, Map<String, String> labels) {
+        return NodeInfo.nodeInfo(id, NodeAddress.nodeAddress("host-x", 6000).unwrap(), labels);
+    }
+
+
+    /// Slice A, floor 2, on node-1..3. Draining node-1 leaves A on node-2 and node-3 (2, at the floor): admitted.
+    /// With node-1 already pending, draining node-2 leaves A on node-3 only (1 < 2): refused.
+    @Test
+    void drain_wouldLeaveSliceBelowItsFloor_isRefused409_namingSliceAndCounts() {
+        var a = slice("a", 3, 2);
+        host(a, node(1), node(2), node(3));
+
+        assertThat(routes().drainNodeForTest(node(1).id()).await().isSuccess()).as("control: at the floor is allowed").isTrue();
+
+        var refusal = breach(routes().drainNodeForTest(node(2).id()).await());
+
+        assertThat(((HttpStatusAware) refusal).httpStatus()).isEqualTo(HttpStatus.CONFLICT);
+        assertThat(refusal.message()).contains(SLICE_A, "1 ACTIVE", "minAvailable 2", "force=true");
+        assertThat(pendingDrains).as("a refused drain reserves nothing").containsExactly(node(1));
+        assertThat(settledWarnings()).as("a refusal is not a forced breach, it raises exactly the refusal event")
+                                     .extracting(OperatorWarning::code)
+                                     .containsExactly(OperatorWarningCode.SLICE_FLOOR_DRAIN_REFUSED);
+    }
+
+    /// Owner rule: a warning-worthy condition raises a flood-guarded event on the transition AND a recovery event.
+    /// Three refusals of one target are one transition: one refusal event, naming the target and the slice.
+    @Test
+    void floorRefusal_raisesOneEventPerTransition_notOnePerRequest() {
+        var routes = routes();
+        host(slice("a", 3, 2), node(1), node(2), node(3));
+        pendingDrains.add(node(1));
+
+        for (int i = 0; i < 3; i++) {
+            breach(routes.drainNodeForTest(node(2).id()).await());
+        }
+
+        var raised = settledWarnings();
+
+        assertThat(raised).extracting(OperatorWarning::code).containsExactly(OperatorWarningCode.SLICE_FLOOR_DRAIN_REFUSED);
+        assertThat(raised.getFirst().subject()).isEqualTo(node(2).id());
+        assertThat(raised.getFirst().message()).contains(SLICE_A, "drain");
+    }
+
+    /// The recovery event: the same target's drain is admitted once the floor clears, and it is raised once.
+    @Test
+    void refusedDrainLaterAdmitted_raisesTheRecoveryEvent_once() {
+        var routes = routes();
+        host(slice("a", 3, 2), node(1), node(2), node(3));
+        pendingDrains.add(node(1));
+        breach(routes.drainNodeForTest(node(2).id()).await());
+        pendingDrains.remove(node(1));
+
+        assertThat(routes.drainNodeForTest(node(2).id()).await().isSuccess()).isTrue();
+
+        var raised = awaitWarnings(2);
+
+        assertThat(raised).extracting(OperatorWarning::code)
+                          .containsExactly(OperatorWarningCode.SLICE_FLOOR_DRAIN_REFUSED,
+                                           OperatorWarningCode.SLICE_FLOOR_DRAIN_ADMITTED);
+        assertThat(raised.get(1).subject()).isEqualTo(node(2).id());
+        assertThat(settledWarnings()).as("recovery is reported once").hasSize(2);
+    }
+
+    /// refuse -> admit -> refuse of one target is three events, in order: the SECOND refusal is raised again (the set
+    /// re-arms on admission), and the aggregator test pins that the feed shows it.
+    @Test
+    void refuseAdmitRefuse_raisesAllThree_inOrder() {
+        var routes = routes();
+        host(slice("a", 3, 2), node(1), node(2), node(3));
+        pendingDrains.add(node(1));
+        breach(routes.drainNodeForTest(node(2).id()).await());
+        pendingDrains.remove(node(1));
+        assertThat(routes.drainNodeForTest(node(2).id()).await().isSuccess()).isTrue();
+        pendingDrains.clear();
+        pendingDrains.add(node(1));
+        breach(routes.drainNodeForTest(node(2).id()).await());
+
+        assertThat(awaitWarnings(3)).extracting(OperatorWarning::code)
+                                    .containsExactly(OperatorWarningCode.SLICE_FLOOR_DRAIN_REFUSED,
+                                                     OperatorWarningCode.SLICE_FLOOR_DRAIN_ADMITTED,
+                                                     OperatorWarningCode.SLICE_FLOOR_DRAIN_REFUSED);
+    }
+
+    /// A refused target that leaves the membership is never admitted, so its recovery fires when the next admission
+    /// notices it gone, rather than leaving the refusal open for good (and the set leaking one entry).
+    @Test
+    void refusedTargetThatLeftTheMembership_getsItsRecovery() {
+        var routes = routes();
+        host(slice("a", 3, 2), node(1), node(2), node(3));
+        pendingDrains.add(node(1));
+        breach(routes.drainNodeForTest(node(2).id()).await());
+        pendingDrains.clear();
+        var withoutTwo = presentMembers();
+        withoutTwo.remove(node(2));
+        fsm = fsmAllCore(withoutTwo);
+
+        assertThat(routes.drainNodeForTest(node(4).id()).await().isSuccess()).isTrue();
+
+        var raised = awaitWarnings(2);
+
+        assertThat(raised).extracting(OperatorWarning::code)
+                          .containsExactly(OperatorWarningCode.SLICE_FLOOR_DRAIN_REFUSED,
+                                           OperatorWarningCode.SLICE_FLOOR_DRAIN_ADMITTED);
+        assertThat(raised.get(1).subject()).isEqualTo(node(2).id());
+        assertThat(raised.get(1).message()).contains("left the membership");
+    }
+
+    /// A DEPARTING target has not left: it is still a tracked member, just not a counted one. Re-requesting its shutdown
+    /// is the same refusal four times, so one refusal event, and no "left the membership" recovery (a false all-clear
+    /// that the next refusal would re-open, alternating for as long as the operator retries).
+    @Test
+    void refusedTargetThatIsDeparting_hasNotLeft_soRetriesRaiseOneRefusalAndNoRecovery() {
+        var routes = routes();
+        host(slice("a", 3, 2), node(1), node(2), node(3));
+        pendingDrains.add(node(1));
+        breach(routes.shutdownNodeForTest(node(2).id()).await());
+        fsm.onDrainRequested(node(2));
+        assertThat(fsm.memberStates()).as("control: node-2 is tracked, DEPARTING, and not counted")
+                                      .containsEntry(node(2), "Departing");
+        assertThat(fsm.countedMembers()).doesNotContain(node(2));
+
+        for (int i = 0; i < 4; i++) {
+            breach(routes.shutdownNodeForTest(node(2).id()).await());
+        }
+
+        assertThat(settledWarnings()).extracting(OperatorWarning::code)
+                                     .containsExactly(OperatorWarningCode.SLICE_FLOOR_DRAIN_REFUSED);
+    }
+
+    /// Owner rule: the recovery arrives on the TRANSITION. Refuse, the target dies, and then no operator request ever
+    /// reaches the floor check again: the departure edge alone must close the refusal.
+    @Test
+    void refusedTargetThatDeparts_getsItsRecoveryOnTheDepartureEdge_withNoFurtherRequests() {
+        var routes = routes();
+        host(slice("a", 3, 2), node(1), node(2), node(3));
+        pendingDrains.add(node(1));
+        breach(routes.drainNodeForTest(node(2).id()).await());
+
+        fsm.onSwimDeparted(node(2), 2L);
+        routes.onMemberDeparted(node(2));
+
+        var raised = awaitWarnings(2);
+
+        assertThat(raised).extracting(OperatorWarning::code)
+                          .containsExactly(OperatorWarningCode.SLICE_FLOOR_DRAIN_REFUSED,
+                                           OperatorWarningCode.SLICE_FLOOR_DRAIN_ADMITTED);
+        assertThat(raised.get(1).subject()).isEqualTo(node(2).id());
+        assertThat(raised.get(1).message()).contains("left the membership");
+    }
+
+    /// Control: the departure of a target that was never refused raises nothing, and a second edge for the same target
+    /// raises nothing more.
+    @Test
+    void departureOfATargetThatWasNeverRefused_raisesNothing_andARepeatedEdgeIsIdempotent() {
+        var routes = routes();
+        host(slice("a", 3, 2), node(1), node(2), node(3));
+        pendingDrains.add(node(1));
+        breach(routes.drainNodeForTest(node(2).id()).await());
+        fsm.onSwimDeparted(node(3), 2L);
+        routes.onMemberDeparted(node(3));
+        fsm.onSwimDeparted(node(2), 2L);
+        routes.onMemberDeparted(node(2));
+        routes.onMemberDeparted(node(2));
+
+        assertThat(settledWarnings()).extracting(OperatorWarning::code)
+                                     .containsExactly(OperatorWarningCode.SLICE_FLOOR_DRAIN_REFUSED,
+                                                      OperatorWarningCode.SLICE_FLOOR_DRAIN_ADMITTED);
+    }
+
+    /// F1b: a target that has already left (Dead) is not drained or shut down against the floor at all: the request
+    /// changes no availability, so no refusal is raised or recorded, and repeating it cannot alternate refusal and
+    /// recovery events. Four requests, no events.
+    @Test
+    void requestsAgainstATargetThatHasAlreadyLeft_raiseNoFloorEvents() {
+        var routes = routes();
+        host(slice("a", 3, 2), node(1), node(2), node(3));
+        pendingDrains.add(node(1));
+        fsm.onSwimDeparted(node(2), 1L);
+        assertThat(fsm.memberStates()).as("control: node-2 is Dead").containsEntry(node(2), "Dead");
+
+        for (int i = 0; i < 4; i++) {
+            assertThat(routes.shutdownNodeForTest(node(2).id()).await().isSuccess()).isTrue();
+        }
+
+        assertThat(settledWarnings()).isEmpty();
+    }
+
+    /// F1b with history: refused while alive, then it dies, then the operator keeps retrying. The departure closes the
+    /// refusal once; the four retries add nothing. Exactly refusal then recovery.
+    @Test
+    void refusedTargetThatDiesThenIsRetried_givesExactlyOneRefusalAndOneRecovery() {
+        var routes = routes();
+        host(slice("a", 3, 2), node(1), node(2), node(3));
+        pendingDrains.add(node(1));
+        breach(routes.shutdownNodeForTest(node(2).id()).await());
+        fsm.onSwimDeparted(node(2), 1L);
+        routes.onMemberDeparted(node(2));
+        awaitWarnings(2);
+
+        for (int i = 0; i < 4; i++) {
+            routes.shutdownNodeForTest(node(2).id()).await();
+        }
+
+        assertThat(settledWarnings()).extracting(OperatorWarning::code)
+                                     .containsExactly(OperatorWarningCode.SLICE_FLOOR_DRAIN_REFUSED,
+                                                      OperatorWarningCode.SLICE_FLOOR_DRAIN_ADMITTED);
+    }
+
+    /// F4 regression: lock order. Admission holds the routes monitor and calls into the FSM (`onDrainRequested`, which takes
+    /// the member's transition guard); the FSM runs its `onTransition` listener UNDER that guard, and AetherNode's listener
+    /// calls `routes.onMemberDeparted`. If that call took the routes monitor, a member dying while an operator forces a
+    /// drain of it would deadlock two threads. Driven deterministically with the REAL FSM and routes and latches: thread A
+    /// is inside the sink (monitor held) when thread B kills the member and fires the listener. Both must finish within the
+    /// bound, no thread may be deadlocked, and the refusal must be closed exactly once.
+    @Test
+    @org.junit.jupiter.api.Timeout(60)
+    void memberDyingWhileItsForcedDrainIsAdmitted_doesNotDeadlock_andTheRefusalIsClosedOnce() throws Exception {
+        var inSink = new java.util.concurrent.CountDownLatch(1);
+        var proceed = new java.util.concurrent.CountDownLatch(1);
+        var routes = routes(target -> {
+            inSink.countDown();
+            await(proceed);
+            fsm.onDrainRequested(target);
+            pendingDrains.add(target);
+        });
+
+        fsm.onTransition(record -> {
+            if ("Dead".equals(record.toState())) {
+                routes.onMemberDeparted(record.nodeId());
+            }
+        });
+        host(slice("a", 3, 2), node(1), node(2), node(3));
+        pendingDrains.add(node(1));
+        breach(routes.drainNodeForTest(node(2).id()).await());
+
+        var admission = new Thread(() -> routes.drainNodeForTest(node(2).id(), true).await(), "admission");
+        var death = new Thread(() -> fsm.onSwimDeparted(node(2), 2L), "death");
+
+        admission.start();
+        assertThat(inSink.await(10, java.util.concurrent.TimeUnit.SECONDS)).as("admission reached the sink holding the monitor").isTrue();
+        death.start();
+        death.join(10_000);
+        proceed.countDown();
+        admission.join(10_000);
+
+        var deadlocked = java.lang.management.ManagementFactory.getThreadMXBean().findDeadlockedThreads();
+
+        assertThat(deadlocked).as("no deadlocked threads").isNull();
+        assertThat(death.isAlive()).as("the dying thread finished (listener took no routes lock)").isFalse();
+        assertThat(admission.isAlive()).as("the admission finished").isFalse();
+        assertThat(awaitWarnings(3)).extracting(OperatorWarning::code)
+                                    .containsExactlyInAnyOrder(OperatorWarningCode.SLICE_FLOOR_DRAIN_REFUSED,
+                                                               OperatorWarningCode.SLICE_FLOOR_BREACHED_BY_FORCE,
+                                                               OperatorWarningCode.SLICE_FLOOR_DRAIN_ADMITTED);
+        assertThat(settledWarnings()).as("the recovery is raised exactly once, not lost and not duplicated").hasSize(3);
+    }
+
+    private static void await(java.util.concurrent.CountDownLatch latch) {
+        try {
+            latch.await(30, java.util.concurrent.TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    /// F5: the departure task runs asynchronously, behind the monitor. A member that died and REJOINED under the same id
+    /// before the task ran is present again, so reporting "left the membership" for it is a false all-clear. The task
+    /// re-checks membership under the monitor. Deterministic: this thread holds the (reentrant) monitor, so the task is
+    /// provably queued behind it while the member dies, rejoins and is refused again.
+    @Test
+    void departureTaskForAMemberThatRejoinedBeforeItRan_raisesNoFalseRecovery() {
+        var routes = routes();
+        host(slice("a", 3, 2), node(1), node(2), node(3));
+        pendingDrains.add(node(1));
+        breach(routes.drainNodeForTest(node(2).id()).await());
+
+        synchronized (routes) {
+            fsm.onSwimDeparted(node(2), 2L);
+            assertThat(fsm.memberStates()).as("control: the member died").containsEntry(node(2), "Dead");
+            routes.onMemberDeparted(node(2));
+            fsm.onSwimHealthy(node(2), 3L);
+            assertThat(fsm.memberStates().get(node(2))).as("control: it rejoined under the same id").isNotEqualTo("Dead");
+            breach(routes.drainNodeForTest(node(2).id()).await());
+        }
+
+        assertThat(settledWarnings()).as("the live member is not reported as having left")
+                                     .extracting(OperatorWarning::code)
+                                     .containsExactly(OperatorWarningCode.SLICE_FLOOR_DRAIN_REFUSED);
+    }
+
+    @Test
+    void refusalMessage_namesTheCliFlag_asWellAsTheQueryParameter() {
+        host(slice("a", 3, 2), node(1), node(2), node(3));
+        pendingDrains.add(node(1));
+
+        assertThat(breach(routes().drainNodeForTest(node(2).id()).await()).message()).contains("force=true", "--override-floor");
+    }
+
+    /// Control: an admission that was never refused has nothing to recover from, so no recovery event.
+    @Test
+    void admittedDrainThatWasNeverRefused_raisesNoRecoveryEvent() {
+        host(slice("a", 3, 2), node(1), node(2), node(3));
+
+        assertThat(routes().drainNodeForTest(node(1).id()).await().isSuccess()).isTrue();
+        assertThat(settledWarnings()).isEmpty();
+    }
+
+    /// Forcing a refused drain also ends the refusal: refusal, then the forced-breach warning, then the recovery.
+    @Test
+    void refusedThenForced_raisesRefusal_forcedBreach_andRecovery() {
+        var routes = routes();
+        host(slice("a", 3, 2), node(1), node(2), node(3));
+        pendingDrains.add(node(1));
+        breach(routes.drainNodeForTest(node(2).id()).await());
+
+        assertThat(routes.drainNodeForTest(node(2).id(), true).await().isSuccess()).isTrue();
+
+        assertThat(awaitWarnings(3)).extracting(OperatorWarning::code)
+                                    .containsExactlyInAnyOrder(OperatorWarningCode.SLICE_FLOOR_DRAIN_REFUSED,
+                                                               OperatorWarningCode.SLICE_FLOOR_BREACHED_BY_FORCE,
+                                                               OperatorWarningCode.SLICE_FLOOR_DRAIN_ADMITTED);
+    }
+
+    @Test
+    void shutdown_wouldLeaveSliceBelowItsFloor_isRefused409() {
+        var a = slice("a", 3, 2);
+        host(a, node(1), node(2), node(3));
+        pendingDrains.add(node(1));
+
+        var refusal = breach(routes().shutdownNodeForTest(node(2).id()).await());
+
+        assertThat(refusal.message()).contains("shutdown", SLICE_A);
+        assertThat(pendingDrains).containsExactly(node(1));
+    }
+
+    /// Workers carry slices and bypass the core quorum budget, so the floor is their only operator-drain guard.
+    @Test
+    void workerDrain_isGuardedByTheFloor_thoughItBypassesTheCoreBudget() {
+        fsm = fsmWithWorkers(presentMembers(), Set.of(worker(1)));
+        allPresent = new LinkedHashSet<>(presentMembers());
+        allPresent.add(worker(1));
+        var b = slice("b", 2, 2);
+        host(b, worker(1), node(4));
+
+        var refusal = breach(routes().drainNodeForTest(worker(1).id()).await());
+
+        assertThat(refusal.message()).contains(SLICE_B, "1 ACTIVE", "minAvailable 2");
+        assertThat(pendingDrains).isEmpty();
+    }
+
+    @Test
+    void force_overridesTheFloor_andRaisesAnOperatorWarningNamingTheSlices() {
+        var a = slice("a", 3, 2);
+        var b = slice("b", 3, 2);
+        host(a, node(1), node(2), node(3));
+        host(b, node(2), node(3), node(4));
+        pendingDrains.add(node(1));
+
+        var forced = routes().drainNodeForTest(node(2).id(), true).await();
+
+        assertThat(forced.isSuccess()).as("a forced drain is admitted: " + forced).isTrue();
+        assertThat(pendingDrains).contains(node(2));
+        assertThat(awaitWarnings(1)).hasSize(1);
+        var warning = warnings.getFirst();
+
+        assertThat(warning.code()).isEqualTo(OperatorWarningCode.SLICE_FLOOR_BREACHED_BY_FORCE);
+        assertThat(warning.subject()).isEqualTo(node(2).id());
+        assertThat(warning.message()).contains("drain", SLICE_A);
+    }
+
+    /// Audit: a forced breach names the principal that forced it, taken from the request's bound security context.
+    @Test
+    void forcedBreach_warningNamesThePrincipalWhoForcedIt() throws Exception {
+        host(slice("a", 3, 2), node(1), node(2), node(3));
+        pendingDrains.add(node(1));
+        var routes = routes();
+        var context = org.pragmatica.aether.http.handler.security.SecurityContext.securityContext("ops-alice").unwrap();
+
+        java.util.concurrent.atomic.AtomicReference<Boolean> admitted = new java.util.concurrent.atomic.AtomicReference<>();
+
+        ScopedValue.where(org.pragmatica.aether.http.handler.security.SecurityContextHolder.scopedValue(), context)
+                   .run(() -> admitted.set(routes.drainNodeForTest(node(2).id(), true).await().isSuccess()));
+
+        assertThat(admitted.get()).isTrue();
+        assertThat(awaitWarnings(1).getFirst().message()).contains("ops-alice");
+    }
+
+    /// Control: with no bound principal the warning says `unknown` rather than omitting who.
+    @Test
+    void forcedBreach_withoutABoundPrincipal_saysUnknown() {
+        host(slice("a", 3, 2), node(1), node(2), node(3));
+        pendingDrains.add(node(1));
+
+        assertThat(routes().drainNodeForTest(node(2).id(), true).await().isSuccess()).isTrue();
+        assertThat(awaitWarnings(1).getFirst().message()).contains("by unknown");
+    }
+
+    @Test
+    void forcedShutdown_alsoWarns() {
+        var a = slice("a", 3, 2);
+        host(a, node(1), node(2), node(3));
+        pendingDrains.add(node(1));
+
+        assertThat(routes().shutdownNodeForTest(node(2).id(), true).await().isSuccess()).isTrue();
+        assertThat(awaitWarnings(1)).hasSize(1);
+        assertThat(warnings.getFirst().message()).contains("shutdown");
+    }
+
+    /// A forced request that breaches nothing is just a drain: no warning, so the warning means a breach.
+    @Test
+    void force_withoutABreach_raisesNoWarning() {
+        var a = slice("a", 3, 2);
+        host(a, node(1), node(2), node(3));
+
+        assertThat(routes().drainNodeForTest(node(1).id(), true).await().isSuccess()).isTrue();
+        assertThat(settledWarnings()).isEmpty();
+    }
+
+    /// The sink hands each warning to a virtual thread (it never runs the publisher on the raising thread), so a
+    /// positive assertion waits for it, and a negative one gives it time to arrive before concluding it did not.
+    private List<OperatorWarning> awaitWarnings(int expected) {
+        var deadline = System.nanoTime() + 5_000_000_000L;
+
+        while (warnings.size() < expected && System.nanoTime() < deadline) {
+            java.util.concurrent.locks.LockSupport.parkNanos(10_000_000L);
+        }
+
+        return List.copyOf(warnings);
+    }
+
+    private List<OperatorWarning> settledWarnings() {
+        java.util.concurrent.locks.LockSupport.parkNanos(300_000_000L);
+
+        return List.copyOf(warnings);
+    }
+
+    /// The query parameter reaches the handler: `?force=true` through the real route breaks the floor, its
+    /// absence does not.
+    @Test
+    void route_forceQueryParameter_isHonoured() {
+        var a = slice("a", 3, 2);
+        host(a, node(1), node(2), node(3));
+        pendingDrains.add(node(1));
+        var route = routes().routes()
+                            .filter(candidate -> candidate.name().equals(ManagementRoute.NODE_DRAIN.name()))
+                            .findFirst()
+                            .orElseThrow();
+
+        var unforced = invoke(route, node(2), Map.of());
+        var forced = invoke(route, node(2), Map.of("force", List.of("true")));
+
+        assertThat(unforced.isFailure()).as("without force the floor refuses: " + unforced).isTrue();
+        assertThat(forced.isSuccess()).as("with ?force=true it is admitted: " + forced).isTrue();
+    }
+
+    @SuppressWarnings("unchecked")
+    private Result<Object> invoke(Route<?> route, NodeId target, Map<String, List<String>> query) {
+        return ((Route<Object>) route).handler().handle(new QueryRequestContext(target.id(), query)).await();
+    }
+
+    /// Serialisation (#1720): two operator requests must not both pass against one pending-drains snapshot. The
+    /// first is held INSIDE the sink (the reservation point), the second then arrives; only the admission monitor
+    /// keeps the second from evaluating the floor against a pending set that does not yet hold the first.
+    @Test
+    void concurrentOperatorDrains_cannotBothPassTheFloor() {
+        var a = slice("a", 3, 2);
+        host(a, node(1), node(2), node(3));
+        var entered = Promise.<Unit> promise();
+        var release = Promise.<Unit> promise();
+        var calls = new AtomicInteger();
+        var routes = routes(target -> {
+            calls.incrementAndGet();
+            entered.succeed(Unit.unit());
+            release.await(TimeSpan.timeSpan(5).seconds());
+            pendingDrains.add(target);
+        });
+        var first = CompletableFuture.supplyAsync(() -> routes.drainNodeForTest(node(1).id()).await());
+
+        assertThat(entered.await(TimeSpan.timeSpan(5).seconds()).isSuccess()).isTrue();
+        var second = CompletableFuture.supplyAsync(() -> routes.drainNodeForTest(node(2).id()).await());
+
+        java.util.concurrent.locks.LockSupport.parkNanos(TimeSpan.timeSpan(200).millis().nanos());
+        assertThat(calls).as("the second admission waits for the first's reservation").hasValue(1);
+        release.succeed(Unit.unit());
+
+        assertThat(first.orTimeout(5, TimeUnit.SECONDS).join().isSuccess()).isTrue();
+        breach(second.orTimeout(5, TimeUnit.SECONDS).join());
+        assertThat(pendingDrains).containsExactly(node(1));
+    }
+
+    /// Destroy's premise (#1720 ruling): it takes every slice below its floor by design, so it passes `force`. A
+    /// slice with floor 4 on all five nodes tolerates one drain; the second is refused unforced and admitted forced
+    /// (the core quorum budget, a separate guard, is not what stops it here: 5 - 2 = 3 voters remain).
+    @Test
+    void forcedDrain_isAdmittedWhereTheUnforcedOneIsRefused() {
+        var a = slice("a", 5, 4);
+        host(a, node(1), node(2), node(3), node(4), node(5));
+
+        assertThat(routes().drainNodeForTest(node(1).id()).await().isSuccess()).isTrue();
+        breach(routes().drainNodeForTest(node(2).id()).await());
+        assertThat(routes().drainNodeForTest(node(2).id(), true).await().isSuccess()).as("force is the destroy path").isTrue();
+    }
+
+    private record QueryRequestContext(String nodeId, Map<String, List<String>> query) implements RequestContext {
+        @Override
+        public List<String> pathParams() {
+            return List.of(nodeId);
+        }
+
+        @Override
+        public org.pragmatica.http.QueryParams queryParams() {
+            return org.pragmatica.http.QueryParams.queryParams(query);
+        }
+
+        @Override
+        public <T> Result<T> fromJson(TypeToken<T> literal) {
+            throw new UnsupportedOperationException("fromJson");
+        }
+
+        @Override
+        public byte[] body() {
+            return new byte[0];
+        }
+
+        @Override
+        public Route<?> route() {
+            throw new UnsupportedOperationException("route");
+        }
+
+        @Override
+        public io.netty.handler.codec.http.HttpHeaders responseHeaders() {
+            throw new UnsupportedOperationException("responseHeaders");
+        }
+
+        @Override
+        public String requestId() {
+            return "req-test";
+        }
+
+        @Override
+        public org.pragmatica.http.HttpMethod method() {
+            return org.pragmatica.http.HttpMethod.POST;
+        }
+
+        @Override
+        public String path() {
+            return "/api/v1/nodes/drain/" + nodeId;
+        }
+
+        @Override
+        public org.pragmatica.http.Headers headers() {
+            throw new UnsupportedOperationException("headers");
+        }
+    }
+}

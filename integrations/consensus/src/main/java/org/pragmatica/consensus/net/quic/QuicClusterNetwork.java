@@ -45,6 +45,7 @@ import org.pragmatica.consensus.net.ConnectionError;
 import org.pragmatica.consensus.net.NetworkMessage;
 import org.pragmatica.consensus.net.NetworkServiceMessage;
 import org.pragmatica.consensus.net.NetworkServiceMessage.ListConnectedNodes;
+import org.pragmatica.consensus.net.NoOfflineBuffering;
 import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.consensus.net.WriteOutcome;
 import org.pragmatica.consensus.topology.TopologyObserver;
@@ -1944,11 +1945,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
                                                                                                 message,
                                                                                                 connection);
             case PeerState.OfferOutcome.Queued(boolean oldestEvicted) -> {
-                quicMetrics.onBackpressureQueued();
-                if (oldestEvicted) {
-                    quicMetrics.onBackpressureDrop();
-                    log.debug("Offline buffer for peer {} at capacity — dropped oldest", state.peerId());
-                }
+                recordQueued(state, oldestEvicted);
                 // Queued in the offline buffer — the message has been accepted for eventual
                 // delivery on reconnect. Report as Sent so callers (DHT) treat it as enqueued
                 // success; if the peer never reconnects within the operation deadline the
@@ -1959,6 +1956,37 @@ public class QuicClusterNetwork implements ClusterNetwork {
                 log.debug("Message to REMOVED peer {} dropped", state.peerId());
                 yield new WriteOutcome.NoPeerState(state.peerId());
             }
+            case PeerState.OfferOutcome.NotBuffered ignored -> {
+                log.debug("{} to peer {} not buffered (no live connection, never held for late delivery)",
+                          message.getClass().getSimpleName(),
+                          state.peerId());
+                yield new WriteOutcome.ConnectionDead(state.peerId());
+            }
+        };
+    }
+
+    private void recordQueued(PeerState state, boolean oldestEvicted) {
+        quicMetrics.onBackpressureQueued();
+        if (oldestEvicted) {
+            quicMetrics.onBackpressureDrop();
+            log.debug("Offline buffer for peer {} at capacity — dropped oldest", state.peerId());
+        }
+    }
+
+    /// The re-dispatch of a frame whose captured connection turned out dead. It reports what happened to the frame, not
+    /// what happened to the connection it was captured on (#1973): if the peer's state is by now bound to a NEW live
+    /// connection (the stale capture lost a race), the frame is written there and the outcome is that write's, because
+    /// reporting ConnectionDead for a frame that was written would tell a caller "not sent" about a command that was.
+    /// Buffered (an ordinary frame) or dropped (a [NoOfflineBuffering] one, a REMOVED peer) it stays ConnectionDead.
+    private WriteOutcome redispatchAfterDeadConnection(PeerState state, Message.Wired message) {
+        return switch (state.offerOutbound(message)) {
+            case PeerState.OfferOutcome.SendNow(QuicPeerConnection live) -> writeToStream(state.peerId(), message, live);
+            case PeerState.OfferOutcome.Queued(boolean oldestEvicted) -> {
+                recordQueued(state, oldestEvicted);
+                yield new WriteOutcome.ConnectionDead(state.peerId());
+            }
+            case PeerState.OfferOutcome.Dropped ignored -> new WriteOutcome.ConnectionDead(state.peerId());
+            case PeerState.OfferOutcome.NotBuffered ignored -> new WriteOutcome.ConnectionDead(state.peerId());
         };
     }
 
@@ -1969,12 +1997,11 @@ public class QuicClusterNetwork implements ClusterNetwork {
             // so the message lands in the offline buffer for the next attach.
             evictStaleConnection(peerId, connection);
             var state = peers.get(peerId);
-
-            if (state != null) {
-                var _ = dispatchToPeer(state, message);
-            }
-
-            return new WriteOutcome.ConnectionDead(peerId);
+            // The re-dispatch goes through offerOutbound, which DROPS a NoOfflineBuffering message instead of buffering it
+            // (#1973): held for the reattach it would be delivered after the caller was told ConnectionDead means not sent.
+            return state == null
+                   ? new WriteOutcome.ConnectionDead(peerId)
+                   : redispatchAfterDeadConnection(state, message);
         }
 
         var lane = message.streamType();

@@ -59,7 +59,6 @@
 
     <properties>
         <!-- Gate-only module: it produces an empty jar and must never be published. -->
-        <maven.deploy.skip>true</maven.deploy.skip>
         <gpg.skip>true</gpg.skip>
 
         <!-- Without BOTH of these the JBCT gate examines zero files here and exits green - the
