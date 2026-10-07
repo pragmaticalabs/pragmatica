@@ -1906,8 +1906,21 @@ public final class MembershipFsm {
             livenessGoneSeen = true;
         }
 
+        /// Death is co-confirmed by two planes: SWIM-FAULTY and liveness-gone. Liveness-gone is the QUIC
+        /// disconnect tap, and a core dials ONLY core members ([`#coreDialTarget`]) — it holds no transport
+        /// link to a worker or spot, so for those that plane can never speak, and a killed worker sat in
+        /// SUSPECT forever (#1717): no DEAD edge, hence no REMOVED delta, no worker leave, and its directive,
+        /// roster entry and #731 footprint persisted. For an EXPLICIT non-core role the missing plane is
+        /// waived: SWIM-FAULTY alone arms the same eviction backstop. The backstop window is the veto —
+        /// governor / admission / SWIM-healthy evidence arriving inside it runs [`#clearConfirmedDeath`] and
+        /// cancels the eviction, so a worker that is merely partitioned from SWIM but still reported healthy
+        /// by its governor is never evicted. An unknown or blank role is NOT waived.
         synchronized boolean coConfirmedDead() {
-            return swimFaultySeen && livenessGoneSeen;
+            return swimFaultySeen && (livenessGoneSeen || isTransportBlindMember());
+        }
+
+        private boolean isTransportBlindMember() {
+            return !descriptor.isCore() && ("worker".equalsIgnoreCase(descriptor.role()) || "spot".equalsIgnoreCase(descriptor.role()));
         }
 
         @Contract
