@@ -228,6 +228,18 @@ public final class BackupRestoreCoordinator {
 
         cancelPendingRetry();
         recoverBackupMissing();
+        recoverRestoreBlocked();
+    }
+
+    /// A node that raised `backup-restore-blocked` is the only one whose event layer can close it, and it stops holding the cluster when
+    /// it stops leading, stops, or restarts (a restart is a stop first). The next leader that cannot read the backup raises it again.
+    @Contract
+    private void recoverRestoreBlocked() {
+        if (blocked.compareAndSet(true, false)) {
+            warnings.emit(BackupWarning.backupWarning(Code.BACKUP_RESTORE_UNBLOCKED,
+                                                      "this node no longer leads (or is stopping), so its blocked backup restore no longer holds the cluster;"
+                                                     + " a leader that still cannot read the backup raises backup-restore-blocked again"));
+        }
     }
 
     /// #1968: a leader with no `[backup]` while the cluster's committed state says the backup is in use (typically a replacement
@@ -668,8 +680,8 @@ public final class BackupRestoreCoordinator {
         if (done.compareAndSet(false, true)) {
             RestoreGate.decision(kvStore).onPresent(BackupRestoreCoordinator::logDecision);
             if (blocked.compareAndSet(true, false)) {
-                warnings.emit(BackupWarning.backupWarning(Code.BACKUP_RECOVERED,
-                                                          "the backup restore is no longer blocked"));
+                warnings.emit(BackupWarning.backupWarning(Code.BACKUP_RESTORE_UNBLOCKED,
+                                                          "the backup restore is no longer blocked: the backup was read and the restore decision committed"));
             }
         }
     }

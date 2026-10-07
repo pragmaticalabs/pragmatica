@@ -2070,7 +2070,8 @@ class ClusterEventAggregatorTest {
                              OperatorWarningCode.STREAM_EVENT_EXCEEDS_READ_CAP_RESOLVED,
                              OperatorWarningCode.STREAM_OWNER_PROMOTION_HOLDERS_ANSWERING,
                              OperatorWarningCode.STREAM_CATCHUP_SOURCE_ANSWERING_RESTORED,
-                             OperatorWarningCode.BACKUP_CONFIG_RESTORED);
+                             OperatorWarningCode.BACKUP_CONFIG_RESTORED,
+                             OperatorWarningCode.BACKUP_RESTORE_UNBLOCKED);
         assertThat(java.util.Arrays.stream(OperatorWarningCode.values()).filter(OperatorWarningCode::hasRecovery).toList())
             .containsExactlyInAnyOrder(OperatorWarningCode.SLICE_FLOOR_DRAIN_REFUSED,
                              OperatorWarningCode.STREAM_CONSUMER_STATE_DIVERGED,
@@ -2079,7 +2080,8 @@ class ClusterEventAggregatorTest {
                              OperatorWarningCode.STREAM_EVENT_EXCEEDS_READ_CAP,
                              OperatorWarningCode.STREAM_OWNER_PROMOTION_HOLDERS_UNREACHABLE,
                              OperatorWarningCode.STREAM_CATCHUP_SOURCE_NOT_ANSWERING,
-                             OperatorWarningCode.BACKUP_CONFIG_MISSING);
+                             OperatorWarningCode.BACKUP_CONFIG_MISSING,
+                             OperatorWarningCode.BACKUP_RESTORE_BLOCKED);
         var recoveries = java.util.Arrays.stream(OperatorWarningCode.values()).filter(c -> c.recoveryOf().isPresent()).count();
         var t = new AtomicLong(1_000_000L);
         var h = clocked(t);

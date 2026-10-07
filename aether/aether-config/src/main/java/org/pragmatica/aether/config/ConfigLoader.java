@@ -448,25 +448,35 @@ public final class ConfigLoader {
     /// does, and a blank variable counts as unset. A key the environment sets to a DIFFERENT value than the TOML is logged at
     /// startup (key and source only, never the values: a remote can carry a credential). Empty when the merged `enabled` is false.
     static Option<BackupConfig> backupConfigFrom(TomlDocument doc, org.pragmatica.lang.Functions.Fn1<String, String> env) {
-        return backupConfigFrom(doc, env, notice -> log.warn("{}", notice));
+        return backupConfigFrom(doc, env, notice -> log.warn("{}", notice), summary -> log.info("{}", summary));
     }
 
     static Option<BackupConfig> backupConfigFrom(TomlDocument doc,
                                                  org.pragmatica.lang.Functions.Fn1<String, String> env,
                                                  java.util.function.Consumer<String> overrideNotice) {
-        var enabled = backupKey(doc, env, ClusterIdentityEnv.BACKUP_ENABLED, "enabled", overrideNotice).map(ConfigLoader::toBooleanValue)
-                                                                                                       .or(false);
+        return backupConfigFrom(doc, env, overrideNotice, _ -> {});
+    }
+
+    /// `sourceNotice` receives, once, which source each key came from (`environment`, `TOML` or `default`), never a value.
+    static Option<BackupConfig> backupConfigFrom(TomlDocument doc,
+                                                 org.pragmatica.lang.Functions.Fn1<String, String> env,
+                                                 java.util.function.Consumer<String> overrideNotice,
+                                                 java.util.function.Consumer<String> sourceNotice) {
+        var sources = new java.util.LinkedHashMap<String, String>();
+        var enabled = backupKey(doc, env, ClusterIdentityEnv.BACKUP_ENABLED, "enabled", overrideNotice, sources).map(ConfigLoader::toBooleanValue)
+                                                                                                                .or(false);
 
         if (!enabled) {
             return Option.empty();
         }
 
-        var path = backupKey(doc, env, ClusterIdentityEnv.BACKUP_PATH, "path", overrideNotice).or("");
-        var remote = backupKey(doc, env, ClusterIdentityEnv.BACKUP_REMOTE, "remote", overrideNotice).or("");
-        var restore = BackupConfig.RestoreMode.restoreMode(backupKey(doc, env, ClusterIdentityEnv.BACKUP_RESTORE, "restore", overrideNotice)
+        var path = backupKey(doc, env, ClusterIdentityEnv.BACKUP_PATH, "path", overrideNotice, sources).or("");
+        var remote = backupKey(doc, env, ClusterIdentityEnv.BACKUP_REMOTE, "remote", overrideNotice, sources).or("");
+        var restore = BackupConfig.RestoreMode.restoreMode(backupKey(doc, env, ClusterIdentityEnv.BACKUP_RESTORE, "restore", overrideNotice, sources)
                                                                    .or("auto")).getOrThrow(IllegalArgumentException::new,
                                                                                            "invalid [backup]");
 
+        sourceNotice.accept("[backup] configuration sources: " + sources);
         return Option.some(BackupConfig.backupConfig(true, path, remote, restore));
     }
 
@@ -475,13 +485,15 @@ public final class ConfigLoader {
                                             org.pragmatica.lang.Functions.Fn1<String, String> env,
                                             String envName,
                                             String tomlKey,
-                                            java.util.function.Consumer<String> overrideNotice) {
+                                            java.util.function.Consumer<String> overrideNotice,
+                                            java.util.Map<String, String> sources) {
         var fromEnv = envValue(env, envName);
         var fromToml = doc.getString("backup", tomlKey);
 
         fromEnv.flatMap(value -> fromToml.filter(toml -> !toml.strip().equals(value.strip())))
                .onPresent(_ -> overrideNotice.accept("[backup] " + tomlKey + ": the environment variable " + envName
                                                     + " overrides the value in the node TOML; remove one of them to end the ambiguity"));
+        sources.put(tomlKey, fromEnv.isPresent() ? "environment" : fromToml.isPresent() ? "TOML" : "default");
         return fromEnv.orElse(fromToml);
     }
 

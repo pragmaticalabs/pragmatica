@@ -253,7 +253,34 @@ public final class ClusterBootstrapConfigParser {
                                                                                                                                                section,
                                                                                                                                                type,
                                                                                                                                                provider,
-                                                                                                                                               ceiling));
+                                                                                                                                               ceiling))
+                     .flatMap(profile -> validateBackupPath(section, profile));
+    }
+
+    /// #1968: the repository path a source's `node_config` `[backup]` names is mounted into the node's container (or created on its
+    /// host), so it must be absolute: a relative one renders a mount Docker refuses. A **Docker** source's node has no host directory:
+    /// its repository lives on a per-node named volume, which Docker creates root-owned for any mount point except under `/data`
+    /// (where the image's `aether` user owns it), so there the path must also be under `/data`. Refused at load, not at first write.
+    private static Result<SourceProfile> validateBackupPath(String section, SourceProfile profile) {
+        var path = profile.nodeConfig().flatMap(NodeUserDataRenderer::backupPath);
+
+        return path.map(value -> backupPathVerdict(section, profile.type(), value.strip()).map(_ -> profile))
+                   .or(Result.success(profile));
+    }
+
+    private static Result<String> backupPathVerdict(String section, SourceType type, String path) {
+        var field = section + ".node_config.backup.path";
+
+        if (!path.startsWith("/")) {
+            return parseFailed(field + " '" + path + "' must be an absolute path: it is mounted into the node's container or created on its host").result();
+        }
+
+        if (type == SourceType.DOCKER && !path.equals("/data") && !path.startsWith("/data/")) {
+            return parseFailed(field + " '" + path + "' must be under /data for a docker source: its repository lives on a named volume, "
+                              + "which Docker creates root-owned everywhere except under /data, so the node could not write it").result();
+        }
+
+        return Result.success(path);
     }
 
     /// #1049 — `replacement_ceiling` is optional (absent → the runtime's ten-minute default), but a

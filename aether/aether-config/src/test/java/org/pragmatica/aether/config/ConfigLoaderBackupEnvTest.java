@@ -88,4 +88,17 @@ class ConfigLoaderBackupEnvTest {
 
         assertThat(notices).isEmpty();
     }
+
+    /// The winning source of each key is logged once at boot (R3), never a value.
+    @Test
+    void theWinningSourceOfEachKeyIsReportedOnce_neverTheValue() {
+        var summaries = new java.util.ArrayList<String>();
+        var doc = TomlParser.parse("[backup]\nenabled = true\npath = \"/toml/path\"\nremote = \"secret-remote\"\n").unwrap();
+
+        ConfigLoader.backupConfigFrom(doc, Map.of("AETHER_BACKUP_PATH", "/env/path")::get, _ -> {}, summaries::add);
+
+        assertThat(summaries).hasSize(1);
+        assertThat(summaries.getFirst()).contains("path=environment", "remote=TOML", "restore=default", "enabled=TOML")
+                                        .doesNotContain("/env/path", "/toml/path", "secret-remote");
+    }
 }

@@ -167,10 +167,14 @@ class BackupRestoreCoordinatorTest {
 
             coordinator.activate();
             coordinator.onNodeStopping();
+
+            assertThat(codes()).as("the stop alone closes the alert").containsExactly(Code.BACKUP_CONFIG_MISSING, Code.BACKUP_CONFIG_RESTORED);
+
             coordinator.deactivate();
             coordinator.onNodeStopping();
 
-            assertThat(codes()).containsExactly(Code.BACKUP_CONFIG_MISSING, Code.BACKUP_CONFIG_RESTORED);
+            assertThat(codes()).as("and a later leadership loss or second stop adds nothing")
+                               .containsExactly(Code.BACKUP_CONFIG_MISSING, Code.BACKUP_CONFIG_RESTORED);
         }
 
         @Test
@@ -597,7 +601,39 @@ class BackupRestoreCoordinatorTest {
 
             assertThat(outcome()).isEqualTo(BackupRestoreOutcome.FRESH);
             assertThat(warnings).extracting(BackupWarning::code)
-                                .containsExactly(Code.BACKUP_RESTORE_BLOCKED, Code.BACKUP_RECOVERED);
+                                .containsExactly(Code.BACKUP_RESTORE_BLOCKED, Code.BACKUP_RESTORE_UNBLOCKED);
+        }
+
+        /// A block that is still standing when its node stops leading, or stops, is closed on the way out (the next leader that still
+        /// cannot read the backup raises it again): only this node's event layer can close what it opened, and a restart is a stop first.
+        @Test
+        void aBlockedNode_thatStopsOrLosesLeadership_raisesTheUnblockedRecoveryOnce() {
+            var remotePath = temp.resolve("never.git");
+            var coordinator = coordinator(Option.some(source(Option.some(remotePath.toString()), RestoreMode.AUTO)));
+
+            coordinator.activate();
+            worker.advance(0);
+            fireRetries(2);
+            assertThat(warnings).extracting(BackupWarning::code).as("CONTROL: blocked and still blocked").containsExactly(Code.BACKUP_RESTORE_BLOCKED);
+
+            coordinator.onNodeStopping();
+            coordinator.deactivate();
+            coordinator.onNodeStopping();
+
+            assertThat(warnings).extracting(BackupWarning::code).containsExactly(Code.BACKUP_RESTORE_BLOCKED, Code.BACKUP_RESTORE_UNBLOCKED);
+        }
+
+        @Test
+        void aNodeThatWasNeverBlocked_raisesNoUnblockedOnStop() {
+            var remote = bareRemote(temp.resolve("ok.git"));
+            var coordinator = coordinator(Option.some(source(Option.some(remote), RestoreMode.AUTO)));
+
+            coordinator.activate();
+            worker.advance(0);
+            fireRetries(1);
+            coordinator.onNodeStopping();
+
+            assertThat(warnings).extracting(BackupWarning::code).doesNotContain(Code.BACKUP_RESTORE_BLOCKED, Code.BACKUP_RESTORE_UNBLOCKED);
         }
 
         @Test

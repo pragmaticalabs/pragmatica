@@ -75,6 +75,10 @@ public enum OperatorWarningCode {
     /// A cold start cannot read the KV backup (unreachable, undecodable); cluster-state writes stay refused
     /// until it can, or until a restart with `[backup] restore = "fresh"` (#1533).
     BACKUP_RESTORE_BLOCKED("backup-restore-blocked", "kv-backup", WarningLevel.CRITICAL),
+    /// The end of a [#BACKUP_RESTORE_BLOCKED] on this node (#1968): the restore could read the backup and decided, or this node stopped
+    /// leading or is stopping, so its blocked restore no longer holds the cluster. INFO, paired with the warning: the event layer
+    /// publishes it only after that warning for the same subject. A leader that still cannot read the backup raises the warning again.
+    BACKUP_RESTORE_UNBLOCKED("backup-restore-unblocked", "kv-backup", WarningLevel.INFO, BACKUP_RESTORE_BLOCKED),
     /// Another cluster holds the backup head at this cluster's own lineage and incarnation (a different
     /// incarnation id); this cluster backs up nothing until an operator resolves the fork (#1533).
     BACKUP_FORKED("backup-forked", "kv-backup", WarningLevel.CRITICAL),

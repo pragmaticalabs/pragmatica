@@ -54,6 +54,13 @@ class BackupWarningOperatorEventTest {
         assertThat(OperatorWarningCode.BACKUP_CONFIG_RESTORED.recoveryOf().unwrap()).isEqualTo(OperatorWarningCode.BACKUP_CONFIG_MISSING);
     }
 
+    @Test
+    void theBlockedRestoreRecovery_isRaisedAsAnInfoOperatorWarning_pairedWithTheWarning() {
+        assertRaisedAlone(Code.BACKUP_RESTORE_UNBLOCKED, OperatorWarningCode.BACKUP_RESTORE_UNBLOCKED);
+        assertThat(OperatorWarningCode.BACKUP_RESTORE_UNBLOCKED.level()).isEqualTo(org.pragmatica.utility.warning.WarningLevel.INFO);
+        assertThat(OperatorWarningCode.BACKUP_RESTORE_UNBLOCKED.recoveryOf().unwrap()).isEqualTo(OperatorWarningCode.BACKUP_RESTORE_BLOCKED);
+    }
+
     private void assertRaisedAlone(Code code, OperatorWarningCode expected) {
         sink.emit(BackupWarning.backupWarning(Code.BACKUP_GATED, "not an event"));
         sink.emit(BackupWarning.backupWarning(code, "detail for " + code));
