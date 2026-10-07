@@ -2023,6 +2023,101 @@ class PartitionBackfillTest {
             assertThat(descriptorFor(OWNER).state()).isEqualTo(ReplicationState.SYNCING);
         }
 
+        /// #1937 item 2: the backfill path's refusal for a peer's oversized event is reported like the activation gate's — a
+        /// STREAM_EVENT_EXCEEDS_READ_CAP block raised once per transition, not a WARN on every redrive. Red when the refusal only
+        /// logs: no block reaches the alarm.
+        @Test
+        void backfill_freshOwner_blindSurvivorEventExceedsReadCap_raisesTheBlockOncePerTransition() {
+            registry.registerReplica(STREAM, PARTITION, OWNER);
+            registry.registerReplica(STREAM, PARTITION, SURVIVOR);
+
+            var oversizedNow = new java.util.concurrent.atomic.AtomicBoolean(true);
+            ReplicaWatermarkProbe probe = (_, _, _) -> oversizedNow.get()
+                                                       ? new org.pragmatica.aether.stream.OwnerPeerReads.EventExceedsReadCap(7L).promise()
+                                                       : Promise.success(-1L);
+            var raised = new java.util.concurrent.CopyOnWriteArrayList<org.pragmatica.aether.stream.OwnerActivation.ActivationBlock>();
+            var clock = new AtomicLong(0);
+            var backfill = partitionBackfill(registry,
+                                             recovery,
+                                             failIfCatchup(),
+                                             probe,
+                                             localHeadWatermark(),
+                                             OWNER,
+                                             BOUND,
+                                             clock::get,
+                                             () -> MEMBERS);
+
+            backfill.blockAlarm(block -> {
+                raised.add(block);
+                return org.pragmatica.lang.Unit.unit();
+            });
+            backfill.backfill(STREAM, PARTITION).await();
+            backfill.backfill(STREAM, PARTITION).await();
+            backfill.backfill(STREAM, PARTITION).await();
+
+            assertThat(raised).as("three redrives of one condition raise one block").singleElement()
+                              .isInstanceOfSatisfying(org.pragmatica.aether.stream.OwnerActivation.ActivationBlock.PeerEventExceedsReadCap.class,
+                                                      block -> {
+                                                          assertThat(block.peer()).isEqualTo(SURVIVOR);
+                                                          assertThat(block.offset()).isEqualTo(7L);
+                                                      });
+
+            oversizedNow.set(false);
+            backfill.backfill(STREAM, PARTITION).await();
+            oversizedNow.set(true);
+            backfill.backfill(STREAM, PARTITION).await();
+
+            assertThat(raised).as("the condition ended and came back: a second transition, a second block").hasSize(2);
+        }
+
+        /// #1937 F4: the oversized condition can end by a CATCH-UP (the operator raised the cap, so the peer now answers with a
+        /// tail ahead of self), not only by an all-clear. The report must be forgotten on that path too, or the same peer and offset
+        /// recurring later is silent. Red when the entry is cleared only on the all-clear path: one raise where two are expected.
+        /// Each end also tells the alarm, so the operator sees the recovery.
+        @Test
+        void backfill_freshOwner_oversizedEndedByACatchup_raisesAgainWhenItRecurs_andReportsEachEnd() {
+            registry.registerReplica(STREAM, PARTITION, OWNER);
+            registry.registerReplica(STREAM, PARTITION, SURVIVOR);
+
+            var peerAnswer = new java.util.concurrent.atomic.AtomicReference<Promise<Long>>(new org.pragmatica.aether.stream.OwnerPeerReads.EventExceedsReadCap(7L).promise());
+            ReplicaWatermarkProbe probe = (_, _, _) -> peerAnswer.get();
+            var raised = new java.util.concurrent.CopyOnWriteArrayList<org.pragmatica.aether.stream.OwnerActivation.ActivationBlock>();
+            var resolved = new java.util.concurrent.CopyOnWriteArrayList<org.pragmatica.aether.stream.OwnerActivation.ActivationBlock>();
+            var backfill = partitionBackfill(registry,
+                                             recovery,
+                                             (_, _) -> org.pragmatica.lang.utils.Causes.cause("catch-up refused").promise(),
+                                             probe,
+                                             localHeadWatermark(),
+                                             OWNER,
+                                             BOUND,
+                                             new AtomicLong(0)::get,
+                                             () -> MEMBERS);
+
+            backfill.blockAlarm(new org.pragmatica.aether.stream.OwnerActivation.BlockAlarm() {
+                @Override
+                public org.pragmatica.lang.Unit raise(org.pragmatica.aether.stream.OwnerActivation.ActivationBlock block) {
+                    raised.add(block);
+                    return org.pragmatica.lang.Unit.unit();
+                }
+
+                @Override
+                public org.pragmatica.lang.Unit resolved(org.pragmatica.aether.stream.OwnerActivation.ActivationBlock block) {
+                    resolved.add(block);
+                    return org.pragmatica.lang.Unit.unit();
+                }
+            });
+            backfill.backfill(STREAM, PARTITION).await();
+            peerAnswer.set(Promise.success(50L));
+            backfill.backfill(STREAM, PARTITION).await();
+
+            assertThat(resolved).as("ending by a catch-up reports the end").hasSize(1);
+
+            peerAnswer.set(new org.pragmatica.aether.stream.OwnerPeerReads.EventExceedsReadCap(7L).promise());
+            backfill.backfill(STREAM, PARTITION).await();
+
+            assertThat(raised).as("the same peer and offset recurring after a catch-up is a new transition").hasSize(2);
+        }
+
         @Test
         void backfill_ownerWithKnownSurvivorOffset_noProbe_localRegistryHitPathUntouched() {
             // NEGATIVE: when the local registry DOES carry the survivor's offset (not blind), aheadSurvivor is

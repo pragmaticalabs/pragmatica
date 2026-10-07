@@ -94,10 +94,12 @@ public enum OperatorWarningCode {
                                         "stream-replication",
                                         WarningLevel.WARNING),
     /// The end of a `stream-catchup-source-not-answering` episode: the source lists the replica again and its catch-up is answered
-    /// as a replica. Raised only when that warning was; informational, at the lowest level this enum has. Same subject.
+    /// as a replica. Raised only when that warning was; INFO, paired with [#STREAM_CATCHUP_SOURCE_NOT_ANSWERING]: the event layer
+    /// publishes it only after a published not-answering event for the same subject (#752 mechanism). Same subject.
     STREAM_CATCHUP_SOURCE_ANSWERING_RESTORED("stream-catchup-source-answering-restored",
                                              "stream-replication",
-                                             WarningLevel.WARNING),
+                                             WarningLevel.INFO,
+                                             STREAM_CATCHUP_SOURCE_NOT_ANSWERING),
     /// A declarative stream consumer this node held as attached had no subscription in the consumer runtime (#752):
     /// found by a reconcile pass, which forgets and re-attaches it. The partition was not consumed in between while this node reported it attached.
     STREAM_CONSUMER_STATE_DIVERGED("stream-consumer-state-diverged", "stream-consumer", WarningLevel.WARNING),
@@ -133,7 +135,25 @@ public enum OperatorWarningCode {
     /// A partition's owner promotion is refused because a peer ANSWERED its watermark probe with a page cut before its
     /// first event: that event alone exceeds the peer's read cap (#1431). Not an unreachable peer; the operator raises
     /// the peer's `maxReadResponseBytes`. The message names the partition, the peer and the offset.
-    STREAM_EVENT_EXCEEDS_READ_CAP("stream-event-exceeds-read-cap", "stream-replication", WarningLevel.CRITICAL);
+    STREAM_EVENT_EXCEEDS_READ_CAP("stream-event-exceeds-read-cap", "stream-replication", WarningLevel.CRITICAL),
+    /// The recovery of a [#STREAM_EVENT_EXCEEDS_READ_CAP] (#1937), same subject: the oversized-event refusal no longer holds the
+    /// partition's promotion (the peer's cap was raised, another peer was caught up from, or this node stopped being its owner).
+    STREAM_EVENT_EXCEEDS_READ_CAP_RESOLVED("stream-event-exceeds-read-cap-resolved",
+                                           "stream-replication",
+                                           WarningLevel.INFO,
+                                           STREAM_EVENT_EXCEEDS_READ_CAP),
+    /// A partition's owner promotion waits because members that may hold records did not answer its watermark probe for longer
+    /// than the alarm window (#1937). CRITICAL: the partition is unavailable for writes until they answer or an operator acts.
+    /// The message names the partition, the silent members and the responders.
+    STREAM_OWNER_PROMOTION_HOLDERS_UNREACHABLE("stream-owner-promotion-holders-unreachable",
+                                               "stream-replication",
+                                               WarningLevel.CRITICAL),
+    /// The recovery of a [#STREAM_OWNER_PROMOTION_HOLDERS_UNREACHABLE] (#1937), same subject: every member answers again, or this
+    /// node stopped being the partition's owner.
+    STREAM_OWNER_PROMOTION_HOLDERS_ANSWERING("stream-owner-promotion-holders-answering",
+                                             "stream-replication",
+                                             WarningLevel.INFO,
+                                             STREAM_OWNER_PROMOTION_HOLDERS_UNREACHABLE);
     private final String code;
     private final String subsystem;
     private final WarningLevel level;
