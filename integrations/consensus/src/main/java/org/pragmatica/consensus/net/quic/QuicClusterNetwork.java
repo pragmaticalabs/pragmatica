@@ -1976,9 +1976,9 @@ public class QuicClusterNetwork implements ClusterNetwork {
             // so the message lands in the offline buffer for the next attach.
             evictStaleConnection(peerId, connection);
             var state = peers.get(peerId);
-            // A NoOfflineBuffering message is NOT re-dispatched: it would be held and delivered on reattach, after
-            // the caller was told it was not sent (#1973). It is dropped, so ConnectionDead is true for it.
-            if (state != null && !(message instanceof NoOfflineBuffering)) {
+            // The re-dispatch goes through offerOutbound, which DROPS a NoOfflineBuffering message instead of buffering it
+            // (#1973): held for the reattach it would be delivered after the caller was told ConnectionDead means not sent.
+            if (state != null) {
                 var _ = dispatchToPeer(state, message);
             }
 
