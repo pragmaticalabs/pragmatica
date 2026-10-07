@@ -217,12 +217,20 @@ class EmberNodeReplacementTest {
         return cluster.allNodes().stream().filter(node -> !node.self().equals(leader.self())).findFirst().orElseThrow();
     }
 
+    /// The newest committed record for `original` any node knows: nodes apply the leader's commits at slightly different
+    /// moments, and a node that is dying or dead still holds its last, older view, so the highest epoch wins.
     private NodeReplacementValue recordOf(NodeId original) {
-        var holder = new NodeReplacementValue[1];
+        NodeReplacementValue newest = null;
 
-        cluster.allNodes().forEach(node -> node.nodeReplacementService().status(original).onPresent(found -> holder[0] = found));
+        for (var node : new ArrayList<>(cluster.allNodes())) {
+            var found = node.nodeReplacementService().status(original).or((NodeReplacementValue) null);
 
-        return holder[0];
+            if (found != null && (newest == null || found.epoch() > newest.epoch())) {
+                newest = found;
+            }
+        }
+
+        return newest;
     }
 
     private void awaitTerminal(NodeId original) {
