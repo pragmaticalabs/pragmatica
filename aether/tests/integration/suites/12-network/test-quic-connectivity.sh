@@ -89,8 +89,8 @@ test_kill_node_and_detect_drop() {
 test_connections_recovered() {
     # Recovery is CTM's job — the previous test already asserted that NODE_JOINED
     # fired for a replacement. Here we assert the post-recovery invariant: the
-    # cluster has 5 healthy cores. We deliberately do NOT call
-    # `start_node "$KILLED_VICTIM"`: the killed container has left membership,
+    # cluster has 5 healthy cores. We deliberately do NOT relaunch
+    # the killed node under its old id (same-NodeId relaunch is refused, #1543): the killed container has left membership,
     # CTM has already provisioned a replacement, and restarting the original
     # would push the cluster to a 6-node "stale + replacement" state that fights
     # the elastic-cluster model.

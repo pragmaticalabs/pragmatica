@@ -266,6 +266,59 @@ public sealed interface OperationalEvent extends Message.Local {
         }
     }
 
+    /// #1930: a scheduled task's fire is still in flight when its next tick arrives, so the tick (and each one after it, up to
+    /// the completion bound) is skipped ([ClusterEvent.ScheduledTaskFireHeld]). Raised ONCE per in-flight fire, by the node
+    /// whose scheduler holds it: `node`, `fireAt` (when that fire started), `inFlightMs` (how long it had been in flight at
+    /// the first skipped tick).
+    record ScheduledTaskFireHeld(String task,
+                                 String node,
+                                 long fireAt,
+                                 long inFlightMs,
+                                 String eventId,
+                                 long timestamp) implements OperationalEvent {
+        public static ScheduledTaskFireHeld scheduledTaskFireHeld(String task,
+                                                                  String node,
+                                                                  long fireAt,
+                                                                  long inFlightMs,
+                                                                  String eventId) {
+            return new ScheduledTaskFireHeld(task, node, fireAt, inFlightMs, eventId, System.currentTimeMillis());
+        }
+
+        public String key() {
+            return task + "@" + node;
+        }
+    }
+
+    /// #1930: the fire a [ScheduledTaskFireHeld] told the operator about resolved ([ClusterEvent.ScheduledTaskFireReleased]).
+    /// `outcome` is `executed`, `failed`, `unknown` (the completion bound passed with no response) or `completed` (released
+    /// by a manual trigger); `inFlightMs` is how long the fire was in flight in all.
+    record ScheduledTaskFireReleased(String task,
+                                     String node,
+                                     long fireAt,
+                                     long inFlightMs,
+                                     String outcome,
+                                     String eventId,
+                                     long timestamp) implements OperationalEvent {
+        public static ScheduledTaskFireReleased scheduledTaskFireReleased(String task,
+                                                                          String node,
+                                                                          long fireAt,
+                                                                          long inFlightMs,
+                                                                          String outcome,
+                                                                          String eventId) {
+            return new ScheduledTaskFireReleased(task,
+                                                 node,
+                                                 fireAt,
+                                                 inFlightMs,
+                                                 outcome,
+                                                 eventId,
+                                                 System.currentTimeMillis());
+        }
+
+        public String key() {
+            return task + "@" + node;
+        }
+    }
+
     /// #1723: a scheduled task's newest fire is no longer unknown ([ClusterEvent.ScheduledTaskOutcomeRestored]). `reason`
     /// says why: `late-answer` (the newest fire's late response arrived; `outcome` is what it said), `later-fire` (a
     /// later fire completed; `outcome` is that fire's) or `task-removed` (the task was removed with its outcome still

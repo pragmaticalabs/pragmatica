@@ -590,6 +590,9 @@ public interface SystemTags {
         // a scheduled task with an unknown fire outcome / its late resolution (#1723)
         pin(table, 1751, "org.pragmatica.aether.api.ClusterEvent.ScheduledTaskOutcomeUnknown");
         pin(table, 1752, "org.pragmatica.aether.api.ClusterEvent.ScheduledTaskOutcomeRestored");
+        // a scheduled fire still in flight while its ticks are skipped / its resolution (#1930)
+        pin(table, 1753, "org.pragmatica.aether.api.ClusterEvent.ScheduledTaskFireHeld");
+        pin(table, 1754, "org.pragmatica.aether.api.ClusterEvent.ScheduledTaskFireReleased");
         pin(table, 2112, "org.pragmatica.aether.slice.kvstore.AetherKey.CommunityPlacementAvailabilityKey");
         pin(table, 2113, "org.pragmatica.aether.slice.kvstore.AetherValue.CommunityPlacementAvailabilityValue");
         // built-in artifact store versions index in consensus (#1778)

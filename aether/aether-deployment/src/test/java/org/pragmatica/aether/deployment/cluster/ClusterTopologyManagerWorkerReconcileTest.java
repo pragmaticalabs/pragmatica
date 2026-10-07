@@ -718,11 +718,6 @@ class ClusterTopologyManagerWorkerReconcileTest {
         }
 
         @Override
-        public Promise<Unit> restartNode(NodeId nodeId) {
-            return Promise.success(unit());
-        }
-
-        @Override
         public boolean isCloudManaged() {
             return true;
         }

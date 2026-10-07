@@ -83,6 +83,8 @@ SHAPE org.pragmatica.aether.api.ClusterEvent$QuorumLost (at:org.pragmatica.hlc.H
 SHAPE org.pragmatica.aether.api.ClusterEvent$ScaleCapped (at:org.pragmatica.hlc.HlcTimestamp,severity:org.pragmatica.aether.api.ClusterEvent$Severity,summary:java.lang.String,details:java.util.Map<java.lang.String, java.lang.String>)
 SHAPE org.pragmatica.aether.api.ClusterEvent$ScaleDown (at:org.pragmatica.hlc.HlcTimestamp,severity:org.pragmatica.aether.api.ClusterEvent$Severity,summary:java.lang.String,details:java.util.Map<java.lang.String, java.lang.String>)
 SHAPE org.pragmatica.aether.api.ClusterEvent$ScaleUp (at:org.pragmatica.hlc.HlcTimestamp,severity:org.pragmatica.aether.api.ClusterEvent$Severity,summary:java.lang.String,details:java.util.Map<java.lang.String, java.lang.String>)
+SHAPE org.pragmatica.aether.api.ClusterEvent$ScheduledTaskFireHeld (at:org.pragmatica.hlc.HlcTimestamp,severity:org.pragmatica.aether.api.ClusterEvent$Severity,summary:java.lang.String,details:java.util.Map<java.lang.String, java.lang.String>)
+SHAPE org.pragmatica.aether.api.ClusterEvent$ScheduledTaskFireReleased (at:org.pragmatica.hlc.HlcTimestamp,severity:org.pragmatica.aether.api.ClusterEvent$Severity,summary:java.lang.String,details:java.util.Map<java.lang.String, java.lang.String>)
 SHAPE org.pragmatica.aether.api.ClusterEvent$ScheduledTaskOutcomeRestored (at:org.pragmatica.hlc.HlcTimestamp,severity:org.pragmatica.aether.api.ClusterEvent$Severity,summary:java.lang.String,details:java.util.Map<java.lang.String, java.lang.String>)
 SHAPE org.pragmatica.aether.api.ClusterEvent$ScheduledTaskOutcomeUnknown (at:org.pragmatica.hlc.HlcTimestamp,severity:org.pragmatica.aether.api.ClusterEvent$Severity,summary:java.lang.String,details:java.util.Map<java.lang.String, java.lang.String>)
 SHAPE org.pragmatica.aether.api.ClusterEvent$SelfDrainInitiated (at:org.pragmatica.hlc.HlcTimestamp,severity:org.pragmatica.aether.api.ClusterEvent$Severity,summary:java.lang.String,details:java.util.Map<java.lang.String, java.lang.String>)
@@ -438,6 +440,8 @@ TAG  org.pragmatica.aether.api.ClusterEvent$QuorumLost 279
 TAG  org.pragmatica.aether.api.ClusterEvent$ScaleCapped 280
 TAG  org.pragmatica.aether.api.ClusterEvent$ScaleDown 281
 TAG  org.pragmatica.aether.api.ClusterEvent$ScaleUp 282
+TAG  org.pragmatica.aether.api.ClusterEvent$ScheduledTaskFireHeld 1753
+TAG  org.pragmatica.aether.api.ClusterEvent$ScheduledTaskFireReleased 1754
 TAG  org.pragmatica.aether.api.ClusterEvent$ScheduledTaskOutcomeRestored 1752
 TAG  org.pragmatica.aether.api.ClusterEvent$ScheduledTaskOutcomeUnknown 1751
 TAG  org.pragmatica.aether.api.ClusterEvent$SelfDrainInitiated 283

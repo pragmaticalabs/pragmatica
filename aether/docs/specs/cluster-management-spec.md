@@ -822,7 +822,7 @@ REQ-UPGRADE-02: Node upgrade sequence (rolling):
 3. Update `cluster.version` in KV-Store `ClusterConfigValue`
 
 REQ-UPGRADE-03: For cloud deployments, "update the node" means:
-- Container runtime: `ComputeProvider.restart(instanceId)` with updated user-data containing new image tag
+- Container runtime: ~~`ComputeProvider.restart(instanceId)` with updated user-data containing new image tag~~ — withdrawn (#1543): a node is replaced under a fresh NodeId, never restarted under its old one; `ComputeProvider.restart` was removed. The replacement boots from the new image tag via CTM provisioning.
 - JVM runtime: SSH to node, replace JAR, restart process (Phase 2)
 
 REQ-UPGRADE-04: Upgrade is non-atomic. If it fails mid-way, the cluster is in a mixed-version state. The `status` command shows per-node versions. Re-running `upgrade` retries from where it left off (skipping already-upgraded nodes).
