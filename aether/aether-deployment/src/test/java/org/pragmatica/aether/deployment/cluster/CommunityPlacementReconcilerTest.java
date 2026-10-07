@@ -145,6 +145,55 @@ class CommunityPlacementReconcilerTest {
         assertThat(effects).isEmpty();
     }
 
+    private void seedSurgeWorker(NodeId surge) {
+        seed(new KVCommand.Put<>(new AetherKey.ActivationDirectiveKey(surge), new AetherValue.ActivationDirectiveValue(AetherValue.ActivationDirectiveValue.WORKER, "stable", "")));
+        seed(new KVCommand.Put<>(new AetherKey.NodePlacementKey(surge), new AetherValue.NodePlacementValue("pool", Option.some("old"), "surge-instance")));
+        ready.add(surge);
+    }
+
+    /// Control: with NO pairing a second member of a size-1 community is an excess, and the reduction removes whichever
+    /// member sorts first, here the newcomer. This is what a surge replacement would suffer without the pairing.
+    @Test
+    void unpairedExtraMember_isReducedAway_theNewcomerSortingFirst() {
+        initialize();
+        var surge = new NodeId("a-surge");
+
+        seedSurgeWorker(surge);
+        reconciler.reconcile().await();
+
+        assertThat(current().previousNode().unwrap()).isEqualTo(surge);
+    }
+
+    /// #1543 E2: mid-replacement BOTH nodes are protected (the original until it retires, the replacement throughout), so no
+    /// reduction may name either of them as the node to remove.
+    @Test
+    void pairedOriginalAndReplacement_areBothProtected_noReductionTakesEither() {
+        initialize();
+        var replacement = new NodeId("a-replacement");
+
+        seedSurgeWorker(replacement);
+        reconciler.protectReplacements(() -> Set.of(OLD, replacement));
+        reconciler.reconcile().await();
+
+        assertThat(store.getTyped(new AetherKey.CommunityPlacementOperationKey("stable"), CommunityPlacementOperationValue.class)
+                        .flatMap(operation -> operation.previousNode())
+                        .isEmpty()).as("no operation removes a protected node").isTrue();
+    }
+
+    /// When the original is retiring (so the replacement is counted again), the reduction must take the ORIGINAL, never the
+    /// protected replacement, even though the replacement sorts first.
+    @Test
+    void protectedReplacement_isNeverTheNodeAReductionRemoves() {
+        initialize();
+        var replacement = new NodeId("a-replacement");
+
+        seedSurgeWorker(replacement);
+        reconciler.protectReplacements(() -> Set.of(replacement));
+        reconciler.reconcile().await();
+
+        assertThat(current().previousNode().unwrap()).isEqualTo(OLD);
+    }
+
     @Test
     void implicitSurplusWaitsForQuiescenceAcknowledgementWithoutExplicitPolicy() {
         initialize();

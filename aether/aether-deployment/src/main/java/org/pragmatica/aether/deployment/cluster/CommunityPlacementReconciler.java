@@ -44,6 +44,14 @@ public interface CommunityPlacementReconciler {
     Promise<Unit> requestRetirement(NodeId node, AetherValue.TopologyEntry expectedTopology);
     Promise<Boolean> onDrainCompleted(NodeId sender, String operationId);
 
+    /// #1543 E2: a worker replacement pairing brings a surge worker into a community on purpose. `protectedNodes` (a live
+    /// pairing's original before it retires, and its replacement throughout) are never chosen as the node a reduction removes.
+    /// Without it the surge reads as an excess and the placement removes whichever member sorts first, which can be the
+    /// replacement itself.
+    default Unit protectReplacements(Supplier<java.util.Set<NodeId>> protectedNodes) {
+        return Unit.unit();
+    }
+
     interface Actuator {
         org.pragmatica.lang.Result<String> sourceBinding(org.pragmatica.aether.environment.SourceName source);
 
@@ -77,7 +85,8 @@ public interface CommunityPlacementReconciler {
                                        retirementRefusal,
                                        new java.util.concurrent.ConcurrentHashMap<>(),
                                        drainTimeout,
-                                       new AtomicBoolean());
+                                       new AtomicBoolean(),
+                                       new java.util.concurrent.atomic.AtomicReference<>(java.util.Set::of));
     }
 }
 
@@ -93,7 +102,15 @@ record PlacementReconciler(NodeId self,
                            java.util.function.BiConsumer<NodeId, org.pragmatica.lang.Cause> retirementRefusal,
                            java.util.concurrent.ConcurrentHashMap<NodeId, String> reportedRetirementRefusals,
                            org.pragmatica.lang.io.TimeSpan drainTimeout,
-                           AtomicBoolean running) implements CommunityPlacementReconciler {
+                           AtomicBoolean running,
+                           java.util.concurrent.atomic.AtomicReference<Supplier<java.util.Set<NodeId>>> protectedNodes) implements CommunityPlacementReconciler {
+    @Override
+    public Unit protectReplacements(Supplier<java.util.Set<NodeId>> protectedSupplier) {
+        protectedNodes.set(protectedSupplier);
+
+        return Unit.unit();
+    }
+
     @Override
     public Promise<Unit> reconcile() {
         if (!activeLeader.getAsBoolean() || !running.compareAndSet(false, true)) {
@@ -850,8 +867,10 @@ record PlacementReconciler(NodeId self,
         var deficit = ordinary.isPresent()
                       ? ordinary
                       : probe;
+        var shielded = protectedNodes.get().get();
         var previous = members.entrySet()
                               .stream()
+                              .filter(entry -> !shielded.contains(entry.getKey()))
                               .filter(entry -> policy.locations()
                                                      .stream()
                                                      .noneMatch(location -> matches(entry.getValue(),

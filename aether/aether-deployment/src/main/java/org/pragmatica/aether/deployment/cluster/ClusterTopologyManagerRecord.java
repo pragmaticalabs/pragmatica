@@ -1420,10 +1420,10 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                            nodeReplacements.get());
 
         if (victims.size() < surplus) {
-            log.info("CTM: worker topology {}/{} — {} of the surplus is an in-flight node replacement, not terminated",
-                     entry.sourceName(),
-                     entry.role(),
-                     surplus - victims.size());
+            log.debug("CTM: worker topology {}/{} — {} of the surplus is an in-flight node replacement, not terminated",
+                      entry.sourceName(),
+                      entry.role(),
+                      surplus - victims.size());
         }
 
         var pass = Promise.unitPromise();
