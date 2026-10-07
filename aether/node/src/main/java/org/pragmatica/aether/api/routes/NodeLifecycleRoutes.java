@@ -21,6 +21,7 @@ import org.pragmatica.aether.api.OperationalEvent;
 import org.pragmatica.aether.deployment.cluster.SliceOwnershipQuery;
 import org.pragmatica.aether.deployment.cluster.SliceOwnershipQuery.DrainRefusal;
 import org.pragmatica.aether.deployment.membership.fsm.MemberDescriptor;
+import org.pragmatica.aether.http.handler.security.SecurityContextHolder;
 import org.pragmatica.aether.http.security.AuditLog;
 import org.pragmatica.aether.management.route.ManagementRoute;
 import org.pragmatica.aether.metrics.NodeReportedState;
@@ -424,12 +425,22 @@ public final class NodeLifecycleRoutes implements RouteSource {
                                floor.warnings(),
                                OperatorWarningCode.SLICE_FLOOR_BREACHED_BY_FORCE,
                                node.id(),
-                               "Forced {} of node {} breaches the slice floor: {}",
+                               "Forced {} of node {} by {} breaches the slice floor: {}",
                                operation,
                                node.id(),
+                               forcingPrincipal(),
                                describe(breaches));
 
         return Result.success(org.pragmatica.lang.Unit.unit());
+    }
+
+    /// Who forced the request, for the audit trail of a forced breach: the authenticated management principal bound
+    /// by the server for this request, or `unknown` when none is bound (a test, or security off).
+    private static String forcingPrincipal() {
+        return SecurityContextHolder.currentContext()
+                                    .map(context -> context.principal()
+                                                           .value())
+                                    .or("unknown");
     }
 
     /// The recovery counterpart of the refusal event: only when this target WAS refused, and once (the set is

@@ -376,6 +376,33 @@ class NodeLifecycleRoutesSliceFloorTest {
         assertThat(warning.message()).contains("drain", SLICE_A);
     }
 
+    /// Audit: a forced breach names the principal that forced it, taken from the request's bound security context.
+    @Test
+    void forcedBreach_warningNamesThePrincipalWhoForcedIt() throws Exception {
+        host(slice("a", 3, 2), node(1), node(2), node(3));
+        pendingDrains.add(node(1));
+        var routes = routes();
+        var context = org.pragmatica.aether.http.handler.security.SecurityContext.securityContext("ops-alice").unwrap();
+
+        java.util.concurrent.atomic.AtomicReference<Boolean> admitted = new java.util.concurrent.atomic.AtomicReference<>();
+
+        ScopedValue.where(org.pragmatica.aether.http.handler.security.SecurityContextHolder.scopedValue(), context)
+                   .run(() -> admitted.set(routes.drainNodeForTest(node(2).id(), true).await().isSuccess()));
+
+        assertThat(admitted.get()).isTrue();
+        assertThat(awaitWarnings(1).getFirst().message()).contains("ops-alice");
+    }
+
+    /// Control: with no bound principal the warning says `unknown` rather than omitting who.
+    @Test
+    void forcedBreach_withoutABoundPrincipal_saysUnknown() {
+        host(slice("a", 3, 2), node(1), node(2), node(3));
+        pendingDrains.add(node(1));
+
+        assertThat(routes().drainNodeForTest(node(2).id(), true).await().isSuccess()).isTrue();
+        assertThat(awaitWarnings(1).getFirst().message()).contains("by unknown");
+    }
+
     @Test
     void forcedShutdown_alsoWarns() {
         var a = slice("a", 3, 2);
