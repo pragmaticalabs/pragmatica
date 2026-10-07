@@ -70,6 +70,22 @@ public enum OperatorWarningCode {
     /// reachable (#1835): no QUIC handshake, SWIM ALIVE or health evidence. It never joined, so it did not
     /// fail; NODE_FAILED and the CRITICAL node-health alert are reserved for members that had.
     NODE_NEVER_JOINED("node-never-joined", "membership", WarningLevel.WARNING),
+    /// A replica of a `confirmation_factor` 1 stream cut its divergent tail back to the last offset it shares with its
+    /// owner (#1730 phase 2). With that factor the acknowledgement was the old owner's alone, so the discarded offsets
+    /// may have been acknowledged and are lost; the message names them. A stream that confirms with replicas
+    /// discards only unacknowledged records on the same cut, and that is only logged.
+    STREAM_DIVERGENT_TAIL_TRUNCATED("stream-divergent-tail-truncated", "stream-replication", WarningLevel.WARNING),
+    /// #1730 phase 2: a replica's catch-up has been answered as a consumer read for a minute -- the source does not list it
+    /// as a replica of the partition -- so nothing is applied and it stays out of the in-sync set. Subject is
+    /// `stream[partition]@source`.
+    STREAM_CATCHUP_SOURCE_NOT_ANSWERING("stream-catchup-source-not-answering",
+                                        "stream-replication",
+                                        WarningLevel.WARNING),
+    /// The end of a `stream-catchup-source-not-answering` episode: the source lists the replica again and its catch-up is answered
+    /// as a replica. Raised only when that warning was; informational, at the lowest level this enum has. Same subject.
+    STREAM_CATCHUP_SOURCE_ANSWERING_RESTORED("stream-catchup-source-answering-restored",
+                                             "stream-replication",
+                                             WarningLevel.WARNING),
     /// A declarative stream consumer this node held as attached had no subscription in the consumer runtime (#752):
     /// found by a reconcile pass, which forgets and re-attaches it. The partition was not consumed in between while this node reported it attached.
     STREAM_CONSUMER_STATE_DIVERGED("stream-consumer-state-diverged", "stream-consumer", WarningLevel.WARNING),

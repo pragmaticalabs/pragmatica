@@ -938,6 +938,10 @@ class PartitionBackfillTest {
         /// response, so the response cannot tell them apart and both used to route into the cold-start
         /// contest. A caught-up replica then lost the lowest-NodeId tie-break to the owner and returned
         /// to SYNCING every redrive interval — observed as 336 declines over 28 minutes.
+        ///
+        /// #1730 phase 2 changed what proves "at the owner's tail": the empty response is only the cue. The replica then
+        /// fetches the owner's last records and compares them with its own before it is CAUGHT_UP, and is promoted at
+        /// the OWNER's head. The fixture's owner therefore serves its tail window; the contest is still never entered.
         @Test
         void backfill_selfAtOwnerTail_emptyResponse_reachesCaughtUp_withoutPromotionContest() {
             registry.registerReplica(STREAM, PARTITION, NON_OWNER); // self
@@ -945,7 +949,7 @@ class PartitionBackfillTest {
             var clock = new AtomicLong(BOUND.millis() + 1L); // bound elapsed — contest would be reachable
             var backfill = partitionBackfill(registry,
                                              recovery,
-                                             fixedSource(List.of()), // nothing at or beyond self's tail
+                                             ownerServing(eventsFrom(0, 2)), // the owner serves its tail window when asked (#1730 phase 2)
                                              ownerProbedAt(1L),      // owner's true tail is 1 — self matches
                                              selfWatermarkOf(1L),
                                              NON_OWNER,
@@ -1006,7 +1010,7 @@ class PartitionBackfillTest {
             for (var replica : List.of(secondReplica, thirdReplica)) {
                 var backfill = partitionBackfill(registry,
                                                  recovery,
-                                                 fixedSource(List.of()), // nothing at or beyond this replica's tail
+                                                 ownerServing(eventsFrom(0, 2)), // the owner serves its tail window when asked (#1730 phase 2)
                                                  ownerProbedAt(1L),      // owner's true tail
                                                  selfWatermarkOf(1L),    // this replica already holds it
                                                  replica,
@@ -1334,8 +1338,10 @@ class PartitionBackfillTest {
         private CatchupTransport ownerSource(NodeId expectedOwner, long expectedFrom, List<EventData> events) {
             return (target, request) -> {
                 assertThat(target).as("backfill must target the HRW owner").isEqualTo(expectedOwner);
-                assertThat(request.fromOffset()).as("fromOffset must be local head + 1 (contiguous)")
-                                                .isEqualTo(expectedFrom);
+                // #1730 phase 2: a pull re-fetches the replica's last 1,024 held records too, so they are compared; the new
+                // records start at expectedFrom.
+                assertThat(request.fromOffset()).as("fromOffset is the start of the overlap window below local head + 1")
+                                                .isEqualTo(Math.max(0L, expectedFrom - 1024L));
                 var payloads = new ArrayList<byte[]>();
                 var timestamps = new ArrayList<Long>();
                 events.forEach(event -> {
@@ -1346,7 +1352,7 @@ class PartitionBackfillTest {
                 return Promise.success(catchupResponse(target,
                                                        request.streamName(),
                                                        request.partition(),
-                                                       request.fromOffset(),
+                                                       events.isEmpty() ? request.fromOffset() : events.getFirst().offset(),
                                                        toOffset,
                                                        payloads,
                                                        timestamps));
@@ -1654,8 +1660,10 @@ class PartitionBackfillTest {
         private CatchupTransport ownerSource(NodeId expectedOwner, long expectedFrom, List<EventData> events) {
             return (target, request) -> {
                 assertThat(target).as("backfill must target the HRW owner").isEqualTo(expectedOwner);
-                assertThat(request.fromOffset()).as("fromOffset must be local head + 1 (contiguous)")
-                                                .isEqualTo(expectedFrom);
+                // #1730 phase 2: a pull re-fetches the replica's last 1,024 held records too, so they are compared; the new
+                // records start at expectedFrom.
+                assertThat(request.fromOffset()).as("fromOffset is the start of the overlap window below local head + 1")
+                                                .isEqualTo(Math.max(0L, expectedFrom - 1024L));
                 var payloads = new ArrayList<byte[]>();
                 var timestamps = new ArrayList<Long>();
                 events.forEach(event -> {
@@ -1666,7 +1674,7 @@ class PartitionBackfillTest {
                 return Promise.success(catchupResponse(target,
                                                        request.streamName(),
                                                        request.partition(),
-                                                       request.fromOffset(),
+                                                       events.isEmpty() ? request.fromOffset() : events.getFirst().offset(),
                                                        toOffset,
                                                        payloads,
                                                        timestamps));
@@ -2348,8 +2356,10 @@ class PartitionBackfillTest {
         private CatchupTransport ownerSource(NodeId expectedOwner, long expectedFrom, List<EventData> events) {
             return (target, request) -> {
                 assertThat(target).as("backfill must target the HRW owner").isEqualTo(expectedOwner);
-                assertThat(request.fromOffset()).as("fromOffset must be local head + 1 (contiguous)")
-                                                .isEqualTo(expectedFrom);
+                // #1730 phase 2: a pull re-fetches the replica's last 1,024 held records too, so they are compared; the new
+                // records start at expectedFrom.
+                assertThat(request.fromOffset()).as("fromOffset is the start of the overlap window below local head + 1")
+                                                .isEqualTo(Math.max(0L, expectedFrom - 1024L));
                 var payloads = new ArrayList<byte[]>();
                 var timestamps = new ArrayList<Long>();
                 events.forEach(event -> {
@@ -2360,7 +2370,7 @@ class PartitionBackfillTest {
                 return Promise.success(catchupResponse(target,
                                                        request.streamName(),
                                                        request.partition(),
-                                                       request.fromOffset(),
+                                                       events.isEmpty() ? request.fromOffset() : events.getFirst().offset(),
                                                        toOffset,
                                                        payloads,
                                                        timestamps));
@@ -2460,8 +2470,10 @@ class PartitionBackfillTest {
         private CatchupTransport ownerSource(NodeId expectedOwner, long expectedFrom, List<EventData> events) {
             return (target, request) -> {
                 assertThat(target).as("backfill must target the reconciled HRW owner").isEqualTo(expectedOwner);
-                assertThat(request.fromOffset()).as("fromOffset must be local head + 1 (contiguous)")
-                                                .isEqualTo(expectedFrom);
+                // #1730 phase 2: a pull re-fetches the replica's last 1,024 held records too, so they are compared; the new
+                // records start at expectedFrom.
+                assertThat(request.fromOffset()).as("fromOffset is the start of the overlap window below local head + 1")
+                                                .isEqualTo(Math.max(0L, expectedFrom - 1024L));
                 var payloads = new ArrayList<byte[]>();
                 var timestamps = new ArrayList<Long>();
                 events.forEach(event -> {
@@ -2472,7 +2484,7 @@ class PartitionBackfillTest {
                 return Promise.success(catchupResponse(target,
                                                        request.streamName(),
                                                        request.partition(),
-                                                       request.fromOffset(),
+                                                       events.isEmpty() ? request.fromOffset() : events.getFirst().offset(),
                                                        toOffset,
                                                        payloads,
                                                        timestamps));
@@ -2629,8 +2641,10 @@ class PartitionBackfillTest {
         private CatchupTransport ownerSource(NodeId expectedOwner, long expectedFrom, List<EventData> events) {
             return (target, request) -> {
                 assertThat(target).as("backfill must target the HRW owner").isEqualTo(expectedOwner);
-                assertThat(request.fromOffset()).as("fromOffset must be local head + 1 (contiguous)")
-                                                .isEqualTo(expectedFrom);
+                // #1730 phase 2: a pull re-fetches the replica's last 1,024 held records too, so they are compared; the new
+                // records start at expectedFrom.
+                assertThat(request.fromOffset()).as("fromOffset is the start of the overlap window below local head + 1")
+                                                .isEqualTo(Math.max(0L, expectedFrom - 1024L));
                 var payloads = new ArrayList<byte[]>();
                 var timestamps = new ArrayList<Long>();
                 events.forEach(event -> {
@@ -2641,7 +2655,7 @@ class PartitionBackfillTest {
                 return Promise.success(catchupResponse(target,
                                                        request.streamName(),
                                                        request.partition(),
-                                                       request.fromOffset(),
+                                                       events.isEmpty() ? request.fromOffset() : events.getFirst().offset(),
                                                        toOffset,
                                                        payloads,
                                                        timestamps));
@@ -2969,6 +2983,14 @@ class PartitionBackfillTest {
                        .filter(d -> d.nodeId().equals(nodeId))
                        .findFirst()
                        .orElseThrow();
+    }
+
+    /// An owner that answers each request with the events it holds from the requested offset up, so the empty answer
+    /// to a request past its head and the answer to a request for its tail window are both honest.
+    private CatchupTransport ownerServing(List<EventData> held) {
+        return (target, request) -> fixedSource(held.stream()
+                                                    .filter(event -> event.offset() >= request.fromOffset())
+                                                    .toList()).requestCatchup(target, request);
     }
 
     private CatchupTransport fixedSource(List<EventData> events) {

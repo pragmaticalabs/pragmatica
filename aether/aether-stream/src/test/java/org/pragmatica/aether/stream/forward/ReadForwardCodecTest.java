@@ -92,6 +92,19 @@ class ReadForwardCodecTest {
                   .isEqualTo(Option.some(VisibleBounds.visibleBounds(0L, -1L)));
     }
 
+    /// #1730 phase 2: `historyVouched` rides the wire, and an EMPTY history keeps its meaning with it: vouched-and-empty
+    /// is a source that keeps no log, not-vouched-and-empty is a consumer-read answer. A codec that dropped the flag
+    /// would decode both to the same record.
+    @Test
+    void readForwardResponse_historyVouched_roundTrips_distinguishingNoHistoryKeptFromNotAnsweredAsAReplica() {
+        var consumerAnswer = ReadForwardResponse.successResponse(SENDER, "corr-8", List.of());
+        var logLessReplicaAnswer = consumerAnswer.withHistory(List.of());
+
+        assertThat(roundTripResponse(consumerAnswer).historyVouched()).isFalse();
+        assertThat(roundTripResponse(logLessReplicaAnswer).historyVouched()).isTrue();
+        assertThat(roundTripResponse(logLessReplicaAnswer).history()).isEmpty();
+    }
+
     /// #1873 added the owner epoch a consumer read carries; the codec is positional, so each pin is whole-record equality and
     /// the epoch is a value that cannot be mistaken for the zero default.
     @Test

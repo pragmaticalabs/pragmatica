@@ -9,6 +9,7 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Predicate;
 
+import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
@@ -224,6 +225,18 @@ public final class ReplicaRegistry {
                                 NodeId nodeId,
                                 long confirmedOffset,
                                 ReplicationState state) {
+        updateWatermark(streamName, partition, nodeId, confirmedOffset, state, Epoch.ZERO);
+    }
+
+    /// As above, recording the committed owner epoch the confirmation was made under (#1730 phase 2): a row carries the epoch
+    /// of its owner, so an owner counts only rows confirmed under its own current epoch.
+    @Contract
+    public void updateWatermark(String streamName,
+                                int partition,
+                                NodeId nodeId,
+                                long confirmedOffset,
+                                ReplicationState state,
+                                Epoch epoch) {
         var key = partitionKey(streamName, partition);
 
         option(replicas.get(key)).onPresent(nodeMap -> nodeMap.computeIfPresent(nodeId,
@@ -231,7 +244,8 @@ public final class ReplicaRegistry {
                                                                                                             streamName,
                                                                                                             partition,
                                                                                                             confirmedOffset,
-                                                                                                            state)));
+                                                                                                            state,
+                                                                                                            epoch)));
         watermarkStore.persistWatermark(streamName, partition, nodeId, confirmedOffset);
     }
 

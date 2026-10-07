@@ -110,6 +110,64 @@ public sealed interface StreamError extends Cause {
         }
     }
 
+    /// A repair was refused because this copy's own history cannot vouch for its records (#1730 phase 2): it compares
+    /// unequal with the owner at `offset` only because it holds records and no owner-epoch history, which is no evidence of
+    /// a lineage split. Nothing was cut; the partition stays quarantined.
+    record DivergenceNotEstablished(String streamName, int partition, long offset) implements StreamError {
+        @Override
+        public String message() {
+            return "Divergence of %s[%d] at offset %d is not established: this copy's owner-epoch history cannot vouch for its records".formatted(streamName,
+                                                                                                                                                  partition,
+                                                                                                                                                  offset);
+        }
+    }
+
+    /// A repair was refused because the committed owner no longer authorises it: it is not the owner this copy backfills from,
+    /// it is this node, or its epoch is not later than the epoch of the records about to be cut (#1730 phase 2).
+    record RepairNotAuthorized(String streamName, int partition, long divergedAt) implements StreamError {
+        @Override
+        public String message() {
+            return "Repair of %s[%d] at offset %d is not authorised by the committed owner".formatted(streamName,
+                                                                                                      partition,
+                                                                                                      divergedAt);
+        }
+    }
+
+    /// A repair was refused because the record of what its cut would discard could not be made durable first (#1730 phase 2): the
+    /// copy keeps its records and stays quarantined, and the repair is retried.
+    record RepairWitnessFailed(String streamName, int partition, String reason) implements StreamError, Cause.Transient {
+        @Override
+        public String message() {
+            return "Repair of %s[%d] refused: its truncation witness could not be written (%s)".formatted(streamName,
+                                                                                                          partition,
+                                                                                                          reason);
+        }
+    }
+
+    /// This node holds records at or above the start of the committed owner's current epoch that it has not compared with the
+    /// owner (it was demoted, or the epoch advanced while it was away): it serves nothing from there and acknowledges nothing,
+    /// until a backfill has verified it for the epoch (#1730 phase 2). Retriable: the backfill redrive verifies it.
+    record ReplicaNotVerified(String streamName, int partition, long startOffset) implements StreamError, Cause.Transient {
+        @Override
+        public String message() {
+            return "Replica %s[%d] has not been verified against the owner's epoch starting at offset %d".formatted(streamName,
+                                                                                                                    partition,
+                                                                                                                    startOffset);
+        }
+    }
+
+    /// A suffix truncation asked to cut below the ring's retained range (#1730 phase 2): offsets between `keepThrough`
+    /// and `tailOffset` were evicted (and possibly sealed), so the ring cannot say they are gone. Nothing changed.
+    record TruncateBelowRetained(String streamName, int partition, long keepThrough, long tailOffset) implements StreamError {
+        @Override
+        public String message() {
+            return "Cannot truncate %s[%d] back to offset %d: the ring retains only offsets from %d".formatted(streamName,
+                                                                                                               partition,
+                                                                                                               keepThrough,
+                                                                                                               tailOffset);
+        }
+    }
+
     /// Ring seed-offset precondition rejection (spec PHASE A-WAL §W1): {@link OffHeapRingBuffer#seedHead}
     /// requires a FRESH ring (`headOffset() == -1`, no appends yet) and a non-negative `base`. The seed
     /// is a replay-only positioning op; this rejects a misuse — a non-fresh ring or a negative `base` —
