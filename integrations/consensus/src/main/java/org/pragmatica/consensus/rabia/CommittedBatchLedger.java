@@ -29,9 +29,11 @@ import static org.pragmatica.lang.Option.some;
 /// id; a batch carrying some new correlation id is admitted with the committed ones stripped.
 ///
 /// Bounded: the `capacity` most recently committed batch ids are kept, oldest evicted first. A delivery delayed
-/// by more than `capacity` commits is not recognised.
+/// by more than `capacity` commits is not recognised. NewBatch is not offline-buffered by the transport, so its
+/// delay is bounded by the in-flight retry budget (about 5 s, `QuicTransportTuning` consensus retry), which this window
+/// covers up to about 13k commits per second.
 final class CommittedBatchLedger {
-    static final int DEFAULT_CAPACITY = 16_384;
+    static final int DEFAULT_CAPACITY = 65_536;
 
     private final int capacity;
     private final Map<Id, Set<CorrelationId>> committed = new LinkedHashMap<>();
