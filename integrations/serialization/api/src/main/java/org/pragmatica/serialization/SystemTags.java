@@ -590,6 +590,9 @@ public interface SystemTags {
         // a scheduled task with an unknown fire outcome / its late resolution (#1723)
         pin(table, 1751, "org.pragmatica.aether.api.ClusterEvent.ScheduledTaskOutcomeUnknown");
         pin(table, 1752, "org.pragmatica.aether.api.ClusterEvent.ScheduledTaskOutcomeRestored");
+        // a scheduled fire still in flight while its ticks are skipped / its resolution (#1930)
+        pin(table, 1753, "org.pragmatica.aether.api.ClusterEvent.ScheduledTaskFireHeld");
+        pin(table, 1754, "org.pragmatica.aether.api.ClusterEvent.ScheduledTaskFireReleased");
         pin(table, 2112, "org.pragmatica.aether.slice.kvstore.AetherKey.CommunityPlacementAvailabilityKey");
         pin(table, 2113, "org.pragmatica.aether.slice.kvstore.AetherValue.CommunityPlacementAvailabilityValue");
         // built-in artifact store versions index in consensus (#1778)
@@ -611,7 +614,11 @@ public interface SystemTags {
         pin(table, 2126, "org.pragmatica.aether.slice.kvstore.AetherValue.DhtReplicationStage");
         pin(table, 2127, "org.pragmatica.aether.api.ClusterEvent.DhtWriterStale");
         pin(table, 2128, "org.pragmatica.aether.api.ClusterEvent.DhtWriterStaleResolved");
-        // ---- 2119..16383 RESERVED ----
+        // #1543 part D: the replacement pairing record — next free after 2128
+        pin(table, 2129, "org.pragmatica.aether.slice.kvstore.AetherKey.NodeReplacementKey");
+        pin(table, 2130, "org.pragmatica.aether.slice.kvstore.AetherValue.NodeReplacementValue");
+        pin(table, 2131, "org.pragmatica.aether.slice.kvstore.AetherValue.NodeReplacementPhase");
+        // ---- 2132..16383 RESERVED ----
         rejectDuplicateTags(table);
 
         return Map.copyOf(table);

@@ -1113,8 +1113,19 @@ class ScheduledTaskManagerTest {
         final java.util.concurrent.atomic.AtomicBoolean unknownWithLateOutcome = new java.util.concurrent.atomic.AtomicBoolean();
         final CopyOnWriteArrayList<Promise<Unit>> lateOutcomes = new CopyOnWriteArrayList<>();
 
+        /// #1930: when set, every completion-awaited fire returns THIS promise (a fire that is still running), until it is cleared.
+        final java.util.concurrent.atomic.AtomicReference<Promise<Unit>> heldCompletion = new java.util.concurrent.atomic.AtomicReference<>();
+
         @Override
         public Promise<Unit> invokeAwaitingCompletion(Artifact slice, MethodName method, Object request) {
+            var held = heldCompletion.get();
+
+            if (held != null) {
+                invocations.add(new InvocationRecord(slice, method, request));
+
+                return held;
+            }
+
             if (unknownWithLateOutcome.get()) {
                 var lateOutcome = Promise.<Unit> promise();
 

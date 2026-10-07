@@ -49,6 +49,7 @@ import org.pragmatica.aether.slice.topic.MessageContext;
 import org.pragmatica.aether.stream.ConsumerFence;
 import org.pragmatica.aether.stream.DeadLetterHandler;
 import org.pragmatica.aether.stream.StreamConsumerRuntime;
+import org.pragmatica.aether.stream.StreamError;
 import org.pragmatica.aether.stream.consumer.TransactionalCursorCommit;
 import org.pragmatica.aether.stream.topic.DurableGroupIdentity;
 import org.pragmatica.aether.stream.topic.DurableTopicPublisher;
@@ -67,6 +68,9 @@ import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.type.TypeToken;
 import org.pragmatica.serialization.FrameworkCodecs;
 import org.pragmatica.serialization.SliceCodec;
+import org.pragmatica.utility.warning.OperatorWarning;
+import org.pragmatica.utility.warning.OperatorWarningCode;
+import org.pragmatica.utility.warning.OperatorWarningSink;
 
 import org.apache.logging.log4j.Level;
 import org.apache.logging.log4j.LogManager;
@@ -1825,6 +1829,338 @@ class StreamConsumerManagerTest {
 
     /// Captures the manager's own log lines by level, so a "logged at WARN" claim is checked against a
     /// line rather than inferred from a status field.
+    /// #752: the attached set this manager holds and the consumer runtime's subscriptions must not diverge
+    /// silently. A subscription the runtime lost is a partition nobody consumes while this node reports it attached.
+    @Nested
+    class StateDivergence {
+        private final List<OperatorWarning> warnings = new CopyOnWriteArrayList<>();
+
+        private StreamConsumerManager attachedOnPartitionZero() {
+            declareStringConsumer();
+            deploySliceLocally();
+            ownership.ownedBySelf(0);
+            ownership.withPartitionCount(1);
+            var manager = manager();
+
+            manager.setOperatorWarningSink(OperatorWarningSink.handingOffTo(warnings::add));
+            manager.reconcile();
+            assertThat(runtime.subscribedPartitions()).containsExactly(0);
+
+            return manager;
+        }
+
+        /// Red under "no reconcile against the runtime": `attach`'s `putIfAbsent` finds the key still held and
+        /// skips it on every pass, so the partition stays unconsumed and nothing is reported.
+        @Test
+        void reconcile_reattachesAndReports_whenTheRuntimeLostAnAttachedSubscription() throws InterruptedException {
+            var manager = attachedOnPartitionZero();
+            var subscribesBefore = runtime.subscribeCalls;
+
+            runtime.lose(0);
+            manager.reconcile();
+
+            assertThat(runtime.subscribedPartitions()).describedAs("the same pass re-attached it").containsExactly(0);
+            assertThat(runtime.subscribeCalls).isEqualTo(subscribesBefore + 1);
+            assertThat(awaitWarnings(2)).first()
+                      .satisfies(warning -> {
+                                     assertThat(warning.code()).isEqualTo(OperatorWarningCode.STREAM_CONSUMER_STATE_DIVERGED);
+                                     assertThat(warning.subject()).isEqualTo(GROUP + ":" + STREAM + "[0]");
+                                     assertThat(warning.message()).contains("no subscription");
+                                 });
+        }
+
+        /// The recovery event: one per divergence, after it, same subject. Red under "no repaired report".
+        @Test
+        void reconcile_reportsTheRepair_onceTheLostSubscriptionIsAttachedAgain() throws InterruptedException {
+            var manager = attachedOnPartitionZero();
+
+            runtime.lose(0);
+            manager.reconcile();
+            manager.reconcile();
+            runtime.lose(0);
+            manager.reconcile();
+
+            assertThat(awaitWarnings(4)).extracting(OperatorWarning::code)
+                      .describedAs("each loss is followed by exactly one repair; the quiet pass between them raises nothing")
+                      .containsExactly(OperatorWarningCode.STREAM_CONSUMER_STATE_DIVERGED,
+                                       OperatorWarningCode.STREAM_CONSUMER_STATE_REPAIRED,
+                                       OperatorWarningCode.STREAM_CONSUMER_STATE_DIVERGED,
+                                       OperatorWarningCode.STREAM_CONSUMER_STATE_REPAIRED);
+            assertThat(warnings.get(1)).satisfies(repaired -> {
+                                                      assertThat(repaired.subject()).isEqualTo(warnings.get(0).subject());
+                                                      assertThat(repaired.message()).contains("attached again");
+                                                  });
+        }
+
+        /// A divergence whose key the pass no longer wants here is over too: nothing is left to attach.
+        @Test
+        void reconcile_reportsTheRepair_whenTheLostSubscriptionIsNoLongerWantedHere() throws InterruptedException {
+            var manager = attachedOnPartitionZero();
+
+            runtime.lose(0);
+            undeclare();
+            manager.reconcile();
+
+            assertThat(awaitWarnings(2)).extracting(OperatorWarning::code)
+                      .containsExactly(OperatorWarningCode.STREAM_CONSUMER_STATE_DIVERGED,
+                                       OperatorWarningCode.STREAM_CONSUMER_STATE_REPAIRED);
+            assertThat(warnings.get(1).message()).contains("no longer wants it attached");
+            assertThat(runtime.subscribedPartitions()).isEmpty();
+        }
+
+        /// Still wanted here but not attachable (the slice went away between the desired-set read and the attach): the
+        /// partition is still consumed by nobody, so the divergence stays open until a later pass attaches it. Had the
+        /// first pass closed it, its message would be the "no longer wants" one.
+        @Test
+        void reconcile_holdsTheRepair_untilAStillWantedSubscriptionAttaches() throws InterruptedException {
+            var manager = attachedOnPartitionZero();
+
+            runtime.lose(0);
+            when(invocationHandler.localSlice(ARTIFACT)).thenReturn(Option.some(new StubBridge(Option.none())), Option.none());
+            manager.reconcile();
+            assertThat(runtime.subscribedPartitions()).describedAs("arming: the re-attach did not happen").isEmpty();
+            deploySliceLocally();
+            manager.reconcile();
+            assertThat(runtime.subscribedPartitions()).containsExactly(0);
+
+            assertThat(awaitWarnings(2)).extracting(OperatorWarning::code)
+                      .containsExactly(OperatorWarningCode.STREAM_CONSUMER_STATE_DIVERGED,
+                                       OperatorWarningCode.STREAM_CONSUMER_STATE_REPAIRED);
+            assertThat(warnings.get(1).message()).contains("attached again");
+        }
+
+        /// A divergence found by a detach or abandon is a point report: nothing is left to repair, so no recovery
+        /// event follows it. The hand-off is FIFO, so the sentinel loss and its repair close the list.
+        @Test
+        void abandonAll_thatFindsNoSubscription_raisesNoRepair() throws InterruptedException {
+            var manager = attachedOnPartitionZero();
+
+            runtime.strictRemoval = true;
+            runtime.lose(0);
+            manager.abandonAll();
+            manager.reconcile();
+            runtime.lose(0);
+            manager.reconcile();
+
+            assertThat(awaitWarnings(3)).extracting(OperatorWarning::code)
+                      .containsExactly(OperatorWarningCode.STREAM_CONSUMER_DETACH_FOUND_NOTHING,
+                                       OperatorWarningCode.STREAM_CONSUMER_STATE_DIVERGED,
+                                       OperatorWarningCode.STREAM_CONSUMER_STATE_REPAIRED);
+            assertThat(warnings.get(0).message()).contains("Detach of").contains("point event; state already reconciled");
+        }
+
+        /// Red under "the detach failure is logged at DEBUG": nothing reaches the operator.
+        @Test
+        void stop_reportsDivergence_whenTheDetachFindsNoSubscription() throws InterruptedException {
+            var manager = attachedOnPartitionZero();
+
+            runtime.strictRemoval = true;
+            runtime.lose(0);
+            manager.stop();
+
+            assertThat(manager.activeSubscriptionCount()).describedAs("forgotten: both sides now hold nothing").isZero();
+            assertThat(awaitWarnings(1)).singleElement()
+                      .satisfies(warning -> assertThat(warning.message()).contains("no final cursor flush"));
+        }
+
+        /// Red under "the abandon result is ignored".
+        @Test
+        void abandonAll_reportsDivergence_whenTheAbandonFindsNoSubscription() throws InterruptedException {
+            var manager = attachedOnPartitionZero();
+
+            runtime.strictRemoval = true;
+            runtime.lose(0);
+            manager.abandonAll();
+
+            assertThat(awaitWarnings(1)).singleElement()
+                      .satisfies(warning -> assertThat(warning.code()).isEqualTo(OperatorWarningCode.STREAM_CONSUMER_DETACH_FOUND_NOTHING));
+        }
+
+        /// No false alert: ordinary passes and an ordinary stop agree with the runtime and raise nothing. The hand-off
+        /// is FIFO, so a sentinel loss raised AFTER them proves the earlier ones raised nothing rather than racing.
+        @Test
+        void ordinaryPassesAndStop_raiseNothing() throws InterruptedException {
+            var manager = attachedOnPartitionZero();
+
+            runtime.strictRemoval = true;
+            manager.reconcile();
+            manager.reconcile();
+            undeclare();
+            manager.reconcile();
+            assertThat(runtime.subscribedPartitions()).describedAs("detached normally when the declaration went away").isEmpty();
+            declareStringConsumer();
+            manager.reconcile();
+            assertThat(runtime.subscribedPartitions()).containsExactly(0);
+            runtime.lose(0);
+            manager.reconcile();
+
+            assertThat(awaitWarnings(2)).extracting(OperatorWarning::code)
+                      .describedAs("only the sentinel loss and its repair, which is the last thing the scenario can raise")
+                      .containsExactly(OperatorWarningCode.STREAM_CONSUMER_STATE_DIVERGED,
+                                       OperatorWarningCode.STREAM_CONSUMER_STATE_REPAIRED);
+        }
+
+        private List<OperatorWarning> awaitWarnings(int count) throws InterruptedException {
+            var deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+
+            while (warnings.size() < count && System.nanoTime() < deadline) {
+                Thread.sleep(10);
+            }
+
+            return List.copyOf(warnings);
+        }
+    }
+
+    /// #752, adopted from v1890's probes for #1923: `abandonAll` (the quorum-loss path) must not run while a pass is
+    /// between `attach`'s `active.putIfAbsent` and the runtime subscribe (here: held inside the local-slice lookup, which
+    /// sits exactly there). Red under "abandonAll does not take passLock": a false divergence warning, and an orphan
+    /// subscription the manager no longer tracks.
+    @Nested
+    class AbandonDuringAttach {
+        private final List<OperatorWarning> warnings = new CopyOnWriteArrayList<>();
+
+        private Thread passBlockedMidAttach(StreamConsumerManager manager, CountDownLatch entered, CountDownLatch release) {
+            placement.activeOn(SELF);
+            var calls = new java.util.concurrent.atomic.AtomicInteger();
+
+            // The pass asks for the local slice twice: in desiredFor (before attach), then in attachAdmitted, right after
+            // `active.putIfAbsent` and before the runtime subscribe. Block only the second.
+            when(invocationHandler.localSlice(ARTIFACT)).thenAnswer(_ -> {
+                if (calls.incrementAndGet() == 2) {
+                    entered.countDown();
+                    release.await(5, TimeUnit.SECONDS);
+                }
+                return Option.some(new StubBridge(Option.none()));
+            });
+            var pass = new Thread(manager::reconcile);
+
+            pass.start();
+            return pass;
+        }
+
+        /// The quorum-loss abandon is issued on its own thread while the pass is held mid-attach, then the pass is
+        /// released. With `abandonAll` under `passLock` it waits for the pass and abandons what the pass attached;
+        /// without the lock it runs inside the held attach. Issued from the test thread it would wait for a pass that
+        /// only the test thread can release.
+        ///
+        /// No timed wait decides the interleaving: the pass is released only once the abandon has either finished
+        /// (it never waited) or is parked on a monitor the pass thread owns (it is waiting for the pass).
+        private void abandonWhileThePassIsHeld(StreamConsumerManager manager, Thread pass, CountDownLatch release) throws InterruptedException {
+            var abandon = new Thread(manager::abandonAll);
+
+            abandon.start();
+            assertThat(finishedOrWaitingOn(abandon, pass)).as("arming: the abandon ran, or waits for the pass").isTrue();
+            release.countDown();
+            abandon.join(5000);
+            assertThat(abandon.isAlive()).as("the abandon completed").isFalse();
+        }
+
+        private boolean finishedOrWaitingOn(Thread waiter, Thread owner) throws InterruptedException {
+            var threads = java.lang.management.ManagementFactory.getThreadMXBean();
+            var deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+
+            while (System.nanoTime() < deadline) {
+                var info = Option.option(threads.getThreadInfo(waiter.threadId()));
+
+                if (!waiter.isAlive() || info.map(live -> live.getLockOwnerId() == owner.threadId()).or(false)) {
+                    return true;
+                }
+
+                Thread.sleep(1);
+            }
+
+            return false;
+        }
+
+        /// The hand-off is FIFO, so a real loss raised AFTER the scenario is its last warning: everything before it
+        /// in `warnings` was raised by the scenario. Returns the divergence warnings up to and including the sentinel.
+        private List<OperatorWarning> divergencesUpToASentinelLoss(StreamConsumerManager manager) throws InterruptedException {
+            manager.reconcile();
+            assertThat(runtime.subscribedPartitions()).as("sentinel arming: attached again").containsExactly(0);
+            runtime.lose(0);
+            manager.reconcile();
+            var deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+
+            while (warnings.stream().noneMatch(AbandonDuringAttach::isSentinelLoss) && System.nanoTime() < deadline) {
+                Thread.sleep(1);
+            }
+
+            return warnings.stream()
+                           .filter(warning -> warning.code() == OperatorWarningCode.STREAM_CONSUMER_STATE_DIVERGED
+                                              || warning.code() == OperatorWarningCode.STREAM_CONSUMER_DETACH_FOUND_NOTHING)
+                           .toList();
+        }
+
+        private static boolean isSentinelLoss(OperatorWarning warning) {
+            return warning.code() == OperatorWarningCode.STREAM_CONSUMER_STATE_DIVERGED && warning.message()
+                                                                                                  .contains("was held as attached");
+        }
+
+        /// No false alert: an abandon that meets an attach still in progress found no "lost" subscription; the runtime
+        /// simply had not been asked yet.
+        @Test
+        void abandonAll_duringAnInFlightAttach_raisesNoDivergenceWarning() throws InterruptedException {
+            declareStringConsumer();
+            ownership.ownedBySelf(0);
+            ownership.withPartitionCount(1);
+            var manager = manager();
+            var entered = new CountDownLatch(1);
+            var release = new CountDownLatch(1);
+
+            manager.setOperatorWarningSink(OperatorWarningSink.handingOffTo(warnings::add));
+            runtime.strictRemoval = true;
+            var pass = passBlockedMidAttach(manager, entered, release);
+
+            assertThat(entered.await(5, TimeUnit.SECONDS)).as("arming: the pass is inside attach").isTrue();
+            abandonWhileThePassIsHeld(manager, pass, release);
+            pass.join(5000);
+
+            assertThat(divergencesUpToASentinelLoss(manager)).as("divergence warnings: only the sentinel loss, none from the abandon racing an in-flight attach")
+                      .singleElement()
+                      .matches(AbandonDuringAttach::isSentinelLoss);
+        }
+
+        /// Pre-existing companion: after the quorum-loss abandon, nothing is subscribed. Without the lock the in-flight
+        /// attach subscribes after the abandon, leaving a runtime subscription the manager no longer holds, which
+        /// forgetVanished (manager -> runtime direction only) never sees.
+        @Test
+        void abandonAll_duringAnInFlightAttach_leavesNoOrphanSubscription() throws InterruptedException {
+            declareStringConsumer();
+            ownership.ownedBySelf(0);
+            ownership.withPartitionCount(1);
+            var manager = manager();
+            var entered = new CountDownLatch(1);
+            var release = new CountDownLatch(1);
+            var pass = passBlockedMidAttach(manager, entered, release);
+
+            assertThat(entered.await(5, TimeUnit.SECONDS)).as("arming: the pass is inside attach").isTrue();
+            abandonWhileThePassIsHeld(manager, pass, release);
+            pass.join(5000);
+
+            assertThat(runtime.subscribedPartitions()).as("subscriptions after the quorum-loss abandon").isEmpty();
+            assertThat(manager.activeSubscriptionCount()).as("manager's attached count").isZero();
+        }
+
+        /// Control: abandonAll on a settled attachment (no pass in flight) raises nothing and leaves nothing.
+        @Test
+        void abandonAll_afterASettledAttach_isQuiet() throws InterruptedException {
+            declareStringConsumer();
+            deploySliceLocally();
+            ownership.ownedBySelf(0);
+            ownership.withPartitionCount(1);
+            var manager = manager();
+
+            manager.setOperatorWarningSink(OperatorWarningSink.handingOffTo(warnings::add));
+            manager.reconcile();
+            assertThat(runtime.subscribedPartitions()).containsExactly(0);
+            runtime.strictRemoval = true;
+            manager.abandonAll();
+
+            assertThat(runtime.subscribedPartitions()).isEmpty();
+            assertThat(divergencesUpToASentinelLoss(manager)).singleElement().matches(AbandonDuringAttach::isSentinelLoss);
+        }
+    }
+
     private static final class CapturingAppender extends AbstractAppender {
         private final List<LogEvent> events = new CopyOnWriteArrayList<>();
 
@@ -1953,6 +2289,9 @@ class StreamConsumerManagerTest {
         private final List<Integer> abandoned = new CopyOnWriteArrayList<>();
         private final List<Integer> gracefullyUnsubscribed = new CopyOnWriteArrayList<>();
         private int subscribeCalls;
+        /// #752: when set, unsubscribe/abandon of a subscription this runtime does not hold fails with
+        /// `CONSUMER_NOT_FOUND`, as the real runtime does. Off by default, so existing tests keep their double.
+        private volatile boolean strictRemoval;
         private volatile boolean deadLetterHold;
         private volatile boolean retryHold;
         private volatile boolean awaitingCursorFetch;
@@ -1985,9 +2324,21 @@ class StreamConsumerManagerTest {
         @Override
         public Result<Unit> abandon(String streamName, int partition, String consumerGroup) {
             abandoned.add(partition);
-            subscriptions.remove(new StreamPartition(streamName, partition));
 
-            return Result.unitResult();
+            return removed(streamName, partition);
+        }
+
+        /// #752: the runtime loses a subscription behind the manager's back.
+        void lose(int partition) {
+            subscriptions.remove(new StreamPartition(STREAM, partition));
+        }
+
+        private Result<Unit> removed(String streamName, int partition) {
+            var held = subscriptions.remove(new StreamPartition(streamName, partition)) != null;
+
+            return held || !strictRemoval
+                   ? Result.unitResult()
+                   : StreamError.General.CONSUMER_NOT_FOUND.result();
         }
 
         List<Integer> subscribedPartitions() {
@@ -2025,10 +2376,11 @@ class StreamConsumerManagerTest {
         @Override
         public Result<Unit> unsubscribe(String streamName, int partition, String consumerGroup) {
             gracefullyUnsubscribed.add(partition);
-            subscriptions.remove(new StreamPartition(streamName, partition));
+            var outcome = removed(streamName, partition);
+
             afterUnsubscribe.run();
 
-            return Result.unitResult();
+            return outcome;
         }
 
         @Override

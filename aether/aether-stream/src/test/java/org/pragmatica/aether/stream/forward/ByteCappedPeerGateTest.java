@@ -61,6 +61,7 @@ class ByteCappedPeerGateTest {
     private StreamForwardClient client;
     private final List<String> catchUps = new CopyOnWriteArrayList<>();
     private final List<OwnerActivation.ActivationBlock> alarms = new CopyOnWriteArrayList<>();
+    private final List<OwnerActivation.ActivationBlock> resolved = new CopyOnWriteArrayList<>();
 
     private void wire(long capBytes) {
         peerStorage = StorageInstance.storageInstance("peer", List.of(MemoryTier.memoryTier(ONE_GB)));
@@ -118,10 +119,7 @@ class ByteCappedPeerGateTest {
                                                },
                                                () -> true,
                                                ranges,
-                                               block -> {
-                                                   alarms.add(block);
-                                                   return Unit.unit();
-                                               },
+                                               recordingAlarm(),
                                                TimeSpan.timeSpan(0).millis());
     }
 
@@ -191,6 +189,137 @@ class ByteCappedPeerGateTest {
                                                                                  .contains("offset 4")
                                                                                  .doesNotContain("did not answer");
                                                   });
+    }
+
+    /// #1937 item 3: while one peer is refused for an oversized event, ANOTHER peer that does not answer is its own condition and
+    /// is reported on its own — the two are independent, each raised once, neither re-raising the other on a redrive.
+    /// Red when the oversized refusal returns before the unreachable timer is armed (the gate reported only the oversized peer).
+    @Test
+    void oversizedPeer_doesNotMaskAnotherPeersUnreachableAlarm() {
+        wire(StreamForwardHandler.DEFAULT_MAX_READ_RESPONSE_BYTES);
+        var silent = NodeId.randomNodeId();
+        var gate = gateOverPeers(List.of(PEER, silent),
+                                 (target, _, _) -> target.equals(PEER)
+                                                   ? new OwnerPeerReads.EventExceedsReadCap(4L).promise()
+                                                   : org.pragmatica.lang.utils.Causes.cause("no answer").promise());
+
+        var first = gate.activate(STREAM, PARTITION).await();
+        var second = gate.activate(STREAM, PARTITION).await();
+
+        assertThat(first.isFailure()).isTrue();
+        assertThat(second.isFailure()).isTrue();
+        assertThat(alarms).as("each condition raised once, on its own transition").hasSize(2);
+        assertThat(alarms).anySatisfy(block -> assertThat(block).isInstanceOfSatisfying(OwnerActivation.ActivationBlock.PeerEventExceedsReadCap.class,
+                                                                                         oversized -> assertThat(oversized.peer()).isEqualTo(PEER)));
+        assertThat(alarms).anySatisfy(block -> assertThat(block).isInstanceOfSatisfying(OwnerActivation.ActivationBlock.HoldersUnreachable.class,
+                                                                                         unreachable -> assertThat(unreachable.unreachable()).containsExactly(silent)));
+    }
+
+    /// The same two conditions: when the silent peer answers again its unreachable block ends, and the oversized one — still
+    /// true — is neither re-raised nor lost.
+    @Test
+    void unreachablePeerRecovers_whileTheOversizedPeerStaysRefused_theOversizedBlockStands() {
+        wire(StreamForwardHandler.DEFAULT_MAX_READ_RESPONSE_BYTES);
+        var silent = NodeId.randomNodeId();
+        var silentAnswers = new java.util.concurrent.atomic.AtomicBoolean(false);
+        var gate = gateOverPeers(List.of(PEER, silent),
+                                 (target, _, _) -> target.equals(PEER)
+                                                   ? new OwnerPeerReads.EventExceedsReadCap(4L).promise()
+                                                   : silentAnswers.get()
+                                                     ? Promise.success(CANDIDATE_HEAD)
+                                                     : org.pragmatica.lang.utils.Causes.cause("no answer").promise());
+
+        gate.activate(STREAM, PARTITION).await();
+        silentAnswers.set(true);
+        gate.activate(STREAM, PARTITION).await();
+        gate.activate(STREAM, PARTITION).await();
+
+        assertThat(alarms).as("oversized once, unreachable once, nothing re-raised").hasSize(2);
+        assertThat(gate.blockOf(STREAM, PARTITION).isPresent()).isTrue();
+        assertThat(gate.blockOf(STREAM, PARTITION).or((OwnerActivation.ActivationBlock) null)).isInstanceOf(OwnerActivation.ActivationBlock.PeerEventExceedsReadCap.class);
+    }
+
+    private OwnerActivation.BlockAlarm recordingAlarm() {
+        return new OwnerActivation.BlockAlarm() {
+            @Override
+            public Unit raise(OwnerActivation.ActivationBlock block) {
+                alarms.add(block);
+                return Unit.unit();
+            }
+
+            @Override
+            public Unit resolved(OwnerActivation.ActivationBlock block) {
+                resolved.add(block);
+                return Unit.unit();
+            }
+        };
+    }
+
+    /// #1937 (owner rule: a recovery for every operator-facing condition): the silent peer answers again, so its unreachable block
+    /// ends and the alarm is told; the oversized block, still true, is not. Red when the unreachable block is dropped silently.
+    @Test
+    void unreachablePeerRecovers_reportsItsEnd_andNotTheOversizedBlocks() {
+        wire(StreamForwardHandler.DEFAULT_MAX_READ_RESPONSE_BYTES);
+        var silent = NodeId.randomNodeId();
+        var silentAnswers = new java.util.concurrent.atomic.AtomicBoolean(false);
+        var gate = gateOverPeers(List.of(PEER, silent),
+                                 (target, _, _) -> target.equals(PEER)
+                                                   ? new OwnerPeerReads.EventExceedsReadCap(4L).promise()
+                                                   : silentAnswers.get()
+                                                     ? Promise.success(CANDIDATE_HEAD)
+                                                     : org.pragmatica.lang.utils.Causes.cause("no answer").promise());
+
+        gate.activate(STREAM, PARTITION).await();
+        assertThat(resolved).isEmpty();
+        silentAnswers.set(true);
+        gate.activate(STREAM, PARTITION).await();
+
+        assertThat(resolved).singleElement().isInstanceOf(OwnerActivation.ActivationBlock.HoldersUnreachable.class);
+    }
+
+    /// The oversized refusal ends when the peer's cap is raised and the gate activates: the block clears and the alarm is told.
+    @Test
+    void oversizedPeerCleared_whenTheGateActivates_reportsTheEnd() {
+        wire(StreamForwardHandler.DEFAULT_MAX_READ_RESPONSE_BYTES);
+        var oversized = new java.util.concurrent.atomic.AtomicBoolean(true);
+        var gate = gateOverPeers(List.of(PEER),
+                                 (_, _, _) -> oversized.get()
+                                              ? new OwnerPeerReads.EventExceedsReadCap(4L).promise()
+                                              : Promise.success(CANDIDATE_HEAD));
+
+        gate.activate(STREAM, PARTITION).await();
+        assertThat(resolved).isEmpty();
+        oversized.set(false);
+        var outcome = gate.activate(STREAM, PARTITION).await();
+
+        assertThat(outcome.isSuccess()).as("activation outcome %s", outcome).isTrue();
+        assertThat(resolved).singleElement().isInstanceOf(OwnerActivation.ActivationBlock.PeerEventExceedsReadCap.class);
+    }
+
+    private OwnerActivation gateOverPeers(List<NodeId> peers, org.pragmatica.aether.stream.replication.ReplicaWatermarkProbe probe) {
+        OwnerActivation.RecordRange ranges = (node, stream, partition, from, to) ->
+            OwnerPeerReads.appendedRange(OwnerPeerReads.localPages(peer, Option.none()), node, stream, partition, from, to, 1024);
+        var members = new java.util.ArrayList<NodeId>();
+
+        members.add(CANDIDATE);
+        members.addAll(peers);
+
+        return OwnerActivation.ownerActivation(CANDIDATE,
+                                               (_, _) -> Option.none(),
+                                               (_, _) -> true,
+                                               Option.some((_, _) -> Promise.success(Unit.unit())),
+                                               () -> List.copyOf(members),
+                                               probe,
+                                               (_, _) -> local.get(),
+                                               (_, _, source, tail) -> {
+                                                   catchUps.add(source + "@" + tail);
+                                                   local.set(tail);
+                                                   return Promise.success(tail);
+                                               },
+                                               () -> true,
+                                               ranges,
+                                               recordingAlarm(),
+                                               TimeSpan.timeSpan(0).millis());
     }
 
     private static StreamConfig config() {

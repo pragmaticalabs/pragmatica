@@ -284,6 +284,14 @@ canary_check() {
     fi
 }
 
+# POST the drain and keep the body of a non-2xx answer (`api_call` uses `curl -f`, which discards it): the 409 problem
+# document naming the slice floor (#1720) is what the caller decides on.
+drain_post() {
+    local auth
+    auth=$(auth_header)
+    curl -sSL -X POST $auth "http://$CLUSTER/api/v1/nodes/drain/$1" 2>/dev/null
+}
+
 # Upgrade a single node
 upgrade_node() {
     local node_id="$1"
@@ -296,13 +304,24 @@ upgrade_node() {
     # Step 1: Drain
     log_info "  Draining $node_id..."
     local drain_response
-    drain_response=$(api_call POST "http://$CLUSTER/api/v1/nodes/drain/$node_id") || true
+    drain_response=$(drain_post "$node_id") || true
+
+    # #1720: a drain that would take a hosted slice below its minAvailable floor is refused (409). Inside a rolling
+    # upgrade that is transient: the instance the previous node's drain displaced is not ACTIVE on its new node yet.
+    # Wait it out (bounded) instead of aborting the upgrade on the first refusal; any other answer falls through.
+    local floor_waited=0
+    while echo "$drain_response" | grep -q "minAvailable" && [ "$floor_waited" -lt 120 ]; do
+        log_info "  drain of $node_id waits for the slice floor to recover..."
+        sleep 2
+        floor_waited=$((floor_waited + 2))
+        drain_response=$(drain_post "$node_id") || true
+    done
 
     local success
     success=$(echo "$drain_response" | jq -r '.success' 2>/dev/null) || true
     if [ "$success" != "true" ]; then
         local msg
-        msg=$(echo "$drain_response" | jq -r '.message' 2>/dev/null) || true
+        msg=$(echo "$drain_response" | jq -r '.message // .detail' 2>/dev/null) || true
         # If already draining/decommissioned, continue
         if echo "$msg" | grep -qi "DRAINING"; then
             log_warn "  $node_id already draining, continuing..."
