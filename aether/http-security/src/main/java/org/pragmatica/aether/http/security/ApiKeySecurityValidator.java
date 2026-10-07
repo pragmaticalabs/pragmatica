@@ -27,7 +27,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 
-class ApiKeySecurityValidator implements SecurityValidator {
+class ApiKeySecurityValidator implements HttpAuthenticator {
     private static final Logger log = LoggerFactory.getLogger(ApiKeySecurityValidator.class);
     private static final String API_KEY_HEADER = "X-API-Key";
 

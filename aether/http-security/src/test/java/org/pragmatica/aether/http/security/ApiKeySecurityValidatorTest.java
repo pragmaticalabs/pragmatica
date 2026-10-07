@@ -25,7 +25,7 @@ class ApiKeySecurityValidatorTest {
 
     @Test
     void validate_allowsAnonymousAccess_forPublicRoute() {
-        var validator = SecurityValidator.apiKeyValidator(VALID_KEYS);
+        var validator = HttpAuthenticator.apiKeyValidator(VALID_KEYS);
         var request = createRequest(Map.of());
 
         validator.validate(request, SecurityPolicy.publicRoute())
@@ -38,7 +38,7 @@ class ApiKeySecurityValidatorTest {
 
     @Test
     void validate_succeeds_forValidApiKey() {
-        var validator = SecurityValidator.apiKeyValidator(VALID_KEYS);
+        var validator = HttpAuthenticator.apiKeyValidator(VALID_KEYS);
         var request = createRequest(Map.of("X-API-Key", List.of(VALID_KEY)));
 
         validator.validate(request, SecurityPolicy.apiKeyRequired())
@@ -52,7 +52,7 @@ class ApiKeySecurityValidatorTest {
 
     @Test
     void validate_fails_forInvalidApiKey() {
-        var validator = SecurityValidator.apiKeyValidator(VALID_KEYS);
+        var validator = HttpAuthenticator.apiKeyValidator(VALID_KEYS);
         var request = createRequest(Map.of("X-API-Key", List.of(INVALID_KEY)));
 
         validator.validate(request, SecurityPolicy.apiKeyRequired())
@@ -65,7 +65,7 @@ class ApiKeySecurityValidatorTest {
 
     @Test
     void validate_fails_forMissingApiKey() {
-        var validator = SecurityValidator.apiKeyValidator(VALID_KEYS);
+        var validator = HttpAuthenticator.apiKeyValidator(VALID_KEYS);
         var request = createRequest(Map.of());
 
         validator.validate(request, SecurityPolicy.apiKeyRequired())
@@ -78,7 +78,7 @@ class ApiKeySecurityValidatorTest {
 
     @Test
     void validate_succeeds_forCaseInsensitiveHeader() {
-        var validator = SecurityValidator.apiKeyValidator(VALID_KEYS);
+        var validator = HttpAuthenticator.apiKeyValidator(VALID_KEYS);
         var request = createRequest(Map.of("x-api-key", List.of(VALID_KEY)));
 
         validator.validate(request, SecurityPolicy.apiKeyRequired())
@@ -89,27 +89,11 @@ class ApiKeySecurityValidatorTest {
     }
 
     @Test
-    void validate_returnsSystemContext_forNoOpValidator() {
-        var validator = SecurityValidator.permitAllValidator();
-        var request = createRequest(Map.of());
-
-        validator.validate(request, SecurityPolicy.apiKeyRequired())
-                 .onFailureRun(() -> fail("Expected success"))
-                 .onSuccess(context -> {
-                     assertThat(context.isAuthenticated()).isTrue();
-                     assertThat(context.principal().isService()).isTrue();
-                     assertThat(context.principal().value()).isEqualTo("service:system");
-                     assertThat(context.hasRole(Role.ADMIN)).isTrue();
-                     assertThat(context.hasRole(Role.SERVICE)).isTrue();
-                 });
-    }
-
-    @Test
     void validate_succeeds_forNamedKeyEntry() {
         var entries = Map.of(
             VALID_KEY, ApiKeyEntry.apiKeyEntry("my-service", Set.of("admin", "service"))
         );
-        var validator = SecurityValidator.apiKeyValidator(entries);
+        var validator = HttpAuthenticator.apiKeyValidator(entries);
         var request = createRequest(Map.of("X-API-Key", List.of(VALID_KEY)));
 
         validator.validate(request, SecurityPolicy.apiKeyRequired())
@@ -125,7 +109,7 @@ class ApiKeySecurityValidatorTest {
 
     @Test
     void validate_sameKeyAlwaysProducesSameResult() {
-        var validator = SecurityValidator.apiKeyValidator(VALID_KEYS);
+        var validator = HttpAuthenticator.apiKeyValidator(VALID_KEYS);
         var request1 = createRequest(Map.of("X-API-Key", List.of(VALID_KEY)));
         var request2 = createRequest(Map.of("X-API-Key", List.of(VALID_KEY)));
 
@@ -149,7 +133,7 @@ class ApiKeySecurityValidatorTest {
             key1, ApiKeyEntry.apiKeyEntry("first-svc", Set.of("admin")),
             key2, ApiKeyEntry.apiKeyEntry("second-svc", Set.of("service"))
         );
-        var validator = SecurityValidator.apiKeyValidator(entries);
+        var validator = HttpAuthenticator.apiKeyValidator(entries);
 
         var request1 = createRequest(Map.of("X-API-Key", List.of(key1)));
         var request2 = createRequest(Map.of("X-API-Key", List.of(key2)));
@@ -169,7 +153,7 @@ class ApiKeySecurityValidatorTest {
 
     @Test
     void validate_succeeds_forAuthenticatedPolicy_withValidApiKey() {
-        var validator = SecurityValidator.apiKeyValidator(VALID_KEYS);
+        var validator = HttpAuthenticator.apiKeyValidator(VALID_KEYS);
         var request = createRequest(Map.of("X-API-Key", List.of(VALID_KEY)));
 
         validator.validate(request, SecurityPolicy.authenticated())
@@ -182,7 +166,7 @@ class ApiKeySecurityValidatorTest {
 
     @Test
     void validate_fails_forAuthenticatedPolicy_withMissingApiKey() {
-        var validator = SecurityValidator.apiKeyValidator(VALID_KEYS);
+        var validator = HttpAuthenticator.apiKeyValidator(VALID_KEYS);
         var request = createRequest(Map.of());
 
         validator.validate(request, SecurityPolicy.authenticated())
@@ -192,7 +176,7 @@ class ApiKeySecurityValidatorTest {
 
     @Test
     void validate_succeeds_forRoleRequiredPolicy_withValidApiKey() {
-        var validator = SecurityValidator.apiKeyValidator(VALID_KEYS);
+        var validator = HttpAuthenticator.apiKeyValidator(VALID_KEYS);
         var request = createRequest(Map.of("X-API-Key", List.of(VALID_KEY)));
 
         validator.validate(request, SecurityPolicy.roleRequired("admin"))
@@ -205,7 +189,7 @@ class ApiKeySecurityValidatorTest {
 
     @Test
     void validate_fails_forRoleRequiredPolicy_withMissingApiKey() {
-        var validator = SecurityValidator.apiKeyValidator(VALID_KEYS);
+        var validator = HttpAuthenticator.apiKeyValidator(VALID_KEYS);
         var request = createRequest(Map.of());
 
         validator.validate(request, SecurityPolicy.roleRequired("admin"))
@@ -226,7 +210,7 @@ class ApiKeySecurityValidatorTest {
         // "bearer_token" — which reads as a lock-down, and which the routes listing then reports as
         // BEARER_TOKEN — served the route to anyone. Denying is the honest outcome: this node cannot
         // enforce what was asked for.
-        var validator = SecurityValidator.apiKeyValidator(VALID_KEYS);
+        var validator = HttpAuthenticator.apiKeyValidator(VALID_KEYS);
         var request = createRequest(Map.of());
 
         validator.validate(request, SecurityPolicy.bearerTokenRequired())
@@ -238,7 +222,7 @@ class ApiKeySecurityValidatorTest {
     void validate_denies_forBearerTokenPolicy_evenWithAValidApiKeyPresented() {
         // The bypass did not depend on the caller being anonymous: a valid API key is still not a
         // bearer token, so presenting one must not satisfy a BEARER_TOKEN policy either.
-        var validator = SecurityValidator.apiKeyValidator(VALID_KEYS);
+        var validator = HttpAuthenticator.apiKeyValidator(VALID_KEYS);
         var request = createRequest(Map.of("X-API-Key", List.of(VALID_KEY)));
 
         validator.validate(request, SecurityPolicy.bearerTokenRequired())
@@ -251,7 +235,7 @@ class ApiKeySecurityValidatorTest {
         // #763/#772 review: Unspecified is a codegen-only sentinel that AppHttpServer resolves to a
         // concrete policy before dispatch — it should never reach a validator directly. Pre-fix, the
         // exhaustiveness-only `default` arm granted access unconditionally for it; it must deny.
-        var validator = SecurityValidator.apiKeyValidator(VALID_KEYS);
+        var validator = HttpAuthenticator.apiKeyValidator(VALID_KEYS);
         var request = createRequest(Map.of("X-API-Key", List.of(VALID_KEY)));
 
         validator.validate(request, SecurityPolicy.unspecified())
