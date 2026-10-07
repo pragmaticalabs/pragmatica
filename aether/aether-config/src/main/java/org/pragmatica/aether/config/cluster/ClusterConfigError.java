@@ -311,6 +311,47 @@ public sealed interface ClusterConfigError extends Cause, HttpStatusAware {
         }
     }
 
+    /// #1543 part C: an upgrade rewrites the committed `[cluster] version`, which replacements render into
+    /// their image tag / jar URL — unless a role's runtime profile pins `image` (container) or `jar_url`
+    /// (JVM), in which case the new version would be recorded and silently ignored. Refused, naming the
+    /// profiles to edit.
+    record UpgradeVersionPinned(String targetVersion, List<String> profiles) implements ClusterConfigError {
+        @Override
+        public String message() {
+            return "Refusing to upgrade to " + targetVersion
+                 + ": runtime profile(s) " + profiles
+                 + " pin image/jar_url literally, so replacements would keep booting the pinned artifact and ignore the "
+                 + "version. Use {version} in the pin (image = \"registry/aether-node:{version}\") to let it follow upgrades. "
+                 + "The pin must be declared that way in the config the cluster was bootstrapped with: 'aether cluster apply' "
+                 + "does not currently change runtime-profile content";
+        }
+
+        @Override
+        public HttpStatus httpStatus() {
+            return HttpStatus.CONFLICT;
+        }
+    }
+
+    /// #1543 part C: a changed `[cluster] version` on `apply` used to be answered 501 "escalate rather than retry"
+    /// (the generic unsupported-action refusal) while the CLI merely logged it. The version is the one replacements
+    /// provision, so it has exactly one writer — the upgrade route, which rewrites the committed TOML and refuses a
+    /// pinned image/jar_url. Apply refuses with a pointer to it.
+    record VersionChangeViaApply(String from, String to) implements ClusterConfigError {
+        @Override
+        public String message() {
+            return "cluster.version change " + from
+                 + " -> " + to
+                 + " is not applied through 'aether cluster apply'. Use 'aether cluster upgrade --version " + to
+                 + "' (it commits the version replacements are provisioned from), or keep version = \"" + from
+                 + "\" in the file you apply.";
+        }
+
+        @Override
+        public HttpStatus httpStatus() {
+            return HttpStatus.CONFLICT;
+        }
+    }
+
     record ImmutableFieldChange(String field) implements ClusterConfigError {
         @Override
         public String message() {
