@@ -51,3 +51,9 @@ The clean application reactor built all 20 child modules; eight opt-in PostgreSQ
 Relevant Terra/resource JBCT gates pass. Forced legacy gates retain baseline debt: processor 38 lint/10 format failures, integration JDBC five lint failures, native PostgreSQL converter 43 lint failures. Changed production files are formatted; these legacy checks are not claimed green. The converter and cache fixes have separate commits from the Terra application expansion.
 
 The downstream `aether/node -am install -DskipTests` reactor passed after the shared fixes, with no skipped modules.
+
+## Extension boundary review
+
+Terra rejects null slice instances and null factory, binding, resource-acquisition, or cleanup completion values with operation-specific failures. Five fault-injection cases in `TerraApplicationTest` exercise these extension defects and verify reverse cleanup reaches every scope. Generated factories obey these contracts; the guards cover custom embedding implementations. This does not attempt to compensate arbitrary external effects performed by a defective factory.
+
+After boundary hardening, `mvn -o -T 1 -f terra/pom.xml clean install -Dterra.test.jdbcUrl=…` rebuilt the entire Terra subtree and all nine distributions. **64 tests passed with zero failures, errors, or skips**, including HTTP/TLS, 12 live database tests, and extracted-process tests. The explicit runtime JBCT gate passed (zero lint errors or format issues).

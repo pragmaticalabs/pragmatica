@@ -11,6 +11,7 @@ import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.ServiceLoader;
 
 import org.pragmatica.aether.resource.SpiResourceProvider;
@@ -140,8 +141,11 @@ public final class TerraApplication {
 
     private static <T> Promise<T> invokeFactory(TerraFactory<T> factory, TerraContext context) {
         return Result.lift(Causes::fromThrowable,
-                           () -> factory.create(context))
-                     .fold(Promise::failure, promise -> promise);
+                           () -> Objects.requireNonNull(factory.create(context),
+                                                        "Factory returned null factory promise: " + factory.artifact()))
+                     .<Promise<T>> fold(Promise::failure, promise -> promise)
+                     .filter(new TerraError.InvalidGraph("Factory returned null slice: " + factory.artifact()),
+                             Objects::nonNull);
     }
 
     private TerraContext contextFor(TerraFactory<?> factory,
@@ -162,7 +166,8 @@ public final class TerraApplication {
         slices.put(factory.sliceType(), instance);
 
         return Result.lift(Causes::fromThrowable,
-                           () -> factory.bind(instance, context))
+                           () -> Objects.requireNonNull(factory.bind(instance, context),
+                                                        "Factory returned null binding result: " + factory.artifact()))
                      .flatMap(result -> result);
     }
 

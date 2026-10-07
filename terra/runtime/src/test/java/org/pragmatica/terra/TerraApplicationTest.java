@@ -115,4 +115,39 @@ class TerraApplicationTest {
             .await(timeSpan(5).seconds());
         assertThat(result.<String>fold(c -> c.message(), _ -> "unexpected success")).contains("ephemeral topics only");
     }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {"factory promise", "slice", "binding result", "resource promise", "cleanup promise"})
+    void start_nullExtensionReturn_failsAndReleasesEveryScope(String defect) {
+        var released = new java.util.ArrayList<String>();
+        ResourceProviderFacade provider = new ResourceProviderFacade() {
+            public <T> Promise<T> provide(Class<T> type, String section) { return null; }
+            public <T> Promise<T> provide(Class<T> type, String section, ProvisioningContext context) { return provide(type, section); }
+            public Promise<Unit> releaseAll(String scope) {
+                released.add(scope);
+                return defect.equals("cleanup promise") && scope.equals("g:second:1") ? null : Promise.unitPromise();
+            }
+        };
+        var first = new Factory<>("g:first:1", First.class, List.of(), _ -> Promise.success(new First(42)));
+        TerraFactory<Second> second = new TerraFactory<>() {
+            public String artifact() { return "g:second:1"; }
+            public Class<Second> sliceType() { return Second.class; }
+            public List<Class<?>> dependencies() { return List.of(First.class); }
+            public Promise<Second> create(TerraContext context) {
+                return switch (defect) {
+                    case "factory promise" -> null;
+                    case "slice" -> Promise.success(null);
+                    case "resource promise" -> context.resources().provide(First.class, "test").map(Second::new);
+                    case "cleanup promise" -> cause("construction failed").promise();
+                    default -> context.slice(First.class).map(Second::new);
+                };
+            }
+            public Result<Unit> bind(Second instance, TerraContext context) { return defect.equals("binding result") ? null : Result.unitResult(); }
+        };
+        var result = TerraApplication.start(new TerraBlueprint(List.of(first.artifact(), second.artifact())),
+            List.of(first, second), _ -> CONFIG, provider).await(timeSpan(2).seconds());
+        assertThat(result.<String>fold(c -> c.message(), _ -> "unexpected success")).contains("null " + defect);
+        assertThat(released).containsExactly(second.artifact(), first.artifact());
+    }
+
 }

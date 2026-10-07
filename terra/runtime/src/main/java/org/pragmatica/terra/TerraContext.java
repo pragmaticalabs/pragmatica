@@ -7,6 +7,7 @@ package org.pragmatica.terra;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 
 import org.pragmatica.aether.slice.ConfigFacade;
 import org.pragmatica.aether.slice.ProvisioningContext;
@@ -133,7 +134,9 @@ public final class TerraContext {
             var enriched = context.withExtension(String.class, artifact)
                                   .withExtension(ConfigurationProvider.class, configuration);
             Promise<T> acquisition = Result.lift(Causes::fromThrowable,
-                                                 () -> delegate.provide(type, section, enriched))
+                                                 () -> Objects.requireNonNull(delegate.provide(type, section, enriched),
+                                                                              "Provider returned null resource promise: " + artifact
+                                                                             + "/" + section))
                                            .fold(Promise::failure, promise -> promise);
 
             acquisitions.add(acquisition.mapToUnit());
@@ -148,7 +151,8 @@ public final class TerraContext {
 
         private Promise<Unit> release() {
             return Result.lift(Causes::fromThrowable,
-                               () -> delegate.releaseAll(artifact))
+                               () -> Objects.requireNonNull(delegate.releaseAll(artifact),
+                                                            "Provider returned null cleanup promise: " + artifact))
                          .fold(Promise::failure, promise -> promise);
         }
 
