@@ -22,13 +22,10 @@ public interface NodeReplacementService {
     /// Start replacing `original` with a freshly minted node the leader provisions (CTM mode). `targetVersion` is the version
     /// the replacement must run before the swap is kept (`""` = none). Refused with a [Refusal] when it cannot start.
     Promise<NodeReplacementValue> begin(NodeId original, String targetVersion);
-
     /// The committed record for `original`.
     Option<NodeReplacementValue> status(NodeId original);
-
     /// Every committed record.
     Map<NodeId, NodeReplacementValue> all();
-
     /// Settle a replacement that ended `FAILED_KEPT_BOTH`: keep the new node and finish retiring the old, or give the new
     /// one up.
     Promise<Unit> settle(NodeId original, Settlement settlement);

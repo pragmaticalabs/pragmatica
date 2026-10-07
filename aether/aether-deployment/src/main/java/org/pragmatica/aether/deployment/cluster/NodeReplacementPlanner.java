@@ -121,11 +121,15 @@ public final class NodeReplacementPlanner {
         }
 
         if (isExternal(r) || o.replacementKnown()) {
-            return Plan.commit(r.advanced(NodeReplacementPhase.JOINING, o.now() + t.joiningMs(), ""));
+            return Plan.commit(r.advanced(NodeReplacementPhase.JOINING,
+                                          o.now() + t.joiningMs(),
+                                          ""));
         }
 
         return Plan.act(Effect.PROVISION,
-                        r.advanced(NodeReplacementPhase.JOINING, o.now() + t.joiningMs(), ""),
+                        r.advanced(NodeReplacementPhase.JOINING,
+                                   o.now() + t.joiningMs(),
+                                   ""),
                         r.advanced(NodeReplacementPhase.ROLLED_BACK, o.now(), "provisioning refused"));
     }
 
@@ -139,7 +143,9 @@ public final class NodeReplacementPlanner {
         }
 
         if (o.replacementCaughtUp()) {
-            return Plan.commit(r.advanced(NodeReplacementPhase.SWAPPING, o.now() + t.swappingMs(), ""));
+            return Plan.commit(r.advanced(NodeReplacementPhase.SWAPPING,
+                                          o.now() + t.swappingMs(),
+                                          ""));
         }
 
         var overdueAt = r.phaseDeadlineMs() - t.joiningMs() / 2;
@@ -153,19 +159,25 @@ public final class NodeReplacementPlanner {
 
     private static Plan swapping(NodeReplacementValue r, Observation o, Timings t) {
         if (o.replacementIsVoter() && !o.oldIsVoter() && o.rosterSettled()) {
-            return Plan.commit(r.advanced(NodeReplacementPhase.CANARY, o.now() + t.canaryMs(), ""));
+            return Plan.commit(r.advanced(NodeReplacementPhase.CANARY,
+                                          o.now() + t.canaryMs(),
+                                          ""));
         }
 
         if (o.replacementKnown() && !o.replacementAlive()) {
             return o.oldIsVoter() && !o.replacementIsVoter()
                    ? rollBack(r, o, "replacement died before the swap")
-                   : Plan.commit(r.advanced(NodeReplacementPhase.FAILED_KEPT_BOTH, o.now(), "replacement died after the swap"));
+                   : Plan.commit(r.advanced(NodeReplacementPhase.FAILED_KEPT_BOTH,
+                                            o.now(),
+                                            "replacement died after the swap"));
         }
 
         if (o.now() > r.phaseDeadlineMs()) {
             return o.oldIsVoter() && !o.replacementIsVoter()
                    ? rollBack(r, o, "swap deadline")
-                   : Plan.commit(r.advanced(NodeReplacementPhase.FAILED_KEPT_BOTH, o.now(), "swap applied but not settled"));
+                   : Plan.commit(r.advanced(NodeReplacementPhase.FAILED_KEPT_BOTH,
+                                            o.now(),
+                                            "swap applied but not settled"));
         }
 
         return Plan.hold();
@@ -176,7 +188,9 @@ public final class NodeReplacementPlanner {
         var healthy = o.replacementAlive() && o.replacementReady() && versionOk;
 
         if (healthy && canaryHeldLongEnough(r, o, t)) {
-            return Plan.commit(r.advanced(NodeReplacementPhase.DRAINING_OLD, o.now() + t.drainingMs(), ""));
+            return Plan.commit(r.advanced(NodeReplacementPhase.DRAINING_OLD,
+                                          o.now() + t.drainingMs(),
+                                          ""));
         }
 
         if (healthy && t.canaryWaitMs() > 0 && !r.reason().startsWith(CANARY_OK_SINCE)) {
@@ -184,9 +198,12 @@ public final class NodeReplacementPlanner {
         }
 
         if (!o.replacementAlive() || o.now() > r.phaseDeadlineMs()) {
-            return revertOrKeep(r, o, t, o.replacementAlive()
-                                         ? "canary deadline"
-                                         : "replacement died in canary");
+            return revertOrKeep(r,
+                                o,
+                                t,
+                                o.replacementAlive()
+                                ? "canary deadline"
+                                : "replacement died in canary");
         }
 
         return Plan.hold();
@@ -197,7 +214,8 @@ public final class NodeReplacementPlanner {
             return true;
         }
 
-        return r.reason().startsWith(CANARY_OK_SINCE) && o.now() - since(r.reason()) >= t.canaryWaitMs();
+        return r.reason()
+                .startsWith(CANARY_OK_SINCE) && o.now() - since(r.reason()) >= t.canaryWaitMs();
     }
 
     private static long since(String reason) {
@@ -208,7 +226,9 @@ public final class NodeReplacementPlanner {
     /// holds its seat again. When it is gone there is nothing to go back to, and the replacement is kept.
     private static Plan revertOrKeep(NodeReplacementValue r, Observation o, Timings t, String why) {
         return o.oldAlive()
-               ? Plan.commit(r.advanced(NodeReplacementPhase.REVERTING, o.now() + t.swappingMs(), why))
+               ? Plan.commit(r.advanced(NodeReplacementPhase.REVERTING,
+                                        o.now() + t.swappingMs(),
+                                        why))
                : Plan.commit(r.advanced(NodeReplacementPhase.FAILED_KEPT_BOTH, o.now(), why + "; the original is gone"));
     }
 
@@ -228,11 +248,15 @@ public final class NodeReplacementPlanner {
 
     private static Plan drainingOld(NodeReplacementValue r, Observation o, Timings t) {
         if (!o.oldAlive()) {
-            return Plan.commit(r.advanced(NodeReplacementPhase.RETIRING_OLD, o.now() + t.retiringMs(), ""));
+            return Plan.commit(r.advanced(NodeReplacementPhase.RETIRING_OLD,
+                                          o.now() + t.retiringMs(),
+                                          ""));
         }
 
         if (o.oldDrain() == DrainState.COMPLETE) {
-            return Plan.commit(r.advanced(NodeReplacementPhase.RETIRING_OLD, o.now() + t.retiringMs(), ""));
+            return Plan.commit(r.advanced(NodeReplacementPhase.RETIRING_OLD,
+                                          o.now() + t.retiringMs(),
+                                          ""));
         }
 
         if (o.now() > r.phaseDeadlineMs()) {
@@ -247,7 +271,9 @@ public final class NodeReplacementPlanner {
         var markedBlocked = r.reason().startsWith(DRAIN_BLOCKED);
 
         if (blocked && !markedBlocked) {
-            return Plan.commit(r.advanced(NodeReplacementPhase.DRAINING_OLD, r.phaseDeadlineMs(), DRAIN_BLOCKED + o.drainBlockedBy()));
+            return Plan.commit(r.advanced(NodeReplacementPhase.DRAINING_OLD,
+                                          r.phaseDeadlineMs(),
+                                          DRAIN_BLOCKED + o.drainBlockedBy()));
         }
 
         if (!blocked && markedBlocked) {
@@ -258,7 +284,8 @@ public final class NodeReplacementPlanner {
     }
 
     private static String blocked(NodeReplacementValue r, Observation o) {
-        return o.drainBlockedBy().isEmpty()
+        return o.drainBlockedBy()
+                .isEmpty()
                ? "drain did not complete"
                : DRAIN_BLOCKED + o.drainBlockedBy();
     }
@@ -269,7 +296,9 @@ public final class NodeReplacementPlanner {
         }
 
         if (o.now() > r.phaseDeadlineMs()) {
-            return Plan.commit(r.advanced(NodeReplacementPhase.DONE, o.now(), "retirement overdue: the cluster is already correct"));
+            return Plan.commit(r.advanced(NodeReplacementPhase.DONE,
+                                          o.now(),
+                                          "retirement overdue: the cluster is already correct"));
         }
 
         return Plan.act(Effect.RETIRE_OLD);

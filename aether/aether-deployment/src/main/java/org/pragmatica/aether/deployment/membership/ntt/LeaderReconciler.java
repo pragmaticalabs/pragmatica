@@ -254,6 +254,7 @@ public final class LeaderReconciler {
     /// [`#setOwnsActiveSlices`]. A predicate (not a snapshot set) is intentional: ownership is read
     /// fresh per drain pass, never staged stale.
     private final AtomicReference<Predicate<NodeId>> ownsActiveSlices = new AtomicReference<>(id -> false);
+
     /// #1543 E: replacements that are SURGE capacity (a live pairing's replacement before its original retires), not surplus.
     private final AtomicReference<Supplier<Set<NodeId>>> surgeReplacements = new AtomicReference<>(Set::of);
 
@@ -1337,7 +1338,9 @@ public final class LeaderReconciler {
     /// young ages + one scheduled follow-up reconcile via [`#armDrainGraceReEval`]) rather than
     /// silently dropped. Internal — observers see only the count via
     /// [`ReconcileIntent#drainCount`].
-    private Set<NodeId> computePeersToDrain(Set<NodeId> currentMembers, int configuredCoreCount, int effectiveWithSurge) {
+    private Set<NodeId> computePeersToDrain(Set<NodeId> currentMembers,
+                                            int configuredCoreCount,
+                                            int effectiveWithSurge) {
         var surge = (int) surgeReplacements.get().get().stream().filter(currentMembers::contains).count();
         var effective = effectiveWithSurge - surge;
 

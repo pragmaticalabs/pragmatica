@@ -24,7 +24,9 @@ public final class NodeReplacementAnnouncements {
 
     public record Announcement(OperatorWarningCode code, String subject, String message) {}
 
-    public static List<Announcement> of(NodeId original, Option<NodeReplacementValue> before, NodeReplacementValue after) {
+    public static List<Announcement> of(NodeId original,
+                                        Option<NodeReplacementValue> before,
+                                        NodeReplacementValue after) {
         var out = new ArrayList<Announcement>();
         var subject = original.id();
         var prior = before.map(NodeReplacementValue::phase).or(NodeReplacementPhase.UNKNOWN);
@@ -32,15 +34,18 @@ public final class NodeReplacementAnnouncements {
         if (before.isEmpty()) {
             out.add(new Announcement(OperatorWarningCode.NODE_REPLACEMENT_STARTED,
                                      subject,
-                                     "Replacing node " + subject + " with " + after.replacement().id() + " (role " + after.role()
-                                     + (after.targetVersion().isEmpty() ? "" : ", target version " + after.targetVersion()) + ")"));
+                                     "Replacing node " + subject
+                                    + " with " + after.replacement().id()
+                                    + " (role " + after.role() + (after.targetVersion().isEmpty()
+                                                                  ? ""
+                                                                  : ", target version " + after.targetVersion())
+                                    + ")"));
 
             return out;
         }
 
         closeConditions(out, subject, before.unwrap(), after);
         openConditions(out, subject, before.unwrap(), after);
-
         if (after.phase() != prior) {
             terminal(out, subject, prior, after);
         }
@@ -48,41 +53,63 @@ public final class NodeReplacementAnnouncements {
         return out;
     }
 
-    private static void closeConditions(List<Announcement> out, String subject, NodeReplacementValue before, NodeReplacementValue after) {
+    private static void closeConditions(List<Announcement> out,
+                                        String subject,
+                                        NodeReplacementValue before,
+                                        NodeReplacementValue after) {
         if (before.reason().equals(NodeReplacementPlanner.JOIN_OVERDUE) && after.phase() == NodeReplacementPhase.SWAPPING) {
-            out.add(new Announcement(OperatorWarningCode.NODE_REPLACEMENT_JOINED, subject, "Replacement " + after.replacement().id() + " joined and is caught up"));
+            out.add(new Announcement(OperatorWarningCode.NODE_REPLACEMENT_JOINED,
+                                     subject,
+                                     "Replacement " + after.replacement().id() + " joined and is caught up"));
         }
 
-        if (before.reason().startsWith(NodeReplacementPlanner.DRAIN_BLOCKED) && !after.reason().startsWith(NodeReplacementPlanner.DRAIN_BLOCKED)
-            && after.phase() != NodeReplacementPhase.FAILED_KEPT_BOTH) {
-            out.add(new Announcement(OperatorWarningCode.NODE_REPLACEMENT_DRAIN_UNBLOCKED, subject, "Draining " + subject + " is no longer blocked by the slice floor"));
+        if (before.reason().startsWith(NodeReplacementPlanner.DRAIN_BLOCKED) && !after.reason()
+                                                                                      .startsWith(NodeReplacementPlanner.DRAIN_BLOCKED) && after.phase() != NodeReplacementPhase.FAILED_KEPT_BOTH) {
+            out.add(new Announcement(OperatorWarningCode.NODE_REPLACEMENT_DRAIN_UNBLOCKED,
+                                     subject,
+                                     "Draining " + subject + " is no longer blocked by the slice floor"));
         }
 
         if (before.phase() == NodeReplacementPhase.FAILED_KEPT_BOTH && after.phase() != NodeReplacementPhase.FAILED_KEPT_BOTH) {
-            out.add(new Announcement(OperatorWarningCode.NODE_REPLACEMENT_SETTLED, subject, "The kept-both replacement of " + subject + " was settled: " + after.phase()));
+            out.add(new Announcement(OperatorWarningCode.NODE_REPLACEMENT_SETTLED,
+                                     subject,
+                                     "The kept-both replacement of " + subject + " was settled: " + after.phase()));
         }
     }
 
-    private static void openConditions(List<Announcement> out, String subject, NodeReplacementValue before, NodeReplacementValue after) {
-        if (after.reason().equals(NodeReplacementPlanner.JOIN_OVERDUE) && !before.reason().equals(NodeReplacementPlanner.JOIN_OVERDUE)) {
+    private static void openConditions(List<Announcement> out,
+                                       String subject,
+                                       NodeReplacementValue before,
+                                       NodeReplacementValue after) {
+        if (after.reason().equals(NodeReplacementPlanner.JOIN_OVERDUE) && !before.reason()
+                                                                                 .equals(NodeReplacementPlanner.JOIN_OVERDUE)) {
             out.add(new Announcement(OperatorWarningCode.NODE_REPLACEMENT_JOIN_OVERDUE,
                                      subject,
-                                     "Replacement " + after.replacement().id() + " of " + subject + " has not joined and caught up within half its join budget"));
+                                     "Replacement " + after.replacement().id()
+                                    + " of " + subject
+                                    + " has not joined and caught up within half its join budget"));
         }
 
-        if (after.reason().startsWith(NodeReplacementPlanner.DRAIN_BLOCKED) && !before.reason().startsWith(NodeReplacementPlanner.DRAIN_BLOCKED)) {
+        if (after.reason().startsWith(NodeReplacementPlanner.DRAIN_BLOCKED) && !before.reason()
+                                                                                      .startsWith(NodeReplacementPlanner.DRAIN_BLOCKED)) {
             out.add(new Announcement(OperatorWarningCode.NODE_REPLACEMENT_DRAIN_BLOCKED,
                                      subject,
-                                     "Draining " + subject + " is blocked: " + after.reason().substring(NodeReplacementPlanner.DRAIN_BLOCKED.length())));
+                                     "Draining " + subject
+                                    + " is blocked: " + after.reason()
+                                                             .substring(NodeReplacementPlanner.DRAIN_BLOCKED.length())));
         }
     }
 
-    private static void terminal(List<Announcement> out, String subject, NodeReplacementPhase prior, NodeReplacementValue after) {
+    private static void terminal(List<Announcement> out,
+                                 String subject,
+                                 NodeReplacementPhase prior,
+                                 NodeReplacementValue after) {
         switch (after.phase()) {
             case DONE -> out.add(new Announcement(OperatorWarningCode.NODE_REPLACEMENT_COMPLETED,
                                                   subject,
-                                                  "Replaced " + subject + " with " + after.replacement().id()
-                                                  + (after.reason().isEmpty() ? "" : " (" + after.reason() + ")")));
+                                                  "Replaced " + subject + " with " + after.replacement().id() + (after.reason().isEmpty()
+                                                                                                                 ? ""
+                                                                                                                 : " (" + after.reason() + ")")));
             case ROLLED_BACK -> out.add(new Announcement(OperatorWarningCode.NODE_REPLACEMENT_ROLLED_BACK,
                                                          subject,
                                                          "Replacement of " + subject + " by " + after.replacement().id() + " rolled back: " + after.reason()));

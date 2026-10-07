@@ -45,19 +45,14 @@ public interface NodeReplacementReconciler {
     interface Environment {
         /// This node is the active leader.
         boolean isLeader();
-
         /// Every committed record, original → record.
         Map<NodeId, NodeReplacementValue> records();
-
         /// Compare-and-set on the committed record: `true` only when it still equals `expected` and `next` was applied.
         Promise<Boolean> commit(NodeId original, NodeReplacementValue expected, NodeReplacementValue next);
-
         /// The current facts for this record.
         Observation observe(NodeId original, NodeReplacementValue record);
-
         /// Run `effect` for this record. Idempotent.
         Promise<EffectResult> execute(Effect effect, NodeId original, NodeReplacementValue record);
-
         /// A transition was committed. Operator events are derived here, once per commit.
         Unit announce(NodeId original, Option<NodeReplacementValue> before, NodeReplacementValue after);
     }
@@ -74,10 +69,11 @@ public interface NodeReplacementReconciler {
                                        .entrySet()
                                        .stream()
                                        .sorted(Map.Entry.comparingByKey(java.util.Comparator.comparing(NodeId::id)))
-                                       .map(entry -> Map.entry(entry.getKey(), entry.getValue()))
+                                       .map(entry -> Map.entry(entry.getKey(),
+                                                               entry.getValue()))
                                        .toList(),
                             0).timeout(TimeSpan.timeSpan(30).seconds())
-                              .onResultRun(() -> running.set(false));
+                           .onResultRun(() -> running.set(false));
             }
 
             private Promise<Unit> step(java.util.List<Map.Entry<NodeId, NodeReplacementValue>> live, int index) {
@@ -99,10 +95,13 @@ public interface NodeReplacementReconciler {
 
                 if (plan.effect() == Effect.NONE) {
                     return plan.next()
-                               .fold(Promise::unitPromise, next -> commit(original, record, next));
+                               .fold(Promise::unitPromise,
+                                     next -> commit(original, record, next));
                 }
 
-                return environment.execute(plan.effect(), original, record)
+                return environment.execute(plan.effect(),
+                                           original,
+                                           record)
                                   .flatMap(result -> settle(original, record, plan, result));
             }
 
@@ -111,8 +110,10 @@ public interface NodeReplacementReconciler {
                                          NodeReplacementPlanner.Plan plan,
                                          EffectResult result) {
                 return switch (result) {
-                    case EffectResult.Done _ -> plan.next().fold(Promise::unitPromise, next -> commit(original, record, next));
-                    case EffectResult.Failed _ -> plan.onFailure().fold(Promise::unitPromise, next -> commit(original, record, next));
+                    case EffectResult.Done _ -> plan.next().fold(Promise::unitPromise,
+                                                                 next -> commit(original, record, next));
+                    case EffectResult.Failed _ -> plan.onFailure().fold(Promise::unitPromise,
+                                                                        next -> commit(original, record, next));
                     case EffectResult.Deferred _ -> Promise.unitPromise();
                 };
             }
@@ -120,7 +121,9 @@ public interface NodeReplacementReconciler {
             private Promise<Unit> commit(NodeId original, NodeReplacementValue before, NodeReplacementValue next) {
                 return environment.commit(original, before, next)
                                   .map(accepted -> accepted
-                                                   ? environment.announce(original, Option.some(before), next)
+                                                   ? environment.announce(original,
+                                                                          Option.some(before),
+                                                                          next)
                                                    : Unit.unit());
             }
         }

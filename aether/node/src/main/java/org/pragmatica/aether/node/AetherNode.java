@@ -457,7 +457,6 @@ public interface AetherNode extends ManageableNode {
     ConsumerGroupCoordinator consumerGroupCoordinator();
     ConsumerGroupRegistry consumerGroupRegistry();
     StreamNamespacesService streamNamespacesService();
-
     /// #1543 E: begin, inspect and settle node replacements (the leader drives the phases).
     NodeReplacementService nodeReplacementService();
     Fn1<Result<NodeId>, TaskGroup> taskGroupOwnerResolver();
@@ -4849,32 +4848,35 @@ public interface AetherNode extends ManageableNode {
         leaderReconciler.setSurgeReplacements(nodeReplacements::surgeReplacements);
         // #1543 E: the replacement reconciler (leader-driven, resumes from the committed records) and its service.
         var replacementWiring = NodeReplacementWiring.wire(new NodeReplacementWiring.Inputs(config.self(),
-                                                                                           isLeaderSupplier,
-                                                                                           kvStore,
-                                                                                           commands -> clusterNode.apply(commands),
-                                                                                           nodeReplacements,
-                                                                                           membershipFsmRef::get,
-                                                                                           clusterNode::voterConfiguration,
-                                                                                           clusterNode::retirementSafeVoters,
-                                                                                           () -> readyCoreCandidates(stableCdmReadyNodesSupplier.get(),
-                                                                                                                     membershipFsmRef::get).stream()
-                                                                                                                    .filter(coreAdmission::isAllowed)
-                                                                                                                    .collect(Collectors.toUnmodifiableSet()),
-                                                                                           id -> clusterNode.topologyManager()
-                                                                                                            .get(id)
-                                                                                                            .flatMap(info -> Option.option(info.labels().get(NodeInfo.LABEL_VERSION)))
-                                                                                                            .or(""),
-                                                                                           clusterTopologyManager,
-                                                                                           id -> managementServerRef.get()
-                                                                                                                    .fold(() -> Promise.success(NodeReplacementWiring.DrainOutcome.blocked("management server not ready")),
-                                                                                                                          server -> server.admitReplacementDrain(id)
-                                                                                                                                          .<NodeReplacementWiring.DrainOutcome> map(_ -> NodeReplacementWiring.DrainOutcome.admitted())
-                                                                                                                                          .recover(cause -> NodeReplacementWiring.DrainOutcome.blocked(cause.message()))),
-                                                                                           () -> ProvisionContext.coreNodeNamePrefix(clusterNameSupplier.get()),
-                                                                                           id -> dhtNode.ring().nodes().contains(id),
-                                                                                           operatorWarningSink,
-                                                                                           System::currentTimeMillis,
-                                                                                           NodeReplacementPlanner.Timings.defaults()));
+                                                                                            isLeaderSupplier,
+                                                                                            kvStore,
+                                                                                            commands -> clusterNode.apply(commands),
+                                                                                            nodeReplacements,
+                                                                                            membershipFsmRef::get,
+                                                                                            clusterNode::voterConfiguration,
+                                                                                            clusterNode::retirementSafeVoters,
+                                                                                            () -> readyCoreCandidates(stableCdmReadyNodesSupplier.get(),
+                                                                                                                      membershipFsmRef::get).stream()
+                                                                                                                     .filter(coreAdmission::isAllowed)
+                                                                                                                     .collect(Collectors.toUnmodifiableSet()),
+                                                                                            id -> clusterNode.topologyManager()
+                                                                                                             .get(id)
+                                                                                                             .flatMap(info -> Option.option(info.labels()
+                                                                                                                                                .get(NodeInfo.LABEL_VERSION)))
+                                                                                                             .or(""),
+                                                                                            clusterTopologyManager,
+                                                                                            id -> managementServerRef.get()
+                                                                                                                     .fold(() -> Promise.success(NodeReplacementWiring.DrainOutcome.blocked("management server not ready")),
+                                                                                                                           server -> server.admitReplacementDrain(id)
+                                                                                                                                           .<NodeReplacementWiring.DrainOutcome> map(_ -> NodeReplacementWiring.DrainOutcome.admitted())
+                                                                                                                                           .recover(cause -> NodeReplacementWiring.DrainOutcome.blocked(cause.message()))),
+                                                                                            () -> ProvisionContext.coreNodeNamePrefix(clusterNameSupplier.get()),
+                                                                                            id -> dhtNode.ring()
+                                                                                                         .nodes()
+                                                                                                         .contains(id),
+                                                                                            operatorWarningSink,
+                                                                                            System::currentTimeMillis,
+                                                                                            NodeReplacementPlanner.Timings.defaults()));
 
         periodicTasks.defer(() -> SharedScheduler.scheduleAtFixedRate(() -> replacementWiring.reconciler()
                                                                                              .reconcile()
@@ -6714,7 +6716,7 @@ public interface AetherNode extends ManageableNode {
                                                                         leaderTerm,
                                                                         streamReplicationShutdown,
                                                                         resourceProviderSetup.spiProvider(),
-                                  replacementWiring.service());
+                                                                        replacementWiring.service());
                                               }
 
                                                   return node;

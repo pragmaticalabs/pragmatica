@@ -103,4 +103,16 @@ class NodeReplacementIndexTest {
         index.remove(new NodeReplacementKey(OLD));
         assertThat(index.voterSwaps()).isEmpty();
     }
+
+    /// #1543 E: a pairing being REVERTED after a failed canary swaps the seat BACK: the replacement leaves, the original
+    /// returns, and both stay protected until the swap-back is installed.
+    @Test
+    void reverting_reversesTheSwap_andProtectsBoth() {
+        var index = NodeReplacementIndex.nodeReplacementIndex();
+
+        index.put(new NodeReplacementKey(OLD), new NodeReplacementValue(NEW, "core", NodeReplacementPhase.REVERTING, 0L));
+
+        assertThat(index.voterSwaps()).containsExactly(Map.entry(NEW, OLD));
+        assertThat(index.retirementProtected()).contains(OLD, NEW);
+    }
 }

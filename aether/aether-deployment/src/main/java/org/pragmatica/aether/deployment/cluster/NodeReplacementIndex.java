@@ -16,6 +16,7 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.NodeReplacementKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeReplacementPhase;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeReplacementValue;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Unit;
 
 
@@ -95,15 +96,15 @@ public final class NodeReplacementIndex {
                                                                                  .replacement()));
 
         originalsWhere(current, NodeReplacementPhase.REVERTING::equals).forEach(original -> forward.put(current.get(original)
-                                                                                                                .replacement(),
-                                                                                                         original));
+                                                                                                               .replacement(),
+                                                                                                        original));
 
         return Map.copyOf(forward);
     }
 
     /// The committed record for `original`, if any.
-    public java.util.Optional<NodeReplacementValue> recordFor(NodeId original) {
-        return java.util.Optional.ofNullable(pairings.get(original));
+    public Option<NodeReplacementValue> recordFor(NodeId original) {
+        return Option.option(pairings.get(original));
     }
 
     /// Every committed pairing, original → record.

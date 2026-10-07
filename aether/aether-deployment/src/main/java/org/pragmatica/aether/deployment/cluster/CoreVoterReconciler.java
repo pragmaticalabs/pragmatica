@@ -148,7 +148,7 @@ public interface CoreVoterReconciler {
                                         NodeId original,
                                         NodeId replacement) {
         return current.members()
-                         .contains(original)
+                      .contains(original)
                && !current.members()
                           .contains(replacement)
                && ready.contains(replacement);

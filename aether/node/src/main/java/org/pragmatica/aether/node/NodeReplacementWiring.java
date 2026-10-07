@@ -98,17 +98,23 @@ public final class NodeReplacementWiring {
                           new Service(in, environment));
     }
 
-    private static boolean alive(String state) {
-        return state != null && !"Departing".equals(state) && !"Dead".equals(state);
+    private static boolean alive(Option<String> state) {
+        return state.filter(name -> !"Departing".equals(name) && !"Dead".equals(name))
+                    .isPresent();
     }
 
     private static Option<LeaderValue> leaderValue(Inputs in) {
         return in.kvStore()
                  .getTyped(LeaderKey.INSTANCE, LeaderValue.class)
-                 .filter(leader -> in.isLeader().getAsBoolean() && leader.leader().equals(in.self()));
+                 .filter(leader -> in.isLeader()
+                                     .getAsBoolean() && leader.leader()
+                                                              .equals(in.self()));
     }
 
-    private static Promise<Boolean> cas(Inputs in, NodeId original, Option<NodeReplacementValue> expected, NodeReplacementValue next) {
+    private static Promise<Boolean> cas(Inputs in,
+                                        NodeId original,
+                                        Option<NodeReplacementValue> expected,
+                                        NodeReplacementValue next) {
         return leaderValue(in).fold(() -> Promise.success(false),
                                     leader -> {
                                         var key = new NodeReplacementKey(original);
@@ -116,19 +122,32 @@ public final class NodeReplacementWiring {
                                         var mutation = new KVCommand.Mutation<AetherKey, AetherValue>(key,
                                                                                                       expected.map(value -> (AetherValue) value),
                                                                                                       Option.some(next));
-                                        var command = new KVCommand.LeaderTransaction<AetherKey, AetherValue>(key, id, leader, List.of(), List.of(mutation));
+                                        var command = new KVCommand.LeaderTransaction<AetherKey, AetherValue>(key,
+                                                                                                              id,
+                                                                                                              leader,
+                                                                                                              List.of(),
+                                                                                                              List.of(mutation));
 
-                                        return in.apply().apply(List.of(command))
+                                        return in.apply()
+                                                 .apply(List.of(command))
                                                  .map(results -> results.stream()
                                                                         .filter(KVCommand.TransactionResult.class::isInstance)
                                                                         .map(KVCommand.TransactionResult.class::cast)
-                                                                        .anyMatch(result -> result.transactionId().equals(id) && result.accepted()));
+                                                                        .anyMatch(result -> result.transactionId()
+                                                                                                  .equals(id) && result.accepted()));
                                     });
     }
 
-    private static Unit announce(Inputs in, NodeId original, Option<NodeReplacementValue> before, NodeReplacementValue after) {
-        NodeReplacementAnnouncements.of(original, before, after)
-                                    .forEach(a -> OperatorWarnings.raise(LOG, in.warnings(), a.code(), a.subject(), "{}", a.message()));
+    private static Unit announce(Inputs in,
+                                 NodeId original,
+                                 Option<NodeReplacementValue> before,
+                                 NodeReplacementValue after) {
+        NodeReplacementAnnouncements.of(original, before, after).forEach(a -> OperatorWarnings.raise(LOG,
+                                                                                                     in.warnings(),
+                                                                                                     a.code(),
+                                                                                                     a.subject(),
+                                                                                                     "{}",
+                                                                                                     a.message()));
 
         return Unit.unit();
     }
@@ -144,12 +163,14 @@ public final class NodeReplacementWiring {
 
         @Override
         public boolean isLeader() {
-            return in.isLeader().getAsBoolean();
+            return in.isLeader()
+                     .getAsBoolean();
         }
 
         @Override
         public Map<NodeId, NodeReplacementValue> records() {
-            return in.index().all();
+            return in.index()
+                     .all();
         }
 
         @Override
@@ -160,16 +181,21 @@ public final class NodeReplacementWiring {
         @Override
         public Observation observe(NodeId original, NodeReplacementValue record) {
             var states = Option.option(in.membership().get()).map(MembershipFsm::memberStates).or(Map.of());
-            var oldState = states.get(original);
-            var newState = states.get(record.replacement());
+            var oldState = Option.option(states.get(original));
+            var newState = Option.option(states.get(record.replacement()));
             var voters = in.installed().get().map(config -> Set.copyOf(config.members())).or(Set.of());
-            var settled = in.installed().get().flatMap(current -> in.settled().get().filter(current::equals)).isPresent();
+            var settled = in.installed()
+                            .get()
+                            .flatMap(current -> in.settled()
+                                                  .get()
+                                                  .filter(current::equals))
+                            .isPresent();
             var ready = in.readyAdmitted().get();
             var oldAlive = alive(oldState);
 
             return new Observation(in.clock().getAsLong(),
                                    oldAlive,
-                                   newState != null,
+                                   newState.isPresent(),
                                    alive(newState),
                                    ready.contains(record.replacement()),
                                    voters.contains(original),
@@ -179,7 +205,7 @@ public final class NodeReplacementWiring {
                                    in.version().apply(record.replacement()),
                                    drainState(original, oldAlive),
                                    drainBlocked.getOrDefault(original, ""),
-                                   oldState == null || "Dead".equals(oldState),
+                                   oldState.filter(name -> !"Dead".equals(name)).isEmpty(),
                                    !in.dhtHolds().test(original));
         }
 
@@ -205,43 +231,50 @@ public final class NodeReplacementWiring {
         }
 
         private Promise<EffectResult> provision(NodeId original, NodeReplacementValue record) {
-            var members = Option.option(in.membership().get()).map(fsm -> fsm.memberStates().keySet()).or(Set.of());
+            var members = Option.option(in.membership().get()).map(fsm -> fsm.memberStates()
+                                                                             .keySet()).or(Set.of());
 
             return in.ctm()
-                     .provisionReplacement(record.replacement(), Option.none(), Set.copyOf(members), NodeRole.CORE)
-                     .<EffectResult>map(disposition -> switch (disposition) {
-                         case ProvisionDisposition.Dispatched _ -> new EffectResult.Done();
-                         case ProvisionDisposition.Deferred deferred -> new EffectResult.Deferred("provisioning deferred: " + deferred.reason());
-                     })
+                     .provisionReplacement(record.replacement(),
+                                           Option.none(),
+                                           Set.copyOf(members),
+                                           NodeRole.CORE)
+                     .<EffectResult> map(disposition -> switch (disposition) {
+                case ProvisionDisposition.Dispatched _ -> new EffectResult.Done();
+                case ProvisionDisposition.Deferred deferred -> new EffectResult.Deferred("provisioning deferred: " + deferred.reason());
+            })
                      .recover(cause -> new EffectResult.Failed(cause.message()));
         }
 
         private Promise<EffectResult> terminate(NodeId node) {
             return in.ctm()
                      .drainNode(node, DrainReason.REPLACED)
-                     .<EffectResult>map(_ -> new EffectResult.Done())
+                     .<EffectResult> map(_ -> new EffectResult.Done())
                      .recover(cause -> new EffectResult.Deferred("terminate refused: " + cause.message()));
         }
 
         private Promise<EffectResult> drain(NodeId original) {
-            return in.drain().apply(original)
-                     .<EffectResult>map(outcome -> {
-                         if (outcome.accepted()) {
-                             drainBlocked.remove(original);
-                             drainRequested.add(original);
+            return in.drain()
+                     .apply(original)
+                     .<EffectResult> map(outcome -> {
+                                             if (outcome.accepted()) {
+                                             drainBlocked.remove(original);
+                                             drainRequested.add(original);
 
-                             return new EffectResult.Done();
-                         }
+                                             return new EffectResult.Done();
+                                         }
 
-                         drainBlocked.put(original, outcome.blockedBy());
+                                             drainBlocked.put(original,
+                                                              outcome.blockedBy());
 
-                         return new EffectResult.Deferred("drain blocked");
-                     })
+                                             return new EffectResult.Deferred("drain blocked");
+                                         })
                      .recover(cause -> {
-                         drainBlocked.put(original, cause.message());
+                                  drainBlocked.put(original,
+                                                   cause.message());
 
-                         return new EffectResult.Deferred("drain refused");
-                     });
+                                  return new EffectResult.Deferred("drain refused");
+                              });
         }
 
         @Override
@@ -267,7 +300,8 @@ public final class NodeReplacementWiring {
 
             var fsm = in.membership().get();
             var descriptor = Option.option(fsm).flatMap(f -> f.memberDescriptor(original));
-            var known = Option.option(fsm).map(f -> f.memberStates().containsKey(original)).or(false);
+            var known = Option.option(fsm).map(f -> f.memberStates()
+                                                     .containsKey(original)).or(false);
 
             if (!known) {
                 return new Refusal.UnknownNode(original).promise();
@@ -279,7 +313,10 @@ public final class NodeReplacementWiring {
                 return new Refusal.RoleNotSupported(original, role).promise();
             }
 
-            var live = in.index().all().entrySet().stream()
+            var live = in.index()
+                         .all()
+                         .entrySet()
+                         .stream()
                          .filter(entry -> !NodeReplacementReconciler.isTerminal(entry.getValue().phase()))
                          .findAny();
 
@@ -294,16 +331,16 @@ public final class NodeReplacementWiring {
                                                   NodeReplacementPhase.PROVISIONING,
                                                   now + in.timings().provisioningMs(),
                                                   descriptor.map(d -> d.source()).or(""),
-                                                  targetVersion == null ? "" : targetVersion,
+                                                  targetVersion,
                                                   NodeReplacementValue.MODE_CTM,
                                                   0,
                                                   "",
                                                   0L);
             var expected = in.index().recordFor(original);
 
-            return cas(in, original, Option.option(expected.orElse(null)), record).flatMap(accepted -> {
+            return cas(in, original, expected, record).flatMap(accepted -> {
                 if (!accepted) {
-                    return new Refusal.Conflict(original).<NodeReplacementValue>promise();
+                    return new Refusal.Conflict(original).<NodeReplacementValue> promise();
                 }
 
                 announce(in, original, Option.none(), record);
@@ -314,31 +351,37 @@ public final class NodeReplacementWiring {
 
         @Override
         public Option<NodeReplacementValue> status(NodeId original) {
-            return Option.option(in.index().recordFor(original).orElse(null));
+            return in.index()
+                     .recordFor(original);
         }
 
         @Override
         public Map<NodeId, NodeReplacementValue> all() {
-            return in.index().all();
+            return in.index()
+                     .all();
         }
 
         @Override
         public Promise<Unit> settle(NodeId original, Settlement settlement) {
             var current = in.index().recordFor(original);
 
-            if (current.isEmpty() || current.get().phase() != NodeReplacementPhase.FAILED_KEPT_BOTH) {
+            if (current.filter(found -> found.phase() == NodeReplacementPhase.FAILED_KEPT_BOTH).isEmpty()) {
                 return new Refusal.NothingToSettle(original).promise();
             }
 
-            var record = current.get();
+            var record = current.unwrap();
             var now = in.clock().getAsLong();
             var next = settlement == Settlement.KEEP_NEW
-                       ? record.advanced(NodeReplacementPhase.DRAINING_OLD, now + in.timings().drainingMs(), "")
-                       : record.advanced(NodeReplacementPhase.REVERTING, now + in.timings().swappingMs(), "settled: rolled back");
+                       ? record.advanced(NodeReplacementPhase.DRAINING_OLD,
+                                         now + in.timings().drainingMs(),
+                                         "")
+                       : record.advanced(NodeReplacementPhase.REVERTING,
+                                         now + in.timings().swappingMs(),
+                                         "settled: rolled back");
 
             return cas(in, original, Option.some(record), next).flatMap(accepted -> {
                 if (!accepted) {
-                    return new Refusal.Conflict(original).<Unit>promise();
+                    return new Refusal.Conflict(original).<Unit> promise();
                 }
 
                 announce(in, original, Option.some(record), next);
