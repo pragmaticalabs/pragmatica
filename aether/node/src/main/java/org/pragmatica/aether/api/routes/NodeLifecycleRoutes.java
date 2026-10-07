@@ -391,8 +391,17 @@ public final class NodeLifecycleRoutes implements RouteSource {
                                                              boolean drain,
                                                              boolean force) {
         var remaining = new HashSet<>(nodeSupplier.get().membershipFsm().countedMembers());
+        var tracked = nodeSupplier.get().membershipFsm().memberStates();
 
-        closeRefusalsOfDepartedTargets(floor);
+        closeRefusalsOfDepartedTargets(floor, tracked);
+        if (hasLeftMembership(tracked, node.id())) {
+            // A drain or shutdown of a member that has already left changes no availability: its instances are not
+            // capacity any more, so a "breach" read from the artifact entries it still carries is not caused by this
+            // request. The floor protects the cluster from a departure, and this node has already departed. No refusal
+            // is raised or recorded, so repeating the request cannot alternate refusal and recovery events (#1720).
+            return Result.success(org.pragmatica.lang.Unit.unit());
+        }
+
         remaining.removeAll(pendingDrainsSupplier.get());
         remaining.remove(node);
         var breaches = floor.violations().apply(node, remaining);
@@ -464,17 +473,31 @@ public final class NodeLifecycleRoutes implements RouteSource {
     }
 
     /// The transition itself: the membership FSM confirmed `node` DEAD on this node. A target refused by the slice floor
-    /// that has now left gets its recovery event here, without waiting for another operator request to reach the floor
-    /// check. Shares the admission monitor, so it cannot interleave with an admission of the same target.
+    /// that has now left gets its recovery event, without waiting for another operator request to reach the floor
+    /// check.
+    ///
+    /// Called from the FSM's `onTransition` listener, which the FSM runs UNDER the member's transition guard. Admission
+    /// holds the routes monitor and then calls into the FSM (`onDrainRequested`), which takes that same guard, so taking
+    /// the routes monitor here would be the opposite lock order: a deadlock whenever a member dies while an operator
+    /// drains it. So this method takes NO lock: it only hands the departure to a virtual thread, which waits for the
+    /// routes monitor with nothing else held. Ordering: the recovery is raised only when the refused set still holds the
+    /// target, and the set is only ever written under the monitor, so a recovery always follows its refusal and is raised
+    /// at most once (a departure applied before the refusal finds nothing, and the refusal is never recorded for a
+    /// departed target); it is not lost because the departure always runs after the edge, and any refusal that raced it
+    /// is recorded under the monitor before the departure task can take it.
     @SuppressWarnings("JBCT-RET-01")
-    public synchronized void onMemberDeparted(NodeId node) {
+    public void onMemberDeparted(NodeId node) {
+        Thread.ofVirtual().name("slice-floor-departure-" + node.id()).start(() -> closeRefusalOnDeparture(node));
+    }
+
+    @SuppressWarnings("JBCT-RET-01")
+    private synchronized void closeRefusalOnDeparture(NodeId node) {
         sliceFloor.onPresent(floor -> raiseFloorRecovery(floor, node, "drain", "the node left the membership"));
     }
 
     /// A refused target that has since left the membership will never be admitted, so its refusal would stay open in
     /// the event feed for good: close it with the recovery event, naming why, and forget the target.
-    private void closeRefusalsOfDepartedTargets(SliceFloor floor) {
-        var tracked = nodeSupplier.get().membershipFsm().memberStates();
+    private void closeRefusalsOfDepartedTargets(SliceFloor floor, Map<NodeId, String> tracked) {
         var departed = floorRefusedTargets.stream().filter(refused -> hasLeftMembership(tracked, refused)).toList();
 
         departed.forEach(refused -> raiseFloorRecovery(floor, refused, "drain", "the node left the membership"));

@@ -407,6 +407,102 @@ class NodeLifecycleRoutesSliceFloorTest {
                                                       OperatorWarningCode.SLICE_FLOOR_DRAIN_ADMITTED);
     }
 
+    /// F1b: a target that has already left (Dead) is not drained or shut down against the floor at all: the request
+    /// changes no availability, so no refusal is raised or recorded, and repeating it cannot alternate refusal and
+    /// recovery events. Four requests, no events.
+    @Test
+    void requestsAgainstATargetThatHasAlreadyLeft_raiseNoFloorEvents() {
+        var routes = routes();
+        host(slice("a", 3, 2), node(1), node(2), node(3));
+        pendingDrains.add(node(1));
+        fsm.onSwimDeparted(node(2), 1L);
+        assertThat(fsm.memberStates()).as("control: node-2 is Dead").containsEntry(node(2), "Dead");
+
+        for (int i = 0; i < 4; i++) {
+            assertThat(routes.shutdownNodeForTest(node(2).id()).await().isSuccess()).isTrue();
+        }
+
+        assertThat(settledWarnings()).isEmpty();
+    }
+
+    /// F1b with history: refused while alive, then it dies, then the operator keeps retrying. The departure closes the
+    /// refusal once; the four retries add nothing. Exactly refusal then recovery.
+    @Test
+    void refusedTargetThatDiesThenIsRetried_givesExactlyOneRefusalAndOneRecovery() {
+        var routes = routes();
+        host(slice("a", 3, 2), node(1), node(2), node(3));
+        pendingDrains.add(node(1));
+        breach(routes.shutdownNodeForTest(node(2).id()).await());
+        fsm.onSwimDeparted(node(2), 1L);
+        routes.onMemberDeparted(node(2));
+        awaitWarnings(2);
+
+        for (int i = 0; i < 4; i++) {
+            routes.shutdownNodeForTest(node(2).id()).await();
+        }
+
+        assertThat(settledWarnings()).extracting(OperatorWarning::code)
+                                     .containsExactly(OperatorWarningCode.SLICE_FLOOR_DRAIN_REFUSED,
+                                                      OperatorWarningCode.SLICE_FLOOR_DRAIN_ADMITTED);
+    }
+
+    /// F4 regression: lock order. Admission holds the routes monitor and calls into the FSM (`onDrainRequested`, which takes
+    /// the member's transition guard); the FSM runs its `onTransition` listener UNDER that guard, and AetherNode's listener
+    /// calls `routes.onMemberDeparted`. If that call took the routes monitor, a member dying while an operator forces a
+    /// drain of it would deadlock two threads. Driven deterministically with the REAL FSM and routes and latches: thread A
+    /// is inside the sink (monitor held) when thread B kills the member and fires the listener. Both must finish within the
+    /// bound, no thread may be deadlocked, and the refusal must be closed exactly once.
+    @Test
+    @org.junit.jupiter.api.Timeout(60)
+    void memberDyingWhileItsForcedDrainIsAdmitted_doesNotDeadlock_andTheRefusalIsClosedOnce() throws Exception {
+        var inSink = new java.util.concurrent.CountDownLatch(1);
+        var proceed = new java.util.concurrent.CountDownLatch(1);
+        var routes = routes(target -> {
+            inSink.countDown();
+            await(proceed);
+            fsm.onDrainRequested(target);
+            pendingDrains.add(target);
+        });
+
+        fsm.onTransition(record -> {
+            if ("Dead".equals(record.toState())) {
+                routes.onMemberDeparted(record.nodeId());
+            }
+        });
+        host(slice("a", 3, 2), node(1), node(2), node(3));
+        pendingDrains.add(node(1));
+        breach(routes.drainNodeForTest(node(2).id()).await());
+
+        var admission = new Thread(() -> routes.drainNodeForTest(node(2).id(), true).await(), "admission");
+        var death = new Thread(() -> fsm.onSwimDeparted(node(2), 2L), "death");
+
+        admission.start();
+        assertThat(inSink.await(10, java.util.concurrent.TimeUnit.SECONDS)).as("admission reached the sink holding the monitor").isTrue();
+        death.start();
+        death.join(10_000);
+        proceed.countDown();
+        admission.join(10_000);
+
+        var deadlocked = java.lang.management.ManagementFactory.getThreadMXBean().findDeadlockedThreads();
+
+        assertThat(deadlocked).as("no deadlocked threads").isNull();
+        assertThat(death.isAlive()).as("the dying thread finished (listener took no routes lock)").isFalse();
+        assertThat(admission.isAlive()).as("the admission finished").isFalse();
+        assertThat(awaitWarnings(3)).extracting(OperatorWarning::code)
+                                    .containsExactlyInAnyOrder(OperatorWarningCode.SLICE_FLOOR_DRAIN_REFUSED,
+                                                               OperatorWarningCode.SLICE_FLOOR_BREACHED_BY_FORCE,
+                                                               OperatorWarningCode.SLICE_FLOOR_DRAIN_ADMITTED);
+        assertThat(settledWarnings()).as("the recovery is raised exactly once, not lost and not duplicated").hasSize(3);
+    }
+
+    private static void await(java.util.concurrent.CountDownLatch latch) {
+        try {
+            latch.await(30, java.util.concurrent.TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
     @Test
     void refusalMessage_namesTheCliFlag_asWellAsTheQueryParameter() {
         host(slice("a", 3, 2), node(1), node(2), node(3));
