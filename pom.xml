@@ -70,6 +70,11 @@
             CLI that has not been built.
         -->
         <module>cli-docs-gate</module>
+        <!--
+            Also last: it builds the projects `jbct init` and `jbct add-*` generate, so everything they resolve must be installed
+            first, which its test-scoped dependencies guarantee in any build order (#1998).
+        -->
+        <module>generated-project-gate</module>
     </modules>
 
     <properties>

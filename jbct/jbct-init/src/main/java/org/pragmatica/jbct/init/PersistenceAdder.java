@@ -13,10 +13,14 @@ import org.pragmatica.lang.utils.Causes;
 
 /// Adds PostgreSQL persistence support to an existing Aether slice project.
 /// Creates schema directory, migration template, persistence interface,
-/// and updates POM with pg-codegen annotation processor and resource-api dependency.
+/// and updates POM with the pg-codegen annotation-processor path and the pg-codegen `provided` dependency.
 public final class PersistenceAdder {
-    private static final Pattern PG_CODEGEN_PRESENT = Pattern.compile("<artifactId>pg-codegen</artifactId>");
-    private static final Pattern RESOURCE_API_PRESENT = Pattern.compile("<artifactId>resource-api</artifactId>");
+    /// The two places `pg-codegen` goes are different elements and are checked separately (#1998): the annotation-processor `<path>`
+    /// runs the generator, the `<dependency>` puts the annotations the generated code imports (`@Query`) on the compile classpath.
+    private static final Pattern PG_CODEGEN_PATH_PRESENT = Pattern.compile("<path>\\s*<groupId>[^<]*</groupId>\\s*<artifactId>pg-codegen</artifactId>");
+
+    private static final Pattern PG_CODEGEN_DEPENDENCY_PRESENT = Pattern.compile("<dependency>\\s*<groupId>[^<]*</groupId>\\s*<artifactId>pg-codegen</artifactId>");
+
     private static final Pattern DATABASE_SECTION_PRESENT = Pattern.compile("(?m)^\\s*\\[database(\\]|\\.)");
 
     private final Path projectDir;
@@ -124,7 +128,7 @@ public final class PersistenceAdder {
             var content = Files.readString(pomPath);
             var updated = addAnnotationProcessor(content);
 
-            updated = addResourceApiDependency(updated);
+            updated = addPgCodegenDependency(updated);
             if (!updated.equals(content)) {
                 Files.writeString(pomPath, updated);
             }
@@ -177,7 +181,7 @@ public final class PersistenceAdder {
     }
 
     private String addAnnotationProcessor(String pomContent) {
-        if (PG_CODEGEN_PRESENT.matcher(pomContent).find()) {
+        if (PG_CODEGEN_PATH_PRESENT.matcher(pomContent).find()) {
             return pomContent;
         }
 
@@ -192,18 +196,26 @@ public final class PersistenceAdder {
         return pomContent.replace(marker, insertion + marker);
     }
 
-    private String addResourceApiDependency(String pomContent) {
-        if (RESOURCE_API_PRESENT.matcher(pomContent).find()) {
+    /// Adds `pg-codegen` as a `provided` dependency. The generated persistence interface imports `@Query` from it, so without the
+    /// dependency the project does not compile (#1998). It used to be skipped whenever `resource-api` was present, which a slice
+    /// project always has.
+    private String addPgCodegenDependency(String pomContent) {
+        if (PG_CODEGEN_DEPENDENCY_PRESENT.matcher(pomContent).find()) {
             return pomContent;
         }
 
-        var marker = "<!-- Testing -->";
+        var testing = "<!-- Testing -->";
 
-        if (!pomContent.contains(marker)) {
-            return pomContent;
+        if (pomContent.contains(testing)) {
+            return pomContent.replace(testing, PG_CODEGEN_DEPENDENCY_FRAGMENT + testing);
         }
 
-        return pomContent.replace(marker, RESOURCE_API_DEPENDENCY_FRAGMENT + marker);
+        var end = "</dependencies>";
+        var at = pomContent.indexOf(end);
+
+        return at < 0
+               ? pomContent
+               : pomContent.substring(0, at) + PG_CODEGEN_DEPENDENCY_FRAGMENT + pomContent.substring(at);
     }
 
     private String substituteVariables(String template) {
@@ -219,7 +231,7 @@ public final class PersistenceAdder {
                                     </path>
     """;
 
-    private static final String RESOURCE_API_DEPENDENCY_FRAGMENT = """
+    private static final String PG_CODEGEN_DEPENDENCY_FRAGMENT = """
                 <!-- PostgreSQL Persistence (provided by Aether runtime) -->
                 <dependency>
                     <groupId>org.pragmatica-lite.aether</groupId>
@@ -231,6 +243,8 @@ public final class PersistenceAdder {
                 """;
 
     // File templates
+    // The examples live in the doc comment, not in the body: the formatter flushes body line comments to column 0 and drops their blank
+    // lines, so a body of commented examples is rewritten by `format-check` (#1998). Two blank lines follow the imports for the same reason.
     private static final String PERSISTENCE_INTERFACE_TEMPLATE = """
         package {{persistencePackage}};
 
@@ -239,24 +253,27 @@ public final class PersistenceAdder {
         import org.pragmatica.lang.Option;
         import org.pragmatica.lang.Promise;
 
+
         /// Sample persistence interface.
-        /// Annotate with @Query for explicit SQL or use method-name conventions.
+        ///
+        /// Annotate a method with `@Query` for explicit SQL, or use method-name conventions. Examples (uncomment and adapt):
+        ///
+        /// ```
+        /// @Query("SELECT id, name, email FROM users WHERE id = :id")
+        /// Promise<Option<UserRow>> findById(long id);
+        ///
+        /// Promise<Option<UserRow>> findByEmail(String email);
+        ///
+        /// Promise<UserRow> insert(CreateUserRequest request);
+        /// ```
         ///
         /// Inject into your slice factory:
-        ///   static MySlice mySlice(@PgSql SamplePersistence persistence) { ... }
+        ///
+        /// ```
+        /// static MySlice mySlice(@PgSql SamplePersistence persistence) { ... }
+        /// ```
         @PgSql
-        public interface SamplePersistence {
-
-            // Example: explicit query
-            // @Query("SELECT id, name, email FROM users WHERE id = :id")
-            // Promise<Option<UserRow>> findById(long id);
-
-            // Example: convention-based (auto-generated from method name)
-            // Promise<Option<UserRow>> findByEmail(String email);
-
-            // Example: insert
-            // Promise<UserRow> insert(CreateUserRequest request);
-        }
+        public interface SamplePersistence {}
         """;
 
     private static final String MIGRATION_TEMPLATE = """
