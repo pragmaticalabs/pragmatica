@@ -52,7 +52,7 @@ scenario() {
           esac
       }
       _run_with_timeout() { shift; "$@"; }   # `timeout` cannot run the stub docker function
-      remote_exec() { case "$1" in *"compose -f docker-compose-b.yml down"*) echo "recreate" >> "$EV" ;; esac; return 1; }
+      remote_exec() { case "$1" in *"compose -f docker-compose-b.yml up -d"*) echo "recreate" >> "$EV" ;; esac; return 1; }
       $body ) > "${d}/out" 2>&1
 }
 caps() { ls -d "${WORK}/$1/failure-logs/02-chaos/$2"/* 2>/dev/null; }   # scenario test-tag -> capture dirs

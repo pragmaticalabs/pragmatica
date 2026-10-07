@@ -46,7 +46,6 @@ ALLOW=(
   'aether/cli/src/test/java/org/pragmatica/aether/cli/cluster/UserDataTemplatePeersTest.java|systemctl start|asserts the cloud-init first start above'
   'aether/tests/cloud/deploy-cloud.sh|systemctl start docker|`systemctl start docker` on a fresh VM, not an aether node'
   'integrations/dht/src/test/java/org/pragmatica/dht/|cluster[.]restart[(]|in-process DHT unit cluster restart (no NodeId lifecycle, no aether runtime)'
-  'aether/tests/integration/lib/cluster.sh|down -v && docker compose|#1543 part A2 / #1968: restart_all_nodes compose down/up is a whole-cluster same-id cold start until it restarts onto fresh ids with KV restore'
   'aether/docker/scaling-test/k6/chaos-controller.sh|COMPOSE (stop|start)|#1968: the soak compose has no docker.sock/auto-heal wiring, so its stop/start chaos stays until that compose can heal under fresh ids'
   'aether/forge/forge-tests/src/test/java/org/pragmatica/aether/forge/StreamCrashDurabilityTest.java|stop[(][)] then .*start[(][)] in restartCluster|owner question: data durability across a whole-cluster restart onto fresh nodes (#1968)'
   'aether/forge/forge-tests/src/test/java/org/pragmatica/aether/forge/MultiPartitionCrashDurabilityTest.java|stop[(][)] then .*start[(][)] in restartCluster|owner question: data durability across a whole-cluster restart onto fresh nodes (#1968)'

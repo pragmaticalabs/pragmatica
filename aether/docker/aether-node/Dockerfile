@@ -11,8 +11,9 @@ ARG VERSION=dev
 LABEL org.opencontainers.image.version="${VERSION}"
 LABEL org.opencontainers.image.source="https://github.com/pragmaticalabs/pragmatica"
 
-# Install iptables for network partition testing (E2E tests)
-RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends iptables wget && rm -rf /var/lib/apt/lists/*
+# Install iptables for network partition testing (E2E tests), and git: the `[backup]` repository (#1532/#1533) is a git
+# repository driven through the git CLI, so a node image without it cannot back up or restore (#1968).
+RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends iptables wget git && rm -rf /var/lib/apt/lists/*
 
 # Copy Docker CLI binary for scaling operations (used with mounted Docker socket)
 COPY --from=docker-cli /usr/local/bin/docker /usr/local/bin/docker
