@@ -29,6 +29,7 @@ import org.pragmatica.aether.slice.blueprint.BlueprintId;
 import org.pragmatica.aether.slice.blueprint.BlueprintParser;
 import org.pragmatica.aether.slice.blueprint.ExpandedBlueprint;
 import org.pragmatica.aether.slice.blueprint.MigrationEntry;
+import org.pragmatica.aether.slice.blueprint.ExpanderError;
 import org.pragmatica.aether.slice.blueprint.PubSubValidator;
 import org.pragmatica.aether.slice.blueprint.RoutePrefixCollisionValidator;
 import org.pragmatica.aether.slice.blueprint.ResolvedSlice;
@@ -801,35 +802,42 @@ class BlueprintServiceInstance implements BlueprintService {
     }
 
     private Promise<Preflighted> validateSliceJars(ExpandedBlueprint expanded, List<SliceJar> sliceJars) {
-        return loadAllSliceJars(otherBlueprintsSlices(expanded)).flatMap(others -> validateSliceJars(expanded,
-                                                                                                     sliceJars,
-                                                                                                     topologiesOf(others)));
+        return storedBlueprintSlices(expanded).flatMap(stored -> validateSliceJars(expanded, sliceJars, stored));
     }
 
-    /// The slices of every OTHER stored blueprint, once each: a route collision between the blueprint being published and
-    /// a blueprint stored earlier is only visible when both slice sets are read (#1206). The blueprint's own previous
-    /// version is excluded (a republish replaces it), and a slice that appears in several blueprints is read once.
-    private List<ResolvedSlice> otherBlueprintsSlices(ExpandedBlueprint expanded) {
-        var seen = new java.util.HashSet<String>();
+    /// The slices of every OTHER stored blueprint, per blueprint: a route collision between the blueprint being published and
+    /// a blueprint stored earlier is only visible when both slice sets are read (#1206), and the refusal names the stored
+    /// blueprint. The blueprint's own previous version is excluded (a republish replaces it).
+    private Promise<List<RoutePrefixCollisionValidator.StoredSlices>> storedBlueprintSlices(ExpandedBlueprint expanded) {
+        return Promise.allOf(list().stream()
+                                 .filter(other -> !other.id()
+                                                        .equals(expanded.id()))
+                                 .map(other -> loadAllSliceJars(other.loadOrder()).map(jars -> RoutePrefixCollisionValidator.StoredSlices.storedSlices(other.id()
+                                                                                                                                                            .asString(),
+                                                                                                                                                       topologiesOf(jars))))
+                                 .toList()).map(results -> results.stream()
+                                                                  .flatMap(result -> result.option()
+                                                                                           .stream())
+                                                                  .toList());
+    }
 
-        return list().stream()
-                   .filter(other -> !other.id()
-                                          .equals(expanded.id()))
-                   .flatMap(other -> other.loadOrder()
-                                          .stream())
-                   .filter(slice -> seen.add(slice.artifact().asString()))
-                   .toList();
+    /// #1206: a collision among the blueprint's own slices is a malformed request (400); one with an already-stored blueprint is a
+    /// conflict with current state (409).
+    private static Cause routeRefusal(Cause cause) {
+        return cause instanceof ExpanderError.RoutePrefixConflictsWithStored
+               ? BlueprintConflict.FACTORY.apply(cause)
+               : BlueprintRejected.FACTORY.apply(cause);
     }
 
     private Promise<Preflighted> validateSliceJars(ExpandedBlueprint expanded,
                                                    List<SliceJar> sliceJars,
-                                                   List<SliceTopology> otherTopologies) {
+                                                   List<RoutePrefixCollisionValidator.StoredSlices> stored) {
         var topologies = topologiesOf(sliceJars);
 
         noteConfigSectionPreflightSkipIfBlind(topologies);
 
         return PubSubValidator.validate(topologies)
-                              .flatMap(_ -> RoutePrefixCollisionValidator.validate(topologies, otherTopologies).mapError(BlueprintRejected.FACTORY))
+                              .flatMap(_ -> RoutePrefixCollisionValidator.validate(topologies, stored).mapError(BlueprintServiceInstance::routeRefusal))
                               .flatMap(_ -> ConfigSectionPreflightValidator.validate(sliceJars, nodeComposite))
                               .flatMap(_ -> replicationContext())
                               .flatMap(replication -> ReplicationPreflight.validate(sliceJars,

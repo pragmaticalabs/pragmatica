@@ -37,44 +37,91 @@ import static org.pragmatica.lang.Result.unitResult;
 /// blueprints (published before this check, or invisible at their admission) does not block an unrelated publish.
 @SuppressWarnings("JBCT-UTIL-02")
 public sealed interface RoutePrefixCollisionValidator {
-    static Result<Unit> validate(List<SliceTopology> admitted, List<SliceTopology> existing) {
-        var admittedBases = admitted.stream().map(RoutePrefixCollisionValidator::baseOf).toList();
-        var claims = new TreeMap<String, TreeMap<String, String>>();
-
-        Stream.concat(admitted.stream(), existing.stream()).forEach(topology -> claimRoutes(claims, topology));
-        var collisions = new ArrayList<ExpanderError.RouteCollision>();
-
-        claims.forEach((key, byBase) -> collisionOf(key, byBase, admittedBases).onPresent(collisions::add));
-
-        return collisions.isEmpty()
-               ? unitResult()
-               : ExpanderError.RoutePrefixCollisions.routePrefixCollisions(collisions).result();
+    /// The slices of one ALREADY-STORED blueprint.
+    record StoredSlices(String blueprint, List<SliceTopology> topologies) {
+        public static StoredSlices storedSlices(String blueprint, List<SliceTopology> topologies) {
+            return new StoredSlices(blueprint, List.copyOf(topologies));
+        }
     }
 
-    private static void claimRoutes(Map<String, TreeMap<String, String>> claims, SliceTopology topology) {
+    /// One slice claiming a route: its coordinate, and the stored blueprint it belongs to (empty for the blueprint being
+    /// published).
+    record Claimant(String coordinate, String storedBlueprint) {
+        boolean isStored() {
+            return ! storedBlueprint.isEmpty();
+        }
+    }
+
+    /// A collision between two slices of the blueprint being published is a malformed request ([ExpanderError.RoutePrefixCollisions]);
+    /// one with a slice of an already-stored blueprint is a conflict with current state
+    /// ([ExpanderError.RoutePrefixConflictsWithStored]), which names that blueprint and slice and takes precedence.
+    static Result<Unit> validate(List<SliceTopology> admitted, List<StoredSlices> stored) {
+        var admittedBases = admitted.stream().map(RoutePrefixCollisionValidator::baseOf).toList();
+        var claims = new TreeMap<String, TreeMap<String, Claimant>>();
+
+        admitted.forEach(topology -> claimRoutes(claims, topology, ""));
+        stored.forEach(slices -> slices.topologies()
+                                       .forEach(topology -> claimRoutes(claims,
+                                                                        topology,
+                                                                        slices.blueprint())));
+        var internal = new ArrayList<ExpanderError.RouteCollision>();
+        var conflicts = new ArrayList<ExpanderError.RouteCollision>();
+
+        claims.forEach((key, byBase) -> classify(key, byBase, admittedBases, internal, conflicts));
+        if (!conflicts.isEmpty()) {
+            return ExpanderError.RoutePrefixConflictsWithStored.routePrefixConflictsWithStored(conflicts).result();
+        }
+
+        return internal.isEmpty()
+               ? unitResult()
+               : ExpanderError.RoutePrefixCollisions.routePrefixCollisions(internal).result();
+    }
+
+    private static void claimRoutes(Map<String, TreeMap<String, Claimant>> claims,
+                                    SliceTopology topology,
+                                    String storedBlueprint) {
         var base = baseOf(topology);
 
         topology.routes()
                 .forEach(route -> claims.computeIfAbsent(keyOf(route),
                                                          _ -> new TreeMap<>())
                                         .putIfAbsent(base,
-                                                     topology.artifact()));
+                                                     new Claimant(topology.artifact(),
+                                                                  storedBlueprint)));
     }
 
-    private static Option<ExpanderError.RouteCollision> collisionOf(String key,
-                                                                    TreeMap<String, String> byBase,
-                                                                    List<String> admittedBases) {
-        if (byBase.size() < 2 || byBase.keySet().stream().noneMatch(admittedBases::contains)) {
-            return Option.none();
+    private static void classify(String key,
+                                 TreeMap<String, Claimant> byBase,
+                                 List<String> admittedBases,
+                                 List<ExpanderError.RouteCollision> internal,
+                                 List<ExpanderError.RouteCollision> conflicts) {
+        var ours = byBase.entrySet()
+                         .stream()
+                         .filter(entry -> !entry.getValue()
+                                                .isStored() && admittedBases.contains(entry.getKey()))
+                         .map(Map.Entry::getValue)
+                         .toList();
+        var theirs = byBase.values().stream().filter(Claimant::isStored).toList();
+        var separator = key.indexOf(' ');
+        var method = key.substring(0, separator);
+        var path = key.substring(separator + 1);
+
+        if (ours.isEmpty() || byBase.size() < 2) {
+            return;
         }
 
-        var separator = key.indexOf(' ');
-        var coordinates = List.copyOf(byBase.values());
-
-        return Option.some(ExpanderError.RouteCollision.routeCollision(key.substring(0, separator),
-                                                                       key.substring(separator + 1),
-                                                                       coordinates.get(0),
-                                                                       coordinates.get(1)));
+        if (!theirs.isEmpty()) {
+            conflicts.add(ExpanderError.RouteCollision.conflictWithStored(method,
+                                                                          path,
+                                                                          ours.getFirst().coordinate(),
+                                                                          theirs.getFirst().coordinate(),
+                                                                          theirs.getFirst().storedBlueprint()));
+        } else if (ours.size() > 1) {
+            internal.add(ExpanderError.RouteCollision.routeCollision(method,
+                                                                     path,
+                                                                     ours.get(0).coordinate(),
+                                                                     ours.get(1).coordinate()));
+        }
     }
 
     /// `METHOD /normalized/path`.

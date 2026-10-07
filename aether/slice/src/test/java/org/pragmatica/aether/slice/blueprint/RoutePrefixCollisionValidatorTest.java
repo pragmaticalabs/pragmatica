@@ -31,8 +31,15 @@ class RoutePrefixCollisionValidatorTest {
                                  List.of());
     }
 
-    private static ExpanderError.RoutePrefixCollisions refusal(List<SliceTopology> admitted, List<SliceTopology> existing) {
-        var result = RoutePrefixCollisionValidator.validate(admitted, existing);
+    private static List<RoutePrefixCollisionValidator.StoredSlices> stored(SliceTopology... slices) {
+        return java.util.stream.Stream.of(slices)
+                                      .map(slice -> RoutePrefixCollisionValidator.StoredSlices.storedSlices("stored:" + slice.sliceName() + ":1.0.0",
+                                                                                                           List.of(slice)))
+                                      .toList();
+    }
+
+    private static ExpanderError.RoutePrefixCollisions refusal(List<SliceTopology> admitted, List<SliceTopology> unused) {
+        var result = RoutePrefixCollisionValidator.validate(admitted, List.of());
 
         assertThat(result.isFailure()).as("expected a refusal").isTrue();
 
@@ -65,13 +72,16 @@ class RoutePrefixCollisionValidatorTest {
 
     @Test
     void collisionWithAnAlreadyStoredBlueprint_isRefused() {
-        var refused = refusal(List.of(slice("org.b:two:1.0.0", "POST", "/api/x")),
-                              List.of(slice("org.a:one:1.0.0", "POST", "/api/x")));
+        var result = RoutePrefixCollisionValidator.validate(List.of(slice("org.b:two:1.0.0", "POST", "/api/x")),
+                                                            stored(slice("org.a:one:1.0.0", "POST", "/api/x")));
+        var refused = (ExpanderError.RoutePrefixConflictsWithStored) result.fold(cause -> cause, _ -> null);
 
-        assertThat(refused.collisions()).singleElement().satisfies(collision -> {
-            assertThat(collision.first()).isEqualTo("org.a:one:1.0.0");
-            assertThat(collision.second()).isEqualTo("org.b:two:1.0.0");
+        assertThat(refused.conflicts()).singleElement().satisfies(conflict -> {
+            assertThat(conflict.first()).as("the slice of the blueprint being published").isEqualTo("org.b:two:1.0.0");
+            assertThat(conflict.second()).as("the stored slice").isEqualTo("org.a:one:1.0.0");
+            assertThat(conflict.storedBlueprint()).isEqualTo("stored:one:1.0.0");
         });
+        assertThat(refused.message()).contains("stored blueprint stored:one:1.0.0", "org.a:one:1.0.0", "POST /api/x");
     }
 
     /// The control: overlapping but NOT identical routes are admitted, so the longest prefix keeps winning for the paths it
@@ -94,7 +104,7 @@ class RoutePrefixCollisionValidatorTest {
     @Test
     void twoVersionsOfOneArtifact_doNotCollide() {
         var result = RoutePrefixCollisionValidator.validate(List.of(slice("org.a:one:2.0.0", "GET", "/api/x")),
-                                                            List.of(slice("org.a:one:1.0.0", "GET", "/api/x")));
+                                                            stored(slice("org.a:one:1.0.0", "GET", "/api/x")));
 
         assertThat(result.isSuccess()).isTrue();
     }
@@ -103,8 +113,8 @@ class RoutePrefixCollisionValidatorTest {
     @Test
     void collisionBetweenTwoStoredBlueprints_doesNotBlockAnUnrelatedPublish() {
         var result = RoutePrefixCollisionValidator.validate(List.of(slice("org.c:three:1.0.0", "GET", "/api/other")),
-                                                            List.of(slice("org.a:one:1.0.0", "GET", "/api/x"),
-                                                                    slice("org.b:two:1.0.0", "GET", "/api/x")));
+                                                            stored(slice("org.a:one:1.0.0", "GET", "/api/x"),
+                                                                           slice("org.b:two:1.0.0", "GET", "/api/x")));
 
         assertThat(result.isSuccess()).isTrue();
     }

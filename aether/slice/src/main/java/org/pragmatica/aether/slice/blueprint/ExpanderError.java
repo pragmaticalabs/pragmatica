@@ -51,14 +51,49 @@ public sealed interface ExpanderError extends Cause {
         }
     }
 
+    /// #1206: the blueprint being published declares a route that an ALREADY-STORED blueprint's slice declares too. The request is
+    /// well-formed; it conflicts with the current state of the cluster, so the caller sees a conflict (409), naming the stored
+    /// blueprint and its slice.
+    record RoutePrefixConflictsWithStored(List<RouteCollision> conflicts) implements ExpanderError {
+        public static RoutePrefixConflictsWithStored routePrefixConflictsWithStored(List<RouteCollision> conflicts) {
+            return new RoutePrefixConflictsWithStored(List.copyOf(conflicts));
+        }
+
+        @Override
+        public String message() {
+            return "HTTP route conflicts with a stored blueprint: " + conflicts.stream()
+                                                                               .map(RouteCollision::describe)
+                                                                               .collect(java.util.stream.Collectors.joining("; "));
+        }
+    }
+
     /// One colliding route: `method` and the `path` template (path parameters normalized) declared by BOTH `first` and
     /// `second`, which are the lexically ordered artifact coordinates.
-    record RouteCollision(String method, String path, String first, String second) {
+    record RouteCollision(String method, String path, String first, String second, String storedBlueprint) {
         public static RouteCollision routeCollision(String method, String path, String first, String second) {
-            return new RouteCollision(method, path, first, second);
+            return new RouteCollision(method, path, first, second, "");
+        }
+
+        /// `first` is the slice of the blueprint being published, `second` the slice of the ALREADY-STORED blueprint
+        /// `storedBlueprint`.
+        public static RouteCollision conflictWithStored(String method,
+                                                        String path,
+                                                        String first,
+                                                        String second,
+                                                        String storedBlueprint) {
+            return new RouteCollision(method, path, first, second, storedBlueprint);
         }
 
         public String describe() {
+            if (!storedBlueprint.isEmpty()) {
+                return method
+                     + " " + path
+                     + " is declared by slice " + first
+                     + " of this blueprint and by slice " + second
+                     + " of the stored blueprint " + storedBlueprint
+                     + " (one of them would activate, report healthy and serve nothing)";
+            }
+
             return method
                  + " " + path
                  + " is declared by both " + first

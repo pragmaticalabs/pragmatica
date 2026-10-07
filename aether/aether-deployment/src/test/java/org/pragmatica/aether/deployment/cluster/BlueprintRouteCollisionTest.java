@@ -104,12 +104,23 @@ class BlueprintRouteCollisionTest {
                                .await();
     }
 
+    private static ExpanderError.RoutePrefixConflictsWithStored conflictOf(Result<PublishedBlueprint> result) {
+        assertThat(result.isFailure()).as("the publish must be refused").isTrue();
+        var cause = result.fold(failure -> failure, _ -> null);
+
+        assertThat(cause).isInstanceOf(BlueprintConflict.class);
+        assertThat(((HttpStatusAware) cause).httpStatus()).as("a conflict with a stored blueprint is a 409").isEqualTo(HttpStatus.CONFLICT);
+
+        return (ExpanderError.RoutePrefixConflictsWithStored) ((BlueprintConflict) cause).origin();
+    }
+
     private static ExpanderError.RoutePrefixCollisions collisionsOf(Result<PublishedBlueprint> result) {
         assertThat(result.isFailure()).as("the publish must be refused").isTrue();
         var cause = result.fold(failure -> failure, _ -> null);
 
         assertThat(cause).isInstanceOf(BlueprintRejected.class);
-        assertThat(((HttpStatusAware) cause).httpStatus()).isEqualTo(HttpStatus.BAD_REQUEST);
+        assertThat(((HttpStatusAware) cause).httpStatus()).as("a collision inside one blueprint is a malformed request: 400")
+                                                          .isEqualTo(HttpStatus.BAD_REQUEST);
 
         return (ExpanderError.RoutePrefixCollisions) ((BlueprintRejected) cause).origin();
     }
@@ -138,12 +149,13 @@ class BlueprintRouteCollisionTest {
         assertThat(publish("org.example:first:1.0.0", "org.example:alpha:1.0.0").isSuccess()).as("the first blueprint is admitted").isTrue();
         var batchesAfterFirst = cluster.batches.size();
 
-        var refused = collisionsOf(publish("org.example:second:1.0.0", "org.example:beta:1.0.0"));
+        var refused = conflictOf(publish("org.example:second:1.0.0", "org.example:beta:1.0.0"));
 
-        assertThat(refused.collisions()).singleElement().satisfies(collision -> {
-            assertThat(collision.path()).isEqualTo("/api/echo/health");
-            assertThat(collision.first()).isEqualTo("org.example:alpha:1.0.0");
-            assertThat(collision.second()).isEqualTo("org.example:beta:1.0.0");
+        assertThat(refused.conflicts()).singleElement().satisfies(conflict -> {
+            assertThat(conflict.path()).isEqualTo("/api/echo/health");
+            assertThat(conflict.first()).as("this blueprint's slice").isEqualTo("org.example:beta:1.0.0");
+            assertThat(conflict.second()).as("the stored slice").isEqualTo("org.example:alpha:1.0.0");
+            assertThat(conflict.storedBlueprint()).as("the stored blueprint is named").isEqualTo("org.example:first:1.0.0");
         });
         assertThat(cluster.batches).as("the refused publish applies nothing").hasSize(batchesAfterFirst);
     }
