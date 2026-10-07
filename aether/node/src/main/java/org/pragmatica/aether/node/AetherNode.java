@@ -1512,21 +1512,40 @@ public interface AetherNode extends ManageableNode {
     /// #1873 (KIP-320): how an owner commits where its epoch begins, before it is activated: a guarded write of the exact
     /// committed record, witnessed by the committed leader, that records the start at `start` and, when its ring was
     /// rebuilt, first takes the next ownership term. Refusal is not a failed promise (the applier answers it with a result),
-    /// so the activation re-reads the record and checks the start landed.
+    /// so #1976: the write's own [KVCommand.TransactionResult] decides — accepted or the commit FAILS. Never a re-read of
+    /// the record: on a restart the old record already names a start, so a refused commit would read as landed.
     static OwnerActivation.LineageCommit streamLineageCommit(Supplier<Option<LeaderValue>> committedLeader,
                                                              java.util.function.Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> applier,
                                                              HlcClock clock) {
         return (stream, partition, current, start, restarted) -> committedLeader.get()
-                                                                                .fold(() -> OwnerActivation.ActivationError.LINEAGE_NOT_COMMITTED.<Unit> promise(),
-                                                                                      leader -> applier.apply(List.of(StreamPartitionOwnershipWriter.guardedOwnershipWrite(leader,
-                                                                                                                                                                           stream,
-                                                                                                                                                                           partition,
-                                                                                                                                                                           Option.some(current),
-                                                                                                                                                                           restarted
-                                                                                                                                                                           ? current.restarted(start,
-                                                                                                                                                                                               clock.now())
-                                                                                                                                                                           : current.withEpochStart(start))))
-                                                                                                       .mapToUnit());
+                                                                                .fold(() -> OwnerActivation.ActivationError.NO_COMMITTED_LEADER.<Unit> promise(),
+                                                                                      leader -> lineageWrite(applier,
+                                                                                                             StreamPartitionOwnershipWriter.guardedOwnershipWrite(leader,
+                                                                                                                                                                  stream,
+                                                                                                                                                                  partition,
+                                                                                                                                                                  Option.some(current),
+                                                                                                                                                                  restarted
+                                                                                                                                                                  ? current.restarted(start,
+                                                                                                                                                                                      clock.now())
+                                                                                                                                                                  : current.withEpochStart(start))));
+    }
+
+    private static Promise<Unit> lineageWrite(java.util.function.Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> applier,
+                                              KVCommand.LeaderTransaction<AetherKey, AetherValue> write) {
+        var transactionId = write.transactionId();
+
+        return applier.apply(List.of(write))
+                      .flatMap(results -> acceptedBy(results, transactionId)
+                                          ? Promise.success(Unit.unit())
+                                          : OwnerActivation.ActivationError.LINEAGE_NOT_COMMITTED.<Unit> promise());
+    }
+
+    static boolean acceptedBy(List<Object> results, String transactionId) {
+        return results.stream()
+                      .filter(KVCommand.TransactionResult.class::isInstance)
+                      .map(KVCommand.TransactionResult.class::cast)
+                      .anyMatch(result -> result.transactionId()
+                                                .equals(transactionId) && result.accepted());
     }
 
     /// #1730: the partitions this node owns AND serves (activated for the committed record), with their record and
@@ -2022,6 +2041,12 @@ public interface AetherNode extends ManageableNode {
                                                                                                           partitionSubject(unreachable),
                                                                                                           "{}",
                                                                                                           unreachable.message());
+            case OwnerActivation.ActivationBlock.LineageRefused refused -> OperatorWarnings.raise(LOG,
+                                                                                                  sink,
+                                                                                                  OperatorWarningCode.STREAM_OWNER_LINEAGE_REFUSED,
+                                                                                                  partitionSubject(refused),
+                                                                                                  "{}",
+                                                                                                  refused.message());
             default -> raiseOwnerPromotionBlock(block);
         };
     }
@@ -2040,6 +2065,12 @@ public interface AetherNode extends ManageableNode {
                                                                                                           partitionSubject(unreachable),
                                                                                                           "Owner promotion of {} no longer waits for unreachable members.",
                                                                                                           partitionSubject(unreachable));
+            case OwnerActivation.ActivationBlock.LineageRefused refused -> OperatorWarnings.raise(LOG,
+                                                                                                  sink,
+                                                                                                  OperatorWarningCode.STREAM_OWNER_LINEAGE_COMMITTED,
+                                                                                                  partitionSubject(refused),
+                                                                                                  "Owner promotion of {} is no longer refused at its epoch-start commit.",
+                                                                                                  partitionSubject(refused));
             default -> Unit.unit();
         };
     }
