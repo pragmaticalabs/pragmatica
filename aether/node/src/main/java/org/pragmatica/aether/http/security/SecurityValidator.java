@@ -25,11 +25,11 @@ public interface SecurityValidator {
     Result<SecurityContext> validate(HttpRequestContext request, SecurityPolicy policy);
 
     static SecurityValidator apiKeyValidator(Set<String> validKeys) {
-        return new ApiKeySecurityValidator(ApiKeySecurityValidator.fromKeySet(validKeys));
+        return HttpAuthenticator.apiKeyValidator(validKeys)::validate;
     }
 
     static SecurityValidator apiKeyValidator(Map<String, ApiKeyEntry> keyEntries) {
-        return new ApiKeySecurityValidator(keyEntries);
+        return HttpAuthenticator.apiKeyValidator(keyEntries)::validate;
     }
 
     static SecurityValidator kvStoreAwareValidator(SecurityValidator configValidator,
@@ -38,7 +38,7 @@ public interface SecurityValidator {
     }
 
     static SecurityValidator jwtValidator(JwtConfig jwtConfig) {
-        return new JwtSecurityValidator(jwtConfig);
+        return HttpAuthenticator.jwtValidator(jwtConfig)::validate;
     }
 
     /// GRANTS ADMIN + SERVICE TO EVERY CALLER. Named `permitAll` rather than `noOp` because "no-op"

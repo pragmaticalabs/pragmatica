@@ -25,7 +25,7 @@ import static org.pragmatica.lang.Result.success;
 
 
 @SuppressWarnings({"JBCT-RET-01", "JBCT-RET-03"})
-class JwtSecurityValidator implements SecurityValidator {
+class JwtSecurityValidator implements HttpAuthenticator {
     private static final Logger log = LoggerFactory.getLogger(JwtSecurityValidator.class);
     private static final String BEARER_PREFIX = "Bearer ";
 
@@ -40,6 +40,16 @@ class JwtSecurityValidator implements SecurityValidator {
     JwtSecurityValidator(JwtConfig config, JwksKeyStore keyStore) {
         this.config = config;
         this.keyStore = keyStore;
+    }
+
+    @Override
+    public org.pragmatica.lang.Promise<org.pragmatica.lang.Unit> close() {
+        return org.pragmatica.lang.Promise.lift(org.pragmatica.lang.utils.Causes::fromThrowable,
+                                                () -> {
+                                                    keyStore.close();
+
+                                                    return org.pragmatica.lang.Unit.unit();
+                                                });
     }
 
     @Override

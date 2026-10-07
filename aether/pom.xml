@@ -60,6 +60,7 @@
         <!-- e2e-tests requires examples to be installed first, enabled via -Pwith-e2e profile -->
         <module>http-handler-api</module>
         <module>http-routing-adapter</module>
+        <module>http-security</module>
         <!-- Split node modules - ordered by dependency -->
         <module>aether-metrics</module>
         <module>aether-dht</module>

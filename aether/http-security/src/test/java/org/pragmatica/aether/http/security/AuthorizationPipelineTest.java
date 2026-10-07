@@ -26,7 +26,7 @@ import static org.assertj.core.api.Assertions.fail;
 
 /// Integration test for the full authentication + authorization pipeline.
 ///
-/// Exercises: SecurityValidator → RoleEnforcer.enforce() with RoutePermissionRegistry
+/// Exercises: HttpAuthenticator → RoleEnforcer.enforce() with RoutePermissionRegistry
 /// to verify end-to-end authorization behavior matching the ManagementServer security flow.
 class AuthorizationPipelineTest {
 
@@ -40,7 +40,7 @@ class AuthorizationPipelineTest {
         VIEWER_KEY, ApiKeyEntry.apiKeyEntry("viewer-svc", Set.of("service"), "VIEWER")
     );
 
-    private final SecurityValidator validator = SecurityValidator.apiKeyValidator(KEY_ENTRIES);
+    private final HttpAuthenticator validator = HttpAuthenticator.apiKeyValidator(KEY_ENTRIES);
     private final SecurityPolicy policy = SecurityPolicy.apiKeyRequired();
 
     /// Simulates the ManagementServer security pipeline:
@@ -313,7 +313,7 @@ class AuthorizationPipelineTest {
             var entries = Map.of(
                 keyWithNoRole, ApiKeyEntry.apiKeyEntry("no-role-svc", Set.of("service"))
             );
-            var validatorNoRole = SecurityValidator.apiKeyValidator(entries);
+            var validatorNoRole = HttpAuthenticator.apiKeyValidator(entries);
             var request = createRequest(keyWithNoRole, "GET", "/api/v1/nodes/status");
             var permission = RoutePermissionRegistry.resolve("GET", "/api/v1/nodes/status");
             validatorNoRole.validate(request, policy)
@@ -328,7 +328,7 @@ class AuthorizationPipelineTest {
             var entries = Map.of(
                 keyWithBadRole, ApiKeyEntry.apiKeyEntry("bad-role-svc", Set.of("service"), "SUPERUSER")
             );
-            var validatorBadRole = SecurityValidator.apiKeyValidator(entries);
+            var validatorBadRole = HttpAuthenticator.apiKeyValidator(entries);
             var request = createRequest(keyWithBadRole, "GET", "/api/v1/nodes/status");
             var permission = RoutePermissionRegistry.resolve("GET", "/api/v1/nodes/status");
             validatorBadRole.validate(request, policy)
