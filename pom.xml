@@ -823,6 +823,8 @@
                                                 </not>
                                             </condition>
                                         </fail>
+                                        <!-- A PASSING gate still states what it examined: a green with no count is not a result. -->
+                                        <echo message="${closure.gate.out}"/>
                                     </target>
                                 </configuration>
                             </execution>

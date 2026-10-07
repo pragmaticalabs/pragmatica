@@ -28,7 +28,7 @@ annotation-processor path out of the generated `pom.xml` files.
 | `jbct init --with-persistence`, `jbct add-persistence` | the slice set plus `pg-codegen` as a processor path |
 | `jbct add-slice`, `jbct add-event` | nothing new (source files and resources only) |
 
-`jbct add http-client` appears only in `aether/docs/specs/interactive-scaffolding-spec.md`; no such command exists
+An http-client adder exists only in `aether/docs/specs/interactive-scaffolding-spec.md`, with no CLI command
 (`JbctCommand` subcommands: format, lint, check, check-sheet, derive, score, shape-census, obligations, doc, upgrade, init, add-slice,
 add-event, add-persistence, fix-slice, update, migrate, verify-slice). The `jbct`, `aether` and node/forge jars reach users through the
 install script, GitHub releases and the container image, not Maven Central.
@@ -115,7 +115,7 @@ The limits are cumulative per month, so a second release in the same month needs
 | `aether/slice` | `org.pragmatica-lite.aether:slice` | jar | skip | runtime internal of the node (ships inside the node jar and image) or Aether tooling; not a dependency of a slice |
 | `aether/slice-annotations` | `org.pragmatica-lite.aether:slice-annotations` | jar | publish | template dependency (`jbct init`, provided) |
 | `aether/slice-api` | `org.pragmatica-lite.aether:slice-api` | jar | publish | template dependency (`jbct init`, provided) |
-| `aether/slice-testkit` | `org.pragmatica-lite.aether:slice-testkit` | jar | skip | test kit for slice authors; no template, `jbct init` or `jbct add` output references it (owner call if it should ship) |
+| `aether/slice-testkit` | `org.pragmatica-lite.aether:slice-testkit` | jar | skip | test kit for slice authors; no template or generated-project output references it (owner call if it should ship) |
 | `cli-docs-gate` | `org.pragmatica-lite:cli-docs-gate` | jar | skip | build gate or build instrument; produces no consumer-facing artifact |
 | `core` | `org.pragmatica-lite:core` | jar | publish | template dependency (`jbct init`, provided): `Result`/`Option`/`Promise` |
 | `examples` | `org.pragmatica-lite:examples` | pom | skip | example slice or example parent; nothing published depends on it |
