@@ -282,6 +282,46 @@ class QuicClusterNetworkStreamZombieTest {
                 .isEqualTo(1);
         }
 
+        /// #1973 (v-1991 R1): the connection a frame was captured on is dead, but the peer's state is by now bound to a NEW live
+        /// connection (the stale capture lost a race with a reattach). The frame is written on the live one exactly once, and
+        /// the outcome says so: reporting ConnectionDead for a frame that was written told a caller "not sent, safe to retry"
+        /// about a command that was sent.
+        @Test
+        void writeToStream_staleCapture_stateRebound_writesOnTheLiveConnection_andReportsTheWrite() {
+            var network = network();
+            var peerId = new NodeId("rebound-peer");
+            var staleConnection = connectionWithOpener(peerId, failingOpener(), false);
+            var liveConnection = connectionWithOpener(peerId, failingOpener(), true);
+            var liveStream = writableStream();
+
+            liveConnection.registerStream(StreamType.CONTROL, liveStream);
+            network.seedPeerForTests(peerId, connectedPeerState(peerId, liveConnection));
+
+            var outcome = network.writeToStreamForTests(peerId, new NetworkMessage.KeepAlive(peerId), staleConnection);
+
+            assertThat(outcome).as("the frame was written, so the outcome is the write's, not ConnectionDead").isInstanceOf(WriteOutcome.Sent.class);
+            verify(liveStream, times(1)).writeAndFlush(any());
+            assertThat(network.offlineBufferSizeForTests(peerId)).as("and it is not also buffered").isZero();
+        }
+
+        /// The other half: nothing live to rebind to, so nothing is written (a stream registered on the dead connection stays
+        /// untouched) and the outcome is ConnectionDead.
+        @Test
+        void writeToStream_genuinelyDeadConnection_writesNothing_andReportsConnectionDead() {
+            var network = network();
+            var peerId = new NodeId("dead-no-rebind-peer");
+            var deadConnection = connectionWithOpener(peerId, failingOpener(), false);
+            var deadStream = writableStream();
+
+            deadConnection.registerStream(StreamType.CONTROL, deadStream);
+            network.seedPeerForTests(peerId, connectedPeerState(peerId, deadConnection));
+
+            var outcome = network.writeToStreamForTests(peerId, new NetworkMessage.KeepAlive(peerId), deadConnection);
+
+            assertThat(outcome).isInstanceOf(WriteOutcome.ConnectionDead.class);
+            verify(deadStream, never()).writeAndFlush(any());
+        }
+
         /// #1973: a NoOfflineBuffering frame (an entity owner-forward) that finds its connection dead is DROPPED, not re-dispatched
         /// into the offline buffer. The caller is told ConnectionDead means "not sent", so the frame must not be delivered on
         /// reattach, after the caller was told nothing was applied. The buffer is empty and a reattach drains nothing.
