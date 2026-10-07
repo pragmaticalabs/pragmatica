@@ -395,6 +395,7 @@ class EntityOwnerForwardTest {
     /// committed owner has just died surfaces `ForwardNotSent`, not an untyped failure a caller reads as final.
     @Test
     void get_forwardNeverSent_surfacesTheTypedTransientCause() {
+        substrate.holds = false;
         transport.refuseWith(new EntityOwnerForward.ForwardNotSent("entity owner-forward to other-node refused at send (NoPeerState)"));
 
         var result = entityAs(SELF, OTHER, Option.some(transport)).get("k1").await();
