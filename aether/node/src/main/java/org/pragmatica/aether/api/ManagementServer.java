@@ -1521,7 +1521,9 @@ class ManagementServerImpl implements ManagementServer {
                 return;
             }
 
-            if (validateManagementSecurity(serverCtx, responseCapture, context.path(), method.unwrap()).isFailure()) {
+            var validated = validateManagementSecurity(serverCtx, responseCapture, context.path(), method.unwrap());
+
+            if (validated.isFailure()) {
                 responseCapture.completion()
                                .onSuccess(responseData -> sendManagementForwardSuccess(network,
                                                                                        request,
@@ -1533,7 +1535,31 @@ class ManagementServerImpl implements ManagementServer {
 
                 return;
             }
+            // #1983: the context this owner just validated is bound for the dispatch, exactly as the node that took the
+            // client call binds it (handleRequest), so a handler reading the principal or its role sees the caller whether
+            // the request arrived locally or forwarded. Discarding it left every reader on ANONYMOUS.
+            validated.onSuccess(sc -> ScopedValue.where(SecurityContextHolder.scopedValue(),
+                                                        sc)
+                                                 .run(() -> dispatchValidatedManagementForward(context,
+                                                                                               request,
+                                                                                               network,
+                                                                                               ser,
+                                                                                               serverCtx,
+                                                                                               responseCapture)));
+
+            return;
         }
+
+        dispatchValidatedManagementForward(context, request, network, ser, serverCtx, responseCapture);
+    }
+
+    @SuppressWarnings("JBCT-PAT-01")
+    private void dispatchValidatedManagementForward(HttpRequestContext context,
+                                                    HttpForwardRequest request,
+                                                    ClusterNetwork network,
+                                                    Serializer ser,
+                                                    ForwardedRequestContext serverCtx,
+                                                    ForwardedResponseWriter responseCapture) {
         // #1039 receive-side owner guard. A forwarded request is dispatched by `router.handle` right
         // below and never re-enters `dispatchManagementRequest`, so `tryForwardIfNotPartitionOwner`
         // does NOT run on this node — without this check a receiver that disagrees with the sender
