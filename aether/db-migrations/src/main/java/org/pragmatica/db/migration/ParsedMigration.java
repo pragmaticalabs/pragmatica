@@ -2,16 +2,15 @@
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
 // Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
 // See LICENSE in the repository root for full terms.
-package org.pragmatica.aether.deployment.schema;
+package org.pragmatica.db.migration;
 
-import org.pragmatica.aether.slice.blueprint.MigrationEntry;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 
-import static org.pragmatica.aether.deployment.schema.SchemaError.InvalidMigrationFormat.invalidMigrationFormat;
+import static org.pragmatica.db.migration.MigrationError.InvalidMigrationFormat.invalidMigrationFormat;
 
 
-public record ParsedMigration(MigrationEntry entry, MigrationType type, int version, String description) {
+public record ParsedMigration(MigrationScript entry, MigrationType type, int version, String description) {
     public enum MigrationType {
         VERSIONED,
         REPEATABLE,
@@ -21,14 +20,14 @@ public record ParsedMigration(MigrationEntry entry, MigrationType type, int vers
 
     private static final int SEPARATOR_LENGTH = 2;
 
-    public static Result<ParsedMigration> parsedMigration(MigrationEntry entry) {
+    public static Result<ParsedMigration> parsedMigration(MigrationScript entry) {
         return Option.option(entry.filename())
                      .filter(f -> !f.isEmpty())
                      .toResult(invalidMigrationFormat("", "filename is empty"))
                      .flatMap(filename -> parseFilename(entry, filename));
     }
 
-    private static Result<ParsedMigration> parseFilename(MigrationEntry entry, String filename) {
+    private static Result<ParsedMigration> parseFilename(MigrationScript entry, String filename) {
         if (!filename.endsWith(".sql")) {
             return invalidMigrationFormat(filename, "must end with .sql").result();
         }
@@ -44,7 +43,7 @@ public record ParsedMigration(MigrationEntry entry, MigrationType type, int vers
         };
     }
 
-    private static Result<ParsedMigration> parseRepeatable(MigrationEntry entry, String filename) {
+    private static Result<ParsedMigration> parseRepeatable(MigrationScript entry, String filename) {
         var separatorIndex = filename.indexOf("__");
 
         if (separatorIndex < 0) {
@@ -60,7 +59,7 @@ public record ParsedMigration(MigrationEntry entry, MigrationType type, int vers
         return Result.success(new ParsedMigration(entry, MigrationType.REPEATABLE, 0, description));
     }
 
-    private static Result<ParsedMigration> parseVersioned(MigrationEntry entry, String filename, MigrationType type) {
+    private static Result<ParsedMigration> parseVersioned(MigrationScript entry, String filename, MigrationType type) {
         var separatorIndex = filename.indexOf("__");
 
         if (separatorIndex < 1) {

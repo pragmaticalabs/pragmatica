@@ -2,7 +2,7 @@
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
 // Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
 // See LICENSE in the repository root for full terms.
-package org.pragmatica.aether.deployment.schema;
+package org.pragmatica.db.migration;
 
 import org.pragmatica.aether.pg.split.DialectSpec;
 import org.pragmatica.aether.pg.split.Dialects;
@@ -14,7 +14,7 @@ import static org.pragmatica.lang.Option.some;
 
 
 /// Maps a runtime [DatabaseType] to the migration execution descriptor that governs how
-/// [AetherSchemaManager] splits and wraps a migration file.
+/// [SchemaMigrations] splits and wraps a migration file.
 ///
 /// PostgreSQL-family dialects (`POSTGRESQL`, `COCKROACHDB`), the MySQL family
 /// (`MYSQL`, `MARIADB`), `DB2`, `SQLSERVER`, `ORACLE`, and `H2` are wired to the dialect-aware

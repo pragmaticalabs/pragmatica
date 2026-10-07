@@ -288,7 +288,7 @@ public sealed interface SchemaError extends Cause {
     /// database slip past it: each name is unclaimed. Since `aether_schema_history` is unqualified —
     /// one per physical database — both blueprints would then interleave unrelated version sequences
     /// in a single shared history. The claim is therefore recorded IN the database being migrated
-    /// ([SchemaHistoryEvolution#OWNER_TABLE]) and read before any migration is applied, so a refused
+    /// ([org.pragmatica.db.migration.SchemaHistoryEvolution#OWNER_TABLE]) and read before any migration is applied, so a refused
     /// claim writes nothing at all.
     ///
     /// Compared on `ArtifactBase` (`group:artifact`, version stripped), exactly like the publish-time

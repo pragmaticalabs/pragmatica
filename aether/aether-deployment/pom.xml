@@ -30,6 +30,11 @@
     </properties>
 
     <dependencies>
+        <dependency>
+            <groupId>org.pragmatica-lite.aether</groupId>
+            <artifactId>db-migrations</artifactId>
+            <version>${project.version}</version>
+        </dependency>
         <!-- Internal -->
         <dependency>
             <groupId>org.pragmatica-lite</groupId>

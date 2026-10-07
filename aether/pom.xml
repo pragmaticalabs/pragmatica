@@ -65,6 +65,7 @@
         <module>aether-dht</module>
         <module>aether-storage</module>
         <module>aether-invoke</module>
+        <module>db-migrations</module>
         <module>aether-deployment</module>
         <module>aether-control</module>
         <!-- TTM modules - after control and metrics -->
