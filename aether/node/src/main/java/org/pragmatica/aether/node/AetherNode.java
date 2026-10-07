@@ -1904,6 +1904,14 @@ public interface AetherNode extends ManageableNode {
     }
 
     @Contract
+    private static void closeSliceFloorRefusalOnDeath(AtomicReference<Option<ManagementServer>> managementServerRef,
+                                                      MembershipTransitionRecord record) {
+        if ("Dead".equals(record.toState())) {
+            managementServerRef.get().onPresent(server -> server.onMemberDeparted(record.nodeId()));
+        }
+    }
+
+    @Contract
     static void reconcileReplicaSetOnCountedBoundary(AtomicReference<ReplicaSetController> controllerRef,
                                                      MembershipTransitionRecord record) {
         if (crossesCountedBoundary(record)) {
@@ -4689,6 +4697,9 @@ public interface AetherNode extends ManageableNode {
             alertManager.noteMembershipTransition(record.nodeId(), record.cause());
             onFsmTransition(transitionJournal, quorumLossDetectorRef, record);
             reconcileReplicaSetOnCountedBoundary(clusterEventsControllerRef, record);
+            // #1720: a floor-refused operator drain target that has now reached DEAD closes its refusal on this edge.
+            // Here and not on the DEAD-edge listener, which a wiring pin keeps to the unconditional callback.
+            closeSliceFloorRefusalOnDeath(managementServerRef, record);
         });
         // Wave-4 (cluster-topology-overhaul, #245): the MembershipDeltaProjector is the SOLE
         // emitter of MembershipDecision, fed by the FSM's own JOINED/REMOVED delta edge —
@@ -4976,9 +4987,6 @@ public interface AetherNode extends ManageableNode {
 
         membershipFsm.onConfirmedDeparture(departed -> {
             onMembershipDeath(departed, dropDeadPeerLink, quorumLossDetectorRef, leaderReconcilerRef);
-            // #1720: a floor-refused operator drain target that has now left closes its refusal on this edge
-            managementServerRef.get()
-                               .onPresent(server -> server.onMemberDeparted(departed));
         });
         // #1777 R1b: the pong cadence the leader already receives is what notices that time passed (the overdue bound)
         // and that a member's departure is now committed (it is no longer waited for, and its report is dropped); no timer

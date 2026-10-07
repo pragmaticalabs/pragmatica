@@ -1472,6 +1472,7 @@ class ManagementServerImpl implements ManagementServer {
     }
 
     @Override
+    @SuppressWarnings("JBCT-RET-01")
     public void onMemberDeparted(NodeId node) {
         nodeLifecycleRoutes.onMemberDeparted(node);
     }

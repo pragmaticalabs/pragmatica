@@ -466,6 +466,7 @@ public final class NodeLifecycleRoutes implements RouteSource {
     /// The transition itself: the membership FSM confirmed `node` DEAD on this node. A target refused by the slice floor
     /// that has now left gets its recovery event here, without waiting for another operator request to reach the floor
     /// check. Shares the admission monitor, so it cannot interleave with an admission of the same target.
+    @SuppressWarnings("JBCT-RET-01")
     public synchronized void onMemberDeparted(NodeId node) {
         sliceFloor.onPresent(floor -> raiseFloorRecovery(floor, node, "drain", "the node left the membership"));
     }
