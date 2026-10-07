@@ -5,8 +5,7 @@
 
 package org.pragmatica.aether.forge;
 
-import org.junit.jupiter.api.AfterAll;
-import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.MethodOrderer;
 import org.junit.jupiter.api.Order;
 import org.junit.jupiter.api.Tag;
@@ -105,6 +104,8 @@ class StreamCrashDurabilityTest {
     private static final Duration WAIT_TIMEOUT = Duration.ofSeconds(240);
     private static final Duration POLL_INTERVAL = Duration.ofMillis(500);
     private static final Duration DRAIN_TIMEOUT = Duration.ofSeconds(90);
+    /// How long the tripwire waits for a recovery that is expected not to come.
+    private static final Duration TRIPWIRE_RECOVERY_WINDOW = Duration.ofSeconds(60);
     private static final Duration RECOVERY_TIMEOUT = Duration.ofSeconds(240);
     private static final long POLL_GAP_NANOS = Duration.ofMillis(20).toNanos();
 
@@ -133,9 +134,11 @@ class StreamCrashDurabilityTest {
     /// One stream event as observed by a consumer over HTTP.
     private record Event(long offset, String payload) {}
 
-    @BeforeAll
-    void setUp(@TempDir Path tempDir) {
-        this.baseDir = tempDir;
+    /// Starts this test's five-node cluster over `dir` (restart-stable per-node data dirs). With `withBackup` the KV is backed up to a
+    /// git remote under `dir` and restored on a restart (the supported configuration, #1532/#1533); without it a restart starts from an
+    /// empty KV, as Forge's in-memory consensus always did.
+    private void startCluster(Path dir, boolean withBackup) {
+        this.baseDir = dir;
 
         // A ConfigurationProvider must be present for the node to enable resource provisioning
         // (StreamPublisher / StreamAccess); without it AetherNode installs a no-op facade that fails
@@ -147,24 +150,57 @@ class StreamCrashDurabilityTest {
         cluster = emberCluster(NODES, BASE_PORT, BASE_MGMT_PORT, BASE_APP_HTTP_PORT, "scd", Option.some(configProvider));
         // Opt in to a writable, restart-stable per-node data dir -> disk tier + per-partition WAL ON.
         cluster.withDataBaseDir(baseDir);
+        if (withBackup) {
+            var remote = baseDir.resolve("kv-backup-remote.git");
+
+            runGit(baseDir, "init", "--quiet", "--bare", remote.toString());
+            cluster.withKvBackup(baseDir.resolve("kv-backup-nodes"), remote.toString(), org.pragmatica.aether.config.BackupConfig.RestoreMode.AUTO);
+        }
 
         startAndAwaitReady();
     }
 
-    @AfterAll
+    @AfterEach
     void tearDown() {
         if (cluster != null) {
             var leaderPort = cluster.getLeaderManagementPort().or(anyMgmtPort());
             httpDelete(leaderPort, "/api/v1/blueprints/" + BLUEPRINT_ID);
             LifecycleAwait.bestEffort("cluster stop in tearDown()", cluster, cluster.stop());
+            cluster = null;
+        }
+    }
+
+    private static void runGit(Path cwd, String... args) {
+        var command = new ArrayList<String>();
+
+        command.add("git");
+        command.addAll(List.of(args));
+        try {
+            var process = new ProcessBuilder(command).directory(cwd.toFile()).redirectErrorStream(true).start();
+
+            process.getInputStream().readAllBytes();
+            if (process.waitFor() != 0) {
+                throw new IllegalStateException("git " + String.join(" ", args) + " failed");
+            }
+        } catch (IOException e) {
+            throw new IllegalStateException(e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
         }
     }
 
     /// THE A6 gate: publish N acked events that live only in the hot ring + WAL, fully restart the
     /// cluster preserving the per-node data dirs, then prove all N are recovered via WAL replay.
+    ///
+    /// The supported configuration: `[backup]` is on and restored, so the stream comes back with the SAME incarnation and its WAL
+    /// directory (`<engine key>@<incarnation>`, #1567) on the same node id is found again. Measured 50 of 50. Without the backup
+    /// the restart creates the stream afresh under a new incarnation and the old log is never looked up; see
+    /// [#fullClusterRestart_withoutBackup_recoversNothing_andLeavesTheOldWalUnread].
     @Test
     @Order(1)
-    void fullClusterRestart_recoversAllAckedEvents_viaWalReplay() throws IOException {
+    void fullClusterRestart_withBackupRestored_recoversAllAckedEvents_viaWalReplay(@TempDir Path dir) throws IOException {
+        startCluster(dir, true);
+
         var port = appPort();
         var base = head(port);
 
@@ -208,11 +244,14 @@ class StreamCrashDurabilityTest {
     /// (#1083), so nothing is reloaded, nothing activates again, and no WAL for the bare alias ever appears.
     ///
     /// The watcher: after the DELETE the base directory is scanned every 20 ms for [#OBSERVE_AFTER_REMOVAL] and every directory
-    /// that holds a WAL is collected, so a ring that is opened and gone again is still seen. Runs after the crash-durability test, on
-    /// the cluster it leaves with the blueprint deployed. Red when the redeploy's committed-target gate is removed.
+    /// that holds a WAL is collected, so a ring that is opened and gone again is still seen. The race fires on roughly half of the
+    /// runs at the commit the ticket observed it on (n=2), so the deterministic pin is `NodeDeploymentStateRollbackOrphanTest`.
     @Test
     @Order(2)
-    void blueprintRemoval_doesNotReloadTheSlice_noSecondStreamRingOpensItsWal() throws IOException {
+    void blueprintRemoval_doesNotReloadTheSlice_noSecondStreamRingOpensItsWal(@TempDir Path dir) throws IOException {
+        startCluster(dir, false);
+        publishBatch(appPort(), "removal", 5);
+
         var leaderPort = cluster.getLeaderManagementPort().or(anyMgmtPort());
 
         assertThat(walDirectoryNames()).as("control: the qualified ring's WAL directory exists before the removal")
@@ -242,6 +281,71 @@ class StreamCrashDurabilityTest {
         }
 
         return names;
+    }
+
+    /// TRIPWIRE for the documented rc4 gap (#1569, storage-identity adoption): a whole-cluster restart WITHOUT `[backup]` recovers none
+    /// of the acked events, and their WAL stays on disk, unread. The restarted cluster has no KV, so the stream is created again as a
+    /// new life with a new incarnation, and its WAL directory is a different one (`<engine key>@<incarnation>`, #1278 ruling C: a
+    /// re-created stream never reopens the old life's log). Same node ids and volumes as the supported test above; the only
+    /// difference is the backup.
+    ///
+    /// ENABLED on purpose, asserting today's behaviour (a `@Disabled` test is silence): it reddens the day the old log is adopted,
+    /// with the instruction in its message.
+    @Test
+    @Order(3)
+    void fullClusterRestart_withoutBackup_recoversNothing_andLeavesTheOldWalUnread(@TempDir Path dir) throws IOException {
+        startCluster(dir, false);
+
+        var port = appPort();
+
+        var base = head(port);
+
+        publishBatch(port, "gap", EVENT_COUNT);
+        assertContiguousBatch(drain(port, base, EVENT_COUNT, deadlineNanos()), base, "gap");
+        assertWalActiveForTestEvents();
+
+        var incarnationBefore = committedIncarnation();
+        var oldWals = testEventsWalSizes();
+
+        restartCluster();
+
+        var recovered = drain(appPort(), 0L, EVENT_COUNT, System.nanoTime() + TRIPWIRE_RECOVERY_WINDOW.toNanos());
+
+        assertThat(recovered)
+            .as("#1569 landed? An old WAL is adopted after a whole-cluster restart without [backup] (recovered %d of %d): delete this "
+                + "tripwire and assert full recovery", recovered.size(), EVENT_COUNT)
+            .isEmpty();
+        assertThat(committedIncarnation()).as("the restarted cluster created the stream as a new life").isNotEqualTo(incarnationBefore);
+        assertThat(testEventsWalSizes()).as("the old WAL files are still on disk, byte for byte, never opened").containsAllEntriesOf(oldWals);
+    }
+
+    /// The incarnation of the stream's committed config, as every node sees it (they agree).
+    private long committedIncarnation() {
+        var seen = new java.util.HashSet<Long>();
+
+        for (var node : cluster.allNodes()) {
+            node.kvStore()
+                .getTyped(org.pragmatica.aether.slice.kvstore.AetherKey.StreamConfigKey.streamConfigKey(STREAM_NAME),
+                          org.pragmatica.aether.slice.kvstore.AetherValue.StreamConfigValue.class)
+                .onPresent(value -> seen.add(value.config().incarnation()));
+        }
+
+        assertThat(seen).as("every node holds the stream's committed config, with one incarnation").hasSize(1);
+
+        return seen.iterator().next();
+    }
+
+    /// Every `test-events` WAL file under the data dir (any incarnation), by path relative to it, with its size.
+    private java.util.Map<String, Long> testEventsWalSizes() throws IOException {
+        var sizes = new java.util.TreeMap<String, Long>();
+
+        for (var wal : walFiles(baseDir)) {
+            if (isTestEventsWal(wal)) {
+                sizes.put(baseDir.relativize(wal).toString(), Files.size(wal));
+            }
+        }
+
+        return sizes;
     }
 
     // --- restart ------------------------------------------------------------
