@@ -1367,6 +1367,8 @@ aether scheduled-tasks inject \
 aether scheduled-tasks executions-by-node <configSection> <artifact> <method>
 ```
 
+The task entries printed by `list` and `get` carry `lastOutcome` (`SUCCESS`, `FAILURE`, `UNKNOWN`, or empty) and `completionTimeouts` and `lateResolutions` (monotonic counters): `UNKNOWN` is a remote fire whose response did not arrive within the scheduler's 10-minute completion bound, counted neither as an execution nor as a failure (see the scheduled-tasks state API in the management API reference).
+
 Example:
 ```bash
 # Show all scheduled tasks
@@ -2514,11 +2516,15 @@ See [`cluster-generation-spec.md`](../specs/cluster-generation-spec.md) §14.
 
 ### `aether cluster upgrade`
 
-Initiate a cluster version upgrade.
+Change the version the cluster provisions. The command rewrites `[cluster] version` in the committed TOML (the version replacements and scale-ups boot) and stores the same version beside it; it does not restart or replace any running node.
 
 ```bash
 aether cluster upgrade --version <X.Y.Z>
 ```
+
+The upgrade is refused (HTTP 409) when a runtime profile used by a source role pins `image` (container) or `jar_url` (JVM) literally: the pin would win over the version, so nothing would change. Write the pin with `{version}` (`image = "registry/aether-node:{version}"`) and it follows the upgrade; the placeholder has to be in the config the cluster was bootstrapped with, since `aether cluster apply` does not currently change runtime-profile content. A version change inside a file given to `aether cluster apply` is likewise refused, with a pointer back to this command — `cluster upgrade` is the only way to change the version.
+
+`GET /api/v1/nodes/lifecycle` shows the `version` each node advertises.
 
 | Option | Description |
 |--------|-------------|

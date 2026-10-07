@@ -31,7 +31,7 @@ import org.pragmatica.serialization.Codec;
 /// every closed variant is handled and that an `ExtendedEvent` arm is present (typically a
 /// discriminator-keyed dispatch, structured log, or no-op).
 @Codec
-public sealed interface ClusterEvent permits ClusterEvent.NodeJoined, ClusterEvent.NodeLeft, ClusterEvent.NodeFailed, ClusterEvent.LeaderElected, ClusterEvent.LeaderLost, ClusterEvent.QuorumEstablished, ClusterEvent.QuorumLost, ClusterEvent.DeploymentStarted, ClusterEvent.DeploymentCompleted, ClusterEvent.DeploymentFailed, ClusterEvent.ScaleUp, ClusterEvent.ScaleDown, ClusterEvent.SliceFailure, ClusterEvent.AutoRollback, ClusterEvent.ConnectionEstablished, ClusterEvent.ConnectionFailed, ClusterEvent.CommunityScaleRequest, ClusterEvent.CommunityMetricsSnapshot, ClusterEvent.AccessDenied, ClusterEvent.NodeLifecycleChanged, ClusterEvent.ConfigChanged, ClusterEvent.BackupCreated, ClusterEvent.BackupRestored, ClusterEvent.BlueprintDeployed, ClusterEvent.BlueprintDeleted, ClusterEvent.StreamRegistered, ClusterEvent.StreamDeleted, ClusterEvent.AlertInjected, ClusterEvent.TraceInjected, ClusterEvent.SelfDrainInitiated, ClusterEvent.StreamMemoryExceeded, ClusterEvent.DeparturePushIncomplete, ClusterEvent.ScaleCapped, ClusterEvent.ThresholdBreached, ClusterEvent.ThresholdCleared, ClusterEvent.OperatorWarning, ClusterEvent.CommunityMinted, ClusterEvent.CommunityStateChanged, ClusterEvent.CommunityMemberJoined, ClusterEvent.CommunityMemberLeft, ClusterEvent.DhtReplicationUnsettled, ClusterEvent.DhtReplicationSettled, ClusterEvent.DhtWriterStale, ClusterEvent.DhtWriterStaleResolved, ClusterEvent.StreamFailoverRefused, ClusterEvent.StreamFailoverResolved, ClusterEvent.StreamIsrBelowMinimum, ClusterEvent.StreamIsrRestored, ClusterEvent.StreamConfigChangeNotApplied, ExtendedEvent {
+public sealed interface ClusterEvent permits ClusterEvent.NodeJoined, ClusterEvent.NodeLeft, ClusterEvent.NodeFailed, ClusterEvent.LeaderElected, ClusterEvent.LeaderLost, ClusterEvent.QuorumEstablished, ClusterEvent.QuorumLost, ClusterEvent.DeploymentStarted, ClusterEvent.DeploymentCompleted, ClusterEvent.DeploymentFailed, ClusterEvent.ScaleUp, ClusterEvent.ScaleDown, ClusterEvent.SliceFailure, ClusterEvent.AutoRollback, ClusterEvent.ConnectionEstablished, ClusterEvent.ConnectionFailed, ClusterEvent.CommunityScaleRequest, ClusterEvent.CommunityMetricsSnapshot, ClusterEvent.AccessDenied, ClusterEvent.NodeLifecycleChanged, ClusterEvent.ConfigChanged, ClusterEvent.BackupCreated, ClusterEvent.BackupRestored, ClusterEvent.BlueprintDeployed, ClusterEvent.BlueprintDeleted, ClusterEvent.StreamRegistered, ClusterEvent.StreamDeleted, ClusterEvent.AlertInjected, ClusterEvent.TraceInjected, ClusterEvent.SelfDrainInitiated, ClusterEvent.StreamMemoryExceeded, ClusterEvent.DeparturePushIncomplete, ClusterEvent.ScaleCapped, ClusterEvent.ThresholdBreached, ClusterEvent.ThresholdCleared, ClusterEvent.OperatorWarning, ClusterEvent.CommunityMinted, ClusterEvent.CommunityStateChanged, ClusterEvent.CommunityMemberJoined, ClusterEvent.CommunityMemberLeft, ClusterEvent.DhtReplicationUnsettled, ClusterEvent.DhtReplicationSettled, ClusterEvent.DhtWriterStale, ClusterEvent.DhtWriterStaleResolved, ClusterEvent.StreamFailoverRefused, ClusterEvent.StreamFailoverResolved, ClusterEvent.StreamIsrBelowMinimum, ClusterEvent.StreamIsrRestored, ClusterEvent.StreamLineageRestarted, ClusterEvent.StreamConfigChangeNotApplied, ClusterEvent.ScheduledTaskOutcomeUnknown, ClusterEvent.ScheduledTaskOutcomeRestored, ClusterEvent.ScheduledTaskFireHeld, ClusterEvent.ScheduledTaskFireReleased, ExtendedEvent {
     /// Restart-safe identity + total cluster ordering: HLC physical micros + logical counter + origin nodeId.
     HlcTimestamp at();
 
@@ -521,6 +521,17 @@ public sealed interface ClusterEvent permits ClusterEvent.NodeJoined, ClusterEve
         }
     }
 
+    /// #1873: a partition's owner began a new epoch of the same owner (its ring was rebuilt), at `startOffset`. INFO: the commit
+    /// proves a ring restarted, not that records were lost (activation may have pulled them all back from replicas); the loss
+    /// witness is the node-local `stream-consumer-rewound` warning. Derived on every node from the committed ownership Put;
+    /// published once, by the cluster-events owner. `details`: `stream`, `partition`, `owner`, `oldEpoch`, `newEpoch`, `startOffset`.
+    record StreamLineageRestarted(HlcTimestamp at, Severity severity, String summary, Map<String, String> details) implements ClusterEvent {
+        @Override
+        public ClusterEvent withDetail(String key, String value) {
+            return new StreamLineageRestarted(at, severity, summary, ClusterEvent.detailsWith(details, key, value));
+        }
+    }
+
     /// #1883: a committed config lowered a running stream's confirmation factor, which is not applied online
     /// (durability only increases), so the stream keeps enforcing the higher factor. A point event; no resolved pair.
     /// `details`: `stream`, `requestedConfirmationFactor`, `effectiveConfirmationFactor`, `reason`.
@@ -531,6 +542,49 @@ public sealed interface ClusterEvent permits ClusterEvent.NodeJoined, ClusterEve
         @Override
         public ClusterEvent withDetail(String key, String value) {
             return new StreamConfigChangeNotApplied(at, severity, summary, ClusterEvent.detailsWith(details, key, value));
+        }
+    }
+
+    /// #1723: a scheduled task has a fire whose outcome is unknown, so it is not known whether the work ran. Derived on
+    /// every node from the committed task state; published once, by the cluster-events owner, throttled per task.
+    /// `details`: `task` (`section/artifact/method`), `node` (ALL-mode only), `fireAt`.
+    record ScheduledTaskOutcomeUnknown(HlcTimestamp at,
+                                       Severity severity,
+                                       String summary,
+                                       Map<String, String> details) implements ClusterEvent {
+        @Override
+        public ClusterEvent withDetail(String key, String value) {
+            return new ScheduledTaskOutcomeUnknown(at, severity, summary, ClusterEvent.detailsWith(details, key, value));
+        }
+    }
+
+    /// #1723: the last unknown fire of a scheduled task was answered late. `details`: `task`, `node`, `fireAt` (of the fire
+    /// that made the outcome unknown), `outcome` (`executed` or `failed`), `late` (`true`).
+    record ScheduledTaskOutcomeRestored(HlcTimestamp at,
+                                        Severity severity,
+                                        String summary,
+                                        Map<String, String> details) implements ClusterEvent {
+        @Override
+        public ClusterEvent withDetail(String key, String value) {
+            return new ScheduledTaskOutcomeRestored(at, severity, summary, ClusterEvent.detailsWith(details, key, value));
+        }
+    }
+
+    /// #1930: a scheduled task's fire is still in flight when its next tick arrives, so the task is not firing (up to the
+    /// completion bound). Raised once per in-flight fire by the node whose scheduler holds it (a per-node fact, published
+    /// from there). `details`: `task`, `node`, `fireAt`, `inFlightMs`.
+    record ScheduledTaskFireHeld(HlcTimestamp at, Severity severity, String summary, Map<String, String> details) implements ClusterEvent {
+        @Override
+        public ClusterEvent withDetail(String key, String value) {
+            return new ScheduledTaskFireHeld(at, severity, summary, ClusterEvent.detailsWith(details, key, value));
+        }
+    }
+
+    /// #1930: the fire resolved. `details`: `task`, `node`, `fireAt` (of the fire), `inFlightMs` (in all), `outcome`.
+    record ScheduledTaskFireReleased(HlcTimestamp at, Severity severity, String summary, Map<String, String> details) implements ClusterEvent {
+        @Override
+        public ClusterEvent withDetail(String key, String value) {
+            return new ScheduledTaskFireReleased(at, severity, summary, ClusterEvent.detailsWith(details, key, value));
         }
     }
 

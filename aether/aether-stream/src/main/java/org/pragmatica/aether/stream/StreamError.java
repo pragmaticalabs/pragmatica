@@ -75,6 +75,34 @@ public sealed interface StreamError extends Cause {
         }
     }
 
+    /// The consumer's cursor belongs to a lineage the partition no longer has (#1730 phase 2 / #1873, KIP-320): an owner
+    /// restart or failover began epoch `ownerEpoch` at `resumeAt` and assigned the offsets above it again. The consumer
+    /// re-reads from `resumeAt` and adopts `ownerEpoch`; reading on from its cursor would skip the new records.
+    ///
+    /// `provenLossFrom` is where the record PROVES a loss to begin, or [#NO_PROVEN_LOSS]: the first start exactly known to be of
+    /// an epoch after the consumer's, below its cursor. `resumeAt` is only a lower bound of every offset an epoch after the
+    /// consumer's may have re-assigned (the consumer re-reads from it: it may redeliver, it never skips), and may be below
+    /// `provenLossFrom` when the record folded the starts in between. Records in `[provenLossFrom, cursor)` are proven gone.
+    record EpochDiverged(Epoch ownerEpoch, long resumeAt, long provenLossFrom) implements StreamError {
+        /// No loss is proven: the record cannot tell a loss from a re-read.
+        public static final long NO_PROVEN_LOSS = -1L;
+
+        /// A divergence at an exact boundary: the loss is proven from `resumeAt`.
+        public EpochDiverged(Epoch ownerEpoch, long resumeAt) {
+            this(ownerEpoch, resumeAt, resumeAt);
+        }
+
+        public boolean lossProven() {
+            return provenLossFrom >= 0L;
+        }
+
+        @Override
+        public String message() {
+            return "Consumer cursor belongs to a replaced lineage: owner epoch %s began at offset %d, resume there".formatted(ownerEpoch,
+                                                                                                                              resumeAt);
+        }
+    }
+
     record CursorExpired(long requestedOffset, long tailOffset) implements StreamError {
         @Override
         public String message() {
