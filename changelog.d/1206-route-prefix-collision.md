@@ -1,7 +1,8 @@
 ### Fixed (2026-10-07 — #1206: two slices serving the same HTTP route were both admitted; the loser reported healthy and served nothing)
 - **Blueprint admission refuses an identical-route collision.** Two slices of DIFFERENT artifacts that declare the same route (same method, same
-  path template, path-parameter names and trailing slashes ignored) are refused at publish with a typed 400 (`BlueprintRejected` wrapping
-  `ExpanderError.RoutePrefixCollisions`) naming both slices and the route. The check covers the slices of the blueprint being published AND of every
+  path template, path-parameter names and trailing slashes ignored) are refused at publish with a typed refusal naming both slices and the route: a collision between two slices of the SAME blueprint is a malformed request (400, `BlueprintRejected` wrapping
+  `ExpanderError.RoutePrefixCollisions`); one with an ALREADY-STORED blueprint conflicts with current state (409, `BlueprintConflict` wrapping
+  `ExpanderError.RoutePrefixConflictsWithStored`, naming the stored blueprint and its slice). The check covers the slices of the blueprint being published AND of every
   other stored blueprint, so the second of two blueprints published at different times is refused at its own publish; a blueprint's earlier version is
   excluded (a republish replaces it), two versions of one artifact never collide (rolling redeploy), and a collision already present between two
   stored blueprints does not block an unrelated publish. Overlapping but different routes (`/orders` and `/orders/export`, `/orders/{id}` and
