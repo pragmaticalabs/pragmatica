@@ -47,23 +47,36 @@ public sealed interface BackupPreflight {
     }
 
     private static Result<Probe> run(List<String> command) {
-        return Result.lift(cause -> GitUnavailable.FACTORY.apply(cause.getMessage()),
-                           () -> probe(command));
+        return Result.lift(BackupPreflight::unavailable,
+                           () -> new ProcessBuilder(command).redirectErrorStream(true)
+                                                            .start())
+                     .flatMap(BackupPreflight::collect);
     }
 
-    private static Probe probe(List<String> command) throws Exception {
-        var process = new ProcessBuilder(command).redirectErrorStream(true).start();
-        var finished = process.waitFor(PROBE_TIMEOUT.millis(), TimeUnit.MILLISECONDS);
+    private static Result<Probe> collect(Process process) {
+        return Result.lift(BackupPreflight::unavailable,
+                           () -> process.waitFor(PROBE_TIMEOUT.millis(),
+                                                 TimeUnit.MILLISECONDS))
+                     .flatMap(finished -> finished
+                                          ? completed(process)
+                                          : timedOut(process));
+    }
 
-        if (!finished) {
-            process.destroyForcibly();
+    private static Result<Probe> completed(Process process) {
+        return Result.lift(BackupPreflight::unavailable,
+                           () -> new Probe(process.exitValue(),
+                                           new String(process.getInputStream().readAllBytes(),
+                                                      StandardCharsets.UTF_8).strip()));
+    }
 
-            return new Probe(-1, "no answer within " + PROBE_TIMEOUT);
-        }
+    private static Result<Probe> timedOut(Process process) {
+        process.destroyForcibly();
 
-        return new Probe(process.exitValue(),
-                         new String(process.getInputStream().readAllBytes(),
-                                    StandardCharsets.UTF_8).strip());
+        return success(new Probe(-1, "no answer within " + PROBE_TIMEOUT));
+    }
+
+    private static Cause unavailable(Throwable cause) {
+        return GitUnavailable.FACTORY.apply(Causes.fromThrowable(cause).message());
     }
 
     private static Result<Unit> exitedCleanly(Probe probe) {
