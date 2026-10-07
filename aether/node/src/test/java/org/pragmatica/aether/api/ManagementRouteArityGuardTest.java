@@ -160,6 +160,8 @@ class ManagementRouteArityGuardTest {
                                         Option.<Serializer> none(),
                                         Option.<Deserializer> none(),
                                         _ -> {},
-                                        Set::of);
+                                        Set::of,
+                                        org.pragmatica.aether.api.routes.NodeLifecycleRoutes.SliceFloor.sliceFloor((_, _) -> java.util.List.of(),
+                                                                                                                    org.pragmatica.utility.warning.OperatorWarningSink.logOnly()));
     }
 }
