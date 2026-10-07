@@ -307,7 +307,7 @@ public final class NodeReplacementWiring {
 
     /// A replacement holds the cluster's one slot while it runs AND while it waits, kept-both, for an operator to settle it: the
     /// kept pair still holds an extra node, and beginning over it would orphan the kept replacement and leave its event open.
-    private static boolean holdsCapacity(NodeReplacementPhase phase) {
+    static boolean holdsCapacity(NodeReplacementPhase phase) {
         return phase == NodeReplacementPhase.FAILED_KEPT_BOTH || !NodeReplacementReconciler.isTerminal(phase);
     }
 
