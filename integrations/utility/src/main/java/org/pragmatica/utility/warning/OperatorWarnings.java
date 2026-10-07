@@ -72,6 +72,9 @@ public sealed interface OperatorWarnings {
 
     private static Unit logWarning(Logger log, OperatorWarning warning) {
         switch (warning.code().level()) {
+            case INFO -> log.info("[{}] {}",
+                                  warning.code().code(),
+                                  warning.message());
             case WARNING -> log.warn("[{}] {}",
                                      warning.code().code(),
                                      warning.message());

@@ -34,6 +34,12 @@ class OperatorWarningWiringTest {
         assertThat(code).contains("streamOwnershipViews.writeAuthority(),operatorWarningSink);");
     }
 
+    /// #752: the declarative consumer manager reports a divergence from its consumer runtime to this node's sink.
+    @Test
+    void assembly_givesTheSinkToTheStreamConsumerManager() {
+        assertThat(assemblyCode()).contains("streamConsumerManager.setOperatorWarningSink(operatorWarningSink);");
+    }
+
     /// #1935: a declared stream consumer that cannot be registered reaches this node's sink. The deployment test hands
     /// the context a test sink, so un-binding it here left every unit test green.
     @Test

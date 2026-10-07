@@ -149,7 +149,7 @@ class NodeDeploymentStateStreamConsumerRegistrationTest {
     }
 
     /// The resolved counterpart: once the section is declared, the consumer that was raised as not registered registers
-    /// and a WARNING `stream-consumer-registered-again` is raised for exactly that subject; a consumer that always
+    /// and an INFO `stream-consumer-registered-again` is raised for exactly that subject; a consumer that always
     /// registered raises nothing, and a second publish does not repeat it.
     @Test
     void aConsumerRaisedAsNotRegistered_thenRegistering_raisesTheResolvedWarningOnce() throws Exception {
@@ -164,7 +164,7 @@ class NodeDeploymentStateStreamConsumerRegistrationTest {
 
         assertThat(all).hasSize(2);
         assertThat(all.get(1).code()).isEqualTo(OperatorWarningCode.STREAM_CONSUMER_REGISTERED_AGAIN);
-        assertThat(all.get(1).code().level()).isEqualTo(WarningLevel.WARNING);
+        assertThat(all.get(1).code().level()).isEqualTo(WarningLevel.INFO);
         assertThat(all.get(1).subject()).contains("onGhost").contains("streams.ghost");
     }
 
