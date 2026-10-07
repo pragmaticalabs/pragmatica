@@ -214,7 +214,7 @@ Failure modes surface through a small, fixed set of observables. Learn these onc
 - **Budget:** n/a (bounded by restart + re-registration).
 - **Degraded / at risk:** cluster-state changes after the last backup push (KV); entity state (checkpoints are not restored); stream records held only by the old nodes; all DHT system-map state (self-heals by rebuild). Without `[backup]`, all cluster state. A **rolling** restart is safe — this applies only to losing the whole cluster at once.
 - **Operator action:** treat the rc-series as non-durable across a full-cluster crash; durable tiers are tracked under [#349](https://github.com/pragmaticalabs/pragmatica/issues/349) / #383.
-- **Proof anchor:** guarantees.md §1–§2; [known-limitations.md](known-limitations.md). Forge `StreamCrashDurabilityTest` proves a **single owner's** WAL survives restart. **Partial** — full durable persistence pending #349.
+- **Proof anchor:** guarantees.md §1–§2; [known-limitations.md](known-limitations.md). Forge `StreamCrashDurabilityTest` proves that acked events are recovered from the WAL after a whole-cluster restart **only with `[backup]` configured and restored on the same node ids and volumes** (the stream keeps its incarnation, so its WAL directory is found); its tripwire pins that without `[backup]` it recovers none and the old WAL stays on disk, unread (see backup-recovery.md). Neither covers fresh NodeIds (#1569). **Partial** — full durable persistence pending #349.
 
 ### DHT / artifact loss under churn
 
