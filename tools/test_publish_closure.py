@@ -243,6 +243,19 @@ class PublishClosureTest(unittest.TestCase):
             })
             self.assertEqual(count, 2, "root and mid; the leaf inherits nothing")
 
+    def test_a_module_outside_the_root_must_skip_the_default_deploy_itself(self):
+        # step-composition is a standalone pom: the root's defaults never reach it, so without its own maven.deploy.skip the
+        # default deploy runs and fails the release reactor (measured on the first full deploy of #1989).
+        loose = pom("loose", group="org.example")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "loose").mkdir()
+            (root / "pom.xml").write_text(root_pom(("loose",)))
+            (root / "loose" / "pom.xml").write_text(loose)
+            self.assertTrue(any("loose" in line and "maven.deploy.skip" in line for line in closure.violations(root / "pom.xml")[2]))
+            (root / "loose" / "pom.xml").write_text(loose.replace("<version>1</version>", "<version>1</version><properties><maven.deploy.skip>true</maven.deploy.skip></properties>", 1))
+            self.assertEqual(closure.violations(root / "pom.xml")[2], [])
+
     def test_the_decision_table_is_checked_against_the_poms(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

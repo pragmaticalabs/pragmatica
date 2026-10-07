@@ -67,6 +67,10 @@ class Module:
     def coordinate(self):
         return (self.group_id, self.artifact_id)
 
+    def declares_deploy_skip(self):
+        """True when this pom's own <properties> sets `maven.deploy.skip` to true."""
+        return text(self.root, "m:properties/m:maven.deploy.skip") == "true"
+
     def plugin_entry(self):
         """The publishing plugin's own <build><plugins> entry as (skipPublishing or None, inherited or None); None if absent.
 
@@ -177,12 +181,25 @@ def managed_entry(module, modules, key):
     return None, None
 
 
+def reaches(module, modules, root):
+    current = module
+    while current is not None and current.pom != root:
+        current = parent_of(current, modules)
+    return current is not None
+
+
 def violations(root_pom):
     modules = reactor(root_pom)
+    root = root_pom.resolve()
     by_coordinate = {module.coordinate(): module for module in modules.values()}
     published = {pom: module for pom, module in modules.items() if publishes(module, modules)}
     found = []
     edges = 0
+    for pom, module in modules.items():
+        # The root's default (skipPublishing in <pluginManagement>, maven.deploy.skip) reaches a module only through its parent
+        # chain. A parent-less module is unbound, so the default deploy would run and fail the release: it must skip it itself.
+        if pom not in published and not reaches(module, modules, root) and not module.declares_deploy_skip():
+            found.append(f"{module.artifact_id} ({pom}) is not under the root pom and does not set maven.deploy.skip=true")
     for module in published.values():
         parent = modules.get(module.parent_pom) if module.parent_pom else None
         if parent is not None and parent.pom not in published:
