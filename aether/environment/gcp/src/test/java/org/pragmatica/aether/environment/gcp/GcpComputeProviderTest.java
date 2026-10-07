@@ -239,18 +239,6 @@ class GcpComputeProviderTest {
     }
 
     @Nested
-    class RestartTests {
-        @Test
-        void restart_success_callsReset() {
-            provider.restart(new InstanceId("us-central1-a/aether-test"))
-                    .await()
-                    .onFailure(cause -> assertThat(cause).isNull())
-                    .onSuccess(unit -> assertThat(unit).isNotNull());
-            assertThat(testClient.lastResetInstanceName).isEqualTo("us-central1-a/aether-test");
-        }
-    }
-
-    @Nested
     class ApplyTagsTests {
         @Test
         void applyTags_success_setsLabels() {

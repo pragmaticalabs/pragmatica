@@ -554,11 +554,6 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
     }
 
     @Override
-    public Promise<Unit> restartNode(NodeId node) {
-        return delegate.restartNode(node);
-    }
-
-    @Override
     public org.pragmatica.lang.Result<String> sourceBinding(SourceName source) {
         return delegate.sourceBinding(source);
     }
@@ -579,7 +574,6 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
         return switch (action) {
             case NodeAction.StartNode start -> provisionNode(start.spec()).map(ActionResult.NodeStarted::new);
             case NodeAction.StopNode stop -> terminateNode(stop.nodeId()).map(_ -> new ActionResult.NodeStopped(stop.nodeId()));
-            case NodeAction.RestartNode restart -> restartNode(restart.nodeId()).map(_ -> new ActionResult.NodeRestarted(restart.nodeId()));
             case NodeAction.MigrateSlices _ -> EnvironmentError.operationNotSupported("migrateSlices").promise();
         };
     }

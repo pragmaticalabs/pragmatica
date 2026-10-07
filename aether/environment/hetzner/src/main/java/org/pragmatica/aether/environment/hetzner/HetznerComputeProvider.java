@@ -198,12 +198,6 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
     }
 
     @Override
-    public Promise<Unit> restart(InstanceId id) {
-        return parseServerId(id).async()
-                            .flatMap(this::rebootServer);
-    }
-
-    @Override
     public Promise<Unit> applyTags(InstanceId id, Map<String, String> tags) {
         return parseServerId(id).async()
                             .flatMap(serverId -> mergeLabels(serverId, tags));
@@ -228,10 +222,6 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
 
     private Promise<Unit> destroyServer(long serverId) {
         return client.deleteServer(serverId);
-    }
-
-    private Promise<Unit> rebootServer(long serverId) {
-        return client.rebootServer(serverId);
     }
 
     /// #442 v2b — Hetzner's label update REPLACES the server's whole label map, so a partial
