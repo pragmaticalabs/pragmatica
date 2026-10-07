@@ -175,3 +175,9 @@ Executed on 2026-10-08 using JDK 25, the isolated Maven repository, and local Po
 The cache change orders sequential maintenance; it does not provide concurrent read/write coherence or a forced maintenance timeout. Original example sources remain authoritative: comprehensive persistence still rejects nullable columns mapped to required fields, and banking's transfer history remains in memory. Windows execution, cloud/Forge, multi-node startup, cross-process migration exclusion, and stream/entity durability are outside this validation.
 
 The downstream `aether/node -am install -DskipTests` reactor passed after the shared fixes, with no skipped modules.
+
+## Extension boundary review
+
+Terra rejects null slice instances and null factory, binding, resource-acquisition, or cleanup completion values with operation-specific failures. Five fault-injection cases in `TerraApplicationTest` exercise these extension defects and verify reverse cleanup reaches every scope. Generated factories obey these contracts; the guards cover custom embedding implementations. This does not attempt to compensate arbitrary external effects performed by a defective factory.
+
+After boundary hardening, `mvn -o -T 1 -f terra/pom.xml clean install -Dterra.test.jdbcUrl=…` rebuilt the entire Terra subtree and all nine distributions. **64 tests passed with zero failures, errors, or skips**, including HTTP/TLS, 12 live database tests, and extracted-process tests. The explicit runtime JBCT gate passed (zero lint errors or format issues).
