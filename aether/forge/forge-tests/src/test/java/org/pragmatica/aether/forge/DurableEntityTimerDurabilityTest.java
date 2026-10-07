@@ -17,6 +17,7 @@ import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.api.parallel.Execution;
 import org.junit.jupiter.api.parallel.ExecutionMode;
 import org.awaitility.core.ConditionTimeoutException;
+import org.pragmatica.aether.config.BackupConfig;
 import org.pragmatica.aether.dht.EntityPartitionArc;
 import org.pragmatica.aether.ember.EmberCluster;
 import org.pragmatica.config.ConfigurationProvider;
@@ -24,10 +25,12 @@ import org.pragmatica.http.HttpOperations;
 import org.pragmatica.http.HttpResult;
 import org.pragmatica.lang.Option;
 
+import java.io.IOException;
 import java.net.URI;
 import java.net.http.HttpRequest;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -190,8 +193,37 @@ class DurableEntityTimerDurabilityTest {
         // entity log's backing per-partition WAL on. Without it a full-cluster restart would lose the log
         // and the gate would be measuring the harness rather than the entity.
         cluster.withDataBaseDir(baseDir);
+        // The supported restart configuration (#1532/#1533): the KV is backed up to a git remote and restored, so the entity log's
+        // backing stream comes back with the SAME incarnation and finds its WAL directory (`<engine key>@<incarnation>`, #1567).
+        // Without it a restart starts from an empty KV, the stream is created afresh under a new incarnation, and the old log
+        // (with the pending timer) is never looked up (#1569).
+        var remote = baseDir.resolve("kv-backup-remote.git");
+
+        runGit(baseDir, "init", "--quiet", "--bare", remote.toString());
+        cluster.withKvBackup(baseDir.resolve("kv-backup-nodes"), remote.toString(), BackupConfig.RestoreMode.AUTO);
 
         startAndAwaitReady();
+    }
+
+    private static void runGit(Path cwd, String... args) {
+        var command = new ArrayList<String>();
+
+        command.add("git");
+        command.addAll(List.of(args));
+
+        try {
+            var process = new ProcessBuilder(command).directory(cwd.toFile()).redirectErrorStream(true).start();
+
+            process.getInputStream().readAllBytes();
+
+            if (process.waitFor() != 0) {
+                throw new IllegalStateException("git " + String.join(" ", args) + " failed");
+            }
+        } catch (IOException e) {
+            throw new IllegalStateException(e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
     }
 
     @AfterAll
