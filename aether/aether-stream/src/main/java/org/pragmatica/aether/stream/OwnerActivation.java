@@ -159,6 +159,9 @@ public final class OwnerActivation {
         HOLDER_UNREACHABLE("A live placement member did not answer the watermark probe and may hold a higher watermark"),
         CATCH_UP_SHORT("The catch-up did not reach the highest live holder's watermark"),
         NO_RING("The partition's ring is not materialized here, so there is no offset an epoch could begin at"),
+        /// #1976: no committed leader authorises the write — a quorum condition with its own event, not a refusal of this
+        /// partition's commit, so it is retried but never counted toward the per-partition refusal alarm.
+        NO_COMMITTED_LEADER("No committed leader authorises the owner's lineage commit"),
         LINEAGE_NOT_COMMITTED("The owner's epoch start was not committed (the guarded write was refused or did not apply)"),
         IN_PROGRESS("An activation of this partition is already running");
         private final String message;

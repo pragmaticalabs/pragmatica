@@ -1501,7 +1501,7 @@ public interface AetherNode extends ManageableNode {
                                                              java.util.function.Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> applier,
                                                              HlcClock clock) {
         return (stream, partition, current, start, restarted) -> committedLeader.get()
-                                                                                .fold(() -> OwnerActivation.ActivationError.LINEAGE_NOT_COMMITTED.<Unit> promise(),
+                                                                                .fold(() -> OwnerActivation.ActivationError.NO_COMMITTED_LEADER.<Unit> promise(),
                                                                                       leader -> lineageWrite(applier,
                                                                                                              StreamPartitionOwnershipWriter.guardedOwnershipWrite(leader,
                                                                                                                                                                   stream,
@@ -1514,8 +1514,8 @@ public interface AetherNode extends ManageableNode {
     }
 
     private static Promise<Unit> lineageWrite(java.util.function.Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> applier,
-                                              KVCommand<AetherKey> write) {
-        var transactionId = ((KVCommand.LeaderTransaction<?, ?>) write).transactionId();
+                                              KVCommand.LeaderTransaction<AetherKey, AetherValue> write) {
+        var transactionId = write.transactionId();
 
         return applier.apply(List.of(write))
                       .flatMap(results -> acceptedBy(results, transactionId)

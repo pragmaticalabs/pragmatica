@@ -148,6 +148,8 @@ class StreamLineageCommitTest {
                                .await();
 
         assertThat(result.isFailure()).isTrue();
+        result.onFailure(cause -> assertThat(cause).as("a quorum condition, not a refusal of this commit")
+                                                  .isEqualTo(org.pragmatica.aether.stream.OwnerActivation.ActivationError.NO_COMMITTED_LEADER));
     }
 
     private void commit(StreamPartitionOwnershipValue current, long start, boolean restarted) {

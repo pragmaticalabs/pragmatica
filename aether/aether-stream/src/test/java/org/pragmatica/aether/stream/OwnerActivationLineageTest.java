@@ -252,6 +252,19 @@ class OwnerActivationLineageTest {
         assertThat(raised).as("2 refusals in the new tenure, not 2 + the old tenure's").isEmpty();
     }
 
+    /// No committed leader is a quorum condition with its own event: it fails the activation (retried) but never counts toward
+    /// the per-partition refusal alarm, or every owned partition would raise one when quorum goes. Red when it counts.
+    @Test
+    void commitsWithoutACommittedLeader_failButNeverRaiseTheRefusalAlarm() {
+        record.set(Option.some(committed(List.of(new EpochStart(EPOCH, 5L)))));
+        refusal.set(Option.some(OwnerActivation.ActivationError.NO_COMMITTED_LEADER));
+
+        stickFor(OwnerActivation.LINEAGE_REFUSAL_ALARM_AFTER * 2);
+
+        assertThat(raised).isEmpty();
+        assertThat(commits).as("each attempt retried the commit").hasSize(OwnerActivation.LINEAGE_REFUSAL_ALARM_AFTER * 2);
+    }
+
     private void stickFor(int attempts) {
         for (var attempt = 0; attempt < attempts; attempt++) {
             activate();
