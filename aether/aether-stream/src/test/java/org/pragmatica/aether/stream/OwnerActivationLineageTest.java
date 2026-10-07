@@ -240,6 +240,18 @@ class OwnerActivationLineageTest {
         assertThat(raised).as("the second stuck tenure raises its own block").hasSize(2);
     }
 
+    /// Refusals below the threshold do not carry across a quorum loss: the count belongs to the tenure that ended.
+    @Test
+    void refusalsBelowTheThreshold_doNotCarryAcrossQuorumLoss() {
+        record.set(Option.some(committed(List.of(new EpochStart(EPOCH, 5L)))));
+        refusal.set(Option.some(OwnerActivation.ActivationError.LINEAGE_NOT_COMMITTED));
+        stickFor(OwnerActivation.LINEAGE_REFUSAL_ALARM_AFTER - 2);
+        activation.onQuorumStateChange(org.pragmatica.consensus.topology.ClusterStateNotification.passive());
+        stickFor(2);
+
+        assertThat(raised).as("2 refusals in the new tenure, not 2 + the old tenure's").isEmpty();
+    }
+
     private void stickFor(int attempts) {
         for (var attempt = 0; attempt < attempts; attempt++) {
             activate();
