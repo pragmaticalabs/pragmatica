@@ -42,7 +42,15 @@ public record DockerEnvironmentIntegrationFactory() implements EnvironmentIntegr
                             compute.getOrDefault("socket_path", "/var/run/docker.sock"),
                             compute.getOrDefault("api_key", ""),
                             compute.getOrDefault("docker_gid", ""),
-                            parseBoolOrDefault(compute.getOrDefault("expose_host_ports", ""), false));
+                            parseBoolOrDefault(compute.getOrDefault("expose_host_ports", ""), false)).map(docker -> docker.withBackupEnv(backupEnvOf(compute)));
+    }
+
+    /// The leader's effective `[backup]`, handed in as `AETHER_BACKUP_*` entries of the compute map (`Main` writes them).
+    private static Map<String, String> backupEnvOf(Map<String, String> compute) {
+        return compute.entrySet()
+                      .stream()
+                      .filter(entry -> org.pragmatica.aether.environment.ClusterIdentityEnv.BACKUP_VARS.contains(entry.getKey()))
+                      .collect(java.util.stream.Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue));
     }
 
     /// Resolve a port-base setting with the following precedence:

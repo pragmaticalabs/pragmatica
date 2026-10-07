@@ -351,7 +351,7 @@ public record DockerComputeProvider(DockerCommandRunner runner, DockerConfig con
         ClusterIdentityEnv.DOCKER_INFRA_VARS.forEach(name -> propagateEnvVar(command, name));
         // #1968: the backup configuration is environment-driven for a Docker node (it has no node TOML of its own), so a
         // replacement inherits it from the provisioning host's environment, and gets a volume for the repository path.
-        ClusterIdentityEnv.BACKUP_VARS.forEach(name -> propagateEnvVar(command, name));
+        ClusterIdentityEnv.BACKUP_VARS.forEach(name -> emitBackupVar(command, name));
         addBackupVolume(command, containerName);
         // --- Dev-mode (ISOLATED — never part of IDENTITY_VARS) ---
         // Propagate AETHER_INSECURE_DEV_MODE only when present in env so an auto-healed
@@ -394,8 +394,8 @@ public record DockerComputeProvider(DockerCommandRunner runner, DockerConfig con
     /// `/data`, so a path under it mounts `/data` (the volume is initialised from the image's ownership); any other path
     /// is mounted as given. Per node, never shared: two nodes must not write one git working tree.
     private void addBackupVolume(ArrayList<String> command, String containerName) {
-        var enabled = Boolean.parseBoolean(Option.option(hostEnv.apply(ClusterIdentityEnv.BACKUP_ENABLED)).or(""));
-        var path = Option.option(hostEnv.apply(ClusterIdentityEnv.BACKUP_PATH)).or("");
+        var enabled = Boolean.parseBoolean(backupValue(ClusterIdentityEnv.BACKUP_ENABLED));
+        var path = backupValue(ClusterIdentityEnv.BACKUP_PATH);
 
         if (!enabled || path.isBlank()) {
             return;
@@ -407,6 +407,25 @@ public record DockerComputeProvider(DockerCommandRunner runner, DockerConfig con
 
         command.add("-v");
         command.add(containerName + "-backup:" + target);
+    }
+
+    /// The backup variable from the leader's EFFECTIVE `[backup]` (whatever its source) when one was handed in, else from the
+    /// provisioning host's environment. Never a mix: a configured leader's backup is that whole section.
+    private String backupValue(String name) {
+        return config.backupEnv()
+                     .isEmpty()
+               ? Option.option(hostEnv.apply(name)).or("")
+               : config.backupEnv()
+                       .getOrDefault(name, "");
+    }
+
+    private void emitBackupVar(ArrayList<String> command, String name) {
+        var value = backupValue(name);
+
+        if (!value.isEmpty()) {
+            command.add("-e");
+            command.add(name + "=" + value);
+        }
     }
 
     private void propagateEnvVar(ArrayList<String> command, String name) {

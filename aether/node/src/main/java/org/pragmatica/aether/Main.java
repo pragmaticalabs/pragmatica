@@ -26,6 +26,7 @@ import org.pragmatica.aether.config.AlertConfig;
 import org.pragmatica.aether.config.AetherConfig;
 import org.pragmatica.aether.config.ClusterConfig;
 import org.pragmatica.aether.config.ClusterSizeGate;
+import org.pragmatica.aether.environment.CloudConfig;
 import org.pragmatica.aether.environment.ClusterName;
 import org.pragmatica.aether.environment.AutoHealConfig;
 import org.pragmatica.aether.config.AppHttpConfig;
@@ -384,11 +385,20 @@ public record Main(String[] args) {
     }
 
     private Option<EnvironmentIntegration> resolveEnvironment(Option<AetherConfig> aetherConfig) {
-        return aetherConfig.flatMap(AetherConfig::cloud)
+        return aetherConfig.flatMap(config -> config.cloud()
+                                                    .map(cloud -> withEffectiveBackup(cloud,
+                                                                                      config.backup())))
                            .flatMap(cloudConfig -> EnvironmentIntegrationFactory.createFromConfig(cloudConfig)
                                                                                 .onFailure(cause -> log.error("Failed to create cloud environment: {}",
                                                                                                               cause.message()))
                                                                                 .option());
+    }
+
+    /// #1968: the provider that mints replacements learns this node's EFFECTIVE `[backup]`, from its TOML or its environment alike,
+    /// so a replacement carries the same backup whatever the leader's source of it was. A provider without a node TOML (Docker)
+    /// reads it from the compute map; others ignore the extra entries.
+    static CloudConfig withEffectiveBackup(CloudConfig cloud, BackupConfig backup) {
+        return cloud.withCompute(backup.asEnvironment());
     }
 
     private static HttpProtocol resolveManagementHttpProtocol(Option<AetherConfig> aetherConfig) {
