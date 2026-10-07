@@ -1992,17 +1992,17 @@ public interface AetherNode extends ManageableNode {
     private static Unit raiseOwnerPromotionBlock(OperatorWarningSink sink, OwnerActivation.ActivationBlock block) {
         return switch (block) {
             case OwnerActivation.ActivationBlock.PeerEventExceedsReadCap oversized -> OperatorWarnings.raise(LOG,
-                                                                                                              sink,
-                                                                                                              OperatorWarningCode.STREAM_EVENT_EXCEEDS_READ_CAP,
-                                                                                                              partitionSubject(oversized),
-                                                                                                              "{}",
-                                                                                                              oversized.message());
+                                                                                                             sink,
+                                                                                                             OperatorWarningCode.STREAM_EVENT_EXCEEDS_READ_CAP,
+                                                                                                             partitionSubject(oversized),
+                                                                                                             "{}",
+                                                                                                             oversized.message());
             case OwnerActivation.ActivationBlock.HoldersUnreachable unreachable -> OperatorWarnings.raise(LOG,
-                                                                                                           sink,
-                                                                                                           OperatorWarningCode.STREAM_OWNER_PROMOTION_HOLDERS_UNREACHABLE,
-                                                                                                           partitionSubject(unreachable),
-                                                                                                           "{}",
-                                                                                                           unreachable.message());
+                                                                                                          sink,
+                                                                                                          OperatorWarningCode.STREAM_OWNER_PROMOTION_HOLDERS_UNREACHABLE,
+                                                                                                          partitionSubject(unreachable),
+                                                                                                          "{}",
+                                                                                                          unreachable.message());
             default -> raiseOwnerPromotionBlock(block);
         };
     }
@@ -2010,17 +2010,17 @@ public interface AetherNode extends ManageableNode {
     private static Unit resolveOwnerPromotionBlock(OperatorWarningSink sink, OwnerActivation.ActivationBlock block) {
         return switch (block) {
             case OwnerActivation.ActivationBlock.PeerEventExceedsReadCap oversized -> OperatorWarnings.raise(LOG,
-                                                                                                              sink,
-                                                                                                              OperatorWarningCode.STREAM_EVENT_EXCEEDS_READ_CAP_RESOLVED,
-                                                                                                              partitionSubject(oversized),
-                                                                                                              "Owner promotion of {} is no longer refused for a peer's oversized event.",
-                                                                                                              partitionSubject(oversized));
+                                                                                                             sink,
+                                                                                                             OperatorWarningCode.STREAM_EVENT_EXCEEDS_READ_CAP_RESOLVED,
+                                                                                                             partitionSubject(oversized),
+                                                                                                             "Owner promotion of {} is no longer refused for a peer's oversized event.",
+                                                                                                             partitionSubject(oversized));
             case OwnerActivation.ActivationBlock.HoldersUnreachable unreachable -> OperatorWarnings.raise(LOG,
-                                                                                                           sink,
-                                                                                                           OperatorWarningCode.STREAM_OWNER_PROMOTION_HOLDERS_ANSWERING,
-                                                                                                           partitionSubject(unreachable),
-                                                                                                           "Owner promotion of {} no longer waits for unreachable members.",
-                                                                                                           partitionSubject(unreachable));
+                                                                                                          sink,
+                                                                                                          OperatorWarningCode.STREAM_OWNER_PROMOTION_HOLDERS_ANSWERING,
+                                                                                                          partitionSubject(unreachable),
+                                                                                                          "Owner promotion of {} no longer waits for unreachable members.",
+                                                                                                          partitionSubject(unreachable));
             default -> Unit.unit();
         };
     }

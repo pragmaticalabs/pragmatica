@@ -60,7 +60,10 @@ public record ClusterEventsLimits(long maxCount, long maxBytes, long maxAgeMs, l
         return Result.all(limit(environment, MAX_COUNT_VARIABLE, DEFAULT_MAX_COUNT, OffHeapRingBuffer.MAX_CAPACITY).flatMap(ClusterEventsLimits::withinReadWindow),
                           limit(environment, MAX_BYTES_VARIABLE, DEFAULT_MAX_BYTES, Long.MAX_VALUE),
                           limit(environment, MAX_AGE_MS_VARIABLE, DEFAULT_MAX_AGE_MS, Long.MAX_VALUE),
-                          limit(environment, MAX_EVENT_SIZE_BYTES_VARIABLE, DEFAULT_MAX_EVENT_SIZE_BYTES, StreamEventLimits.MAX_EVENT_SIZE_BYTES))
+                          limit(environment,
+                                MAX_EVENT_SIZE_BYTES_VARIABLE,
+                                DEFAULT_MAX_EVENT_SIZE_BYTES,
+                                StreamEventLimits.MAX_EVENT_SIZE_BYTES))
                      .map(ClusterEventsLimits::new);
     }
 
