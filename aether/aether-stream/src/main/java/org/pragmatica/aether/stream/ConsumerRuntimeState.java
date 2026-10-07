@@ -1265,7 +1265,6 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
                             ESCAPE_BACKOFF_CAP_MS,
                             escape.framesText());
         } else if (escapes == ESCAPES_BEFORE_WARNING) {
-            state.markEscapeRunReported();
             OperatorWarnings.raise(ESCAPE_LOG,
                                    operatorWarnings,
                                    OperatorWarningCode.STREAM_CONSUMER_DRAIN_FAILING,
@@ -1280,13 +1279,17 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
                                    clockMs.getAsLong() - state.escapeRunStartMs(),
                                    ESCAPE_BACKOFF_CAP_MS,
                                    escape.framesText());
+            // Marked only AFTER the raise, so a cancel's own hook that runs before it finds the run unreported and raises no
+            // recovery ahead of the failure it would end. A cancel that landed meanwhile has nobody left to end the alert
+            // just raised, so it is ended here, exactly once: `endEscapeRun` reports the run as reported only to
+            // whichever of this recheck and the cancel's hook gets there first.
+            state.markEscapeRunReported();
             if (state.isCancelled()) {
-                // The cancel's own hook may have run between this escape being counted and the alert being raised: it
-                // found the run unreported and reset it, so the alert just raised has nobody left to end it.
                 var lastedMs = clockMs.getAsLong() - state.escapeRunStartMs();
 
-                state.endEscapeRun();
-                raiseCancelledRecovery(key, escapes, lastedMs);
+                if (state.endEscapeRun()) {
+                    raiseCancelledRecovery(key, escapes, lastedMs);
+                }
             }
         } else {
             ESCAPE_LOG.debug("Delivery pass for {}[{}] group {} threw again ({} in a row), next pass in {} ms: {}",
