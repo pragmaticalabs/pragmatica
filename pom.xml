@@ -75,6 +75,9 @@
     <properties>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <java.release>25</java.release>
+        <!-- A module the Central plugin is not bound to (every module that has not opted in) must not run the default deploy
+             either (#1988). The Central plugin itself ignores this property: its own skipPublishing decides. -->
+        <maven.deploy.skip>true</maven.deploy.skip>
 
         <!-- Dependencies -->
         <netty.version>4.2.18.Final</netty.version>
@@ -609,6 +612,9 @@
                         <doclint>none</doclint>
                         <failOnError>false</failOnError>
                         <quiet>true</quiet>
+                        <additionalOptions>
+                            <additionalOption>--no-fonts</additionalOption>
+                        </additionalOptions>
                     </configuration>
                 </plugin>
                 <plugin>
@@ -633,6 +639,14 @@
                     <configuration>
                         <publishingServerId>central</publishingServerId>
                         <autoPublish>true</autoPublish>
+                        <!--
+                            Publishing is OPT-IN (#1988, #1989). A module the plugin is bound to takes this default; a module publishes only
+                            when its own pom declares this plugin in <build><plugins> with <skipPublishing>false</skipPublishing>. Only the
+                            Central plugin's `skipPublishing` excludes a module: `maven.deploy.skip` is ignored by it. A parent pom that
+                            publishes while its children do not declares the entry with <inherited>false</inherited>.
+                            docs/release/maven-central-publish-set.md decides every module; tools/check-publish-closure.py gates it.
+                        -->
+                        <skipPublishing>true</skipPublishing>
                     </configuration>
                 </plugin>
                 <plugin>
@@ -708,6 +722,14 @@
 
         <plugins>
             <plugin>
+                <groupId>org.sonatype.central</groupId>
+                <artifactId>central-publishing-maven-plugin</artifactId>
+                <inherited>false</inherited>
+                <configuration>
+                    <skipPublishing>false</skipPublishing>
+                </configuration>
+            </plugin>
+            <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-compiler-plugin</artifactId>
             </plugin>
@@ -749,9 +771,32 @@
                         <groupId>org.apache.maven.plugins</groupId>
                         <artifactId>maven-gpg-plugin</artifactId>
                     </plugin>
+                    <!--
+                        The Central plugin is not listed here: it is bound by each published module's own pom (opt-in, see its
+                        <pluginManagement> entry), so a module that says nothing is never uploaded (#1988). The closure gate
+                        runs first, so a release whose published set is not closed under its dependencies stops before the upload.
+                    -->
                     <plugin>
-                        <groupId>org.sonatype.central</groupId>
-                        <artifactId>central-publishing-maven-plugin</artifactId>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-antrun-plugin</artifactId>
+                        <version>3.1.0</version>
+                        <inherited>false</inherited>
+                        <executions>
+                            <execution>
+                                <id>published-set-closure</id>
+                                <phase>validate</phase>
+                                <goals>
+                                    <goal>run</goal>
+                                </goals>
+                                <configuration>
+                                    <target>
+                                        <exec executable="python3" failonerror="true" dir="${project.basedir}">
+                                            <arg value="tools/check-publish-closure.py"/>
+                                        </exec>
+                                    </target>
+                                </configuration>
+                            </execution>
+                        </executions>
                     </plugin>
                 </plugins>
             </build>
