@@ -419,4 +419,11 @@ class NodeReplacementReconcilerTest {
         assertThat(model.records.get(OLD).phase()).isEqualTo(NodeReplacementPhase.DONE);
         assertThat(model.records.get(OLD).reason()).contains("retirement overdue");
     }
+
+    @Test
+    void timingsOverride_parsesSevenValues_andIgnoresAnythingElse() {
+        assertThat(Timings.parse("1,2,3,4,5,6,7")).isEqualTo(new Timings(1, 2, 3, 4, 5, 6, 7));
+        assertThat(Timings.parse("1,2,3")).as("too short: defaults").isEqualTo(Timings.parse(""));
+        assertThat(Timings.parse("a,b,c,d,e,f,g")).as("unparsable: defaults").isEqualTo(Timings.parse(""));
+    }
 }

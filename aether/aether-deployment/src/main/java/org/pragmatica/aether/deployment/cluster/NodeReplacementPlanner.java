@@ -7,6 +7,8 @@ package org.pragmatica.aether.deployment.cluster;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeReplacementPhase;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeReplacementValue;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.utils.Causes;
 
 
 /// #1543 part E — the decision function of the replacement reconciler: what ONE committed record should do next, given
@@ -73,8 +75,31 @@ public final class NodeReplacementPlanner {
                           long canaryWaitMs,
                           long drainingMs,
                           long retiringMs) {
+        /// The system property that overrides the budgets (provisioning, joining, swapping, canary, canaryWait, draining,
+        /// retiring, in milliseconds, comma-separated). Meant for the integration harness, where a "never joins" case must
+        /// not wait ten minutes; an unparsable or short value is ignored and the defaults apply.
+        public static final String OVERRIDE_PROPERTY = "aether.replacement.timings.ms";
+
         public static Timings defaults() {
-            return new Timings(120_000L, 600_000L, 180_000L, 120_000L, 0L, 600_000L, 300_000L);
+            return parse(System.getProperty(OVERRIDE_PROPERTY, ""));
+        }
+
+        public static Timings parse(String commaSeparated) {
+            var fallback = new Timings(120_000L, 600_000L, 180_000L, 120_000L, 0L, 600_000L, 300_000L);
+            var parts = commaSeparated.isBlank()
+                        ? new String[0]
+                        : commaSeparated.split(",");
+
+            if (parts.length != 7) {
+                return fallback;
+            }
+
+            return Result.lift(Causes::fromThrowable,
+                               () -> java.util.Arrays.stream(parts)
+                                                     .mapToLong(part -> Long.parseLong(part.trim()))
+                                                     .toArray())
+                         .map(v -> new Timings(v[0], v[1], v[2], v[3], v[4], v[5], v[6]))
+                         .or(fallback);
         }
     }
 
