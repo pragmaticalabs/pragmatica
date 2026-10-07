@@ -120,6 +120,8 @@ public interface EntityOwnerForward {
     /// so a frame that finds its connection dead or absent is DROPPED rather than held in the peer's offline buffer and
     /// delivered on reattach after the caller was told it was not sent. [Cause.Transient]: an app route answers 503 with
     /// "safe to retry" in the body. Contrast [ForwardTimedOut], where the command WAS sent and the outcome is unknown.
+    /// A frame that the transport wrote after its captured connection died (the peer rebound to a live one) is reported as
+    /// the write it was, so it is never mistaken for this cause.
     record ForwardNotSent(String detail) implements Cause.Transient {
         @Override
         public String message() {
