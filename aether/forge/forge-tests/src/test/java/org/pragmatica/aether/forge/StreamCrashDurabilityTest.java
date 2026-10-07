@@ -7,7 +7,10 @@ package org.pragmatica.aether.forge;
 
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.MethodOrderer;
+import org.junit.jupiter.api.Order;
 import org.junit.jupiter.api.Tag;
+import org.junit.jupiter.api.TestMethodOrder;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
 import org.junit.jupiter.api.io.TempDir;
@@ -89,6 +92,7 @@ import org.pragmatica.aether.ember.EmberCluster;
 @Tag("Heavy")
 @Execution(ExecutionMode.SAME_THREAD)
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
+@TestMethodOrder(MethodOrderer.OrderAnnotation.class)
 class StreamCrashDurabilityTest {
     private static final System.Logger LOG = System.getLogger(StreamCrashDurabilityTest.class.getName());
     private static final int BASE_PORT = 13500;
@@ -111,6 +115,9 @@ class StreamCrashDurabilityTest {
     /// what `replicaSnapshot` keys by AND the name of the partition's WAL directory
     /// (`StreamPartitionManager` opens `<walBaseDir>/<config.name()>/<partition>.wal`).
     private static final String STREAM_NAME = TestArtifacts.streamEngineKey(BLUEPRINT_ID, "test-events");
+    /// The unqualified alias the removal-path redeploy would mint a second ring under (#1040 / #1104).
+    private static final String BARE_ALIAS = "test-events";
+    private static final Duration OBSERVE_AFTER_REMOVAL = Duration.ofSeconds(20);
     private static final String ERROR_FALLBACK = "{\"error\":\"request failed\"}";
 
     private static final Pattern EVENT_OBJECT = Pattern.compile("\\{[^{}]*\"offset\"[^{}]*}");
@@ -156,6 +163,7 @@ class StreamCrashDurabilityTest {
     /// THE A6 gate: publish N acked events that live only in the hot ring + WAL, fully restart the
     /// cluster preserving the per-node data dirs, then prove all N are recovered via WAL replay.
     @Test
+    @Order(1)
     void fullClusterRestart_recoversAllAckedEvents_viaWalReplay() throws IOException {
         var port = appPort();
         var base = head(port);
@@ -191,6 +199,47 @@ class StreamCrashDurabilityTest {
                          + "(ring was in-memory and lost; nothing was sealed)", EVENT_COUNT)
             .hasSize(EVENT_COUNT);
         assertContiguousBatch(recovered, 0L, "crash");
+    }
+
+    /// #1104: a blueprint removal must not reload the slice. About 40 ms after the removal the owning `SliceTargetKey` is gone, and
+    /// the node's KV-convergence redeploy (`redeployClaimedActiveSlice`) used to see ACTIVE claimed in the KV with the slice not
+    /// loaded, and load it again; with no owning blueprint the stream address fell back to the bare alias `test-events`, which
+    /// opened a SECOND ring and a second WAL directory beside the qualified one. The redeploy is now gated on a committed target
+    /// (#1083), so nothing is reloaded, nothing activates again, and no WAL for the bare alias ever appears.
+    ///
+    /// The watcher: after the DELETE the base directory is scanned every 20 ms for [#OBSERVE_AFTER_REMOVAL] and every directory
+    /// that holds a WAL is collected, so a ring that is opened and gone again is still seen. Runs after the crash-durability test, on
+    /// the cluster it leaves with the blueprint deployed. Red when the redeploy's committed-target gate is removed.
+    @Test
+    @Order(2)
+    void blueprintRemoval_doesNotReloadTheSlice_noSecondStreamRingOpensItsWal() throws IOException {
+        var leaderPort = cluster.getLeaderManagementPort().or(anyMgmtPort());
+
+        assertThat(walDirectoryNames()).as("control: the qualified ring's WAL directory exists before the removal").contains(STREAM_NAME);
+        assertThat(walDirectoryNames()).as("control: no bare-alias ring exists before the removal").doesNotContain(BARE_ALIAS);
+
+        var removal = httpDelete(leaderPort, "/api/v1/blueprints/" + BLUEPRINT_ID);
+        var seen = new java.util.TreeSet<String>();
+        var deadline = System.nanoTime() + OBSERVE_AFTER_REMOVAL.toNanos();
+
+        while (System.nanoTime() < deadline) {
+            seen.addAll(walDirectoryNames());
+            LockSupport.parkNanos(POLL_GAP_NANOS);
+        }
+
+        LOG.log(System.Logger.Level.INFO, "BLUEPRINT-REMOVAL removal={0} walDirectoriesSeenAfterRemoval={1}", removal, seen);
+        assertThat(seen).as("WAL directories seen for %s after the blueprint removal (removal answered %s): a bare-alias ring is a second activation", OBSERVE_AFTER_REMOVAL, removal)
+                        .doesNotContain(BARE_ALIAS);
+    }
+
+    private java.util.Set<String> walDirectoryNames() throws IOException {
+        var names = new java.util.HashSet<String>();
+
+        for (var wal : walFiles(baseDir)) {
+            names.add(wal.getParent().getFileName().toString());
+        }
+
+        return names;
     }
 
     // --- restart ------------------------------------------------------------
