@@ -27,6 +27,7 @@ public final class TerraContext {
     private final ConfigurationProvider configuration;
     private final TerraTopics topics;
     private final Scope scope;
+    private final Map<String, Object> steps = new java.util.concurrent.ConcurrentHashMap<>();
 
     TerraContext(String artifact,
                  Map<Class<?>, Object> slices,
@@ -44,6 +45,19 @@ public final class TerraContext {
                                          .map(type::cast)
                                          .toResult(new TerraError.InvalidGraph("Dependency not constructed: " + type.getName()))
                                          .async();
+    }
+
+    /// Retain the exact plain-interface instance injected into the slice for generated subscriptions.
+    public <T> T retainStep(String name, T step) {
+        steps.put(name, step);
+
+        return step;
+    }
+
+    public <T> Result<T> step(String name, Class<T> type) {
+        return org.pragmatica.lang.Option.option(steps.get(name))
+                                         .map(type::cast)
+                                         .toResult(new TerraError.InvalidGraph("Plain-interface step not constructed: " + name));
     }
 
     public ResourceProviderFacade resources() {

@@ -149,6 +149,7 @@ public class FactoryClassGenerator {
         if (model.hasMethodInterceptors() || model.dependencies()
                                                   .stream()
                                                   .anyMatch(dep -> dep.isPublisher() || dep.isStreamResource())) {
+            importTracker.use("org.pragmatica.lang.type.TypeToken");
             importTracker.use("org.pragmatica.aether.slice.ProvisioningContext");
             importTracker.use("org.pragmatica.lang.Functions.Fn1");
         }
@@ -614,12 +615,13 @@ public class FactoryClassGenerator {
             var factoryMethodName = lowercaseFirst(dep.interfaceSimpleName());
             var params = plainInterfaceParams.getOrDefault(dep.parameterName(), List.of());
             var argList = params.stream().map(PlainInterfaceFactoryParam::varName).collect(Collectors.joining(", "));
+            var stepCall = dep.sourceUsableName() + "." + factoryMethodName + "(" + argList + ")";
 
             out.println("            var " + dep.parameterName()
-                       + " = " + dep.sourceUsableName()
-                       + "." + factoryMethodName
-                       + "(" + argList
-                       + ");");
+                       + " = " + (terraTarget()
+                                  ? "ctx.retainStep(\"" + dep.parameterName() + "\", " + stepCall + ")"
+                                  : stepCall)
+                       + ";");
         }
         // Call factory and wrap
         var factoryArgs = model.dependencies().stream().map(DependencyModel::parameterName).toList();
@@ -809,12 +811,13 @@ public class FactoryClassGenerator {
             var factoryMethodName = lowercaseFirst(dep.interfaceSimpleName());
             var params = plainInterfaceParams.getOrDefault(dep.parameterName(), List.of());
             var argList = params.stream().map(PlainInterfaceFactoryParam::varName).collect(Collectors.joining(", "));
+            var stepCall = dep.sourceUsableName() + "." + factoryMethodName + "(" + argList + ")";
 
             out.println("        var " + dep.parameterName()
-                       + " = " + dep.sourceUsableName()
-                       + "." + factoryMethodName
-                       + "(" + argList
-                       + ");");
+                       + " = " + (terraTarget()
+                                  ? "ctx.retainStep(\"" + dep.parameterName() + "\", " + stepCall + ")"
+                                  : stepCall)
+                       + ";");
         }
 
         var factoryArgs = buildFactoryArgs(model, plainDeps);

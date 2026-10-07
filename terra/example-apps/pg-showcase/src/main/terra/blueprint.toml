@@ -1,0 +1,4 @@
+id="org.pragmatica.aether.example:pg-showcase:1.0.0-rc4"
+
+[[slices]]
+artifact="org.pragmatica.aether.example:pg-showcase-order-processing:1.0.0-rc4"

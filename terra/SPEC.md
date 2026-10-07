@@ -143,3 +143,35 @@ The fourth increment assembles Terra-built slice JARs from a Maven project's res
 | 6 | DONE | `TerraDistributionIT` extracts the actual attached ZIP, launches outside the repository, requests Catalog over HTTP, and tests `--check`. |
 
 Executed on 2026-10-08: clean installs of `terra/runtime,terra/launcher,terra/maven-plugin` and `terra/examples` passed **36 tests** (17 runtime, 10 launcher, 4 assembler, 3 example unit/network tests, 2 extracted-process tests). The four opt-in database tests skipped in this packaging-only run. Explicit JBCT format/check passed across all four touched modules. The ZIP was launched from an unrelated temporary working directory. Windows launcher execution has not been tested.
+
+
+## Existing example expansion contract
+
+Recompile original example source directories in separate Terra Maven modules, preserving their original logical slice coordinates and JAR resource ownership. Package the existing migration scripts without editing business code. Add full ecommerce, both URL-shortener versions, pricing engine, step composition, banking, PG showcase, and comprehensive persistence candidates. Distinguish compilation/assembly evidence from live application evidence for each.
+
+Support single-payload ephemeral subscriptions on injected plain-interface steps by retaining the constructed step and binding that exact instance before publication is admitted. Keep schedules, context-carrying subscriptions, live config callbacks, and durable/stream resources refused, including nested step resources. Preserve the Aether factory output contract. Keyed multi-parameter interceptor generation must import its shared type-token API for Terra too.
+
+The live ecommerce proof exposed unsupported `Instant` arguments in shared JDBC binding. `JdbcParameters` now normalizes these to `Timestamp` for ordinary and transactional queries/updates/batches; driver/column timezone behavior is retained. Validation: 37 JDBC tests, 3 JDBC-resource tests, and live extracted ecommerce/URL processes passed. The JDBC resource JBCT gate passes; forcing the normally skipped integration JDBC gate reports the same five existing exception-boundary lint errors as an exported HEAD baseline, with no format errors after formatting the new helper.
+
+### Fifth increment reconciliation
+
+| Clause | Status | Implementation and executed evidence |
+| --- | --- | --- |
+| Unchanged examples and assembly | DONE | `example-apps` has 20 child modules and eight staged, preflight-checked distributions. The original `examples/` tree is unchanged. The support matrix names each executed path and the comprehensive example's existing nullable-field limitation. |
+| Plain-interface subscriptions | DONE | `TerraContext.retainStep` retains the injected instance; generated descriptor binding retrieves it. A real database test delivers an order event to the original listener. Nested unsupported resource/reactive declarations remain compiler errors. |
+| Keyed interceptors | DONE | Terra generation registers `TypeToken`; the original banking account methods compile and sequential credit/read/transfer operations pass with LOCAL caching. |
+| Application-only embedding | DONE | `TerraLaunchPlan.startApplication()` uses the same migration/construction path; banking, step, and persistence tests await owned close. |
+| Shared defects discovered by examples | DONE | JDBC Instant normalization; native PostgreSQL generic conversion preserving binary/text format; cache-aside population and write-around invalidation awaited before business completion. Shared tests and live examples pass. |
+| Streams/entities investigation | DONE | `STREAMS-AND-ENTITIES.md` traces local WAL, consumer cursors, entity state machine, timers, codec and ownership requirements. It labels the next contract as proposed, with no implemented Terra durability claim. |
+
+Executed on 2026-10-08 using JDK 25, the isolated Maven repository, and local PostgreSQL 14.20:
+
+- Clean application reactor install: all 20 child modules built and all **8 live database tests** passed. After review tightened nullable-column assertions and float compatibility, all application bundles were rebuilt and the 8 tests passed again. Process tests extract archives outside the checkout; embedding tests exercise application APIs against real databases.
+- Original `terra/examples` clean install with the live database property: **9 tests passed**, including four migration/database tests, live Catalog HTTP, and two extracted-process tests; no skips.
+- Processor: **364 tests passed**; runtime/launcher clean install: **27 tests passed**. JDBC and JDBC-resource: **40 tests passed**. Native PostgreSQL targeted generic conversion: **4 tests passed**. Interceptors: **139 tests passed**.
+- Existing stream/entity feasibility suites: **69 tests passed**, independently of Terra. No Terra stream/entity or replicated-availability proof is implied.
+- Touched runtime, launcher, JDBC resource, and interceptor JBCT gates passed. Normally skipped legacy gates were also examined: processor retains the baseline 38 lint/10 formatting failures, JDBC integration retains five lint failures, and the touched native PostgreSQL converter retains 43 lint failures. Exported baseline comparisons found no added lint failures; changed/new production files are formatted. These legacy checks are not reported as green.
+
+The cache change orders sequential maintenance; it does not provide concurrent read/write coherence or a forced maintenance timeout. Original example sources remain authoritative: comprehensive persistence still rejects nullable columns mapped to required fields, and banking's transfer history remains in memory. Windows execution, cloud/Forge, multi-node startup, cross-process migration exclusion, and stream/entity durability are outside this validation.
+
+The downstream `aether/node -am install -DskipTests` reactor passed after the shared fixes, with no skipped modules.

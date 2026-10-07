@@ -2,7 +2,7 @@
 
 Terra compiles the same slice sources as Aether into a single-process application. The implementation provides typed construction, blueprint selection, scoped resources, existing interceptor wrappers, ephemeral in-process pub-sub, and startup database migrations. It starts no Aether node.
 
-The [specification](SPEC.md) records the implemented compiler, migration, and HTTP hosting contracts. Executable distribution assembly is available through `terra:assemble`; see [the launcher guide](launcher/README.md). PostgreSQL startup is exercised with the unchanged ecommerce InventoryService.
+The [specification](SPEC.md) records the implemented compiler, migration, and HTTP hosting contracts. Executable distribution assembly is available through `terra:assemble`; see [the launcher guide](launcher/README.md). The [application examples](example-apps/README.md) build eight further distributions from unchanged ecommerce, URL-shortener, pricing, banking, step-composition, and persistence sources, with live PostgreSQL proofs.
 
 ## Existing examples
 
@@ -38,7 +38,7 @@ Terra shares annotation analysis, resource injection, factory return handling, i
 
 Every selected dependency must appear in the blueprint with its exact generated coordinate. Dependencies are constructed first; injected instances retain their interceptor wrappers. This increment accepts blueprint identity and slice selection, including deployment-only scaling fields, and refuses unsupported sections. One instance is created per selected slice. The assembler obtains Terra-built candidate JARs from Maven runtime dependencies and checks this selection.
 
-Configuration is explicit and scoped per slice. Supply resource sections through the configuration provider; The executable launcher reads each owning JAR’s defaults separately; embedding callers supply their own providers. Existing LOCAL cache factories are reused. Other SPI resources require their dependencies and configuration; database startup uses the explicit migration path below, while distributed collaborators remain outside Terra’s supported runtime.
+Configuration is explicit and scoped per slice. Supply resource sections through the configuration provider. The executable launcher reads each owning JAR’s defaults separately; embedding callers supply their own providers. Existing LOCAL cache factories are reused. Other SPI resources require their dependencies and configuration; database startup uses the explicit migration path below, while distributed collaborators remain outside Terra’s supported runtime.
 
 ## Pub-sub contract
 
@@ -48,7 +48,7 @@ A publication invokes every handler in its subscriber snapshot and waits for all
 
 Publication is admitted only after all slices and subscriptions are ready. Closing rejects new publications, drains accepted deliveries, then releases resources in reverse construction order. Callers must stop other entry points before closing; arbitrary direct calls are not automatically drained. Handlers that never complete prevent a graceful drain.
 
-Streams, schedules, durable entities/topics, transitive reactive methods, context-carrying subscribers, and live configuration callbacks are refused. The HTTP host below supplies listener lifecycle, authentication, route composition, and draining for the generated typed routers.
+Single-payload subscriptions on injected plain-interface steps bind to the exact instance used by the slice. Streams, schedules, durable entities/topics, context-carrying subscribers, and live configuration callbacks are refused, including unsupported resources nested in steps. [Streams and durable entities](STREAMS-AND-ENTITIES.md) records reusable storage code and a proposed next contract; it does not claim implemented support. The HTTP host below supplies listener lifecycle, authentication, route composition, and draining for the generated typed routers.
 
 ## Database startup
 

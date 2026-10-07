@@ -1,0 +1,21 @@
+id = "org.pragmatica-lite.aether.example:ecommerce:1.0.0-rc4"
+
+[[slices]]
+artifact = "org.pragmatica-lite.aether.example:inventory-inventory-service:1.0.0-rc4"
+instances = 1
+
+[[slices]]
+artifact = "org.pragmatica-lite.aether.example:pricing-pricing-service:1.0.0-rc4"
+instances = 1
+
+[[slices]]
+artifact = "org.pragmatica-lite.aether.example:payment-payment-service:1.0.0-rc4"
+instances = 1
+
+[[slices]]
+artifact = "org.pragmatica-lite.aether.example:fulfillment-fulfillment-service:1.0.0-rc4"
+instances = 1
+
+[[slices]]
+artifact = "org.pragmatica-lite.aether.example:place-order-place-order:1.0.0-rc4"
+instances = 1
