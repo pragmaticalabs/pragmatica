@@ -67,7 +67,7 @@ _api_call() {
 }
 STUB
 grep -E '^(ENTITY_TRANSIENT_FAILURE_TYPES|ENTITY_CREATE_RETRY_[A-Z_]*|TRANSIENT_READ_[A-Z_]*)=' "$SUT"
-for f in key_for amount_for transient_failure_type entity_refusal_class entity_post_any entity_post_status create_entity read_amount; do extract "$SUT" "$f"; done
+for f in now_s key_for amount_for transient_failure_type entity_refusal_class entity_post_any entity_post_status create_entity read_amount; do extract "$SUT" "$f"; done
 } > "$WORK/fns.sh"
 
 run() {  # <label> [VAR=value ...]
