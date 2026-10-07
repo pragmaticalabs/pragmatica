@@ -196,6 +196,15 @@ public final class ClusterEventAggregator {
     /// resolution cancels it instead of announcing an all-clear for something never announced.
     private record ScheduledOutcome(OperationalEvent.ScheduledTaskOutcomeUnknown unknown, boolean visible) {}
 
+    /// The same mechanism for a scheduled fire that is still in flight while its ticks are skipped (#1930), with its own key
+    /// space (`task@node`): one window per task and node, one entry per in-flight fire, changed only through `compute` /
+    /// `remove`. `visible` as for [ScheduledOutcome]: a held event that resolves inside the window is never announced, nor
+    /// is its release.
+    private final ConcurrentHashMap<String, ThrottleWindow> fireHeldThrottle = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, HeldFire> heldFires = new ConcurrentHashMap<>();
+
+    private record HeldFire(OperationalEvent.ScheduledTaskFireHeld event, boolean visible) {}
+
     /// Throttle window shared by {@link #onStreamMemoryExceeded} (60s per `(streamName, phase)`, spec
     /// §4.5c) and {@link #onOperatorWarning} (60s per `(code, subject)`, #1574).
     private static final long EVENT_THROTTLE_MS = 60_000L;
@@ -852,6 +861,10 @@ public final class ClusterEventAggregator {
 
     /// The tasks whose UNKNOWN the aggregator is tracking (published or held): it ends with the task's RESTORED,
     /// including `task-removed`, so a removed task cannot leave an entry behind.
+    public int trackedScheduledFires() {
+        return heldFires.size();
+    }
+
     public int trackedScheduledOutcomes() {
         return scheduledOutcomes.size();
     }
@@ -869,8 +882,10 @@ public final class ClusterEventAggregator {
         var now = hlcClock.now().physicalMillis();
 
         announceHeldScheduledOutcomes();
+        announceHeldFires();
         evictIdle(streamMemoryEventThrottle, now);
         evictIdle(scheduledOutcomeThrottle, now);
+        evictIdle(fireHeldThrottle, now);
 
         return reportEvictedHeldBack(evictIdle(operatorWarningThrottle, now));
     }
@@ -1605,6 +1620,119 @@ public final class ClusterEventAggregator {
             case OperationalEvent.ScheduledTaskOutcomeRestored.TASK_REMOVED -> task + " was removed while its outcome was unknown";
             default -> task + " is known again: a later fire completed and " + event.outcome();
         };
+    }
+
+    /// #1930: a scheduled fire is still in flight when its next tick arrives. Raised by the node whose scheduler holds the
+    /// fire, ONCE per fire; throttled per task and node to one event per [#EVENT_THROTTLE_MS]. Published through
+    /// [#emitLocal]: the fact is that node's own, so the events-owner gate (which would drop it on every node but one) does
+    /// not apply. A held event that is still in flight when the window closes is announced by [#announceHeldFires].
+    @Contract
+    public void onScheduledTaskFireHeld(OperationalEvent.ScheduledTaskFireHeld event) {
+        if (replayingCheck.getAsBoolean()) {
+            return;
+        }
+
+        var key = event.key();
+        var window = admit(fireHeldThrottle, key);
+        var previous = heldFires.putIfAbsent(key, new HeldFire(event, window.admitted()));
+
+        if (previous != null) {
+            LOG.debug("ClusterEventAggregator: ScheduledTaskFireHeld for {} repeats a fire already tracked", key);
+
+            return;
+        }
+
+        if (window.admitted()) {
+            emitFireHeld(event, window.suppressedBefore());
+        } else {
+            LOG.debug("ClusterEventAggregator: holding throttled ScheduledTaskFireHeld for {}", key);
+        }
+    }
+
+    /// #1930: the held fire resolved. Announced only if its held event was: a release for something the operator was never
+    /// told is not news.
+    @Contract
+    public void onScheduledTaskFireReleased(OperationalEvent.ScheduledTaskFireReleased event) {
+        if (replayingCheck.getAsBoolean()) {
+            return;
+        }
+
+        var previous = heldFires.remove(event.key());
+
+        if (previous == null || !previous.visible()) {
+            LOG.debug("ClusterEventAggregator: ScheduledTaskFireReleased for {} has no published hold; not announced",
+                      event.key());
+
+            return;
+        }
+
+        emitLocal(new ClusterEvent.ScheduledTaskFireReleased(hlcClock.now(),
+                                                             Severity.INFO,
+                                                             "Scheduled task " + event.task()
+                                                            + " is firing again: the fire that held it resolved (" + event.outcome()
+                                                            + ") after " + event.inFlightMs()
+                                                            + " ms",
+                                                             scheduledOutcomeDetails(event.task(),
+                                                                                     event.node(),
+                                                                                     event.fireAt(),
+                                                                                     event.eventId(),
+                                                                                     Map.of("inFlightMs",
+                                                                                            Long.toString(event.inFlightMs()),
+                                                                                            "outcome",
+                                                                                            event.outcome()))));
+    }
+
+    /// Publishes every held fire the window held back whose window has since closed and which is still in flight (still in
+    /// the map). Run once per window through [#evictIdleThrottleWindows].
+    public Unit announceHeldFires() {
+        var now = hlcClock.now().physicalMillis();
+
+        heldFires.entrySet()
+                 .stream()
+                 .filter(entry -> !entry.getValue()
+                                        .visible())
+                 .filter(entry -> windowClosed(fireHeldThrottle.get(entry.getKey()),
+                                               now))
+                 .map(Map.Entry::getKey)
+                 .toList()
+                 .forEach(this::announceHeldFire);
+
+        return Unit.unit();
+    }
+
+    private void announceHeldFire(String key) {
+        var promoted = new AtomicReference<HeldFire>();
+
+        heldFires.computeIfPresent(key,
+                                   (_, held) -> held.visible()
+                                                ? held
+                                                : promoteFire(held, promoted));
+        Option.option(promoted.get()).onPresent(entry -> emitFireHeld(entry.event(),
+                                                                      admit(fireHeldThrottle, key).suppressedBefore()));
+    }
+
+    private static HeldFire promoteFire(HeldFire held, AtomicReference<HeldFire> promoted) {
+        var visible = new HeldFire(held.event(), true);
+
+        promoted.set(visible);
+
+        return visible;
+    }
+
+    private void emitFireHeld(OperationalEvent.ScheduledTaskFireHeld event, long suppressedSince) {
+        emitLocal(new ClusterEvent.ScheduledTaskFireHeld(hlcClock.now(),
+                                                         Severity.WARNING,
+                                                         "Scheduled task " + event.task()
+                                                        + " is not firing: its previous fire is still in flight (" + event.inFlightMs()
+                                                        + " ms) and each tick is skipped until it resolves",
+                                                         scheduledOutcomeDetails(event.task(),
+                                                                                 event.node(),
+                                                                                 event.fireAt(),
+                                                                                 event.eventId(),
+                                                                                 Map.of("inFlightMs",
+                                                                                        Long.toString(event.inFlightMs()),
+                                                                                        "suppressedSince",
+                                                                                        Long.toString(suppressedSince)))));
     }
 
     /// Publishes every UNKNOWN the window held back whose window has since closed and whose outcome is still unknown:

@@ -3794,7 +3794,10 @@ public interface AetherNode extends ManageableNode {
                                                                              config.self(),
                                                                              command -> switchableCluster.apply(List.of(command)),
                                                                              scheduledTaskStateRegistry::stateFor,
-                                                                             clusterNode.leaderManager());
+                                                                             clusterNode.leaderManager(),
+                                                                             ScheduledTaskManager.DEFAULT_COMPLETION_BOUND,
+                                                                             ScheduledFireAnnouncer.scheduledFireAnnouncer(config.self(),
+                                                                                                                           delegateRouter::route));
         // #273 item 1: resolve the drain hook now the manager exists. `DrainProcedure.initiate` runs this
         // once at the INACTIVE->DRAINING CAS, for every trigger (QUORUM_LOSS, CORE_ABSENCE, COMMANDED).
         scheduledTaskDrainHookRef.set(scheduledTaskManager::onDrainInitiated);
@@ -9242,6 +9245,10 @@ public interface AetherNode extends ManageableNode {
                                               eventAggregator::onScheduledTaskOutcomeUnknown));
         entries.add(MessageRouter.Entry.route(OperationalEvent.ScheduledTaskOutcomeRestored.class,
                                               eventAggregator::onScheduledTaskOutcomeRestored));
+        entries.add(MessageRouter.Entry.route(OperationalEvent.ScheduledTaskFireHeld.class,
+                                              eventAggregator::onScheduledTaskFireHeld));
+        entries.add(MessageRouter.Entry.route(OperationalEvent.ScheduledTaskFireReleased.class,
+                                              eventAggregator::onScheduledTaskFireReleased));
         entries.add(MessageRouter.Entry.route(OperationalEvent.BlueprintDeleted.class,
                                               eventAggregator::onBlueprintDeleted));
         entries.add(MessageRouter.Entry.route(OperationalEvent.DhtReplicationUnsettled.class,
