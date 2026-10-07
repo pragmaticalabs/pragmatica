@@ -24,7 +24,9 @@ RUN usermod -l aether -d /home/aether -m ubuntu && \
     usermod -aG docker aether
 
 # Create directories for app, data, and config
-RUN mkdir -p /app /data /config && \
+# /data/backups exists and is aether's, so a named volume mounted there inherits that ownership: a root-owned mount point makes
+# [backup] unreadable (AccessDenied) and leaves the restore BLOCKED (#2007).
+RUN mkdir -p /app /data /config /data/backups && \
     chown -R aether:aether /app /data /config
 
 WORKDIR /app
