@@ -45,6 +45,7 @@ import org.pragmatica.consensus.net.ConnectionError;
 import org.pragmatica.consensus.net.NetworkMessage;
 import org.pragmatica.consensus.net.NetworkServiceMessage;
 import org.pragmatica.consensus.net.NetworkServiceMessage.ListConnectedNodes;
+import org.pragmatica.consensus.net.NoOfflineBuffering;
 import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.consensus.net.WriteOutcome;
 import org.pragmatica.consensus.topology.TopologyObserver;
@@ -1959,6 +1960,12 @@ public class QuicClusterNetwork implements ClusterNetwork {
                 log.debug("Message to REMOVED peer {} dropped", state.peerId());
                 yield new WriteOutcome.NoPeerState(state.peerId());
             }
+            case PeerState.OfferOutcome.NotBuffered ignored -> {
+                log.debug("{} to peer {} not buffered (no live connection, never held for late delivery)",
+                          message.getClass().getSimpleName(),
+                          state.peerId());
+                yield new WriteOutcome.ConnectionDead(state.peerId());
+            }
         };
     }
 
@@ -1969,8 +1976,9 @@ public class QuicClusterNetwork implements ClusterNetwork {
             // so the message lands in the offline buffer for the next attach.
             evictStaleConnection(peerId, connection);
             var state = peers.get(peerId);
-
-            if (state != null) {
+            // A NoOfflineBuffering message is NOT re-dispatched: it would be held and delivered on reattach, after
+            // the caller was told it was not sent (#1973). It is dropped, so ConnectionDead is true for it.
+            if (state != null && !(message instanceof NoOfflineBuffering)) {
                 var _ = dispatchToPeer(state, message);
             }
 

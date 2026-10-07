@@ -212,7 +212,10 @@ case " $allow " in *" ForwardNotSent "*) ok "T2 ForwardNotSent (safe to retry by
 # and the producer wording that tells the two 503 bodies apart is still there.
 if grep -qE 'record ForwardTimedOut\(String detail\) implements Cause.Transient' "$FORWARD_SRC" \
    && ! case " $allow " in *" ForwardTimedOut "*) true ;; *) false ;; esac \
-   && grep -qF 'outcome unknown' "$SERVICE_SRC" && grep -qF 'safe to retry' "$SERVICE_SRC"; then
+   && grep -qF 'outcome unknown: the owner may have applied the command' "$SERVICE_SRC" \
+   && grep -qF 'retry only an idempotent operation' "$SERVICE_SRC" \
+   && grep -qF 'nothing was applied; safe to retry' "$SERVICE_SRC" \
+   && grep -qF 'safe to retry with a fresh budget' "$SERVICE_SRC"; then
     ok "T3 ForwardTimedOut (outcome unknown) is a transient producer type, off the allow-list, with its own wording"
 else fail "T3 ForwardTimedOut missing from the producer, allow-listed, or its wording changed"; fi
 

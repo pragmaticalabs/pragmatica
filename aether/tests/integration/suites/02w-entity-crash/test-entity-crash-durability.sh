@@ -256,7 +256,9 @@ create_range_recording_acks() {
 # `ForwardNotSent` (EntityOwnerForward.ForwardNotSent, #1973) is a forward this node's transport refused at send, or whose budget
 # was already spent: nothing was sent or applied, so a retry is safe BY CONSTRUCTION. `ForwardTimedOut` (the forward WAS sent and
 # timed out, #1973) is a Cause.Transient too (503 at an app route) but stays OFF this list on purpose: its outcome is unknown, the owner
-# may have applied the command, and a blind retry can double-apply. test-entity-create-retry.sh T1-T3 reads the producer source, so a
+# may have applied the command, and a blind retry can double-apply. Being off the list does NOT make it unretried on the 503 route path:
+# E1c retries any 503 by status, which is acceptable here only because this suite issues just create (a re-create reads back as
+# EntityAlreadyExists, the lost ack) and get, both idempotent; there is no update/delete/schedule call to double-apply. test-entity-create-retry.sh T1-T3 reads the producer source, so a
 # renamed or removed type reddens the harness test instead of silently dropping out of (or into) the list.
 # Refusals that mean "retry", never "no" (#1501). Each is a `Cause.Transient` in the product and
 # clears on its own: `FoldInProgress` is a partition holder still replaying its entity log before it

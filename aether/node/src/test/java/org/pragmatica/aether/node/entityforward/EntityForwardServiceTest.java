@@ -108,6 +108,18 @@ class EntityForwardServiceTest {
         }
     }
 
+    /// #1973: every entity forward frame (all verbs and their answers) must opt out of the transport's offline buffer: a frame
+    /// held for the reconnect is delivered late, after the caller was told ConnectionDead means "not sent, safe to retry".
+    @Test
+    void everyEntityForwardMessage_optsOutOfTheOfflineBuffer() {
+        var permitted = EntityForwardMessage.class.getPermittedSubclasses();
+
+        assertThat(permitted).as("control: the sealed message family was enumerated").isNotEmpty();
+        assertThat(permitted).allSatisfy(type -> assertThat(org.pragmatica.consensus.net.NoOfflineBuffering.class.isAssignableFrom(type))
+                                                    .as(type.getSimpleName())
+                                                    .isTrue());
+    }
+
     /// #1973: an exhausted budget refuses before anything is sent, so it is the same typed transient.
     @Test
     void forwardCreate_underExhaustedBudget_isATypedTransientRefusal() {
@@ -138,6 +150,7 @@ class EntityForwardServiceTest {
                   assertThat(cause.message()).contains("timed out")
                                              .contains("outcome unknown")
                                              .contains("may have applied")
+                                             .contains("retry only an idempotent operation")
                                              .doesNotContain("safe to retry")
                                              .doesNotContain("nothing was applied");
               });

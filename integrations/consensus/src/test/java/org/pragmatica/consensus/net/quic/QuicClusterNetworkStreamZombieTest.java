@@ -50,6 +50,8 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.pragmatica.consensus.ConsensusCodecs;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.ProtocolMessage;
+import org.pragmatica.consensus.net.NoOfflineBuffering;
 import org.pragmatica.consensus.net.NetCodecs;
 import org.pragmatica.consensus.net.NetworkMessage;
 import org.pragmatica.consensus.net.NetworkServiceMessage;
@@ -275,6 +277,38 @@ class QuicClusterNetworkStreamZombieTest {
             assertThat(network.quicMetrics().streamZombieEvictionCount())
                 .as("an inactive connection takes the pre-existing dead-connection path, not the BACKSTOP")
                 .isZero();
+            assertThat(network.offlineBufferSizeForTests(peerId))
+                .as("an ordinary (state-convergence) frame is still re-dispatched into the offline buffer: only NoOfflineBuffering opts out (#1973)")
+                .isEqualTo(1);
+        }
+
+        /// #1973: a NoOfflineBuffering frame (an entity owner-forward) that finds its connection dead is DROPPED, not re-dispatched
+        /// into the offline buffer. The caller is told ConnectionDead means "not sent", so the frame must not be delivered on
+        /// reattach, after the caller was told nothing was applied. The buffer is empty and a reattach drains nothing.
+        @Test
+        void writeToStream_inactiveConnection_noOfflineBufferingFrame_isDropped_andNothingDrainsOnReattach() {
+            var network = network();
+            var peerId = new NodeId("dead-connection-forward-peer");
+
+            var connection = connectionWithOpener(peerId, failingOpener(), false);
+            network.seedPeerForTests(peerId, connectedPeerState(peerId, connection));
+
+            var outcome = network.writeToStreamForTests(peerId, new UnbufferedForward(peerId), connection);
+
+            assertThat(outcome).isInstanceOf(WriteOutcome.ConnectionDead.class);
+            assertThat(network.offlineBufferSizeForTests(peerId))
+                .as("the dead-connection path must not buffer a NoOfflineBuffering frame")
+                .isZero();
+            assertThat(network.peerStateForTests(peerId).drainOfflineBuffer())
+                .as("so a reattach (the drain) has nothing to deliver late")
+                .isEmpty();
+        }
+
+        private record UnbufferedForward(NodeId sender) implements ProtocolMessage, NoOfflineBuffering {
+            @Override
+            public StreamType streamType() {
+                return StreamType.FORWARD;
+            }
         }
     }
 

@@ -123,7 +123,10 @@ class AppHttpServerLocalRouteFailureStatusTest {
         var answer = answerFor(failure);
 
         assertThat(answer.statusCode()).isEqualTo(503);
-        assertThat(answer.body()).contains("outcome unknown").contains("may have applied the command").doesNotContain("safe to retry");
+        assertThat(answer.body()).contains("outcome unknown")
+                                .contains("may have applied the command")
+                                .contains("retry only an idempotent operation")
+                                .doesNotContain("safe to retry");
     }
 
     private static Cause entityForwardFailure(WriteOutcome refusal) {
