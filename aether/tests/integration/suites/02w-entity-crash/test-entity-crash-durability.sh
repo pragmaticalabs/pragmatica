@@ -314,7 +314,9 @@ read_amount() {
     #
     # Every log helper writes to STDOUT and this function's stdout IS the parsed amount, so
     # diagnostics must be redirected or they silently corrupt the compared value.
-    now_s; deadline=$((NOW_S + TRANSIENT_READ_DEADLINE_S))
+    now_s
+    # No sooner than the stated duration (see deadline_in in lib/common.sh): `$SECONDS` is whole seconds, so NOW_S + N alone is (N-1, N].
+    deadline=$((NOW_S + TRANSIENT_READ_DEADLINE_S + (TRANSIENT_READ_DEADLINE_S > 0 ? 1 : 0)))
     local out status
     while :; do
         # The status and body of a non-2xx answer are KEPT (entity_post_status): app routes answer 503 for a

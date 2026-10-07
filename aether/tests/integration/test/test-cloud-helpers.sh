@@ -673,6 +673,14 @@ got=$(W_DEADLINE=1 W_CLOCK_JUMP_AFTER_CALLS=2 w_run 'read_amount ENTDUR-00003-Z'
 [ "$got" = "rc=4 out= calls=3" ] && grep -q 'previous attempt WAS answered with a transient refusal: .*still replaying its log' "${W_WORK}/err" \
     && ok "W12 transient refusal then no answer: rc 4 after the transient attempt and the unanswered one, and the report names the earlier transient answer" \
     || fail "W12 transient then down: got '${got}'; $(tr '\n' '|' < "${W_WORK}/err")"
+# D1/D2 (#1887): deadline_in is reached NO SOONER than the stated duration. `$SECONDS` is whole seconds, so with the shell clock sitting
+# just before a tick (SECONDS=0 after 0.9s) the old `SECONDS + 3` is 3 and is reached 2.1s later; deadline_in 3 must be at least 4.
+SECONDS=0; sleep 0.9; got=$(deadline_in 3)
+[ "$got" -ge 4 ] && ok "D1 deadline_in 3 at the end of a shell second is >= 4 (reached no sooner than 3s of wall time), got ${got}" \
+    || fail "D1 deadline_in 3 at the end of a shell second: got '${got}', want >= 4 (SECONDS + 3 is reached after only 2.1s)"
+got=$(deadline_in 0); [ "$got" -le "$SECONDS" ] && [ "$(deadline_in x)" -le "$SECONDS" ] \
+    && ok "D2 deadline_in 0 (and a non-number) is already expired, as the stub cases that pass a 0s deadline need" \
+    || fail "D2 deadline_in 0: got '${got}' with SECONDS=${SECONDS}"
 got=$(w_run 'read_amount ENTDUR-00003-Z' '{"outcome":"failed","failureType":"FoldInProgress","failure":"x","failureType":"Other"}' "$FOUND3")
 [ "$got" = "rc=0 out=24 calls=2" ] \
     && ok "W13 the FIRST failureType in a body decides (greedy last-match would read 'Other')" \

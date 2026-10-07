@@ -5028,7 +5028,8 @@ stream_publish_status() {
     coord=$(stream_coordinate "$name") || { printf '000'; return 0; }
     local budget="${STREAM_PUBLISH_RETRY_BUDGET_S:-10}"
     local delay="${STREAM_PUBLISH_RETRY_DELAY_S:-0.25}" max_delay="${STREAM_PUBLISH_RETRY_MAX_DELAY_S:-1}"
-    local deadline=$(( SECONDS + budget ))
+    local deadline
+    deadline=$(deadline_in "$budget")
     local out status resp_body ep attempt=0 off part
     while :; do
         attempt=$((attempt + 1))
