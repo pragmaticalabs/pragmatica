@@ -157,7 +157,9 @@ public final class ProviderResolver {
                                               Map.of()));
     }
 
-    public static Result<ComputeProvider> resolveDockerCompute() {
+    /// The Docker provider for tearing nodes down: it starts nothing, so it has no use for the source's `[backup]`. Provisioning
+    /// uses [#resolveDockerCompute(SourceProfile)], which hands the provider that backup.
+    public static Result<ComputeProvider> resolveDockerComputeWithoutBackup() {
         return lookupFactory("docker").flatMap(factory -> factory.create(dockerCloudConfig()))
                             .flatMap(ProviderResolver::extractCompute);
     }

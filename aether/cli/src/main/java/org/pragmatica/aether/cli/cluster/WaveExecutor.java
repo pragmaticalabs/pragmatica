@@ -738,7 +738,7 @@ public final class WaveExecutor {
     }
 
     private static Result<Unit> resolveDockerAndDestroy(SourceName sourceName, NodeRole role, int count) {
-        return ProviderResolver.resolveDockerCompute().flatMap(compute -> destroyViaCompute(compute,
+        return ProviderResolver.resolveDockerComputeWithoutBackup().flatMap(compute -> destroyViaCompute(compute,
                                                                                             sourceName,
                                                                                             role,
                                                                                             count));
