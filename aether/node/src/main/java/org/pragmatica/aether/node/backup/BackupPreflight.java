@@ -40,9 +40,10 @@ public sealed interface BackupPreflight {
     record GitProbeTimedOut(TimeSpan limit, String message) implements Cause {
         static GitProbeTimedOut gitProbeTimedOut(TimeSpan limit) {
             return new GitProbeTimedOut(limit,
-                                        "[backup] is enabled but git did not answer within " + limit + " (timed out). "
-                                        + "The backup repository shells out to git: fix or replace the git on this node, "
-                                        + "or set [backup] enabled = false");
+                                        "[backup] is enabled but git did not answer within " + limit
+                                       + " (timed out). "
+                                       + "The backup repository shells out to git: fix or replace the git on this node, "
+                                       + "or set [backup] enabled = false");
         }
     }
 
