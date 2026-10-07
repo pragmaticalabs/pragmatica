@@ -30,6 +30,8 @@ Three storage/persistence concepts that are distinct and must not be conflated:
 
 ## Deployment & Lifecycle
 
+Migration execution/history now lives in the shared [`db-migrations`](../../db-migrations/README.md) module, used by Aether’s existing adapter and Terra startup. Aether retains leases, deployment gating, status, and HTTP error projection. Persisted history and ownership formats are retained by the extraction. [mechanism: `AetherSchemaManager` delegates to `SchemaMigrations` and maps shared failures back to `SchemaError`]
+
 | # | Feature | Status | Description |
 |---|---------|--------|-------------|
 | 1 | Blueprint management | Battle-tested | Declarative TOML-based deployment specs with dependency ordering, validation, pub-sub orphan detection, and status tracking. A slice's `instances` is at least 3 and defaults to 3 (#1495): the parser refuses fewer with the typed `SliceSpecError.InstancesBelowMinimum`, transitive dependencies deploy at 3, and `POST /api/v1/deploy` applies the same floor and default `[verified: BlueprintParserTest.InstanceFloorCases, DeployRouteStatusTest.InstanceFloor — unit level]` |

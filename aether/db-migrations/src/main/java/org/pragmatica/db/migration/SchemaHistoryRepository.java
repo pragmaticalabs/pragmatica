@@ -2,24 +2,23 @@
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
 // Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
 // See LICENSE in the repository root for full terms.
-package org.pragmatica.aether.deployment.schema;
+package org.pragmatica.db.migration;
 
 import java.util.List;
 
-import org.pragmatica.aether.deployment.schema.ParsedMigration.MigrationType;
-import org.pragmatica.aether.deployment.schema.SchemaHistoryEvolution.Step;
-import org.pragmatica.aether.deployment.schema.SchemaHistoryRepository.MigrationProgress;
-import org.pragmatica.aether.deployment.schema.SchemaHistoryRepository.MigrationStatus;
+import org.pragmatica.db.migration.ParsedMigration.MigrationType;
+import org.pragmatica.db.migration.SchemaHistoryEvolution.Step;
+import org.pragmatica.db.migration.SchemaHistoryRepository.MigrationProgress;
+import org.pragmatica.db.migration.SchemaHistoryRepository.MigrationStatus;
 import org.pragmatica.aether.resource.db.DatabaseType;
 import org.pragmatica.aether.resource.db.RowMapper;
 import org.pragmatica.aether.resource.db.SqlConnector;
-import org.pragmatica.aether.slice.blueprint.BlueprintId;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 
-import static org.pragmatica.aether.deployment.schema.SchemaError.PhysicalDatasourceOwnershipConflict.physicalDatasourceOwnershipConflict;
+import static org.pragmatica.db.migration.MigrationError.PhysicalDatasourceOwnershipConflict.physicalDatasourceOwnershipConflict;
 import static org.pragmatica.lang.Result.all;
 
 
@@ -28,16 +27,16 @@ public interface SchemaHistoryRepository {
     /// Single-migrator claim on the PHYSICAL database (#566). Creates
     /// [SchemaHistoryEvolution#OWNER_TABLE] `IF NOT EXISTS`, reads its single row and either records
     /// `owner`'s `ArtifactBase` (no row yet) or accepts/refuses the caller against the recorded one:
-    /// - absent ⇒ INSERT `owner.base()` and succeed — this blueprint now owns the database;
-    /// - present and equal to `owner.base()` ⇒ succeed — the same owner advancing its own schema
+    /// - absent ⇒ INSERT the versionless `owner` coordinate and succeed — this blueprint now owns the database;
+    /// - present and equal to the versionless `owner` coordinate ⇒ succeed — the same owner advancing its own schema
     ///   (`my-app:1.0.1` over rows written by `my-app:1.0.0` compares equal, version stripped, just
     ///   as `BlueprintService.ensureDatasourceUnclaimed` does at publish time);
-    /// - present and different ⇒ fail with [SchemaError.PhysicalDatasourceOwnershipConflict].
+    /// - present and different ⇒ fail with [MigrationError.PhysicalDatasourceOwnershipConflict].
     ///
     /// Called immediately after [#bootstrap] and BEFORE [#queryApplied], so a refused claim writes no
     /// history rows and applies no migrations. `datasourceName` is carried only to name the offending
     /// node config section in the cause — the claim itself is keyed by the database's own identity.
-    Promise<Unit> claimOwnership(SqlConnector connector, String datasourceName, BlueprintId owner);
+    Promise<Unit> claimOwnership(SqlConnector connector, String datasourceName, String owner);
     Promise<List<AppliedMigration>> queryApplied(SqlConnector connector);
     Promise<Unit> recordMigration(SqlConnector connector, AppliedMigration migration);
     Promise<Unit> removeMigration(SqlConnector connector, int version, MigrationType type);
@@ -243,7 +242,7 @@ final class DefaultSchemaHistoryRepository implements SchemaHistoryRepository {
     /// `IF NOT EXISTS`, read its single row, then insert-or-match. Ordered by the caller BEFORE any
     /// history read or write, so a refusal leaves the database exactly as it was found.
     @Override
-    public Promise<Unit> claimOwnership(SqlConnector connector, String datasourceName, BlueprintId owner) {
+    public Promise<Unit> claimOwnership(SqlConnector connector, String datasourceName, String owner) {
         return connector.update(CREATE_OWNER_SQL)
                         .flatMap(_ -> readOwnerBase(connector))
                         .flatMap(stored -> resolveClaim(connector, datasourceName, owner, stored));
@@ -255,25 +254,22 @@ final class DefaultSchemaHistoryRepository implements SchemaHistoryRepository {
 
     private Promise<Unit> resolveClaim(SqlConnector connector,
                                        String datasourceName,
-                                       BlueprintId owner,
+                                       String owner,
                                        Option<String> stored) {
         return stored.fold(() -> insertOwner(connector, owner), current -> matchOwner(datasourceName, owner, current));
     }
 
-    private Promise<Unit> insertOwner(SqlConnector connector, BlueprintId owner) {
-        return connector.update(INSERT_OWNER_SQL,
-                                owner.base().asString())
+    private Promise<Unit> insertOwner(SqlConnector connector, String owner) {
+        return connector.update(INSERT_OWNER_SQL, owner)
                         .mapToUnit();
     }
 
     /// Compared on `ArtifactBase` (version stripped), so a republished version of the SAME blueprint
     /// advances its own schema rather than colliding with itself.
-    private static Promise<Unit> matchOwner(String datasourceName, BlueprintId owner, String currentBase) {
-        return currentBase.equals(owner.base().asString())
+    private static Promise<Unit> matchOwner(String datasourceName, String owner, String currentBase) {
+        return currentBase.equals(owner)
                ? Promise.unitPromise()
-               : physicalDatasourceOwnershipConflict(datasourceName,
-                                                     currentBase,
-                                                     owner.base().asString()).promise();
+               : physicalDatasourceOwnershipConflict(datasourceName, currentBase, owner).promise();
     }
 
     @Override

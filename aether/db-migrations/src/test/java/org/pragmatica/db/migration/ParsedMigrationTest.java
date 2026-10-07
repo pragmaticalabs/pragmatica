@@ -3,15 +3,15 @@
 // Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
 // See LICENSE in the repository root for full terms.
 
-package org.pragmatica.aether.deployment.schema;
+package org.pragmatica.db.migration;
 
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.pragmatica.aether.deployment.schema.ParsedMigration.MigrationType.*;
-import static org.pragmatica.aether.slice.blueprint.MigrationEntry.migrationEntry;
+import static org.pragmatica.db.migration.ParsedMigration.MigrationType.*;
+import static org.pragmatica.db.migration.MigrationScript.migrationScript;
 
 class ParsedMigrationTest {
 
@@ -23,7 +23,7 @@ class ParsedMigrationTest {
 
         @Test
         void parsedMigration_versionedPrefix_parsesTypeVersionAndDescription() {
-            var entry = migrationEntry("V001__create_tables.sql", SAMPLE_SQL, SAMPLE_CHECKSUM);
+            var entry = migrationScript("V001__create_tables.sql", SAMPLE_SQL, SAMPLE_CHECKSUM);
 
             ParsedMigration.parsedMigration(entry)
                 .onFailure(cause -> Assertions.fail(cause.message()))
@@ -37,7 +37,7 @@ class ParsedMigrationTest {
 
         @Test
         void parsedMigration_leadingZeros_parsesVersionCorrectly() {
-            var entry = migrationEntry("V0042__add_indexes.sql", SAMPLE_SQL, SAMPLE_CHECKSUM);
+            var entry = migrationScript("V0042__add_indexes.sql", SAMPLE_SQL, SAMPLE_CHECKSUM);
 
             ParsedMigration.parsedMigration(entry)
                 .onFailure(cause -> Assertions.fail(cause.message()))
@@ -53,7 +53,7 @@ class ParsedMigrationTest {
 
         @Test
         void parsedMigration_repeatablePrefix_parsesDescription() {
-            var entry = migrationEntry("R__refresh_views.sql", SAMPLE_SQL, SAMPLE_CHECKSUM);
+            var entry = migrationScript("R__refresh_views.sql", SAMPLE_SQL, SAMPLE_CHECKSUM);
 
             ParsedMigration.parsedMigration(entry)
                 .onFailure(cause -> Assertions.fail(cause.message()))
@@ -65,7 +65,7 @@ class ParsedMigrationTest {
 
         @Test
         void parsedMigration_repeatablePrefix_hasVersionZero() {
-            var entry = migrationEntry("R__seed_data.sql", SAMPLE_SQL, SAMPLE_CHECKSUM);
+            var entry = migrationScript("R__seed_data.sql", SAMPLE_SQL, SAMPLE_CHECKSUM);
 
             ParsedMigration.parsedMigration(entry)
                 .onFailure(cause -> Assertions.fail(cause.message()))
@@ -80,7 +80,7 @@ class ParsedMigrationTest {
 
         @Test
         void parsedMigration_undoPrefix_parsesTypeVersionAndDescription() {
-            var entry = migrationEntry("U001__undo_create.sql", SAMPLE_SQL, SAMPLE_CHECKSUM);
+            var entry = migrationScript("U001__undo_create.sql", SAMPLE_SQL, SAMPLE_CHECKSUM);
 
             ParsedMigration.parsedMigration(entry)
                 .onFailure(cause -> Assertions.fail(cause.message()))
@@ -97,7 +97,7 @@ class ParsedMigrationTest {
 
         @Test
         void parsedMigration_baselinePrefix_parsesTypeVersionAndDescription() {
-            var entry = migrationEntry("B005__baseline.sql", SAMPLE_SQL, SAMPLE_CHECKSUM);
+            var entry = migrationScript("B005__baseline.sql", SAMPLE_SQL, SAMPLE_CHECKSUM);
 
             ParsedMigration.parsedMigration(entry)
                 .onFailure(cause -> Assertions.fail(cause.message()))
@@ -114,7 +114,7 @@ class ParsedMigrationTest {
 
         @Test
         void parsedMigration_noSqlExtension_returnsFailure() {
-            var entry = migrationEntry("V001__create_tables.txt", SAMPLE_SQL, SAMPLE_CHECKSUM);
+            var entry = migrationScript("V001__create_tables.txt", SAMPLE_SQL, SAMPLE_CHECKSUM);
 
             ParsedMigration.parsedMigration(entry)
                 .onSuccessRun(Assertions::fail)
@@ -123,7 +123,7 @@ class ParsedMigrationTest {
 
         @Test
         void parsedMigration_unknownPrefix_returnsFailure() {
-            var entry = migrationEntry("X001__create_tables.sql", SAMPLE_SQL, SAMPLE_CHECKSUM);
+            var entry = migrationScript("X001__create_tables.sql", SAMPLE_SQL, SAMPLE_CHECKSUM);
 
             ParsedMigration.parsedMigration(entry)
                 .onSuccessRun(Assertions::fail)
@@ -132,7 +132,7 @@ class ParsedMigrationTest {
 
         @Test
         void parsedMigration_missingSeparator_returnsFailure() {
-            var entry = migrationEntry("V001create_tables.sql", SAMPLE_SQL, SAMPLE_CHECKSUM);
+            var entry = migrationScript("V001create_tables.sql", SAMPLE_SQL, SAMPLE_CHECKSUM);
 
             ParsedMigration.parsedMigration(entry)
                 .onSuccessRun(Assertions::fail)
@@ -141,7 +141,7 @@ class ParsedMigrationTest {
 
         @Test
         void parsedMigration_emptyDescription_returnsFailure() {
-            var entry = migrationEntry("V001__.sql", SAMPLE_SQL, SAMPLE_CHECKSUM);
+            var entry = migrationScript("V001__.sql", SAMPLE_SQL, SAMPLE_CHECKSUM);
 
             ParsedMigration.parsedMigration(entry)
                 .onSuccessRun(Assertions::fail)
