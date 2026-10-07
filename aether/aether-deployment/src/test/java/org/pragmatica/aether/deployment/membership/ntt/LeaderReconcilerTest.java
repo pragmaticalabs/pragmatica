@@ -244,6 +244,25 @@ class LeaderReconcilerTest {
         assertThat(ctm.provisionReplacementCalls()).hasSize(2);
     }
 
+    /// #1543 N6: a live pairing's replacement that has not joined yet is capacity. Two cores short of 5, one of them already
+    /// on its way as a pairing's replacement: auto-heal provisions ONE, not two. The control is the same cluster with no pairing.
+    @Test
+    void pendingPairingReplacement_countsAsCapacity_autoHealDoesNotProvisionTheSeatTwice() {
+        configuredCoreCount.set(3);
+        observeCoreHealthy(PEER_A);
+        observeCoreHealthy(PEER_B);
+        reconciler.activate();
+        scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
+        configuredCoreCount.set(5);
+        reconciler.setSurgeReplacements(() -> Set.of(NodeId.randomNodeId()));
+        reconciler.onConfigChange();
+        fireDebouncedReconcile();
+        advancePastProvisioningGates();
+        triggerAndFireReconcile();
+
+        assertThat(ctm.provisionReplacementCalls()).as("one seat is already being filled by the pairing").hasSize(1);
+    }
+
     @Test
     void targetRaisedBeforeFirstPass_usesVerifiedInstalledElectorateAsFormationEvidence() {
         configuredCoreCount.set(3);

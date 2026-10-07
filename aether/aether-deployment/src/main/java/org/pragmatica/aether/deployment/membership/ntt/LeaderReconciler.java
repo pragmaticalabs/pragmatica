@@ -1272,6 +1272,10 @@ public final class LeaderReconciler {
                                                   .countsTowardCapacity(now, joinGraceWindow))
                             .map(Map.Entry::getKey)
                             .forEach(union::add);
+        // #1543: a committed replacement pairing's replacement is capacity on purpose, joined or not yet. Without it, an
+        // original that dies before its replacement is a member reads as a deficit and auto-heal provisions a second
+        // node for the same seat.
+        union.addAll(surgeReplacements.get().get());
 
         return union.size();
     }
@@ -1341,7 +1345,7 @@ public final class LeaderReconciler {
     private Set<NodeId> computePeersToDrain(Set<NodeId> currentMembers,
                                             int configuredCoreCount,
                                             int effectiveWithSurge) {
-        var surge = (int) surgeReplacements.get().get().stream().filter(currentMembers::contains).count();
+        var surge = surgeReplacements.get().get().size();
         var effective = effectiveWithSurge - surge;
 
         if (effective <= configuredCoreCount) {
