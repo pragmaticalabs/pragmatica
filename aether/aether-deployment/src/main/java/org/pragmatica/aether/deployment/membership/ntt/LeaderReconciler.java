@@ -254,6 +254,8 @@ public final class LeaderReconciler {
     /// [`#setOwnsActiveSlices`]. A predicate (not a snapshot set) is intentional: ownership is read
     /// fresh per drain pass, never staged stale.
     private final AtomicReference<Predicate<NodeId>> ownsActiveSlices = new AtomicReference<>(id -> false);
+    /// #1543 E: replacements that are SURGE capacity (a live pairing's replacement before its original retires), not surplus.
+    private final AtomicReference<Supplier<Set<NodeId>>> surgeReplacements = new AtomicReference<>(Set::of);
 
     /// Drain-availability guard (#1488 owner ruling), consulted for SLICE-OWNER candidates only:
     /// `apply(candidate, remainingNodes)` returns the [`DrainRefusal`] naming the first hosted slice
@@ -813,6 +815,15 @@ public final class LeaderReconciler {
                              : predicate);
     }
 
+    /// Inject the surge set: members the surplus path must not count as surplus because a committed replacement pairing
+    /// brought them in on purpose (#1543). `null` resets to "no surge".
+    @Contract
+    public void setSurgeReplacements(Supplier<Set<NodeId>> supplier) {
+        surgeReplacements.set(supplier == null
+                              ? Set::of
+                              : supplier);
+    }
+
     /// Inject the drain-availability guard consulted for slice-owner drain candidates (#1488 owner
     /// ruling). `AetherNode` wires this to the KV-backed minAvailable check so an owner whose removal
     /// would drop a hosted slice below its `minAvailable` ACTIVE instances on the remaining nodes is
@@ -1326,7 +1337,10 @@ public final class LeaderReconciler {
     /// young ages + one scheduled follow-up reconcile via [`#armDrainGraceReEval`]) rather than
     /// silently dropped. Internal — observers see only the count via
     /// [`ReconcileIntent#drainCount`].
-    private Set<NodeId> computePeersToDrain(Set<NodeId> currentMembers, int configuredCoreCount, int effective) {
+    private Set<NodeId> computePeersToDrain(Set<NodeId> currentMembers, int configuredCoreCount, int effectiveWithSurge) {
+        var surge = (int) surgeReplacements.get().get().stream().filter(currentMembers::contains).count();
+        var effective = effectiveWithSurge - surge;
+
         if (effective <= configuredCoreCount) {
             return Set.of();
         }

@@ -4846,6 +4846,7 @@ public interface AetherNode extends ManageableNode {
         // membership-layer reconciler keeps no hard dependency on the deployment FSM.
         leaderReconciler.setOwnsActiveSlices(SliceOwnershipQuery.ownsActiveSlices(kvStore));
         leaderReconciler.setSliceDrainGuard(SliceOwnershipQuery.minAvailableDrainGuard(kvStore));
+        leaderReconciler.setSurgeReplacements(nodeReplacements::surgeReplacements);
         // #1543 E: the replacement reconciler (leader-driven, resumes from the committed records) and its service.
         var replacementWiring = NodeReplacementWiring.wire(new NodeReplacementWiring.Inputs(config.self(),
                                                                                            isLeaderSupplier,

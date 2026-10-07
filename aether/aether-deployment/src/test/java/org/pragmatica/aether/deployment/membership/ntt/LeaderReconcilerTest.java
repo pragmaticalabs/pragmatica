@@ -1052,6 +1052,24 @@ class LeaderReconcilerTest {
                 .hasSize(1);
         }
 
+        /// #1543 E (v-1970 gap): a paired replacement is surge capacity, not surplus. With one live pairing the +1 member
+        /// must not be counted as surplus, so the reconciler dispatches no drain for it (and re-arms no follow-up). The control
+        /// is the same cluster without the surge: its surplus IS drained.
+        @Test
+        void surplusDrain_surgeReplacement_isNotCountedAsSurplus_controlWithoutItDrains() {
+            configuredCoreCount.set(3);
+            seedClusterWithPeers(PEER_A, PEER_B);
+            var surge = NodeId.randomNodeId();
+
+            seedYoungPeers(surge);
+            reconciler.setSurgeReplacements(() -> Set.of(surge));
+
+            reconciler.activate();
+            scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
+
+            assertThat(ctm.drainNodeCalls()).as("the paired surge node is not surplus").isEmpty();
+        }
+
         @Test
         void surplusDrain_allConfiguredCandidatesYoung_defersWithFollowUp_noDrainDispatched() {
             configuredCoreCount.set(2);
