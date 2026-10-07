@@ -13,7 +13,6 @@ import org.pragmatica.aether.deployment.cluster.NodeReplacementPlanner.Timings;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeReplacementPhase;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeReplacementValue;
 import org.pragmatica.consensus.NodeId;
-import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
@@ -53,8 +52,6 @@ public interface NodeReplacementReconciler {
         Observation observe(NodeId original, NodeReplacementValue record);
         /// Run `effect` for this record. Idempotent.
         Promise<EffectResult> execute(Effect effect, NodeId original, NodeReplacementValue record);
-        /// A transition was committed. Operator events are derived here, once per commit.
-        Unit announce(NodeId original, Option<NodeReplacementValue> before, NodeReplacementValue after);
     }
 
     static NodeReplacementReconciler nodeReplacementReconciler(Environment environment, Timings timings) {
@@ -72,8 +69,7 @@ public interface NodeReplacementReconciler {
                                        .map(entry -> Map.entry(entry.getKey(),
                                                                entry.getValue()))
                                        .toList(),
-                            0).timeout(TimeSpan.timeSpan(30).seconds())
-                           .onResultRun(() -> running.set(false));
+                            0).onResultRun(() -> running.set(false));
             }
 
             private Promise<Unit> step(java.util.List<Map.Entry<NodeId, NodeReplacementValue>> live, int index) {
@@ -98,10 +94,15 @@ public interface NodeReplacementReconciler {
                                .fold(Promise::unitPromise,
                                      next -> commit(original, record, next));
                 }
-
+                // The tick does not end, and the next one does not start, while an effect is pending: re-opening the tick
+                // would run the same effect again (a second provision of the same id) before the first has answered.
+                // Every effect is bounded, so a hung provider cannot stall the driver for good; an effect that outlives
+                // its bound is treated as not done yet, and the planner decides again from the observation.
                 return environment.execute(plan.effect(),
                                            original,
                                            record)
+                                  .timeout(effectBound(plan.effect()))
+                                  .recover(cause -> new EffectResult.Deferred("effect not finished: " + cause.message()))
                                   .flatMap(result -> settle(original, record, plan, result));
             }
 
@@ -118,13 +119,15 @@ public interface NodeReplacementReconciler {
                 };
             }
 
+            private TimeSpan effectBound(Effect effect) {
+                return effect == Effect.PROVISION
+                       ? TimeSpan.timeSpan(Math.max(30_000L, 2 * timings.provisioningMs())).millis()
+                       : TimeSpan.timeSpan(30).seconds();
+            }
+
             private Promise<Unit> commit(NodeId original, NodeReplacementValue before, NodeReplacementValue next) {
                 return environment.commit(original, before, next)
-                                  .map(accepted -> accepted
-                                                   ? environment.announce(original,
-                                                                          Option.some(before),
-                                                                          next)
-                                                   : Unit.unit());
+                                  .mapToUnit();
             }
         }
 

@@ -7,6 +7,7 @@ package org.pragmatica.aether.deployment.cluster;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
 import java.util.function.Predicate;
 import java.util.stream.Collectors;
@@ -39,13 +40,39 @@ public final class NodeReplacementIndex {
         return new NodeReplacementIndex();
     }
 
-    public synchronized Unit put(NodeReplacementKey key, NodeReplacementValue value) {
+    /// Told of every committed record as it is applied, with the record it replaced: the one place a transition is seen
+    /// exactly as the cluster committed it, on every node.
+    @FunctionalInterface
+    public interface TransitionListener {
+        Unit onTransition(NodeId original, Option<NodeReplacementValue> before, NodeReplacementValue after);
+    }
+
+    private final AtomicReference<TransitionListener> listener = new AtomicReference<>((_, _, _) -> Unit.unit());
+
+    /// Replaces the transition listener. It runs outside the index's lock.
+    public Unit onTransition(TransitionListener transitionListener) {
+        listener.set(transitionListener);
+
+        return Unit.unit();
+    }
+
+    public Unit put(NodeReplacementKey key, NodeReplacementValue value) {
+        var before = swap(key, value);
+
+        return listener.get()
+                       .onTransition(key.original(),
+                                     before,
+                                     value);
+    }
+
+    private synchronized Option<NodeReplacementValue> swap(NodeReplacementKey key, NodeReplacementValue value) {
+        var before = Option.option(pairings.get(key.original()));
         var updated = new HashMap<>(pairings);
 
         updated.put(key.original(), value);
         pairings = Map.copyOf(updated);
 
-        return Unit.unit();
+        return before;
     }
 
     public synchronized Unit remove(NodeReplacementKey key) {

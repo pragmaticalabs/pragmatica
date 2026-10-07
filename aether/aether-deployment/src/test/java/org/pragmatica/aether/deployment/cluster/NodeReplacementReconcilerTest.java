@@ -22,7 +22,6 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.NodeReplacementValue;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
-import org.pragmatica.lang.Unit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -56,6 +55,7 @@ class NodeReplacementReconcilerTest {
         boolean decommissioned;
         boolean handoffSettled = true;
         EffectResult provisionResult = new EffectResult.Done();
+        Promise<EffectResult> provisionPending;
         boolean provisionedSoNewJoins = true;
 
         @Override public boolean isLeader() {return leader;}
@@ -69,6 +69,7 @@ class NodeReplacementReconcilerTest {
 
             records.put(original, next);
             phases.add(next.phase());
+            announcements.add(next.phase() + (next.reason().isEmpty() ? "" : "(" + next.reason() + ")"));
 
             return Promise.success(true);
         }
@@ -97,6 +98,10 @@ class NodeReplacementReconcilerTest {
 
             switch (effect) {
                 case PROVISION -> {
+                    if (provisionPending != null) {
+                        return provisionPending;
+                    }
+
                     if (provisionResult instanceof EffectResult.Done && provisionedSoNewJoins) {
                         newKnown = true;
                         newAlive = true;
@@ -121,13 +126,6 @@ class NodeReplacementReconcilerTest {
             }
 
             return Promise.success(new EffectResult.Done());
-        }
-
-        @Override
-        public Unit announce(NodeId original, Option<NodeReplacementValue> before, NodeReplacementValue after) {
-            announcements.add(after.phase() + (after.reason().isEmpty() ? "" : "(" + after.reason() + ")"));
-
-            return Unit.unit();
         }
 
         void begin(NodeReplacementPhase phase) {
@@ -425,5 +423,144 @@ class NodeReplacementReconcilerTest {
         assertThat(Timings.parse("1,2,3,4,5,6,7")).isEqualTo(new Timings(1, 2, 3, 4, 5, 6, 7));
         assertThat(Timings.parse("1,2,3")).as("too short: defaults").isEqualTo(Timings.parse(""));
         assertThat(Timings.parse("a,b,c,d,e,f,g")).as("unparsable: defaults").isEqualTo(Timings.parse(""));
+    }
+
+    // ---- v-2008 round: B4 / B5 / N3 / N4 ------------------------------------------------------------------------------
+
+    @Test
+    void defaultTimings_giveTheCanaryANonZeroWait() {
+        assertThat(Timings.parse("").canaryWaitMs()).as("a canary that passes on its first look certifies a corpse").isGreaterThan(0);
+    }
+
+    /// B5: the replacement dies silently right after the swap. The canary holds for its wait, sees the death, and REVERTS: the
+    /// original is never drained or retired.
+    @Test
+    void replacementThatDiesDuringTheCanaryWait_revertsTheSwap_andTheOriginalSurvives() {
+        var model = new Model();
+        var timings = new Timings(10_000, 10_000, 10_000, 10_000, 2_000, 10_000, 10_000);
+        var driver = NodeReplacementReconciler.nodeReplacementReconciler(model, timings);
+
+        model.begin(NodeReplacementPhase.CANARY);
+        model.newKnown = true;
+        model.newAlive = true;
+        model.newVoter = true;
+        model.oldVoter = false;
+        for (int tick = 0; tick < 60 && !NodeReplacementReconciler.isTerminal(model.records.get(OLD).phase()); tick++) {
+            driver.reconcile().await();
+            model.clusterProgresses();
+            model.clock.addAndGet(100);
+            if (tick == 5) {
+                model.newAlive = false;
+            }
+        }
+
+        assertThat(distinct(model.phases)).contains(NodeReplacementPhase.REVERTING, NodeReplacementPhase.ROLLED_BACK)
+                                          .doesNotContain(NodeReplacementPhase.DRAINING_OLD, NodeReplacementPhase.RETIRING_OLD, NodeReplacementPhase.DONE);
+        assertThat(model.effects).doesNotContain("DRAIN_OLD", "RETIRE_OLD");
+        assertThat(model.oldAlive && model.oldVoter).as("the original is alive and holds its seat").isTrue();
+    }
+
+    @Test
+    void replacementDyingBeforeTheDrainStarts_reverts_butOnceTheOldNodeDrainsTheyAreBothKept() {
+        var before = new Model();
+
+        before.begin(NodeReplacementPhase.DRAINING_OLD);
+        before.newKnown = true;
+        before.newAlive = false;
+        before.newVoter = true;
+        before.oldVoter = false;
+        driver(before).reconcile().await();
+
+        assertThat(before.records.get(OLD).phase()).as("drain not requested: swap back").isEqualTo(NodeReplacementPhase.REVERTING);
+        assertThat(before.effects).doesNotContain("DRAIN_OLD");
+
+        var during = new Model();
+
+        during.begin(NodeReplacementPhase.DRAINING_OLD);
+        during.newKnown = true;
+        during.newAlive = false;
+        during.newVoter = true;
+        during.oldVoter = false;
+        during.drain = DrainState.IN_PROGRESS;
+        driver(during).reconcile().await();
+
+        assertThat(during.records.get(OLD).phase()).as("the old node is already draining: keep both").isEqualTo(NodeReplacementPhase.FAILED_KEPT_BOTH);
+    }
+
+    @Test
+    void replacementDyingBeforeTheOldNodeIsRetired_neverRetiresTheLastNodeOfThePair() {
+        var model = new Model();
+
+        model.begin(NodeReplacementPhase.RETIRING_OLD);
+        model.newKnown = true;
+        model.newAlive = false;
+        model.newVoter = true;
+        model.oldVoter = false;
+        model.decommissioned = false;
+        driver(model).reconcile().await();
+
+        assertThat(model.records.get(OLD).phase()).isEqualTo(NodeReplacementPhase.FAILED_KEPT_BOTH);
+        assertThat(model.effects).doesNotContain("RETIRE_OLD");
+    }
+
+    /// N4: a swap that was already requested can still install, so the replacement is terminated only once the roster is settled.
+    @Test
+    void swapRollback_waitsForTheRosterToSettle_beforeTerminatingTheReplacement() {
+        var model = new Model();
+
+        model.begin(NodeReplacementPhase.SWAPPING);
+        model.newKnown = true;
+        model.newAlive = true;
+        model.settled = false;
+        model.clock.addAndGet(20_000);
+        driver(model).reconcile().await();
+
+        assertThat(model.records.get(OLD).phase()).isEqualTo(NodeReplacementPhase.SWAPPING);
+        assertThat(model.effects).doesNotContain("TERMINATE_REPLACEMENT");
+
+        model.settled = true;
+        driver(model).reconcile().await();
+
+        assertThat(model.records.get(OLD).phase()).isEqualTo(NodeReplacementPhase.ROLLED_BACK);
+    }
+
+    /// B4: an effect that has not answered is not run again by the next tick, however late it is, and an answer that comes in
+    /// after the phase deadline still advances the record: a VM that is coming up is never reported as a rollback.
+    @Test
+    void pendingProvision_isNotReopenedByLaterTicks_andALateAnswerStillAdvances() {
+        var model = new Model();
+        var driver = driver(model);
+
+        model.begin(NodeReplacementPhase.PROVISIONING);
+        model.provisionPending = Promise.promise();
+        var first = driver.reconcile();
+
+        driver.reconcile().await();
+        model.clock.addAndGet(60_000);
+        driver.reconcile().await();
+
+        assertThat(model.effects).as("one dispatch, however many ticks passed").containsExactly("PROVISION");
+        assertThat(model.records.get(OLD).phase()).as("no rollback while the provider has not answered").isEqualTo(NodeReplacementPhase.PROVISIONING);
+
+        model.provisionPending.succeed(new EffectResult.Done());
+        first.await();
+
+        assertThat(model.records.get(OLD).phase()).isEqualTo(NodeReplacementPhase.JOINING);
+        assertThat(model.effects).containsExactly("PROVISION");
+    }
+
+    @Test
+    void attempt_countsHowOftenTheSamePhaseWasCommittedAgain() {
+        var model = new Model();
+
+        model.begin(NodeReplacementPhase.JOINING);
+        model.newKnown = true;
+        model.newAlive = true;
+        model.newCaughtUp = false;
+        model.clock.addAndGet(6_000);
+        driver(model).reconcile().await();
+
+        assertThat(model.records.get(OLD).reason()).isEqualTo(NodeReplacementPlanner.JOIN_OVERDUE);
+        assertThat(model.records.get(OLD).attempt()).as("the same phase, committed again with a marker").isEqualTo(1);
     }
 }

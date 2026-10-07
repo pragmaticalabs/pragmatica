@@ -60,7 +60,8 @@ public interface NodeReplacementService {
         record AlreadyReplacing(NodeId node) implements Refusal {
             @Override
             public String message() {
-                return "A replacement is already in progress for " + node.id() + ", or for another node (one at a time)";
+                return "A replacement is already in progress for " + node.id()
+                     + " (or waits to be settled), or for another node (one at a time)";
             }
         }
 
