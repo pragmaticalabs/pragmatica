@@ -1,5 +1,7 @@
 # Terra implementation handover
 
+Current checkpoint (2026-10-08): compiler, migrations, HTTP/authentication, executable assembly, and expanded examples are implemented. Nine distributions compile 21 original slice implementations. The sections below retain each increment's scope and evidence; [the example matrix](example-apps/README.md) describes current application support. Streams/entities remain explicitly unsupported, with an investigation and proposed next contract.
+
 Work is on `feat/terra-runtime`, based on `release-1.0.0-rc4` at `c39009df6`. The specification and usage guide are [SPEC.md](SPEC.md) and [README.md](README.md). The first commit extracts shared migrations; the Terra commit adds the runtime, compiler backend, and examples. Publishing and merging have not been requested.
 
 ## Completed
@@ -57,3 +59,9 @@ The downstream `aether/node -am install -DskipTests` reactor passed after the sh
 Terra rejects null slice instances and null factory, binding, resource-acquisition, or cleanup completion values with operation-specific failures. Five fault-injection cases in `TerraApplicationTest` exercise these extension defects and verify reverse cleanup reaches every scope. Generated factories obey these contracts; the guards cover custom embedding implementations. This does not attempt to compensate arbitrary external effects performed by a defective factory.
 
 After boundary hardening, `mvn -o -T 1 -f terra/pom.xml clean install -Dterra.test.jdbcUrl=…` rebuilt the entire Terra subtree and all nine distributions. **64 tests passed with zero failures, errors, or skips**, including HTTP/TLS, 12 live database tests, and extracted-process tests. The explicit runtime JBCT gate passed (zero lint errors or format issues).
+
+## Nested resource validation review
+
+A compiler regression reproduced a stream resource accepted through an injected plain step: the shared `PlainInterfaceModel.dependencies` list is currently empty. Terra now inspects the same static factory parameters used by shared generation. Parameterized tests require explicit refusal of nested `StreamPublisher`, `StreamAccess`, and durable-entity resources. This change is Terra-only and does not change Aether's factory/envelope output. The changed descriptor's explicit JBCT check passes with zero lint errors or format issues.
+
+Final compiler validation passed **367 tests**. All 20 application child modules then clean-built successfully with that compiler; this last assembly-only run skipped tests, following the successful 64-test full Terra run above. The isolated PostgreSQL test cluster was stopped after verification. No original `examples/` sources were modified.
