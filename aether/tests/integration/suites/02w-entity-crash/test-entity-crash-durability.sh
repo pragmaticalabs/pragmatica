@@ -266,6 +266,12 @@ ENTITY_CREATE_RETRY_BACKOFF_S="${ENTITY_CREATE_RETRY_BACKOFF_S:-1}"
 TRANSIENT_READ_DEADLINE_S="${TRANSIENT_READ_DEADLINE_S:-60}"
 TRANSIENT_READ_BACKOFF_S="${TRANSIENT_READ_BACKOFF_S:-2}"
 
+# Whole seconds since start, into NOW_S. `$SECONDS` ticks at integer boundaries of the shell's own clock, so a deadline of
+# `SECONDS + N` is really somewhere in (N-1, N] seconds of wall time, and a stub case with N=1 raced its first call against it (#1887).
+# A function so a stub case can drive time by the sequence of calls it makes (W12 in test-cloud-helpers.sh) instead of by the
+# runner's speed. No fork: this is read on every retry.
+now_s() { NOW_S=$SECONDS; }
+
 # transient_failure_type <body>: echo the body's (first) failureType and succeed when it is on the
 # allow-list — by exact name, never by substring or case-folding; fail (echoing nothing) otherwise.
 transient_failure_type() {
@@ -308,7 +314,7 @@ read_amount() {
     #
     # Every log helper writes to STDOUT and this function's stdout IS the parsed amount, so
     # diagnostics must be redirected or they silently corrupt the compared value.
-    deadline=$((SECONDS + TRANSIENT_READ_DEADLINE_S))
+    now_s; deadline=$((NOW_S + TRANSIENT_READ_DEADLINE_S))
     local out status
     while :; do
         # The status and body of a non-2xx answer are KEPT (entity_post_status): app routes answer 503 for a
@@ -330,7 +336,8 @@ read_amount() {
         ft=$(transient_failure_type "$body") || ft=""
         [ "$(entity_refusal_class "$status" "$body")" = "fatal" ] && break
         [ -n "$body" ] && last_transient="$body"
-        if [ "$SECONDS" -ge "$deadline" ]; then
+        now_s
+        if [ "$NOW_S" -ge "$deadline" ]; then
             if [ "$status" = "503" ] || [ -n "$ft" ]; then
                 log_warn "read ${key}: a node answered transient (HTTP ${status}${ft:+, ${ft}}) until the ${TRANSIENT_READ_DEADLINE_S}s retry deadline; last body: ${body}" >&2
                 return 5
