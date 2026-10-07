@@ -100,6 +100,21 @@ class ManagementForwardedSecurityContextTest {
     /// trail that cannot say who overrode the floor in any multi-node cluster.
     @Test
     void forwardedForcedShutdown_breachWarningNamesThePrincipalWhoForcedIt() {
+        assertThat(forcedShutdownMessage("ops-alice")).contains("ops-alice").doesNotContain("by unknown");
+    }
+
+    /// Control that pins the BINDING rather than the gate: two forwarded requests under different validated principals each
+    /// name their OWN principal, so the context is bound per request and is neither absent nor carried over from another one.
+    @Test
+    void forwardedForcedShutdowns_eachNameTheirOwnPrincipal() {
+        var first = forcedShutdownMessage("ops-alice");
+        var second = forcedShutdownMessage("ops-bob");
+
+        assertThat(first).contains("ops-alice").doesNotContain("ops-bob");
+        assertThat(second).contains("ops-bob").doesNotContain("ops-alice");
+    }
+
+    private String forcedShutdownMessage(String principalName) {
         var worker = NodeId.nodeId("worker-1").unwrap();
         var warnings = new java.util.concurrent.CopyOnWriteArrayList<OperatorWarning>();
         var artifact = Artifact.artifact("org.example:slice-a:1.0.0").unwrap();
@@ -117,16 +132,21 @@ class ManagementForwardedSecurityContextTest {
                                                            new byte[0],
                                                            "req-1983-audit");
 
-        server(authenticated(AuthorizationRole.ADMIN), floor, forced).onHttpForwardRequest(forwardRequest());
+        server(authenticatedAs(principalName, AuthorizationRole.ADMIN), floor, forced).onHttpForwardRequest(forwardRequest());
 
         assertThat(serializer.status()).as("the forced shutdown was admitted").isBetween(200, 299);
         org.awaitility.Awaitility.await().atMost(java.time.Duration.ofSeconds(5)).until(() -> !warnings.isEmpty());
         assertThat(warnings).as("the forced breach raised its warning").hasSize(1);
-        assertThat(warnings.getFirst().message()).contains("ops-alice").doesNotContain("by unknown");
+
+        return warnings.getFirst().message();
     }
 
     private static SecurityContext authenticated(AuthorizationRole role) {
-        return SecurityContext.securityContext("ops-alice", java.util.Set.of(), role).unwrap();
+        return authenticatedAs("ops-alice", role);
+    }
+
+    private static SecurityContext authenticatedAs(String name, AuthorizationRole role) {
+        return SecurityContext.securityContext(name, java.util.Set.of(), role).unwrap();
     }
 
     private static HttpForwardRequest forwardRequest() {
