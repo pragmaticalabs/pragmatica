@@ -202,6 +202,11 @@ public final class TerraApplication {
                                               .mapToUnit());
     }
 
+    /// Resolve the selected dependency graph without constructing slices or provisioning resources.
+    public static Result<List<TerraFactory<?>>> plan(TerraBlueprint blueprint, List<TerraFactory<?>> available) {
+        return Result.lift(Causes::fromThrowable, () -> ordered(blueprint, available)).flatMap(result -> result);
+    }
+
     static Result<List<TerraFactory<?>>> ordered(TerraBlueprint blueprint, List<TerraFactory<?>> available) {
         if (blueprint.artifacts().isEmpty() || blueprint.artifacts().stream().distinct().count() != blueprint.artifacts()
                                                                                                              .size()) {

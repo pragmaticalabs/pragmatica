@@ -119,3 +119,27 @@ Executed on 2026-10-07/08 with the isolated Maven repository and JDK 25:
 - Explicit JBCT format/check passed for HTTP adapter, shared authentication, Terra HTTP, and examples; the node gate also passed. A subsequent HTTP-only check added a null-promise defect test (11 host tests total) and passed format/lint/install.
 
 This is **297 executed focused tests** for the HTTP increment. No cloud, Forge, multi-node, HTTP/2, or Terra HTTP/3 host proof is claimed. The transport regression suite includes its existing HTTP/3 shutdown tests, independently of Terra hosting. Executable process packaging remains the next milestone.
+
+## Executable distribution milestone
+
+The fourth increment assembles Terra-built slice JARs from a Maven project's resolved runtime dependencies. Maven dependency declarations locate candidate code; the existing blueprint remains the sole selection of slices to instantiate. It does not rebuild published Aether binaries or independently resolve blueprint coordinates.
+
+1. `terra:assemble` runs after packaging. Include the project JAR and resolved compile/runtime JARs intact, retaining service descriptors and resource ownership. Refuse duplicate class definitions and conflicting bundle filenames. Use Maven's resolved version mediation; detecting every evicted transitive version request is not a separate guarantee.
+2. Bundle `application/` (blueprint, optional host/resource/per-slice files, schema), `lib/`, launch scripts, and SHA-256 library inventory. Attach a ZIP with classifier `terra`. Validate a staged bundle using the bundled launcher in a separate Java process before replacing an owned output directory. Refuse replacement of unmarked directories and application symlinks. Validation failure preserves the previous distribution. This is not a transactional publication guarantee for filesystem failures during final replacement.
+3. The launcher loads selected factory defaults only from the factory's own JAR/classes directory. Slice precedence is system properties (`terra.`), environment (`TERRA_`), per-slice file, deployment resources, intrinsic resources. Double underscores in environment names become dots; single underscores remain unchanged. No merging of unrelated JAR-local defaults. Reject malformed files and unresolved secret placeholders; use direct environment/property values for secrets.
+4. `--check` validates graph selection, configuration syntax/host options, and migration filenames/identity without constructing slices, acquiring resources, connecting to databases/JWKS, or opening a listener. Resource-specific configuration and actual TLS/route construction are checked at startup. Host settings support API keys, JWT, explicit public defaults, TLS, path/header versions, port/body size; unknown host options fail.
+5. Normal launch awaits migrations, constructs slices, binds HTTP, and reports readiness. Process termination invokes the host's graceful drain and resource cleanup. No forced shutdown deadline is implied. Java 25 with preview enabled is required; scripts use `JAVA_HOME` or `java` from PATH. The Unix script is also runnable as `sh bin/terra` after ZIP extraction.
+6. Prove that the extracted archive serves unchanged Catalog from a working directory outside the checkout and shuts down on termination. Prove check mode, resource ownership/precedence, invalid selection/configuration/migrations, duplicate-class refusal, and preservation of previous output after validation failure.
+
+### Fourth increment reconciliation
+
+| Clause | Status | Implementation and evidence |
+| --- | --- | --- |
+| 1 | DONE | `AssembleMojo` resolves the Maven runtime set; `Distribution.classpath` rejects duplicate class/file identities. Distribution tests exercise class collisions and legitimate service/module metadata. |
+| 2 | DONE | Staged copy/check/ZIP pipeline and marker protection. Tests prove failed validation preserves prior output and refuses an unowned directory. |
+| 3 | DONE | `TerraConfiguration` reads factory code-source resources; tests use two separate JARs with colliding resource names and verify layer precedence/environment names. |
+| 4 | DONE | `TerraLaunchPlan`, `LaunchHttp`, and `TerraMain`; a factory that always fails construction still passes check mode. Invalid migration/configuration/selection tests fail before provisioning. |
+| 5 | DONE | Launcher composes existing migration/application/HTTP lifecycle; the extracted-process test terminates the process and observes clean shutdown. |
+| 6 | DONE | `TerraDistributionIT` extracts the actual attached ZIP, launches outside the repository, requests Catalog over HTTP, and tests `--check`. |
+
+Executed on 2026-10-08: clean installs of `terra/runtime,terra/launcher,terra/maven-plugin` and `terra/examples` passed **36 tests** (17 runtime, 10 launcher, 4 assembler, 3 example unit/network tests, 2 extracted-process tests). The four opt-in database tests skipped in this packaging-only run. Explicit JBCT format/check passed across all four touched modules. The ZIP was launched from an unrelated temporary working directory. Windows launcher execution has not been tested.
