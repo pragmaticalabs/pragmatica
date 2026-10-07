@@ -19,6 +19,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.NodeRoutesValue;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
 import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Unit;
 
 
@@ -65,6 +66,7 @@ public interface RouteCollisionAnnouncer {
         }
 
         @Override
+        @Contract
         public synchronized void onRoutesPut(ValuePut<NodeRoutesKey, NodeRoutesValue> put) {
             var key = put.cause().key();
             var next = put.cause()
@@ -83,6 +85,7 @@ public interface RouteCollisionAnnouncer {
         }
 
         @Override
+        @Contract
         public synchronized void onRoutesRemove(ValueRemove<NodeRoutesKey, NodeRoutesValue> remove) {
             replace(remove.cause().key(),
                     Map.of());
@@ -125,8 +128,10 @@ public interface RouteCollisionAnnouncer {
         }
 
         private Unit announce(RouteIdentity route, Claim before, Claim after) {
-            var wasCollision = before != null && before.bases().size() > 1;
-            var isCollision = after != null && after.bases().size() > 1;
+            var wasCollision = Option.option(before).map(claim -> claim.bases()
+                                                                       .size() > 1).or(false);
+            var isCollision = Option.option(after).map(claim -> claim.bases()
+                                                                     .size() > 1).or(false);
 
             if (wasCollision == isCollision) {
                 return Unit.unit();
