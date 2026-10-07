@@ -5689,7 +5689,15 @@ public interface AetherNode extends ManageableNode {
         // #1723: a scheduled task's unknown fire outcome, and its late resolution, derived by every node from the committed
         // task state; the aggregator publishes on the cluster-events owner only, throttled per task.
         var scheduledTaskOutcomeAnnouncer = ScheduledTaskOutcomeAnnouncer.scheduledTaskOutcomeAnnouncer(delegateRouter::route);
+        // #1206: two artifacts serving one route, derived by every node from the committed route table.
+        var routeCollisionAnnouncer = RouteCollisionAnnouncer.routeCollisionAnnouncer(delegateRouter::route);
 
+        allEntries.addAll(KVNotificationRouter.<AetherKey, AetherValue> builder(AetherKey.class)
+                                              .onPut(AetherKey.NodeRoutesKey.class, routeCollisionAnnouncer::onRoutesPut)
+                                              .onRemove(AetherKey.NodeRoutesKey.class,
+                                                        routeCollisionAnnouncer::onRoutesRemove)
+                                              .build()
+                                              .asRouteEntries());
         allEntries.addAll(KVNotificationRouter.<AetherKey, AetherValue> builder(AetherKey.class)
                                               .onPut(AetherKey.ScheduledTaskStateKey.class,
                                                      scheduledTaskOutcomeAnnouncer::onStatePut)
@@ -9350,6 +9358,10 @@ public interface AetherNode extends ManageableNode {
                                               eventAggregator::onScheduledTaskOutcomeUnknown));
         entries.add(MessageRouter.Entry.route(OperationalEvent.ScheduledTaskOutcomeRestored.class,
                                               eventAggregator::onScheduledTaskOutcomeRestored));
+        entries.add(MessageRouter.Entry.route(OperationalEvent.RoutePrefixCollision.class,
+                                              eventAggregator::onRoutePrefixCollision));
+        entries.add(MessageRouter.Entry.route(OperationalEvent.RoutePrefixCollisionCleared.class,
+                                              eventAggregator::onRoutePrefixCollisionCleared));
         entries.add(MessageRouter.Entry.route(OperationalEvent.ScheduledTaskFireHeld.class,
                                               eventAggregator::onScheduledTaskFireHeld));
         entries.add(MessageRouter.Entry.route(OperationalEvent.ScheduledTaskFireReleased.class,

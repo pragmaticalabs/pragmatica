@@ -80,6 +80,8 @@ SHAPE org.pragmatica.aether.api.ClusterEvent$NodeLifecycleChanged (at:org.pragma
 SHAPE org.pragmatica.aether.api.ClusterEvent$OperatorWarning (at:org.pragmatica.hlc.HlcTimestamp,severity:org.pragmatica.aether.api.ClusterEvent$Severity,summary:java.lang.String,details:java.util.Map<java.lang.String, java.lang.String>)
 SHAPE org.pragmatica.aether.api.ClusterEvent$QuorumEstablished (at:org.pragmatica.hlc.HlcTimestamp,severity:org.pragmatica.aether.api.ClusterEvent$Severity,summary:java.lang.String,details:java.util.Map<java.lang.String, java.lang.String>)
 SHAPE org.pragmatica.aether.api.ClusterEvent$QuorumLost (at:org.pragmatica.hlc.HlcTimestamp,severity:org.pragmatica.aether.api.ClusterEvent$Severity,summary:java.lang.String,details:java.util.Map<java.lang.String, java.lang.String>)
+SHAPE org.pragmatica.aether.api.ClusterEvent$RoutePrefixCollision (at:org.pragmatica.hlc.HlcTimestamp,severity:org.pragmatica.aether.api.ClusterEvent$Severity,summary:java.lang.String,details:java.util.Map<java.lang.String, java.lang.String>)
+SHAPE org.pragmatica.aether.api.ClusterEvent$RoutePrefixCollisionCleared (at:org.pragmatica.hlc.HlcTimestamp,severity:org.pragmatica.aether.api.ClusterEvent$Severity,summary:java.lang.String,details:java.util.Map<java.lang.String, java.lang.String>)
 SHAPE org.pragmatica.aether.api.ClusterEvent$ScaleCapped (at:org.pragmatica.hlc.HlcTimestamp,severity:org.pragmatica.aether.api.ClusterEvent$Severity,summary:java.lang.String,details:java.util.Map<java.lang.String, java.lang.String>)
 SHAPE org.pragmatica.aether.api.ClusterEvent$ScaleDown (at:org.pragmatica.hlc.HlcTimestamp,severity:org.pragmatica.aether.api.ClusterEvent$Severity,summary:java.lang.String,details:java.util.Map<java.lang.String, java.lang.String>)
 SHAPE org.pragmatica.aether.api.ClusterEvent$ScaleUp (at:org.pragmatica.hlc.HlcTimestamp,severity:org.pragmatica.aether.api.ClusterEvent$Severity,summary:java.lang.String,details:java.util.Map<java.lang.String, java.lang.String>)
@@ -437,6 +439,8 @@ TAG  org.pragmatica.aether.api.ClusterEvent$NodeLifecycleChanged 277
 TAG  org.pragmatica.aether.api.ClusterEvent$OperatorWarning 292
 TAG  org.pragmatica.aether.api.ClusterEvent$QuorumEstablished 278
 TAG  org.pragmatica.aether.api.ClusterEvent$QuorumLost 279
+TAG  org.pragmatica.aether.api.ClusterEvent$RoutePrefixCollision 1755
+TAG  org.pragmatica.aether.api.ClusterEvent$RoutePrefixCollisionCleared 1756
 TAG  org.pragmatica.aether.api.ClusterEvent$ScaleCapped 280
 TAG  org.pragmatica.aether.api.ClusterEvent$ScaleDown 281
 TAG  org.pragmatica.aether.api.ClusterEvent$ScaleUp 282
