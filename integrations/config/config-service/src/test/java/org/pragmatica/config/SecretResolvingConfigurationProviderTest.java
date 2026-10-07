@@ -9,6 +9,7 @@ import org.pragmatica.lang.utils.Causes;
 
 import org.pragmatica.lang.Option;
 
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicReference;
@@ -220,6 +221,85 @@ class SecretResolvingConfigurationProviderTest {
                 assertThat(cause.message()).doesNotContain("s3cret");
             });
         }
+
+        @Test
+        void reload_resolvesTheReloadedPathsNotTheOriginalOnes() {
+            var seen = new java.util.ArrayList<String>();
+            var source = new GenerationSource(List.of(Map.of("db.password", "${secrets:db/old}"),
+                                                      Map.of("db.password", "${secrets:db/new}")),
+                                              0);
+            var provider = ConfigurationProvider.withSecretResolution(ConfigurationProvider.configurationProvider(source),
+                                                                      path -> {
+                                                                          seen.add(path);
+                                                                          return Promise.resolved(Result.success("value-of-" + path));
+                                                                      })
+                                                .unwrap();
+
+            var reloaded = (ConfigurationProvider) provider.reload().unwrap();
+
+            assertThat(reloaded.getString("db.password").unwrap()).isEqualTo("value-of-db/new");
+            assertThat(seen).containsExactly("db/old", "db/new");
+        }
+
+        @Test
+        void reload_delegateReloadingToANonProviderSource_isStillResolved() {
+            var raw = new GenerationSource(List.of(Map.of("db.password", "${secrets:db/password}")), 0);
+            var delegate = new ReloadsToPlainSource(raw);
+            var provider = ConfigurationProvider.withSecretResolution(delegate,
+                                                                      path -> Promise.resolved(Result.success("s3cret")))
+                                                .unwrap();
+
+            var reloaded = provider.reload().unwrap();
+
+            assertThat(reloaded.getString("db.password").unwrap())
+                .as("a reloaded source that is not a ConfigurationProvider must not escape with raw placeholders")
+                .isEqualTo("s3cret");
+        }
+
+        @Test
+        void reload_overADynamicDelegate_readsTheReloadedBase() {
+            var source = new GenerationSource(List.of(Map.of("db.host", "initial-host"),
+                                                      Map.of("db.host", "reloaded-host")),
+                                              0);
+            var dynamic = DynamicConfigurationProvider.dynamicConfigurationProvider(ConfigurationProvider.configurationProvider(source));
+            var provider = ConfigurationProvider.withSecretResolution(dynamic,
+                                                                      path -> Promise.resolved(Result.success("x")))
+                                                .unwrap();
+
+            var reloaded = (ConfigurationProvider) provider.reload().unwrap();
+
+            assertThat(reloaded.getString("db.host").unwrap()).isEqualTo("reloaded-host");
+        }
+    }
+
+    /// Serves `generations[generation]`; every reload advances one generation (the last repeats).
+    private record GenerationSource(List<Map<String, String>> generations, int generation) implements ConfigSource {
+        @Override public Option<String> getString(String key) {return Option.option(generations.get(generation).get(key));}
+
+        @Override public Set<String> keys() {return generations.get(generation).keySet();}
+
+        @Override public Map<String, String> asMap() {return generations.get(generation);}
+
+        @Override public String name() {return "generation-source";}
+
+        @Override public Result<ConfigSource> reload() {
+            return Result.success(new GenerationSource(generations, Math.min(generation + 1, generations.size() - 1)));
+        }
+    }
+
+    /// A provider whose reload yields a plain ConfigSource that is not a ConfigurationProvider.
+    private record ReloadsToPlainSource(ConfigSource raw) implements ConfigurationProvider {
+        @Override public Option<String> getString(String key) {return raw.getString(key);}
+
+        @Override public Set<String> keys() {return raw.keys();}
+
+        @Override public Map<String, String> asMap() {return raw.asMap();}
+
+        @Override public java.util.List<ConfigSource> sources() {return java.util.List.of(raw);}
+
+        @Override public String name() {return "reloads-to-plain";}
+
+        @Override public Result<ConfigSource> reload() {return Result.success(raw);}
     }
 
     /// A source whose reload yields a fresh copy of its raw (placeholder-bearing) values.

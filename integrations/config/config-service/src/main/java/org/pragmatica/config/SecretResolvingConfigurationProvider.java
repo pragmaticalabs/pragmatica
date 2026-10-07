@@ -213,8 +213,8 @@ final class SecretResolvingConfigurationProvider implements ConfigurationProvide
     /// placeholders. Re-resolve it with the same resolver, so the returned provider keeps the decorator
     /// and observes a rotated secret rather than a stale snapshot. A resolution failure is the reload's
     /// failure, naming key and path only (see [ConfigError.SecretResolutionFailed]). A reloaded source
-    /// that is not a [ConfigurationProvider] has no values to resolve through this decorator and is
-    /// returned as the delegate gave it.
+    /// that is not a [ConfigurationProvider] is wrapped as one first, so its placeholders are resolved
+    /// too rather than escaping as literal values.
     @Override
     public Result<ConfigSource> reload() {
         return delegate.reload()
@@ -222,10 +222,12 @@ final class SecretResolvingConfigurationProvider implements ConfigurationProvide
     }
 
     private Result<ConfigSource> reResolve(ConfigSource reloaded) {
-        if (reloaded instanceof ConfigurationProvider provider) {
-            return resolve(provider, secretResolver).map(ConfigSource.class::cast);
-        }
+        return resolve(asProvider(reloaded), secretResolver).map(ConfigSource.class::cast);
+    }
 
-        return success(reloaded);
+    private static ConfigurationProvider asProvider(ConfigSource source) {
+        return source instanceof ConfigurationProvider provider
+               ? provider
+               : ConfigurationProvider.configurationProvider(source);
     }
 }
