@@ -38,6 +38,12 @@ import org.pragmatica.aether.http.security.SecurityValidator;
 import org.pragmatica.aether.http.handler.HttpResponseData;
 import org.pragmatica.aether.resource.artifact.MavenProtocolHandler;
 import org.pragmatica.aether.resource.artifact.MavenProtocolHandler.MavenResponse;
+import org.pragmatica.aether.api.routes.NodeLifecycleRoutes;
+import org.pragmatica.aether.deployment.cluster.SliceOwnershipQuery;
+import org.pragmatica.aether.deployment.membership.fsm.MembershipFsm;
+import org.pragmatica.aether.artifact.Artifact;
+import org.pragmatica.utility.warning.OperatorWarning;
+import org.pragmatica.utility.warning.OperatorWarningSink;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.ProtocolMessage;
 import org.pragmatica.consensus.net.ClusterNetwork;
@@ -69,6 +75,7 @@ class ManagementForwardedSecurityContextTest {
 
     private final RecordingClusterNetwork network = new RecordingClusterNetwork();
     private final CapturingSerializer serializer = new CapturingSerializer();
+    private final MembershipFsm fsm = MembershipFsm.membershipFsm();
 
     @Test
     void forwardedOperatorPush_isAdmitted_becauseTheValidatedPrincipalIsBoundOnTheOwner() {
@@ -88,8 +95,58 @@ class ManagementForwardedSecurityContextTest {
         assertThat(serializer.status()).isIn(401, 403);
     }
 
+    /// The #1720 audit reader, forwarded: an operator shutdown of a worker that the DEPLOYMENT owner receives from a
+    /// non-owner, FORCED past a slice floor, must name the principal that forced it. Unbound it said "by unknown": an audit
+    /// trail that cannot say who overrode the floor in any multi-node cluster.
+    @Test
+    void forwardedForcedShutdown_breachWarningNamesThePrincipalWhoForcedIt() {
+        assertThat(forcedShutdownMessage("ops-alice")).contains("ops-alice").doesNotContain("by unknown");
+    }
+
+    /// Control that pins the BINDING rather than the gate: two forwarded requests under different validated principals each
+    /// name their OWN principal, so the context is bound per request and is neither absent nor carried over from another one.
+    @Test
+    void forwardedForcedShutdowns_eachNameTheirOwnPrincipal() {
+        var first = forcedShutdownMessage("ops-alice");
+        var second = forcedShutdownMessage("ops-bob");
+
+        assertThat(first).contains("ops-alice").doesNotContain("ops-bob");
+        assertThat(second).contains("ops-bob").doesNotContain("ops-alice");
+    }
+
+    private String forcedShutdownMessage(String principalName) {
+        var worker = NodeId.nodeId("worker-1").unwrap();
+        var warnings = new java.util.concurrent.CopyOnWriteArrayList<OperatorWarning>();
+        var artifact = Artifact.artifact("org.example:slice-a:1.0.0").unwrap();
+        var floor = NodeLifecycleRoutes.SliceFloor.sliceFloor((target, _) -> java.util.List.of(new SliceOwnershipQuery.DrainRefusal(target, artifact, 1L, 2)),
+                                                              OperatorWarningSink.handingOffTo(warnings::add));
+
+        fsm.onSwimHealthy(worker, 1L);
+        fsm.onMemberDescriptor(org.pragmatica.consensus.net.NodeInfo.nodeInfo(worker,
+                                                                              org.pragmatica.net.tcp.NodeAddress.nodeAddress("host-w", 6000).unwrap(),
+                                                                              Map.of(org.pragmatica.consensus.net.NodeInfo.LABEL_ROLE, "worker")));
+        var forced = HttpRequestContext.httpRequestContext("/api/v1/nodes/shutdown/worker-1",
+                                                           "POST",
+                                                           Map.of("force", java.util.List.of("true")),
+                                                           Map.of(),
+                                                           new byte[0],
+                                                           "req-1983-audit");
+
+        server(authenticatedAs(principalName, AuthorizationRole.ADMIN), floor, forced).onHttpForwardRequest(forwardRequest());
+
+        assertThat(serializer.status()).as("the forced shutdown was admitted").isBetween(200, 299);
+        org.awaitility.Awaitility.await().atMost(java.time.Duration.ofSeconds(5)).until(() -> !warnings.isEmpty());
+        assertThat(warnings).as("the forced breach raised its warning").hasSize(1);
+
+        return warnings.getFirst().message();
+    }
+
     private static SecurityContext authenticated(AuthorizationRole role) {
-        return SecurityContext.securityContext("ops-alice", java.util.Set.of(), role).unwrap();
+        return authenticatedAs("ops-alice", role);
+    }
+
+    private static SecurityContext authenticatedAs(String name, AuthorizationRole role) {
+        return SecurityContext.securityContext(name, java.util.Set.of(), role).unwrap();
     }
 
     private static HttpForwardRequest forwardRequest() {
@@ -97,6 +154,14 @@ class ManagementForwardedSecurityContextTest {
     }
 
     private ManagementServerImpl server(SecurityContext validated) {
+        return server(validated,
+                      NodeLifecycleRoutes.SliceFloor.sliceFloor((_, _) -> java.util.List.of(), OperatorWarningSink.logOnly()),
+                      HttpRequestContext.httpRequestContext(PUSH_PATH, "PUT", Map.of(), Map.of(), new byte[] {1, 2, 3}, "req-1983"));
+    }
+
+    private ManagementServerImpl server(SecurityContext validated,
+                                        NodeLifecycleRoutes.SliceFloor floor,
+                                        HttpRequestContext forwarded) {
         var node = mock(ManageableNode.class);
         var appHttpServer = mock(AppHttpServer.class);
         var maven = mock(MavenProtocolHandler.class);
@@ -110,6 +175,12 @@ class ManagementForwardedSecurityContextTest {
         when(node.consumerGroupRegistry()).thenReturn(ConsumerGroupRegistry.consumerGroupRegistry());
         when(node.streamNamespacesService()).thenReturn(mock(StreamNamespacesService.class));
         when(node.hasCompleteClusterView()).thenReturn(true);
+        when(node.membershipFsm()).thenReturn(fsm);
+        when(node.coreNodeIds()).thenReturn(Set.of(SELF));
+        var kv = mock(org.pragmatica.cluster.state.kvstore.KVStore.class);
+
+        when(kv.get(org.mockito.ArgumentMatchers.any())).thenReturn(Option.none());
+        when(node.kvStore()).thenReturn(kv);
         when(node.mavenProtocolHandler()).thenReturn(maven);
         when(maven.handlePut(org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.any()))
                 .thenReturn(Promise.success(new MavenResponse(201, "text/plain", "created".getBytes())));
@@ -138,14 +209,10 @@ class ManagementForwardedSecurityContextTest {
                                         ForwardingTimeouts.forwardingTimeouts(),
                                         Option.some(network),
                                         Option.some(serializer),
-                                        Option.some(new StubDeserializer(HttpRequestContext.httpRequestContext(PUSH_PATH,
-                                                                                                                "PUT",
-                                                                                                                Map.of(),
-                                                                                                                Map.of(),
-                                                                                                                new byte[] {1, 2, 3},
-                                                                                                                "req-1983"))),
+                                        Option.some(new StubDeserializer(forwarded)),
                                         _ -> {},
-                                        Set::of);
+                                        Set::of,
+                                        floor);
     }
 
     private static final class RecordingClusterNetwork implements ClusterNetwork {

@@ -88,9 +88,8 @@ class EmberForwardedMavenPushTest {
         }
     }
 
-    /// One cluster boot, four assertions, because booting a second three-node cluster to split them
-    /// would double the wall time and the flake surface for no added isolation — they are stages of a
-    /// single claim.
+    /// One cluster boot for the whole matrix (paths x nodes), because booting a second three-node cluster to split
+    /// it would double the wall time and the flake surface for no added isolation.
     @Test
     @Timeout(420)
     void authenticatedPush_succeedsThroughEveryNode_owner_and_nonOwners_alike() {
@@ -102,23 +101,31 @@ class EmberForwardedMavenPushTest {
 
         assertThat(mgmtPorts).describedAs("three nodes, so at least two are not the group owner").hasSize(CLUSTER_SIZE);
 
-        var statuses = new java.util.ArrayList<String>();
+        var actual = new java.util.LinkedHashMap<String, java.util.List<Integer>>();
 
-        for (var path : PUSH_PATHS) {
+        for (var expectation : EXPECTED_STATUS.entrySet()) {
+            var perNode = new java.util.ArrayList<Integer>();
+
             for (var port : mgmtPorts) {
-                statuses.add(path + "@" + port + "=" + push(port, path).status());
+                perNode.add(push(port, expectation.getKey()).status());
             }
+
+            actual.put(expectation.getKey(), perNode);
         }
 
-        // Admitted means the in-route gate let it through: any answer but 401/403. The owner may still refuse the
-        // probe's content (400), which is the artifact handler judging the pom, not authorization.
-        assertThat(statuses).describedAs("PUT /repository with the ADMIN key, through each node, per path shape: %s", statuses)
-                            .allSatisfy(entry -> assertThat(Integer.parseInt(entry.substring(entry.lastIndexOf('=') + 1)))
-                                .describedAs(entry)
-                                .isNotIn(401, 403));
+        // EXACT statuses, identical through every node (so identical for the owner and the non-owners). A non-owner that
+        // loses the principal answers 401 where the owner answers 200/201/400, so any asymmetry fails here with the matrix.
+        // The single-segment group is task-group routed (the forwarded #1983 shape) and the repository handler answers 400
+        // to it on every node: it is a malformed coordinate, not a success, but a 400 comes AFTER authorization, which is
+        // what separates it from the 401 an unbound non-owner gave.
+        var expected = new java.util.LinkedHashMap<String, java.util.List<Integer>>();
+
+        EXPECTED_STATUS.forEach((path, status) -> expected.put(path, java.util.Collections.nCopies(CLIENT_NODES, status)));
+        assertThat(actual).describedAs("PUT /repository with the ADMIN key through each node, per path: %s", actual)
+                          .isEqualTo(expected);
     }
 
-    /// Control: the same push with NO key is refused on every node, so the 2xx above is authentication that was
+    /// Control: the same push with NO key is refused on every node, so the statuses above are authentication that was
     /// REACHED and satisfied, not a gate that is off.
     @Test
     @Timeout(420)
@@ -138,11 +145,20 @@ class EmberForwardedMavenPushTest {
         return exchange(mgmtPort, path, DERIVED_KEY, HttpRequest.BodyPublishers.ofString(POM), "PUT");
     }
 
-    /// One path per shape: a single-segment group, which matches `ARTIFACT_PUT` and so is task-group routed (forwarded
-    /// from a non-owner), and a slashed group, as a Maven client sends it.
-    private static final java.util.List<String> PUSH_PATHS = java.util.List.of("/repository/probe1983/probe/1.0.0/probe-1.0.0.pom",
-                                                                               "/repository/org/aether/probe1983/probe/1.0.0/probe-1.0.0.pom");
-    private static final String PUSH_PATH = PUSH_PATHS.getFirst();
+    /// What a client pushes for one artifact, per group shape, and the exact status every node must answer. A single-segment
+    /// group matches `ARTIFACT_PUT` and is task-group routed, so a non-owner FORWARDS it (the #1983 case); a slashed group
+    /// does not match that route's single-segment parameter and is answered on the node that took it (#1985 is about that
+    /// routing). Each path is pushed through every node.
+    private static final java.util.Map<String, Integer> EXPECTED_STATUS = new java.util.LinkedHashMap<>(java.util.Map.of());
+    static {
+        EXPECTED_STATUS.put("/repository/probe1983/probe/1.0.0/probe-1.0.0.pom", 400);
+        EXPECTED_STATUS.put("/repository/probe1983/probe/1.0.0/probe-1.0.0.pom.sha1", 400);
+        EXPECTED_STATUS.put("/repository/org/aether/probe1983/probe/1.0.0/probe-1.0.0.pom", 200);
+        EXPECTED_STATUS.put("/repository/org/aether/probe1983/probe/1.0.0/probe-1.0.0.pom.sha1", 201);
+        EXPECTED_STATUS.put("/repository/org/aether/probe1983/probe/maven-metadata.xml", 200);
+    }
+    private static final int CLIENT_NODES = CLUSTER_SIZE;
+    private static final String PUSH_PATH = EXPECTED_STATUS.keySet().iterator().next();
     private static final String POM = "<project><modelVersion>4.0.0</modelVersion><groupId>org.aether.probe1983</groupId>"
                                       + "<artifactId>probe</artifactId><version>1.0.0</version></project>";
 
