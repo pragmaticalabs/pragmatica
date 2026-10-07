@@ -20,12 +20,18 @@
   supported cluster (3 cores, default floor 2) could not complete a rolling restart.
 - **A refusal is an event, and so is its recovery** (owner rule: every warning-worthy condition raises a flood-guarded event on
   the transition and a recovery event). The first floor refusal of a target raises operator warning
-  `slice-floor-drain-refused` (once per transition, not per request; the aggregator's per-`(code, subject)` window
-  also applies); when that target's drain or shutdown is next admitted, because the floor cleared or the operator forced
-  it, `slice-floor-drain-admitted` (severity INFO) is raised once. `WarningLevel.INFO` exists for recovery notices.
+  `slice-floor-drain-refused` (once per transition, not per request; the aggregator's per-`(code, subject)` window also
+  applies); when that target's drain or shutdown is next admitted, because the floor cleared or the operator forced it,
+  or when the refused target has left the membership, `slice-floor-drain-admitted` (severity INFO) is raised once. It is
+  declared with #1923's `recoveryOf` pairing, so the event layer publishes it only after a published refusal for the same
+  subject and the recovery clears the refusal's throttle window: refuse, admit, refuse again within 60 s shows all three.
   [verified: `NodeLifecycleRoutesSliceFloorTest#floorRefusal_raisesOneEventPerTransition_notOnePerRequest`,
   `#refusedDrainLaterAdmitted_raisesTheRecoveryEvent_once`, `#admittedDrainThatWasNeverRefused_raisesNoRecoveryEvent`,
-  `#refusedThenForced_raisesRefusal_forcedBreach_andRecovery`]
+  `#refusedThenForced_raisesRefusal_forcedBreach_andRecovery`, `#refuseAdmitRefuse_raisesAllThree_inOrder`,
+  `#refusedTargetThatLeftTheMembership_getsItsRecovery`; through the real aggregator
+  `ClusterEventAggregatorTest#onOperatorWarning_sliceFloorRefuseAdmitRefuse_allThreeAreShown`]
+- **The forced-breach warning names the principal who forced it** (the request's bound security context, `unknown` when
+  none), and the 409 text names the CLI flag `--override-floor` beside `force=true`.
 - Docs: per-operation guarantee table (automatic drain, operator drain, forced drain, destroy) in
   `slice-developers/deployment.md`, the routes and the new warning code in `management-api.md`, flags in `cli.md`.
 - Pinned by `NodeLifecycleRoutesSliceFloorTest` (the real guard against a real KV store, through the real routes, incl.
