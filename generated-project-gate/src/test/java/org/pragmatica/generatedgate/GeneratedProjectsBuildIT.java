@@ -20,6 +20,7 @@ import java.util.stream.Stream;
 
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.DynamicTest;
+import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestFactory;
 import org.junit.jupiter.api.TestInstance;
 import org.junit.jupiter.api.io.TempDir;
@@ -44,8 +45,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 /// Not covered: AI-tool installation (`jbct init` without `--no-ai` downloads from GitHub and writes no build input).
 ///
 /// A gate that cannot see is worse than none (every defect it exists for is a project that did not build), so a green variant
-/// must show the build RAN the project's gates (`format-check` and `lint` executions in the log) and that the generated files
-/// the variant promises exist.
+/// must show that the project's `format-check` and `lint` REPORTED examining at least the Java files the variant promises (`GateLog`:
+/// the execution header alone is printed for a skipped goal too), and that the generated files the variant promises exist.
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class GeneratedProjectsBuildIT {
     private static final String VERSION = require("gate.version");
@@ -106,14 +107,32 @@ class GeneratedProjectsBuildIT {
 
         assertThat(outcome.buildExit()).as("`mvn verify` of the project generated for %s succeeds; errors:%n%s", variant.name(), errors(log))
                                        .isZero();
-        assertThat(log).as("the build of %s ran the project's own format-check", variant.name()).containsPattern("--- .*:format-check ");
-        assertThat(log).as("the build of %s ran the project's own lint", variant.name()).containsPattern("--- .*:lint ");
+        assertThat(GateLog.problems(log, variant.expectedFiles().size())).as("the build of %s ran the project's own format-check and lint over at least %d Java file(s)",
+                                                                              variant.name(), variant.expectedFiles().size())
+                                                                         .isEmpty();
         assertThat(log).as("the build of %s ends in BUILD SUCCESS", variant.name()).contains("BUILD SUCCESS");
 
         var generated = generatedFileNames(outcome.log().getParent());
 
         assertThat(generated).as("the generated project of %s holds the files its commands promise", variant.name())
                              .containsAll(variant.expectedFiles());
+    }
+
+    /// The instrument's own control, run for real: the same project built with `-Djbct.skip=true` must be REPORTED as a gate that did
+    /// not run. Without it a green gate could mean "the evidence check cannot see a skip" (#1998 review: all 7 variants stayed green).
+    @Test
+    void controlBuildWithJbctSkipped_isRefusedByTheEvidenceCheck(@TempDir Path tempDir) throws Exception {
+        var dir = tempDir.resolve("control-skipped");
+        var init = init(false, false);
+
+        assertThat(new CommandLine(new JbctCommand()).execute(init.arguments().apply(dir).toArray(String[]::new))).isZero();
+
+        var log = dir.resolve("build.log");
+        var exit = build(dir, log, "-Djbct.skip=true");
+        var text = Files.readString(log);
+
+        assertThat(exit).as("control: the skipped build itself succeeds, so only the evidence check can catch it").isZero();
+        assertThat(GateLog.problems(text, 1)).as("a build whose jbct goals were skipped is refused").isNotEmpty();
     }
 
     private static List<String> generatedFileNames(Path projectDir) throws IOException {
@@ -158,8 +177,13 @@ class GeneratedProjectsBuildIT {
         }
     }
 
-    private static int build(Path dir, Path log) throws IOException, InterruptedException {
-        var process = new ProcessBuilder(MAVEN.toString(), "-B", "--no-transfer-progress", "-Dmaven.repo.local=" + REPOSITORY, "verify")
+    private static int build(Path dir, Path log, String... extra) throws IOException, InterruptedException {
+        var command = new ArrayList<>(List.of(MAVEN.toString(), "-B", "--no-transfer-progress", "-Dmaven.repo.local=" + REPOSITORY));
+
+        command.addAll(List.of(extra));
+        command.add("verify");
+
+        var process = new ProcessBuilder(command)
                           .directory(dir.toFile())
                           .redirectErrorStream(true)
                           .redirectOutput(log.toFile())
