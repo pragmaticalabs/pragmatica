@@ -426,4 +426,61 @@ class NodeReplacementReconcilerTest {
         assertThat(Timings.parse("1,2,3")).as("too short: defaults").isEqualTo(Timings.parse(""));
         assertThat(Timings.parse("a,b,c,d,e,f,g")).as("unparsable: defaults").isEqualTo(Timings.parse(""));
     }
+
+    private Model workerModel() {
+        var model = new Model();
+
+        model.records.put(OLD, new NodeReplacementValue(NEW, "worker", NodeReplacementPhase.PROVISIONING, model.clock.get() + 10_000));
+        model.oldVoter = false;
+
+        return model;
+    }
+
+    /// E2: a worker holds no consensus seat, so its replacement never enters SWAPPING and never touches a voter.
+    @Test
+    void workerReplacement_skipsTheSwap_andWalksJoiningCanaryDrainRetireDone() {
+        var model = workerModel();
+
+        runToTerminal(model, driver(model));
+
+        assertThat(distinct(model.phases)).containsExactly(NodeReplacementPhase.JOINING,
+                                                           NodeReplacementPhase.CANARY,
+                                                           NodeReplacementPhase.DRAINING_OLD,
+                                                           NodeReplacementPhase.RETIRING_OLD,
+                                                           NodeReplacementPhase.DONE);
+        assertThat(model.effects).contains("PROVISION", "DRAIN_OLD", "RETIRE_OLD");
+    }
+
+    /// A failed worker canary has no seat to swap back: the replacement is given up while the original still serves.
+    @Test
+    void workerCanaryFailure_rollsBackWithoutReverting_andTerminatesTheReplacement() {
+        var model = workerModel();
+
+        model.records.put(OLD, new NodeReplacementValue(NEW, "worker", NodeReplacementPhase.CANARY, model.clock.get() + 300, "", "3.0.0", "CTM", 0, "", 0L));
+        model.newKnown = true;
+        model.newAlive = true;
+        model.newVersion = "2.0.0";
+        runToTerminal(model, driver(model));
+
+        assertThat(distinct(model.phases)).containsExactly(NodeReplacementPhase.ROLLED_BACK);
+        assertThat(model.effects).contains("TERMINATE_REPLACEMENT");
+        assertThat(model.oldAlive).isTrue();
+    }
+
+    @Test
+    void deadOldWorker_atEveryPhase_isNeverDrained() {
+        for (var start : EnumSet.of(NodeReplacementPhase.JOINING, NodeReplacementPhase.CANARY, NodeReplacementPhase.DRAINING_OLD, NodeReplacementPhase.RETIRING_OLD)) {
+            var model = workerModel();
+
+            model.records.put(OLD, new NodeReplacementValue(NEW, "worker", start, model.clock.get() + 10_000));
+            model.oldAlive = false;
+            model.newKnown = true;
+            model.newAlive = true;
+            model.newCaughtUp = true;
+            runToTerminal(model, driver(model));
+
+            assertThat(model.records.get(OLD).phase()).as("start %s", start).isEqualTo(NodeReplacementPhase.DONE);
+            assertThat(model.effects).as("start %s", start).doesNotContain("DRAIN_OLD");
+        }
+    }
 }

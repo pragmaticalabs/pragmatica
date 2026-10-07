@@ -168,9 +168,14 @@ public final class NodeReplacementPlanner {
         }
 
         if (o.replacementCaughtUp()) {
-            return Plan.commit(r.advanced(NodeReplacementPhase.SWAPPING,
-                                          o.now() + t.swappingMs(),
-                                          ""));
+            // A worker holds no consensus seat, so there is no swap to authorize: it goes straight to the canary.
+            return isCore(r)
+                   ? Plan.commit(r.advanced(NodeReplacementPhase.SWAPPING,
+                                            o.now() + t.swappingMs(),
+                                            ""))
+                   : Plan.commit(r.advanced(NodeReplacementPhase.CANARY,
+                                            o.now() + t.canaryMs(),
+                                            ""));
         }
 
         var overdueAt = r.phaseDeadlineMs() - t.joiningMs() / 2;
@@ -250,6 +255,15 @@ public final class NodeReplacementPlanner {
     /// A failed canary swaps the original back when the original is still alive: the pairing keeps it protected until it
     /// holds its seat again. When it is gone there is nothing to go back to, and the replacement is kept.
     private static Plan revertOrKeep(NodeReplacementValue r, Observation o, Timings t, String why) {
+        if (!isCore(r)) {
+            // Nothing was swapped, so there is no seat to give back: give the replacement up while the original still serves.
+            return o.oldAlive()
+                   ? rollBack(r, o, why)
+                   : Plan.commit(r.advanced(NodeReplacementPhase.FAILED_KEPT_BOTH,
+                                            o.now(),
+                                            why + "; the original is gone"));
+        }
+
         return o.oldAlive()
                ? Plan.commit(r.advanced(NodeReplacementPhase.REVERTING,
                                         o.now() + t.swappingMs(),
@@ -333,6 +347,10 @@ public final class NodeReplacementPlanner {
         var done = r.advanced(NodeReplacementPhase.ROLLED_BACK, o.now(), why);
 
         return Plan.act(Effect.TERMINATE_REPLACEMENT, done, done);
+    }
+
+    private static boolean isCore(NodeReplacementValue r) {
+        return "core".equalsIgnoreCase(r.role());
     }
 
     private static boolean isExternal(NodeReplacementValue r) {
