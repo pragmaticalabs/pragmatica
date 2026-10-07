@@ -376,6 +376,14 @@ class EmberNodeReplacementTest {
             }
         }
 
+        private void joinSampler() {
+            try {
+                sampler.join(2_000L);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        }
+
         private void notePhase(NodeId original) {
             Option.option(test.recordOf(original))
                   .map(NodeReplacementValue::phase)
@@ -409,6 +417,10 @@ class EmberNodeReplacementTest {
 
         Result finish() {
             running.set(false);
+            joinSampler();
+            // The sampler may have stopped between the terminal commit and its next look: note the phase once more, so the
+            // phases reported are the phases the cluster reached.
+            Option.option(watched).onPresent(this::notePhase);
             sleep(300);
             var finalLeader = test.awaitLeader();
             var lost = acked.stream().filter(key -> finalLeader.kvStore().get(key).isEmpty()).map(AetherKey.LogLevelKey::loggerName).toList();
