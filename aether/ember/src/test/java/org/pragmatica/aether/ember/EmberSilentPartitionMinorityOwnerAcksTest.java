@@ -15,6 +15,7 @@ import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.UUID;
+import java.util.stream.Collectors;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
@@ -185,10 +186,14 @@ class EmberSilentPartitionMinorityOwnerAcksTest {
         var cf1After = attempts1.stream().filter(a -> a.acked() && passiveAt != 0L && a.startedAtNs() > passiveAt).toList();
         var cf1InFlight = attempts1.stream().filter(a -> a.acked() && passiveAt != 0L && a.startedAtNs() <= passiveAt && a.endedAtNs() > passiveAt).toList();
         var cf2AfterCut = attempts2.stream().filter(a -> a.acked() && a.startedAtNs() > cutAtNs).toList();
+        var cf1RefusalKinds = attempts1.stream()
+                                       .filter(a -> !a.acked() && passiveAt != 0L && a.startedAtNs() > passiveAt)
+                                       .collect(Collectors.groupingBy(a -> a.detail().length() > 40 ? a.detail().substring(0, 40) : a.detail(), java.util.TreeMap::new, Collectors.counting()));
+        var firstCf1RefusalMs = attempts1.stream().filter(a -> !a.acked()).findFirst().map(a -> (a.startedAtNs() - cutAtNs) / 1_000_000L).orElse(-1L);
         var lastCf1Ack = cf1Window.isEmpty() ? -1L : (cf1Window.getLast().endedAtNs() - cutAtNs) / 1_000_000L;
 
         System.out.printf("SILENTCUT owner=%s cutToGateRefusalMs=%d cf1AcksInWindow=%d cf1LastAckAtMs=%d cf1AcksStartedAfterRefusal=%d cf1AcksInFlightAcrossRefusal=%d"
-                          + " cf1Attempts=%d cf2AcksAfterCut=%d cf2Attempts=%d lastCf1Refusal=%s%n",
+                          + " cf1Attempts=%d cf2AcksAfterCut=%d cf2Attempts=%d firstCf1RefusalAtMs=%d cf1RefusalsAfterGate=%s%n",
                           ownerId.id(),
                           windowMs,
                           cf1Window.size(),
@@ -198,7 +203,8 @@ class EmberSilentPartitionMinorityOwnerAcksTest {
                           attempts1.size(),
                           cf2AfterCut.size(),
                           attempts2.size(),
-                          attempts1.stream().filter(a -> !a.acked()).reduce((first, second) -> second).map(Attempt::detail).orElse("none"));
+                          firstCf1RefusalMs,
+                          cf1RefusalKinds);
 
         assertThat(passiveAt).as("the owner's serve gate refused within %d ms of the silent cut (PASSIVE fired); attempts: %d", OBSERVE_BOUND_MS, attempts1.size()).isNotZero();
         assertThat(windowMs).as("detection window from the cut to the gate's refusal, ms").isLessThanOrEqualTo(PASSIVE_BOUND_MS);
