@@ -253,11 +253,18 @@ create_range_recording_acks() {
 # keyspace's slice during a CDM rebalance and has not yet been re-minted away (run 8): it clears by itself.
 # The same type now also covers a committed owner whose partition ring is not held yet (was a terminal
 # PartitionNotHeld over the forward wire, #1805). A genuinely unknown keyspace still answers the terminal `UnknownKeyspace`/`ForwardRefused`, OFF the list.
+# `ForwardNotSent` (EntityOwnerForward.ForwardNotSent, #1973) is a forward this node's transport refused at send, or whose budget
+# was already spent: nothing was sent or applied, so a retry is safe BY CONSTRUCTION. `ForwardTimedOut` (the forward WAS sent and
+# timed out, #1973) is a Cause.Transient too (503 at an app route) but stays OFF this list on purpose: its outcome is unknown, the owner
+# may have applied the command, and a blind retry can double-apply. Being off the list does NOT make it unretried on the 503 route path:
+# E1c retries any 503 by status, which is acceptable here only because this suite issues just create (a re-create reads back as
+# EntityAlreadyExists, the lost ack) and get, both idempotent; there is no update/delete/schedule call to double-apply. test-entity-create-retry.sh T1-T3 reads the producer source, so a
+# renamed or removed type reddens the harness test instead of silently dropping out of (or into) the list.
 # Refusals that mean "retry", never "no" (#1501). Each is a `Cause.Transient` in the product and
 # clears on its own: `FoldInProgress` is a partition holder still replaying its entity log before it
 # may serve reads (EntityLogError.java). An EXPLICIT allow-list, so an unknown failure type is never
 # retried into silence. Space-separated; extend only with a failureType the product marks transient.
-ENTITY_TRANSIENT_FAILURE_TYPES="${ENTITY_TRANSIENT_FAILURE_TYPES:-FoldInProgress OwnershipNotYetCommitted LinearizableUnavailable StorageUnavailable OwnerTransitioning}"
+ENTITY_TRANSIENT_FAILURE_TYPES="${ENTITY_TRANSIENT_FAILURE_TYPES:-FoldInProgress OwnershipNotYetCommitted LinearizableUnavailable StorageUnavailable OwnerTransitioning ForwardNotSent}"
 # The same allow-list bounds the CREATE retry (create_entity): ~30s, 1s doubling to 5s.
 ENTITY_CREATE_RETRY_DEADLINE_S="${ENTITY_CREATE_RETRY_DEADLINE_S:-30}"
 ENTITY_CREATE_RETRY_BACKOFF_S="${ENTITY_CREATE_RETRY_BACKOFF_S:-1}"

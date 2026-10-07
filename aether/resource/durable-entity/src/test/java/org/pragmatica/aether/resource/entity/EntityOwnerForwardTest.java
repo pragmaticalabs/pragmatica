@@ -391,6 +391,38 @@ class EntityOwnerForwardTest {
         }
     }
 
+    /// #1973: a not-sent forward stays a transient, typed cause end to end through the entity: the read of a key whose
+    /// committed owner has just died surfaces `ForwardNotSent`, not an untyped failure a caller reads as final.
+    @Test
+    void get_forwardNeverSent_surfacesTheTypedTransientCause() {
+        substrate.holds = false;
+        transport.refuseWith(new EntityOwnerForward.ForwardNotSent("entity owner-forward to other-node refused at send (NoPeerState)"));
+
+        var result = entityAs(SELF, OTHER, Option.some(transport)).get("k1").await();
+
+        assertThat(result.isFailure()).isTrue();
+        result.onFailure(cause -> {
+            assertThat(cause).isInstanceOf(EntityOwnerForward.ForwardNotSent.class);
+            assertThat(cause.isTransient()).isTrue();
+        });
+    }
+
+    /// #1973: the owner refusing an arrived-expired command without touching the entity (`ForwardBudgetExhausted`) applied
+    /// nothing either, so it crosses the wire as the same typed transient, not as the terminal carrier.
+    @Test
+    void create_ownerRefusesBecauseTheBudgetIsSpent_surfacesTheTypedTransientCause() {
+        transport.refuseWith(new EntityOwnerForward.ForwardRefused("ForwardBudgetExhausted", "budget spent on arrival"));
+
+        var result = entityAs(SELF, OTHER, Option.some(transport)).create("k1", 100).await();
+
+        assertThat(result.isFailure()).isTrue();
+        result.onFailure(cause -> {
+            assertThat(cause).isInstanceOf(EntityOwnerForward.ForwardNotSent.class);
+            assertThat(cause.isTransient()).isTrue();
+            assertThat(cause.message()).contains("budget spent on arrival");
+        });
+    }
+
     /// The control for the row above: the terminal `UnknownKeyspace` (a keyspace nobody provisioned) must
     /// keep the carrier, so retyping stays an allow-list and a genuinely unknown keyspace is never retried.
     @Test
