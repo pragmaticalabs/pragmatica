@@ -192,10 +192,12 @@ public final class OwnerActivation {
     /// binds the operator-facing warning.
     @FunctionalInterface
     public interface BlockAlarm {
+        /// Called while the gate holds its alarm-ordering monitor (#2004): it must neither block nor take a lock, or the monitor
+        /// is no longer a leaf lock and a lock-order inversion becomes possible. Log and hand off.
         Unit raise(ActivationBlock block);
 
         /// `block` no longer holds the partition's promotion (#1937): its condition ended or this node stopped being the owner.
-        /// Called once per ended block that was raised; the default does nothing.
+        /// Called once per ended block that was raised; the default does nothing. Same contract as [#raise]: neither blocks nor takes a lock.
         default Unit resolved(ActivationBlock block) {
             return Unit.unit();
         }
@@ -432,6 +434,13 @@ public final class OwnerActivation {
     /// open warning, leaving the CRITICAL open. Serialised rather than flagged "reported after the raise" because the raise is a
     /// log line plus an asynchronous hand-off, and these events fire on a refusal or a transition, not per request. Reentrant, so a
     /// raise or resolve that calls back into the gate cannot deadlock itself.
+    ///
+    /// **A leaf lock, which is why it cannot take part in a deadlock (the #1946 shape was a lock taken in opposite orders).**
+    /// While it is held the gate runs only map operations and [BlockAlarm#raise] / [BlockAlarm#resolved], and no other lock is taken
+    /// beneath it: the node's alarm writes a log line and enqueues onto a bounded hand-off queue (`OperatorWarningSink.HandOff`: an
+    /// `ArrayBlockingQueue` offer, a rejection handler that only counts, never caller-runs). Nothing above it holds a lock the
+    /// partition manager shares: `admit`, which starts an activation, is called outside every `StreamPartitionManager` monitor.
+    /// An alarm that blocked or took a lock would break this, so [BlockAlarm] says it must not.
     private final Object alarmOrder = new Object();
     /// When the current run of probe failures started (`System.nanoTime`), per partition.
     private final Map<PartitionKey, Long> unreachableSince = new ConcurrentHashMap<>();
