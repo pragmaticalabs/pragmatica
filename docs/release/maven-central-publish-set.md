@@ -33,6 +33,22 @@ annotation-processor path out of the generated `pom.xml` files.
 add-event, add-persistence, fix-slice, update, migrate, verify-slice). The `jbct`, `aether` and node/forge jars reach users through the
 install script, GitHub releases and the container image, not Maven Central.
 
+## What it weighs (measured, 2026-10-07, `4855e51bc`)
+
+A full `mvn clean install -DperformRelease=true` (every module, with a throwaway 4096-bit key) and a `deploy` whose "Central" is a
+sink on `127.0.0.1`, so the plugin built and sent its own bundle; the bundle was opened and its entries counted. Nothing left the host.
+
+| | Files in the bundle | Bytes (uncompressed / zip) | Releases per month under 1,167 files / 78 MB |
+|---|---:|---:|---|
+| `checksums=ALL` (the plugin default) | 612 | 15.8 MB / 14.5 MB | 1 (files bind: 1,224 for two) |
+| `checksums=required` | 408 | 15.8 MB / 14.5 MB | 2 (816 files; bytes allow 4) |
+
+612 = 102 files built (33 poms, 23 jars, 23 sources jars, 23 javadoc jars) + 102 `.asc` + 408 checksums (the plugin writes md5, sha1,
+sha256 and sha512 for each of the 102, not for the `.asc`). A jar module is 24 entries, a parent pom 6. Javadoc is built with
+`--no-fonts`: a javadoc jar was about 4.1 MB for the web fonts alone and is now about 0.1 MB for a small module, 10.4 MB for all 23.
+The limits are cumulative per month, so a second release in the same month needs `checksums=required` or a smaller set.
+`[unverified: whether Central counts the checksums it asks the plugin for; only Sonatype support can say]`.
+
 ## Decision table
 
 
