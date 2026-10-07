@@ -181,6 +181,12 @@ public final class OwnerActivation {
     @FunctionalInterface
     public interface BlockAlarm {
         Unit raise(ActivationBlock block);
+
+        /// `block` no longer holds the partition's promotion (#1937): its condition ended or this node stopped being the owner.
+        /// Called once per ended block that was raised; the default does nothing.
+        default Unit resolved(ActivationBlock block) {
+            return Unit.unit();
+        }
     }
 
     /// A promotion that cannot complete without an operator: the partition stays un-activated, the gate keeps
@@ -666,8 +672,8 @@ public final class OwnerActivation {
     }
 
     private Unit clearBlock(PartitionKey key) {
-        blocks.remove(key);
-        unreachableBlocks.remove(key);
+        ended(blocks.remove(key));
+        ended(unreachableBlocks.remove(key));
         unreachableSince.remove(key);
 
         return Unit.unit();
@@ -831,7 +837,7 @@ public final class OwnerActivation {
     /// Every member answered: the unreachable run is over, and a report of it no longer describes the partition.
     private Unit clearUnreachable(PartitionKey key) {
         unreachableSince.remove(key);
-        unreachableBlocks.remove(key);
+        ended(unreachableBlocks.remove(key));
 
         return Unit.unit();
     }
@@ -1061,8 +1067,15 @@ public final class OwnerActivation {
 
     /// Record the block and raise the alarm when it first appears or changes, so a partition that stays blocked
     /// across many demands is reported once.
+    /// A block that stood has ended (#1937): the alarm is told, so a recovery reaches whoever was told of the block.
+    private void ended(ActivationBlock block) {
+        Option.option(block).onPresent(alarm::resolved);
+    }
+
     private Unit report(PartitionKey key, ActivationBlock block) {
         var previous = Option.option(blocks.put(key, block));
+
+        previous.filter(last -> last.getClass() != block.getClass()).onPresent(this::ended);
 
         return previous.filter(block::equals)
                        .fold(() -> alarm.raise(block),

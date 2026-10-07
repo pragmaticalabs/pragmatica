@@ -638,12 +638,16 @@ public final class PartitionBackfill {
         var replicas = registry.replicasFor(streamName, partition);
 
         if (isQuarantined(streamName, partition)) {
+            clearOversized(streamName, partition);
+
             return refuseQuarantined(streamName, partition);
         }
 
         if (isSelfOwner(streamName, partition)) {
             return promoteOwner(streamName, partition, replicas);
         }
+
+        clearOversized(streamName, partition);
 
         return hrwOwner(streamName, partition).filter(owner -> !owner.equals(self))
                        .fold(() -> backfillViaRegistryOrColdStart(streamName, partition, replicas),
@@ -1330,10 +1334,14 @@ public final class PartitionBackfill {
                                                                                         partition,
                                                                                         replicas,
                                                                                         localWatermark),
-                                                            survivor -> catchupOwnerFromSurvivor(streamName,
-                                                                                                 partition,
-                                                                                                 survivor,
-                                                                                                 localWatermark));
+                                                            survivor -> {
+                                                                clearOversized(streamName, partition);
+
+                                                                return catchupOwnerFromSurvivor(streamName,
+                                                                                                partition,
+                                                                                                survivor,
+                                                                                                localWatermark);
+                                                            });
     }
 
     /// #1555 owner promotion gate: pull `(local watermark + 1) .. sourceTail` of `(streamName, partition)` from
@@ -1466,6 +1474,8 @@ public final class PartitionBackfill {
         var blind = blindPeers(replicas);
 
         if (blind.isEmpty()) {
+            clearOversized(streamName, partition);
+
             return ownerSelfPromote(streamName, partition);
         }
 
@@ -1505,6 +1515,8 @@ public final class PartitionBackfill {
         var bestTail = results.stream().mapToLong(result -> result.or(-1L)).max().orElse(-1L);
 
         if (bestTail > localWatermark) {
+            clearOversized(streamName, partition);
+
             return catchupOwnerFromSurvivor(streamName,
                                             partition,
                                             peerWithTail(peers, results, bestTail),
@@ -1521,12 +1533,19 @@ public final class PartitionBackfill {
                                  failureOf(results.get(oversizedAt)).or((Cause) null));
         }
 
-        reportedOversized.remove(partitionKey(streamName, partition));
+        clearOversized(streamName, partition);
         if (results.stream().anyMatch(Result::isFailure)) {
             return escapeOwnerCatchup(streamName, partition, localWatermark, UNREACHABLE_REPLICA_BLOCKS_PROMOTION);
         }
 
         return ownerSelfPromote(streamName, partition);
+    }
+
+    /// The oversized-peer condition no longer holds for this partition (#1937): the next promotion attempt found no peer cut
+    /// before its first event, found another peer to catch up from, or this node is no longer the owner. Forgetting the report
+    /// is what lets the same peer and offset raise again when it recurs, and the alarm is told so the operator sees it end.
+    private void clearOversized(String streamName, int partition) {
+        Option.option(reportedOversized.remove(partitionKey(streamName, partition))).onPresent(blockAlarm::resolved);
     }
 
     /// The index of the first peer that answered with a page cut before its first event, or -1 (index-aligned with `peers`).

@@ -81,14 +81,14 @@ class OperatorWarningWiringTest {
     /// #1431: the owner gate's block alarm reaches this node's sink, so an oversized peer event is an operator event.
     @Test
     void assembly_givesTheSinkToTheOwnerPromotionBlockAlarm() {
-        assertThat(assemblyCode()).contains("block->raiseOwnerPromotionBlock(operatorWarningSink,block),");
+        assertThat(assemblyCode()).contains("ownerPromotionAlarm(operatorWarningSink),");
     }
 
     /// #1937: the promoted owner's BACKFILL reports a peer's oversized event through the same sink, once per transition. Red
     /// without the wiring: the backfill's alarm stays the no-op default and the refusal is only a log line.
     @Test
     void assembly_givesTheSinkToTheBackfillBlockAlarm() {
-        assertThat(assemblyCode()).contains("streamPartitionBackfill.blockAlarm(block->raiseOwnerPromotionBlock(operatorWarningSink,block));");
+        assertThat(assemblyCode()).contains("streamPartitionBackfill.blockAlarm(ownerPromotionAlarm(operatorWarningSink));");
     }
 
     /// `AetherNode.java` with line comments removed and all whitespace stripped. An unreadable file fails loudly,

@@ -9,6 +9,7 @@ import org.pragmatica.aether.slice.ConsistencyMode;
 import org.pragmatica.aether.slice.RetentionMode;
 import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.StreamConfig;
+import org.pragmatica.aether.slice.blueprint.StreamEventLimits;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ClusterConfigValue;
 import org.pragmatica.aether.stream.OffHeapRingBuffer;
 import org.pragmatica.lang.Cause;
@@ -31,6 +32,9 @@ import static org.pragmatica.lang.Result.success;
 /// stream never came up while its registrar retried. Now a set value must be a whole number from 1 to the
 /// bound's maximum, or the node refuses to boot with [InvalidLimit] naming the variable. Unset or blank
 /// means the default.
+///
+/// #1937: the event-size maximum is the one-frame ceiling every declared stream is held to ([StreamEventLimits]); this stream
+/// is built directly, not through the blueprint parser, so the boot refusal is where that ceiling is enforced for it.
 ///
 /// #1571: the count's maximum is also the aggregator's read window, [AetherNode#CLUSTER_EVENTS_MAX_RETAINED].
 /// A retained count above it was accepted, and the read window then silently failed to cover everything
@@ -56,7 +60,7 @@ public record ClusterEventsLimits(long maxCount, long maxBytes, long maxAgeMs, l
         return Result.all(limit(environment, MAX_COUNT_VARIABLE, DEFAULT_MAX_COUNT, OffHeapRingBuffer.MAX_CAPACITY).flatMap(ClusterEventsLimits::withinReadWindow),
                           limit(environment, MAX_BYTES_VARIABLE, DEFAULT_MAX_BYTES, Long.MAX_VALUE),
                           limit(environment, MAX_AGE_MS_VARIABLE, DEFAULT_MAX_AGE_MS, Long.MAX_VALUE),
-                          limit(environment, MAX_EVENT_SIZE_BYTES_VARIABLE, DEFAULT_MAX_EVENT_SIZE_BYTES, Long.MAX_VALUE))
+                          limit(environment, MAX_EVENT_SIZE_BYTES_VARIABLE, DEFAULT_MAX_EVENT_SIZE_BYTES, StreamEventLimits.MAX_EVENT_SIZE_BYTES))
                      .map(ClusterEventsLimits::new);
     }
 

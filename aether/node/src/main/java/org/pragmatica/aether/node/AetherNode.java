@@ -1968,15 +1968,61 @@ public interface AetherNode extends ManageableNode {
     ///
     /// #1431: a peer whose event exceeds its read cap is raised as its own CRITICAL operator warning (a log line plus
     /// a cluster event), naming the partition, the peer and the offset — never as an unreachable member.
+    /// An owner-promotion block as an operator event, and its end as the recovery (#1937). The oversized-event refusal and the
+    /// members-unreachable wait each raise on a transition and recover on the opposite one (flood-guarded by the sink); the other
+    /// blocks stay a WARN and the partition status read until #1574 gives them a code.
+    static OwnerActivation.BlockAlarm ownerPromotionAlarm(OperatorWarningSink sink) {
+        return new OwnerActivation.BlockAlarm() {
+            @Override
+            public Unit raise(OwnerActivation.ActivationBlock block) {
+                return raiseOwnerPromotionBlock(sink, block);
+            }
+
+            @Override
+            public Unit resolved(OwnerActivation.ActivationBlock block) {
+                return resolveOwnerPromotionBlock(sink, block);
+            }
+        };
+    }
+
+    private static String partitionSubject(OwnerActivation.ActivationBlock block) {
+        return block.streamName() + "[" + block.partition() + "]";
+    }
+
     private static Unit raiseOwnerPromotionBlock(OperatorWarningSink sink, OwnerActivation.ActivationBlock block) {
-        return block instanceof OwnerActivation.ActivationBlock.PeerEventExceedsReadCap oversized
-               ? OperatorWarnings.raise(LOG,
-                                        sink,
-                                        OperatorWarningCode.STREAM_EVENT_EXCEEDS_READ_CAP,
-                                        oversized.streamName() + "[" + oversized.partition() + "]",
-                                        "{}",
-                                        oversized.message())
-               : raiseOwnerPromotionBlock(block);
+        return switch (block) {
+            case OwnerActivation.ActivationBlock.PeerEventExceedsReadCap oversized -> OperatorWarnings.raise(LOG,
+                                                                                                              sink,
+                                                                                                              OperatorWarningCode.STREAM_EVENT_EXCEEDS_READ_CAP,
+                                                                                                              partitionSubject(oversized),
+                                                                                                              "{}",
+                                                                                                              oversized.message());
+            case OwnerActivation.ActivationBlock.HoldersUnreachable unreachable -> OperatorWarnings.raise(LOG,
+                                                                                                           sink,
+                                                                                                           OperatorWarningCode.STREAM_OWNER_PROMOTION_HOLDERS_UNREACHABLE,
+                                                                                                           partitionSubject(unreachable),
+                                                                                                           "{}",
+                                                                                                           unreachable.message());
+            default -> raiseOwnerPromotionBlock(block);
+        };
+    }
+
+    private static Unit resolveOwnerPromotionBlock(OperatorWarningSink sink, OwnerActivation.ActivationBlock block) {
+        return switch (block) {
+            case OwnerActivation.ActivationBlock.PeerEventExceedsReadCap oversized -> OperatorWarnings.raise(LOG,
+                                                                                                              sink,
+                                                                                                              OperatorWarningCode.STREAM_EVENT_EXCEEDS_READ_CAP_RESOLVED,
+                                                                                                              partitionSubject(oversized),
+                                                                                                              "Owner promotion of {} is no longer refused for a peer's oversized event.",
+                                                                                                              partitionSubject(oversized));
+            case OwnerActivation.ActivationBlock.HoldersUnreachable unreachable -> OperatorWarnings.raise(LOG,
+                                                                                                           sink,
+                                                                                                           OperatorWarningCode.STREAM_OWNER_PROMOTION_HOLDERS_ANSWERING,
+                                                                                                           partitionSubject(unreachable),
+                                                                                                           "Owner promotion of {} no longer waits for unreachable members.",
+                                                                                                           partitionSubject(unreachable));
+            default -> Unit.unit();
+        };
     }
 
     private static Unit raiseOwnerPromotionBlock(OwnerActivation.ActivationBlock block) {
@@ -5723,8 +5769,7 @@ public interface AetherNode extends ManageableNode {
                                                                                         streamTieredReader,
                                                                                         streamForwardClient::readRemoteCatchup,
                                                                                         STREAM_CATCHUP_BATCH_SIZE),
-                                                              block -> raiseOwnerPromotionBlock(operatorWarningSink,
-                                                                                                block),
+                                                              ownerPromotionAlarm(operatorWarningSink),
                                                               ownerPromotionAlarmWindow(config.timeouts()
                                                                                               .swim()
                                                                                               .suspectTimeout()),
@@ -5741,7 +5786,7 @@ public interface AetherNode extends ManageableNode {
                                                                                                                                                 partition),
                                                                                         StreamPartitionOwnershipValue.class));
         // #1937: the promoted owner's backfill refuses for a peer's oversized event too, and reports it the way the gate does
-        streamPartitionBackfill.blockAlarm(block -> raiseOwnerPromotionBlock(operatorWarningSink, block));
+        streamPartitionBackfill.blockAlarm(ownerPromotionAlarm(operatorWarningSink));
         streamPartitionManager.ownerServeGate(ownerActivation::admit);
         // #1730: a partition with no live in-sync replica has no owner to report a block, so the controller reports it.
         streamPartitionManager.ownerBlockSource((stream, partition) -> ownerActivation.blockOf(stream, partition)
