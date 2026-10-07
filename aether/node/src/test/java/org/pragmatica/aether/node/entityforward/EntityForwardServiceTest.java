@@ -103,7 +103,7 @@ class EntityForwardServiceTest {
             result.onFailure(cause -> {
                 assertThat(cause).as(refusal.toString()).isInstanceOf(EntityOwnerForward.ForwardNotSent.class);
                 assertThat(cause.isTransient()).as(refusal.toString()).isTrue();
-                assertThat(cause.message()).contains("safe to retry");
+                assertThat(cause.message()).contains("safe to retry").contains("nothing was applied").doesNotContain("outcome unknown");
             });
         }
     }
@@ -122,18 +122,24 @@ class EntityForwardServiceTest {
               });
     }
 
-    /// #1973 control: a forward that WAS sent and then timed out has an unknown outcome (the owner may have applied it), so
-    /// it is deliberately NOT transient: a blind retry can double-apply. It answers 500 at an app route, not 503.
+    /// #1973: a forward that WAS sent and then timed out has an unknown outcome (the owner may have applied it). Per owner
+    /// ruling bcfb04232 it is [Cause.Transient] like every app-route timeout (503), but its message must say the outcome
+    /// is unknown, in words that differ from the not-sent refusal's "safe to retry", because the body is what tells them apart.
     @Test
-    void forwardCreate_timedOutAfterTheSend_staysNonTransient() {
+    void forwardCreate_timedOutAfterTheSend_isTransient_butSaysTheOutcomeIsUnknown() {
         var shortService = entityForwardService(SELF, sender, TimeSpan.timeSpan(50).millis());
         var result = shortService.forwardCreate(OWNER, "orders", bytes("k1"), bytes("5")).await();
 
         assertThat(sender.messageCount()).as("control: the command was sent").isEqualTo(1);
         result.onSuccess(_ -> org.junit.jupiter.api.Assertions.fail("expected a timeout"))
               .onFailure(cause -> {
-                  assertThat(cause.isTransient()).isFalse();
-                  assertThat(cause.message()).contains("timed out").contains("outcome unknown");
+                  assertThat(cause).isInstanceOf(EntityOwnerForward.ForwardTimedOut.class);
+                  assertThat(cause.isTransient()).isTrue();
+                  assertThat(cause.message()).contains("timed out")
+                                             .contains("outcome unknown")
+                                             .contains("may have applied")
+                                             .doesNotContain("safe to retry")
+                                             .doesNotContain("nothing was applied");
               });
     }
 

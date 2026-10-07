@@ -254,8 +254,10 @@ create_range_recording_acks() {
 # The same type now also covers a committed owner whose partition ring is not held yet (was a terminal
 # PartitionNotHeld over the forward wire, #1805). A genuinely unknown keyspace still answers the terminal `UnknownKeyspace`/`ForwardRefused`, OFF the list.
 # `ForwardNotSent` (EntityOwnerForward.ForwardNotSent, #1973) is a forward this node's transport refused at send, or whose budget
-# was already spent: nothing was sent or applied, so a retry is safe. A forward that TIMED OUT after the send stays OFF the list
-# (outcome unknown, a blind retry can double-apply).
+# was already spent: nothing was sent or applied, so a retry is safe BY CONSTRUCTION. `ForwardTimedOut` (the forward WAS sent and
+# timed out, #1973) is a Cause.Transient too (503 at an app route) but stays OFF this list on purpose: its outcome is unknown, the owner
+# may have applied the command, and a blind retry can double-apply. test-entity-create-retry.sh T1-T3 reads the producer source, so a
+# renamed or removed type reddens the harness test instead of silently dropping out of (or into) the list.
 # Refusals that mean "retry", never "no" (#1501). Each is a `Cause.Transient` in the product and
 # clears on its own: `FoldInProgress` is a partition holder still replaying its entity log before it
 # may serve reads (EntityLogError.java). An EXPLICIT allow-list, so an unknown failure type is never

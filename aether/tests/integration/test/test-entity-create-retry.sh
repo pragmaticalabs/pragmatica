@@ -36,6 +36,7 @@ unset TARGET_HOST AETHER_SSH_USER HCLOUD_TOKEN
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 INTEG_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+ROOT="$(cd "${INTEG_DIR}/../../.." && pwd)"
 SUT="${SCRIPT_UNDER_TEST:-${INTEG_DIR}/suites/02w-entity-crash/test-entity-crash-durability.sh}"
 PASS=0; FAIL=0
 ok()   { echo "  PASS  $1"; PASS=$((PASS + 1)); }
@@ -190,6 +191,30 @@ else fail "N7 rc=$(cat "$WORK/rc.rn4") calls=$(calls rn4)"; fi
 run_read rn5 EPS="$TWO" STATUS=504 BODY='{"title":"Gateway Timeout","detail":"GW-TAIL"}'
 if [ "$(cat "$WORK/rc.rn5")" = "4" ] && [ "$(calls rn5)" -ge 4 ] && grep -q 'GW-TAIL' "$WORK/err.rn5"; then ok "N8 read: every node 504 -> swept until the deadline ($(calls rn5) requests), rc 4 with the last full body"
 else fail "N8 rc=$(cat "$WORK/rc.rn5") calls=$(calls rn5)"; fi
+
+# T1-T3: PRODUCER TRIPWIRE for the failureType allow-list. The fixture reports a cause by its class's simple name, so every allow-listed
+# name must still be a type in the product sources (a rename would silently turn a retried refusal into a fatal one), and the types that
+# are NOT safe to retry must stay off the list. The sources are overridable so the tripwire itself can be shown red.
+FORWARD_SRC="${ENTITY_OWNER_FORWARD_SRC_UNDER_TEST:-${ROOT}/aether/resource/durable-entity/src/main/java/org/pragmatica/aether/resource/entity/EntityOwnerForward.java}"
+ENTITY_ERR_SRC="${ENTITY_ERROR_SRC_UNDER_TEST:-${ROOT}/aether/resource/durable-entity/src/main/java/org/pragmatica/aether/resource/entity/EntityError.java}"
+ENTITY_LOG_SRC="${ENTITY_LOG_ERROR_SRC_UNDER_TEST:-${ROOT}/aether/resource/durable-entity/src/main/java/org/pragmatica/aether/resource/entity/EntityLogError.java}"
+SERVICE_SRC="${ENTITY_FORWARD_SERVICE_SRC_UNDER_TEST:-${ROOT}/aether/node/src/main/java/org/pragmatica/aether/node/entityforward/EntityForwardService.java}"
+allow=$(grep -E '^ENTITY_TRANSIENT_FAILURE_TYPES=' "$SUT" | sed -E 's/^[^:]*:-//; s/\}"$//')
+missing=""; n_names=0
+for name in $allow; do
+    n_names=$((n_names + 1))
+    grep -qE "(record|enum|class|interface) ${name}\b" "$FORWARD_SRC" "$ENTITY_ERR_SRC" "$ENTITY_LOG_SRC" || missing="${missing}[${name}] "
+done
+if [ "$n_names" -ge 6 ] && [ -z "$missing" ]; then ok "T1 all ${n_names} allow-listed failureTypes are types in the producer source"
+else fail "T1 names=${n_names} absent from the producers: ${missing:-none}"; fi
+case " $allow " in *" ForwardNotSent "*) ok "T2 ForwardNotSent (safe to retry by construction) is allow-listed" ;; *) fail "T2 ForwardNotSent is not allow-listed" ;; esac
+# T3: the timeout type exists in the producer (so the exclusion is about a real type), is Cause.Transient, and is NOT allow-listed;
+# and the producer wording that tells the two 503 bodies apart is still there.
+if grep -qE 'record ForwardTimedOut\(String detail\) implements Cause.Transient' "$FORWARD_SRC" \
+   && ! case " $allow " in *" ForwardTimedOut "*) true ;; *) false ;; esac \
+   && grep -qF 'outcome unknown' "$SERVICE_SRC" && grep -qF 'safe to retry' "$SERVICE_SRC"; then
+    ok "T3 ForwardTimedOut (outcome unknown) is a transient producer type, off the allow-list, with its own wording"
+else fail "T3 ForwardTimedOut missing from the producer, allow-listed, or its wording changed"; fi
 
 echo "  passed: ${PASS}"
 echo "  failed: ${FAIL}"

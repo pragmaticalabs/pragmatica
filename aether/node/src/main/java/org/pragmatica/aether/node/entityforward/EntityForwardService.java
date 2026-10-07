@@ -625,10 +625,12 @@ public final class EntityForwardService implements EntityOwnerForward, EntityFor
                                                                                                                                                  + " refused at send (" + outcome
                                                                                                                                                  + ") — the owner was never reached and nothing was applied; safe to retry");
 
-    private static final BiFunction<String, String, Cause> FORWARD_TIMED_OUT = (owner, keyspace) -> Causes.cause("entity owner-forward to " + owner
-                                                                                                                + " for keyspace " + keyspace
-                                                                                                                + " timed out — NOT applied on this node; the owner may or may not have"
-                                                                                                                + " applied it (outcome unknown, a blind retry can double-apply)");
+    /// Transient, but NOT safe to retry blindly: the command was sent, so the owner may have applied it. The message must say
+    /// so, in words that differ from [#FORWARD_SEND_REFUSED]'s, because both answer 503 and the body is what tells them apart.
+    private static final BiFunction<String, String, Cause> FORWARD_TIMED_OUT = (owner, keyspace) -> new EntityOwnerForward.ForwardTimedOut("entity owner-forward to " + owner
+                                                                                                                                          + " for keyspace " + keyspace
+                                                                                                                                          + " timed out after the send — outcome unknown: the owner may have applied the command"
+                                                                                                                                          + " (it was not applied on this node); retry only an idempotent operation, a blind retry can double-apply");
 
     /// Typed transient (#1973): refused before the send, so nothing left this node.
     private static final BiFunction<String, String, Cause> FORWARD_BUDGET_EXHAUSTED = (owner, keyspace) -> new EntityOwnerForward.ForwardNotSent("entity owner-forward to " + owner

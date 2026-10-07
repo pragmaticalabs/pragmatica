@@ -108,21 +108,22 @@ class AppHttpServerLocalRouteFailureStatusTest {
         var answer = answerFor(entityForwardFailure(new WriteOutcome.NoPeerState(OWNER)));
 
         assertThat(answer.statusCode()).isEqualTo(503);
-        assertThat(answer.body()).contains("refused at send").contains("safe to retry");
+        assertThat(answer.body()).contains("refused at send").contains("safe to retry").doesNotContain("outcome unknown");
     }
 
-    /// The control and the reason for the split: a forward that was SENT and timed out has an unknown outcome, so it stays
-    /// non-transient and answers 500 (a blind retry of a non-idempotent write can double-apply). 500, not 503, on purpose.
+    /// The sibling: a forward that was SENT and timed out has an unknown outcome. Owner ruling bcfb04232 answers every
+    /// transient cause 503, timeouts included, so it is 503 too, but its body says the outcome is unknown and does NOT say
+    /// "safe to retry": the two 503s are told apart by the body.
     @Test
-    void localRouteFailure_entityForwardTimedOutAfterSend_answers500() throws Exception {
+    void localRouteFailure_entityForwardTimedOutAfterSend_answers503_withAnOutcomeUnknownBody() throws Exception {
         var service = EntityForwardService.entityForwardService(SELF_NODE,
                                                                 (target, message) -> Promise.success(new WriteOutcome.Sent(target)),
                                                                 TimeSpan.timeSpan(50).millis());
         var failure = service.forwardGet(OWNER, "orders", new byte[]{1}).await().fold(cause -> cause, _ -> Causes.cause("unexpected success"));
         var answer = answerFor(failure);
 
-        assertThat(answer.statusCode()).isEqualTo(500);
-        assertThat(answer.body()).contains("outcome unknown");
+        assertThat(answer.statusCode()).isEqualTo(503);
+        assertThat(answer.body()).contains("outcome unknown").contains("may have applied the command").doesNotContain("safe to retry");
     }
 
     private static Cause entityForwardFailure(WriteOutcome refusal) {

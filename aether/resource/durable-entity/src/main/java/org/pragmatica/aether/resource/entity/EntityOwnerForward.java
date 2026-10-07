@@ -128,6 +128,17 @@ public interface EntityOwnerForward {
         }
     }
 
+    /// A forward that WAS sent and whose answer never came within the wait: the owner may or may not have applied the
+    /// command. Also [Cause.Transient], so an app route answers 503 like every transient cause (owner ruling bcfb04232:
+    /// 503 means "transient, retry later", never "not executed"), but its message says the outcome is UNKNOWN. A client
+    /// that retries a non-idempotent command after it can repeat the effect; contrast [ForwardNotSent], which is safe to retry.
+    record ForwardTimedOut(String detail) implements Cause.Transient {
+        @Override
+        public String message() {
+            return detail;
+        }
+    }
+
     record ForwardRefused(String failureType, String ownerMessage) implements Cause {
         @Override
         public String message() {
