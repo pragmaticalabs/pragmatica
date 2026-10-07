@@ -305,20 +305,6 @@ class AwsComputeProviderTest {
     }
 
     @Nested
-    class RestartTests {
-
-        @Test
-        void restart_success_callsReboot() {
-            provider.restart(new InstanceId("i-abc123"))
-                    .await()
-                    .onFailure(cause -> assertThat(cause).isNull())
-                    .onSuccess(unit -> assertThat(unit).isNotNull());
-
-            assertThat(testClient.lastRebootedIds).containsExactly("i-abc123");
-        }
-    }
-
-    @Nested
     class ApplyTagsTests {
 
         @Test

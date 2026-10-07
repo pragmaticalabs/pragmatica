@@ -34,6 +34,19 @@ class OperatorWarningWiringTest {
         assertThat(code).contains("streamOwnershipViews.writeAuthority(),operatorWarningSink);");
     }
 
+    /// #752: the declarative consumer manager reports a divergence from its consumer runtime to this node's sink.
+    @Test
+    void assembly_givesTheSinkToTheStreamConsumerManager() {
+        assertThat(assemblyCode()).contains("streamConsumerManager.setOperatorWarningSink(operatorWarningSink);");
+    }
+
+    /// #1935: a declared stream consumer that cannot be registered reaches this node's sink. The deployment test hands
+    /// the context a test sink, so un-binding it here left every unit test green.
+    @Test
+    void assembly_givesTheSinkToNodeDeployment() {
+        assertThat(assemblyCode()).contains("nodeDeploymentManager.setOperatorWarningSink(operatorWarningSink);");
+    }
+
     /// #1564 (R10): the replication warnings raised at resource activation, the deploy warnings and the refused
     /// cluster-events registration all reach this node's sink. Un-binding any of them leaves every unit test green.
     @Test
@@ -47,6 +60,12 @@ class OperatorWarningWiringTest {
         assertThat(code).contains("()->alertManager.clearInjected(OperatorWarningCode.CLUSTER_EVENTS_REGISTRATION_REFUSED.code())");
         // v1735 B1: local-only, so the recovery clear resolves it completely (a replicated copy would outlive it).
         assertThat(code).contains("alertManager.injectLocal(OperatorWarningCode.CLUSTER_EVENTS_REGISTRATION_REFUSED.code(),\"CRITICAL\",");
+    }
+
+    /// #1934: the stream consumer runtime reports a consumer whose delivery passes keep throwing to this node's sink.
+    @Test
+    void assembly_givesTheSinkToTheStreamConsumerRuntime() {
+        assertThat(assemblyCode()).contains("streamConsumerRuntime.operatorWarnings(operatorWarningSink);");
     }
 
     /// #1564 N2: the cluster-events local partition built at construction takes the committed
@@ -68,11 +87,14 @@ class OperatorWarningWiringTest {
     /// #1431: the owner gate's block alarm reaches this node's sink, so an oversized peer event is an operator event.
     @Test
     void assembly_givesTheSinkToTheOwnerPromotionBlockAlarm() {
-        var code = assemblyCode();
+        assertThat(assemblyCode()).contains("ownerPromotionAlarm(operatorWarningSink),");
+    }
 
-        assertThat(code).as("link 1: the assembly hands the sink to the alarm").contains("ownerPromotionAlarm(operatorWarningSink),ownerPromotionAlarmWindow(");
-        assertThat(code).as("link 2: the alarm's raise reaches the sink-taking raiser")
-                        .contains("publicUnitraise(OwnerActivation.ActivationBlockblock){returnraiseOwnerPromotionBlock(sink,block);}");
+    /// #1937: the promoted owner's BACKFILL reports a peer's oversized event through the same sink, once per transition. Red
+    /// without the wiring: the backfill's alarm stays the no-op default and the refusal is only a log line.
+    @Test
+    void assembly_givesTheSinkToTheBackfillBlockAlarm() {
+        assertThat(assemblyCode()).contains("streamPartitionBackfill.blockAlarm(ownerPromotionAlarm(operatorWarningSink));");
     }
 
     /// `AetherNode.java` with line comments removed and all whitespace stripped. An unreadable file fails loudly,

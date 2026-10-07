@@ -50,6 +50,10 @@ class StreamFailoverAnnouncerWiringTest {
         assertThat(code).contains(".onPut(AetherKey.ScheduledTaskStateKey.class,scheduledTaskOutcomeAnnouncer::onStatePut)");
         assertThat(code).contains("MessageRouter.Entry.route(MembershipDecision.NodeRemoved.class,scheduledTaskManager::onNodeRemoved)");
         assertThat(code).contains("MessageRouter.Entry.route(MembershipDecision.NodeDecommissioned.class,scheduledTaskManager::onNodeDecommissioned)");
+        // #1930: the scheduler's in-flight observer feeds the aggregator through the operational-event path.
+        assertThat(code).contains("ScheduledFireAnnouncer.scheduledFireAnnouncer(config.self(),delegateRouter::route)");
+        assertThat(code).contains("MessageRouter.Entry.route(OperationalEvent.ScheduledTaskFireHeld.class,eventAggregator::onScheduledTaskFireHeld)");
+        assertThat(code).contains("MessageRouter.Entry.route(OperationalEvent.ScheduledTaskFireReleased.class,eventAggregator::onScheduledTaskFireReleased)");
         assertThat(code).contains("MessageRouter.Entry.route(OperationalEvent.ScheduledTaskOutcomeUnknown.class,eventAggregator::onScheduledTaskOutcomeUnknown)");
         assertThat(code).contains("MessageRouter.Entry.route(OperationalEvent.ScheduledTaskOutcomeRestored.class,eventAggregator::onScheduledTaskOutcomeRestored)");
     }

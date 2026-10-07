@@ -40,7 +40,7 @@ class OwnerActivationLineageTest {
     private final List<String> commits = new ArrayList<>();
     private final java.util.concurrent.atomic.AtomicBoolean silentRefusal = new java.util.concurrent.atomic.AtomicBoolean();
     private final List<OwnerActivation.ActivationBlock> raised = new ArrayList<>();
-    private final List<OwnerActivation.ActivationBlock> cleared = new ArrayList<>();
+    private final List<OwnerActivation.ActivationBlock> resolved = new ArrayList<>();
     private final OwnerActivation activation = activation();
 
     private OwnerActivation activation() {
@@ -63,8 +63,8 @@ class OwnerActivationLineageTest {
                                                    }
 
                                                    @Override
-                                                   public Unit cleared(OwnerActivation.ActivationBlock block) {
-                                                       cleared.add(block);
+                                                   public Unit resolved(OwnerActivation.ActivationBlock block) {
+                                                       resolved.add(block);
 
                                                        return Unit.unit();
                                                    }
@@ -189,7 +189,7 @@ class OwnerActivationLineageTest {
         refusal.set(Option.none());
 
         assertThat(activate()).as("the restart finally lands").isTrue();
-        assertThat(cleared).as("the recovery is told once").hasSize(1);
+        assertThat(resolved).as("the recovery is told once").hasSize(1);
         assertThat(activation.blockOf(STREAM, PARTITION).isEmpty()).isTrue();
     }
 
@@ -216,7 +216,7 @@ class OwnerActivationLineageTest {
                                                                  List.of(),
                                                                  List.of(new EpochStart(EPOCH, 5L)))));
         assertThat(activate()).as("ownership left this node").isFalse();
-        assertThat(cleared).as("the first episode is over").hasSize(1);
+        assertThat(resolved).as("the first episode is over").hasSize(1);
 
         record.set(Option.some(mine));
         stickFor(OwnerActivation.LINEAGE_REFUSAL_ALARM_AFTER);
@@ -233,7 +233,7 @@ class OwnerActivationLineageTest {
         assertThat(raised).hasSize(1);
 
         activation.onQuorumStateChange(org.pragmatica.consensus.topology.ClusterStateNotification.passive());
-        assertThat(cleared).as("the first episode is over").hasSize(1);
+        assertThat(resolved).as("the first episode is over").hasSize(1);
 
         stickFor(OwnerActivation.LINEAGE_REFUSAL_ALARM_AFTER);
 
@@ -263,6 +263,20 @@ class OwnerActivationLineageTest {
 
         assertThat(raised).isEmpty();
         assertThat(commits).as("each attempt retried the commit").hasSize(OwnerActivation.LINEAGE_REFUSAL_ALARM_AFTER * 2);
+    }
+
+    /// One episode, one resolution: the block ends with quorum loss, and the later activation that lands must not resolve
+    /// it a second time (#1955's `ended` and the episode reset share the removal).
+    @Test
+    void anEpisodeEndedByQuorumLoss_isNotResolvedAgainWhenTheNextActivationLands() {
+        record.set(Option.some(committed(List.of(new EpochStart(EPOCH, 5L)))));
+        refusal.set(Option.some(OwnerActivation.ActivationError.LINEAGE_NOT_COMMITTED));
+        stickFor(OwnerActivation.LINEAGE_REFUSAL_ALARM_AFTER);
+        activation.onQuorumStateChange(org.pragmatica.consensus.topology.ClusterStateNotification.passive());
+        refusal.set(Option.none());
+
+        assertThat(activate()).isTrue();
+        assertThat(resolved).as("resolved once, by the quorum loss").hasSize(1);
     }
 
     private void stickFor(int attempts) {

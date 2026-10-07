@@ -218,6 +218,7 @@ class StreamForwardHandlerTest {
             assertThat(response.success()).isTrue();
             assertThat(response.events()).hasSize(1);
             assertThat(response.events().getFirst().data()).isEqualTo(PAYLOAD);
+            assertThat(response.historyVouched()).as("answered as a replica catch-up: the history is vouched").isTrue();
         }
 
         /// CTO ruling (#1235 Fork A): the flag alone must not let an arbitrary reader opt out of
@@ -230,6 +231,7 @@ class StreamForwardHandlerTest {
 
             assertThat(response.success()).isTrue();
             assertThat(response.events()).isEmpty();
+            assertThat(response.historyVouched()).as("a consumer-read answer says it is not a replica answer").isFalse();
         }
     }
 

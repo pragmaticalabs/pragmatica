@@ -245,15 +245,6 @@ public record DockerComputeProvider(DockerCommandRunner runner, DockerConfig con
     }
 
     @Override
-    public Promise<Unit> restart(InstanceId id) {
-        var command = buildRestartCommand(id);
-
-        return runner.execute(command)
-                     .mapToUnit()
-                     .mapError(DockerComputeProvider::toProvisionError);
-    }
-
-    @Override
     public Promise<Unit> applyTags(InstanceId id, Map<String, String> tags) {
         return EnvironmentError.operationNotSupported("applyTags (Docker labels are immutable after creation)").promise();
     }
@@ -493,10 +484,6 @@ public record DockerComputeProvider(DockerCommandRunner runner, DockerConfig con
                       + "{{with index .Config.Labels \"aether.role\"}}{{.}}{{end}}\t"
                       + "{{with index .Config.Labels \"aether.node-id\"}}{{.}}{{end}}",
                        instanceId.value());
-    }
-
-    private static List<String> buildRestartCommand(InstanceId id) {
-        return List.of("docker", "restart", id.value());
     }
 
     private InstanceInfo toProvisionedInfo(String containerId, String containerName, ProvisionRequest request) {

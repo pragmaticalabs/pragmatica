@@ -218,6 +218,12 @@ public sealed interface StreamForwardMessage extends ProtocolMessage {
     /// read only (empty on every other answer): the source's slice a catch-up apply checks and installs before
     /// applying the events, so every caught-up record is attributed to the epoch that first wrote it. Same
     /// precedent: a widening of this pinned record rather than a second round trip.
+    ///
+    /// `historyVouched` is true only on that replica catch-up answer: the source treated the reader as a replica and
+    /// `history` is what it keeps, which is EMPTY only when it keeps no log. Every other answer -- a consumer read, which
+    /// is what a node the source does not yet list as a replica gets (#1235) -- is not vouched, so an empty `history`
+    /// there means "not answered as a replica", never "keeps no history". The receiver of a catch-up refuses records it
+    /// cannot attribute from an unvouched answer and pulls again.
     record ReadForwardResponse(NodeId sender,
                                String correlationId,
                                boolean success,
@@ -227,6 +233,7 @@ public sealed interface StreamForwardMessage extends ProtocolMessage {
                                long earliestRetained,
                                long visibleHead,
                                List<ProvenanceEntry> history,
+                               boolean historyVouched,
                                Epoch ownerEpoch,
                                long divergenceResumeAt,
                                long divergenceLossFrom) implements StreamForwardMessage {
@@ -254,6 +261,7 @@ public sealed interface StreamForwardMessage extends ProtocolMessage {
                                            bounds.earliestRetained(),
                                            bounds.visibleHead(),
                                            List.of(),
+                                           false,
                                            Epoch.ZERO,
                                            NO_DIVERGENCE,
                                            NO_DIVERGENCE);
@@ -278,6 +286,7 @@ public sealed interface StreamForwardMessage extends ProtocolMessage {
                                            bounds.earliestRetained(),
                                            bounds.visibleHead(),
                                            List.of(),
+                                           false,
                                            Epoch.ZERO,
                                            NO_DIVERGENCE,
                                            NO_DIVERGENCE);
@@ -293,6 +302,7 @@ public sealed interface StreamForwardMessage extends ProtocolMessage {
                                            VisibleBounds.NONE,
                                            VisibleBounds.NONE,
                                            List.of(),
+                                           false,
                                            Epoch.ZERO,
                                            NO_DIVERGENCE,
                                            NO_DIVERGENCE);
@@ -309,6 +319,7 @@ public sealed interface StreamForwardMessage extends ProtocolMessage {
                                            earliestRetained,
                                            visibleHead,
                                            sourceHistory,
+                                           true,
                                            ownerEpoch,
                                            divergenceResumeAt,
                                            divergenceLossFrom);
@@ -326,6 +337,7 @@ public sealed interface StreamForwardMessage extends ProtocolMessage {
                                            earliestRetained,
                                            visibleHead,
                                            history,
+                                           historyVouched,
                                            epoch,
                                            divergenceResumeAt,
                                            divergenceLossFrom);
@@ -349,6 +361,7 @@ public sealed interface StreamForwardMessage extends ProtocolMessage {
                                            VisibleBounds.NONE,
                                            VisibleBounds.NONE,
                                            List.of(),
+                                           false,
                                            ownerEpoch,
                                            resumeAt,
                                            lossFrom);

@@ -473,24 +473,6 @@ _fork_bounded() {
 _live_endpoint_sticky_file() {
     printf '%s/aether-live-endpoint-%s-%s' "${TMPDIR:-/tmp}" "${CLUSTER_ID:-default}" "${AETHER_RUN_ID:-norun}"
 }
-# VMs THIS run deleted through cloud_kill_vm: one `<node id> <hetzner server id>` line each, keyed by AETHER_RUN_ID (removed on
-# exit by run-tests.sh). A deleted VM's address no longer resolves, so a later cloud_server_id on its node id is rc 3 (unknown);
-# without this record a cleanup that asks to revive "the node I killed" got a counted FAIL for a deletion the harness made.
-_cloud_deleted_vms_file() {
-    printf '%s/aether-deleted-vms-%s' "${TMPDIR:-/tmp}" "${AETHER_RUN_ID:-norun}"
-}
-# <node id> <server id>
-_cloud_record_deleted_vm() {
-    printf '%s %s\n' "$1" "${2:-?}" >> "$(_cloud_deleted_vms_file)" 2>/dev/null || true
-    return 0
-}
-# prints the server id (or ?) and returns 0 when this run deleted <node id>; returns 1 otherwise
-_cloud_deleted_vm_server() {
-    local sid
-    sid=$(awk -v n="$1" '$1 == n { print $2; found = 1 } END { exit !found }' "$(_cloud_deleted_vms_file)" 2>/dev/null | tail -1) || return 1
-    [ -n "$sid" ] || return 1
-    printf '%s' "$sid"
-}
 _pin_dead_file() {
     printf '%s/aether-pin-dead-%s-%s' "${TMPDIR:-/tmp}" "${CLUSTER_ID:-default}" "${AETHER_RUN_ID:-norun}"
 }
@@ -1424,7 +1406,7 @@ ENV_TYPE="${ENV_TYPE:-docker}"
 export ENV_TYPE
 CLOUD_MODE="${CLOUD_MODE:-false}"   # backward compat: true maps to ENV_TYPE=cloud
 if [ "$CLOUD_MODE" = "true" ]; then ENV_TYPE="cloud"; fi
-# Sync the reverse direction: kill_node, start_node, etc. still branch on CLOUD_MODE.
+# Sync the reverse direction: kill_node, restart_all_nodes, etc. still branch on CLOUD_MODE.
 if [ "$ENV_TYPE" = "cloud" ]; then CLOUD_MODE="true"; fi
 export CLOUD_MODE
 # BASTION_IP is retained for backward-compat env templates but ignored under

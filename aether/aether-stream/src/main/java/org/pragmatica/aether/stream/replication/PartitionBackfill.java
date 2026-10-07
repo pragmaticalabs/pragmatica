@@ -14,7 +14,9 @@ import java.util.function.LongSupplier;
 import java.util.function.Supplier;
 
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.stream.CommittedStreamOwnerSource;
+import org.pragmatica.aether.stream.OwnerActivation;
 import org.pragmatica.aether.stream.OwnerPeerReads;
 import org.pragmatica.aether.stream.StreamError;
 import org.pragmatica.lang.Cause;
@@ -99,6 +101,9 @@ import static org.pragmatica.aether.stream.replication.ReplicationMessage.Replic
 /// replica re-runs backfill on the next reconcile.
 public final class PartitionBackfill {
     private static final Logger log = LoggerFactory.getLogger(PartitionBackfill.class);
+    /// How many of the owner's newest records a replica that claims to hold them all compares before it is promoted
+    /// (#1730 phase 2, the window the promotion gate compares as well).
+    private static final long TAIL_VERIFY_WINDOW = 1024L;
 
     private final ReplicaRegistry registry;
     private final AlignedRecovery partitionRecovery;
@@ -140,9 +145,12 @@ public final class PartitionBackfill {
     /// `backfill` is invoked one-shot and retried by the reconcile / on-gap seams, so the bounded wait
     /// must persist across calls — this map is that cross-call memory.
     private final ConcurrentHashMap<PartitionKey, Long> firstNoSourceMs;
-
     /// #1555 sticky ownership owner source; default: no committed owner, pure HRW (see [#hrwOwner]).
     private volatile OwnerResolver ownerResolver = (_, _) -> Option.none();
+    private volatile OwnerActivation.BlockAlarm blockAlarm = _ -> Unit.unit();
+
+    /// The oversized-peer block last reported per partition, so a redrive of the same condition is silent (#1937).
+    private final ConcurrentHashMap<PartitionKey, OwnerActivation.ActivationBlock> reportedOversized;
 
     /// Per-partition `confirmedOffset` at which a CAUGHT_UP non-owner replica was last re-verified against
     /// the HRW owner (#333 write-idle residual). It quiesces {@link #redriveCandidates}: a stale CAUGHT_UP
@@ -210,6 +218,7 @@ public final class PartitionBackfill {
         this.reverifiedAtOffset = new ConcurrentHashMap<>();
         this.lastReverifyMs = new ConcurrentHashMap<>();
         this.inFlight = new ConcurrentHashMap<>();
+        this.reportedOversized = new ConcurrentHashMap<>();
         this.current = () -> true;
     }
 
@@ -235,6 +244,8 @@ public final class PartitionBackfill {
         this.lastReverifyMs = shared.lastReverifyMs;
         this.inFlight = shared.inFlight;
         this.ownerResolver = shared.ownerResolver;
+        this.blockAlarm = shared.blockAlarm;
+        this.reportedOversized = shared.reportedOversized;
         this.current = current;
     }
 
@@ -628,15 +639,25 @@ public final class PartitionBackfill {
     }
 
     private Promise<Long> runBackfill(String streamName, int partition) {
+        return runBackfill(streamName, partition, true);
+    }
+
+    private Promise<Long> runBackfill(String streamName, int partition, boolean mayRepair) {
         var replicas = registry.replicasFor(streamName, partition);
 
         if (isQuarantined(streamName, partition)) {
-            return refuseQuarantined(streamName, partition);
+            clearOversized(streamName, partition);
+
+            return mayRepair && repairable(streamName, partition)
+                   ? repairThenRun(streamName, partition)
+                   : refuseQuarantined(streamName, partition);
         }
 
         if (isSelfOwner(streamName, partition)) {
             return promoteOwner(streamName, partition, replicas);
         }
+
+        clearOversized(streamName, partition);
 
         return hrwOwner(streamName, partition).filter(owner -> !owner.equals(self))
                        .fold(() -> backfillViaRegistryOrColdStart(streamName, partition, replicas),
@@ -652,9 +673,70 @@ public final class PartitionBackfill {
     private Promise<Long> refuseQuarantined(String streamName, int partition) {
         var divergedAt = quarantine.quarantinedAt(streamName, partition).or(0L);
 
+        quarantine.flagUnrepaired(streamName, partition);
         holdSyncingBelow(streamName, partition, divergedAt);
 
         return quarantineRefusal(streamName, partition, divergedAt);
+    }
+
+    /// #1730 phase 2 (KIP-101): a quarantined copy is repairable only against the COMMITTED owner, of a LATER epoch than
+    /// the records about to be cut, and only when this node is not that owner and the committed owner is the node this copy
+    /// backfills from: the owner's records for the diverging offsets win, and what this copy holds above the last shared
+    /// offset was never acknowledged (an acknowledgement needs every in-sync member, and the committed owner is one). A sender
+    /// of an older epoch (a deposed owner seen through a stale view), this node as the owner, or no committed owner at all
+    /// leaves the copy quarantined. The manager evaluates the same rule again inside the cut ([#repairAuthority]).
+    private boolean repairable(String streamName, int partition) {
+        return committedOwnerIsSender(streamName, partition);
+    }
+
+    private boolean committedOwnerIsSender(String streamName, int partition) {
+        return committedOwnerSource.committedOwner(streamName, partition)
+                                   .filter(committed -> !committed.owner()
+                                                                  .equals(self))
+                                   .flatMap(committed -> hrwOwner(streamName, partition).filter(committed.owner()::equals))
+                                   .isPresent();
+    }
+
+    /// The rule the manager re-checks under the cut: the committed owner is the sender and not this node, and its epoch is
+    /// strictly after the epoch of the records to be removed (unknown for a copy that keeps no history: the committed owner's
+    /// lineage is the authority there).
+    private QuarantineView.RepairAuthority repairAuthority(String streamName, int partition) {
+        return divergentEpoch -> committedOwnerIsSender(streamName, partition) && committedOwnerSource.committedOwner(streamName,
+                                                                                                                      partition)
+                                                                                                      .filter(committed -> divergentEpoch.map(epoch -> committed.ownerEpoch()
+                                                                                                                                                                .isStrictlyAfter(epoch))
+                                                                                                                                         .or(true))
+                                                                                                      .isPresent();
+    }
+
+    /// Cut the divergent tail, hold self SYNCING at the last shared offset, and run the backfill again from there. A
+    /// refused cut leaves the quarantine as it was.
+    private Promise<Long> repairThenRun(String streamName, int partition) {
+        return quarantine.repair(streamName,
+                                 partition,
+                                 repairAuthority(streamName, partition))
+                         .fold(cause -> repairRefused(streamName, partition, cause),
+                               kept -> kept.fold(() -> runBackfill(streamName, partition, false),
+                                                 keptThrough -> resumeAfterRepair(streamName, partition, keptThrough)));
+    }
+
+    private Promise<Long> resumeAfterRepair(String streamName, int partition, long keptThrough) {
+        updateWatermark(streamName, partition, self, keptThrough, ReplicationState.SYNCING);
+        log.info("Backfill {}[{}]: divergent tail cut back to offset {} — refetching from the owner",
+                 streamName,
+                 partition,
+                 keptThrough);
+
+        return runBackfill(streamName, partition, false);
+    }
+
+    private Promise<Long> repairRefused(String streamName, int partition, Cause cause) {
+        log.warn("Backfill {}[{}]: quarantined copy could not be repaired by truncation: {}",
+                 streamName,
+                 partition,
+                 cause.message());
+
+        return refuseQuarantined(streamName, partition);
     }
 
     @Contract
@@ -797,7 +879,15 @@ public final class PartitionBackfill {
             return false;
         }
 
-        return offsetMoved(descriptor) || reverifyIntervalElapsed(descriptor);
+        return offsetMoved(descriptor) || reverifyIntervalElapsed(descriptor) || notVerifiedForTheCurrentEpoch(descriptor);
+    }
+
+    /// B5/B7 (#1730 phase 2): a CAUGHT_UP copy that has not been compared with the committed owner of the current epoch (it
+    /// was demoted, or the epoch advanced while it was away) is re-driven at once, not at the next quiet interval: it serves
+    /// nothing from the epoch's start and acknowledges nothing until this compare has run, so the wait for it is the redrive
+    /// period plus one window fetch.
+    private boolean notVerifiedForTheCurrentEpoch(ReplicaDescriptor descriptor) {
+        return ! quarantine.verifiedForCurrentEpoch(descriptor.streamName(), descriptor.partition());
     }
 
     /// True when self's CAUGHT_UP `confirmedOffset` differs from the offset last re-verified against the HRW
@@ -865,8 +955,16 @@ public final class PartitionBackfill {
                                          List<ReplicaDescriptor> replicas,
                                          long selfConfirmed,
                                          long ownerHead) {
-        return ownerHead > selfConfirmed
-               ? backfillFromOwner(streamName, partition, owner, replicas)
+        if (ownerHead > selfConfirmed) {
+            return backfillFromOwner(streamName, partition, owner, replicas);
+        }
+        // #1890 (v1890): a row above a non-empty owner's head was confirmed against an earlier lineage; re-acking it
+        // would let this owner count offsets the copy holds from another owner. Compare and cap at the owner's head.
+        // B7: the no-compare shortcut (#333) is allowed only within an epoch this copy was verified for. After a demotion or a
+        // committed-epoch advance it compares even when the heads are EQUAL: a divergent tail of the same length would
+        // otherwise be re-acked as the owner's records.
+        return ownerHead >= 0 && (ownerHead < selfConfirmed || !quarantine.verifiedForCurrentEpoch(streamName, partition))
+               ? verifyAgainstOwnerTail(streamName, partition, owner, ownerHead, replicas)
                : reverifyNoOp(streamName, partition, selfConfirmed, ownerHead);
     }
 
@@ -927,7 +1025,13 @@ public final class PartitionBackfill {
                                             int partition,
                                             NodeId owner,
                                             List<ReplicaDescriptor> replicas) {
-        var fromOffset = selfWatermark.localWatermark(streamName, partition) + 1;
+        var local = selfWatermark.localWatermark(streamName, partition);
+        var epoch = quarantine.committedEpoch(streamName, partition);
+        // #1730 phase 2 (v1890): a copy below the owner is compared over its last window too, not only pulled from its
+        // head + 1; the apply skips an identical held record and quarantines a different one.
+        var fromOffset = local < 0
+                         ? 0L
+                         : Math.max(0L, local - TAIL_VERIFY_WINDOW + 1);
         var request = catchupRequest(owner, streamName, partition, fromOffset);
 
         log.debug("Backfill {}[{}]: owner source={} from offset {} [authoritative HRW owner]",
@@ -939,12 +1043,20 @@ public final class PartitionBackfill {
         return transport.requestCatchup(owner,
                                         request,
                                         () -> progress(streamName, partition))
-                        .flatMap(response -> applyOwnerResponse(streamName,
-                                                                partition,
-                                                                owner,
-                                                                fromOffset - 1,
-                                                                replicas,
-                                                                response));
+                        .flatMap(response -> applyOwnerResponse(streamName, partition, owner, local, replicas, response).onSuccess(_ -> markVerifiedIfCompared(streamName,
+                                                                                                                                                               partition,
+                                                                                                                                                               epoch,
+                                                                                                                                                               !response.payloads()
+                                                                                                                                                                        .isEmpty())));
+    }
+
+    /// The compare succeeded against the committed owner of `epoch`: this copy may now serve and acknowledge at and above that
+    /// epoch's start. Only a response that carried records compared anything.
+    @Contract
+    private void markVerifiedIfCompared(String streamName, int partition, Epoch epoch, boolean carriedRecords) {
+        if (carriedRecords && !epoch.equals(Epoch.ZERO) && committedOwnerIsSender(streamName, partition)) {
+            quarantine.verifiedForEpoch(streamName, partition, epoch);
+        }
     }
 
     /// Dispatch the owner's catch-up response (#445). An EMPTY response (`payloads().isEmpty()` — the robust
@@ -1095,6 +1207,8 @@ public final class PartitionBackfill {
         }
 
         updateWatermark(streamName, partition, self, watermark);
+        quarantine.verified(streamName, partition, watermark);
+        quarantine.repairSettled(streamName, partition);
         ackBackfillToOwner(streamName, partition, watermark);
         reverifiedAtOffset.put(partitionKey(streamName, partition), watermark);
         // A successful owner/source pull IS a re-verify by definition: the replica now holds the source's
@@ -1125,7 +1239,12 @@ public final class PartitionBackfill {
     private void ackBackfillToOwner(String streamName, int partition, long watermark) {
         hrwOwner(streamName, partition).filter(owner -> !owner.equals(self) && current.getAsBoolean())
                 .onPresent(owner -> replicationTransport.send(owner,
-                                                              replicateAck(self, streamName, partition, watermark)));
+                                                              replicateAck(self,
+                                                                           streamName,
+                                                                           partition,
+                                                                           watermark,
+                                                                           quarantine.committedEpoch(streamName,
+                                                                                                     partition))));
     }
 
     /// Apply every recovered event in order via a sequential fail-fast fold. A truncated response
@@ -1292,6 +1411,13 @@ public final class PartitionBackfill {
         this.ownerResolver = resolver;
     }
 
+    /// Where a promoted owner's catch-up refused for a peer's oversized event is reported (#1937, like the activation gate's
+    /// own alarm). Late-bound, because the operator-warning sink is built after the backfill.
+    @Contract
+    public void blockAlarm(OwnerActivation.BlockAlarm alarm) {
+        this.blockAlarm = alarm;
+    }
+
     /// Owner promotion is LOSSLESS (#336 phase-2). A freshly HRW-elected owner can be BEHIND a surviving
     /// replica when `replicas > confirmationFactor`: different client-acked writes were confirmed by different
     /// peers, so the promoted owner's local watermark may trail the highest survivor. Self-promoting at the
@@ -1316,10 +1442,14 @@ public final class PartitionBackfill {
                                                                                         partition,
                                                                                         replicas,
                                                                                         localWatermark),
-                                                            survivor -> catchupOwnerFromSurvivor(streamName,
-                                                                                                 partition,
-                                                                                                 survivor,
-                                                                                                 localWatermark));
+                                                            survivor -> {
+                                                                clearOversized(streamName, partition);
+
+                                                                return catchupOwnerFromSurvivor(streamName,
+                                                                                                partition,
+                                                                                                survivor,
+                                                                                                localWatermark);
+                                                            });
     }
 
     /// #1555 owner promotion gate: pull `(local watermark + 1) .. sourceTail` of `(streamName, partition)` from
@@ -1452,6 +1582,8 @@ public final class PartitionBackfill {
         var blind = blindPeers(replicas);
 
         if (blind.isEmpty()) {
+            clearOversized(streamName, partition);
+
             return ownerSelfPromote(streamName, partition);
         }
 
@@ -1491,6 +1623,8 @@ public final class PartitionBackfill {
         var bestTail = results.stream().mapToLong(result -> result.or(-1L)).max().orElse(-1L);
 
         if (bestTail > localWatermark) {
+            clearOversized(streamName, partition);
+
             return catchupOwnerFromSurvivor(streamName,
                                             partition,
                                             peerWithTail(peers, results, bestTail),
@@ -1498,20 +1632,39 @@ public final class PartitionBackfill {
                                             localWatermark);
         }
 
-        var oversized = results.stream()
-                               .flatMap(result -> failureOf(result).filter(OwnerPeerReads.EventExceedsReadCap.class::isInstance)
-                                                           .stream())
-                               .findFirst();
+        var oversizedAt = oversizedIndex(results);
 
-        if (oversized.isPresent()) {
-            return oversizedPeer(streamName, partition, oversized.get());
+        if (oversizedAt >= 0) {
+            return oversizedPeer(streamName,
+                                 partition,
+                                 peers.get(oversizedAt),
+                                 failureOf(results.get(oversizedAt)).or((Cause) null));
         }
 
+        clearOversized(streamName, partition);
         if (results.stream().anyMatch(Result::isFailure)) {
             return escapeOwnerCatchup(streamName, partition, localWatermark, UNREACHABLE_REPLICA_BLOCKS_PROMOTION);
         }
 
         return ownerSelfPromote(streamName, partition);
+    }
+
+    /// The oversized-peer condition no longer holds for this partition (#1937): the next promotion attempt found no peer cut
+    /// before its first event, found another peer to catch up from, or this node is no longer the owner. Forgetting the report
+    /// is what lets the same peer and offset raise again when it recurs, and the alarm is told so the operator sees it end.
+    private void clearOversized(String streamName, int partition) {
+        Option.option(reportedOversized.remove(partitionKey(streamName, partition))).onPresent(blockAlarm::resolved);
+    }
+
+    /// The index of the first peer that answered with a page cut before its first event, or -1 (index-aligned with `peers`).
+    private static int oversizedIndex(List<Result<Long>> results) {
+        for (var i = 0; i < results.size(); i++) {
+            if (failureOf(results.get(i)).filter(OwnerPeerReads.EventExceedsReadCap.class::isInstance).isPresent()) {
+                return i;
+            }
+        }
+
+        return -1;
     }
 
     private static Option<Cause> failureOf(Result<Long> result) {
@@ -1521,11 +1674,24 @@ public final class PartitionBackfill {
     /// #1431: a peer ANSWERED with a page cut before its first event, so its tail is unknown but it is not
     /// unreachable: the bounded [#escapeOwnerCatchup] (which would promote at the LOCAL watermark below it) does not
     /// apply. Self stays behind and the redrive retries until an operator raises that peer's read cap.
-    private Promise<Long> oversizedPeer(String streamName, int partition, Cause cause) {
-        log.warn("Backfill {}[{}]: promoted-owner catch-up refused — {}; staying non-authoritative, never escaping at the local watermark",
-                 streamName,
-                 partition,
-                 cause.message());
+    ///
+    /// #1937: reported like the activation gate's own refusal — a [OwnerActivation.ActivationBlock.PeerEventExceedsReadCap]
+    /// raised to the block alarm ONCE per transition (a redrive of the same condition is silent; the condition ending and
+    /// coming back raises again), not a WARN on every redrive.
+    private Promise<Long> oversizedPeer(String streamName, int partition, NodeId peer, Cause cause) {
+        var offset = cause instanceof OwnerPeerReads.EventExceedsReadCap(var at)
+                     ? at
+                     : -1L;
+        var block = new OwnerActivation.ActivationBlock.PeerEventExceedsReadCap(streamName, partition, peer, offset);
+        var previous = reportedOversized.put(partitionKey(streamName, partition), block);
+
+        if (!block.equals(previous)) {
+            log.warn("Backfill {}[{}]: promoted-owner catch-up refused — {}; staying non-authoritative, never escaping at the local watermark",
+                     streamName,
+                     partition,
+                     block.message());
+            blockAlarm.raise(block);
+        }
 
         return cause.promise();
     }
@@ -1850,6 +2016,7 @@ public final class PartitionBackfill {
                     .fold(result -> result.fold(_ -> handleNoSource(streamName, partition, replicas),
                                                 ownerWatermark -> promoteOrWait(streamName,
                                                                                 partition,
+                                                                                owner,
                                                                                 selfConfirmed,
                                                                                 ownerWatermark,
                                                                                 replicas)));
@@ -1859,47 +2026,46 @@ public final class PartitionBackfill {
     /// else falls through to the probe-gated no-source path rather than flipping a false `CAUGHT_UP`.
     private Promise<Long> promoteOrWait(String streamName,
                                         int partition,
+                                        NodeId owner,
                                         long selfConfirmed,
                                         long ownerWatermark,
                                         List<ReplicaDescriptor> replicas) {
         return atTail(selfConfirmed, ownerWatermark)
-               ? promoteAtOwnerTail(streamName, partition, selfConfirmed, ownerWatermark)
+               ? verifyAgainstOwnerTail(streamName, partition, owner, ownerWatermark, replicas)
                : handleNoSource(streamName, partition, replicas);
+    }
+
+    /// #1730 phase 2: a replica that holds everything the owner holds is not CAUGHT_UP until it has COMPARED its records
+    /// with the owner's. An empty response says only that the replica holds at least the owner's head; it says nothing
+    /// about whether the records agree, and a replica that held more, or different records, was promoted at its OWN
+    /// head (the owner then counted that offset as a confirmation of records the replica never received). The owner's
+    /// last [#TAIL_VERIFY_WINDOW] records are fetched and applied through the ordinary apply, which skips a held record
+    /// that is identical and refuses a different one (quarantine, then repair); the replica is promoted at the OWNER's
+    /// head, whatever it holds above it. An empty answer proves nothing and takes the no-source path.
+    private Promise<Long> verifyAgainstOwnerTail(String streamName,
+                                                 int partition,
+                                                 NodeId owner,
+                                                 long ownerWatermark,
+                                                 List<ReplicaDescriptor> replicas) {
+        var from = Math.max(0L, ownerWatermark - TAIL_VERIFY_WINDOW + 1);
+        var epoch = quarantine.committedEpoch(streamName, partition);
+
+        return transport.requestCatchup(owner,
+                                        catchupRequest(owner, streamName, partition, from),
+                                        () -> progress(streamName, partition))
+                        .flatMap(response -> response.payloads()
+                                                     .isEmpty()
+                                             ? handleNoSource(streamName, partition, replicas)
+                                             : applyAndPromote(streamName, partition, -1L, response).onSuccess(_ -> markVerifiedIfCompared(streamName,
+                                                                                                                                           partition,
+                                                                                                                                           epoch,
+                                                                                                                                           true)));
     }
 
     /// An owner reporting `-1` is an EMPTY owner, never a true tail (#445) — self must not promote off
     /// it however much history self holds, because a further-ahead survivor may exist.
     private static boolean atTail(long selfConfirmed, long ownerWatermark) {
         return ownerWatermark >= 0 && selfConfirmed >= ownerWatermark;
-    }
-
-    /// #1505 F2: a quarantined partition is never promoted at the owner's tail (#559 path, [#promoteUnlessQuarantined]).
-    private Promise<Long> promoteAtOwnerTail(String streamName,
-                                             int partition,
-                                             long selfConfirmed,
-                                             long ownerWatermark) {
-        return promoteUnlessQuarantined(streamName,
-                                        partition,
-                                        () -> promoteAtOwnerTailUnquarantined(streamName,
-                                                                              partition,
-                                                                              selfConfirmed,
-                                                                              ownerWatermark));
-    }
-
-    private Promise<Long> promoteAtOwnerTailUnquarantined(String streamName,
-                                                          int partition,
-                                                          long selfConfirmed,
-                                                          long ownerWatermark) {
-        log.debug("Backfill {}[{}]: CAUGHT_UP at owner tail — owner watermark {}, self {} — empty response "
-                 + "means nothing to fetch, not an empty owner; skipping the cold-start contest",
-                  streamName,
-                  partition,
-                  ownerWatermark,
-                  selfConfirmed);
-        updateWatermark(streamName, partition, self, selfConfirmed);
-        firstNoSourceMs.remove(partitionKey(streamName, partition));
-
-        return Promise.success(0L);
     }
 
     /// On an exact tie at the max watermark, exactly ONE replica may promote: the one with the lowest

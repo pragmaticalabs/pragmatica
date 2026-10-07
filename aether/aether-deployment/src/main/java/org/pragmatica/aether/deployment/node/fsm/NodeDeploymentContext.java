@@ -33,6 +33,7 @@ import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.fsm.ClusterFsmEvent;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
+import org.pragmatica.utility.warning.OperatorWarningSink;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.net.tcp.NodeAddress;
@@ -58,6 +59,10 @@ public final class NodeDeploymentContext {
     private final AtomicLong quorumSequence;
     private final AtomicReference<Runnable> shutdownCallback;
     private final AtomicReference<Runnable> activeOnEntryCallback;
+    private final AtomicReference<OperatorWarningSink> operatorWarnings;
+
+    private final java.util.Set<String> unregisteredConsumers = java.util.concurrent.ConcurrentHashMap.newKeySet();
+
     private final LongSupplier clock;
     private final Supplier<Option<Epoch>> currentEpochSupplier;
     private final NodeDeploymentState dormant;
@@ -194,6 +199,7 @@ public final class NodeDeploymentContext {
         this.quorumSequence = new AtomicLong(0);
         this.shutdownCallback = new AtomicReference<>();
         this.activeOnEntryCallback = new AtomicReference<>();
+        this.operatorWarnings = new AtomicReference<>(OperatorWarningSink.logOnly());
         this.clock = clock;
         this.currentEpochSupplier = currentEpochSupplier;
         this.dormant = new NodeDeploymentState.Dormant(this, List.of(), Map.of());
@@ -302,6 +308,29 @@ public final class NodeDeploymentContext {
 
     public AtomicLong quorumSequence() {
         return quorumSequence;
+    }
+
+    /// Where operator-attention conditions of this node's deployments are raised. [OperatorWarningSink#logOnly]
+    /// until the node binds its own sink (never a process-wide one: Ember runs several nodes in one JVM).
+    public OperatorWarningSink operatorWarnings() {
+        return operatorWarnings.get();
+    }
+
+    /// Subjects (`<slice>.<method>[<section>]`) of declared stream consumers a `stream-consumer-not-registered`
+    /// warning was raised for and that have not registered since, so the resolved warning is raised only for those.
+    @Contract
+    public void markUnregisteredConsumer(String subject) {
+        unregisteredConsumers.add(subject);
+    }
+
+    /// True when `subject` was marked, which is also what clears it.
+    public boolean clearUnregisteredConsumer(String subject) {
+        return unregisteredConsumers.remove(subject);
+    }
+
+    @Contract
+    public void setOperatorWarningSink(OperatorWarningSink sink) {
+        operatorWarnings.set(sink);
     }
 
     public Option<Runnable> shutdownCallback() {

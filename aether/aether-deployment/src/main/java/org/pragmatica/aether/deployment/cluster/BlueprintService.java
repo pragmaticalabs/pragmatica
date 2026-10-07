@@ -300,9 +300,9 @@ class BlueprintServiceInstance implements BlueprintService {
     }
 
     private Promise<byte[]> resolveArtifactBytes(Artifact artifact, String classifier) {
-        return repository.locate(artifact, classifier)
-                         .flatMap(BlueprintServiceInstance::readLocationBytes)
-                         .orElse(() -> resolveFromArtifactStore(artifact));
+        return Repository.orElseWhenAbsent(repository.locate(artifact, classifier)
+                                                     .flatMap(BlueprintServiceInstance::readLocationBytes),
+                                           () -> resolveFromArtifactStore(artifact));
     }
 
     private record ParsedArtifactCoords(Result<Artifact> artifact, String classifier, String baseCoords) {

@@ -53,6 +53,48 @@ class OperatorWarningCodeTest {
             .allMatch(subsystem -> subsystem.matches("[a-z][a-z0-9]*(-[a-z0-9]+)*"));
     }
 
+    /// #752: a recovery code closes a condition of its own subsystem, and a condition is not itself a recovery, so a
+    /// recovery is never itself waiting for one.
+    @Test
+    void recoveryCodes_closeAnOrdinaryConditionOfTheirOwnSubsystem() {
+        var recoveries = Arrays.stream(OperatorWarningCode.values())
+                               .filter(code -> code.recoveryOf().isPresent())
+                               .toList();
+
+        assertThat(recoveries).as("control: the catalogue has a recovery").isNotEmpty();
+        assertThat(recoveries).allSatisfy(recovery -> {
+            var closes = recovery.recoveryOf().unwrap();
+            assertThat(closes.subsystem()).isEqualTo(recovery.subsystem());
+            assertThat(closes.recoveryOf().isPresent()).isFalse();
+            assertThat(closes.hasRecovery()).isTrue();
+            assertThat(recovery.hasRecovery()).isFalse();
+        });
+    }
+
+    @Test
+    void streamConsumerRecovery_isInfo_andClosesTheDivergence() {
+        assertThat(OperatorWarningCode.STREAM_CONSUMER_STATE_REPAIRED.level()).isEqualTo(WarningLevel.INFO);
+        assertThat(OperatorWarningCode.STREAM_CONSUMER_STATE_REPAIRED.recoveryOf().unwrap())
+            .isEqualTo(OperatorWarningCode.STREAM_CONSUMER_STATE_DIVERGED);
+    }
+
+    /// #1941's resolved counterpart is a recovery, so it is INFO and paired with the not-registered condition.
+    @Test
+    void registeredAgain_isInfo_andClosesNotRegistered() {
+        assertThat(OperatorWarningCode.STREAM_CONSUMER_REGISTERED_AGAIN.level()).isEqualTo(WarningLevel.INFO);
+        assertThat(OperatorWarningCode.STREAM_CONSUMER_REGISTERED_AGAIN.recoveryOf().unwrap())
+            .isEqualTo(OperatorWarningCode.STREAM_CONSUMER_NOT_REGISTERED);
+        assertThat(OperatorWarningCode.STREAM_CONSUMER_NOT_REGISTERED.hasRecovery()).isTrue();
+    }
+
+    /// #1934: the end of a failing drain is a recovery, so it is INFO and paired with the failing condition.
+    @Test
+    void drainRestored_isInfo_andClosesDrainFailing() {
+        assertThat(OperatorWarningCode.STREAM_CONSUMER_DRAIN_RESTORED.level()).isEqualTo(WarningLevel.INFO);
+        assertThat(OperatorWarningCode.STREAM_CONSUMER_DRAIN_RESTORED.recoveryOf().unwrap())
+            .isEqualTo(OperatorWarningCode.STREAM_CONSUMER_DRAIN_FAILING);
+    }
+
     /// Positive control for [#codes_areUnique]: the same grouping reports a duplicate when one exists.
     @Test
     void uniquenessCheck_detectsADuplicate() {

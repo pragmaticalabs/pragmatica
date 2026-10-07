@@ -5,6 +5,10 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
 import java.util.Map;
+import java.util.Set;
+
+import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Result;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.config.DynamicConfigurationProvider.dynamicConfigurationProvider;
@@ -120,5 +124,43 @@ class DynamicConfigurationProviderTest {
             var result = provider.reload();
             assertThat(result.isSuccess()).isTrue();
         }
+    }
+
+    /// #1326 sibling: `reload()` reloaded the base, discarded the result and returned `this`, so the returned provider still read the PRE-reload base.
+    @Nested
+    class ReloadKeepsTheOverlayOverTheReloadedBase {
+        @Test
+        void reload_returnedProvider_readsTheReloadedBase() {
+            var dynamic = dynamicConfigurationProvider(ConfigurationProvider.configurationProvider(new TwoGenerationSource(false)));
+
+            var reloaded = (ConfigurationProvider) dynamic.reload().unwrap();
+
+            assertThat(reloaded.getString("database.host").unwrap()).isEqualTo("reloaded-host");
+        }
+
+        @Test
+        void reload_returnedProvider_sharesTheLiveOverlay() {
+            var dynamic = dynamicConfigurationProvider(ConfigurationProvider.configurationProvider(new TwoGenerationSource(false)));
+
+            dynamic.put("feature.flag", "on");
+            var reloaded = (ConfigurationProvider) dynamic.reload().unwrap();
+            dynamic.put("later.key", "seen");
+
+            assertThat(reloaded.getString("feature.flag").unwrap()).isEqualTo("on");
+            assertThat(reloaded.getString("later.key").unwrap()).as("an overlay write after the reload reaches the reloaded provider too").isEqualTo("seen");
+        }
+    }
+
+    /// Serves `database.host=initial-host`, and `reloaded-host` from every reload.
+    private record TwoGenerationSource(boolean reloaded) implements ConfigSource {
+        @Override public Option<String> getString(String key) {return Option.option(asMap().get(key));}
+
+        @Override public Set<String> keys() {return asMap().keySet();}
+
+        @Override public Map<String, String> asMap() {return Map.of("database.host", reloaded ? "reloaded-host" : "initial-host");}
+
+        @Override public String name() {return "two-generation-source";}
+
+        @Override public Result<ConfigSource> reload() {return Result.success(new TwoGenerationSource(true));}
     }
 }
