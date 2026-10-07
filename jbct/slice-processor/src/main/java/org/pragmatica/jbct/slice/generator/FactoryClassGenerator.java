@@ -63,6 +63,10 @@ public class FactoryClassGenerator {
     /// unpacks it, and invokes the user method with `(T event, MessageContext context)`.
     private static final String CONTEXTUAL_EVENT_TYPE = "org.pragmatica.aether.slice.topic.ContextualEvent";
 
+    private boolean terraTarget() {
+        return "terra".equals(processingEnv.getOptions().get("slice.target"));
+    }
+
     private final ProcessingEnvironment processingEnv;
     private final Filer filer;
     private final Elements elements;
@@ -119,7 +123,7 @@ public class FactoryClassGenerator {
         var proxyMethodsCache = new LinkedHashMap<String, List<ProxyMethodInfo>>();
 
         for (var dep : allDeps) {
-            if (!dep.isResource() && !dep.isPlainInterface()) {
+            if (!terraTarget() && !dep.isResource() && !dep.isPlainInterface()) {
                 proxyMethodsCache.put(dep.interfaceQualifiedName(), collectProxyMethods(dep));
             }
         }
@@ -127,16 +131,21 @@ public class FactoryClassGenerator {
         var bodyBuffer = new StringWriter();
         var bodyOut = new PrintWriter(bodyBuffer);
         // Register standard imports
-        importTracker.use("org.pragmatica.aether.slice.MethodHandle");
-        importTracker.use("org.pragmatica.aether.slice.MethodName");
-        importTracker.use("org.pragmatica.aether.slice.Slice");
-        importTracker.use("org.pragmatica.aether.slice.SliceCreationContext");
-        importTracker.use("org.pragmatica.aether.slice.SliceMethod");
         importTracker.use("org.pragmatica.lang.Promise");
         importTracker.use("org.pragmatica.lang.Unit");
-        importTracker.use("org.pragmatica.lang.type.TypeToken");
-        importTracker.use("org.pragmatica.aether.slice.ResourceProviderFacade");
-        importTracker.use("org.pragmatica.serialization.SliceCodec");
+        if (terraTarget()) {
+            importTracker.use("org.pragmatica.terra.TerraContext");
+        } else {
+            importTracker.use("org.pragmatica.aether.slice.MethodHandle");
+            importTracker.use("org.pragmatica.aether.slice.MethodName");
+            importTracker.use("org.pragmatica.aether.slice.Slice");
+            importTracker.use("org.pragmatica.aether.slice.SliceCreationContext");
+            importTracker.use("org.pragmatica.aether.slice.SliceMethod");
+            importTracker.use("org.pragmatica.lang.type.TypeToken");
+            importTracker.use("org.pragmatica.aether.slice.ResourceProviderFacade");
+            importTracker.use("org.pragmatica.serialization.SliceCodec");
+        }
+
         if (model.hasMethodInterceptors() || model.dependencies()
                                                   .stream()
                                                   .anyMatch(dep -> dep.isPublisher() || dep.isStreamResource())) {
@@ -185,7 +194,9 @@ public class FactoryClassGenerator {
         generateCreateMethod(bodyOut, model, allDeps, proxyMethodsCache, importTracker, publisherBindings);
         bodyOut.println();
         // createSlice() method
-        generateCreateSliceMethod(bodyOut, model, proxyMethodsCache, importTracker);
+        if (!terraTarget()) {
+            generateCreateSliceMethod(bodyOut, model, proxyMethodsCache, importTracker);
+        }
         // notifyConfigUpdate() method (only if config update methods exist)
         if (model.hasConfigUpdateSubscriptions()) {
             bodyOut.println();
@@ -243,9 +254,16 @@ public class FactoryClassGenerator {
         var sliceDeps = allDeps.stream().filter(d -> !d.isResource() && !d.isPlainInterface()).toList();
         var plainDeps = allDeps.stream().filter(DependencyModel::isPlainInterface).toList();
 
-        out.println("    public static Promise<" + sliceName + "> " + methodName + "(SliceCreationContext ctx) {");
+        out.println("    public static Promise<" + sliceName
+                   + "> " + methodName
+                   + "(" + (terraTarget()
+                            ? "TerraContext"
+                            : "SliceCreationContext")
+                   + " ctx) {");
         // Generate local proxy records ONLY for slice dependencies
-        for (var dep : sliceDeps) {
+        for (var dep : terraTarget()
+                       ? List.<DependencyModel> of()
+                       : sliceDeps) {
             generateLocalProxyRecord(out, dep, proxyMethodsCache, importTracker);
             out.println();
         }
@@ -479,6 +497,12 @@ public class FactoryClassGenerator {
         }
         // Slice method handles
         for (var dep : sliceDeps) {
+            if (terraTarget()) {
+                entries.add(new AllEntry(dep.parameterName(),
+                                         "ctx.slice(" + importTracker.use(dep.interfaceQualifiedName()) + ".class)"));
+                continue;
+            }
+
             var methods = proxyMethodsCache.get(dep.interfaceQualifiedName());
 
             for (var method : methods) {
@@ -573,8 +597,10 @@ public class FactoryClassGenerator {
                                       ImportTracker importTracker) {
         var sliceName = model.simpleName();
         var isNonDirect = model.factoryReturnKind() != SliceModel.FactoryReturnKind.DIRECT;
-        // Instantiate proxy records from handle vars
-        for (var dep : sliceDeps) {
+        // Terra injects the fully intercepted dependency once; Aether builds invocation proxies.
+        for (var dep : terraTarget()
+                       ? List.<DependencyModel> of()
+                       : sliceDeps) {
             var methods = proxyMethodsCache.get(dep.interfaceQualifiedName());
             var handleArgs = methods.stream().map(m -> dep.parameterName() + "_" + m.name).toList();
 
@@ -1715,7 +1741,7 @@ public class FactoryClassGenerator {
     }
 
     /// Converts first letter to lowercase following JBCT naming conventions.
-    private String lowercaseFirst(String name) {
+    static String lowercaseFirst(String name) {
         if (name == null || name.isEmpty()) {
             return "";
         }
@@ -1752,7 +1778,7 @@ public class FactoryClassGenerator {
 
     /// Convert PascalCase to kebab-case.
     /// Examples: OrderService -> order-service, PlaceOrder -> place-order
-    private String toKebabCase(String pascalCase) {
+    static String toKebabCase(String pascalCase) {
         if (pascalCase == null || pascalCase.isEmpty()) {
             return pascalCase;
         }
@@ -1902,6 +1928,12 @@ public class FactoryClassGenerator {
     private String typedPublisherProvideCall(String typeName,
                                              ResolvedTopicConstant constant,
                                              ImportTracker importTracker) {
+        if (terraTarget()) {
+            return "ctx.publisher(" + importTracker.use(constant.holderQualifiedName())
+                 + "." + constant.fieldName()
+                 + ")";
+        }
+
         var section = escapeJavaString(constant.topicName().or(constant.configIdentifier()));
         var provideCall = "ctx.resources().provide(" + typeName
                         + ".class, \"" + section

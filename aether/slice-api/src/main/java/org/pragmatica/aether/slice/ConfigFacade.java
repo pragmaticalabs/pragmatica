@@ -16,6 +16,11 @@ import org.pragmatica.lang.Result;
 /// is a failure naming the key and the value (#1098). `Option<T>` alone had no failure channel, so
 /// `port = "80x"` read as "not configured" and the slice's default applied silently.
 public interface ConfigFacade {
+    /// Bind configuration for an explicitly assembled slice, including non-Aether runtimes.
+    static ConfigFacade configFacade(String sliceId, org.pragmatica.config.ConfigurationProvider provider) {
+        return ConfigProviderFacade.configProviderFacade(sliceId, provider);
+    }
+
     Result<String> requireString(String section, String key);
     Result<Integer> requireInt(String section, String key);
     Result<Long> requireLong(String section, String key);

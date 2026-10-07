@@ -49,7 +49,7 @@ import com.google.auto.service.AutoService;
 
 @AutoService(Processor.class)
 @SupportedAnnotationTypes("org.pragmatica.aether.slice.annotation.Slice")
-@SupportedOptions({"slice.groupId", "slice.artifactId", "jbct.routes.errors.strict", "jbct.routes.coverage.strict"})
+@SupportedOptions({"slice.groupId", "slice.artifactId", "slice.version", "slice.target", "jbct.routes.errors.strict", "jbct.routes.coverage.strict"})
 @SupportedSourceVersion(SourceVersion.RELEASE_25)
 public class SliceProcessor extends AbstractProcessor {
     /// Processor option escalating an unmapped Cause record from a warning to a build error (#385).
@@ -57,6 +57,7 @@ public class SliceProcessor extends AbstractProcessor {
     /// Processor option escalating an unrouted slice method from a warning to a build error (#389).
     private static final String COVERAGE_STRICT_OPTION = "jbct.routes.coverage.strict";
 
+    private org.pragmatica.jbct.slice.generator.TerraDescriptorGenerator terraGenerator;
     private FactoryClassGenerator factoryGenerator;
     private ManifestGenerator manifestGenerator;
     private DependencyVersionResolver versionResolver;
@@ -77,6 +78,7 @@ public class SliceProcessor extends AbstractProcessor {
         var types = processingEnv.getTypeUtils();
         var options = processingEnv.getOptions();
 
+        this.terraGenerator = new org.pragmatica.jbct.slice.generator.TerraDescriptorGenerator(processingEnv);
         this.versionResolver = new DependencyVersionResolver(processingEnv);
         this.factoryGenerator = new FactoryClassGenerator(processingEnv, filer, elements, types, versionResolver);
         this.manifestGenerator = new ManifestGenerator(filer, versionResolver, options);
@@ -105,6 +107,14 @@ public class SliceProcessor extends AbstractProcessor {
 
     @Override
     public boolean process(Set<? extends TypeElement> annotations, RoundEnvironment roundEnv) {
+        var target = processingEnv.getOptions().getOrDefault("slice.target", "aether");
+        if (!target.equals("aether") && !target.equals("terra")) {
+            processingEnv.getMessager().printMessage(Diagnostic.Kind.ERROR, "Unknown slice.target: " + target);
+            return true;
+        }
+        if (roundEnv.processingOver() && target.equals("terra")) {
+            terraGenerator.finish().onFailure(cause -> processingEnv.getMessager().printMessage(Diagnostic.Kind.ERROR, cause.message()));
+        }
         for (var annotation : annotations) {
             for (var element : roundEnv.getElementsAnnotatedWith(annotation)) {
                 if (element.getKind() != ElementKind.INTERFACE) {
@@ -174,6 +184,9 @@ public class SliceProcessor extends AbstractProcessor {
     private void generateArtifacts(TypeElement interfaceElement,
                                    SliceModel sliceModel,
                                    Set<? extends Element> roundRoots) {
+        if ("terra".equals(processingEnv.getOptions().get("slice.target")) && !terraGenerator.validate(sliceModel)) {
+            return;
+        }
         var topicBindings = ResolvedTopicConstant.resolveBindings(sliceModel, roundRoots, processingEnv);
 
         if (!topicBindings.errors().isEmpty()) {
@@ -231,6 +244,9 @@ public class SliceProcessor extends AbstractProcessor {
                                                Option<String> routesClass,
                                                Option<RouteConfig> routeConfig,
                                                Map<String, ResolvedTopicConstant> topicBindings) {
+        if ("terra".equals(processingEnv.getOptions().get("slice.target"))) {
+            return terraGenerator.generate(sliceModel, topicBindings);
+        }
         return manifestGenerator.generateSliceManifest(sliceModel, routesClass, routeConfig, topicBindings)
                                 .onSuccess(_ -> note(interfaceElement,
                                                      "Generated slice manifest: META-INF/slice/" + sliceModel.simpleName()

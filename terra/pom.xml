@@ -1,0 +1,15 @@
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+    <modelVersion>4.0.0</modelVersion>
+    <parent>
+        <groupId>org.pragmatica-lite</groupId>
+        <artifactId>pragmatica</artifactId>
+        <version>1.0.0-rc4</version>
+    </parent>
+    <artifactId>terra</artifactId>
+    <packaging>pom</packaging>
+    <name>Pragmatica Terra</name>
+    <modules>
+        <module>runtime</module>
+        <module>examples</module>
+    </modules>
+</project>

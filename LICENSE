@@ -17,6 +17,7 @@ Apache License, Version 2.0 (see LICENSE-APACHE-2.0):
 
 Business Source License 1.1 (see aether/LICENSE):
     aether/                         — full BSL 1.1 text in aether/LICENSE
+    terra/                          — standalone runtime; full text in terra/LICENSE
     jbct/slice-processor/           — Aether tooling; BSL per module LICENSE
     jbct/slice-processor-tests/     — tests for the above; BSL per module LICENSE
 

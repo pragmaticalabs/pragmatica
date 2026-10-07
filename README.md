@@ -14,6 +14,8 @@ A monorepo for building reliable Java backends with functional programming patte
 
 **[Aether Runtime](aether/README.md)** — Unified Application Runtime for Java. Deploy services as slices, scale transparently, no microservices boilerplate. Consensus-based state, automatic topology management, built-in observability.
 
+**[Terra Runtime](terra/README.md)** — Standalone compilation target for the same slice sources. Initial support includes blueprint-selected composition, scoped resources, local interceptors, in-process pub-sub, and shared database migrations.
+
 ## Prerequisites
 
 | Tool | Version | Purpose |
@@ -86,6 +88,6 @@ mvn test                   # Run tests after build
 ## License
 
 - Core, integrations, JBCT: Apache License 2.0
-- Aether: Business Source License 1.1 (converts to Apache 2.0 on January 1, 2030)
+- Aether and Terra: Business Source License 1.1 (converts to Apache 2.0 on January 1, 2030)
 
 See [LICENSE](LICENSE) and [aether/LICENSE](aether/LICENSE).
