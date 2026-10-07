@@ -18,8 +18,8 @@ import org.pragmatica.lang.Unit;
 /// 2. `orderEventListener(@Sql SqlConnector db)` has a @ResourceQualifier
 ///    parameter — triggering transitive resource provisioning (same as PersistOrder).
 ///
-/// 3. `onOrderPlaced()` has an @OnOrderEvent annotation on the method itself.
-///    @OnOrderEvent is a @ResourceQualifier(type = Subscriber.class, config = "order-events").
+/// 3. `onOrderPlaced()` has an `@OnOrderEvent` annotation on the method itself.
+///    `@OnOrderEvent` is a `@ResourceQualifier(type = Subscriber.class, config = "order-events")`.
 ///
 /// 4. The processor generates a qualified method name by combining the step
 ///    parameter name from the slice factory and the method name:
