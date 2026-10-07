@@ -132,6 +132,11 @@ therefore silently beats a deliberate TOML change, so the node logs one WARN lin
 differs from the TOML value (the key and both sources, never the values: a remote can carry a credential).
 `[verified: ConfigLoaderBackupEnvTest]`
 
+**Bind-mount ownership.** For a cloud or SSH container node the renderer creates the host directory `/opt/aether/backups` owned by uid 1000
+(the in-container `aether` user) before `docker run`. If you create or change that directory yourself, it must stay writable by uid 1000: a repository
+the node cannot write backs up nothing (`BACKUP_COMMIT_FAILED`). For a **Docker** source the repository must be under `/data`
+(validated at load, see `bootstrap-config.md`): the named volume is owned by uid 1000 only there.
+
 **The dead node's volume is kept on purpose.** A Docker replacement mounts `<container name>-backup`; the node that died keeps its
 own volume, and nothing removes it (old volumes are meant to be reattached, which belongs to the #1569 storage adoption, not this
 change). The repository on the backup REMOTE, not the node's local copy, is what a restore reads. To reclaim a volume you are sure
@@ -243,6 +248,8 @@ mode; a remote that needs credentials the process does not hold fails, and the b
 |------|---------|-----------------|
 | `BACKUP_GATED` | The head belongs to another lineage | Restore it, or `aether backup declare-genesis` to make this cluster the head |
 | `BACKUP_FORKED` | Another cluster (a different incarnation id) holds the head at this cluster's own lineage and incarnation (two clusters restored from the same backup) | Retire one cluster; run `aether backup declare-genesis` on the one whose state continues |
+| `backup-restore-blocked` (cluster event, CRITICAL) | A cold start cannot read the backup; cluster-state writes stay refused until it can (#1533) | Fix the backup source, or restart with `[backup] restore = "fresh"` to abandon it |
+| `backup-restore-unblocked` (INFO) | The block ended: the backup was read and the restore decided, or the blocked node stopped leading or is stopping (a restart is a stop first) | None. A crash of the blocked node cannot raise it (see `backup-config-restored`); a leader that still cannot read the backup raises `backup-restore-blocked` again |
 | `backup-config-missing` (cluster event, `OPERATOR_WARNING`) | This leader has no `[backup]` while the committed state says the backup is in use; nothing is backed up while it leads (#1968) | Restart it with the cluster's `[backup]` (or `AETHER_BACKUP_*`), or move leadership |
 | `backup-config-restored` (INFO) | The leader that lacked `[backup]` no longer leads, or its node is stopping (graceful stop, drain, self-fence) | None; a new leader without `[backup]` raises the warning again. A crash (`kill -9`, power loss, OOM kill) cannot raise it: that node's `backup-config-missing` then stays the last event for the code, and only another node's event layer could close it, which the event design does not allow. Treat a `backup-config-missing` whose node is gone as closed |
 | `BACKUP_HEAD_AHEAD` | The head of this lineage stayed ahead of this cluster for > 30 s; nothing is backed up meanwhile | If the warning names a **higher incarnation**, another cluster took over this lineage's backup (a `declare-genesis` or a later restore) and this cluster will never write again: stop it or point its `[backup]` elsewhere. At the **same** incarnation, a later revision of this cluster holds the head; it writes again once its revision passes the head's |

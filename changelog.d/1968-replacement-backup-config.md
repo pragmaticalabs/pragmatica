@@ -15,6 +15,10 @@
   raise it (documented). `[verified: BackupRestoreCoordinatorTest.LeaderWithoutBackup]`
 - **The environment overriding the TOML is logged** at startup (one WARN per differing key, key and sources only), and the precedence is documented.
   `[verified: ConfigLoaderBackupEnvTest]`
+- **An unwritable container backup path is refused at load.** `[source.<name>.node_config.backup] path` must be absolute; for a `docker` source it must be under
+  `/data` (a named volume is root-owned elsewhere). `[verified: BackupPathValidationTest]`
+- **`backup-restore-blocked` now has a recovery event, `backup-restore-unblocked`** (INFO), raised when the restore decides, and when the blocked node stops leading or
+  stops (a restart is a stop first). `[verified: BackupRestoreCoordinatorTest.Blocked, BackupWarningOperatorEventTest, ClusterEventAggregatorTest]`
 - A dead Docker node's backup volume is kept on purpose (reattachment belongs to #1569); the runbook says how to reclaim it.
 - Not in this change: #1968 item 2 (the harness restarting the whole cluster onto fresh ids). `[unverified: a leader that CRASHES while lacking [backup] leaves its
   backup-config-missing event without a recovery]`
