@@ -34,6 +34,13 @@ class OperatorWarningWiringTest {
         assertThat(code).contains("streamOwnershipViews.writeAuthority(),operatorWarningSink);");
     }
 
+    /// #1935: a declared stream consumer that cannot be registered reaches this node's sink. The deployment test hands
+    /// the context a test sink, so un-binding it here left every unit test green.
+    @Test
+    void assembly_givesTheSinkToNodeDeployment() {
+        assertThat(assemblyCode()).contains("nodeDeploymentManager.setOperatorWarningSink(operatorWarningSink);");
+    }
+
     /// #1564 (R10): the replication warnings raised at resource activation, the deploy warnings and the refused
     /// cluster-events registration all reach this node's sink. Un-binding any of them leaves every unit test green.
     @Test
