@@ -523,9 +523,12 @@ class StreamPartitionVisibilityTest {
         }
 
         /// Replica control: a replica's visible position is its OWN durability (#1235 replica side), never
-        /// the owner's acks — a blind registry must not hold its replayed tail back.
+        /// the owner's acks — a blind registry must not hold its replayed tail back. #1730 phase 2 narrows "at once":
+        /// the recovered tail may belong to a lineage the owner never had, so it is invisible until verified against
+        /// the committed owner (`markVerified`), and then visible by durability alone. The earlier premise (visible at
+        /// restart, before any verification) was the leak; this test was wrong, not the change.
         @Test
-        void walReplay_onAReplica_isVisibleAtOnce() {
+        void walReplay_onAReplica_isVisibleOnceVerified() {
             manager = replicatingWalManager(replicationWithPeer(), walDir);
             manager.placementRoleSupplier((_, _) -> ReplicaSetController.Role.REPLICA);
             createStream(manager, 3, 2);
@@ -536,6 +539,10 @@ class StreamPartitionVisibilityTest {
             manager = replicatingWalManager(replicationWithPeer(), walDir);
             manager.placementRoleSupplier((_, _) -> ReplicaSetController.Role.REPLICA);
             createStream(manager, 3, 2);
+
+            assertThat(readAll(manager)).as("unverified tail stays invisible").isEmpty();
+
+            manager.markVerified(STREAM, PARTITION, 2L);
 
             assertThat(readAll(manager)).containsExactly("r0", "r1", "r2");
         }

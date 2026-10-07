@@ -133,12 +133,15 @@ public interface StreamForwardClient {
     /// `bounds` (#1333): the serving node's visible span of the partition at answer time; none when it held
     /// no ring, or from a client that does not carry it.
     /// `history` (#1596): the serving node's owner-epoch history on a replica catch-up read, empty otherwise.
+    /// `historyVouched`: the source answered as a replica catch-up, so an empty `history` means it keeps none
+    /// ([ReadForwardResponse#historyVouched]). The shorter constructors model a source that does.
     /// `ownerEpoch` (#1730 phase 2 / #1873): the owner epoch a validated consumer read was served under, [Epoch#ZERO] on any
     /// other answer.
     record ReadForwardResult(List<RawEventDto> events,
                              boolean truncated,
                              Option<VisibleBounds> bounds,
                              List<ProvenanceEntry> history,
+                             boolean historyVouched,
                              Epoch ownerEpoch) {
         public ReadForwardResult {
             events = List.copyOf(events);
@@ -149,11 +152,19 @@ public interface StreamForwardClient {
                                  boolean truncated,
                                  Option<VisibleBounds> bounds,
                                  List<ProvenanceEntry> history) {
-            this(events, truncated, bounds, history, Epoch.ZERO);
+            this(events, truncated, bounds, history, true, Epoch.ZERO);
+        }
+
+        public ReadForwardResult(List<RawEventDto> events,
+                                 boolean truncated,
+                                 Option<VisibleBounds> bounds,
+                                 List<ProvenanceEntry> history,
+                                 boolean historyVouched) {
+            this(events, truncated, bounds, history, historyVouched, Epoch.ZERO);
         }
 
         public ReadForwardResult(List<RawEventDto> events, boolean truncated) {
-            this(events, truncated, Option.none(), List.of(), Epoch.ZERO);
+            this(events, truncated, Option.none(), List.of(), true, Epoch.ZERO);
         }
 
         public static ReadForwardResult readForwardResult(List<RawEventDto> events, boolean truncated) {
@@ -171,6 +182,15 @@ public interface StreamForwardClient {
                                                                                                                                                        + "[" + partition
                                                                                                                                                        + "]"))
                                                                                                      .async());
+    }
+
+    /// Where a peer's RING begins, over the CATCH-UP read class (#1730 phase 2): a read from beyond any head asking for no events, so
+    /// it reveals no data and is not subject to the consumer-read verification gate (a peer that has not been compared with the
+    /// committed owner still answers it). None when the peer holds no ring or reports none.
+    default Promise<Option<Long>> ringTailRemote(NodeId peerId, String streamName, int partition) {
+        return readRemoteCatchup(peerId, streamName, partition, Long.MAX_VALUE, 0).map(result -> result.bounds()
+                                                                                                       .filter(known -> known.earliestRetained() >= 0L)
+                                                                                                       .map(VisibleBounds::earliestRetained));
     }
 
     private static StreamForwardClient noOpClient() {
@@ -393,6 +413,7 @@ final class DefaultStreamForwardClient implements StreamForwardClient {
                                                   response.truncated(),
                                                   response.bounds(),
                                                   response.history(),
+                                                  response.historyVouched(),
                                                   response.ownerEpoch()));
         } else {
             promise.resolve(readFailureCause(response).result());

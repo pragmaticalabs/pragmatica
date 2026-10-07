@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.stream;
 
+import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashSet;
 import java.util.List;
@@ -64,18 +65,24 @@ import org.slf4j.LoggerFactory;
 /// with no recovery but removing the member (#1563: a black-holed peer that re-handshakes; the production form
 /// would be a wedged JVM whose network stack still completes handshakes).**
 ///
-/// **Overlap verification (#1555 item 7, the KIP-101 interim).** No ring or WAL record carries an owner epoch,
-/// so a returning ex-owner's never-acked tail (the same offsets, written under an older ownership) is
-/// indistinguishable by HEAD from the acked history that replaced it. Before any peer is used as catch-up source,
-/// and for every other responder, the last [#OVERLAP_WINDOW] offsets both hold are compared record by record
-/// (offset, timestamp, payload — the #1505 notion of "the same event"); the catch-up source is also compared
-/// PAIRWISE with every responder above the candidate's head, because the local log covers only offsets up to the candidate's own head
-/// and a candidate lagging two lineages agrees with both. Any disagreement REFUSES activation,
-/// whichever side is higher: without an epoch nothing here can tell which of the two lineages was acknowledged,
-/// so neither is served and neither is pulled. The refusal is reported once through the [BlockAlarm] and on
-/// [#blockOf] (the partition status read); the partition then waits for an operator to pick the source
-/// (#1569's pick-source surface, AD14). The detect-and-flag follow-up over a durable per-log epoch history is
-/// #1596; the cluster never auto-truncates.
+/// **Overlap verification (#1555 item 7, #1730 phase 2).** The ownership epoch is recorded in every WAL frame's
+/// attribution (`StreamPartitionManager.attributedWrite`), but this gate compares RECORDS: a returning ex-owner's
+/// never-acked tail (the same offsets, written under an older ownership) is indistinguishable by HEAD from the acked
+/// history that replaced it. Before any peer is used as catch-up source, and for every other responder, the last
+/// [#OVERLAP_WINDOW] offsets both hold are compared record by record (offset, timestamp, payload — the #1505 notion of
+/// "the same event"); the catch-up source is also compared PAIRWISE with every responder above the candidate's head,
+/// because the local log covers only offsets up to the candidate's own head and a candidate lagging two lineages agrees
+/// with both.
+///
+/// **A candidate elected from the committed ISR** (a record with `isrVersion > 0` whose ISR names this node) holds
+/// every acknowledged record, because an acknowledgement waited for every member of the ISR in force. A peer that
+/// disagrees with it within the overlap therefore holds a tail nobody acknowledged: it is LEFT OUT of the catch-up
+/// (never the source, never compared again) and cuts its own tail back when it backfills from this node (Kafka's
+/// KIP-101 truncation). Any other disagreement REFUSES activation, whichever side is higher: for a candidate with no
+/// committed ISR to be elected from (a record minted before #1730), and for two peers that disagree with each other
+/// above the candidate's head, nothing here can tell which of the two lineages was acknowledged, so neither is served
+/// and neither is pulled. The refusal is reported once through the [BlockAlarm] and on [#blockOf] (the partition
+/// status read); the partition then waits for an operator to pick the source (#1569's pick-source surface, AD14).
 ///
 /// **The window is a named constant, not a derived bound.** Nothing caps how far an owner may append beyond its
 /// last acknowledged offset: the pre-append floor (`ReplicationManager.ensureReplicaFloor`) requires in-sync peers
@@ -340,6 +347,50 @@ public final class OwnerActivation {
 
     /// The committed record each partition was activated for; [Option#none] marks a first-owner activation.
     private final Map<PartitionKey, Option<StreamPartitionOwnershipValue>> activated = new ConcurrentHashMap<>();
+
+    /// The candidate's durable sealed floor, late-bound ([#sealedFloor]); none sealed until wired.
+    private volatile LastSealedOffsetSource sealedFloor = LastSealedOffsetSource.none();
+
+    /// The earliest offset a peer still holds in its RING, or none when that is not known. Late-bound ([#peerRingTail]).
+    @FunctionalInterface
+    public interface PeerRingTail {
+        Promise<Option<Long>> of(NodeId peer, String stream, int partition);
+    }
+
+    private volatile PeerRingTail peerRingTail = (_, _, _) -> Promise.success(Option.none());
+
+    /// Late-bind where a peer's ring begins. The gate's relaxation for a divergent peer applies only to a divergence at an offset
+    /// the peer still holds in its ring: below it the peer's copy was handed to the tier (sealed), where its own repair refuses to
+    /// cut. The compare reads the peer's range through its tier too, so a difference found there is NOT a relaxation case. Unknown
+    /// (the default) fails safe: no relaxation. Set once at wiring.
+    @Contract
+    public void peerRingTail(PeerRingTail tail) {
+        this.peerRingTail = tail;
+    }
+
+    /// Forgets what this node's registry says a peer confirmed. Late-bound ([#peerRows]); the default forgets nothing.
+    @FunctionalInterface
+    public interface PeerRowReset {
+        @Contract
+        void reset(String stream, int partition, NodeId peer);
+    }
+
+    private volatile PeerRowReset peerRows = (_, _, _) -> {};
+
+    /// Late-bind the registry reset used for a peer the gate leaves out as divergent: its row, confirmed under an earlier
+    /// tenure, would otherwise keep seeding this owner's acknowledgements for records the peer holds in another version
+    /// (#1890 class). Set once at wiring.
+    @Contract
+    public void peerRows(PeerRowReset reset) {
+        this.peerRows = reset;
+    }
+
+    /// Late-bind the candidate's durable sealed floor, the bound the gate's relaxation for a divergent peer respects. Set once at
+    /// wiring.
+    @Contract
+    public void sealedFloor(LastSealedOffsetSource source) {
+        this.sealedFloor = source;
+    }
 
     private final Set<PartitionKey> inFlight = ConcurrentHashMap.newKeySet();
     /// Partitions with a re-drive already scheduled.
@@ -821,6 +872,125 @@ public final class OwnerActivation {
     private Promise<Unit> catchUpFromHighest(String stream, int partition, List<PeerWatermark> answered) {
         clearUnreachable(PartitionKey.partitionKey(stream, partition));
         var local = selfWatermark.localWatermark(stream, partition);
+
+        return withoutDivergentPeers(stream, partition, local, answered).flatMap(kept -> catchUpFromKept(stream,
+                                                                                                         partition,
+                                                                                                         local,
+                                                                                                         kept));
+    }
+
+    /// #1730 phase 2 (KIP-101): a candidate ELECTED from the committed ISR holds every acknowledged record, because an
+    /// acknowledgement needed every member of the ISR in force (phase 1). A peer whose records differ from the
+    /// candidate's within the overlap therefore carries a tail nobody acknowledged: an ex-owner that returned, or an ISR
+    /// member that lagged an election. That peer is left out of the catch-up (never the source, never compared again) and
+    /// truncates itself when it backfills from the new owner. Only a candidate with a committed ISR it belongs to is
+    /// exempt; a record minted before #1730 has none, and every other refusal (two peers disagreeing with each other,
+    /// nothing comparable) is unchanged.
+    private Promise<List<PeerWatermark>> withoutDivergentPeers(String stream,
+                                                               int partition,
+                                                               long local,
+                                                               List<PeerWatermark> answered) {
+        if (!isrElected(stream, partition)) {
+            return Promise.success(answered);
+        }
+
+        return Promise.allOf(answered.stream()
+                                     .map(peer -> divergesFromCandidate(stream, partition, local, peer))
+                                     .toList()).map(verdicts -> keepAgreeing(stream, partition, answered, verdicts));
+    }
+
+    private boolean isrElected(String stream, int partition) {
+        return records.committed(stream, partition)
+                      .filter(record -> record.isrVersion() > 0 && record.isr()
+                                                                         .contains(self))
+                      .isPresent();
+    }
+
+    /// The first offset, within the overlap, at which `peer` holds a record that differs from the candidate's, or none. A peer
+    /// that cannot be read is not judged here; the existing comparisons report it as they did before.
+    private Promise<Option<Long>> divergesFromCandidate(String stream, int partition, long local, PeerWatermark peer) {
+        var to = Math.min(local, peer.watermark());
+
+        if (to < 0) {
+            return Promise.success(Option.none());
+        }
+
+        var from = Math.max(0L, to - OVERLAP_WINDOW + 1);
+
+        return Promise.all(ranges.read(self, stream, partition, from, to),
+                           ranges.read(peer.node(),
+                                       stream,
+                                       partition,
+                                       from,
+                                       to))
+                      .map(OwnerActivation::firstDifference)
+                      .flatMap(difference -> difference.fold(() -> Promise.success(Option.<Long> none()),
+                                                             offset -> inPeersRing(stream, partition, peer, offset)))
+                      .recover(_ -> Option.none());
+    }
+
+    /// `offset` when the peer holds it in its RING (it is at or above the peer's ring tail); none when it lies below it (sealed
+    /// data) or the tail is not known.
+    private Promise<Option<Long>> inPeersRing(String stream, int partition, PeerWatermark peer, long offset) {
+        return peerRingTail.of(peer.node(),
+                               stream,
+                               partition)
+                           .map(tail -> tail.filter(ringTail -> offset >= ringTail)
+                                            .map(_ -> offset));
+    }
+
+    /// The lowest offset present in both ranges whose records differ.
+    private static Option<Long> firstDifference(List<OffHeapRingBuffer.RawEvent> mine,
+                                                List<OffHeapRingBuffer.RawEvent> theirs) {
+        var theirRecords = new HashSet<>(theirs);
+        var theirOffsets = theirs.stream().map(OffHeapRingBuffer.RawEvent::offset).collect(Collectors.toSet());
+
+        return Option.from(mine.stream()
+                               .filter(event -> theirOffsets.contains(event.offset()))
+                               .filter(event -> !theirRecords.contains(event))
+                               .map(OffHeapRingBuffer.RawEvent::offset)
+                               .min(Long::compare));
+    }
+
+    /// B6 (the design's Q6): the gate relaxes, excluding a divergent peer, ONLY when the candidate is ISR-elected, the peer is a
+    /// replica of the partition, and the divergence lies ABOVE the candidate's durable sealed floor. A divergence at or below it
+    /// is in offsets already sealed into segments, which no truncation will remove (the peer's repair refuses below the floor
+    /// and the partition stays flagged), so there is nothing to discard and activation stays refused as before. The peer's own
+    /// sealed floor is not known here; the candidate's is the bound.
+    private static boolean relaxable(Result<Option<Long>> verdict, long floor) {
+        return verdict.or(Option.none())
+                      .filter(offset -> offset > floor)
+                      .isPresent();
+    }
+
+    private List<PeerWatermark> keepAgreeing(String stream,
+                                             int partition,
+                                             List<PeerWatermark> answered,
+                                             List<Result<Option<Long>>> verdicts) {
+        var kept = new ArrayList<PeerWatermark>();
+        var floor = sealedFloor.lastSealedOffset(stream, partition);
+
+        for (var i = 0; i < answered.size(); i++) {
+            if (relaxable(verdicts.get(i), floor)) {
+                log.warn("Owner activation of {}[{}]: {} holds records that differ from this elected owner's (watermark {}, "
+                        + "local {}); it is left out of the catch-up and truncates its divergent tail when it backfills from this node",
+                         stream,
+                         partition,
+                         answered.get(i).node(),
+                         answered.get(i).watermark(),
+                         selfWatermark.localWatermark(stream, partition));
+                peerRows.reset(stream,
+                               partition,
+                               answered.get(i).node());
+            } else {
+                kept.add(answered.get(i));
+            }
+        }
+
+        return List.copyOf(kept);
+    }
+
+    private Promise<Unit> catchUpFromKept(String stream, int partition, long local, List<PeerWatermark> answered) {
         var source = Option.from(answered.stream()
                                          .filter(peer -> peer.watermark() > local)
                                          .max(Comparator.comparingLong(PeerWatermark::watermark)));
