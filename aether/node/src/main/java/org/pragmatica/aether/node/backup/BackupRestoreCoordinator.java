@@ -15,6 +15,8 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
 
 import org.pragmatica.aether.config.BackupConfig.RestoreMode;
+import org.pragmatica.aether.config.cluster.ClusterBootstrapConfigParser;
+import org.pragmatica.aether.config.cluster.NodeUserDataRenderer;
 import org.pragmatica.aether.node.ClusterIncarnation;
 import org.pragmatica.aether.node.ClusterIncarnationRegistrar.RetryScheduler;
 import org.pragmatica.aether.node.backup.BackupWarning.Code;
@@ -102,6 +104,7 @@ public final class BackupRestoreCoordinator {
     private final AtomicBoolean leader = new AtomicBoolean(false);
     private final AtomicBoolean done = new AtomicBoolean(false);
     private final AtomicBoolean blocked = new AtomicBoolean(false);
+    private final AtomicBoolean missingReported = new AtomicBoolean(false);
     private final AtomicReference<ScheduledFuture<?>> pendingRetry = new AtomicReference<>();
     private final AtomicReference<TimeSpan> nextBackoff = new AtomicReference<>(INITIAL_BACKOFF);
 
@@ -205,6 +208,7 @@ public final class BackupRestoreCoordinator {
         }
 
         nextBackoff.set(INITIAL_BACKOFF);
+        warnIfBackupMissing();
         runPass();
     }
 
@@ -215,6 +219,55 @@ public final class BackupRestoreCoordinator {
         }
 
         cancelPendingRetry();
+        recoverBackupMissing();
+    }
+
+    /// #1968: a leader with no `[backup]` while the cluster's committed state says the backup is in use (typically a replacement
+    /// provisioned without it) would stop the backup without a word. The committed setting is KEPT: this node commits
+    /// nothing, a terminal decision stands, and the one thing it can do is say so, once per leadership term. Refusing instead
+    /// (withholding the decision) would hold [RestoreGate] closed and refuse every cluster-state write cluster-wide for as
+    /// long as this node leads, and a node cannot make itself stop leading.
+    @Contract
+    private void warnIfBackupMissing() {
+        if (source.isEmpty() && committedBackupExpected() && missingReported.compareAndSet(false, true)) {
+            warnings.emit(BackupWarning.backupWarning(Code.BACKUP_CONFIG_MISSING,
+                                                      "this node leads without a [backup] section, but the cluster's committed state says the backup is in use,"
+                                                     + " so nothing is backed up while it leads; the committed setting is unchanged. Restart this node"
+                                                     + " with the cluster's [backup] (or the AETHER_BACKUP_* environment), or move leadership to a node that has it"));
+        }
+    }
+
+    @Contract
+    private void recoverBackupMissing() {
+        if (missingReported.compareAndSet(true, false)) {
+            warnings.emit(BackupWarning.backupWarning(Code.BACKUP_CONFIG_RESTORED,
+                                                      "this node no longer leads, so its missing [backup] no longer stops the cluster's backup;"
+                                                     + " a leader that also lacks [backup] raises backup-config-missing again"));
+        }
+    }
+
+    /// The committed state names a backup in use: a restore decision made by a backup-enabled leader (anything but DISABLED),
+    /// or a committed cluster configuration with a source whose `node_config` enables `[backup]` with a path.
+    private boolean committedBackupExpected() {
+        return RestoreGate.decision(kvStore)
+                          .map(marker -> marker.outcome() != BackupRestoreOutcome.DISABLED && marker.outcome() != BackupRestoreOutcome.UNKNOWN)
+                          .or(false) || committedConfigEnablesBackup();
+    }
+
+    private boolean committedConfigEnablesBackup() {
+        return kvStore.get(AetherKey.ClusterConfigKey.CURRENT)
+                      .filter(AetherValue.ClusterConfigValue.class::isInstance)
+                      .map(AetherValue.ClusterConfigValue.class::cast)
+                      .flatMap(AetherValue.ClusterConfigValue::tomlContent)
+                      .flatMap(toml -> ClusterBootstrapConfigParser.parse(toml).fold(_ -> Option.<org.pragmatica.aether.config.cluster.ClusterBootstrapConfig> none(),
+                                                                                     Option::some))
+                      .map(config -> config.sources()
+                                           .values()
+                                           .stream()
+                                           .anyMatch(source -> source.nodeConfig()
+                                                                     .flatMap(NodeUserDataRenderer::backupPath)
+                                                                     .isPresent()))
+                      .or(false);
     }
 
     boolean isComplete() {

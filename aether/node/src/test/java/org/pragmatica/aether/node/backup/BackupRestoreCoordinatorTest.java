@@ -116,6 +116,124 @@ class BackupRestoreCoordinatorTest {
                                  ++slot);
     }
 
+    /// #1968: a leader with no `[backup]` while the committed state says the backup is in use must not quietly downgrade it: it keeps
+    /// the committed setting and says so, once per leadership term, with a recovery event when it stops leading.
+    @Nested
+    class LeaderWithoutBackup {
+        @Test
+        void aLeaderWithoutBackup_overACommittedBackupDecision_warnsOnce_andKeepsTheCommittedSetting() {
+            commitMarker(BackupRestoreOutcome.FRESH);
+            var coordinator = coordinator(Option.none());
+
+            coordinator.activate();
+            coordinator.activate();
+
+            assertThat(codes()).as("raised once for the term, however many times leadership is re-announced")
+                               .containsExactly(Code.BACKUP_CONFIG_MISSING);
+            assertThat(outcome()).as("the committed setting is kept, never downgraded to DISABLED").isEqualTo(BackupRestoreOutcome.FRESH);
+        }
+
+        @Test
+        void losingLeadership_afterTheWarning_raisesTheRecoveryOnce() {
+            commitMarker(BackupRestoreOutcome.RESTORED);
+            var coordinator = coordinator(Option.none());
+
+            coordinator.activate();
+            coordinator.deactivate();
+            coordinator.deactivate();
+
+            assertThat(codes()).containsExactly(Code.BACKUP_CONFIG_MISSING, Code.BACKUP_CONFIG_RESTORED);
+        }
+
+        @Test
+        void aCommittedClusterConfigurationThatEnablesBackup_isEnoughToWarn() {
+            commitClusterConfig("""
+                                config_version = "1.0.0"
+
+                                [cluster]
+                                name = "restore-test"
+                                version = "1.0.0"
+
+                                [operations.ports]
+                                cluster = 6000
+                                management = 5160
+                                app_http = 8070
+
+                                [source.eu-1]
+                                type = "cloud"
+                                provider = "hetzner"
+                                region = "eu-central"
+
+                                [source.eu-1.core]
+                                count = 3
+
+                                [source.eu-1.node_config.backup]
+                                enabled = true
+                                path = "/var/aether/backups"
+                                """);
+
+            coordinator(Option.none()).activate();
+
+            assertThat(codes()).contains(Code.BACKUP_CONFIG_MISSING);
+        }
+
+        /// The controls: a cluster that genuinely runs without a backup (a DISABLED decision), a leader that has its `[backup]`,
+        /// and no committed state at all raise nothing, and the recovery is never raised without the warning.
+        @Test
+        void noWarning_whenTheClusterRunsWithoutBackup_orTheLeaderHasIt_orNothingIsCommitted() {
+            commitMarker(BackupRestoreOutcome.DISABLED);
+            var disabledCluster = coordinator(Option.none());
+
+            disabledCluster.activate();
+            disabledCluster.deactivate();
+            assertThat(codes()).as("DISABLED committed: the cluster has no backup to downgrade").isEmpty();
+
+            warnings.clear();
+            var withBackup = coordinator(Option.some(source(Option.none(), RestoreMode.AUTO)));
+
+            withBackup.activate();
+            withBackup.deactivate();
+            assertThat(codes()).as("the leader has [backup]").isEmpty();
+        }
+
+        @Test
+        void noWarning_whenNothingIsCommitted_theColdDecisionStaysUnchanged() {
+            var coordinator = coordinator(Option.none());
+
+            runToCompletion(coordinator);
+
+            assertThat(codes()).isEmpty();
+            assertThat(outcome()).as("an unconfigured cluster still commits DISABLED").isEqualTo(BackupRestoreOutcome.DISABLED);
+        }
+
+        private List<Code> codes() {
+            return warnings.stream().map(BackupWarning::code).toList();
+        }
+
+        @SuppressWarnings({"unchecked", "rawtypes"})
+        private void commitMarker(BackupRestoreOutcome outcome) {
+            kvStore.processCommitted(kvStore.createBatch((List) List.of(new KVCommand.Put<>(AetherKey.BackupRestoreKey.SINGLETON,
+                                                                                            BackupRestoreValue.decided(outcome)))),
+                                     ++slot);
+        }
+
+        @SuppressWarnings({"unchecked", "rawtypes"})
+        private void commitClusterConfig(String toml) {
+            var value = new ClusterConfigValue(Option.some(toml),
+                                               "restore-test",
+                                               "1.0.0",
+                                               CLUSTER_CONFIG.desiredTopology(),
+                                               3,
+                                               5,
+                                               "bootstrap-seed",
+                                               1L,
+                                               0L);
+
+            kvStore.processCommitted(kvStore.createBatch((List) List.of(new KVCommand.Put<>(AetherKey.ClusterConfigKey.CURRENT, value))),
+                                     ++slot);
+        }
+    }
+
     @Nested
     class Decision {
         @Test
