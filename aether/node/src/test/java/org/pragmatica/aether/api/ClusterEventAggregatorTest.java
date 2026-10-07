@@ -2036,15 +2036,21 @@ class ClusterEventAggregatorTest {
         assertThat(codes(h)).containsExactly("stream-consumer-state-diverged", "stream-consumer-state-repaired");
     }
 
-    /// The pairing touches exactly the two declared pairs of codes; every other code keeps the plain 60 s throttle.
+    /// The pairing touches exactly the declared pairs of codes (the two consumer pairs #752/#1935, the oversized-event refusal and the
+    /// members-unreachable wait of #1937); every other code keeps the plain 60 s throttle.
     @Test
     void onOperatorWarning_onlyTheDeclaredPairsArePaired_otherCodesUnchanged() {
         assertThat(java.util.Arrays.stream(OperatorWarningCode.values()).filter(c -> c.recoveryOf().isPresent()).toList())
             .containsExactly(OperatorWarningCode.STREAM_CONSUMER_STATE_REPAIRED,
-                             OperatorWarningCode.STREAM_CONSUMER_REGISTERED_AGAIN);
+                             OperatorWarningCode.STREAM_CONSUMER_REGISTERED_AGAIN,
+                             OperatorWarningCode.STREAM_EVENT_EXCEEDS_READ_CAP_RESOLVED,
+                             OperatorWarningCode.STREAM_OWNER_PROMOTION_HOLDERS_ANSWERING);
         assertThat(java.util.Arrays.stream(OperatorWarningCode.values()).filter(OperatorWarningCode::hasRecovery).toList())
             .containsExactly(OperatorWarningCode.STREAM_CONSUMER_STATE_DIVERGED,
-                             OperatorWarningCode.STREAM_CONSUMER_NOT_REGISTERED);
+                             OperatorWarningCode.STREAM_CONSUMER_NOT_REGISTERED,
+                             OperatorWarningCode.STREAM_EVENT_EXCEEDS_READ_CAP,
+                             OperatorWarningCode.STREAM_OWNER_PROMOTION_HOLDERS_UNREACHABLE);
+        var recoveries = java.util.Arrays.stream(OperatorWarningCode.values()).filter(c -> c.recoveryOf().isPresent()).count();
         var t = new AtomicLong(1_000_000L);
         var h = clocked(t);
 
@@ -2057,7 +2063,7 @@ class ClusterEventAggregatorTest {
             h.aggregator().onOperatorWarning(OperatorWarning.operatorWarning(code, "x", "m"));
         }
         assertThat(h.events()).as("one event per non-recovery code, the repeat throttled")
-                              .hasSize(OperatorWarningCode.values().length - 2);
+                              .hasSize(OperatorWarningCode.values().length - (int) recoveries);
     }
 
     /// #752: a detach-found divergence is a POINT event with no recovery. Sharing the pass-found code, it opened a
