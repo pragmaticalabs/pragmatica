@@ -16,6 +16,8 @@ A monorepo for building reliable Java backends with functional programming patte
 
 **[Aether Runtime](aether/README.md)** — Unified Application Runtime for Java. Deploy services as slices, scale transparently, no microservices boilerplate. Consensus-based state, automatic topology management, built-in observability.
 
+**[Terra Runtime](terra/README.md)** — Standalone compilation target for the same slice sources. Initial support includes blueprint-selected composition, scoped resources, local interceptors, in-process pub-sub, and shared database migrations.
+
 ## Prerequisites
 
 | Tool | Version | Purpose |
@@ -107,7 +109,7 @@ mvn test                   # Run tests after build
 
 ## License
 
-- Apache License 2.0 everywhere by default: core, integrations, JBCT, and the Aether slice API, resources, CLI and tooling
+- Apache License 2.0 everywhere by default: core, integrations, JBCT, Terra, and the Aether slice API, resources, CLI and tooling
 - Business Source License 1.1 (converts to Apache 2.0 on January 1, 2030) for the Aether runtime modules listed in [LICENSE](LICENSE): `node`, `aether-deployment`, `aether-control`, `aether-ttm`, `aether-ttm-onnx`, `aether-stream`, `aether-invoke`, `ember`, `forge-api`, `forge-core` (and the `forge-tests` harness)
 
 Each BSL module carries its own `LICENSE` file. No Apache-2.0 module depends on a BSL module; `tools/check-licence-closure.py` enforces that in CI.
