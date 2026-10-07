@@ -759,15 +759,32 @@ public final class OwnerActivation {
         var answered = results.stream().flatMap(result -> result.option()
                                                                 .stream()).toList();
 
-        return oversizedAt(peers, results).fold(() -> answered.size() < peers.size()
-                                                      ? holdersUnreachable(stream, partition, peers, answered)
-                                                      : catchUpFromHighest(stream, partition, answered),
+        return oversizedAt(peers, results).fold(() -> noLongerOversized(stream, partition, peers, answered),
                                                 oversized -> refuseOversizedKeepingUnreachable(stream,
                                                                                                partition,
                                                                                                peers,
                                                                                                results,
                                                                                                answered,
                                                                                                oversized));
+    }
+
+    /// No peer is cut before its first event any more (#1937 F5): an oversized block still standing for this partition describes a
+    /// condition that ended, whether the peers now answer or one went silent, so it ends here and the alarm is told. The
+    /// unreachable wait and the catch-up proceed as before.
+    private Promise<Unit> noLongerOversized(String stream, int partition, List<NodeId> peers, List<PeerWatermark> answered) {
+        var key = PartitionKey.partitionKey(stream, partition);
+
+        Option.option(blocks.get(key))
+              .filter(ActivationBlock.PeerEventExceedsReadCap.class::isInstance)
+              .onPresent(block -> {
+                             if (blocks.remove(key, block)) {
+                                 ended(block);
+                             }
+                         });
+
+        return answered.size() < peers.size()
+               ? holdersUnreachable(stream, partition, peers, answered)
+               : catchUpFromHighest(stream, partition, answered);
     }
 
     private record OversizedPeer(NodeId peer, long offset) {}
