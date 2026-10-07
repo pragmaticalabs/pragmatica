@@ -54,7 +54,9 @@ class OperatorWarningWiringTest {
         var code = assemblyCode();
 
         assertThat(code).contains("spi.registerExtension(OperatorWarningSink.class,operatorWarningSink);");
-        assertThat(code).contains("BlueprintService.blueprintService(clusterNode,kvStore,repository,artifactStore,resourceProviderSetup.nodeComposite(),operatorWarningSink);");
+        // The node's operator-warning sink is the sixth argument; what follows it (the HEADER-mode flag admission needs, #1206) is pinned on its own.
+        assertThat(code).contains("BlueprintService.blueprintService(clusterNode,kvStore,repository,artifactStore,resourceProviderSetup.nodeComposite(),operatorWarningSink,");
+        assertThat(code).contains("operatorWarningSink,config.appHttp().apiVersioningDetection().isHeaderMode());");
         assertThat(code).contains("cause->raiseClusterEventsRefusal(operatorWarningSink,alertManager,cause)");
         // v1680 N-r3-1: the refusal is also a REST-visible alert, resolved when a corrected config commits the stream.
         assertThat(code).contains("()->alertManager.clearInjected(OperatorWarningCode.CLUSTER_EVENTS_REGISTRATION_REFUSED.code())");
