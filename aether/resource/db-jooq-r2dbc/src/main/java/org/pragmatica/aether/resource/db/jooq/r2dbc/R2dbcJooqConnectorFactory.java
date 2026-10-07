@@ -43,13 +43,22 @@ public final class R2dbcJooqConnectorFactory implements ResourceFactory<JooqConn
         return Promise.lift(DatabaseConnectorError::databaseFailure, () -> connector(config));
     }
 
-    private static JooqConnector connector(DatabaseConnectorConfig config) {
+    /// Package-visible so the URL and credentials the pool is built with are checkable without connecting (#784): the
+    /// R2DBC connector reads ITS OWN transport's values.
+    static ConnectionFactoryOptions connectionFactoryOptions(DatabaseConnectorConfig config) {
         var options = ConnectionFactoryOptions.parse(config.effectiveR2dbcUrl());
         var optionsBuilder = ConnectionFactoryOptions.builder().from(options);
 
-        config.effectiveUsername().onPresent(u -> optionsBuilder.option(ConnectionFactoryOptions.USER, u));
-        config.effectivePassword().onPresent(p -> optionsBuilder.option(ConnectionFactoryOptions.PASSWORD, p));
-        var connectionFactory = ConnectionFactories.get(optionsBuilder.build());
+        config.effectiveUsername(DatabaseConnectorConfig.Transport.R2DBC)
+              .onPresent(u -> optionsBuilder.option(ConnectionFactoryOptions.USER, u));
+        config.effectivePassword(DatabaseConnectorConfig.Transport.R2DBC)
+              .onPresent(p -> optionsBuilder.option(ConnectionFactoryOptions.PASSWORD, p));
+
+        return optionsBuilder.build();
+    }
+
+    private static JooqConnector connector(DatabaseConnectorConfig config) {
+        var connectionFactory = ConnectionFactories.get(connectionFactoryOptions(config));
         var poolConfig = ConnectionPoolConfiguration.builder(connectionFactory)
                                                     .maxSize(config.poolConfig().maxConnections())
                                                     .initialSize(config.poolConfig().minConnections())

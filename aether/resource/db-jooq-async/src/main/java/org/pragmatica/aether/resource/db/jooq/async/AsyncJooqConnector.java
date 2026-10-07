@@ -7,6 +7,7 @@ package org.pragmatica.aether.resource.db.jooq.async;
 import java.util.List;
 
 import org.pragmatica.aether.resource.db.DatabaseConnectorConfig;
+import org.pragmatica.aether.resource.db.DatabaseType;
 import org.pragmatica.aether.resource.db.DatabaseConnectorError;
 import org.pragmatica.aether.resource.db.jooq.JooqConnector;
 import org.pragmatica.jooq.r2dbc.JooqR2dbcOperations;
@@ -46,7 +47,7 @@ final class AsyncJooqConnector implements JooqConnector {
 
     static AsyncJooqConnector asyncJooqConnector(DatabaseConnectorConfig config,
                                                  PgAsyncConnectionFactory connectionFactory) {
-        var dialect = JooqConnector.mapDialect(config.effectiveType());
+        var dialect = JooqConnector.mapDialect(config.effectiveType(DatabaseConnectorConfig.Transport.ASYNC));
 
         return new AsyncJooqConnector(config, connectionFactory, dialect);
     }
@@ -88,6 +89,11 @@ final class AsyncJooqConnector implements JooqConnector {
     @Override
     public DatabaseConnectorConfig config() {
         return config;
+    }
+
+    @Override
+    public DatabaseType databaseType() {
+        return config.effectiveType(DatabaseConnectorConfig.Transport.ASYNC);
     }
 
     @Override

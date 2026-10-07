@@ -1165,6 +1165,8 @@ public record Main(String[] args) {
         envLookup.apply("AETHER_INSTANCE_TYPE").onPresent(t -> labels.put(NodeInfo.LABEL_INSTANCE_TYPE, t));
         envLookup.apply("AETHER_POOL").onPresent(p -> labels.put(NodeInfo.LABEL_POOL, p));
         envLookup.apply("AETHER_SOURCE").onPresent(s -> labels.put(NodeInfo.LABEL_SOURCE, s));
+        // #1543 part C: the running binary's own version, so an upgrade can see what each node actually runs.
+        labels.put(NodeInfo.LABEL_VERSION, AetherNode.VERSION);
         // #689: the default is deliberate (blank counts as core — the safe failure direction for
         // the core tier) and unchanged; what was missing is the node saying so. A worker started
         // without this label joins the core set on every peer and nothing else reports why.

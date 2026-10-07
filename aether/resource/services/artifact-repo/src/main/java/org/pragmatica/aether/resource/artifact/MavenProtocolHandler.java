@@ -120,6 +120,10 @@ public interface MavenProtocolHandler {
         /// store holds no SNAPSHOTs, so this is recognised in order to be refused accurately, never served (#1919).
         record VersionMetadataPath(String path) implements ParsedPath {}
 
+        /// `<group path>/maven-metadata.xml`: what `mvn deploy` writes for a `maven-plugin` packaging (the plugin
+        /// goal prefixes of a group). Recognised in order to be refused accurately, never served.
+        record GroupMetadataPath(String path) implements ParsedPath {}
+
         record ChecksumPath(ParsedPath inner, String algorithm) implements ParsedPath {}
     }
 
@@ -198,6 +202,7 @@ class MavenProtocolHandlerImpl implements MavenProtocolHandler {
             case ParsedPath.ArtifactPath ap -> handleGetArtifact(ap);
             case ParsedPath.MetadataPath mp -> handleGetMetadata(mp);
             case ParsedPath.VersionMetadataPath vp -> Promise.success(MavenResponse.notFound(versionMetadataRefusal(vp)));
+            case ParsedPath.GroupMetadataPath gp -> Promise.success(MavenResponse.notFound(groupMetadataRefusal(gp)));
             case ParsedPath.ChecksumPath cp -> handleGetChecksum(cp);
         };
     }
@@ -304,6 +309,7 @@ class MavenProtocolHandlerImpl implements MavenProtocolHandler {
             case ParsedPath.ArtifactPath ap -> handleGetArtifactChecksum(ap, cp.algorithm());
             case ParsedPath.MetadataPath mp -> handleGetMetadataChecksum(mp, cp.algorithm());
             case ParsedPath.VersionMetadataPath vp -> Promise.success(MavenResponse.notFound(versionMetadataRefusal(vp)));
+            case ParsedPath.GroupMetadataPath gp -> Promise.success(MavenResponse.notFound(groupMetadataRefusal(gp)));
             case ParsedPath.ChecksumPath _ -> Promise.success(MavenResponse.badRequest("Invalid checksum path"));
         };
     }
@@ -354,6 +360,8 @@ class MavenProtocolHandlerImpl implements MavenProtocolHandler {
             case ParsedPath.ArtifactPath ap -> handlePutArtifact(ap, content);
             case ParsedPath.ChecksumPath cp when cp.inner() instanceof ParsedPath.VersionMetadataPath vp -> Promise.success(MavenResponse.badRequest(versionMetadataRefusal(vp)));
             case ParsedPath.VersionMetadataPath vp -> Promise.success(MavenResponse.badRequest(versionMetadataRefusal(vp)));
+            case ParsedPath.ChecksumPath cp when cp.inner() instanceof ParsedPath.GroupMetadataPath gp -> Promise.success(MavenResponse.badRequest(groupMetadataRefusal(gp)));
+            case ParsedPath.GroupMetadataPath gp -> Promise.success(MavenResponse.badRequest(groupMetadataRefusal(gp)));
             case ParsedPath.ChecksumPath cp when cp.inner() instanceof ParsedPath.MetadataPath -> Promise.success(derivedMetadataResponse());
             case ParsedPath.ChecksumPath _ -> Promise.success(MavenResponse.created());
             case ParsedPath.MetadataPath _ -> Promise.success(derivedMetadataResponse());
@@ -540,7 +548,8 @@ class MavenProtocolHandlerImpl implements MavenProtocolHandler {
         if (parts.length < 3) return Option.none();
 
         if (parts[parts.length - 1].equals(METADATA_FILE)) {
-            return parseMetadataPath(parts).orElse(() -> parseVersionMetadataPath(path, parts));
+            return parseMetadataPath(parts).orElse(() -> parseVersionMetadataPath(path, parts))
+                                    .orElse(() -> parseGroupMetadataPath(path, parts));
         }
 
         return parseArtifactPath(parts);
@@ -553,6 +562,25 @@ class MavenProtocolHandlerImpl implements MavenProtocolHandler {
              + "built-in artifact store does not accept (" + refused.path()
              + "); use the artifact-level "
              + "maven-metadata.xml, or publish a release version";
+    }
+
+    /// Why a group-level `maven-metadata.xml` is not served or accepted: it is the plugin-prefix metadata `mvn deploy`
+    /// writes for a Maven plugin, and the built-in repository is an internal cache for deployed slices, not a Maven
+    /// plugin repository, so there is no plugin registry to serve or to update.
+    private static String groupMetadataRefusal(ParsedPath.GroupMetadataPath refused) {
+        return "Group-level maven-metadata.xml is not supported: it is the plugin-prefix metadata Maven writes when "
+             + "deploying a Maven plugin, and the built-in artifact repository stores slices and libraries, not Maven "
+             + "plugins (" + refused.path()
+             + ")";
+    }
+
+    /// `<group path>/maven-metadata.xml`: tried last, only when neither the artifact-level nor the version-level
+    /// reading applies, i.e. the path before the file is itself a valid dotted group (at least two segments).
+    private Option<ParsedPath> parseGroupMetadataPath(String path, String[] parts) {
+        return GroupId.groupId(String.join(".",
+                                           List.of(parts).subList(0, parts.length - 1)))
+                      .map(_ -> Option.<ParsedPath> some(new ParsedPath.GroupMetadataPath(path)))
+                      .or(Option.none());
     }
 
     /// `<group>/<artifact>/<version>/maven-metadata.xml`: tried only when the artifact-level reading fails, i.e. the

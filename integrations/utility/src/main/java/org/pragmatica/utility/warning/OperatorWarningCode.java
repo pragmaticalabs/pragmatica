@@ -69,6 +69,11 @@ public enum OperatorWarningCode {
     /// ACTIVE slice instances whose remaining count falls below the floor, so those slices run degraded, or go
     /// dark, until re-placed. The subject is the target node; the message names each slice and its counts.
     SLICE_FLOOR_BREACHED_BY_FORCE("slice-floor-breached-by-force", "deployment", WarningLevel.WARNING),
+    /// A stream consumer re-read from an earlier offset because the partition's owner replaced the lineage its cursor
+    /// belonged to (#1873, KIP-320): a restart without a WAL, or a failover to a replica that held less, began a new owner
+    /// epoch below the consumer's cursor. The records the group processed above that offset are gone from the log and the
+    /// records now at those offsets are delivered; the message names the group, the partition and the offsets.
+    STREAM_CONSUMER_REWOUND("stream-consumer-rewound", "stream-consumer", WarningLevel.WARNING),
     /// A partition's owner promotion is refused because a peer ANSWERED its watermark probe with a page cut before its
     /// first event: that event alone exceeds the peer's read cap (#1431). Not an unreachable peer; the operator raises
     /// the peer's `maxReadResponseBytes`. The message names the partition, the peer and the offset.

@@ -65,11 +65,11 @@ public final class NotificationListenerFactory implements ResourceFactory<PgNoti
     private static Connectible buildPlainConnectible(DatabaseConnectorConfig config) {
         var builder = new NettyConnectibleBuilder();
 
-        builder.hostname(config.effectiveHost());
-        builder.port(config.effectivePort());
-        builder.database(config.effectiveDatabase());
-        config.effectiveUsername().onPresent(builder::username);
-        config.effectivePassword().onPresent(builder::password);
+        builder.hostname(config.effectiveHost(DatabaseConnectorConfig.Transport.ASYNC));
+        builder.port(config.effectivePort(DatabaseConnectorConfig.Transport.ASYNC));
+        builder.database(config.effectiveDatabase(DatabaseConnectorConfig.Transport.ASYNC));
+        config.effectiveUsername(DatabaseConnectorConfig.Transport.ASYNC).onPresent(builder::username);
+        config.effectivePassword(DatabaseConnectorConfig.Transport.ASYNC).onPresent(builder::password);
         builder.maxConnections(1);
 
         return builder.plain();

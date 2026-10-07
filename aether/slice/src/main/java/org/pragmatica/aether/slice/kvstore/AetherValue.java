@@ -665,35 +665,249 @@ public sealed interface AetherValue {
         }
     }
 
+    /// The recorded state of a scheduled task (one row per task; per node for an ALL-mode task).
+    ///
+    /// `lastOutcome` is the outcome of the NEWEST fire whose outcome is recorded: [#OUTCOME_SUCCESS] (the callee completed
+    /// it), [#OUTCOME_FAILURE] (a failure response, or the callee's node departed), [#OUTCOME_UNKNOWN] (a REMOTE fire
+    /// whose response did not arrive within the invocation timeout: the callee may have run it, completed it or not;
+    /// nothing here can say which), or empty (no fire recorded since the field exists). An UNKNOWN outcome is neither
+    /// an execution nor a failure: it does not count in `totalExecutions` and does not move `consecutiveFailures`
+    /// (the failure streak is neither reset nor extended). The task is "unknown" exactly while its newest fire's outcome
+    /// is UNKNOWN ([#outcomeUnknown]): a later definite fire ends that, and so does the late answer of the newest fire.
+    /// Nothing that must be done by a live process is part of that condition, so no node dying can leave it stuck.
+    ///
+    /// `completionTimeouts` and `lateResolutions` are MONOTONIC counters: every fire that timed out, and every timed-out
+    /// fire whose response arrived late. Their difference approximates the fires whose outcome was never learned (it
+    /// also holds the fires still waiting for their answer, and the answers a leader change lost): an estimate, not a
+    /// gauge, deliberately: a gauge only a live process can lower sticks forever once that process is gone.
+    ///
+    /// `fireSeq` numbers the fires recorded in this row, newest highest, and never goes backwards; `newestFireAt` is when
+    /// that newest fire started. A late resolution resolves ITS OWN fire (counts) but changes `lastOutcome` only if its
+    /// fire is still the newest.
     record ScheduledTaskStateValue(long lastExecutionAt,
                                    long nextFireAt,
                                    int consecutiveFailures,
                                    int totalExecutions,
                                    String lastFailureMessage,
                                    long updatedAt,
-                                   int skippedOverlaps) implements AetherValue {
-        public static ScheduledTaskStateValue successState(long nextFireAt, int totalExecutions, int skippedOverlaps) {
-            return new ScheduledTaskStateValue(System.currentTimeMillis(),
-                                               nextFireAt,
-                                               0,
-                                               totalExecutions,
-                                               "",
-                                               System.currentTimeMillis(),
-                                               skippedOverlaps);
+                                   int skippedOverlaps,
+                                   String lastOutcome,
+                                   int fireSeq,
+                                   long newestFireAt,
+                                   int completionTimeouts,
+                                   int lateResolutions) implements AetherValue {
+        public static final String OUTCOME_SUCCESS = "SUCCESS";
+        public static final String OUTCOME_FAILURE = "FAILURE";
+        public static final String OUTCOME_UNKNOWN = "UNKNOWN";
+        /// The row of a per-node (ALL-mode) task whose node left the cluster for good while its newest fire was unknown.
+        public static final String OUTCOME_NODE_DEPARTED = "NODE_DEPARTED";
+
+        /// A row with no recorded outcome (the shape every row had before outcomes were recorded).
+        public ScheduledTaskStateValue(long lastExecutionAt,
+                                       long nextFireAt,
+                                       int consecutiveFailures,
+                                       int totalExecutions,
+                                       String lastFailureMessage,
+                                       long updatedAt,
+                                       int skippedOverlaps) {
+            this(lastExecutionAt,
+                 nextFireAt,
+                 consecutiveFailures,
+                 totalExecutions,
+                 lastFailureMessage,
+                 updatedAt,
+                 skippedOverlaps,
+                 "",
+                 0,
+                 0,
+                 0,
+                 0);
         }
 
-        public static ScheduledTaskStateValue failureState(long nextFireAt,
-                                                           int consecutiveFailures,
-                                                           int totalExecutions,
-                                                           int skippedOverlaps,
-                                                           String failureMessage) {
-            return new ScheduledTaskStateValue(System.currentTimeMillis(),
+        /// Whether the newest fire's outcome is unknown: the condition operators are told about.
+        public boolean outcomeUnknown() {
+            return OUTCOME_UNKNOWN.equals(lastOutcome);
+        }
+
+        /// The sequence number the next recorded fire of this row takes.
+        public static int nextFireSeq(Option<ScheduledTaskStateValue> prior) {
+            return prior.map(ScheduledTaskStateValue::fireSeq)
+                        .or(0) + 1;
+        }
+
+        /// A fire (started at `firedAt`) that completed: an execution, the streak reset, the next fire sequence.
+        public static ScheduledTaskStateValue successState(Option<ScheduledTaskStateValue> prior,
+                                                           long nextFireAt,
+                                                           long firedAt) {
+            var now = System.currentTimeMillis();
+
+            return new ScheduledTaskStateValue(now,
                                                nextFireAt,
-                                               consecutiveFailures,
-                                               totalExecutions,
+                                               0,
+                                               prior.map(ScheduledTaskStateValue::totalExecutions).or(0) + 1,
+                                               "",
+                                               now,
+                                               prior.map(ScheduledTaskStateValue::skippedOverlaps).or(0),
+                                               OUTCOME_SUCCESS,
+                                               nextFireSeq(prior),
+                                               firedAt,
+                                               prior.map(ScheduledTaskStateValue::completionTimeouts).or(0),
+                                               prior.map(ScheduledTaskStateValue::lateResolutions).or(0));
+        }
+
+        /// A fire (started at `firedAt`) that failed: the streak extended, not an execution, the next fire sequence.
+        public static ScheduledTaskStateValue failureState(Option<ScheduledTaskStateValue> prior,
+                                                           long nextFireAt,
+                                                           long firedAt,
+                                                           String failureMessage) {
+            var now = System.currentTimeMillis();
+
+            return new ScheduledTaskStateValue(now,
+                                               nextFireAt,
+                                               prior.map(ScheduledTaskStateValue::consecutiveFailures).or(0) + 1,
+                                               prior.map(ScheduledTaskStateValue::totalExecutions).or(0),
                                                failureMessage,
+                                               now,
+                                               prior.map(ScheduledTaskStateValue::skippedOverlaps).or(0),
+                                               OUTCOME_FAILURE,
+                                               nextFireSeq(prior),
+                                               firedAt,
+                                               prior.map(ScheduledTaskStateValue::completionTimeouts).or(0),
+                                               prior.map(ScheduledTaskStateValue::lateResolutions).or(0));
+        }
+
+        /// A REMOTE fire (started at `firedAt`) whose outcome is unknown (no response within the invocation timeout).
+        /// Everything else carries over from `prior` unchanged: not an execution, not a failure, so `totalExecutions` and
+        /// `consecutiveFailures` stay as they were; the outcome, the timeout total and the timestamps move.
+        /// `lastFailureMessage` is left alone: it still describes the last real failure. The fire takes [#nextFireSeq].
+        public static ScheduledTaskStateValue unknownOutcomeState(Option<ScheduledTaskStateValue> prior,
+                                                                  long nextFireAt,
+                                                                  long firedAt) {
+            var now = System.currentTimeMillis();
+            var seq = nextFireSeq(prior);
+
+            return prior.map(p -> new ScheduledTaskStateValue(p.lastExecutionAt(),
+                                                              nextFireAt,
+                                                              p.consecutiveFailures(),
+                                                              p.totalExecutions(),
+                                                              p.lastFailureMessage(),
+                                                              now,
+                                                              p.skippedOverlaps(),
+                                                              OUTCOME_UNKNOWN,
+                                                              seq,
+                                                              firedAt,
+                                                              p.completionTimeouts() + 1,
+                                                              p.lateResolutions()))
+                        .or(new ScheduledTaskStateValue(0,
+                                                        nextFireAt,
+                                                        0,
+                                                        0,
+                                                        "",
+                                                        now,
+                                                        0,
+                                                        OUTCOME_UNKNOWN,
+                                                        seq,
+                                                        firedAt,
+                                                        1,
+                                                        0));
+        }
+
+        /// The row a resolution is applied to: the newer, by `fireSeq`, of the committed `row` and `submitted`, the last row
+        /// the resolving manager itself wrote (the submitted one on a tie: it carries every write since). The writer is
+        /// asynchronous, so the committed row can lag what the manager has already decided: before the commit of this
+        /// fire's own UNKNOWN, or of a NEWER fire's outcome. Applying the resolution to the lagging row would write the
+        /// sequence BACKWARDS and, for an older fire's answer, overwrite the newer fire's outcome.
+        public static ScheduledTaskStateValue resolutionBase(ScheduledTaskStateValue row,
+                                                             ScheduledTaskStateValue submitted) {
+            return row.fireSeq() > submitted.fireSeq()
+                   ? row
+                   : submitted;
+        }
+
+        /// The task was removed while its newest fire was unknown: the condition ends with the task, so a task registered
+        /// again under the same key does not inherit it. Everything else, the sequence included, is kept.
+        public static ScheduledTaskStateValue conditionClearedState(ScheduledTaskStateValue base) {
+            return cleared(base, "");
+        }
+
+        /// The node that fired a per-node row left the cluster for good while its newest fire was unknown: nothing will
+        /// ever write that row again, so the condition ends with the node ([#OUTCOME_NODE_DEPARTED]). Everything else is kept.
+        public static ScheduledTaskStateValue nodeDepartedState(ScheduledTaskStateValue base) {
+            return cleared(base, OUTCOME_NODE_DEPARTED);
+        }
+
+        private static ScheduledTaskStateValue cleared(ScheduledTaskStateValue base, String outcome) {
+            return new ScheduledTaskStateValue(base.lastExecutionAt(),
+                                               base.nextFireAt(),
+                                               base.consecutiveFailures(),
+                                               base.totalExecutions(),
+                                               base.lastFailureMessage(),
                                                System.currentTimeMillis(),
-                                               skippedOverlaps);
+                                               base.skippedOverlaps(),
+                                               outcome,
+                                               base.fireSeq(),
+                                               base.newestFireAt(),
+                                               base.completionTimeouts(),
+                                               base.lateResolutions());
+        }
+
+        /// The fire numbered `fireSeq`, recorded as UNKNOWN, was answered LATE with success (#1723): it was an execution
+        /// after all. It is counted in `totalExecutions` and `lateResolutions`. When it is still the NEWEST fire it also
+        /// becomes the last outcome and resets the failure streak, as any success does; when a newer fire has been
+        /// recorded since, that fire's outcome stands.
+        public static ScheduledTaskStateValue lateSuccessState(ScheduledTaskStateValue base, int fireSeq) {
+            var now = System.currentTimeMillis();
+            var newest = base.fireSeq() == fireSeq;
+
+            return new ScheduledTaskStateValue(newest
+                                               ? now
+                                               : base.lastExecutionAt(),
+                                               base.nextFireAt(),
+                                               newest
+                                               ? 0
+                                               : base.consecutiveFailures(),
+                                               base.totalExecutions() + 1,
+                                               base.lastFailureMessage(),
+                                               now,
+                                               base.skippedOverlaps(),
+                                               newest
+                                               ? OUTCOME_SUCCESS
+                                               : base.lastOutcome(),
+                                               base.fireSeq(),
+                                               base.newestFireAt(),
+                                               base.completionTimeouts(),
+                                               base.lateResolutions() + 1);
+        }
+
+        /// The fire numbered `fireSeq`, recorded as UNKNOWN, was answered LATE with a failure (#1723): a failure after all.
+        /// It is counted in `lateResolutions`. When it is still the NEWEST fire it also becomes the last outcome and
+        /// extends the streak; when a newer fire has been recorded since, that fire's outcome and the streak stand.
+        public static ScheduledTaskStateValue lateFailureState(ScheduledTaskStateValue base,
+                                                               int fireSeq,
+                                                               String failureMessage) {
+            var now = System.currentTimeMillis();
+            var newest = base.fireSeq() == fireSeq;
+
+            return new ScheduledTaskStateValue(newest
+                                               ? now
+                                               : base.lastExecutionAt(),
+                                               base.nextFireAt(),
+                                               newest
+                                               ? base.consecutiveFailures() + 1
+                                               : base.consecutiveFailures(),
+                                               base.totalExecutions(),
+                                               newest
+                                               ? failureMessage
+                                               : base.lastFailureMessage(),
+                                               now,
+                                               base.skippedOverlaps(),
+                                               newest
+                                               ? OUTCOME_FAILURE
+                                               : base.lastOutcome(),
+                                               base.fireSeq(),
+                                               base.newestFireAt(),
+                                               base.completionTimeouts(),
+                                               base.lateResolutions() + 1);
         }
 
         /// Records a skipped fixed-rate fire (previous invocation still in flight). Preserves every
@@ -707,7 +921,12 @@ public sealed interface AetherValue {
                                                               p.totalExecutions(),
                                                               p.lastFailureMessage(),
                                                               skippedAt,
-                                                              p.skippedOverlaps() + 1))
+                                                              p.skippedOverlaps() + 1,
+                                                              p.lastOutcome(),
+                                                              p.fireSeq(),
+                                                              p.newestFireAt(),
+                                                              p.completionTimeouts(),
+                                                              p.lateResolutions()))
                         .or(new ScheduledTaskStateValue(0, 0, 0, 0, "", skippedAt, 1));
         }
     }
@@ -1873,7 +2092,8 @@ public sealed interface AetherValue {
                                        long rewindIncarnation,
                                        long rewindGeneration,
                                        long rewindSequence,
-                                       boolean rewind) implements AetherValue, AssignmentTokenBearing, EpochBearing<RewindEpoch> {
+                                       boolean rewind,
+                                       Epoch ownerEpoch) implements AetherValue, AssignmentTokenBearing, EpochBearing<RewindEpoch> {
         @Override
         public Object guardToken() {
             return token;
@@ -1887,13 +2107,23 @@ public sealed interface AetherValue {
         public static StreamCursorCheckpointValue streamCursorCheckpointValue(long committedOffset,
                                                                               ConsumerAssignmentValue.AssignmentToken token,
                                                                               RewindEpoch epoch) {
+            return streamCursorCheckpointValue(committedOffset, token, epoch, Epoch.ZERO);
+        }
+
+        /// A checkpoint that also records the owner epoch the cursor was read under (#1873, KIP-320): a resume presents it to
+        /// the partition's owner, which refuses a cursor that belongs to a replaced lineage. [Epoch#ZERO] is "no claim".
+        public static StreamCursorCheckpointValue streamCursorCheckpointValue(long committedOffset,
+                                                                              ConsumerAssignmentValue.AssignmentToken token,
+                                                                              RewindEpoch epoch,
+                                                                              Epoch ownerEpoch) {
             return new StreamCursorCheckpointValue(committedOffset,
                                                    System.currentTimeMillis(),
                                                    token,
                                                    epoch.incarnation(),
                                                    epoch.generation(),
                                                    epoch.rewind(),
-                                                   false);
+                                                   false,
+                                                   ownerEpoch);
         }
 
         /// The rewind record: the group's cursor moved to `fromOffset` under the minted `epoch`, written
@@ -1907,7 +2137,8 @@ public sealed interface AetherValue {
                                                    epoch.incarnation(),
                                                    epoch.generation(),
                                                    epoch.rewind(),
-                                                   true);
+                                                   true,
+                                                   Epoch.ZERO);
         }
 
         public RewindEpoch rewindEpoch() {
@@ -2402,7 +2633,11 @@ public sealed interface AetherValue {
                                          long isrVersion,
                                          boolean failoverRefused,
                                          List<NodeId> fenced,
-                                         long failoverRefusalSeq) implements AetherValue, EpochBearing<Epoch> {
+                                         long failoverRefusalSeq,
+                                         List<EpochStart> epochStarts) implements AetherValue, EpochBearing<Epoch> {
+        /// Most epoch starts one record keeps (#1730 phase 2). Beyond it the oldest are folded into the oldest one kept, never
+        /// dropped (see `capped`), so the oldest kept start is a lower bound on every offset a later epoch re-assigned.
+        public static final int EPOCH_STARTS_MAX = 16;
         /// Most members one record remembers as fenced. A member that left for good is never unfenced, so the list is
         /// bounded here: the oldest entry is forgotten first. A forgotten member is no longer fenced, so if it is still
         /// registered with the owner as caught up and invisible to the leader, the owner re-expands it and the leader
@@ -2417,6 +2652,28 @@ public sealed interface AetherValue {
         @Override
         public Epoch fenceEpoch() {
             return ownerEpoch;
+        }
+
+        /// A record with no refusal yet counted (`failoverRefusalSeq` 0) and the given epoch starts.
+        public StreamPartitionOwnershipValue(NodeId owner,
+                                             Epoch ownerEpoch,
+                                             long ownershipTerm,
+                                             HlcTimestamp transferredAt,
+                                             List<NodeId> isr,
+                                             long isrVersion,
+                                             boolean failoverRefused,
+                                             List<NodeId> fenced,
+                                             List<EpochStart> epochStarts) {
+            this(owner,
+                 ownerEpoch,
+                 ownershipTerm,
+                 transferredAt,
+                 isr,
+                 isrVersion,
+                 failoverRefused,
+                 fenced,
+                 0L,
+                 epochStarts);
         }
 
         public StreamPartitionOwnershipValue {
@@ -2436,6 +2693,32 @@ public sealed interface AetherValue {
                      : List.copyOf(fenced.size() > FENCED_MAX
                                    ? fenced.subList(fenced.size() - FENCED_MAX, fenced.size())
                                    : fenced);
+            epochStarts = epochStarts == null
+                          ? List.of()
+                          : capped(epochStarts);
+        }
+
+        /// The newest [#EPOCH_STARTS_MAX] starts. The starts it drops are folded, not forgotten: the oldest kept start takes the
+        /// LOWEST offset of the dropped ones, so it stays a lower bound of every offset that a later epoch may have re-assigned
+        /// for a consumer older than it (`EpochValidation` resumes such a consumer at it: it may redeliver, it never skips).
+        /// Starts increase in offset, so the lowest dropped one is the oldest. What the folded entry still asserts EXACTLY is
+        /// that the OLDEST DROPPED epoch (`coversFrom`) began at its offset; its own epoch did not (see [EpochStart#provesAfter]).
+        private static List<EpochStart> capped(List<EpochStart> starts) {
+            if (starts.size() <= EPOCH_STARTS_MAX) {
+                return List.copyOf(starts);
+            }
+
+            var dropped = starts.size() - EPOCH_STARTS_MAX;
+            var kept = new ArrayList<>(starts.subList(dropped, starts.size()));
+            var oldest = kept.getFirst();
+            var lowest = starts.getFirst();
+
+            kept.set(0,
+                     new EpochStart(oldest.epoch(),
+                                    Math.min(oldest.startOffset(), lowest.startOffset()),
+                                    lowest.coversFrom()));
+
+            return List.copyOf(kept);
         }
 
         /// A record whose ISR is the owner alone: the shape of every record written before #1730, and of a
@@ -2452,7 +2735,8 @@ public sealed interface AetherValue {
                                                      0L,
                                                      false,
                                                      List.of(),
-                                                     0L);
+                                                     0L,
+                                                     List.of());
         }
 
         public static StreamPartitionOwnershipValue streamPartitionOwnershipValue(NodeId owner,
@@ -2469,7 +2753,8 @@ public sealed interface AetherValue {
                                                      isrVersion,
                                                      false,
                                                      List.of(),
-                                                     0L);
+                                                     0L,
+                                                     List.of());
         }
 
         /// A record with ISR `isr` and fenced set `fenced` (#1883).
@@ -2488,7 +2773,30 @@ public sealed interface AetherValue {
                                                      isrVersion,
                                                      false,
                                                      fenced,
-                                                     0L);
+                                                     0L,
+                                                     List.of());
+        }
+
+        /// A record with ISR `isr`, fenced set `fenced` and the epoch starts `epochStarts` the new owner inherits (#1730 phase 2):
+        /// a failover bumps the epoch but keeps the history of the earlier ones, so a consumer asleep across it is still checked.
+        public static StreamPartitionOwnershipValue streamPartitionOwnershipValue(NodeId owner,
+                                                                                  Epoch ownerEpoch,
+                                                                                  long ownershipTerm,
+                                                                                  HlcTimestamp transferredAt,
+                                                                                  List<NodeId> isr,
+                                                                                  long isrVersion,
+                                                                                  List<NodeId> fenced,
+                                                                                  List<EpochStart> epochStarts) {
+            return new StreamPartitionOwnershipValue(owner,
+                                                     ownerEpoch,
+                                                     ownershipTerm,
+                                                     transferredAt,
+                                                     isr,
+                                                     isrVersion,
+                                                     false,
+                                                     fenced,
+                                                     0L,
+                                                     epochStarts);
         }
 
         /// The same ownership with ISR `isr`, one ISR change later.
@@ -2501,7 +2809,8 @@ public sealed interface AetherValue {
                                                      isrVersion + 1,
                                                      failoverRefused,
                                                      fenced,
-                                                     failoverRefusalSeq);
+                                                     failoverRefusalSeq,
+                                                     epochStarts);
         }
 
         /// The same ownership with ISR `isr` and fenced set `fenced`, one ISR change later (#1883). `fenced` is the set of
@@ -2516,7 +2825,8 @@ public sealed interface AetherValue {
                                                      isrVersion + 1,
                                                      failoverRefused,
                                                      fenced,
-                                                     failoverRefusalSeq);
+                                                     failoverRefusalSeq,
+                                                     epochStarts);
         }
 
         /// The same ownership and ISR with the failover verdict `refused`. Each transition INTO refused counts one more
@@ -2534,7 +2844,100 @@ public sealed interface AetherValue {
                                                      fenced,
                                                      refused && !failoverRefused
                                                      ? failoverRefusalSeq + 1
-                                                     : failoverRefusalSeq);
+                                                     : failoverRefusalSeq,
+                                                     epochStarts);
+        }
+
+        /// The start of the newest epoch this record names, if any.
+        public Option<EpochStart> lastEpochStart() {
+            return Option.from(epochStarts.stream().reduce((_, later) -> later));
+        }
+
+        /// The same record with the owner of `ownerEpoch` recorded as beginning to write at `startOffset` (#1730 phase 2).
+        /// Recording the epoch that is already the newest start changes nothing.
+        public StreamPartitionOwnershipValue withEpochStart(long startOffset) {
+            var next = new EpochStart(ownerEpoch, startOffset);
+
+            return lastEpochStart().filter(next::equals)
+                                 .isPresent()
+                   ? this
+                   : withStarts(append(epochStarts, next));
+        }
+
+        /// The same owner after its ring restarted (no WAL, or a rebuilt ring): a new epoch one ownership term later,
+        /// beginning at `startOffset` (#1730 phase 2, KIP-320). A consumer holding the old epoch is then checked against
+        /// this start instead of being served the re-assigned offsets as if nothing happened.
+        public StreamPartitionOwnershipValue restarted(long startOffset, HlcTimestamp at) {
+            var term = ownershipTerm + 1L;
+            var epoch = ownerEpoch.withCounter(term);
+
+            return new StreamPartitionOwnershipValue(owner,
+                                                     epoch,
+                                                     term,
+                                                     at,
+                                                     isr,
+                                                     isrVersion + 1,
+                                                     failoverRefused,
+                                                     fenced,
+                                                     failoverRefusalSeq,
+                                                     append(epochStarts, new EpochStart(epoch, startOffset)));
+        }
+
+        private StreamPartitionOwnershipValue withStarts(List<EpochStart> starts) {
+            return new StreamPartitionOwnershipValue(owner,
+                                                     ownerEpoch,
+                                                     ownershipTerm,
+                                                     transferredAt,
+                                                     isr,
+                                                     isrVersion + 1,
+                                                     failoverRefused,
+                                                     fenced,
+                                                     failoverRefusalSeq,
+                                                     starts);
+        }
+
+        /// `next` appended after the starts it does not supersede: an epoch that begins at or below an earlier start re-assigns
+        /// those offsets (a restart that lost its tail, a failover to a shorter copy, a re-created stream beginning at 0), so the
+        /// earlier starts at or above it describe records that no longer exist and are dropped. Verdicts for a consumer older
+        /// than `next` are unchanged (it is judged against the first start that follows its epoch, which is `next` or an earlier
+        /// one that `next` supersedes); only a consumer older than EVERY kept start can tell a new life from an old one.
+        private static List<EpochStart> append(List<EpochStart> starts, EpochStart next) {
+            var all = new ArrayList<>(starts.stream().filter(start -> start.startOffset() < next.startOffset()).toList());
+
+            all.add(next);
+
+            return all;
+        }
+    }
+
+    /// One owner epoch of a stream partition and the offset its owner began writing at (#1730 phase 2, Kafka's leader
+    /// epoch start offset). `StreamPartitionOwnershipValue#epochStarts` lists the newest ones, oldest first: a consumer that
+    /// read under an older epoch is valid only while its cursor does not pass the start of the epoch that followed.
+    ///
+    /// `coversFrom` is the OLDEST epoch this entry stands for: its own epoch unless the record's cap folded older starts into it,
+    /// in which case the oldest dropped epoch, the one that really began at `startOffset` (a re-fold keeps the older). So an
+    /// entry proves "every epoch from `coversFrom` to `epoch` began at or above `startOffset`, and `coversFrom` began AT it",
+    /// and a loss from `startOffset` is proven for a consumer only when `coversFrom` is later than the consumer's epoch.
+    /// A null or [Epoch#ZERO] `coversFrom` means "unfolded" and is read as the entry's own epoch (the two-argument constructor, and a
+    /// value that carries no fold). The substitution is deliberate and is pinned by a round trip through the node codec in
+    /// which a FOLDED entry's `coversFrom` must come back unchanged (`EpochStartCodecTest`), so a codec that dropped the field
+    /// would not hide behind it.
+    @Codec
+    record EpochStart(Epoch epoch, long startOffset, Epoch coversFrom) {
+        public EpochStart {
+            coversFrom = coversFrom == null || coversFrom.equals(Epoch.ZERO)
+                         ? epoch
+                         : coversFrom;
+        }
+
+        public EpochStart(Epoch epoch, long startOffset) {
+            this(epoch, startOffset, epoch);
+        }
+
+        /// Whether this entry proves that an epoch AFTER `consumerEpoch` began at [#startOffset()]: it stands for no epoch the
+        /// consumer itself read under.
+        public boolean provesAfter(Epoch consumerEpoch) {
+            return coversFrom.compareTo(consumerEpoch) > 0;
         }
     }
 
