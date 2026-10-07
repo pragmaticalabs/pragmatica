@@ -22,6 +22,8 @@ import org.pragmatica.http.ContentType;
 import org.pragmatica.http.HttpStatus;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Unit;
 
 
 /// Response writer for HTTP handlers.
@@ -34,6 +36,12 @@ public interface ResponseWriter {
     void write(HttpStatus status, byte[] body, ContentType contentType);
     /// Add header to the response. Must be called before write methods.
     ResponseWriter header(String name, String value);
+
+    /// Write and await transport flush completion (not peer acknowledgement). A custom writer must
+    /// implement this capability explicitly; otherwise no response is written and the promise fails.
+    default Promise<Unit> writeAsync(HttpStatus status, byte[] body, ContentType contentType) {
+        return new HttpServerError.StartFailed("Response writer does not support flush completion").promise();
+    }
 
     // Convenience methods
     /// Write successful JSON response.
