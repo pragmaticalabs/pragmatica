@@ -99,6 +99,25 @@ start, which may be older than another node's. A startup `BACKUP_RESTORE_SOURCE_
 **Every core should carry the same `[backup]` section.** Mixed configurations are unsupported: a leader
 without `[backup]` commits DISABLED, which opens the restore gate on the others.
 
+**Replacements carry it too (#1968).** A core that auto-heal replaces is rendered from the committed cluster configuration, so
+put `[backup]` in the source's `node_config` (`[source.<name>.node_config.backup]`): seeds and replacements then boot with the same
+section. The renderer also provides the directory the repository needs: a container node gets the host directory
+`/opt/aether/backups` (owned by the in-container `aether` user) bind-mounted at `[backup] path`, so the repository outlives the
+container; a JVM node gets `path` created on the host before it starts. A **Docker** node has no node TOML of its own: its
+`[backup]` is the four variables `AETHER_BACKUP_ENABLED`, `AETHER_BACKUP_PATH`, `AETHER_BACKUP_REMOTE` and `AETHER_BACKUP_RESTORE`
+(each overrides the same TOML key), which the Docker provider forwards from the leader's environment to every replacement,
+together with a per-node volume for the repository (mounted at `/data` when `path` is under it, else at `path`).
+`[unverified: a Docker leader whose [backup] comes from its TOML rather than the environment does not forward it; the Docker harness
+is environment-only]` `[unverified: nodes started by the CLI's own first-start command (BootstrapPhaseDeploy) still mount no backup
+volume; only replacements and the cloud-init install path do]`
+
+**A leader without `[backup]` over a committed backup is loud, not silent.** If this node becomes leader with no `[backup]` while the
+cluster's committed state says the backup is in use (a committed restore decision other than DISABLED, or a committed cluster
+configuration that enables it), it keeps the committed setting, commits nothing, and raises `BACKUP_CONFIG_MISSING` (CRITICAL,
+once per leadership term). It raises `BACKUP_CONFIG_RESTORED` (INFO, only after the warning) when it stops leading. It does not
+refuse the decision: that would hold the restore gate closed and refuse every cluster-state write for as long as the node leads.
+Fix it by restarting the node with the cluster's `[backup]`, or by moving leadership to a node that has it.
+
 ## Storage metadata snapshots — a separate mechanism, per node, per storage instance
 
 Each storage instance (`artifacts`, `content`, `streams`, …) also keeps its OWN metadata snapshots
@@ -197,6 +216,8 @@ mode; a remote that needs credentials the process does not hold fails, and the b
 |------|---------|-----------------|
 | `BACKUP_GATED` | The head belongs to another lineage | Restore it, or `aether backup declare-genesis` to make this cluster the head |
 | `BACKUP_FORKED` | Another cluster (a different incarnation id) holds the head at this cluster's own lineage and incarnation (two clusters restored from the same backup) | Retire one cluster; run `aether backup declare-genesis` on the one whose state continues |
+| `backup-config-missing` (cluster event, `OPERATOR_WARNING`) | This leader has no `[backup]` while the committed state says the backup is in use; nothing is backed up while it leads (#1968) | Restart it with the cluster's `[backup]` (or `AETHER_BACKUP_*`), or move leadership |
+| `backup-config-restored` (INFO) | The leader that lacked `[backup]` no longer leads | None; a new leader without `[backup]` raises the warning again |
 | `BACKUP_HEAD_AHEAD` | The head of this lineage stayed ahead of this cluster for > 30 s; nothing is backed up meanwhile | If the warning names a **higher incarnation**, another cluster took over this lineage's backup (a `declare-genesis` or a later restore) and this cluster will never write again: stop it or point its `[backup]` elsewhere. At the **same** incarnation, a later revision of this cluster holds the head; it writes again once its revision passes the head's |
 | `BACKUP_HEAD_REPLACED` | This cluster's state replaced a newer head | The replaced commit is in git history; inspect it |
 | `BACKUP_REMOTE_UNREADABLE` | The head cannot be decoded | Repair or move the head |
