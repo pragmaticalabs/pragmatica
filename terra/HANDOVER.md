@@ -26,10 +26,14 @@ Clean focused validation passed 158 tests: 36 transport, 25 routing adapter, 83 
 
 ## Current next step
 
-The user authorized autonomous work for the next few hours toward a working Terra and as many unchanged examples as practical, including investigation of streams and durable entities. Next implement executable distribution/blueprint artifact assembly, preserve per-slice configuration ownership, and broaden examples (ecommerce, URL shortener, and step composition are candidates). Assess local stream/entity storage and recovery before claiming support; current processor refusal remains in place. Continue making cohesive validated local commits; do not push or merge.
+The user authorized autonomous work for the next few hours toward a working Terra and as many unchanged examples as practical, including investigation of streams and durable entities. Executable assembly is now implemented and verified. Next broaden examples (ecommerce, URL shortener, and step composition are candidates). Assess local stream/entity storage and recovery before claiming support; current processor refusal remains in place. Continue making cohesive validated local commits; do not push or merge.
 
 ## Build hygiene
 
 Use the isolated Maven repository required by `CLAUDE.md`; do not write shared `~/.m2`. The developer checkout has a local absolute repository setting in `.mvn/maven.config`, protected with `skip-worktree`, and `.m2-local/` excluded via `.git/info/exclude`. Keep these machine-specific settings out of commits. Maven uses Java 25; ensure the same JDK when launching the demo.
 
 Changelog fragments currently use provisional number `0`; rename them when a real issue/PR number exists. Workspace-level `AGENTS.md` and the detailed investigation handover live outside the repository; this file carries the portable implementation handover.
+
+## Executable assembly increment
+
+`terra/launcher` and `terra/maven-plugin` now produce an attached ZIP from Maven runtime JARs, with blueprint-selected factories, isolated JAR defaults, explicit override layers, host configuration, migration preflight, and shutdown hooks. See `launcher/README.md`. Clean validation passed 36 tests plus all touched JBCT gates; four opt-in database tests skipped. Extracted distribution served unchanged Catalog outside the checkout and shut down on SIGTERM. Windows script is supplied but untested. Maven dependency declarations locate candidate JARs; the assembler does not independently rebuild/resolve blueprint coordinates.

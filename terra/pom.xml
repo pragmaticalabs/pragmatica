@@ -11,6 +11,8 @@
     <modules>
         <module>runtime</module>
         <module>http</module>
+        <module>launcher</module>
+        <module>maven-plugin</module>
         <module>examples</module>
     </modules>
 </project>

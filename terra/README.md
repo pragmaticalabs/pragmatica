@@ -2,7 +2,7 @@
 
 Terra compiles the same slice sources as Aether into a single-process application. The implementation provides typed construction, blueprint selection, scoped resources, existing interceptor wrappers, ephemeral in-process pub-sub, and startup database migrations. It starts no Aether node.
 
-The [specification](SPEC.md) records the implemented compiler, migration, and HTTP hosting contracts. Executable distribution assembly is the next milestone. PostgreSQL startup is exercised with the unchanged ecommerce InventoryService.
+The [specification](SPEC.md) records the implemented compiler, migration, and HTTP hosting contracts. Executable distribution assembly is available through `terra:assemble`; see [the launcher guide](launcher/README.md). PostgreSQL startup is exercised with the unchanged ecommerce InventoryService.
 
 ## Existing examples
 
@@ -36,9 +36,9 @@ Terra shares annotation analysis, resource injection, factory return handling, i
 
 `TerraBlueprint.parse(toml)` returns the application selection. `TerraApplication.start(blueprint, configurationForArtifact)` discovers generated descriptors and provisions resources through the existing SPI. The overload accepting descriptors and a `ResourceProviderFacade` supports explicit embedding. Retrieve an entry point with `application.slice(MySlice.class)` and await `application.close()` during shutdown.
 
-Every selected dependency must appear in the blueprint with its exact generated coordinate. Dependencies are constructed first; injected instances retain their interceptor wrappers. This increment accepts blueprint identity and slice selection, including deployment-only scaling fields, and refuses unsupported sections. One instance is created per selected slice. Artifact resolution and rebundling an existing Aether blueprint are responsibilities of the future assembler.
+Every selected dependency must appear in the blueprint with its exact generated coordinate. Dependencies are constructed first; injected instances retain their interceptor wrappers. This increment accepts blueprint identity and slice selection, including deployment-only scaling fields, and refuses unsupported sections. One instance is created per selected slice. The assembler obtains Terra-built candidate JARs from Maven runtime dependencies and checks this selection.
 
-Configuration is explicit and scoped per slice. Supply resource sections through the configuration provider; JAR-local defaults are not merged automatically. Existing LOCAL cache factories are reused. Other SPI resources require their dependencies and configuration; database startup uses the explicit migration path below, while distributed collaborators remain outside Terra’s supported runtime.
+Configuration is explicit and scoped per slice. Supply resource sections through the configuration provider; The executable launcher reads each owning JAR’s defaults separately; embedding callers supply their own providers. Existing LOCAL cache factories are reused. Other SPI resources require their dependencies and configuration; database startup uses the explicit migration path below, while distributed collaborators remain outside Terra’s supported runtime.
 
 ## Pub-sub contract
 
@@ -80,3 +80,15 @@ Without that property, the PostgreSQL test is explicitly skipped. The proof cove
 ## HTTP hosting
 
 The `terra-http` module hosts the generated routers over HTTP/1.1 or TLS and owns graceful application shutdown. It supports path/header API version selection, API-key and JWT authentication, route policy enforcement, and health probes. See [the host guide](http/README.md) for configuration, ownership, and drain semantics. `TerraCatalogHttpTest` drives the unchanged Catalog source through real listeners in both versioning modes, including JSON, CSV, binary payloads, and typed failures.
+
+## Run the standalone distribution
+
+```sh
+mvn -pl terra/examples -am install -DskipTests
+export JAVA_HOME=/path/to/jdk-25
+sh terra/examples/target/terra-examples-terra/bin/terra --check
+sh terra/examples/target/terra-examples-terra/bin/terra
+curl http://localhost:8080/api/catalog/v2/items
+```
+
+The ZIP at `terra/examples/target/terra-examples-1.0.0-rc4-terra.zip` includes its dependencies and can run outside the repository. The example explicitly uses public default routes; configure API keys or JWT for protected deployments.
