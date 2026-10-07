@@ -12,6 +12,7 @@ import java.util.Map;
 import java.util.Set;
 
 import org.pragmatica.aether.environment.CloudConfig;
+import org.pragmatica.aether.environment.ClusterIdentityEnv;
 import org.pragmatica.config.toml.TomlDocument;
 import org.pragmatica.config.toml.TomlParser;
 import org.pragmatica.lang.Cause;
@@ -438,16 +439,35 @@ public final class ConfigLoader {
     }
 
     private static void populateBackupConfig(TomlDocument doc, AetherConfig.Builder builder) {
-        var enabled = doc.getString("backup", "enabled").map(ConfigLoader::toBooleanValue).or(false);
+        backupConfigFrom(doc, System::getenv).onPresent(builder::backup);
+    }
 
-        if (enabled) {
-            var path = doc.getString("backup", "path").or("");
-            var remote = doc.getString("backup", "remote").or("");
-            var restore = BackupConfig.RestoreMode.restoreMode(doc.getString("backup", "restore").or("auto")).getOrThrow(IllegalArgumentException::new,
-                                                                                                                         "invalid [backup]");
+    /// `[backup]` (#1532/#1533), each key overridable by its `AETHER_BACKUP_*` environment variable (#1968): a node minted
+    /// without a TOML of its own (a Docker replacement) receives the backup configuration from its provisioner's
+    /// environment, and an env-only compose cluster configures it the same way. Environment wins per key, as `AETHER_API_KEYS`
+    /// does. Empty when the merged `enabled` is false.
+    static Option<BackupConfig> backupConfigFrom(TomlDocument doc,
+                                                 org.pragmatica.lang.Functions.Fn1<String, String> env) {
+        var enabled = envValue(env, ClusterIdentityEnv.BACKUP_ENABLED).orElse(doc.getString("backup", "enabled"))
+                              .map(ConfigLoader::toBooleanValue)
+                              .or(false);
 
-            builder.backup(BackupConfig.backupConfig(true, path, remote, restore));
+        if (!enabled) {
+            return Option.empty();
         }
+
+        var path = envValue(env, ClusterIdentityEnv.BACKUP_PATH).orElse(doc.getString("backup", "path")).or("");
+        var remote = envValue(env, ClusterIdentityEnv.BACKUP_REMOTE).orElse(doc.getString("backup", "remote")).or("");
+        var restore = BackupConfig.RestoreMode.restoreMode(envValue(env, ClusterIdentityEnv.BACKUP_RESTORE).orElse(doc.getString("backup",
+                                                                                                                                 "restore"))
+                                                                   .or("auto")).getOrThrow(IllegalArgumentException::new,
+                                                                                           "invalid [backup]");
+
+        return Option.some(BackupConfig.backupConfig(true, path, remote, restore));
+    }
+
+    private static Option<String> envValue(org.pragmatica.lang.Functions.Fn1<String, String> env, String name) {
+        return Option.option(env.apply(name)).filter(value -> !value.isBlank());
     }
 
     private static void populateDhtReplicationConfig(TomlDocument doc, AetherConfig.Builder builder) {

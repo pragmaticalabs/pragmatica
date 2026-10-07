@@ -57,6 +57,16 @@ public sealed interface ClusterIdentityEnv {
     List<String> NODE_OWN_VARS = List.of("AETHER_ROLE", "AETHER_SOURCE", "AETHER_ZONE");
     /// Docker-specific infrastructure env vars (network + docker group id).
     List<String> DOCKER_INFRA_VARS = List.of("AETHER_DOCKER_NETWORK", "DOCKER_GID");
+    /// `[backup]` as environment (#1968): `ConfigLoader` lets each of these override the same key of the node's `[backup]`
+    /// TOML section, and a provider that mints a node WITHOUT a TOML of its own (the Docker provider: environment and the
+    /// image's baked config only) forwards them from the provisioning host, so a replacement carries the same backup
+    /// configuration as its siblings. Without this, a replacement that became leader had no `[backup]` and the backup silently
+    /// stopped. Deliberately not in [#IDENTITY_VARS]: they describe a feature the node runs, not the cluster's identity.
+    String BACKUP_ENABLED = "AETHER_BACKUP_ENABLED";
+    String BACKUP_PATH = "AETHER_BACKUP_PATH";
+    String BACKUP_REMOTE = "AETHER_BACKUP_REMOTE";
+    String BACKUP_RESTORE = "AETHER_BACKUP_RESTORE";
+    List<String> BACKUP_VARS = List.of(BACKUP_ENABLED, BACKUP_PATH, BACKUP_REMOTE, BACKUP_RESTORE);
     /// Insecure dev-mode flag. Isolated from [#IDENTITY_VARS] on purpose — propagated
     /// only via a standalone block so it can never silently inherit into production.
     String INSECURE_DEV_MODE = "AETHER_INSECURE_DEV_MODE";

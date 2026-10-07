@@ -464,6 +464,54 @@ class DockerComputeProviderTest {
             assertThat(command).noneMatch(arg -> arg.startsWith("AETHER_ZONE="));
         }
 
+        /// #1968: a replacement carries the same `[backup]` its siblings have. A Docker node has no TOML of its own, so the four
+        /// `AETHER_BACKUP_*` variables are forwarded from the provisioning host, and the repository path gets a per-node volume.
+        @Test
+        void buildRunCommand_hostHasBackupEnv_replacementGetsTheSameBackupAndAVolume() {
+            var command = replacementCommand(Map.of("AETHER_BACKUP_ENABLED", "true",
+                                                    "AETHER_BACKUP_PATH", "/data/backups",
+                                                    "AETHER_BACKUP_REMOTE", "git@backups.example.com:ops/c.git",
+                                                    "AETHER_BACKUP_RESTORE", "auto"));
+
+            assertThat(command).contains("AETHER_BACKUP_ENABLED=true",
+                                         "AETHER_BACKUP_PATH=/data/backups",
+                                         "AETHER_BACKUP_REMOTE=git@backups.example.com:ops/c.git",
+                                         "AETHER_BACKUP_RESTORE=auto");
+            var name = command.get(command.indexOf("--name") + 1);
+
+            assertThat(command).as("the repository path lives on a per-node volume under the image-owned /data").contains(name + "-backup:/data");
+        }
+
+        @Test
+        void buildRunCommand_backupPathOutsideData_isMountedWhereItPoints() {
+            var command = replacementCommand(Map.of("AETHER_BACKUP_ENABLED", "true", "AETHER_BACKUP_PATH", "/var/aether/backups"));
+            var name = command.get(command.indexOf("--name") + 1);
+
+            assertThat(command).contains(name + "-backup:/var/aether/backups");
+        }
+
+        /// The control for both: no backup in the host environment means no backup variables and no backup volume, and a
+        /// disabled one mounts nothing.
+        @Test
+        void buildRunCommand_noBackupInHostEnv_addsNoBackupVariablesOrVolume() {
+            assertThat(replacementCommand(Map.of())).noneMatch(arg -> arg.startsWith("AETHER_BACKUP_") || arg.endsWith("-backup:/data"));
+            assertThat(replacementCommand(Map.of("AETHER_BACKUP_ENABLED", "false", "AETHER_BACKUP_PATH", "/data/backups")))
+                .noneMatch(arg -> arg.contains("-backup:"));
+        }
+
+        private List<String> replacementCommand(Map<String, String> hostEnv) {
+            var backupProvider = DockerComputeProvider.dockerComputeProvider(testRunner, CONFIG, hostEnv::get).unwrap();
+            testRunner.queuedResponses.add(Promise.success("id-0"));
+            testRunner.queuedResponses.add(Promise.success(RUNNING_INSPECT));
+            var ctx = ProvisionContext.provisionContext(maybeClusterName("test-cluster"), "core", sourceNameOrDefault("eu-west"),
+                                                         ProvisionContext.PROVISIONED_BY_BOOTSTRAP);
+            var spec = ProvisionSpec.provisionSpec(InstanceType.ON_DEMAND, "docker", "core-pool", ctx).unwrap();
+
+            backupProvider.provision(spec).await().onFailure(cause -> fail("Expected success but got: " + cause.message()));
+
+            return testRunner.allCommands.getFirst();
+        }
+
         @Test
         void buildRunCommand_emptyCluster_noLongerYieldsDefault() {
             // ctx with an empty cluster name + bootstrap origin (passes preflight). The old

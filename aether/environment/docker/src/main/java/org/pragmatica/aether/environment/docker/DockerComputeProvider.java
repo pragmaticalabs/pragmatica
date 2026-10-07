@@ -349,6 +349,10 @@ public record DockerComputeProvider(DockerCommandRunner runner, DockerConfig con
                                         .filter(name -> !ClusterIdentityEnv.NODE_OWN_VARS.contains(name))
                                         .forEach(name -> propagateEnvVar(command, name));
         ClusterIdentityEnv.DOCKER_INFRA_VARS.forEach(name -> propagateEnvVar(command, name));
+        // #1968: the backup configuration is environment-driven for a Docker node (it has no node TOML of its own), so a
+        // replacement inherits it from the provisioning host's environment, and gets a volume for the repository path.
+        ClusterIdentityEnv.BACKUP_VARS.forEach(name -> propagateEnvVar(command, name));
+        addBackupVolume(command, containerName);
         // --- Dev-mode (ISOLATED — never part of IDENTITY_VARS) ---
         // Propagate AETHER_INSECURE_DEV_MODE only when present in env so an auto-healed
         // replacement inherits the dev-mode posture of its siblings (dev-gated routes
@@ -382,6 +386,27 @@ public record DockerComputeProvider(DockerCommandRunner runner, DockerConfig con
         command.add(config.imageName());
 
         return List.copyOf(command);
+    }
+
+    /// A per-node named volume for the backup repository, only when the backup is enabled with a path in the environment
+    /// being forwarded. The repository is `<path>/kv-backup`; without a volume it lives in the container's writable layer and
+    /// dies with the node, and a path the image does not own is root-owned and unwritable by the node user. The image owns
+    /// `/data`, so a path under it mounts `/data` (the volume is initialised from the image's ownership); any other path
+    /// is mounted as given. Per node, never shared: two nodes must not write one git working tree.
+    private void addBackupVolume(ArrayList<String> command, String containerName) {
+        var enabled = Boolean.parseBoolean(Option.option(hostEnv.apply(ClusterIdentityEnv.BACKUP_ENABLED)).or(""));
+        var path = Option.option(hostEnv.apply(ClusterIdentityEnv.BACKUP_PATH)).or("");
+
+        if (!enabled || path.isBlank()) {
+            return;
+        }
+
+        var target = path.startsWith("/data/") || path.equals("/data")
+                     ? "/data"
+                     : path;
+
+        command.add("-v");
+        command.add(containerName + "-backup:" + target);
     }
 
     private void propagateEnvVar(ArrayList<String> command, String name) {
