@@ -426,6 +426,13 @@ public final class OwnerActivation {
     /// The refused-lineage-commit block (#1976), in a slot of its own: it is an independent condition, so a block of another
     /// kind reported for the partition neither replaces it nor ends it.
     private final Map<PartitionKey, ActivationBlock> lineageBlocks = new ConcurrentHashMap<>();
+    /// Raise-before-resolve (#2004): recording a block and raising it, and removing a block and resolving it, each happen under
+    /// this monitor. A clear that lands while a raise is in flight therefore waits for it and delivers [raise, resolve], and a
+    /// clear that lands first leaves nothing to raise; never [resolve, raise], which the aggregator drops as a recovery with no
+    /// open warning, leaving the CRITICAL open. Serialised rather than flagged "reported after the raise" because the raise is a
+    /// log line plus an asynchronous hand-off, and these events fire on a refusal or a transition, not per request. Reentrant, so a
+    /// raise or resolve that calls back into the gate cannot deadlock itself.
+    private final Object alarmOrder = new Object();
     /// When the current run of probe failures started (`System.nanoTime`), per partition.
     private final Map<PartitionKey, Long> unreachableSince = new ConcurrentHashMap<>();
 
@@ -624,7 +631,9 @@ public final class OwnerActivation {
         if (notification.state() == ClusterStateNotification.State.PASSIVE) {
             activated.clear();
             lineageRefusals.clear();
-            lineageBlocks.keySet().forEach(key -> ended(lineageBlocks.remove(key)));
+            synchronized (alarmOrder) {
+                lineageBlocks.keySet().forEach(key -> ended(lineageBlocks.remove(key)));
+            }
         }
     }
 
@@ -712,9 +721,11 @@ public final class OwnerActivation {
 
         var block = new ActivationBlock.LineageRefused(stream, partition, count);
 
-        lineageBlocks.put(key, block);
+        synchronized (alarmOrder) {
+            lineageBlocks.put(key, block);
 
-        return alarm.raise(block);
+            return alarm.raise(block);
+        }
     }
 
     /// A guarded write that was refused is not a failed promise (the applier answers it with a result): the record is
@@ -783,11 +794,14 @@ public final class OwnerActivation {
     /// Also ends a refusal episode (#1976): the count restarts, and a reported [ActivationBlock.LineageRefused] is told as
     /// resolved — the partition activated, or this node stopped claiming it, so the condition no longer holds here. A later
     /// tenure that gets stuck again therefore raises again.
-    private Unit clearBlock(PartitionKey key) {
+    Unit clearBlock(PartitionKey key) {
         lineageRefusals.remove(key);
-        ended(blocks.remove(key));
-        ended(unreachableBlocks.remove(key));
-        ended(lineageBlocks.remove(key));
+        synchronized (alarmOrder) {
+            ended(blocks.remove(key));
+            ended(unreachableBlocks.remove(key));
+            ended(lineageBlocks.remove(key));
+        }
+
         unreachableSince.remove(key);
 
         return Unit.unit();
@@ -843,8 +857,10 @@ public final class OwnerActivation {
         Option.option(blocks.get(key))
               .filter(ActivationBlock.PeerEventExceedsReadCap.class::isInstance)
               .onPresent(block -> {
+                  synchronized (alarmOrder) {
                   if (blocks.remove(key, block)) {
                   ended(block);
+              }
               }
               });
 
@@ -946,9 +962,12 @@ public final class OwnerActivation {
                                                                silent,
                                                                answered.stream().map(PeerWatermark::node).toList(),
                                                                unreachableAlarmAfter);
-            var previous = Option.option(unreachableBlocks.put(key, block));
 
-            previous.filter(block::equals).fold(() -> alarm.raise(block), _ -> Unit.unit());
+            synchronized (alarmOrder) {
+                var previous = Option.option(unreachableBlocks.put(key, block));
+
+                previous.filter(block::equals).fold(() -> alarm.raise(block), _ -> Unit.unit());
+            }
         }
     }
 
@@ -1090,7 +1109,9 @@ public final class OwnerActivation {
     /// Every member answered: the unreachable run is over, and a report of it no longer describes the partition.
     private Unit clearUnreachable(PartitionKey key) {
         unreachableSince.remove(key);
-        ended(unreachableBlocks.remove(key));
+        synchronized (alarmOrder) {
+            ended(unreachableBlocks.remove(key));
+        }
 
         return Unit.unit();
     }
@@ -1326,13 +1347,15 @@ public final class OwnerActivation {
     }
 
     private Unit report(PartitionKey key, ActivationBlock block) {
-        var previous = Option.option(blocks.put(key, block));
+        synchronized (alarmOrder) {
+            var previous = Option.option(blocks.put(key, block));
 
-        previous.filter(last -> last.getClass() != block.getClass()).onPresent(this::ended);
+            previous.filter(last -> last.getClass() != block.getClass()).onPresent(this::ended);
 
-        return previous.filter(block::equals)
-                       .fold(() -> alarm.raise(block),
-                             _ -> Unit.unit());
+            return previous.filter(block::equals)
+                           .fold(() -> alarm.raise(block),
+                                 _ -> Unit.unit());
+        }
     }
 
     private Promise<Unit> pullSuffix(String stream, int partition, PeerWatermark highest) {
