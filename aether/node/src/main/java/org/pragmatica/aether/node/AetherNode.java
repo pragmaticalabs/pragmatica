@@ -4976,6 +4976,9 @@ public interface AetherNode extends ManageableNode {
 
         membershipFsm.onConfirmedDeparture(departed -> {
             onMembershipDeath(departed, dropDeadPeerLink, quorumLossDetectorRef, leaderReconcilerRef);
+            // #1720: a floor-refused operator drain target that has now left closes its refusal on this edge
+            managementServerRef.get()
+                               .onPresent(server -> server.onMemberDeparted(departed));
         });
         // #1777 R1b: the pong cadence the leader already receives is what notices that time passed (the overdue bound)
         // and that a member's departure is now committed (it is no longer waited for, and its report is dropped); no timer

@@ -143,6 +143,12 @@ public interface ManagementServer {
     /// slice-facing interceptors instead of each factory fabricating its own disconnected one.
     MeterRegistry meterRegistry();
 
+    /// A member's departure was confirmed on this node (the FSM's DEAD edge). Lets the operator-drain routes close the
+    /// slice-floor refusal they raised for it (#1720): a refused target that departs gets its recovery on the
+    /// transition, not at the next floor check of some other target.
+    @SuppressWarnings("JBCT-RET-01")
+    void onMemberDeparted(NodeId node);
+
     @SuppressWarnings("JBCT-RET-01")
     void onHttpForwardRequest(HttpForwardRequest request);
 
@@ -244,6 +250,7 @@ class ManagementServerImpl implements ManagementServer {
     private final Consumer<NodeId> drainCommandSink;
     private final Supplier<Set<NodeId>> pendingDrainsSupplier;
     private final NodeLifecycleRoutes.SliceFloor sliceFloor;
+    private final NodeLifecycleRoutes nodeLifecycleRoutes;
 
     private final AtomicReference<Option<HttpForwarder>> mgmtForwarderRef = new AtomicReference<>(Option.empty());
 
@@ -348,10 +355,11 @@ class ManagementServerImpl implements ManagementServer {
         routeSources.add(MetricsRoutes.metricsRoutes(nodeSupplier, observability));
         routeSources.add(DeployRoutes.deployRoutes(nodeSupplier));
         routeSources.add(AbTestRoutes.abTestRoutes(nodeSupplier));
-        routeSources.add(NodeLifecycleRoutes.nodeLifecycleRoutes(nodeSupplier,
-                                                                 drainCommandSink,
-                                                                 pendingDrainsSupplier,
-                                                                 sliceFloor));
+        this.nodeLifecycleRoutes = NodeLifecycleRoutes.nodeLifecycleRoutes(nodeSupplier,
+                                                                           drainCommandSink,
+                                                                           pendingDrainsSupplier,
+                                                                           sliceFloor);
+        routeSources.add(nodeLifecycleRoutes);
         routeSources.add(ScheduledTaskRoutes.scheduledTaskRoutes(scheduledTaskRegistry,
                                                                  scheduledTaskManager,
                                                                  nodeSupplier,
@@ -1461,6 +1469,11 @@ class ManagementServerImpl implements ManagementServer {
     @Override
     public void onHttpForwardResponse(HttpForwardResponse response) {
         ensureMgmtForwarder().onPresent(fwd -> fwd.onHttpForwardResponse(response));
+    }
+
+    @Override
+    public void onMemberDeparted(NodeId node) {
+        nodeLifecycleRoutes.onMemberDeparted(node);
     }
 
     @SuppressWarnings({"JBCT-RET-01", "JBCT-PAT-01"})

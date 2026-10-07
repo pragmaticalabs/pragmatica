@@ -463,6 +463,13 @@ public final class NodeLifecycleRoutes implements RouteSource {
         }
     }
 
+    /// The transition itself: the membership FSM confirmed `node` DEAD on this node. A target refused by the slice floor
+    /// that has now left gets its recovery event here, without waiting for another operator request to reach the floor
+    /// check. Shares the admission monitor, so it cannot interleave with an admission of the same target.
+    public synchronized void onMemberDeparted(NodeId node) {
+        sliceFloor.onPresent(floor -> raiseFloorRecovery(floor, node, "drain", "the node left the membership"));
+    }
+
     /// A refused target that has since left the membership will never be admitted, so its refusal would stay open in
     /// the event feed for good: close it with the recovery event, naming why, and forget the target.
     private void closeRefusalsOfDepartedTargets(SliceFloor floor) {

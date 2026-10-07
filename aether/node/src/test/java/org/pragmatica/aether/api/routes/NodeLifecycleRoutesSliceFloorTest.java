@@ -370,6 +370,43 @@ class NodeLifecycleRoutesSliceFloorTest {
                                      .containsExactly(OperatorWarningCode.SLICE_FLOOR_DRAIN_REFUSED);
     }
 
+    /// Owner rule: the recovery arrives on the TRANSITION. Refuse, the target dies, and then no operator request ever
+    /// reaches the floor check again: the departure edge alone must close the refusal.
+    @Test
+    void refusedTargetThatDeparts_getsItsRecoveryOnTheDepartureEdge_withNoFurtherRequests() {
+        var routes = routes();
+        host(slice("a", 3, 2), node(1), node(2), node(3));
+        pendingDrains.add(node(1));
+        breach(routes.drainNodeForTest(node(2).id()).await());
+
+        routes.onMemberDeparted(node(2));
+
+        var raised = awaitWarnings(2);
+
+        assertThat(raised).extracting(OperatorWarning::code)
+                          .containsExactly(OperatorWarningCode.SLICE_FLOOR_DRAIN_REFUSED,
+                                           OperatorWarningCode.SLICE_FLOOR_DRAIN_ADMITTED);
+        assertThat(raised.get(1).subject()).isEqualTo(node(2).id());
+        assertThat(raised.get(1).message()).contains("left the membership");
+    }
+
+    /// Control: the departure of a target that was never refused raises nothing, and a second edge for the same target
+    /// raises nothing more.
+    @Test
+    void departureOfATargetThatWasNeverRefused_raisesNothing_andARepeatedEdgeIsIdempotent() {
+        var routes = routes();
+        host(slice("a", 3, 2), node(1), node(2), node(3));
+        pendingDrains.add(node(1));
+        routes.onMemberDeparted(node(3));
+        breach(routes.drainNodeForTest(node(2).id()).await());
+        routes.onMemberDeparted(node(2));
+        routes.onMemberDeparted(node(2));
+
+        assertThat(settledWarnings()).extracting(OperatorWarning::code)
+                                     .containsExactly(OperatorWarningCode.SLICE_FLOOR_DRAIN_REFUSED,
+                                                      OperatorWarningCode.SLICE_FLOOR_DRAIN_ADMITTED);
+    }
+
     @Test
     void refusalMessage_namesTheCliFlag_asWellAsTheQueryParameter() {
         host(slice("a", 3, 2), node(1), node(2), node(3));
