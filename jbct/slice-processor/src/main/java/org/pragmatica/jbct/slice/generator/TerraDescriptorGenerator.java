@@ -9,10 +9,14 @@ import java.util.LinkedHashSet;
 import java.util.Map;
 import java.util.Set;
 import javax.annotation.processing.ProcessingEnvironment;
+import javax.lang.model.element.Modifier;
+import javax.lang.model.util.ElementFilter;
 import javax.tools.Diagnostic;
 import javax.tools.StandardLocation;
 
 import org.pragmatica.jbct.slice.model.ResolvedTopicConstant;
+import org.pragmatica.jbct.slice.model.DependencyModel;
+import org.pragmatica.jbct.slice.model.ResourceQualifierModel;
 import org.pragmatica.jbct.slice.model.SliceModel;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
@@ -42,17 +46,8 @@ public final class TerraDescriptorGenerator {
             return refuse(model, "Terra does not yet support live configuration callbacks");
         }
 
-        for (var dependency : java.util.stream.Stream.concat(model.dependencies().stream(),
-                                                             model.plainInterfaceModels()
-                                                                  .stream()
-                                                                  .flatMap(step -> step.dependencies()
-                                                                                       .stream()))
-                                                     .toList()) {
-            if (dependency.isStreamResource() || dependency.resourceQualifier()
-                                                           .map(q -> q.resourceType()
-                                                                      .toString()
-                                                                      .contains("DurableEntity"))
-                                                           .or(false)) {
+        for (var dependency : model.dependencies()) {
+            if (dependency.resourceQualifier().map(this::unsupportedResource).or(false) || dependency.isPlainInterface() && unsupportedStepResource(dependency)) {
                 return refuse(model, "Terra does not support streams or durable entities");
             }
         }
@@ -72,6 +67,32 @@ public final class TerraDescriptorGenerator {
         }
 
         return true;
+    }
+
+    private boolean unsupportedResource(ResourceQualifierModel qualifier) {
+        var type = qualifier.resourceType().toString();
+
+        return type.equals("org.pragmatica.aether.slice.StreamPublisher") || type.equals("org.pragmatica.aether.slice.StreamAccess") || type.contains("DurableEntity");
+    }
+
+    // PlainInterfaceModel currently leaves dependencies empty. Inspect the same factory
+    // parameters used by FactoryClassGenerator instead of relying on that placeholder list.
+    private boolean unsupportedStepResource(DependencyModel step) {
+        var type = environment.getElementUtils().getTypeElement(step.interfaceQualifiedName());
+        var factoryName = FactoryClassGenerator.lowercaseFirst(step.interfaceSimpleName());
+
+        return ElementFilter.methodsIn(type.getEnclosedElements())
+                            .stream()
+                            .filter(method -> method.getModifiers()
+                                                    .contains(Modifier.STATIC) && method.getSimpleName()
+                                                                                        .contentEquals(factoryName))
+                            .findFirst()
+                            .stream()
+                            .flatMap(method -> method.getParameters()
+                                                     .stream())
+                            .anyMatch(parameter -> ResourceQualifierModel.fromParameter(parameter, environment)
+                                                                         .map(this::unsupportedResource)
+                                                                         .or(false));
     }
 
     private boolean refuse(SliceModel model, String message) {

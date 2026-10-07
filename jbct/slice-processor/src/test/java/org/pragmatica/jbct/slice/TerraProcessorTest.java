@@ -122,4 +122,31 @@ class TerraProcessorTest {
         com.google.testing.compile.CompilationSubject.assertThat(compilation).failed();
         com.google.testing.compile.CompilationSubject.assertThat(compilation).hadErrorContaining("Unknown slice.target");
     }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {"org.pragmatica.aether.slice.StreamPublisher", "org.pragmatica.aether.slice.StreamAccess", "sample.Flow.DurableEntity"})
+    void process_plainStepPersistentResource_refusesBeforeGeneratingUnsupportedProvisioning(String resourceType) {
+        var compilation = compile("sample.Flow", """
+            package sample;
+            import java.lang.annotation.*;
+            import org.pragmatica.aether.slice.annotation.*;
+
+            import org.pragmatica.lang.*;
+            @Slice public interface Flow {
+                Promise<String> echo(String input);
+                @Retention(RetentionPolicy.RUNTIME) @Target(ElementType.PARAMETER)
+                @ResourceQualifier(type=RESOURCE_TYPE.class, config="events")
+                @interface Events {}
+                interface DurableEntity<T> {}
+                interface Step {
+                    Promise<String> echo(String input);
+                    static Step step(@Events RESOURCE_TYPE<String> events) { return Promise::success; }
+                }
+                static Flow flow(Step step) { return step::echo; }
+            }
+            """.replace("RESOURCE_TYPE", resourceType));
+        com.google.testing.compile.CompilationSubject.assertThat(compilation).failed();
+        com.google.testing.compile.CompilationSubject.assertThat(compilation).hadErrorContaining("Terra does not support streams or durable entities");
+    }
+
 }
