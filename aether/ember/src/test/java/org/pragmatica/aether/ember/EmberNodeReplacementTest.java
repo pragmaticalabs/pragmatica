@@ -90,7 +90,7 @@ class EmberNodeReplacementTest {
         start(3, "rpf");
         var leader = awaitLeader();
         var victim = followerOf(leader);
-        var watch = Watch.begin(this, 3);
+        var watch = Watch.begin(this, 3).watching(victim.self());
 
         leader.nodeReplacementService().begin(victim.self(), "").await(START_BOUND).onFailure(cause -> throwBecause(cause.message()));
         awaitTerminal(victim.self());
@@ -98,6 +98,8 @@ class EmberNodeReplacementTest {
 
         assertThat(recordOf(victim.self()).phase()).isEqualTo(NodeReplacementPhase.DONE);
         assertThat(result.voterViolations()).as("installed voters == 3 on every sample").isEmpty();
+        assertThat(result.voterSamples()).as("the sampler really looked: voting-node samples").isGreaterThan(100);
+        assertThat(result.phases()).as("the phases walked, in order").contains(NodeReplacementPhase.SWAPPING, NodeReplacementPhase.CANARY, NodeReplacementPhase.DONE);
         assertThat(result.lostAckedWrites()).as("acked writes missing from the final KV").isEmpty();
         assertThat(result.acked()).as("the writer made progress").isGreaterThan(5);
         assertOldGone_newVotes(victim.self());
@@ -109,7 +111,7 @@ class EmberNodeReplacementTest {
         start(3, "rpl");
         var leader = awaitLeader();
         var oldLeader = leader.self();
-        var watch = Watch.begin(this, 3);
+        var watch = Watch.begin(this, 3).watching(oldLeader);
 
         leader.nodeReplacementService().begin(oldLeader, "").await(START_BOUND).onFailure(cause -> throwBecause(cause.message()));
         awaitTerminal(oldLeader);
@@ -119,7 +121,10 @@ class EmberNodeReplacementTest {
         assertThat(recordOf(oldLeader).phase()).isEqualTo(NodeReplacementPhase.DONE);
         assertThat(successor.self()).as("a successor was elected").isNotEqualTo(oldLeader);
         assertThat(result.voterViolations()).as("installed voters == 3 on every sample").isEmpty();
+        assertThat(result.voterSamples()).as("the sampler really looked: voting-node samples").isGreaterThan(100);
+        assertThat(result.phases()).as("the phases walked").contains(NodeReplacementPhase.SWAPPING, NodeReplacementPhase.DONE);
         assertThat(result.lostAckedWrites()).as("acked writes missing from the final KV").isEmpty();
+        assertThat(result.acked()).as("the writer made progress").isGreaterThan(5);
         assertOldGone_newVotes(oldLeader);
     }
 
@@ -286,7 +291,7 @@ class EmberNodeReplacementTest {
 
     /// Samples the installed electorate of every voting node and keeps a writer committing, for the life of a replacement.
     private static final class Watch {
-        record Result(List<String> voterViolations, List<String> lostAckedWrites, int acked) {}
+        record Result(List<String> voterViolations, List<String> lostAckedWrites, int acked, int voterSamples, List<NodeReplacementPhase> phases) {}
 
         private final EmberNodeReplacementTest test;
         private final int expectedVoters;
@@ -294,6 +299,9 @@ class EmberNodeReplacementTest {
         private final List<String> violations = new CopyOnWriteArrayList<>();
         private final List<AetherKey.LogLevelKey> acked = new CopyOnWriteArrayList<>();
         private final AtomicInteger sequence = new AtomicInteger();
+        private final AtomicInteger voterSamples = new AtomicInteger();
+        private final List<NodeReplacementPhase> phases = new CopyOnWriteArrayList<>();
+        private volatile NodeId watched;
         private Thread sampler;
         private Thread writer;
 
@@ -316,12 +324,30 @@ class EmberNodeReplacementTest {
                 for (var node : new ArrayList<>(test.cluster.allNodes())) {
                     var voters = installedVoters(node);
 
+                    if (voters.contains(node.self())) {
+                        voterSamples.incrementAndGet();
+                    }
+
                     if (voters.contains(node.self()) && voters.size() != expectedVoters) {
                         violations.add(node.self().id() + " installed " + voters.size() + " voters: " + voters);
                     }
                 }
+                Option.option(watched).onPresent(this::notePhase);
                 sleep(50);
             }
+        }
+
+        private void notePhase(NodeId original) {
+            Option.option(test.recordOf(original))
+                  .map(NodeReplacementValue::phase)
+                  .filter(phase -> phases.isEmpty() || phases.getLast() != phase)
+                  .onPresent(phases::add);
+        }
+
+        Watch watching(NodeId original) {
+            watched = original;
+
+            return this;
         }
 
         private void write() {
@@ -348,7 +374,7 @@ class EmberNodeReplacementTest {
             var finalLeader = test.awaitLeader();
             var lost = acked.stream().filter(key -> finalLeader.kvStore().get(key).isEmpty()).map(AetherKey.LogLevelKey::loggerName).toList();
 
-            return new Result(List.copyOf(violations), lost, acked.size());
+            return new Result(List.copyOf(violations), lost, acked.size(), voterSamples.get(), List.copyOf(phases));
         }
     }
 
