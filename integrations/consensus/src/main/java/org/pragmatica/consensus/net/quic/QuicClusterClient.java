@@ -195,7 +195,7 @@ public sealed interface QuicClusterClient {
 
 final class QuicClusterClientInstance implements QuicClusterClient {
     private static final Logger log = LoggerFactory.getLogger(QuicClusterClientInstance.class);
-    private static final long HELLO_TIMEOUT_MS = 15_000;
+    private static final long DEFAULT_HELLO_TIMEOUT_MS = 15_000;
     private static final long MAX_IDLE_TIMEOUT_MS = 0;  // Disabled per QUIC RFC 9000 §10.1 — cluster connections are persistent
     private static final long INITIAL_MAX_DATA = 64_000_000;
 
@@ -213,6 +213,15 @@ final class QuicClusterClientInstance implements QuicClusterClient {
                                                     StreamType.FORWARD,
                                                     StreamType.DHT,
                                                     StreamType.SYNC};
+
+    /// The bound on the Hello answer. A field only so a test can shorten it; production leaves the default.
+    private volatile long helloTimeoutMs = DEFAULT_HELLO_TIMEOUT_MS;
+
+    /// Test seam: shorten the Hello bound (applies to dials started after the call).
+    @Contract
+    void helloTimeoutForTest(long millis) {
+        helloTimeoutMs = millis;
+    }
 
     private final NodeId selfId;
     private final NodeAddress selfAddress;
@@ -735,7 +744,7 @@ final class QuicClusterClientInstance implements QuicClusterClient {
         }
 
         private void scheduleHelloTimeout(ChannelHandlerContext ctx) {
-            ctx.executor().schedule(() -> onHelloTimeout(ctx), HELLO_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+            ctx.executor().schedule(() -> onHelloTimeout(ctx), helloTimeoutMs, TimeUnit.MILLISECONDS);
         }
 
         /// #1694: the timeout settles the dial whether or not the channel is still active; it only closes an active one.
@@ -746,7 +755,11 @@ final class QuicClusterClientInstance implements QuicClusterClient {
 
             log.warn("Hello response timeout for peer {}", peerId);
             promise.fail(HELLO_TIMEOUT);
-            if (ctx.channel().isActive()) {
+            // #1933: close the CONNECTION, not just the stream. The QUIC idle timeout is disabled, so a connection whose dial failed
+            // here would otherwise stay "active" for the life of the process, orphaned from every table that could evict it.
+            if (quicChannel.isActive()) {
+                quicChannel.close();
+            } else if (ctx.channel().isActive()) {
                 ctx.close();
             }
         }
