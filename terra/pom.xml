@@ -10,6 +10,7 @@
     <name>Pragmatica Terra</name>
     <modules>
         <module>runtime</module>
+        <module>http</module>
         <module>examples</module>
     </modules>
 </project>

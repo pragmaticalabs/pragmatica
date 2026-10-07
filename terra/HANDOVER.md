@@ -16,9 +16,17 @@ The second increment passed 605 focused tests: 44 shared migration tests, 17 Ter
 
 The isolated local PostgreSQL instance used for verification was stopped. Database tests require `-Dterra.test.jdbcUrl`; without it they explicitly skip. No Forge, cloud, or multi-node validation has been performed. Run the repository's required Forge gate and review before any push involving the deployment changes.
 
+## HTTP increment
+
+The new `terra/http` module hosts selected generated routers over HTTP/1.1 and TLS, in both path and header versioning modes. It enforces the actual selected handler's security policy using shared API-key/JWT verification from `aether/http-security`; the Aether node retains its cluster-key adapter. Startup failure releases owned application/authentication resources; close withdraws readiness, drains accepted handlers and transport flushes, stops the listener, then releases resources. `/__terra/health/live` and `/__terra/health/ready` provide probes; `status()` exposes request/write counters.
+
+Transport prerequisites fix invalid-TLS plaintext fallback, port-zero reporting, and add write-flush completion. A Catalog network regression also exposed shared primitive/composite error mapping; the adapter now preserves client statuses and retains 500 for mixed client/server domain failures.
+
+Clean focused validation passed 158 tests: 36 transport, 25 routing adapter, 83 shared authentication, 11 Terra HTTP, and 3 examples. Four opt-in PostgreSQL tests were skipped in this HTTP-only run (their prior live proof remains recorded above). Another 139 focused Aether HTTP/security tests passed after a clean node build: **297 executed tests**. The downstream node reactor compiled with no skipped modules. HTTP/security/adapter/example and node JBCT gates passed.
+
 ## Current next step
 
-Implement Terra HTTP hosting using the existing generated routers and lower-level HTTP server. Preserve routing/error/version behavior and declared route security, discover only blueprint-selected slice routes, reject collisions, publish readiness only after startup, and drain requests before closing application resources. Authentication policy and supported protocols need explicit contracts. Executable distribution/blueprint artifact assembly follows after HTTP.
+The user authorized autonomous work for the next few hours toward a working Terra and as many unchanged examples as practical, including investigation of streams and durable entities. Next implement executable distribution/blueprint artifact assembly, preserve per-slice configuration ownership, and broaden examples (ecommerce, URL shortener, and step composition are candidates). Assess local stream/entity storage and recovery before claiming support; current processor refusal remains in place. Continue making cohesive validated local commits; do not push or merge.
 
 ## Build hygiene
 

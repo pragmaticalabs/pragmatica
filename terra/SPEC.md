@@ -84,3 +84,38 @@ Executed on 2026-10-07:
 - `git diff --check` passed. The isolated PostgreSQL instance was stopped after validation.
 
 This is **605 focused tests** for the second increment. Container-dependent Aether database tests and Forge/multi-node validation were not part of this run. No cross-process exclusion, other-dialect live proof, production HTTP listener, or executable-distribution claim is made. No migration execution/history algorithm was intentionally changed during extraction; existing engine limitations (including nontransactional checkpoint crash windows) remain.
+
+
+## HTTP hosting milestone
+
+The third increment provides an owned network host around a ready Terra application. It does not yet define executable distribution assembly.
+
+1. Discover shared generated router factories and expose only selected slices. Refuse duplicate factories, incompatible route-security contracts, duplicate identities, reserved management paths, unknown security policy types, and cross-slice ownership of the same method/base path. The shared router retains path-shape, media type, typed error, and API version behavior.
+2. Support both path and header API version mounting. Handler authorization must occur after selecting the actual version and shape. Header-mode owner lookup must not prematurely apply another version's path shape. Retain default/required version behavior and deprecation/sunset response headers.
+3. Extract existing API-key and JWT/JWKS verification into a shared module, retaining Aether's cluster-key adapter. Resolve undeclared route security to an explicit runtime default, authenticate off transport event loops, then enforce the actual route policy. Public routes have no credential requirement. Provide verified request/security scope to handlers and support injected authenticators. Close owned authentication resources.
+4. Serve buffered HTTP/1.1 with optional TLS and existing body limits. Failed TLS construction must fail startup, never open plaintext. Port zero must report the bound port. WebSocket/streaming transport bypasses are rejected; HTTP/2 and HTTP/3 hosting are separate future capabilities.
+5. Transfer ownership of the application and authenticator at startup, cleaning both after validation/bind failure. Publish readiness after successful application startup and binding. On close, reject new application requests, withdraw readiness, drain accepted handlers and response transport flushes, stop the listener, then close application resources and authentication resources. Preserve cleanup failures, continue cleanup after failure, and make close idempotent. A caller timeout does not terminate actual work or release resources early. No forced drain deadline is implied.
+6. Expose credential-free liveness/readiness probes under reserved `/__terra/health/` paths and a local status snapshot with in-flight requests, accepted requests, and failed writes. Prove network behavior with unchanged Catalog, real signed JWTs/local JWKS, API keys, TLS, failed startup, and slow-request shutdown. Keep Aether's focused HTTP/security regressions passing.
+
+Shared adapter tests additionally pin malformed primitive parameter errors as HTTP 400 and consistently mapped composite domain failures at their declared status. Mixed client/server domain failures retain HTTP 500.
+
+
+## Third increment reconciliation
+
+| Clause | Status | Evidence |
+| --- | --- | --- |
+| 1. Selected routes and validation | DONE | `TerraHttpRoutes` binds only selected slice types and validates factory/security/route identity contracts. Live tests pin selection and duplicate refusal. |
+| 2. Version selection | DONE | Shared `SliceRouter` preserves version selection and headers; authorization decorates the actual handler. Tests cover version-specific security, required headers, fallback, and a path prefix belonging to another version. |
+| 3. Shared authentication | DONE | `http-security` contains existing API-key/JWT implementations; the node adapts them. Tests exercise named API keys, role refusals, scoped principals, real RSA signatures and a live local JWKS endpoint, expiry/issuer checks, and forged signatures. |
+| 4. HTTP transport | DONE | Live HTTP/HTTPS tests pass. Invalid TLS fails startup, ephemeral ports report correctly, and response writes expose completion and failure. Unsupported WebSocket/streaming transport options are rejected. |
+| 5. Ownership and shutdown | DONE | Live slow-request test proves withdrawal of readiness/admission and response completion before resource release, including a timed-out shutdown caller. Failed-bind and duplicate-route tests prove owned cleanup; writes after transport close report failure. |
+| 6. Probes and external proof | DONE | Live readiness/liveness endpoints and local `status()` snapshot are implemented. Original Catalog serves JSON/CSV/binary/typed errors over both version modes; Aether adapter regressions pass. |
+
+Executed on 2026-10-07/08 with the isolated Maven repository and JDK 25:
+
+- Clean install of `integrations/net/http-server,aether/http-security,aether/http-routing-adapter,terra/http,terra/examples`: **157 executed tests passed**, with four opt-in PostgreSQL tests explicitly skipped in this HTTP-only run.
+- `aether/node clean test -Dtest='AppHttpServer*Test,*SecurityValidator*Test,*Authorization*Test,*AdminKey*Test'`: **139 tests passed**. Cleaning removes stale classes after authentication extraction.
+- Downstream `aether/node -am install -DskipTests`: successful reactor, no skipped modules.
+- Explicit JBCT format/check passed for HTTP adapter, shared authentication, Terra HTTP, and examples; the node gate also passed. A subsequent HTTP-only check added a null-promise defect test (11 host tests total) and passed format/lint/install.
+
+This is **297 executed focused tests** for the HTTP increment. No cloud, Forge, multi-node, HTTP/2, or Terra HTTP/3 host proof is claimed. The transport regression suite includes its existing HTTP/3 shutdown tests, independently of Terra hosting. Executable process packaging remains the next milestone.
