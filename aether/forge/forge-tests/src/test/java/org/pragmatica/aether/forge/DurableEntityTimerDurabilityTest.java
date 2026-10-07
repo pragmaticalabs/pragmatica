@@ -137,6 +137,7 @@ class DurableEntityTimerDurabilityTest {
     private static final EntityPartitionArc ARC = EntityPartitionArc.entityPartitionArc(KEYSPACE, ENTITY_PARTITIONS);
 
     private static final Duration WAIT_TIMEOUT = Duration.ofSeconds(240);
+    private static final Duration STORAGE_SETTLE_TIMEOUT = Duration.ofSeconds(60);
     private static final Duration POLL_INTERVAL = Duration.ofMillis(500);
 
     /// The handover gate's delay. It must comfortably outlive create + schedule + the pre-kill read — the
@@ -536,8 +537,18 @@ class DurableEntityTimerDurabilityTest {
         assertThat(responses).describedAs("every node must have answered").hasSize(NODES);
         assertThat(created).describedAs("exactly one attempt may create '%s'; got %s", key, outcomesOf(responses))
                            .hasSize(1);
-        assertThat(rejectionTypesOf(responses)).describedAs("every later attempt must surface the owner's duplicate refusal (#596)")
-                                               .containsOnly("EntityAlreadyExists");
+        // A node whose entity storage is still loading answers `StorageUnavailable` (a typed, transient refusal) instead of relaying the
+        // owner's verdict; right after a full-cluster restart that is the common case (measured: 1 of 2 runs of the handover gate after
+        // the restart gate, 0 of 3 when it runs alone). Re-offering the key is idempotent, so the duplicate refusal is awaited, bounded;
+        // a node that never stops saying `StorageUnavailable` still fails the gate.
+        var settleStartedAt = System.nanoTime();
+
+        await().atMost(STORAGE_SETTLE_TIMEOUT)
+               .pollInterval(POLL_INTERVAL)
+               .untilAsserted(() -> assertThat(rejectionTypesOf(appPorts().stream().map(port -> create(port, key, status, amount)).toList()))
+                   .describedAs("every later attempt must surface the owner's duplicate refusal (#596)")
+                   .containsOnly("EntityAlreadyExists"));
+        LOG.log(System.Logger.Level.INFO, "createOnOwner({0}): every later attempt refused with EntityAlreadyExists after {1} ms", key, elapsedMillis(settleStartedAt));
     }
 
     private static List<String> outcomesOf(List<String> responses) {
