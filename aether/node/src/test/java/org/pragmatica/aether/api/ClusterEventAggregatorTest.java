@@ -16,6 +16,7 @@ import org.pragmatica.aether.slice.RetentionMode;
 import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.slice.stream.FrameworkStreamConsumer;
+import org.pragmatica.aether.slice.PublishOutcomeUnknown;
 import org.pragmatica.aether.slice.stream.FrameworkStreamPublisher;
 import org.pragmatica.aether.slice.stream.FrameworkStreamPublishers;
 import org.pragmatica.aether.slice.stream.SystemStreams;
@@ -38,6 +39,8 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.StreamPartitionOwnershipV
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.hlc.HlcTimestamp;
+import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.lang.Option;
 import org.pragmatica.serialization.FrameworkCodecs;
 import org.pragmatica.serialization.SliceCodec;
@@ -356,6 +359,27 @@ class ClusterEventAggregatorTest {
         assertThat(events.get(1)).isInstanceOf(ClusterEvent.StreamIsrRestored.class);
         assertThat(events.get(1).type()).isEqualTo("STREAM_ISR_RESTORED");
         assertThat(events.get(1).severity()).isEqualTo(ClusterEvent.Severity.INFO);
+    }
+
+    /// #1873: a ring rebuilt under an unchanged owner reaches the stream as an INFO event (the commit proves a restart, not a
+    /// loss), with the epochs and the offset the new epoch began at.
+    @Test
+    void streamLineageRestarted_reachesTheEventStream_asInfo_withTheEpochsAndTheStartOffset() {
+        var h = Harness.create();
+        h.aggregator().onStreamLineageRestarted(OperationalEvent.StreamLineageRestarted.streamLineageRestarted("orders", 2, "node-a", "1:1:1", "1:1:2", 7L));
+
+        var events = h.events();
+
+        assertThat(events).hasSize(1);
+        assertThat(events.get(0)).isInstanceOf(ClusterEvent.StreamLineageRestarted.class);
+        assertThat(events.get(0).type()).isEqualTo("STREAM_LINEAGE_RESTARTED");
+        assertThat(events.get(0).severity()).isEqualTo(ClusterEvent.Severity.INFO);
+        assertThat(events.get(0).details()).containsEntry("stream", "orders")
+                                           .containsEntry("partition", "2")
+                                           .containsEntry("owner", "node-a")
+                                           .containsEntry("oldEpoch", "1:1:1")
+                                           .containsEntry("newEpoch", "1:1:2")
+                                           .containsEntry("startOffset", "7");
     }
 
     /// #1730 owner ruling, the cluster-wide path: EVERY node derives the failover event from the same committed
@@ -1217,6 +1241,445 @@ class ClusterEventAggregatorTest {
         assertThat(events.getFirst().details()).containsEntry("suppressedSince", "0");
     }
 
+    private static OperatorWarning diverged(String subject) {
+        return OperatorWarning.operatorWarning(OperatorWarningCode.STREAM_CONSUMER_STATE_DIVERGED, subject, "diverged " + subject);
+    }
+
+    private static OperatorWarning repaired(String subject) {
+        return OperatorWarning.operatorWarning(OperatorWarningCode.STREAM_CONSUMER_STATE_REPAIRED, subject, "repaired " + subject);
+    }
+
+    private List<String> codes(Harness h) {
+        return h.events().stream().map(event -> event.details().get("code")).toList();
+    }
+
+    /// #752: a WarningLevel.INFO code maps to ClusterEvent.Severity.INFO, not WARNING.
+    @Test
+    void onOperatorWarning_infoLevelCode_publishesAtInfoSeverity() {
+        var h = Harness.create();
+
+        h.aggregator().onOperatorWarning(diverged("g:orders[0]"));
+        h.aggregator().onOperatorWarning(repaired("g:orders[0]"));
+
+        assertThat(h.events().stream().map(ClusterEvent::severity).toList())
+            .containsExactly(ClusterEvent.Severity.WARNING, ClusterEvent.Severity.INFO);
+    }
+
+    /// #752: a recovery with no published warning for its subject is refused, and a warning for a different subject
+    /// does not stand in for it.
+    @Test
+    void onOperatorWarning_recoveryWithoutItsWarning_isNotPublished() {
+        var h = Harness.create();
+
+        h.aggregator().onOperatorWarning(repaired("g:orders[0]"));
+        h.aggregator().onOperatorWarning(diverged("g:orders[1]"));
+        h.aggregator().onOperatorWarning(repaired("g:orders[0]"));
+
+        assertThat(codes(h)).containsExactly("stream-consumer-state-diverged");
+    }
+
+    /// #752: a recovery ends its warning's throttle window. D, R, then the condition recurs 10 s later: the recurrence is
+    /// shown, and so is its recovery. The earlier version of this test expected [D, R] here: it held the recurrence back
+    /// behind the first window, so a stuck recurrence left the feed's last word at "repaired" while the partition was
+    /// consumed by nobody (a false all-clear), and it encoded that as the specification.
+    @Test
+    void onOperatorWarning_recurrenceAfterAShownRecovery_isShown_andSoIsItsRecovery() {
+        var physicalMillis = new AtomicLong(1_000_000L);
+        var h = Harness.create(Harness.defaultRetention(), OWNER, () -> false, LEADER,
+                               HlcClock.hlcClock(SELF, physicalMillis::get, Long.MAX_VALUE));
+
+        h.aggregator().onOperatorWarning(diverged("g:orders[0]"));
+        physicalMillis.addAndGet(30_000L);
+        h.aggregator().onOperatorWarning(repaired("g:orders[0]"));
+        physicalMillis.addAndGet(10_000L);
+        h.aggregator().onOperatorWarning(diverged("g:orders[0]"));
+        physicalMillis.addAndGet(60_000L);
+        h.aggregator().onOperatorWarning(repaired("g:orders[0]"));
+
+        assertThat(codes(h)).containsExactly("stream-consumer-state-diverged",
+                                             "stream-consumer-state-repaired",
+                                             "stream-consumer-state-diverged",
+                                             "stream-consumer-state-repaired");
+    }
+
+    /// #752: a repeat of an open warning is still throttled, and its one recovery is still published.
+    @Test
+    void onOperatorWarning_repeatOfAnOpenWarning_isThrottled_andClosedByOneRecovery() {
+        var physicalMillis = new AtomicLong(1_000_000L);
+        var h = Harness.create(Harness.defaultRetention(), OWNER, () -> false, LEADER,
+                               HlcClock.hlcClock(SELF, physicalMillis::get, Long.MAX_VALUE));
+
+        h.aggregator().onOperatorWarning(diverged("g:orders[0]"));
+        physicalMillis.addAndGet(10_000L);
+        h.aggregator().onOperatorWarning(diverged("g:orders[0]"));
+        h.aggregator().onOperatorWarning(repaired("g:orders[0]"));
+
+        assertThat(codes(h)).containsExactly("stream-consumer-state-diverged", "stream-consumer-state-repaired");
+    }
+
+    /// #752: the recovery is released only after its warning is in the log. Here the warning's first publish fails and
+    /// the recovery arrives while it is held: the recovery waits, and follows the warning once the retry lands.
+    @Test
+    void onOperatorWarning_recoveryWhileItsWarningIsHeldForRedelivery_followsTheWarning() throws InterruptedException {
+        var h = Harness.create();
+        var publisher = h.publisher().getAndSet(null);
+
+        h.aggregator().onOperatorWarning(diverged("g:orders[0]"));
+        h.aggregator().onOperatorWarning(repaired("g:orders[0]"));
+        h.publisher().set(publisher);
+        assertThat(codes(h)).as("control: nothing is in the log yet").isEmpty();
+        Thread.sleep(ClusterEventRedelivery.INITIAL_BACKOFF_MS + 100);
+        h.aggregator().redeliverDue();
+
+        assertThat(codes(h)).containsExactly("stream-consumer-state-diverged", "stream-consumer-state-repaired");
+    }
+
+    /// #752: a warning that redelivery gives up on was never shown, so a recovery held for it is dropped, and the log
+    /// never carries a recovery without its warning. Without the hold, the recovery was published at once and the
+    /// warning then lost to overflow.
+    @Test
+    void onOperatorWarning_recoveryWhoseWarningIsGivenUp_isNotPublished() throws InterruptedException {
+        var h = Harness.create();
+        var publisher = h.publisher().getAndSet(null);
+
+        h.aggregator().onOperatorWarning(diverged("g:orders[0]"));
+        h.aggregator().onOperatorWarning(repaired("g:orders[0]"));
+        for (int i = 0; i < ClusterEventRedelivery.CAPACITY; i++) {
+            h.aggregator().onOperatorWarning(fsyncFailed("orders[" + i + "]"));
+        }
+        assertThat(h.aggregator().redeliveryDropped()).as("control: the diverged event was dropped by overflow")
+                                                      .containsEntry("overflow", 1L);
+        h.publisher().set(publisher);
+        Thread.sleep(ClusterEventRedelivery.INITIAL_BACKOFF_MS + 100);
+        h.aggregator().redeliverDue();
+
+        assertThat(codes(h)).as("the held fsync warnings landed (control), and neither diverged nor repaired did")
+                            .isNotEmpty()
+                            .doesNotContain("stream-consumer-state-diverged", "stream-consumer-state-repaired");
+    }
+
+    /// #752: the recovery of a published warning is published even when it comes late. Independent windows swallowed
+    /// the second recovery here (its window, opened by the first, was still shut) though its warning was shown.
+    @Test
+    void onOperatorWarning_recoveryOfAPublishedWarning_isNotThrottledAway() {
+        var physicalMillis = new AtomicLong(1_000_000L);
+        var h = Harness.create(Harness.defaultRetention(), OWNER, () -> false, LEADER,
+                               HlcClock.hlcClock(SELF, physicalMillis::get, Long.MAX_VALUE));
+
+        h.aggregator().onOperatorWarning(diverged("g:orders[0]"));
+        physicalMillis.addAndGet(30_000L);
+        h.aggregator().onOperatorWarning(repaired("g:orders[0]"));
+        physicalMillis.addAndGet(35_000L);
+        h.aggregator().onOperatorWarning(diverged("g:orders[0]"));
+        physicalMillis.addAndGet(5_000L);
+        h.aggregator().onOperatorWarning(repaired("g:orders[0]"));
+
+        assertThat(codes(h)).containsExactly("stream-consumer-state-diverged",
+                                             "stream-consumer-state-repaired",
+                                             "stream-consumer-state-diverged",
+                                             "stream-consumer-state-repaired");
+    }
+
+    /// #752: one published warning allows one recovery.
+    @Test
+    void onOperatorWarning_secondRecoveryForOneWarning_isNotPublished() {
+        var h = Harness.create();
+
+        h.aggregator().onOperatorWarning(diverged("g:orders[0]"));
+        h.aggregator().onOperatorWarning(repaired("g:orders[0]"));
+        h.aggregator().onOperatorWarning(repaired("g:orders[0]"));
+
+        assertThat(codes(h)).containsExactly("stream-consumer-state-diverged", "stream-consumer-state-repaired");
+    }
+
+    /// #752: a warning whose publish was dropped (replay) was never shown, so a recovery for it is refused.
+    @Test
+    void onOperatorWarning_recoveryOfAnUnpublishedWarning_isNotPublished() {
+        var replaying = new java.util.concurrent.atomic.AtomicBoolean(true);
+        var h = Harness.create(Harness.defaultRetention(), OWNER, replaying::get, LEADER, HlcClock.hlcClock(SELF, () -> 1_000_000L, Long.MAX_VALUE));
+
+        h.aggregator().onOperatorWarning(diverged("g:orders[0]"));
+        replaying.set(false);
+        h.aggregator().onOperatorWarning(repaired("g:orders[0]"));
+
+        assertThat(h.events()).isEmpty();
+    }
+
+    private static final String CRON_TASK = "cache/org.example:my-slice:1.0.0/cleanup";
+
+    private static OperationalEvent.ScheduledTaskOutcomeUnknown unknownOutcome(String eventId, long fireAt) {
+        return OperationalEvent.ScheduledTaskOutcomeUnknown.scheduledTaskOutcomeUnknown(CRON_TASK, "node-a", fireAt, eventId);
+    }
+
+    private static OperationalEvent.ScheduledTaskOutcomeRestored restoredOutcome(String eventId, String outcome) {
+        return OperationalEvent.ScheduledTaskOutcomeRestored.scheduledTaskOutcomeRestored(CRON_TASK, "node-a", outcome, "late-answer", eventId);
+    }
+
+    private Harness harnessWithClock(AtomicLong physicalMillis) {
+        return Harness.create(Harness.defaultRetention(),
+                              OWNER,
+                              () -> false,
+                              LEADER,
+                              HlcClock.hlcClock(SELF, physicalMillis::get, Long.MAX_VALUE));
+    }
+
+    /// #1723: an UNKNOWN and its RESTORED reach the stream as typed events: WARNING, then INFO carrying the late
+    /// outcome and the fire time of the UNKNOWN it closes.
+    @Test
+    void scheduledTaskOutcome_unknownThenRestored_reachTheStream_withTaskFireTimeAndLateOutcome() {
+        var h = Harness.create();
+
+        h.aggregator().onScheduledTaskOutcomeUnknown(unknownOutcome("unknown-id", 777L));
+        h.aggregator().onScheduledTaskOutcomeRestored(restoredOutcome("restored-id", "executed"));
+
+        var events = h.events();
+
+        assertThat(events).hasSize(2);
+        assertThat(events.get(0)).isInstanceOf(ClusterEvent.ScheduledTaskOutcomeUnknown.class);
+        assertThat(events.get(0).type()).isEqualTo("SCHEDULED_TASK_OUTCOME_UNKNOWN");
+        assertThat(events.get(0).severity()).isEqualTo(ClusterEvent.Severity.WARNING);
+        assertThat(events.get(0).details()).containsEntry("task", CRON_TASK)
+                                           .containsEntry("node", "node-a")
+                                           .containsEntry("fireAt", "777")
+                                           .containsEntry("eventId", "unknown-id");
+        assertThat(events.get(1)).isInstanceOf(ClusterEvent.ScheduledTaskOutcomeRestored.class);
+        assertThat(events.get(1).type()).isEqualTo("SCHEDULED_TASK_OUTCOME_RESTORED");
+        assertThat(events.get(1).severity()).isEqualTo(ClusterEvent.Severity.INFO);
+        assertThat(events.get(1).details()).containsEntry("task", CRON_TASK)
+                                           .containsEntry("fireAt", "777")
+                                           .containsEntry("outcome", "executed")
+                                           .containsEntry("late", "true")
+                                           .containsEntry("eventId", "restored-id");
+    }
+
+    /// #1723 no false all-clear: a RESTORED whose UNKNOWN the window held back is never announced, and neither is the
+    /// held UNKNOWN once the sweep runs: the operator is told nothing about a condition that came and went inside the
+    /// window.
+    @Test
+    void scheduledTaskOutcome_unknownHeldByTheWindow_thenResolved_announcesNothing() {
+        var physicalMillis = new AtomicLong(1_000_000L);
+        var h = harnessWithClock(physicalMillis);
+
+        h.aggregator().onScheduledTaskOutcomeUnknown(unknownOutcome("first", 1L));
+        h.aggregator().onScheduledTaskOutcomeRestored(restoredOutcome("first-restored", "executed"));
+        physicalMillis.addAndGet(10_000L);
+        h.aggregator().onScheduledTaskOutcomeUnknown(unknownOutcome("second", 2L));
+        h.aggregator().onScheduledTaskOutcomeRestored(restoredOutcome("second-restored", "failed"));
+        physicalMillis.addAndGet(60_000L);
+        h.aggregator().announceHeldScheduledOutcomes();
+
+        assertThat(h.events()).as("the first pair only: the second was held, then resolved").hasSize(2);
+        assertThat(h.events().stream().map(event -> event.details().get("eventId")).toList())
+            .containsExactly("first", "first-restored");
+    }
+
+    /// #1723: an UNKNOWN the window held back that PERSISTS is announced once the window has closed, and its RESTORED
+    /// then follows. Before the window closes the sweep announces nothing.
+    @Test
+    void scheduledTaskOutcome_unknownHeldByTheWindow_stillUnknownAfterIt_isAnnouncedBySweep() {
+        var physicalMillis = new AtomicLong(1_000_000L);
+        var h = harnessWithClock(physicalMillis);
+
+        h.aggregator().onScheduledTaskOutcomeUnknown(unknownOutcome("first", 1L));
+        h.aggregator().onScheduledTaskOutcomeRestored(restoredOutcome("first-restored", "executed"));
+        physicalMillis.addAndGet(10_000L);
+        h.aggregator().onScheduledTaskOutcomeUnknown(unknownOutcome("second", 2L));
+        h.aggregator().announceHeldScheduledOutcomes();
+
+        assertThat(h.events()).as("inside the window the second UNKNOWN stays held").hasSize(2);
+
+        physicalMillis.addAndGet(50_000L);
+        h.aggregator().announceHeldScheduledOutcomes();
+        h.aggregator().announceHeldScheduledOutcomes();
+
+        var events = h.events();
+
+        assertThat(events).as("announced once the window closed, and only once").hasSize(3);
+        assertThat(events.getLast().details()).containsEntry("eventId", "second").containsEntry("fireAt", "2");
+
+        h.aggregator().onScheduledTaskOutcomeRestored(restoredOutcome("second-restored", "failed"));
+
+        assertThat(h.events()).hasSize(4);
+        assertThat(h.events().getLast().details()).containsEntry("outcome", "failed").containsEntry("fireAt", "2");
+    }
+
+    /// #1723 N1: the periodic edge. `AetherNode` schedules `evictIdleThrottleWindows` once a minute; it is what runs the
+    /// sweep that announces a held UNKNOWN, so the sweep must be reachable through it, not only when called directly.
+    @Test
+    void scheduledTaskOutcome_heldUnknown_isAnnouncedByThePeriodicEvictionTick() {
+        var physicalMillis = new AtomicLong(1_000_000L);
+        var h = harnessWithClock(physicalMillis);
+
+        h.aggregator().onScheduledTaskOutcomeUnknown(unknownOutcome("first", 1L));
+        h.aggregator().onScheduledTaskOutcomeRestored(restoredOutcome("first-restored", "executed"));
+        physicalMillis.addAndGet(10_000L);
+        h.aggregator().onScheduledTaskOutcomeUnknown(unknownOutcome("second", 2L));
+        physicalMillis.addAndGet(50_000L);
+        h.aggregator().evictIdleThrottleWindows();
+
+        assertThat(h.events()).hasSize(3);
+        assertThat(h.events().getLast().details()).containsEntry("eventId", "second");
+    }
+
+    /// A RESTORED because a LATER fire completed says so: `late` is false.
+    @Test
+    void scheduledTaskOutcome_restoredByALaterFire_isNotMarkedLate() {
+        var h = Harness.create();
+
+        h.aggregator().onScheduledTaskOutcomeUnknown(unknownOutcome("u", 5L));
+        h.aggregator().onScheduledTaskOutcomeRestored(OperationalEvent.ScheduledTaskOutcomeRestored.scheduledTaskOutcomeRestored(CRON_TASK,
+                                                                                                                                   "node-a",
+                                                                                                                                   "failed",
+                                                                                                                                   "later-fire",
+                                                                                                                                   "r"));
+
+        assertThat(h.events().getLast().details()).containsEntry("late", "false").containsEntry("outcome", "failed");
+        assertThat(h.events().getLast().summary()).contains("a later fire completed");
+    }
+
+    /// A RESTORED because the task was removed closes the operator's UNKNOWN, and frees the aggregator's entry: a task
+    /// registered again starts with nothing tracked (no inherited UNKNOWN, no unbounded growth).
+    @Test
+    void scheduledTaskOutcome_taskRemoved_closesTheUnknown_andFreesTheEntry() {
+        var physicalMillis = new AtomicLong(1_000_000L);
+        var h = harnessWithClock(physicalMillis);
+
+        h.aggregator().onScheduledTaskOutcomeUnknown(unknownOutcome("u1", 5L));
+        h.aggregator().onScheduledTaskOutcomeRestored(OperationalEvent.ScheduledTaskOutcomeRestored.scheduledTaskOutcomeRestored(CRON_TASK,
+                                                                                                                                   "node-a",
+                                                                                                                                   "unknown",
+                                                                                                                                   "task-removed",
+                                                                                                                                   "r1"));
+
+        assertThat(h.events()).hasSize(2);
+        assertThat(h.events().getLast().details()).containsEntry("reason", "task-removed").containsEntry("fireAt", "5");
+        assertThat(h.events().getLast().summary()).contains("removed");
+        assertThat(h.aggregator().trackedScheduledOutcomes()).as("nothing left tracked for the removed task").isZero();
+
+        physicalMillis.addAndGet(61_000L);
+        h.aggregator().onScheduledTaskOutcomeUnknown(unknownOutcome("u2", 99L));
+
+        assertThat(h.events()).as("the re-registered task's first UNKNOWN is announced afresh").hasSize(3);
+    }
+
+    private static OperationalEvent.ScheduledTaskFireHeld fireHeld(String eventId, long fireAt) {
+        return OperationalEvent.ScheduledTaskFireHeld.scheduledTaskFireHeld(CRON_TASK, "node-a", fireAt, 1_200L, eventId);
+    }
+
+    private static OperationalEvent.ScheduledTaskFireReleased fireReleased(String eventId, long fireAt, String outcome) {
+        return OperationalEvent.ScheduledTaskFireReleased.scheduledTaskFireReleased(CRON_TASK, "node-a", fireAt, 9_000L, outcome, eventId);
+    }
+
+    /// #1930: a fire still in flight while its ticks are skipped, and its resolution, reach the stream as typed events with
+    /// their details. The fact belongs to the node whose scheduler holds the fire, so it is published from there even when
+    /// that node is NOT the cluster-events owner (the owner gate would drop it on every node but one).
+    @Test
+    void scheduledFire_heldThenReleased_reachTheStream_evenOnANonOwner() {
+        var h = Harness.create(Harness.defaultRetention(), () -> false);
+
+        h.aggregator().onScheduledTaskFireHeld(fireHeld("held-id", 5L));
+        h.aggregator().onScheduledTaskFireReleased(fireReleased("released-id", 5L, "executed"));
+
+        var events = h.events();
+
+        assertThat(events).hasSize(2);
+        assertThat(events.get(0)).isInstanceOf(ClusterEvent.ScheduledTaskFireHeld.class);
+        assertThat(events.get(0).type()).isEqualTo("SCHEDULED_TASK_FIRE_HELD");
+        assertThat(events.get(0).severity()).isEqualTo(ClusterEvent.Severity.WARNING);
+        assertThat(events.get(0).details()).containsEntry("task", CRON_TASK)
+                                           .containsEntry("node", "node-a")
+                                           .containsEntry("fireAt", "5")
+                                           .containsEntry("inFlightMs", "1200")
+                                           .containsEntry("eventId", "held-id");
+        assertThat(events.get(1)).isInstanceOf(ClusterEvent.ScheduledTaskFireReleased.class);
+        assertThat(events.get(1).type()).isEqualTo("SCHEDULED_TASK_FIRE_RELEASED");
+        assertThat(events.get(1).severity()).isEqualTo(ClusterEvent.Severity.INFO);
+        assertThat(events.get(1).details()).containsEntry("outcome", "executed")
+                                           .containsEntry("inFlightMs", "9000")
+                                           .containsEntry("fireAt", "5");
+        assertThat(h.aggregator().trackedScheduledFires()).as("nothing left tracked").isZero();
+    }
+
+    /// No recovery without the event: a release nobody was told the hold for is not announced.
+    @Test
+    void scheduledFire_releasedWithoutAHeld_isNotAnnounced() {
+        var h = Harness.create();
+
+        h.aggregator().onScheduledTaskFireReleased(fireReleased("orphan", 5L, "executed"));
+
+        assertThat(h.events()).isEmpty();
+    }
+
+    /// One event per FIRE, not per tick: a second hold of the same task inside the window is held back, and when that fire
+    /// resolves inside the window neither it nor its release is announced.
+    @Test
+    void scheduledFire_secondFireHeldInsideTheWindow_thenResolved_announcesNothing() {
+        var physicalMillis = new AtomicLong(1_000_000L);
+        var h = harnessWithClock(physicalMillis);
+
+        h.aggregator().onScheduledTaskFireHeld(fireHeld("first", 1L));
+        h.aggregator().onScheduledTaskFireReleased(fireReleased("first-released", 1L, "executed"));
+        physicalMillis.addAndGet(10_000L);
+        h.aggregator().onScheduledTaskFireHeld(fireHeld("second", 2L));
+        h.aggregator().onScheduledTaskFireReleased(fireReleased("second-released", 2L, "failed"));
+        physicalMillis.addAndGet(60_000L);
+        h.aggregator().announceHeldFires();
+
+        assertThat(h.events().stream().map(event -> event.details().get("eventId")).toList()).containsExactly("first", "first-released");
+    }
+
+    /// A hold the window held back that is STILL in flight when the window closes is announced, by the periodic tick that
+    /// also evicts idle windows (not only when the sweep is called directly), and only once.
+    @Test
+    void scheduledFire_heldInsideTheWindow_stillInFlightAfterIt_isAnnouncedByThePeriodicTick() {
+        var physicalMillis = new AtomicLong(1_000_000L);
+        var h = harnessWithClock(physicalMillis);
+
+        h.aggregator().onScheduledTaskFireHeld(fireHeld("first", 1L));
+        h.aggregator().onScheduledTaskFireReleased(fireReleased("first-released", 1L, "executed"));
+        physicalMillis.addAndGet(10_000L);
+        h.aggregator().onScheduledTaskFireHeld(fireHeld("second", 2L));
+        h.aggregator().evictIdleThrottleWindows();
+
+        assertThat(h.events()).as("inside the window the second hold stays held").hasSize(2);
+
+        physicalMillis.addAndGet(50_000L);
+        h.aggregator().evictIdleThrottleWindows();
+        h.aggregator().evictIdleThrottleWindows();
+
+        assertThat(h.events()).hasSize(3);
+        assertThat(h.events().getLast().details()).containsEntry("eventId", "second");
+
+        h.aggregator().onScheduledTaskFireReleased(fireReleased("second-released", 2L, "unknown"));
+
+        assertThat(h.events()).hasSize(4);
+        assertThat(h.events().getLast().details()).containsEntry("outcome", "unknown");
+    }
+
+    /// #1723: a RESTORED nobody was told the UNKNOWN for is not an all-clear.
+    @Test
+    void scheduledTaskOutcome_restoredWithNoUnknown_isNotAnnounced() {
+        var h = Harness.create();
+
+        h.aggregator().onScheduledTaskOutcomeRestored(restoredOutcome("orphan", "executed"));
+
+        assertThat(h.events()).isEmpty();
+    }
+
+    /// Tasks are throttled independently: a flapping task does not hold back another's UNKNOWN.
+    @Test
+    void scheduledTaskOutcome_windowIsPerTask() {
+        var h = Harness.create();
+
+        h.aggregator().onScheduledTaskOutcomeUnknown(unknownOutcome("a", 1L));
+        h.aggregator().onScheduledTaskOutcomeUnknown(OperationalEvent.ScheduledTaskOutcomeUnknown.scheduledTaskOutcomeUnknown("cache/org.example:other:1.0.0/sweep",
+                                                                                                                              "",
+                                                                                                                              2L,
+                                                                                                                              "b"));
+
+        assertThat(h.events()).hasSize(2);
+    }
+
     /// One millisecond short of the window is still inside it.
     @Test
     void onOperatorWarning_justInsideTheWindow_isStillSuppressed() {
@@ -1493,5 +1956,311 @@ class ClusterEventAggregatorTest {
         assertThat(retention.maxBytes()).isEqualTo(64L * 1024 * 1024);
         assertThat(retention.maxAgeMs()).isEqualTo(24L * 60 * 60 * 1000);
         assertThat(retention.mode()).isEqualTo(RetentionMode.ANY);
+    }
+
+    // --- pins from the #1923 verification (#752) ---------------------------------------
+    private Harness clocked(AtomicLong physicalMillis) {
+        return Harness.create(Harness.defaultRetention(), OWNER, () -> false, LEADER,
+                              HlcClock.hlcClock(SELF, physicalMillis::get, Long.MAX_VALUE));
+    }
+
+    /// PA1: diverged, repaired (shown), diverged again 10 s later and NOT repaired (stuck). The operator's feed must not
+    /// end on "repaired" while the subject is diverged. Expected RED at head if the throttle hides the second diverged.
+    @Test
+    void onOperatorWarning_divergedAgainAfterAShownRepair_isShown() {
+        var t = new AtomicLong(1_000_000L);
+        var h = clocked(t);
+
+        h.aggregator().onOperatorWarning(diverged("g:orders[0]"));
+        t.addAndGet(1_000L);
+        h.aggregator().onOperatorWarning(repaired("g:orders[0]"));
+        t.addAndGet(10_000L);
+        h.aggregator().onOperatorWarning(diverged("g:orders[0]"));
+
+        assertThat(codes(h)).as("feed after D, R, D(stuck)").last().isEqualTo("stream-consumer-state-diverged");
+    }
+
+    /// PA2: two subjects interleaved, across a window boundary: each recovery pairs with its own subject only.
+    @Test
+    void onOperatorWarning_twoSubjects_pairIndependently() {
+        var t = new AtomicLong(1_000_000L);
+        var h = clocked(t);
+
+        h.aggregator().onOperatorWarning(diverged("g:s[0]"));
+        h.aggregator().onOperatorWarning(diverged("g:s[1]"));
+        h.aggregator().onOperatorWarning(repaired("g:s[1]"));
+        h.aggregator().onOperatorWarning(repaired("g:s[1]"));
+        h.aggregator().onOperatorWarning(repaired("g:s[0]"));
+        t.addAndGet(70_000L);
+        h.aggregator().onOperatorWarning(diverged("g:s[0]"));
+        h.aggregator().onOperatorWarning(repaired("g:s[1]"));
+        h.aggregator().onOperatorWarning(repaired("g:s[0]"));
+
+        assertThat(h.events().stream().map(e -> e.details().get("code") + "@" + e.details().get("subject")).toList())
+            .containsExactly("stream-consumer-state-diverged@g:s[0]",
+                             "stream-consumer-state-diverged@g:s[1]",
+                             "stream-consumer-state-repaired@g:s[1]",
+                             "stream-consumer-state-repaired@g:s[0]",
+                             "stream-consumer-state-diverged@g:s[0]",
+                             "stream-consumer-state-repaired@g:s[0]");
+    }
+
+    /// PA3: diverged re-raised while open and inside its window (throttled), then repaired: exactly one recovery.
+    @Test
+    void onOperatorWarning_divergedReRaisedWhileOpen_thenOneRepair() {
+        var t = new AtomicLong(1_000_000L);
+        var h = clocked(t);
+
+        h.aggregator().onOperatorWarning(diverged("g:orders[0]"));
+        t.addAndGet(10_000L);
+        h.aggregator().onOperatorWarning(diverged("g:orders[0]"));
+        t.addAndGet(10_000L);
+        h.aggregator().onOperatorWarning(repaired("g:orders[0]"));
+        h.aggregator().onOperatorWarning(repaired("g:orders[0]"));
+
+        assertThat(codes(h)).containsExactly("stream-consumer-state-diverged", "stream-consumer-state-repaired");
+    }
+
+    /// PA4: the recovery arrives after the warning's throttle window was evicted as idle: still published.
+    @Test
+    void onOperatorWarning_repairAfterTheThrottleKeyWasEvicted_isPublished() {
+        var t = new AtomicLong(1_000_000L);
+        var h = clocked(t);
+
+        h.aggregator().onOperatorWarning(diverged("g:orders[0]"));
+        t.addAndGet(130_000L);
+        h.aggregator().evictIdleThrottleWindows();
+        assertThat(h.aggregator().operatorWarningThrottleKeys()).as("control: the window was evicted").isZero();
+        h.aggregator().onOperatorWarning(repaired("g:orders[0]"));
+
+        assertThat(codes(h)).containsExactly("stream-consumer-state-diverged", "stream-consumer-state-repaired");
+    }
+
+    /// The pairing touches exactly the two declared pairs of codes; every other code keeps the plain 60 s throttle.
+    @Test
+    void onOperatorWarning_onlyTheDeclaredPairsArePaired_otherCodesUnchanged() {
+        assertThat(java.util.Arrays.stream(OperatorWarningCode.values()).filter(c -> c.recoveryOf().isPresent()).toList())
+            .containsExactly(OperatorWarningCode.STREAM_CONSUMER_STATE_REPAIRED,
+                             OperatorWarningCode.STREAM_CONSUMER_REGISTERED_AGAIN,
+                             OperatorWarningCode.STREAM_CONSUMER_DRAIN_RESTORED);
+        assertThat(java.util.Arrays.stream(OperatorWarningCode.values()).filter(OperatorWarningCode::hasRecovery).toList())
+            .containsExactly(OperatorWarningCode.STREAM_CONSUMER_STATE_DIVERGED,
+                             OperatorWarningCode.STREAM_CONSUMER_NOT_REGISTERED,
+                             OperatorWarningCode.STREAM_CONSUMER_DRAIN_FAILING);
+        var t = new AtomicLong(1_000_000L);
+        var h = clocked(t);
+
+        for (var code : OperatorWarningCode.values()) {
+            if (code.recoveryOf().isPresent()) {
+                continue;
+            }
+            h.aggregator().onOperatorWarning(OperatorWarning.operatorWarning(code, "x", "m"));
+            t.addAndGet(1_000L);
+            h.aggregator().onOperatorWarning(OperatorWarning.operatorWarning(code, "x", "m"));
+        }
+        assertThat(h.events()).as("one event per non-recovery code, the repeat throttled")
+                              .hasSize(OperatorWarningCode.values().length - 3);
+    }
+
+    /// #752: a detach-found divergence is a POINT event with no recovery. Sharing the pass-found code, it opened a
+    /// record and consumed the window: a pass-found divergence 10 s later was throttled (never shown) and its repair was
+    /// then published against the detach event. As its own code it opens no record and has its own window.
+    @Test
+    void onOperatorWarning_detachFoundDivergence_opensNoRecord_andHidesNoPassDivergence() {
+        var t = new AtomicLong(1_000_000L);
+        var h = clocked(t);
+
+        h.aggregator().onOperatorWarning(OperatorWarning.operatorWarning(OperatorWarningCode.STREAM_CONSUMER_DETACH_FOUND_NOTHING,
+                                                                         "g:orders[0]",
+                                                                         "Detach ... found no subscription"));
+        t.addAndGet(10_000L);
+        h.aggregator().onOperatorWarning(OperatorWarning.operatorWarning(OperatorWarningCode.STREAM_CONSUMER_STATE_DIVERGED,
+                                                                         "g:orders[0]",
+                                                                         "held as attached, but the consumer runtime has no subscription"));
+        h.aggregator().onOperatorWarning(repaired("g:orders[0]"));
+
+        assertThat(h.events().stream().map(ClusterEvent::summary).toList())
+            .as("the repair must follow the pass-found divergence it closes, which must be shown")
+            .containsExactly("Detach ... found no subscription",
+                             "held as attached, but the consumer runtime has no subscription",
+                             "repaired g:orders[0]");
+    }
+
+    // --- pins from the #1923 round-2 verification (#752) ---------------------------------------------
+    /// A shown diverged, then its repair arrives during a snapshot/resync replay. The repaired of a shown diverged is not
+    /// swallowed: replay used to suppress the repair after it had consumed the open mark, so the diverged stayed open
+    /// for good.
+    @Test
+    void onOperatorWarning_repairDuringReplay_ofAShownWarning_isNotSwallowed() {
+        var replaying = new java.util.concurrent.atomic.AtomicBoolean(false);
+        var h = Harness.create(Harness.defaultRetention(), OWNER, replaying::get, LEADER,
+                               HlcClock.hlcClock(SELF, () -> 1_000_000L, Long.MAX_VALUE));
+
+        h.aggregator().onOperatorWarning(diverged("g:orders[0]"));
+        assertThat(codes(h)).as("control: the warning is shown").containsExactly("stream-consumer-state-diverged");
+        replaying.set(true);
+        h.aggregator().onOperatorWarning(repaired("g:orders[0]"));
+        replaying.set(false);
+        h.aggregator().onOperatorWarning(repaired("g:orders[0]"));
+
+        assertThat(codes(h)).as("a shown diverged is eventually closed").contains("stream-consumer-state-repaired");
+    }
+
+    /// A repair raised during replay is released exactly once on the first tick after it, with no second raise needed.
+    @Test
+    void onOperatorWarning_repairDuringReplay_isReleasedOnTheNextTickAfterIt_once() {
+        var replaying = new java.util.concurrent.atomic.AtomicBoolean(false);
+        var h = Harness.create(Harness.defaultRetention(), OWNER, replaying::get, LEADER,
+                               HlcClock.hlcClock(SELF, () -> 1_000_000L, Long.MAX_VALUE));
+
+        h.aggregator().onOperatorWarning(diverged("g:orders[0]"));
+        replaying.set(true);
+        h.aggregator().onOperatorWarning(repaired("g:orders[0]"));
+        h.aggregator().redeliverDue();
+        assertThat(codes(h)).as("control: still replaying, so the repair is held").containsExactly("stream-consumer-state-diverged");
+        replaying.set(false);
+        h.aggregator().redeliverDue();
+        h.aggregator().redeliverDue();
+        assertThat(codes(h)).as("released by the tick alone").containsExactly("stream-consumer-state-diverged", "stream-consumer-state-repaired");
+
+        h.aggregator().onOperatorWarning(repaired("g:orders[0]"));
+
+        assertThat(codes(h)).as("once: a later raise finds the warning closed")
+                            .containsExactly("stream-consumer-state-diverged", "stream-consumer-state-repaired");
+    }
+
+    /// D1 held for redelivery, its repair held (clearing the window), then a recurrence D2 is admitted before D1
+    /// lands. The held repair is overwritten. The feed must not END on a false state: it ends on diverged, which is true.
+    @Test
+    void onOperatorWarning_recurrenceWhileTheRepairIsHeld_feedEndsTruthfully() throws InterruptedException {
+        var h = Harness.create();
+        var publisher = h.publisher().getAndSet(null);
+
+        h.aggregator().onOperatorWarning(diverged("g:orders[0]"));
+        h.aggregator().onOperatorWarning(repaired("g:orders[0]"));
+        h.aggregator().onOperatorWarning(diverged("g:orders[0]"));
+        h.publisher().set(publisher);
+        Thread.sleep(ClusterEventRedelivery.INITIAL_BACKOFF_MS + 100);
+        h.aggregator().redeliverDue();
+        var afterLanding = codes(h);
+        h.aggregator().onOperatorWarning(repaired("g:orders[0]"));
+
+        assertThat(afterLanding).as("never ends on repaired while diverged").last().isEqualTo("stream-consumer-state-diverged");
+        assertThat(codes(h)).as("the later repair still closes it").last().isEqualTo("stream-consumer-state-repaired");
+    }
+
+    private void expireRedelivery(Harness h, AtomicLong clock) {
+        for (long elapsed = 0; elapsed <= ClusterEventRedelivery.RETRY_HORIZON_MS; elapsed += ClusterEventRedelivery.MAX_BACKOFF_MS) {
+            clock.addAndGet(ClusterEventRedelivery.MAX_BACKOFF_MS);
+            h.aggregator().redeliverDue();
+        }
+    }
+
+    /// A warning whose publish outcome was UNKNOWN may be in the log; when redelivery gives up on it, its held repair is
+    /// released rather than dropped, so the alarm is not left open for good.
+    @Test
+    void onOperatorWarning_warningGivenUpAfterAnUnknownOutcome_releasesItsHeldRepair() {
+        var clock = new AtomicLong(1_000_000L);
+        var h = Harness.create(Harness.defaultRetention(), OWNER, () -> false, LEADER,
+                               HlcClock.hlcClock(SELF, clock::get, Long.MAX_VALUE));
+        var unknown = PublishOutcomeUnknown.FACTORY.apply(Causes.cause("owner died"));
+
+        h.aggregator().interceptPublish(_ -> unknown.promise());
+
+        h.aggregator().onOperatorWarning(diverged("g:orders[0]"));
+        h.aggregator().onOperatorWarning(repaired("g:orders[0]"));
+        assertThat(h.aggregator().redeliveryWaiting()).as("control: both are held").isEqualTo(1);
+        expireRedelivery(h, clock);
+        h.aggregator().interceptPublish(event -> h.publisher().get().publish(event));
+        clock.addAndGet(ClusterEventRedelivery.MAX_BACKOFF_MS);
+        h.aggregator().redeliverDue();
+
+        assertThat(h.aggregator().redeliveryDropped()).as("control: the warning was given up on").containsEntry("expired", 1L);
+        assertThat(codes(h)).as("the repair of a possibly-shown warning is published").containsExactly("stream-consumer-state-repaired");
+    }
+
+    /// The same give-up after a DEFINITE non-delivery drops the held repair: the warning was never in the log.
+    @Test
+    void onOperatorWarning_warningGivenUpAfterADefiniteFailure_dropsItsHeldRepair() {
+        var clock = new AtomicLong(1_000_000L);
+        var h = Harness.create(Harness.defaultRetention(), OWNER, () -> false, LEADER,
+                               HlcClock.hlcClock(SELF, clock::get, Long.MAX_VALUE));
+        h.aggregator().interceptPublish(_ -> Causes.cause("refused").promise());
+
+        h.aggregator().onOperatorWarning(diverged("g:orders[0]"));
+        h.aggregator().onOperatorWarning(repaired("g:orders[0]"));
+        expireRedelivery(h, clock);
+        h.aggregator().interceptPublish(event -> h.publisher().get().publish(event));
+        clock.addAndGet(ClusterEventRedelivery.MAX_BACKOFF_MS);
+        h.aggregator().redeliverDue();
+
+        assertThat(h.aggregator().redeliveryDropped()).as("control: the warning was given up on").containsEntry("expired", 1L);
+        assertThat(codes(h)).isEmpty();
+    }
+
+    /// A repair held during replay is stale once the same subject's condition recurs before the tick: the tick must not
+    /// publish it, or the feed would end on "repaired" while the partition is diverged again.
+    @Test
+    void onOperatorWarning_recurrenceBetweenReplayEndAndTick_discardsTheHeldRepair() {
+        var replaying = new java.util.concurrent.atomic.AtomicBoolean(false);
+        var t = new AtomicLong(1_000_000L);
+        var h = Harness.create(Harness.defaultRetention(), OWNER, replaying::get, LEADER,
+                               HlcClock.hlcClock(SELF, t::get, Long.MAX_VALUE));
+
+        h.aggregator().onOperatorWarning(diverged("g:orders[0]"));
+        t.addAndGet(5_000L);
+        replaying.set(true);
+        h.aggregator().onOperatorWarning(repaired("g:orders[0]"));
+        replaying.set(false);
+        t.addAndGet(500L);
+        h.aggregator().onOperatorWarning(diverged("g:orders[0]"));
+        t.addAndGet(500L);
+        h.aggregator().redeliverDue();
+
+        assertThat(codes(h)).as("feed after D, R(held in replay), D(recurs before the tick), tick")
+                            .last().isEqualTo("stream-consumer-state-diverged");
+    }
+
+    /// The first attempt fails definitely and a RETRY reports an unknown outcome: the warning may still be in the log, so
+    /// give-up releases the held repair. Redelivery must carry the unknown outcome from a retry, not only the first attempt.
+    @Test
+    void onOperatorWarning_unknownOutcomeOnlyOnARetry_stillReleasesItsHeldRepair() {
+        var clock = new AtomicLong(1_000_000L);
+        var h = Harness.create(Harness.defaultRetention(), OWNER, () -> false, LEADER,
+                               HlcClock.hlcClock(SELF, clock::get, Long.MAX_VALUE));
+        var unknown = PublishOutcomeUnknown.FACTORY.apply(Causes.cause("owner died"));
+        var attempts = new java.util.concurrent.atomic.AtomicInteger();
+
+        h.aggregator().interceptPublish(_ -> attempts.getAndIncrement() == 0
+                                             ? Causes.cause("refused").promise()
+                                             : unknown.<org.pragmatica.lang.Unit>promise());
+        h.aggregator().onOperatorWarning(diverged("g:orders[0]"));
+        h.aggregator().onOperatorWarning(repaired("g:orders[0]"));
+        expireRedelivery(h, clock);
+        h.aggregator().interceptPublish(event -> h.publisher().get().publish(event));
+        clock.addAndGet(ClusterEventRedelivery.MAX_BACKOFF_MS);
+        h.aggregator().redeliverDue();
+
+        assertThat(codes(h)).containsExactly("stream-consumer-state-repaired");
+    }
+
+    /// #1941's registered-again is a recovery paired with not-registered: INFO, published only after a published
+    /// not-registered for the same subject.
+    @Test
+    void onOperatorWarning_registeredAgain_followsAPublishedNotRegistered_only() {
+        var h = Harness.create();
+        var subject = "org.example:s:1.0.0.onGhost[streams.ghost]";
+        var notRegistered = OperatorWarning.operatorWarning(OperatorWarningCode.STREAM_CONSUMER_NOT_REGISTERED, subject, "not registered");
+        var registeredAgain = OperatorWarning.operatorWarning(OperatorWarningCode.STREAM_CONSUMER_REGISTERED_AGAIN, subject, "registered again");
+
+        h.aggregator().onOperatorWarning(registeredAgain);
+        assertThat(h.events()).as("control: no recovery without its warning").isEmpty();
+        h.aggregator().onOperatorWarning(notRegistered);
+        h.aggregator().onOperatorWarning(registeredAgain);
+        h.aggregator().onOperatorWarning(registeredAgain);
+
+        assertThat(codes(h)).containsExactly("stream-consumer-not-registered", "stream-consumer-registered-again");
+        assertThat(h.events().stream().map(ClusterEvent::severity).toList())
+            .containsExactly(ClusterEvent.Severity.CRITICAL, ClusterEvent.Severity.INFO);
     }
 }

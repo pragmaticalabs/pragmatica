@@ -188,6 +188,23 @@ class BootstrapPhaseDeploySshSourceTest {
                   .doesNotContain(":latest");
     }
 
+    /// #1543 part C: `{version}` in the runtime profile's image follows `[cluster] version` on the SSH launch too.
+    @Test
+    void sshSource_imagePlaceholder_isSubstitutedWithTheClusterVersion() {
+        var runtimes = Map.of("tracking",
+                              RuntimeProfile.runtimeProfile("tracking",
+                                                            RuntimeType.CONTAINER,
+                                                            Option.some("registry/aether-node:{version}"),
+                                                            Option.empty()));
+        var ctx = context(Map.of("dc", sshSource("dc", List.of("10.0.0.1"), List.of(), "tracking")),
+                          runtimes,
+                          List.of(ssh("dc-core-0", "10.0.0.1")));
+        var result = deploy(ctx, "dc");
+
+        assertThat(result.isSuccess()).as(() -> "deploy must succeed: " + result).isTrue();
+        assertThat(startCommands.get("10.0.0.1")).contains("registry/aether-node:" + VERSION).doesNotContain("{version}");
+    }
+
     /// Review SF-1: the case #1090 was filed on — `[source.x.core] hosts = […]` with no `[runtime.*]`
     /// table at all. The image is then derived from the cluster version; it must never be `:latest`.
     @Test

@@ -44,6 +44,7 @@ class DrainPassEscapeRunTest {
     private final LinkedBlockingQueue<Runnable> scheduled = new LinkedBlockingQueue<>();
     private final List<OperatorWarning> warnings = new CopyOnWriteArrayList<>();
     private final AtomicBoolean throwing = new AtomicBoolean(true);
+    private final AtomicBoolean failingRead = new AtomicBoolean();
     private final AtomicInteger reads = new AtomicInteger();
 
     private StreamPartitionManager manager;
@@ -57,14 +58,13 @@ class DrainPassEscapeRunTest {
                                            none(),
                                            none(),
                                            (_, _, _, _) -> read(),
-                                           none(),
                                            ConsumerRuntimeState.DEAD_LETTER_APPEND_TIMEOUT,
-                                           OperatorWarningSink.handingOffTo(warnings::add),
                                            clock::get,
                                            (task, delay) -> {
                                                delays.add(delay.millis());
                                                scheduled.add(task);
                                            });
+        runtime.operatorWarnings(OperatorWarningSink.handingOffTo(warnings::add));
     }
 
     @AfterEach
@@ -75,6 +75,10 @@ class DrainPassEscapeRunTest {
 
     private Promise<List<OffHeapRingBuffer.RawEvent>> read() {
         reads.incrementAndGet();
+
+        if (failingRead.get()) {
+            return StreamError.General.PARTITION_NOT_LOCAL.promise();
+        }
 
         if (throwing.get()) {
             runawayRecursion(0);
@@ -146,6 +150,68 @@ class DrainPassEscapeRunTest {
                 .as("once, for the reported run; the later one-escape run was never reported")
                 .singleElement()
                 .satisfies(warning -> assertThat(warning.subject()).isEqualTo(NOT_LOCAL + "[0]/" + GROUP));
+    }
+
+    /// A consumer cancelled while its failing alert stands gets the recovery, with the reason; an unreported run does not.
+    @Test
+    void aConsumerCancelledWhileItsFailingAlertStands_getsTheRecovery_namingTheCancellation() throws InterruptedException {
+        subscribe(NOT_LOCAL);
+        awaitEscapes(1);
+        for (var escape = 2; escape <= ConsumerRuntimeState.ESCAPES_BEFORE_WARNING; escape++) {
+            resumeAndAwaitEscapes(escape);
+        }
+        awaitWarnings(1);
+
+        runtime.unsubscribe(NOT_LOCAL, 0, GROUP);
+        awaitWarnings(2);
+        settle();
+
+        assertThat(warningsOf(OperatorWarningCode.STREAM_CONSUMER_DRAIN_RESTORED))
+                .singleElement()
+                .satisfies(warning -> {
+                    assertThat(warning.subject()).isEqualTo(NOT_LOCAL + "[0]/" + GROUP);
+                    assertThat(warning.message()).contains("was cancelled while its delivery passes were failing");
+                });
+    }
+
+    @Test
+    void aConsumerCancelledDuringAnUnreportedRun_raisesNoRecovery() throws InterruptedException {
+        subscribe(NOT_LOCAL);
+        awaitEscapes(1);
+        resumeAndAwaitEscapes(2);
+
+        runtime.unsubscribe(NOT_LOCAL, 0, GROUP);
+        settle();
+
+        assertThat(warnings).as("the run never reached the alert, so there is nothing to recover").isEmpty();
+    }
+
+    @Test
+    void closingTheRuntimeWhileTheFailingAlertStands_getsTheRecovery() throws InterruptedException {
+        subscribe(NOT_LOCAL);
+        awaitEscapes(1);
+        for (var escape = 2; escape <= ConsumerRuntimeState.ESCAPES_BEFORE_WARNING; escape++) {
+            resumeAndAwaitEscapes(escape);
+        }
+        awaitWarnings(1);
+
+        runtime.close();
+        awaitWarnings(2);
+
+        assertThat(warningsOf(OperatorWarningCode.STREAM_CONSUMER_DRAIN_RESTORED)).hasSize(1);
+    }
+
+    /// A read that FAILS (the partition moved, so it is not local) is an ordinary failed promise, not an escaped pass:
+    /// it raises no operator warning and starts no escape backoff.
+    @Test
+    void aFailedRead_raisesNothing_andStartsNoBackoff() throws InterruptedException {
+        failingRead.set(true);
+        subscribe(NOT_LOCAL);
+        awaitUntil(() -> reads.get() >= 3, "three failed reads");
+        settle();
+
+        assertThat(warnings).isEmpty();
+        assertThat(delays).as("no escape backoff scheduled").isEmpty();
     }
 
     @Test

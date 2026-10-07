@@ -450,6 +450,110 @@ class SpiResourceProviderLifecycleTest {
 
             assertThat(unattributed.isClosed()).isFalse();
         }
+
+        /// #903. The shared scope has exactly one legitimate closer, node shutdown, and it must close the
+        /// unattributed resource exactly once, leave a slice-scoped resource to its own `releaseAll`, and
+        /// find nothing to do the second time.
+        @Test
+        void closeShared_closesTheUnattributedResourceOnce_andOnlyThat() {
+            var factory = new AsyncFactory();
+            var provider = providerOf(factory);
+
+            provider.provide(AsyncResource.class, SECTION).await(TIMEOUT);
+            provider.provide(AsyncResource.class, SECTION, contextFor("slice-a")).await(TIMEOUT);
+
+            var unattributed = factory.provisioned.get(0);
+            var sliceScoped = factory.provisioned.get(1);
+
+            assertThat(provider.closeShared().await(TIMEOUT).isSuccess()).isTrue();
+            assertThat(provider.closeShared().await(TIMEOUT).isSuccess()).isTrue();
+
+            assertThat(unattributed.closeCount()).as("shared resource closed exactly once").isEqualTo(1);
+            assertThat(sliceScoped.isClosed()).as("a slice's resource is its own releaseAll's").isFalse();
+        }
+    }
+
+    /// A factory whose OWN `close` reports failure (an override: the default dispatch absorbs and logs its own).
+    private static final class RefusingCloseFactory implements ResourceFactory<AsyncResource, TrackedConfig> {
+        @Override
+        public Class<AsyncResource> resourceType() {
+            return AsyncResource.class;
+        }
+
+        @Override
+        public Class<TrackedConfig> configType() {
+            return TrackedConfig.class;
+        }
+
+        @Override
+        public Promise<AsyncResource> provision(TrackedConfig config) {
+            return Promise.success(new AsyncResource());
+        }
+
+        @Override
+        public Promise<Unit> close(AsyncResource resource) {
+            return Causes.cause("close refused by the factory").promise();
+        }
+    }
+
+    /// `Promise.allOf` collects Results, so a release never FAILS on one resource's failed close; that means the log is
+    /// the only report. `closeShared` is the one place a close failure used to vanish: it is called once, at node stop,
+    /// with no caller left to see a result. Pinned by capturing the WARNING the release writes.
+    @Nested
+    class FailedCloseIsSurfaced {
+        private static final String LOGGER_NAME = SpiResourceProvider.class.getName();
+
+        private final List<String> records = new CopyOnWriteArrayList<>();
+        /// Held strongly: `System.Logger` here is backed by a java.util.logging logger, which JUL keeps only weakly, so
+        /// a handler on an unreferenced logger is lost to a GC and the capture goes silent.
+        private java.util.logging.Logger julLogger;
+        private final java.util.logging.Handler handler = new java.util.logging.Handler() {
+            @Override
+            public void publish(java.util.logging.LogRecord record) {
+                if (record.getLevel().intValue() >= java.util.logging.Level.WARNING.intValue()) {
+                    records.add(record.getMessage());
+                }
+            }
+
+            @Override
+            public void flush() {}
+
+            @Override
+            public void close() {}
+        };
+
+        @org.junit.jupiter.api.BeforeEach
+        void attach() {
+            julLogger = java.util.logging.Logger.getLogger(LOGGER_NAME);
+            julLogger.addHandler(handler);
+        }
+
+        @org.junit.jupiter.api.AfterEach
+        void detach() {
+            julLogger.removeHandler(handler);
+        }
+
+        @Test
+        void closeShared_logsAFailedFactoryClose_andStillSucceeds() {
+            var provider = providerOf(new RefusingCloseFactory());
+
+            provider.provide(AsyncResource.class, SECTION).await(TIMEOUT);
+
+            assertThat(provider.closeShared().await(TIMEOUT).isSuccess()).as("a failed close never fails the release").isTrue();
+            assertThat(records).as("the failed close must be reported, or nothing reports it")
+                               .anyMatch(message -> message.contains("close refused by the factory")
+                                                    && message.contains("<unattributed>"));
+        }
+
+        @Test
+        void closeShared_logsNothing_whenEveryCloseSucceeds() {
+            var provider = providerOf(new AsyncFactory());
+
+            provider.provide(AsyncResource.class, SECTION).await(TIMEOUT);
+
+            assertThat(provider.closeShared().await(TIMEOUT).isSuccess()).isTrue();
+            assertThat(records).as("control: a clean close is silent, so the assertion above is attributable to the failure").isEmpty();
+        }
     }
 
     @Nested

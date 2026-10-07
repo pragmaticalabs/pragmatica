@@ -24,6 +24,7 @@ import org.pragmatica.aether.node.ManageableNode;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ActivationDirectiveKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ActivationDirectiveValue;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.http.HttpError;
 import org.pragmatica.http.HttpStatus;
 import org.pragmatica.http.routing.QueryParameter;
@@ -98,7 +99,9 @@ public final class NodeLifecycleRoutes implements RouteSource {
         return new NodeLifecycleRoutes(nodeSupplier, drainCommandSink, pendingDrainsSupplier);
     }
 
-    record LifecycleEntry(String nodeId, String state, long updatedAt) {}
+    /// `version` (#1543 part C) is the software version the node advertises in its `version` label; empty when
+    /// this observer has no label for it (a peer known only from steady-state gossip, or a node that predates the label).
+    record LifecycleEntry(String nodeId, String state, long updatedAt, String version) {}
 
     record TransitionResult(boolean success, String nodeId, String state, String message) {}
 
@@ -168,14 +171,22 @@ public final class NodeLifecycleRoutes implements RouteSource {
         return Promise.success(collectLifecycleEntries(stateFilter, collector.reportedStates()));
     }
 
-    private static List<LifecycleEntry> collectLifecycleEntries(Option<String> stateFilter,
-                                                                Map<NodeId, NodeReportedState> states) {
+    private List<LifecycleEntry> collectLifecycleEntries(Option<String> stateFilter,
+                                                         Map<NodeId, NodeReportedState> states) {
         var normalizedFilter = stateFilter.map(RouteFilters::parseStateFilter);
         var entries = new ArrayList<LifecycleEntry>();
 
         states.forEach((nodeId, state) -> appendIfMatches(entries, nodeId, state, normalizedFilter));
 
         return entries;
+    }
+
+    private String advertisedVersion(NodeId nodeId) {
+        return nodeSupplier.get()
+                           .topologyManager()
+                           .get(nodeId)
+                           .flatMap(info -> Option.option(info.labels().get(NodeInfo.LABEL_VERSION)))
+                           .or("");
     }
 
     /// Readiness-broadcast (failover-readability): 503 carrying the current leader id + best-effort
@@ -203,11 +214,11 @@ public final class NodeLifecycleRoutes implements RouteSource {
                                                                 .port());
     }
 
-    private static void appendIfMatches(List<LifecycleEntry> entries,
-                                        NodeId nodeId,
-                                        NodeReportedState state,
-                                        Option<Set<String>> normalizedFilter) {
-        var entry = new LifecycleEntry(nodeId.id(), state.name(), 0L);
+    private void appendIfMatches(List<LifecycleEntry> entries,
+                                 NodeId nodeId,
+                                 NodeReportedState state,
+                                 Option<Set<String>> normalizedFilter) {
+        var entry = new LifecycleEntry(nodeId.id(), state.name(), 0L, advertisedVersion(nodeId));
 
         if (normalizedFilter.map(set -> set.contains(entry.state())).or(true)) {
             entries.add(entry);
@@ -225,15 +236,16 @@ public final class NodeLifecycleRoutes implements RouteSource {
             return readinessUnavailableError().promise();
         }
 
-        return NodeId.nodeId(nodeIdStr)
-                     .async()
-                     .flatMap(this::lifecycleEntryOrVerdict);
+        return RequestParse.asRequest(NodeId.nodeId(nodeIdStr))
+                           .async()
+                           .flatMap(this::lifecycleEntryOrVerdict);
     }
 
     private Promise<LifecycleEntry> lifecycleEntryOrVerdict(NodeId nodeId) {
         return readLifecycleState(nodeId).map(state -> Promise.success(new LifecycleEntry(nodeId.id(),
                                                                                           state.name(),
-                                                                                          0L)))
+                                                                                          0L,
+                                                                                          advertisedVersion(nodeId))))
                                  .or(() -> absentFromReadinessView(nodeId));
     }
 
@@ -260,9 +272,9 @@ public final class NodeLifecycleRoutes implements RouteSource {
     /// the target self-drains via its `DrainProcedure`. The CTM grace-terminate backstop reaps the
     /// container if it never self-exits. No `LifecycleWriter` write happens here.
     private Promise<TransitionResult> drainNode(String nodeIdStr) {
-        return NodeId.nodeId(nodeIdStr)
-                     .flatMap(node -> admitOperatorDrain(node, true))
-                     .async();
+        return RequestParse.asRequest(NodeId.nodeId(nodeIdStr))
+                           .flatMap(node -> admitOperatorDrain(node, true))
+                           .async();
     }
 
     /// One routes instance is installed per management server. Check and reserve synchronously:
@@ -402,9 +414,9 @@ public final class NodeLifecycleRoutes implements RouteSource {
     /// `drain` (the target self-drains then halts via its `DrainProcedure`); the CTM grace-terminate
     /// backstop reaps the container. No `LifecycleWriter` write happens here.
     private Promise<TransitionResult> shutdownNode(String nodeIdStr) {
-        return NodeId.nodeId(nodeIdStr)
-                     .flatMap(node -> admitOperatorDrain(node, false))
-                     .async();
+        return RequestParse.asRequest(NodeId.nodeId(nodeIdStr))
+                           .flatMap(node -> admitOperatorDrain(node, false))
+                           .async();
     }
 
     Promise<TransitionResult> shutdownNodeForTest(String nodeIdStr) {
@@ -442,9 +454,9 @@ public final class NodeLifecycleRoutes implements RouteSource {
     }
 
     private Result<PromoteNodeResponse> confirmImmutableRole(String nodeIdStr, String targetRole) {
-        return NodeId.nodeId(nodeIdStr)
-                     .flatMap(this::readCurrentRole)
-                     .flatMap(current -> matchingRoleResponse(nodeIdStr, current, targetRole));
+        return RequestParse.asRequest(NodeId.nodeId(nodeIdStr))
+                           .flatMap(this::readCurrentRole)
+                           .flatMap(current -> matchingRoleResponse(nodeIdStr, current, targetRole));
     }
 
     private Result<String> readCurrentRole(NodeId nodeId) {

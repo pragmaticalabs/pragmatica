@@ -7,7 +7,9 @@
   mark the loop dirty, so a push-mode consumer no longer runs one throwing pass per append. The first throw of a run
   is WARNed once with the thrown frames; later throws are DEBUG. After 5 consecutive throws the operator warning
   `stream-consumer-drain-failing` is raised once (subject `stream[partition]/group`, naming what was thrown and its
-  top frames), and `stream-consumer-drain-restored` once when a pass reads the partition again.
+  top frames), and the INFO recovery `stream-consumer-drain-restored` once when a pass reads the partition again, or
+  when the consumer is cancelled (detached, abandoned, idle-reaped, runtime closed) while the alert stands. The
+  recovery is published only after a published failing event for the same subject (`recoveryOf`).
   `[verified: aether/aether-stream/src/test/java/org/pragmatica/aether/stream/DrainPassEscapeRunTest.java, in-process,
   clock and scheduler seams]`. The node hands the runtime its warning sink
   `[mechanism: pinned by OperatorWarningWiringTest.assembly_givesTheSinkToTheStreamConsumerRuntime]`.

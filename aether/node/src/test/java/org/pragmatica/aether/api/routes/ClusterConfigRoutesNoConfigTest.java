@@ -63,7 +63,7 @@ class ClusterConfigRoutesNoConfigTest {
 
     @Test
     void handleUpgrade_noStoredConfig_refusesWithTypedConflict_namingBootstrapRecovery() {
-        var result = upgrade(new TestKVStore(), new UpgradeRequest("1.2.3"));
+        var result = upgrade(new TestKVStore(), new UpgradeRequest("1.2.3", 1));
 
         assertThat(result.isFailure()).isTrue();
         result.onFailure(cause -> {

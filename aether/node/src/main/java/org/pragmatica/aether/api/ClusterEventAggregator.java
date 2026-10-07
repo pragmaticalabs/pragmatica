@@ -8,10 +8,12 @@ import java.time.Instant;
 import java.util.HashMap;
 import java.util.Comparator;
 import java.util.HashSet;
+import java.util.Set;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
 import java.util.function.Function;
 import java.util.function.IntSupplier;
@@ -28,6 +30,7 @@ import org.pragmatica.aether.api.ClusterEvent.StreamFailoverRefused;
 import org.pragmatica.aether.api.ClusterEvent.StreamFailoverResolved;
 import org.pragmatica.aether.api.ClusterEvent.StreamIsrBelowMinimum;
 import org.pragmatica.aether.api.ClusterEvent.StreamIsrRestored;
+import org.pragmatica.aether.api.ClusterEvent.StreamLineageRestarted;
 import org.pragmatica.aether.api.ClusterEvent.StreamConfigChangeNotApplied;
 import org.pragmatica.aether.api.ClusterEvent.DeparturePushIncomplete;
 import org.pragmatica.aether.api.ClusterEvent.DeploymentCompleted;
@@ -82,6 +85,7 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.utility.warning.OperatorWarning;
+import org.pragmatica.utility.warning.OperatorWarningCode;
 import org.pragmatica.utility.warning.WarningLevel;
 
 import org.slf4j.Logger;
@@ -180,6 +184,37 @@ public final class ClusterEventAggregator {
     /// The key is `code:subject`. It is unambiguous because a code is kebab-case and never contains `:`,
     /// which `OperatorWarningCodeTest` enforces.
     private final ConcurrentHashMap<String, ThrottleWindow> operatorWarningThrottle = new ConcurrentHashMap<>();
+    /// Throttle keys of operator warnings that were published and whose recovery code has not been raised since (#752).
+    /// A recovery is published exactly when its key is here, so it never appears without the warning it closes and is
+    /// never throttled away from one an operator saw. Bounded by the (code, subject) pairs the node can raise.
+    private final Set<String> openRecoverable = ConcurrentHashMap.newKeySet();
+    /// Warnings with a recovery that are admitted but not yet in the log, each holding the recovery that arrived meanwhile.
+    /// Recoveries raised during snapshot/resync replay, by the key of the warning they close, released after it (#752).
+    private final ConcurrentHashMap<String, ClusterEvent> replayHeldRecoveries = new ConcurrentHashMap<>();
+
+    private final ConcurrentHashMap<String, Option<ClusterEvent>> awaitingDelivery = new ConcurrentHashMap<>();
+
+    /// Per-task window for the scheduled-task outcome events (#1723): the same 60 s mechanism, its own key space
+    /// (`task@node`), so one flapping task cannot starve another and neither starves the operator warnings.
+    private final ConcurrentHashMap<String, ThrottleWindow> scheduledOutcomeThrottle = new ConcurrentHashMap<>();
+    /// What the operator can see of each task's unknown outcome, keyed like [#scheduledOutcomeThrottle]. One map, one
+    /// entry per task, changed only through `compute`/`remove`, so "announce a held UNKNOWN" and "the outcome was
+    /// resolved" cannot interleave into a published UNKNOWN that no RESTORED will ever follow.
+    private final ConcurrentHashMap<String, ScheduledOutcome> scheduledOutcomes = new ConcurrentHashMap<>();
+
+    /// `visible`: its UNKNOWN event was published (or would have been, on a node that is not the events owner), so a
+    /// RESTORED may follow it. Otherwise the UNKNOWN was held back by the window: nothing is visible yet, and a
+    /// resolution cancels it instead of announcing an all-clear for something never announced.
+    private record ScheduledOutcome(OperationalEvent.ScheduledTaskOutcomeUnknown unknown, boolean visible) {}
+
+    /// The same mechanism for a scheduled fire that is still in flight while its ticks are skipped (#1930), with its own key
+    /// space (`task@node`): one window per task and node, one entry per in-flight fire, changed only through `compute` /
+    /// `remove`. `visible` as for [ScheduledOutcome]: a held event that resolves inside the window is never announced, nor
+    /// is its release.
+    private final ConcurrentHashMap<String, ThrottleWindow> fireHeldThrottle = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, HeldFire> heldFires = new ConcurrentHashMap<>();
+
+    private record HeldFire(OperationalEvent.ScheduledTaskFireHeld event, boolean visible) {}
 
     /// Throttle window shared by {@link #onStreamMemoryExceeded} (60s per `(streamName, phase)`, spec
     /// §4.5c) and {@link #onOperatorWarning} (60s per `(code, subject)`, #1574).
@@ -260,6 +295,7 @@ public final class ClusterEventAggregator {
     private final AtomicLong ownerlessDrops = new AtomicLong();
     /// #1640: events whose publish did not land wait here and are retried.
     private final ClusterEventRedelivery redelivery;
+    private volatile Option<Function<ClusterEvent, Promise<Unit>>> publishHook = Option.none();
     /// #1653 round 2: stamps each event with `details.eventId` so a redelivered copy is recognised on read.
     private final ClusterEventIdentity identity = ClusterEventIdentity.clusterEventIdentity();
     private volatile int lastReadDuplicates;
@@ -662,6 +698,17 @@ public final class ClusterEventAggregator {
     /// throws, or when its promise fails. Each failure is logged once here; whether it is retried is
     /// [ClusterEventRedelivery]'s decision.
     private Promise<Unit> publishOnce(ClusterEvent event) {
+        return publishHook.map(hook -> hook.apply(event))
+                          .or(() -> publishViaPublisher(event));
+    }
+
+    /// Test seam: replaces the publish attempt, so a test can script outcomes the sealed publisher cannot produce, such
+    /// as [PublishOutcomeUnknown] (#752). Never set in production.
+    void interceptPublish(Function<ClusterEvent, Promise<Unit>> hook) {
+        publishHook = Option.some(hook);
+    }
+
+    private Promise<Unit> publishViaPublisher(ClusterEvent event) {
         return Option.option(publisherSupplier.get())
                      .map(publisher -> publishedBy(publisher, event))
                      .or(() -> unboundPublisher(event));
@@ -690,6 +737,7 @@ public final class ClusterEventAggregator {
     /// #1640: re-sends the cluster events whose publish has not landed yet and are due. `AetherNode` calls it
     /// once a second.
     public Unit redeliverDue() {
+        releaseReplayHeldRecoveries();
         redelivery.redeliver(false);
 
         return Unit.unit();
@@ -798,7 +846,17 @@ public final class ClusterEventAggregator {
     /// once per retry window.
     @Contract
     public void onOperatorWarning(OperatorWarning warning) {
-        var key = warning.code().code() + ":" + warning.subject();
+        var key = throttleKey(warning.code(), warning.subject());
+
+        warning.code()
+               .recoveryOf()
+               .onPresent(closes -> onRecovery(warning, closes))
+               .onEmpty(() -> onCondition(warning, key));
+    }
+
+    private void onCondition(OperatorWarning warning, String key) {
+        // A recurrence makes a repair still held from replay stale: the tick must not publish it behind the new condition.
+        replayHeldRecoveries.remove(key);
         var window = admit(operatorWarningThrottle, key);
 
         if (!window.admitted()) {
@@ -809,10 +867,7 @@ public final class ClusterEventAggregator {
             return;
         }
 
-        var event = new ClusterEvent.OperatorWarning(hlcClock.now(),
-                                                     severityOf(warning.code().level()),
-                                                     warning.message(),
-                                                     operatorWarningDetails(warning, window.suppressedBefore()));
+        var event = warningEvent(warning, window.suppressedBefore());
 
         lastRaisedOperatorWarning = Option.some(event);
         if (replayingCheck.getAsBoolean()) {
@@ -824,7 +879,123 @@ public final class ClusterEventAggregator {
         // #1653: through redelivery, like every other event, so a publish to a dying owner is held and re-sent rather
         // than lost. The window is shortened only if redelivery finally gives up on it: a failure it retries past is
         // not a gap, and shortening on it would admit a second event while the first is still being delivered.
-        redelivery.deliver(stampedOrAsIs(event), () -> shortenWindow(key, window));
+        if (warning.code().hasRecovery()) {
+            deliverRecoverable(event, key, window);
+        } else {
+            redelivery.deliver(stampedOrAsIs(event), () -> shortenWindow(key, window));
+        }
+    }
+
+    /// #752: a warning that has a recovery is "shown" only once it is in the log. Until then a recovery that arrives is
+    /// held in `awaitingDelivery` and released when the warning lands, or dropped with it if redelivery gives up, so a
+    /// recovery never reaches the log without the warning it closes.
+    private void deliverRecoverable(ClusterEvent event, String key, ThrottleWindow window) {
+        awaitingDelivery.put(key, Option.none());
+        redelivery.deliver(stampedOrAsIs(event), outcome -> warningLost(key, window, outcome), () -> warningLanded(key));
+    }
+
+    /// A warning redelivery gave up on. If an attempt's outcome was unknown it may be in the log, so it is treated as
+    /// landed: a recovery for it is less harmful than an alarm left open for good, and the condition really is repaired.
+    /// So a repair may appear without its warning only when the warning's delivery outcome was unknown; this avoids an
+    /// alarm left open forever.
+    /// If it was definitely not delivered, a recovery held for it is dropped, except that an earlier published warning
+    /// for the subject that is still open keeps its recovery.
+    private void warningLost(String key, ThrottleWindow window, ClusterEventRedelivery.GiveUpOutcome outcome) {
+        if (outcome == ClusterEventRedelivery.GiveUpOutcome.POSSIBLY_DELIVERED) {
+            warningLanded(key);
+        } else {
+            Option.option(awaitingDelivery.remove(key))
+                  .flatMap(held -> held)
+                  .filter(_ -> openRecoverable.contains(key))
+                  .onPresent(recovery -> releaseHeldRecovery(key, recovery));
+        }
+
+        shortenWindow(key, window);
+    }
+
+    /// The mark is opened before the held recovery is looked up, so a recovery arriving between the two finds it open.
+    private void warningLanded(String key) {
+        openRecoverable.add(key);
+        Option.option(awaitingDelivery.remove(key))
+              .flatMap(held -> held)
+              .onPresent(recovery -> releaseHeldRecovery(key, recovery));
+    }
+
+    private void releaseHeldRecovery(String key, ClusterEvent recovery) {
+        openRecoverable.remove(key);
+        redelivery.deliver(stampedOrAsIs(recovery));
+    }
+
+    /// A recovery is published iff the warning it closes was published for the same subject and is still open, and it
+    /// closes it. It has no window of its own: one published warning allows one recovery. Publishing it also ends the
+    /// warning's throttle window, so a condition that recurs right after its recovery is shown again rather than
+    /// throttled behind a "repaired" that is no longer true (#752).
+    private void onRecovery(OperatorWarning warning, OperatorWarningCode closes) {
+        var closedKey = throttleKey(closes, warning.subject());
+        var event = warningEvent(warning, 0);
+        var held = Option.option(awaitingDelivery.computeIfPresent(closedKey, (_, _) -> Option.some(event)));
+
+        if (held.isPresent()) {
+            operatorWarningThrottle.remove(closedKey);
+            LOG.debug("ClusterEventAggregator: holding OperatorWarning {} for {} until the warning it closes is delivered",
+                      warning.code().code(),
+                      warning.subject());
+
+            return;
+        }
+
+        if (replayingCheck.getAsBoolean()) {
+            holdDuringReplay(closedKey, event);
+
+            return;
+        }
+
+        replayHeldRecoveries.remove(closedKey);
+        if (!openRecoverable.remove(closedKey)) {
+            LOG.debug("ClusterEventAggregator: refusing OperatorWarning {} for {}, no published warning is open",
+                      warning.code().code(),
+                      warning.subject());
+
+            return;
+        }
+
+        publishRecovery(closedKey, event);
+    }
+
+    /// A shown warning must get its recovery, but replay suppresses local emits. So during replay the recovery is held
+    /// and the open mark is left alone; [#releaseReplayHeldRecoveries] publishes it on the first tick after replay.
+    private void holdDuringReplay(String closedKey, ClusterEvent recovery) {
+        if (openRecoverable.contains(closedKey)) {
+            replayHeldRecoveries.put(closedKey, recovery);
+            LOG.debug("ClusterEventAggregator: snapshot/resync replay in progress — holding {} until it ends", recovery);
+        }
+    }
+
+    private void releaseReplayHeldRecoveries() {
+        if (replayingCheck.getAsBoolean()) {
+            return;
+        }
+
+        replayHeldRecoveries.keySet().forEach(this::releaseReplayHeld);
+    }
+
+    private void releaseReplayHeld(String closedKey) {
+        Option.option(replayHeldRecoveries.remove(closedKey))
+              .filter(_ -> openRecoverable.remove(closedKey))
+              .onPresent(recovery -> publishRecovery(closedKey, recovery));
+    }
+
+    private void publishRecovery(String closedKey, ClusterEvent event) {
+        operatorWarningThrottle.remove(closedKey);
+        lastRaisedOperatorWarning = Option.some(event);
+        redelivery.deliver(stampedOrAsIs(event));
+    }
+
+    private ClusterEvent.OperatorWarning warningEvent(OperatorWarning warning, long suppressedSince) {
+        return new ClusterEvent.OperatorWarning(hlcClock.now(),
+                                                severityOf(warning.code().level()),
+                                                warning.message(),
+                                                operatorWarningDetails(warning, suppressedSince));
     }
 
     /// Observability: the operator-warning event this node most recently admitted for publication,
@@ -833,6 +1004,16 @@ public final class ClusterEventAggregator {
     /// the aggregator rather than stopping at the log line.
     public Option<ClusterEvent> lastRaisedOperatorWarning() {
         return lastRaisedOperatorWarning;
+    }
+
+    /// The tasks whose UNKNOWN the aggregator is tracking (published or held): it ends with the task's RESTORED,
+    /// including `task-removed`, so a removed task cannot leave an entry behind.
+    public int trackedScheduledFires() {
+        return heldFires.size();
+    }
+
+    public int trackedScheduledOutcomes() {
+        return scheduledOutcomes.size();
     }
 
     /// Operator-warning throttle keys currently held (observability for #1617 R3).
@@ -847,7 +1028,11 @@ public final class ClusterEventAggregator {
     public Unit evictIdleThrottleWindows() {
         var now = hlcClock.now().physicalMillis();
 
+        announceHeldScheduledOutcomes();
+        announceHeldFires();
         evictIdle(streamMemoryEventThrottle, now);
+        evictIdle(scheduledOutcomeThrottle, now);
+        evictIdle(fireHeldThrottle, now);
 
         return reportEvictedHeldBack(evictIdle(operatorWarningThrottle, now));
     }
@@ -898,8 +1083,13 @@ public final class ClusterEventAggregator {
                : current;
     }
 
+    private static String throttleKey(OperatorWarningCode code, String subject) {
+        return code.code() + ":" + subject;
+    }
+
     private static Severity severityOf(WarningLevel level) {
         return switch (level) {
+            case INFO -> Severity.INFO;
             case WARNING -> Severity.WARNING;
             case CRITICAL -> Severity.CRITICAL;
         };
@@ -1504,6 +1694,274 @@ public final class ClusterEventAggregator {
                                                     event.eventId())));
     }
 
+    /// #1723: a scheduled task has a fire whose outcome is unknown. Throttled per task to one event per
+    /// [#EVENT_THROTTLE_MS]: an UNKNOWN that arrives inside the window is HELD, and [#announceHeldScheduledOutcomes]
+    /// publishes it once the window has closed IF the outcome is still unknown by then. One that resolved meanwhile
+    /// is never announced, nor is its RESTORED (see [#onScheduledTaskOutcomeRestored]).
+    @Contract
+    public void onScheduledTaskOutcomeUnknown(OperationalEvent.ScheduledTaskOutcomeUnknown event) {
+        if (replayingCheck.getAsBoolean()) {
+            LOG.debug("ClusterEventAggregator: snapshot/resync replay in progress — suppressing side-effect emit of {}",
+                      event);
+
+            return;
+        }
+
+        var key = event.key();
+        var window = admit(scheduledOutcomeThrottle, key);
+        var entry = new ScheduledOutcome(event, window.admitted());
+        var previous = scheduledOutcomes.putIfAbsent(key, entry);
+
+        if (previous != null) {
+            LOG.debug("ClusterEventAggregator: ScheduledTaskOutcomeUnknown for {} repeats an outcome already tracked",
+                      key);
+
+            return;
+        }
+
+        if (window.admitted()) {
+            emitScheduledOutcomeUnknown(event, window.suppressedBefore());
+        } else {
+            LOG.debug("ClusterEventAggregator: holding throttled ScheduledTaskOutcomeUnknown for {}", key);
+        }
+    }
+
+    /// #1723: the unknown fire was answered late. Announced only if its UNKNOWN was: a RESTORED with no visible UNKNOWN
+    /// would be an all-clear for a condition the operator never saw. Not throttled, since it follows a published event.
+    @Contract
+    public void onScheduledTaskOutcomeRestored(OperationalEvent.ScheduledTaskOutcomeRestored event) {
+        if (replayingCheck.getAsBoolean()) {
+            LOG.debug("ClusterEventAggregator: snapshot/resync replay in progress — suppressing side-effect emit of {}",
+                      event);
+
+            return;
+        }
+
+        var previous = scheduledOutcomes.remove(event.key());
+
+        if (previous == null || !previous.visible()) {
+            LOG.debug("ClusterEventAggregator: ScheduledTaskOutcomeRestored for {} has no published UNKNOWN; not announced",
+                      event.key());
+
+            return;
+        }
+
+        var unknown = previous.unknown();
+
+        emit(new ClusterEvent.ScheduledTaskOutcomeRestored(hlcClock.now(),
+                                                           Severity.INFO,
+                                                           restoredSummary(event),
+                                                           scheduledOutcomeDetails(event.task(),
+                                                                                   event.node(),
+                                                                                   unknown.fireAt(),
+                                                                                   event.eventId(),
+                                                                                   Map.of("outcome",
+                                                                                          event.outcome(),
+                                                                                          "reason",
+                                                                                          event.reason(),
+                                                                                          "late",
+                                                                                          String.valueOf(event.late())))));
+    }
+
+    private static String restoredSummary(OperationalEvent.ScheduledTaskOutcomeRestored event) {
+        var task = "Scheduled task " + event.task();
+
+        return switch (event.reason()) {
+            case OperationalEvent.ScheduledTaskOutcomeRestored.LATE_ANSWER -> task + " resolved its unknown outcome: the late response says it " + event.outcome();
+            case OperationalEvent.ScheduledTaskOutcomeRestored.NODE_DEPARTED -> task + " is closed: the node that fired it left the cluster while its outcome was unknown";
+            case OperationalEvent.ScheduledTaskOutcomeRestored.TASK_REMOVED -> task + " was removed while its outcome was unknown";
+            default -> task + " is known again: a later fire completed and " + event.outcome();
+        };
+    }
+
+    /// #1930: a scheduled fire is still in flight when its next tick arrives. Raised by the node whose scheduler holds the
+    /// fire, ONCE per fire; throttled per task and node to one event per [#EVENT_THROTTLE_MS]. Published through
+    /// [#emitLocal]: the fact is that node's own, so the events-owner gate (which would drop it on every node but one) does
+    /// not apply. A held event that is still in flight when the window closes is announced by [#announceHeldFires].
+    @Contract
+    public void onScheduledTaskFireHeld(OperationalEvent.ScheduledTaskFireHeld event) {
+        if (replayingCheck.getAsBoolean()) {
+            return;
+        }
+
+        var key = event.key();
+        var window = admit(fireHeldThrottle, key);
+        var previous = heldFires.putIfAbsent(key, new HeldFire(event, window.admitted()));
+
+        if (previous != null) {
+            LOG.debug("ClusterEventAggregator: ScheduledTaskFireHeld for {} repeats a fire already tracked", key);
+
+            return;
+        }
+
+        if (window.admitted()) {
+            emitFireHeld(event, window.suppressedBefore());
+        } else {
+            LOG.debug("ClusterEventAggregator: holding throttled ScheduledTaskFireHeld for {}", key);
+        }
+    }
+
+    /// #1930: the held fire resolved. Announced only if its held event was: a release for something the operator was never
+    /// told is not news.
+    @Contract
+    public void onScheduledTaskFireReleased(OperationalEvent.ScheduledTaskFireReleased event) {
+        if (replayingCheck.getAsBoolean()) {
+            return;
+        }
+
+        var previous = heldFires.remove(event.key());
+
+        if (previous == null || !previous.visible()) {
+            LOG.debug("ClusterEventAggregator: ScheduledTaskFireReleased for {} has no published hold; not announced",
+                      event.key());
+
+            return;
+        }
+
+        emitLocal(new ClusterEvent.ScheduledTaskFireReleased(hlcClock.now(),
+                                                             Severity.INFO,
+                                                             "Scheduled task " + event.task()
+                                                            + " is firing again: the fire that held it resolved (" + event.outcome()
+                                                            + ") after " + event.inFlightMs()
+                                                            + " ms",
+                                                             scheduledOutcomeDetails(event.task(),
+                                                                                     event.node(),
+                                                                                     event.fireAt(),
+                                                                                     event.eventId(),
+                                                                                     Map.of("inFlightMs",
+                                                                                            Long.toString(event.inFlightMs()),
+                                                                                            "outcome",
+                                                                                            event.outcome()))));
+    }
+
+    /// Publishes every held fire the window held back whose window has since closed and which is still in flight (still in
+    /// the map). Run once per window through [#evictIdleThrottleWindows].
+    public Unit announceHeldFires() {
+        var now = hlcClock.now().physicalMillis();
+
+        heldFires.entrySet()
+                 .stream()
+                 .filter(entry -> !entry.getValue()
+                                        .visible())
+                 .filter(entry -> windowClosed(fireHeldThrottle.get(entry.getKey()),
+                                               now))
+                 .map(Map.Entry::getKey)
+                 .toList()
+                 .forEach(this::announceHeldFire);
+
+        return Unit.unit();
+    }
+
+    private void announceHeldFire(String key) {
+        var promoted = new AtomicReference<HeldFire>();
+
+        heldFires.computeIfPresent(key,
+                                   (_, held) -> held.visible()
+                                                ? held
+                                                : promoteFire(held, promoted));
+        Option.option(promoted.get()).onPresent(entry -> emitFireHeld(entry.event(),
+                                                                      admit(fireHeldThrottle, key).suppressedBefore()));
+    }
+
+    private static HeldFire promoteFire(HeldFire held, AtomicReference<HeldFire> promoted) {
+        var visible = new HeldFire(held.event(), true);
+
+        promoted.set(visible);
+
+        return visible;
+    }
+
+    private void emitFireHeld(OperationalEvent.ScheduledTaskFireHeld event, long suppressedSince) {
+        emitLocal(new ClusterEvent.ScheduledTaskFireHeld(hlcClock.now(),
+                                                         Severity.WARNING,
+                                                         "Scheduled task " + event.task()
+                                                        + " is not firing: its previous fire is still in flight (" + event.inFlightMs()
+                                                        + " ms) and each tick is skipped until it resolves",
+                                                         scheduledOutcomeDetails(event.task(),
+                                                                                 event.node(),
+                                                                                 event.fireAt(),
+                                                                                 event.eventId(),
+                                                                                 Map.of("inFlightMs",
+                                                                                        Long.toString(event.inFlightMs()),
+                                                                                        "suppressedSince",
+                                                                                        Long.toString(suppressedSince)))));
+    }
+
+    /// Publishes every UNKNOWN the window held back whose window has since closed and whose outcome is still unknown:
+    /// a held entry still in the map has not been resolved. Run once per window by `AetherNode` (through
+    /// [#evictIdleThrottleWindows]), so a held UNKNOWN is announced within about two windows.
+    public Unit announceHeldScheduledOutcomes() {
+        var now = hlcClock.now().physicalMillis();
+
+        scheduledOutcomes.entrySet()
+                         .stream()
+                         .filter(entry -> !entry.getValue()
+                                                .visible())
+                         .filter(entry -> windowClosed(scheduledOutcomeThrottle.get(entry.getKey()),
+                                                       now))
+                         .map(Map.Entry::getKey)
+                         .toList()
+                         .forEach(this::announceHeld);
+
+        return Unit.unit();
+    }
+
+    // RET-06: `window` is the nullable value of a JDK map lookup (absent key → null), a framework boundary.
+    @SuppressWarnings("JBCT-RET-06")
+    private static boolean windowClosed(ThrottleWindow window, long now) {
+        return window == null || !window.openAt(now);
+    }
+
+    private void announceHeld(String key) {
+        var promoted = new AtomicReference<ScheduledOutcome>();
+
+        scheduledOutcomes.computeIfPresent(key,
+                                           (_, held) -> held.visible()
+                                                        ? held
+                                                        : promote(held, promoted));
+        Option.option(promoted.get()).onPresent(entry -> emitScheduledOutcomeUnknown(entry.unknown(),
+                                                                                     admit(scheduledOutcomeThrottle, key).suppressedBefore()));
+    }
+
+    private static ScheduledOutcome promote(ScheduledOutcome held, AtomicReference<ScheduledOutcome> promoted) {
+        var visible = new ScheduledOutcome(held.unknown(), true);
+
+        promoted.set(visible);
+
+        return visible;
+    }
+
+    private void emitScheduledOutcomeUnknown(OperationalEvent.ScheduledTaskOutcomeUnknown event, long suppressedSince) {
+        emit(new ClusterEvent.ScheduledTaskOutcomeUnknown(hlcClock.now(),
+                                                          Severity.WARNING,
+                                                          "Scheduled task " + event.task()
+                                                         + " has a fire whose outcome is unknown: no response arrived in"
+                                                         + " time, so it is not known whether the work ran",
+                                                          scheduledOutcomeDetails(event.task(),
+                                                                                  event.node(),
+                                                                                  event.fireAt(),
+                                                                                  event.eventId(),
+                                                                                  Map.of("suppressedSince",
+                                                                                         Long.toString(suppressedSince)))));
+    }
+
+    private static Map<String, String> scheduledOutcomeDetails(String task,
+                                                               String node,
+                                                               long fireAt,
+                                                               String eventId,
+                                                               Map<String, String> extra) {
+        var details = new HashMap<>(extra);
+
+        details.put(ClusterEventIdentity.EVENT_ID, eventId);
+        details.put("task", task);
+        details.put("fireAt", Long.toString(fireAt));
+        if (!node.isEmpty()) {
+            details.put("node", node);
+        }
+
+        return Map.copyOf(details);
+    }
+
     /// Taste: WARNING. The operator asked for a lower factor and the system will not do it; nothing is lost and
     /// nothing stalls by this event itself.
     @Contract
@@ -1525,6 +1983,30 @@ public final class ClusterEventAggregator {
                                                      String.valueOf(event.effectiveConfirmationFactor()),
                                                      "reason",
                                                      event.reason())));
+    }
+
+    @Contract
+    public void onStreamLineageRestarted(OperationalEvent.StreamLineageRestarted event) {
+        emit(new StreamLineageRestarted(hlcClock.now(),
+                                        Severity.INFO,
+                                        "Stream " + event.stream()
+                                       + "[" + event.partition()
+                                       + "] began a new epoch " + event.newEpoch()
+                                       + " on its owner " + event.owner()
+                                       + " at offset " + event.startOffset()
+                                       + ": its ring was rebuilt, consumers read from that offset again",
+                                        Map.of("stream",
+                                               event.stream(),
+                                               "partition",
+                                               String.valueOf(event.partition()),
+                                               "owner",
+                                               event.owner(),
+                                               "oldEpoch",
+                                               event.oldEpoch(),
+                                               "newEpoch",
+                                               event.newEpoch(),
+                                               "startOffset",
+                                               String.valueOf(event.startOffset()))));
     }
 
     private static Map<String, String> streamIsrDetails(String stream,
