@@ -124,7 +124,9 @@ public final class OwnerActivation {
     /// Commits, as the owner, where the current epoch of `(stream, partition)` begins (#1730 phase 2, KIP-320): with
     /// `restarted` the owner first takes the next ownership term, because its ring was rebuilt and it may assign offsets
     /// it assigned before. A guarded write of exactly `current`; a refusal (the record moved on) fails the activation, which
-    /// re-runs against the new record.
+    /// re-runs against the new record. #1976: the refusal is a FAILED promise ([ActivationError#LINEAGE_NOT_COMMITTED]);
+    /// success means THIS write was accepted. A read-back cannot decide it: on a restart the record already names a start,
+    /// so a refused commit would read as landed.
     @FunctionalInterface
     public interface LineageCommit {
         Promise<Unit> commit(String stream,
@@ -181,6 +183,11 @@ public final class OwnerActivation {
     @FunctionalInterface
     public interface BlockAlarm {
         Unit raise(ActivationBlock block);
+
+        /// The recovery transition: the partition that `block` was reported for has activated.
+        default Unit cleared(ActivationBlock block) {
+            return Unit.unit();
+        }
     }
 
     /// A promotion that cannot complete without an operator: the partition stays un-activated, the gate keeps
@@ -290,6 +297,20 @@ public final class OwnerActivation {
             }
         }
 
+        /// #1976: the owner's guarded lineage commit was refused `refusals` times in a row (the ownership record keeps moving
+        /// under it, or no committed leader authorises the write), so the partition stays un-activated. It keeps retrying
+        /// with backoff; this is the operator's signal that it has not succeeded. Reported once, cleared on activation.
+        record LineageRefused(String streamName, int partition, int refusals) implements ActivationBlock {
+            @Override
+            public String message() {
+                return ("Owner promotion of %s[%d] has been refused %d times in a row: the guarded commit of its epoch start "
+                       + "is not accepted (the ownership record keeps changing, or no leader authorises it); the owner "
+                       + "retries with backoff and the partition stays un-activated until it lands").formatted(streamName,
+                                                                                                               partition,
+                                                                                                               refusals);
+            }
+        }
+
         /// `unreachable` have not answered the promotion probe for longer than `blockedLongerThan` and may hold a
         /// higher watermark; `responders` answered.
         record HoldersUnreachable(String streamName,
@@ -311,6 +332,8 @@ public final class OwnerActivation {
     public static final int OVERLAP_WINDOW = 1024;
     static final TimeSpan REDRIVE_INITIAL_BACKOFF = TimeSpan.timeSpan(250).millis();
     static final TimeSpan REDRIVE_MAX_BACKOFF = TimeSpan.timeSpan(2).seconds();
+    /// Consecutive refused lineage commits of one partition before the operator is told (#1976).
+    static final int LINEAGE_REFUSAL_ALARM_AFTER = 5;
 
     private record PeerWatermark(NodeId node, long watermark) {}
 
@@ -331,6 +354,8 @@ public final class OwnerActivation {
     /// The ring each partition was last activated on, by [RingIncarnation]: an activation on the SAME ring kept its
     /// offsets, one on another ring (a restart, a re-created stream) may assign them again.
     private final Map<PartitionKey, Long> activatedIncarnation = new ConcurrentHashMap<>();
+    /// Consecutive refused lineage commits per partition; reset when one lands.
+    private final Map<PartitionKey, Integer> lineageRefusals = new ConcurrentHashMap<>();
 
     /// The committed record each partition was activated for; [Option#none] marks a first-owner activation.
     private final Map<PartitionKey, Option<StreamPartitionOwnershipValue>> activated = new ConcurrentHashMap<>();
@@ -594,7 +619,29 @@ public final class OwnerActivation {
                               restarted)
                       .flatMap(_ -> ownedRecord(stream, partition))
                       .flatMap(this::requireCommittedStart)
-                      .onSuccess(_ -> activatedIncarnation.put(key, incarnation));
+                      .onSuccess(_ -> landed(key, incarnation))
+                      .onFailure(cause -> refused(stream, partition, key, cause));
+    }
+
+    private Unit landed(PartitionKey key, long incarnation) {
+        activatedIncarnation.put(key, incarnation);
+        lineageRefusals.remove(key);
+
+        return Unit.unit();
+    }
+
+    /// #1976: a refused commit never latches [#activatedIncarnation], so the re-drive runs the commit again; only the
+    /// operator's view needs the count — the Nth refusal in a row is reported once, and [#recordActivation] clears it.
+    private Unit refused(String stream, int partition, PartitionKey key, Cause cause) {
+        if (cause != ActivationError.LINEAGE_NOT_COMMITTED) {
+            return Unit.unit();
+        }
+
+        var count = lineageRefusals.merge(key, 1, Integer::sum);
+
+        return count == LINEAGE_REFUSAL_ALARM_AFTER
+               ? report(key, new ActivationBlock.LineageRefused(stream, partition, count))
+               : Unit.unit();
     }
 
     /// A guarded write that was refused is not a failed promise (the applier answers it with a result): the record is
@@ -615,6 +662,9 @@ public final class OwnerActivation {
                                   PartitionKey key,
                                   Option<StreamPartitionOwnershipValue> record) {
         activated.put(key, record);
+        Option.option(blocks.get(key))
+              .filter(ActivationBlock.LineageRefused.class::isInstance)
+              .onPresent(alarm::cleared);
         clearBlock(key);
         log.info("Owner activation of {}[{}] complete at watermark {} for ownership record {}",
                  stream,

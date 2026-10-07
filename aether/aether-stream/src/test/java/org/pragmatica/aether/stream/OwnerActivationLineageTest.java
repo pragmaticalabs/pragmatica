@@ -39,6 +39,8 @@ class OwnerActivationLineageTest {
     private final AtomicReference<Option<org.pragmatica.lang.Cause>> refusal = new AtomicReference<>(Option.none());
     private final List<String> commits = new ArrayList<>();
     private final java.util.concurrent.atomic.AtomicBoolean silentRefusal = new java.util.concurrent.atomic.AtomicBoolean();
+    private final List<OwnerActivation.ActivationBlock> raised = new ArrayList<>();
+    private final List<OwnerActivation.ActivationBlock> cleared = new ArrayList<>();
     private final OwnerActivation activation = activation();
 
     private OwnerActivation activation() {
@@ -52,7 +54,21 @@ class OwnerActivationLineageTest {
                                                (_, _, _, _) -> Promise.success(0L),
                                                () -> true,
                                                (_, _, _, _, _) -> Promise.success(List.of()),
-                                               _ -> Unit.unit(),
+                                               new OwnerActivation.BlockAlarm() {
+                                                   @Override
+                                                   public Unit raise(OwnerActivation.ActivationBlock block) {
+                                                       raised.add(block);
+
+                                                       return Unit.unit();
+                                                   }
+
+                                                   @Override
+                                                   public Unit cleared(OwnerActivation.ActivationBlock block) {
+                                                       cleared.add(block);
+
+                                                       return Unit.unit();
+                                                   }
+                                               },
                                                TimeSpan.timeSpan(1).hours(),
                                                (_, _) -> incarnation.get(),
                                                this::commit);
@@ -146,6 +162,35 @@ class OwnerActivationLineageTest {
         refusal.set(Option.none());
 
         assertThat(activate()).as("re-run against the record as it is now").isTrue();
+    }
+
+    /// #1976 owner rule: refusals that persist are told to the operator ONCE, at the Nth consecutive refusal, and the
+    /// recovery is told once when the commit finally lands; a refused restart never latches, so each re-run commits again.
+    @Test
+    void persistentRefusals_raiseOneBlockAtTheThreshold_andClearItOnRecovery() {
+        record.set(Option.some(committed(List.of(new EpochStart(EPOCH, 5L)))));
+        refusal.set(Option.some(OwnerActivation.ActivationError.LINEAGE_NOT_COMMITTED));
+
+        for (var attempt = 1; attempt < OwnerActivation.LINEAGE_REFUSAL_ALARM_AFTER; attempt++) {
+            assertThat(activate()).isFalse();
+        }
+
+        assertThat(raised).as("below the threshold nothing is raised").isEmpty();
+        assertThat(activate()).isFalse();
+        assertThat(raised).as("the Nth refusal raises once").hasSize(1);
+        assertThat(raised.getFirst()).isInstanceOf(OwnerActivation.ActivationBlock.LineageRefused.class);
+        assertThat(activation.blockOf(STREAM, PARTITION).isPresent()).isTrue();
+
+        assertThat(activate()).isFalse();
+        assertThat(activate()).isFalse();
+        assertThat(raised).as("flood-guarded: further refusals raise nothing").hasSize(1);
+        assertThat(commits).as("every refusal retried the restart commit").hasSize(OwnerActivation.LINEAGE_REFUSAL_ALARM_AFTER + 2);
+
+        refusal.set(Option.none());
+
+        assertThat(activate()).as("the restart finally lands").isTrue();
+        assertThat(cleared).as("the recovery is told once").hasSize(1);
+        assertThat(activation.blockOf(STREAM, PARTITION).isEmpty()).isTrue();
     }
 
     /// The applier answers a refused guarded write with a result, not a failed promise: the commit "succeeds" and the record is

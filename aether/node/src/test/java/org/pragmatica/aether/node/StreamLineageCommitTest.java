@@ -76,9 +76,68 @@ class StreamLineageCommitTest {
         var failedOverToB = record(B, 4L).withEpochStart(9L);
 
         seedRecord(failedOverToB);
-        commit(heldByA, 0L, true);
+
+        var result = AetherNode.streamLineageCommit(() -> Option.some(LEADER), commands -> applied(commands), HlcClock.hlcClock(A))
+                               .commit(STREAM, PARTITION, heldByA, 0L, true)
+                               .await();
+
+        assertThat(result.isFailure()).as("#1976: the refusal is the commit's own result").isTrue();
 
         assertThat(committed()).as("the CAS on the exact record refuses the stale owner").isEqualTo(Option.some(failedOverToB));
+    }
+
+    /// #1976: the applier answers a refused guarded write with a result, and the old record already names a start (a
+    /// restart). The commit must FAIL on the write's own result; a read-back would find that start and report it landed.
+    @Test
+    void aRefusedRestartCommit_failsOnItsOwnResult_evenThoughTheRecordStillNamesAStart() {
+        var held = record(A, 3L).withEpochStart(5L);
+        var moved = held.withIsr(List.of(A, B));
+
+        seedRecord(moved);
+
+        var result = AetherNode.streamLineageCommit(() -> Option.some(LEADER), commands -> applied(commands), HlcClock.hlcClock(A))
+                               .commit(STREAM, PARTITION, held, 2L, true)
+                               .await();
+
+        assertThat(result.isFailure()).as("refused: the record moved under the owner").isTrue();
+        assertThat(committed()).as("nothing landed").isEqualTo(Option.some(moved));
+        assertThat(committed().unwrap().lastEpochStart().isPresent()).as("the read-back that would have fooled the activation").isTrue();
+    }
+
+    /// #1976, end to end through the real [org.pragmatica.aether.stream.OwnerActivation]: a competing ownership write (an ISR
+    /// change) lands between the owner's read and its restart commit. Red when the refusal is discarded: the activation
+    /// succeeds and latches the ring incarnation, so the restart is never retried. Green: it fails, then retries against
+    /// the new record and commits the restart.
+    @Test
+    void aRefusedRestartCommit_doesNotLatchTheActivation_andIsRetried() {
+        var held = record(A, 3L).withEpochStart(5L);
+        var competing = new java.util.concurrent.atomic.AtomicBoolean(true);
+        var activation = org.pragmatica.aether.stream.OwnerActivation.ownerActivation(A,
+                                                                                    (_, _) -> committed(),
+                                                                                    (_, _) -> true,
+                                                                                    Option.none(),
+                                                                                    () -> List.of(A),
+                                                                                    (_, _, _) -> Promise.success(-1L),
+                                                                                    (_, _) -> 2L,
+                                                                                    (_, _, _, _) -> Promise.success(0L),
+                                                                                    () -> true,
+                                                                                    (_, _, _, _, _) -> Promise.success(List.of()),
+                                                                                    _ -> org.pragmatica.lang.Unit.unit(),
+                                                                                    org.pragmatica.lang.io.TimeSpan.timeSpan(1).hours(),
+                                                                                    (_, _) -> 1L,
+                                                                                    AetherNode.streamLineageCommit(() -> Option.some(LEADER),
+                                                                                                                   commands -> competingThenApplied(competing, commands),
+                                                                                                                   HlcClock.hlcClock(A)));
+
+        seedRecord(held);
+
+        assertThat(activation.activate(STREAM, PARTITION).await().isFailure()).as("the refused restart fails the activation").isTrue();
+        assertThat(activation.isActivated(STREAM, PARTITION)).isFalse();
+        assertThat(committed().unwrap().ownerEpoch()).as("no restart landed").isEqualTo(held.ownerEpoch());
+
+        assertThat(activation.activate(STREAM, PARTITION).await().isSuccess()).as("the retry commits against the moved record").isTrue();
+        assertThat(committed().unwrap().ownerEpoch()).as("the restart landed: a new epoch").isNotEqualTo(held.ownerEpoch());
+        assertThat(activation.isActivated(STREAM, PARTITION)).isTrue();
     }
 
     @Test
@@ -101,9 +160,18 @@ class StreamLineageCommitTest {
 
     @SuppressWarnings({"rawtypes", "unchecked"})
     private Promise<List<Object>> applied(List<KVCommand<AetherKey>> commands) {
-        store.process(store.createBatch((List) commands));
+        List<Object> results = store.process(store.createBatch((List) commands));
 
-        return Promise.success(List.of());
+        return Promise.success(results);
+    }
+
+    /// The first apply is preceded by a competing ownership write (an ISR change) that moves the record.
+    private Promise<List<Object>> competingThenApplied(java.util.concurrent.atomic.AtomicBoolean competing, List<KVCommand<AetherKey>> commands) {
+        if (competing.compareAndSet(true, false)) {
+            seedRecord(committed().unwrap().withIsr(List.of(A, B)));
+        }
+
+        return applied(commands);
     }
 
     @SuppressWarnings({"rawtypes", "unchecked"})
