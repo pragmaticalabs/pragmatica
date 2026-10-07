@@ -90,6 +90,22 @@ class LayeredConfigProviderTest {
             assertThat(((ConfigurationProvider) reloaded.unwrap()).getString("a").unwrap()).isEqualTo("1");
             assertThat(((ConfigurationProvider) reloaded.unwrap()).getString("b").unwrap()).isEqualTo("2");
         }
+
+        /// A layer's `reload()` is typed `Result<ConfigSource>`; a layer may legitimately reload to a plain source.
+        /// The cast to `ConfigurationProvider` used to throw ClassCastException out of the layered reload.
+        @Test
+        void reload_layerReloadingToANonProviderSource_isWrapped_notAClassCastException() {
+            var plain = MapConfigSource.mapConfigSource("plain", Map.of("a", "reloaded")).unwrap();
+            var layer = reloadingTo(providerFor("top", Map.of("a", "old")), plain);
+            var bottom = providerFor("bottom", Map.of("b", "2"));
+
+            var reloaded = LayeredConfigProvider.layered(List.of(layer, bottom)).reload();
+
+            assertThat(reloaded.isSuccess()).isTrue();
+            var provider = (ConfigurationProvider) reloaded.unwrap();
+            assertThat(provider.getString("a").unwrap()).isEqualTo("reloaded");
+            assertThat(provider.getString("b").unwrap()).isEqualTo("2");
+        }
     }
 
     @Nested
@@ -205,6 +221,23 @@ class LayeredConfigProviderTest {
             assertThat(rightAssoc.getString("a").unwrap()).isEqualTo("1");
             assertThat(rightAssoc.getString("b").unwrap()).isEqualTo("2");
             assertThat(rightAssoc.getString("c").unwrap()).isEqualTo("3");
+        }
+    }
+
+    /// A provider identical to `base` except that its `reload()` answers `target` (a plain, non-provider source).
+    private static ConfigurationProvider reloadingTo(ConfigurationProvider base, ConfigSource target) {
+        return (ConfigurationProvider) java.lang.reflect.Proxy.newProxyInstance(ConfigurationProvider.class.getClassLoader(),
+                                                                                new Class<?>[]{ConfigurationProvider.class},
+                                                                                (proxy, method, args) -> method.getName().equals("reload") && method.getParameterCount() == 0
+                                                                                                         ? org.pragmatica.lang.Result.success(target)
+                                                                                                         : invokeOn(base, method, args));
+    }
+
+    private static Object invokeOn(ConfigurationProvider base, java.lang.reflect.Method method, Object[] args) throws Throwable {
+        try {
+            return method.invoke(base, args);
+        } catch (java.lang.reflect.InvocationTargetException e) {
+            throw e.getCause();
         }
     }
 

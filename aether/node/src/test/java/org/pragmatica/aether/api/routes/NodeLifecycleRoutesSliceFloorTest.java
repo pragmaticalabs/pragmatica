@@ -304,6 +304,58 @@ class NodeLifecycleRoutesSliceFloorTest {
         assertThat(settledWarnings()).as("recovery is reported once").hasSize(2);
     }
 
+    /// refuse -> admit -> refuse of one target is three events, in order: the SECOND refusal is raised again (the set
+    /// re-arms on admission), and the aggregator test pins that the feed shows it.
+    @Test
+    void refuseAdmitRefuse_raisesAllThree_inOrder() {
+        var routes = routes();
+        host(slice("a", 3, 2), node(1), node(2), node(3));
+        pendingDrains.add(node(1));
+        breach(routes.drainNodeForTest(node(2).id()).await());
+        pendingDrains.remove(node(1));
+        assertThat(routes.drainNodeForTest(node(2).id()).await().isSuccess()).isTrue();
+        pendingDrains.clear();
+        pendingDrains.add(node(1));
+        breach(routes.drainNodeForTest(node(2).id()).await());
+
+        assertThat(awaitWarnings(3)).extracting(OperatorWarning::code)
+                                    .containsExactly(OperatorWarningCode.SLICE_FLOOR_DRAIN_REFUSED,
+                                                     OperatorWarningCode.SLICE_FLOOR_DRAIN_ADMITTED,
+                                                     OperatorWarningCode.SLICE_FLOOR_DRAIN_REFUSED);
+    }
+
+    /// A refused target that leaves the membership is never admitted, so its recovery fires when the next admission
+    /// notices it gone, rather than leaving the refusal open for good (and the set leaking one entry).
+    @Test
+    void refusedTargetThatLeftTheMembership_getsItsRecovery() {
+        var routes = routes();
+        host(slice("a", 3, 2), node(1), node(2), node(3));
+        pendingDrains.add(node(1));
+        breach(routes.drainNodeForTest(node(2).id()).await());
+        pendingDrains.clear();
+        var withoutTwo = presentMembers();
+        withoutTwo.remove(node(2));
+        fsm = fsmAllCore(withoutTwo);
+
+        assertThat(routes.drainNodeForTest(node(4).id()).await().isSuccess()).isTrue();
+
+        var raised = awaitWarnings(2);
+
+        assertThat(raised).extracting(OperatorWarning::code)
+                          .containsExactly(OperatorWarningCode.SLICE_FLOOR_DRAIN_REFUSED,
+                                           OperatorWarningCode.SLICE_FLOOR_DRAIN_ADMITTED);
+        assertThat(raised.get(1).subject()).isEqualTo(node(2).id());
+        assertThat(raised.get(1).message()).contains("left the membership");
+    }
+
+    @Test
+    void refusalMessage_namesTheCliFlag_asWellAsTheQueryParameter() {
+        host(slice("a", 3, 2), node(1), node(2), node(3));
+        pendingDrains.add(node(1));
+
+        assertThat(breach(routes().drainNodeForTest(node(2).id()).await()).message()).contains("force=true", "--override-floor");
+    }
+
     /// Control: an admission that was never refused has nothing to recover from, so no recovery event.
     @Test
     void admittedDrainThatWasNeverRefused_raisesNoRecoveryEvent() {

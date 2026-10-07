@@ -13,13 +13,13 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.stream.IntStream;
 import java.util.stream.Stream;
 
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.slice.dependency.DependencyResolver;
 import org.pragmatica.aether.slice.dependency.SliceRegistry;
 import org.pragmatica.aether.slice.repository.Location;
+import org.pragmatica.aether.slice.repository.CompositeRepository;
 import org.pragmatica.aether.slice.repository.Repository;
 import org.pragmatica.serialization.SliceCodec;
 import org.pragmatica.config.ConfigurationProvider;
@@ -672,60 +672,8 @@ public interface SliceStore {
                          .flatMap(LoadedSliceEntry::sliceConfig);
         }
 
-        private Promise<Location> locateInRepositories(Artifact artifact) {
-            return locateInRepositories(artifact, repositories, List.of());
-        }
-
-        /// `failures` holds, in lookup order, what each repository tried so far answered. A repository
-        /// that failed does not end the search (the next one may have the artifact), but its cause is kept.
-        private Promise<Location> locateInRepositories(Artifact artifact,
-                                                       List<Repository> remainingRepos,
-                                                       List<Cause> failures) {
-            if (remainingRepos.isEmpty()) {
-                return unlocated(artifact, failures).promise();
-            }
-
-            var rest = remainingRepos.subList(1, remainingRepos.size());
-
-            return remainingRepos.getFirst()
-                                 .locate(artifact)
-                                 .fold(result -> result.fold(cause -> locateInRepositories(artifact,
-                                                                                           rest,
-                                                                                           plus(failures, cause)),
-                                                             Promise::success));
-        }
-
-        private static List<Cause> plus(List<Cause> failures, Cause cause) {
-            return Stream.concat(failures.stream(),
-                                 Stream.of(cause))
-                         .toList();
-        }
-
-        /// `ArtifactNotFound` only when EVERY repository answered "absent"; if any could not answer
-        /// (timeout, network), the artifact is not known to be absent and the cause names each outcome.
-        private static Cause unlocated(Artifact artifact, List<Cause> failures) {
-            return failures.stream()
-                           .allMatch(Repository.Absent.class::isInstance)
-                   ? ARTIFACT_NOT_FOUND.apply(artifact.asString())
-                   : new SliceLoadingFailure.Intermittent.ArtifactUnavailable(artifact.asString(), outcomes(failures));
-        }
-
-        private static List<String> outcomes(List<Cause> failures) {
-            return IntStream.range(0,
-                                   failures.size())
-                            .mapToObj(index -> outcome(index,
-                                                       failures.get(index)))
-                            .toList();
-        }
-
-        private static String outcome(int index, Cause cause) {
-            return "repository #" + index + (cause instanceof Repository.Absent
-                                             ? " absent: "
-                                             : " unavailable: ") + cause.message();
-        }
-
         private Repository compositeRepository() {
-            return this::locateInRepositories;
+            return CompositeRepository.compositeRepository(repositories);
         }
 
         private void closeClassLoader(SliceClassLoader classLoader) {
@@ -739,7 +687,5 @@ public interface SliceStore {
         private static final Fn1<Cause, String> SLICE_NOT_LOADED = Causes.forOneValue("Slice not loaded: %s");
 
         private static final Fn1<Cause, String> INVALID_STATE_TRANSITION = Causes.forOneValue("Invalid state transition: %s");
-
-        private static final Fn1<Cause, String> ARTIFACT_NOT_FOUND = SliceLoadingFailure.Intermittent.ArtifactNotFound::new;
     }
 }

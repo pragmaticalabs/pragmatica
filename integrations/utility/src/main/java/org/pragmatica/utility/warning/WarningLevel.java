@@ -15,9 +15,10 @@
  */
 package org.pragmatica.utility.warning;
 
-/// How urgently an operator warning needs attention (#1574). `WARNING` logs at WARN, and `CRITICAL`
-/// logs at ERROR. `INFO` is reserved for the RECOVERY notice that pairs a warning (the condition cleared), and
-/// logs at INFO. The cluster-event layer maps each level to its own severity of the same name.
+/// How urgently an operator warning needs attention (#1574). `INFO` logs at INFO and needs no action (a recovery
+/// notice, #752), `WARNING` logs at WARN, and `CRITICAL` logs at ERROR. The cluster-event layer maps each level to its
+/// own severity of the same name. Not on the wire: only the mapped `ClusterEvent.Severity` is, so adding a level here
+/// moves no ordinal.
 public enum WarningLevel {
     INFO,
     WARNING,

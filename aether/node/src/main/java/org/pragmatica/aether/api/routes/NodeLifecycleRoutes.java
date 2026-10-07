@@ -112,7 +112,7 @@ public final class NodeLifecycleRoutes implements RouteSource {
             return "Cannot " + operation
                  + " node " + nodeId
                  + ": it would leave " + describe(breaches)
-                 + ". Re-run with force=true to override, which takes the slice below its floor.";
+                 + ". Re-run with force=true (CLI: --override-floor) to override, which takes the slice below its floor.";
         }
 
         @Override
@@ -392,6 +392,7 @@ public final class NodeLifecycleRoutes implements RouteSource {
                                                              boolean force) {
         var remaining = new HashSet<>(nodeSupplier.get().membershipFsm().countedMembers());
 
+        closeRefusalsOfDepartedTargets(floor, remaining);
         remaining.removeAll(pendingDrainsSupplier.get());
         remaining.remove(node);
         var breaches = floor.violations().apply(node, remaining);
@@ -446,16 +447,32 @@ public final class NodeLifecycleRoutes implements RouteSource {
     /// The recovery counterpart of the refusal event: only when this target WAS refused, and once (the set is
     /// guarded by the same monitor as admission, so a transition is reported by exactly one request).
     private void raiseFloorRecovery(SliceFloor floor, NodeId node, String operation, String how) {
-        if (floorRefusedTargets.remove(node.id())) {
+        raiseFloorRecovery(floor, node.id(), operation, how);
+    }
+
+    private void raiseFloorRecovery(SliceFloor floor, String nodeId, String operation, String how) {
+        if (floorRefusedTargets.remove(nodeId)) {
             OperatorWarnings.raise(LOG,
                                    floor.warnings(),
                                    OperatorWarningCode.SLICE_FLOOR_DRAIN_ADMITTED,
-                                   node.id(),
+                                   nodeId,
                                    "Admitted {} of node {} that the slice floor had refused ({})",
                                    operation,
-                                   node.id(),
+                                   nodeId,
                                    how);
         }
+    }
+
+    /// A refused target that has since left the membership will never be admitted, so its refusal would stay open in
+    /// the event feed for good: close it with the recovery event, naming why, and forget the target.
+    private void closeRefusalsOfDepartedTargets(SliceFloor floor, Set<NodeId> members) {
+        var departed = floorRefusedTargets.stream()
+                                          .filter(refused -> members.stream()
+                                                                    .noneMatch(member -> member.id()
+                                                                                               .equals(refused)))
+                                          .toList();
+
+        departed.forEach(refused -> raiseFloorRecovery(floor, refused, "drain", "the node left the membership"));
     }
 
     private Result<org.pragmatica.lang.Unit> checkDrainReadiness(NodeId node, boolean requireReady) {
