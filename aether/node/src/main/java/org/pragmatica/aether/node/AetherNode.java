@@ -70,6 +70,7 @@ import org.pragmatica.aether.deployment.cluster.CoreVoterReconciler;
 import org.pragmatica.aether.deployment.cluster.NodeReplacementIndex;
 import org.pragmatica.aether.deployment.cluster.CommunityRetirementIndex;
 import org.pragmatica.aether.node.backup.BackupGenesis;
+import org.pragmatica.aether.node.backup.BackupPreflight;
 import org.pragmatica.aether.node.backup.BackupRestoreCoordinator;
 import org.pragmatica.aether.node.backup.BackupWarning;
 import org.pragmatica.aether.node.backup.GitBackupRepository;
@@ -610,14 +611,22 @@ public interface AetherNode extends ManageableNode {
                                                  Runnable identityRefusedExit,
                                                  Runnable gossipKeyDivergedExit,
                                                  Fn1<Option<String>, String> environment) {
-        return ClusterEventsLimits.clusterEventsLimits(environment).flatMap(limits -> createNodeWithBootToken(config,
-                                                                                                              delegateRouter,
-                                                                                                              nodeCodec,
-                                                                                                              jvmExit,
-                                                                                                              identityRefusedExit,
-                                                                                                              gossipKeyDivergedExit,
-                                                                                                              BootToken.bootToken(),
-                                                                                                              limits));
+        return requireBackupGit(config).flatMap(_ -> ClusterEventsLimits.clusterEventsLimits(environment))
+                               .flatMap(limits -> createNodeWithBootToken(config,
+                                                                          delegateRouter,
+                                                                          nodeCodec,
+                                                                          jvmExit,
+                                                                          identityRefusedExit,
+                                                                          gossipKeyDivergedExit,
+                                                                          BootToken.bootToken(),
+                                                                          limits));
+    }
+
+    /// #2007: `[backup]` shells out to git, so a node that has it enabled and cannot run git refuses to boot here, naming `[backup]` and
+    /// git, instead of leaving the restore BLOCKED and cluster-state writes refused after the cluster is up.
+    private static Result<Unit> requireBackupGit(AetherNodeConfig config) {
+        return enabledBackup(config).fold(() -> Result.success(Unit.unit()),
+                                          _ -> BackupPreflight.requireGit());
     }
 
     private static Result<AetherNode> createNodeWithBootToken(AetherNodeConfig config,

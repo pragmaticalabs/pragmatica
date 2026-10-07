@@ -472,6 +472,11 @@ public sealed interface NodeUserDataRenderer {
         sb.append("    apt-get update -qq\n");
         sb.append("    apt-get install -y -qq temurin-25-jre\n");
         sb.append("fi\n");
+        sb.append("# [backup] shells out to git (#2007): a host without it cannot back up or restore, and the node refuses to boot.\n");
+        sb.append("if ! command -v git &> /dev/null; then\n");
+        sb.append("    apt-get update -qq\n");
+        sb.append("    apt-get install -y -qq --no-install-recommends git\n");
+        sb.append("fi\n");
         sb.append("mkdir -p /opt/aether\n");
         sb.append("if [ ! -s /opt/aether/aether-node.jar ]; then\n");
         sb.append("    curl -fsSL -o /opt/aether/aether-node.jar \\\n");
