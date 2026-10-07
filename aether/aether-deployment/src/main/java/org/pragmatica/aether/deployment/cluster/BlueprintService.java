@@ -30,6 +30,7 @@ import org.pragmatica.aether.slice.blueprint.BlueprintParser;
 import org.pragmatica.aether.slice.blueprint.ExpandedBlueprint;
 import org.pragmatica.aether.slice.blueprint.MigrationEntry;
 import org.pragmatica.aether.slice.blueprint.PubSubValidator;
+import org.pragmatica.aether.slice.blueprint.RoutePrefixCollisionValidator;
 import org.pragmatica.aether.slice.blueprint.ResolvedSlice;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.AppBlueprintKey;
@@ -800,11 +801,35 @@ class BlueprintServiceInstance implements BlueprintService {
     }
 
     private Promise<Preflighted> validateSliceJars(ExpandedBlueprint expanded, List<SliceJar> sliceJars) {
+        return loadAllSliceJars(otherBlueprintsSlices(expanded)).flatMap(others -> validateSliceJars(expanded,
+                                                                                                     sliceJars,
+                                                                                                     topologiesOf(others)));
+    }
+
+    /// The slices of every OTHER stored blueprint, once each: a route collision between the blueprint being published and
+    /// a blueprint stored earlier is only visible when both slice sets are read (#1206). The blueprint's own previous
+    /// version is excluded (a republish replaces it), and a slice that appears in several blueprints is read once.
+    private List<ResolvedSlice> otherBlueprintsSlices(ExpandedBlueprint expanded) {
+        var seen = new java.util.HashSet<String>();
+
+        return list().stream()
+                   .filter(other -> !other.id()
+                                          .equals(expanded.id()))
+                   .flatMap(other -> other.loadOrder()
+                                          .stream())
+                   .filter(slice -> seen.add(slice.artifact().asString()))
+                   .toList();
+    }
+
+    private Promise<Preflighted> validateSliceJars(ExpandedBlueprint expanded,
+                                                   List<SliceJar> sliceJars,
+                                                   List<SliceTopology> otherTopologies) {
         var topologies = topologiesOf(sliceJars);
 
         noteConfigSectionPreflightSkipIfBlind(topologies);
 
         return PubSubValidator.validate(topologies)
+                              .flatMap(_ -> RoutePrefixCollisionValidator.validate(topologies, otherTopologies).mapError(BlueprintRejected.FACTORY))
                               .flatMap(_ -> ConfigSectionPreflightValidator.validate(sliceJars, nodeComposite))
                               .flatMap(_ -> replicationContext())
                               .flatMap(replication -> ReplicationPreflight.validate(sliceJars,

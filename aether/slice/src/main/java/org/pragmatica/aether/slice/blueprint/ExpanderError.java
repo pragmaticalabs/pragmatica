@@ -34,6 +34,39 @@ public sealed interface ExpanderError extends Cause {
         }
     }
 
+    /// #1206: two slices of DIFFERENT artifacts declare the same HTTP route (same method, same path template). The runtime
+    /// resolves such a collision deterministically (the lexically smaller coordinate serves, `HttpRoutePublisher`), so the
+    /// other slice would activate, report healthy and serve nothing. Refused at admission instead, naming both slices and the
+    /// route.
+    record RoutePrefixCollisions(List<RouteCollision> collisions) implements ExpanderError {
+        public static RoutePrefixCollisions routePrefixCollisions(List<RouteCollision> collisions) {
+            return new RoutePrefixCollisions(List.copyOf(collisions));
+        }
+
+        @Override
+        public String message() {
+            return "HTTP route collision: " + collisions.stream()
+                                                        .map(RouteCollision::describe)
+                                                        .collect(java.util.stream.Collectors.joining("; "));
+        }
+    }
+
+    /// One colliding route: `method` and the `path` template (path parameters normalized) declared by BOTH `first` and
+    /// `second`, which are the lexically ordered artifact coordinates.
+    record RouteCollision(String method, String path, String first, String second) {
+        public static RouteCollision routeCollision(String method, String path, String first, String second) {
+            return new RouteCollision(method, path, first, second);
+        }
+
+        public String describe() {
+            return method
+                 + " " + path
+                 + " is declared by both " + first
+                 + " and " + second
+                 + " (one of them would activate, report healthy and serve nothing)";
+        }
+    }
+
     /// One or more topic declarations carry an invalid address: a malformed `namespace:topic:version`
     /// form, an invalid topic name, or the reserved `system` namespace used by an app topic.
     record InvalidTopicAddresses(List<String> diagnostics) implements ExpanderError {
