@@ -1302,6 +1302,28 @@ class ClusterEventAggregatorTest {
                                              "stream-consumer-state-repaired");
     }
 
+    /// #1720: the slice-floor pair through the REAL aggregator. refuse, admit 30 s later, refuse again 10 s after that:
+    /// all three reach the feed. Without the recovery clearing the refusal's 60 s window the second refusal is held back
+    /// and the feed's last word is "admitted" while the target is refused.
+    @Test
+    void onOperatorWarning_sliceFloorRefuseAdmitRefuse_allThreeAreShown() {
+        var physicalMillis = new AtomicLong(1_000_000L);
+        var h = Harness.create(Harness.defaultRetention(), OWNER, () -> false, LEADER,
+                               HlcClock.hlcClock(SELF, physicalMillis::get, Long.MAX_VALUE));
+
+        h.aggregator().onOperatorWarning(floor(OperatorWarningCode.SLICE_FLOOR_DRAIN_REFUSED, "node-2"));
+        physicalMillis.addAndGet(30_000L);
+        h.aggregator().onOperatorWarning(floor(OperatorWarningCode.SLICE_FLOOR_DRAIN_ADMITTED, "node-2"));
+        physicalMillis.addAndGet(10_000L);
+        h.aggregator().onOperatorWarning(floor(OperatorWarningCode.SLICE_FLOOR_DRAIN_REFUSED, "node-2"));
+
+        assertThat(codes(h)).containsExactly("slice-floor-drain-refused", "slice-floor-drain-admitted", "slice-floor-drain-refused");
+    }
+
+    private static OperatorWarning floor(OperatorWarningCode code, String subject) {
+        return OperatorWarning.operatorWarning(code, subject, code.code() + " " + subject);
+    }
+
     /// #752: a repeat of an open warning is still throttled, and its one recovery is still published.
     @Test
     void onOperatorWarning_repeatOfAnOpenWarning_isThrottled_andClosedByOneRecovery() {
@@ -2037,11 +2059,12 @@ class ClusterEventAggregatorTest {
     }
 
     /// The pairing touches exactly the declared pairs of codes (the two consumer pairs #752/#1935, the oversized-event refusal and the
-    /// members-unreachable wait of #1937); every other code keeps the plain 60 s throttle.
+    /// members-unreachable wait of #1937, and the slice-floor refusal of #1720); every other code keeps the plain 60 s throttle.
     @Test
     void onOperatorWarning_onlyTheDeclaredPairsArePaired_otherCodesUnchanged() {
         assertThat(java.util.Arrays.stream(OperatorWarningCode.values()).filter(c -> c.recoveryOf().isPresent()).toList())
-            .containsExactlyInAnyOrder(OperatorWarningCode.STREAM_CONSUMER_STATE_REPAIRED,
+            .containsExactlyInAnyOrder(OperatorWarningCode.SLICE_FLOOR_DRAIN_ADMITTED,
+                             OperatorWarningCode.STREAM_CONSUMER_STATE_REPAIRED,
                              OperatorWarningCode.STREAM_CONSUMER_REGISTERED_AGAIN,
                              OperatorWarningCode.STREAM_CONSUMER_DRAIN_RESTORED,
                              OperatorWarningCode.STREAM_EVENT_EXCEEDS_READ_CAP_RESOLVED,
@@ -2049,7 +2072,8 @@ class ClusterEventAggregatorTest {
                              OperatorWarningCode.STREAM_OWNER_LINEAGE_COMMITTED,
                              OperatorWarningCode.STREAM_CATCHUP_SOURCE_ANSWERING_RESTORED);
         assertThat(java.util.Arrays.stream(OperatorWarningCode.values()).filter(OperatorWarningCode::hasRecovery).toList())
-            .containsExactlyInAnyOrder(OperatorWarningCode.STREAM_CONSUMER_STATE_DIVERGED,
+            .containsExactlyInAnyOrder(OperatorWarningCode.SLICE_FLOOR_DRAIN_REFUSED,
+                             OperatorWarningCode.STREAM_CONSUMER_STATE_DIVERGED,
                              OperatorWarningCode.STREAM_CONSUMER_NOT_REGISTERED,
                              OperatorWarningCode.STREAM_CONSUMER_DRAIN_FAILING,
                              OperatorWarningCode.STREAM_EVENT_EXCEEDS_READ_CAP,

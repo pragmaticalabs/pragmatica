@@ -82,6 +82,18 @@ public enum OperatorWarningCode {
     /// reachable (#1835): no QUIC handshake, SWIM ALIVE or health evidence. It never joined, so it did not
     /// fail; NODE_FAILED and the CRITICAL node-health alert are reserved for members that had.
     NODE_NEVER_JOINED("node-never-joined", "membership", WarningLevel.WARNING),
+    /// An operator drain or shutdown was FORCED past the slice `minAvailable` floor (#1720): the target hosts
+    /// ACTIVE slice instances whose remaining count falls below the floor, so those slices run degraded, or go
+    /// dark, until re-placed. The subject is the target node; the message names each slice and its counts.
+    SLICE_FLOOR_BREACHED_BY_FORCE("slice-floor-breached-by-force", "deployment", WarningLevel.WARNING),
+    /// An operator drain or shutdown was REFUSED (409) because it would take a hosted slice below its `minAvailable`
+    /// floor (#1720). Raised once per target on the transition into refusal; the subject is the target node and the
+    /// message names each slice and its counts. Its recovery is [#SLICE_FLOOR_DRAIN_ADMITTED].
+    SLICE_FLOOR_DRAIN_REFUSED("slice-floor-drain-refused", "deployment", WarningLevel.WARNING),
+    /// The recovery of a [#SLICE_FLOOR_DRAIN_REFUSED], same subject (#1720): a drain or shutdown for a target that was
+    /// earlier refused by the slice floor has now been admitted (the floor cleared, or the operator forced it). INFO,
+    /// published only after a published refusal for that target, and it clears the refusal's throttle window (#752).
+    SLICE_FLOOR_DRAIN_ADMITTED("slice-floor-drain-admitted", "deployment", WarningLevel.INFO, SLICE_FLOOR_DRAIN_REFUSED),
     /// A replica of a `confirmation_factor` 1 stream cut its divergent tail back to the last offset it shares with its
     /// owner (#1730 phase 2). With that factor the acknowledgement was the old owner's alone, so the discarded offsets
     /// may have been acknowledged and are lost; the message names them. A stream that confirms with replicas

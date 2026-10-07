@@ -43,6 +43,7 @@ import org.pragmatica.aether.api.NodeDepartureNotifier;
 import org.pragmatica.aether.api.LogLevelRegistry;
 import org.pragmatica.aether.api.ManagementServer;
 import org.pragmatica.aether.api.OperationalEvent;
+import org.pragmatica.aether.api.routes.NodeLifecycleRoutes;
 import org.pragmatica.aether.api.routes.RetentionRoutes;
 import org.pragmatica.aether.api.DynamicConfigManager;
 import org.pragmatica.config.ConfigService;
@@ -1920,6 +1921,14 @@ public interface AetherNode extends ManageableNode {
 
     private static boolean isCounted(String state) {
         return "Member".equals(state) || "Suspect".equals(state);
+    }
+
+    @Contract
+    private static void closeSliceFloorRefusalOnDeath(AtomicReference<Option<ManagementServer>> managementServerRef,
+                                                      MembershipTransitionRecord record) {
+        if ("Dead".equals(record.toState())) {
+            managementServerRef.get().onPresent(server -> server.onMemberDeparted(record.nodeId()));
+        }
     }
 
     @Contract
@@ -4766,6 +4775,9 @@ public interface AetherNode extends ManageableNode {
             alertManager.noteMembershipTransition(record.nodeId(), record.cause());
             onFsmTransition(transitionJournal, quorumLossDetectorRef, record);
             reconcileReplicaSetOnCountedBoundary(clusterEventsControllerRef, record);
+            // #1720: a floor-refused operator drain target that has now reached DEAD closes its refusal on this edge.
+            // Here and not on the DEAD-edge listener, which a wiring pin keeps to the unconditional callback.
+            closeSliceFloorRefusalOnDeath(managementServerRef, record);
         });
         // Wave-4 (cluster-topology-overhaul, #245): the MembershipDeltaProjector is the SOLE
         // emitter of MembershipDecision, fed by the FSM's own JOINED/REMOVED delta edge —
@@ -6591,7 +6603,12 @@ public interface AetherNode extends ManageableNode {
                                                                                                            target -> requestDrainThroughFsm(drainCommandRegistry,
                                                                                                                                             membershipFsmRef,
                                                                                                                                             target),
-                                                                                                           drainCommandRegistry::drainTargets);
+                                                                                                           drainCommandRegistry::drainTargets,
+
+                                                  // #1720: operator drain and shutdown honour the slice minAvailable floor,
+                                                  // as the automatic drain does (same KV-backed guard, same counting rules).
+                                                  NodeLifecycleRoutes.SliceFloor.sliceFloor(SliceOwnershipQuery.minAvailableDrainViolations(kvStore),
+                                                                                            operatorWarningSink));
 
                                                   managementServerRef.set(Option.some(managementServer));
                                                   // #278: expose the node's real MeterRegistry to slice-facing resource
