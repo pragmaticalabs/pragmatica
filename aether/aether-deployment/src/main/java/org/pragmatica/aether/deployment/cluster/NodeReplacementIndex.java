@@ -85,14 +85,30 @@ public final class NodeReplacementIndex {
                      .collect(Collectors.toUnmodifiableSet());
     }
 
-    /// original → replacement for every pairing whose phase authorizes the voter swap.
+    /// seat-leaver → seat-taker for every pairing whose phase authorizes a voter swap: original → replacement going
+    /// forward, and the REVERSE (replacement → original) for a pairing being `REVERTING` after a failed canary.
     public Map<NodeId, NodeId> voterSwaps() {
         var current = pairings;
+        var forward = originalsWhere(current, NodeReplacementIndex::authorizesSwap).stream()
+                                    .collect(Collectors.toMap(Function.identity(),
+                                                              original -> current.get(original)
+                                                                                 .replacement()));
 
-        return originalsWhere(current, NodeReplacementIndex::authorizesSwap).stream()
-                             .collect(Collectors.toUnmodifiableMap(Function.identity(),
-                                                                   original -> current.get(original)
-                                                                                      .replacement()));
+        originalsWhere(current, NodeReplacementPhase.REVERTING::equals).forEach(original -> forward.put(current.get(original)
+                                                                                                                .replacement(),
+                                                                                                         original));
+
+        return Map.copyOf(forward);
+    }
+
+    /// The committed record for `original`, if any.
+    public java.util.Optional<NodeReplacementValue> recordFor(NodeId original) {
+        return java.util.Optional.ofNullable(pairings.get(original));
+    }
+
+    /// Every committed pairing, original → record.
+    public Map<NodeId, NodeReplacementValue> all() {
+        return pairings;
     }
 
     /// Replacements that are surge capacity, not surplus: a live pairing's replacement before `RETIRING_OLD`.
@@ -126,7 +142,7 @@ public final class NodeReplacementIndex {
     private static boolean isLive(NodeReplacementPhase phase) {
         return switch (phase) {
             case DONE, ROLLED_BACK -> false;
-            case PROVISIONING, JOINING, SWAPPING, CANARY, DRAINING_OLD, RETIRING_OLD, FAILED_KEPT_BOTH, UNKNOWN -> true;
+            case PROVISIONING, JOINING, SWAPPING, CANARY, DRAINING_OLD, RETIRING_OLD, REVERTING, FAILED_KEPT_BOTH, UNKNOWN -> true;
         };
     }
 
@@ -138,7 +154,7 @@ public final class NodeReplacementIndex {
     private static boolean authorizesSwap(NodeReplacementPhase phase) {
         return switch (phase) {
             case SWAPPING, CANARY, DRAINING_OLD, RETIRING_OLD -> true;
-            case PROVISIONING, JOINING, DONE, ROLLED_BACK, FAILED_KEPT_BOTH, UNKNOWN -> false;
+            case PROVISIONING, JOINING, REVERTING, DONE, ROLLED_BACK, FAILED_KEPT_BOTH, UNKNOWN -> false;
         };
     }
 }
