@@ -22,6 +22,8 @@
 #   INTEG_DIR_UNDER_TEST=<path> selects another copy of aether/tests/integration (used for the mutation probes).
 #   bash aether/tests/integration/test/test-failtime-capture.sh
 set -uo pipefail
+# restart_all_nodes waits for the backup head to settle (60s by default); the stubbed remote has no head, so do not wait here.
+export BACKUP_SETTLE_TIMEOUT_S=0 BACKUP_SETTLE_POLL_S=1
 unset TARGET_HOST AETHER_SSH_USER HCLOUD_TOKEN
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"

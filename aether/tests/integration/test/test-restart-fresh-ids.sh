@@ -74,7 +74,7 @@ if [ -n "$start_cmd" ] && [ "$(sed -n 's/^echo \([0-9]*\) > .*/\1/p' <<< "$start
     ok "F1b one command: record the generation, then remove every aether-b-node- container, then start the fresh ids"
 else fail "F1b start command: $start_cmd"; fi
 if ! grep -qE 'down -v|docker (start|restart)|compose (start|restart)' <<< "$c"; then
-    ok "F1c no down -v, docker start or docker restart anywhere in the restart"
+    ok "F1c no same-id relaunch command anywhere in the restart"
 else fail "F1c a same-id command is present: $(grep -E 'down -v|docker (start|restart)|compose (start|restart)' <<< "$c" | head -2)"; fi
 
 body_restart_twice() { _compose_b_restart_onto_fresh_ids; _compose_b_restart_onto_fresh_ids; }
