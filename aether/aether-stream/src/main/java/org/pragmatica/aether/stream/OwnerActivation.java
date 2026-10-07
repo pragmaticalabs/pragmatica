@@ -562,6 +562,8 @@ public final class OwnerActivation {
     public void onQuorumStateChange(ClusterStateNotification notification) {
         if (notification.state() == ClusterStateNotification.State.PASSIVE) {
             activated.clear();
+            lineageRefusals.clear();
+            blocks.keySet().forEach(this::clearRefusedLineage);
         }
     }
 
@@ -662,9 +664,6 @@ public final class OwnerActivation {
                                   PartitionKey key,
                                   Option<StreamPartitionOwnershipValue> record) {
         activated.put(key, record);
-        Option.option(blocks.get(key))
-              .filter(ActivationBlock.LineageRefused.class::isInstance)
-              .onPresent(alarm::cleared);
         clearBlock(key);
         log.info("Owner activation of {}[{}] complete at watermark {} for ownership record {}",
                  stream,
@@ -710,8 +709,21 @@ public final class OwnerActivation {
         return ActivationError.NOT_OWNER.promise();
     }
 
+    /// Also ends a refusal episode (#1976): the count restarts, and a reported [ActivationBlock.LineageRefused] is told as
+    /// cleared — the partition activated, or this node stopped claiming it, so the condition no longer holds here. A later
+    /// tenure that gets stuck again therefore raises again.
+    /// Quorum loss ends every tenure: an episode of refused lineage commits ends with it, other blocks stand.
+    private void clearRefusedLineage(PartitionKey key) {
+        if (blocks.get(key) instanceof ActivationBlock.LineageRefused) {
+            clearBlock(key);
+        }
+    }
+
     private Unit clearBlock(PartitionKey key) {
-        blocks.remove(key);
+        lineageRefusals.remove(key);
+        Option.option(blocks.remove(key))
+              .filter(ActivationBlock.LineageRefused.class::isInstance)
+              .onPresent(alarm::cleared);
         unreachableSince.remove(key);
 
         return Unit.unit();

@@ -193,6 +193,59 @@ class OwnerActivationLineageTest {
         assertThat(activation.blockOf(STREAM, PARTITION).isEmpty()).isTrue();
     }
 
+    /// v-1979 R4: the count and the reported block belong to one tenure. Stuck, deposed (the record names another owner),
+    /// then owner again and stuck again: the second episode raises its own block, and the first was told as cleared. Red
+    /// with the count surviving NOT_OWNER: the second episode starts past the threshold and raises nothing.
+    @Test
+    void aSecondStuckTenure_afterOwnershipLeft_raisesAgain() {
+        var other = new NodeId("other");
+        var mine = committed(List.of(new EpochStart(EPOCH, 5L)));
+
+        record.set(Option.some(mine));
+        refusal.set(Option.some(OwnerActivation.ActivationError.LINEAGE_NOT_COMMITTED));
+        stickFor(OwnerActivation.LINEAGE_REFUSAL_ALARM_AFTER);
+        assertThat(raised).hasSize(1);
+
+        record.set(Option.some(new StreamPartitionOwnershipValue(other,
+                                                                 EPOCH,
+                                                                 4L,
+                                                                 HlcTimestamp.ZERO,
+                                                                 List.of(other),
+                                                                 1L,
+                                                                 false,
+                                                                 List.of(),
+                                                                 List.of(new EpochStart(EPOCH, 5L)))));
+        assertThat(activate()).as("ownership left this node").isFalse();
+        assertThat(cleared).as("the first episode is over").hasSize(1);
+
+        record.set(Option.some(mine));
+        stickFor(OwnerActivation.LINEAGE_REFUSAL_ALARM_AFTER);
+
+        assertThat(raised).as("the second stuck tenure raises its own block").hasSize(2);
+    }
+
+    /// Quorum loss ends the tenure the same way.
+    @Test
+    void aSecondStuckTenure_afterQuorumLoss_raisesAgain() {
+        record.set(Option.some(committed(List.of(new EpochStart(EPOCH, 5L)))));
+        refusal.set(Option.some(OwnerActivation.ActivationError.LINEAGE_NOT_COMMITTED));
+        stickFor(OwnerActivation.LINEAGE_REFUSAL_ALARM_AFTER);
+        assertThat(raised).hasSize(1);
+
+        activation.onQuorumStateChange(org.pragmatica.consensus.topology.ClusterStateNotification.passive());
+        assertThat(cleared).as("the first episode is over").hasSize(1);
+
+        stickFor(OwnerActivation.LINEAGE_REFUSAL_ALARM_AFTER);
+
+        assertThat(raised).as("the second stuck tenure raises its own block").hasSize(2);
+    }
+
+    private void stickFor(int attempts) {
+        for (var attempt = 0; attempt < attempts; attempt++) {
+            activate();
+        }
+    }
+
     /// The applier answers a refused guarded write with a result, not a failed promise: the commit "succeeds" and the record is
     /// unchanged. The activation must not take that for a committed start.
     @Test
