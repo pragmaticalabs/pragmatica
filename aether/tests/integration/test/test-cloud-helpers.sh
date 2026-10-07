@@ -673,6 +673,13 @@ got=$(W_DEADLINE=1 W_CLOCK_JUMP_AFTER_CALLS=2 w_run 'read_amount ENTDUR-00003-Z'
 [ "$got" = "rc=4 out= calls=3" ] && grep -q 'previous attempt WAS answered with a transient refusal: .*still replaying its log' "${W_WORK}/err" \
     && ok "W12 transient refusal then no answer: rc 4 after the transient attempt and the unanswered one, and the report names the earlier transient answer" \
     || fail "W12 transient then down: got '${got}'; $(tr '\n' '|' < "${W_WORK}/err")"
+# W14 (#1887): read_amount with the REAL clock keeps retrying for at least its stated deadline. Started with the shell clock at the end of
+# a second (SECONDS=0 after 0.9s), `SECONDS + 1` is reached 0.1s later; the read must still be retrying a full second after it began.
+SECONDS=0; sleep 0.9; w14_t0=$(perl -MTime::HiRes=time -e 'print time')
+W_DEADLINE=1 w_run 'read_amount ENTDUR-00003-Z' "$FOLD_BODY" > /dev/null
+w14_ms=$(perl -MTime::HiRes=time -e "printf '%d', (time - $w14_t0) * 1000")
+[ "$w14_ms" -ge 1000 ] && ok "W14 a 1s read deadline on the real clock keeps retrying for >= 1s (${w14_ms}ms)" \
+    || fail "W14 a 1s read deadline gave up after ${w14_ms}ms (< 1000): the deadline is the whole-second \$SECONDS tick, not the stated duration"
 # D1/D2 (#1887): deadline_in is reached NO SOONER than the stated duration. `$SECONDS` is whole seconds, so with the shell clock sitting
 # just before a tick (SECONDS=0 after 0.9s) the old `SECONDS + 3` is 3 and is reached 2.1s later; deadline_in 3 must be at least 4.
 SECONDS=0; sleep 0.9; got=$(deadline_in 3)
