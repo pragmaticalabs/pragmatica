@@ -2040,11 +2040,13 @@ class ClusterEventAggregatorTest {
     @Test
     void onOperatorWarning_onlyTheDeclaredPairsArePaired_otherCodesUnchanged() {
         assertThat(java.util.Arrays.stream(OperatorWarningCode.values()).filter(c -> c.recoveryOf().isPresent()).toList())
-            .containsExactly(OperatorWarningCode.STREAM_CONSUMER_STATE_REPAIRED,
-                             OperatorWarningCode.STREAM_CONSUMER_REGISTERED_AGAIN);
+            .containsExactlyInAnyOrder(OperatorWarningCode.STREAM_CONSUMER_STATE_REPAIRED,
+                             OperatorWarningCode.STREAM_CONSUMER_REGISTERED_AGAIN,
+                             OperatorWarningCode.STREAM_CONSUMER_DRAIN_RESTORED);
         assertThat(java.util.Arrays.stream(OperatorWarningCode.values()).filter(OperatorWarningCode::hasRecovery).toList())
-            .containsExactly(OperatorWarningCode.STREAM_CONSUMER_STATE_DIVERGED,
-                             OperatorWarningCode.STREAM_CONSUMER_NOT_REGISTERED);
+            .containsExactlyInAnyOrder(OperatorWarningCode.STREAM_CONSUMER_STATE_DIVERGED,
+                             OperatorWarningCode.STREAM_CONSUMER_NOT_REGISTERED,
+                             OperatorWarningCode.STREAM_CONSUMER_DRAIN_FAILING);
         var t = new AtomicLong(1_000_000L);
         var h = clocked(t);
 
@@ -2057,7 +2059,7 @@ class ClusterEventAggregatorTest {
             h.aggregator().onOperatorWarning(OperatorWarning.operatorWarning(code, "x", "m"));
         }
         assertThat(h.events()).as("one event per non-recovery code, the repeat throttled")
-                              .hasSize(OperatorWarningCode.values().length - 2);
+                              .hasSize(OperatorWarningCode.values().length - 3);
     }
 
     /// #752: a detach-found divergence is a POINT event with no recovery. Sharing the pass-found code, it opened a
