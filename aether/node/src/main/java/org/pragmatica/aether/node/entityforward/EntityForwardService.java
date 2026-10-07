@@ -619,16 +619,21 @@ public final class EntityForwardService implements EntityOwnerForward, EntityFor
     /// interface rather than through this receiver.
     private static final byte[] NO_PAYLOAD = new byte[0];
 
-    private static final BiFunction<String, WriteOutcome, Cause> FORWARD_SEND_REFUSED = (owner, outcome) -> Causes.cause("entity owner-forward to " + owner
-                                                                                                                        + " refused at send (" + outcome
-                                                                                                                        + ") — the owner was never reached");
+    /// Typed transient (#1973): a send this node's transport refused delivered nothing, so a retry is safe and the caller
+    /// must be able to tell it from a final failure.
+    private static final BiFunction<String, WriteOutcome, Cause> FORWARD_SEND_REFUSED = (owner, outcome) -> new EntityOwnerForward.ForwardNotSent("entity owner-forward to " + owner
+                                                                                                                                                 + " refused at send (" + outcome
+                                                                                                                                                 + ") — the owner was never reached and nothing was applied; safe to retry");
 
-    private static final BiFunction<String, String, Cause> FORWARD_TIMED_OUT = (owner, keyspace) -> Causes.cause("entity owner-forward to " + owner
-                                                                                                                + " for keyspace " + keyspace
-                                                                                                                + " timed out — NOT applied on this node; the owner may or may not have"
-                                                                                                                + " applied it (outcome unknown, a blind retry can double-apply)");
+    /// Transient, but NOT safe to retry blindly: the command was sent, so the owner may have applied it. The message must say
+    /// so, in words that differ from [#FORWARD_SEND_REFUSED]'s, because both answer 503 and the body is what tells them apart.
+    private static final BiFunction<String, String, Cause> FORWARD_TIMED_OUT = (owner, keyspace) -> new EntityOwnerForward.ForwardTimedOut("entity owner-forward to " + owner
+                                                                                                                                          + " for keyspace " + keyspace
+                                                                                                                                          + " timed out after the send — outcome unknown: the owner may have applied the command"
+                                                                                                                                          + " (it was not applied on this node); retry only an idempotent operation, a blind retry can double-apply");
 
-    private static final BiFunction<String, String, Cause> FORWARD_BUDGET_EXHAUSTED = (owner, keyspace) -> Causes.cause("entity owner-forward to " + owner
-                                                                                                                       + " for keyspace " + keyspace
-                                                                                                                       + " refused: request budget exhausted — the command was never sent");
+    /// Typed transient (#1973): refused before the send, so nothing left this node.
+    private static final BiFunction<String, String, Cause> FORWARD_BUDGET_EXHAUSTED = (owner, keyspace) -> new EntityOwnerForward.ForwardNotSent("entity owner-forward to " + owner
+                                                                                                                                                + " for keyspace " + keyspace
+                                                                                                                                                + " refused: request budget exhausted — the command was never sent; safe to retry with a fresh budget");
 }

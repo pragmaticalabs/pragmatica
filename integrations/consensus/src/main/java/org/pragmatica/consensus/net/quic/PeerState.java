@@ -24,6 +24,7 @@ import java.util.function.Consumer;
 import java.util.function.LongUnaryOperator;
 
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.net.NoOfflineBuffering;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.messaging.Message;
@@ -138,6 +139,10 @@ public final class PeerState {
 
         /// Peer is REMOVED — message dropped.
         record Dropped() implements OfferOutcome {}
+
+        /// The peer has no live connection and the message is [NoOfflineBuffering]: it was NOT buffered and
+        /// is dropped, so it can never be delivered after a reconnect.
+        record NotBuffered() implements OfferOutcome {}
     }
 
     public enum AttachResult {
@@ -576,17 +581,23 @@ public final class PeerState {
         return switch (phase) {
             case CONNECTED -> new OfferOutcome.SendNow(connection);
             case REMOVED -> new OfferOutcome.Dropped();
-            case INIT, CONNECTING, EVICTED -> {
-                var wasFull = offlineBuffer.size() >= OFFLINE_BUFFER_MAX;
-
-                if (wasFull) {
-                    offlineBuffer.pollFirst();
-                }
-
-                offlineBuffer.offerLast(message);
-                yield new OfferOutcome.Queued(wasFull);
-            }
+            case INIT, CONNECTING, EVICTED -> message instanceof NoOfflineBuffering
+                                              ? new OfferOutcome.NotBuffered()
+                                              : buffered(message);
         };
+    }
+
+    /// Called only from [#offerOutbound], under the per-peer monitor.
+    private OfferOutcome buffered(Message.Wired message) {
+        var wasFull = offlineBuffer.size() >= OFFLINE_BUFFER_MAX;
+
+        if (wasFull) {
+            offlineBuffer.pollFirst();
+        }
+
+        offlineBuffer.offerLast(message);
+
+        return new OfferOutcome.Queued(wasFull);
     }
 
     /// Drain the offline buffer. Intended to be called right after `attach` returns ACCEPTED.

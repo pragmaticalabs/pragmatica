@@ -24,7 +24,10 @@ import org.pragmatica.aether.slice.ObservabilityCellRegistrar;
 import org.pragmatica.aether.slice.SliceInvokerFacade;
 import org.pragmatica.aether.slice.blueprint.SecurityOverrides;
 import org.pragmatica.aether.slice.kvstore.AetherKey.HttpNodeRouteKey;
+import org.pragmatica.aether.node.entityforward.EntityForwardService;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.net.WriteOutcome;
+import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
@@ -47,6 +50,7 @@ import static org.pragmatica.lang.Unit.unit;
 class AppHttpServerLocalRouteFailureStatusTest {
     private static final NodeId SELF_NODE = NodeId.nodeId("failure-node").unwrap();
     private static final Artifact TEST_ARTIFACT = Artifact.artifact("com.example:svc:1.0.0").unwrap();
+    private static final NodeId OWNER = NodeId.nodeId("dead-owner").unwrap();
     private static final int TEST_PORT = 18096;
 
     record Refused(String message) implements Cause.Transient {}
@@ -61,6 +65,10 @@ class AppHttpServerLocalRouteFailureStatusTest {
     }
 
     private int statusFor(Cause failure) throws Exception {
+        return answerFor(failure).statusCode();
+    }
+
+    private HttpResponse<String> answerFor(Cause failure) throws Exception {
         var server = AppHttpServer.appHttpServer(AppHttpConfig.insecureAppHttpConfig(TEST_PORT),
                                                  ForwardingTimeouts.forwardingTimeouts(),
                                                  SELF_NODE,
@@ -76,8 +84,7 @@ class AppHttpServerLocalRouteFailureStatusTest {
                                                             .uri(URI.create("http://localhost:" + TEST_PORT + "/local/thing"))
                                                             .GET()
                                                             .build(),
-                                   HttpResponse.BodyHandlers.ofString())
-                             .statusCode();
+                                   HttpResponse.BodyHandlers.ofString());
         } finally {
             server.stop().await();
         }
@@ -91,6 +98,43 @@ class AppHttpServerLocalRouteFailureStatusTest {
     @Test
     void localRouteFailure_answers500_forNonTransientCause() throws Exception {
         assertThat(statusFor(Causes.cause("disk on fire"))).isEqualTo(500);
+    }
+
+    /// #1973: the REAL cause an entity forward produces when the transport refuses the send (the owner was just killed and
+    /// this node still routes the key to it) answers 503 with the retry hint in the body, not the 500 "Request processing
+    /// failed" of an untyped cause, and never a 200. The cause is produced by the real forward service, not hand-built.
+    @Test
+    void localRouteFailure_entityForwardSendRefused_answers503WithTheRetryHint() throws Exception {
+        var answer = answerFor(entityForwardFailure(new WriteOutcome.NoPeerState(OWNER)));
+
+        assertThat(answer.statusCode()).isEqualTo(503);
+        assertThat(answer.body()).contains("refused at send").contains("safe to retry").doesNotContain("outcome unknown");
+    }
+
+    /// The sibling: a forward that was SENT and timed out has an unknown outcome. Owner ruling bcfb04232 answers every
+    /// transient cause 503, timeouts included, so it is 503 too, but its body says the outcome is unknown and does NOT say
+    /// "safe to retry": the two 503s are told apart by the body.
+    @Test
+    void localRouteFailure_entityForwardTimedOutAfterSend_answers503_withAnOutcomeUnknownBody() throws Exception {
+        var service = EntityForwardService.entityForwardService(SELF_NODE,
+                                                                (target, message) -> Promise.success(new WriteOutcome.Sent(target)),
+                                                                TimeSpan.timeSpan(50).millis());
+        var failure = service.forwardGet(OWNER, "orders", new byte[]{1}).await().fold(cause -> cause, _ -> Causes.cause("unexpected success"));
+        var answer = answerFor(failure);
+
+        assertThat(answer.statusCode()).isEqualTo(503);
+        assertThat(answer.body()).contains("outcome unknown")
+                                .contains("may have applied the command")
+                                .contains("retry only an idempotent operation")
+                                .doesNotContain("safe to retry");
+    }
+
+    private static Cause entityForwardFailure(WriteOutcome refusal) {
+        var service = EntityForwardService.entityForwardService(SELF_NODE,
+                                                                (target, message) -> Promise.success(refusal),
+                                                                TimeSpan.timeSpan(60).seconds());
+
+        return service.forwardGet(OWNER, "orders", new byte[]{1}).await().fold(cause -> cause, _ -> Causes.cause("unexpected success"));
     }
 
     private record FailingRouter(Cause failure) implements SliceRouter {

@@ -61,9 +61,20 @@ NodeIds with empty state is not a supported restart mode (#1543).
   them and raises `BACKUP_RESTORE_ENTITY_CHECKPOINTS_DROPPED` naming each partition: the pointer carries
   no incarnation, and seeding a fresh log from it could skip new records `[verified:
   BackupRestoreCoordinatorTest#aBackedUpEntityCheckpoint_isNotRestored_andTheWithholdingIsWarned]`.
-- **Stream records are lost.** A stream's configuration is restored; records that lived only in the old
-  nodes' WAL and ring are gone. `[unverified: whether a fresh cluster re-reads sealed segments that
-  survive in a remote storage tier — their index lived in the old nodes' metadata snapshots; not tested]`
+- **Acked stream records survive a whole-cluster restart only with `[backup]` configured and restored,
+  and only onto the same NodeIds and volumes; in the supported restart (fresh NodeIds) they are not
+  recovered.** Why: a stream's log lives in a directory named by the stream's incarnation
+  (`<stream>@<incarnation>`, under the node's own directory), the incarnation is minted when the stream is
+  created and held only in the cluster state, and consensus is in memory. Without `[backup]` the restarted
+  cluster starts with no stream and creates it again with a new incarnation, so the old log is never
+  looked up; with `[backup]` the restore brings the stream's configuration back with the same
+  incarnation, but fresh NodeIds have fresh directories (storage-identity adoption, #1569, is not in this
+  release). Either way the records are **not recovered: the files remain on the old volumes, unread.**
+  `[verified: StreamCrashDurabilityTest — same node ids and volumes, backup restored: 50 of 50 events recovered;
+  its tripwire, no backup: 0 recovered, the old WAL still on disk]`
+  `[unverified: the fresh-NodeId case is read from the code and the storage-identity spec, not run]`
+  `[unverified: whether a fresh cluster re-reads sealed segments that survive in a remote storage tier —
+  their index lived in the old nodes' metadata snapshots; not tested]`
 - DHT artifact caches are node-local and re-fetch from the artifact repository.
 
 **When the restore cannot read the backup** (remote unreachable, head undecodable): the cluster stays up
