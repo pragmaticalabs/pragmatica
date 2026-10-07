@@ -19,9 +19,11 @@
     <properties>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <maven.compiler.release>25</maven.compiler.release>
-        <maven.deploy.skip>true</maven.deploy.skip>
         <jbct.skip>false</jbct.skip>
         <platform.version>1.0.0-rc4</platform.version>
+        <!-- A standalone pom (no parent), so the root's default skip never reaches it. The Central plugin is not bound here, which leaves
+             the default deploy to run; this skips it (#1988). tools/check-publish-closure.py requires it of every parent-less module. -->
+        <maven.deploy.skip>true</maven.deploy.skip>
     </properties>
 
     <dependencies>

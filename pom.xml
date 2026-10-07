@@ -80,6 +80,11 @@
     <properties>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <java.release>25</java.release>
+        <!-- A module the Central plugin is not bound to (every module that has not opted in) must not run the default deploy
+             either (#1988). The Central plugin itself ignores this property: its own skipPublishing decides. -->
+        <maven.deploy.skip>true</maven.deploy.skip>
+        <!-- The phase the Central plugin's publish goal runs in; `none` outside the release profile (see its <pluginManagement> entry). -->
+        <central.publish.phase>none</central.publish.phase>
 
         <!-- Dependencies -->
         <netty.version>4.2.18.Final</netty.version>
@@ -614,6 +619,9 @@
                         <doclint>none</doclint>
                         <failOnError>false</failOnError>
                         <quiet>true</quiet>
+                        <additionalOptions>
+                            <additionalOption>--no-fonts</additionalOption>
+                        </additionalOptions>
                     </configuration>
                 </plugin>
                 <plugin>
@@ -638,7 +646,30 @@
                     <configuration>
                         <publishingServerId>central</publishingServerId>
                         <autoPublish>true</autoPublish>
+                        <!--
+                            Publishing is OPT-IN (#1988, #1989). A module the plugin is bound to takes this default; a module publishes only
+                            when its own pom declares this plugin in <build><plugins> with <skipPublishing>false</skipPublishing>. Only the
+                            Central plugin's `skipPublishing` excludes a module: `maven.deploy.skip` is ignored by it. A parent pom that
+                            publishes while its children do not declares the entry with <inherited>false</inherited>.
+                            docs/release/maven-central-publish-set.md decides every module; tools/check-publish-closure.py gates it.
+                        -->
+                        <skipPublishing>true</skipPublishing>
                     </configuration>
+                    <executions>
+                        <!--
+                            The Central plugin's `publish` goal is injected into the deploy phase of every module that declares the plugin.
+                            It acts ONLY in a release build: without -DperformRelease=true the phase is `none`, so a plain `mvn deploy`
+                            uploads nothing to Central, unsigned or otherwise (v-1997: it used to send an unsigned bundle, and with
+                            autoPublish that is an irreversible publish from a casual command).
+                        -->
+                        <execution>
+                            <id>injected-central-publishing</id>
+                            <phase>${central.publish.phase}</phase>
+                            <goals>
+                                <goal>publish</goal>
+                            </goals>
+                        </execution>
+                    </executions>
                 </plugin>
                 <plugin>
                     <groupId>org.apache.maven.plugins</groupId>
@@ -713,6 +744,14 @@
 
         <plugins>
             <plugin>
+                <groupId>org.sonatype.central</groupId>
+                <artifactId>central-publishing-maven-plugin</artifactId>
+                <inherited>false</inherited>
+                <configuration>
+                    <skipPublishing>false</skipPublishing>
+                </configuration>
+            </plugin>
+            <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-compiler-plugin</artifactId>
             </plugin>
@@ -740,6 +779,9 @@
                     <value>true</value>
                 </property>
             </activation>
+            <properties>
+                <central.publish.phase>deploy</central.publish.phase>
+            </properties>
             <build>
                 <plugins>
                     <plugin>
@@ -754,9 +796,44 @@
                         <groupId>org.apache.maven.plugins</groupId>
                         <artifactId>maven-gpg-plugin</artifactId>
                     </plugin>
+                    <!--
+                        The Central plugin is not listed here: it is bound by each published module's own pom (opt-in, see its
+                        <pluginManagement> entry), so a module that says nothing is never uploaded (#1988). The closure gate
+                        runs first, so a release whose published set is not closed under its dependencies stops before the upload.
+                    -->
                     <plugin>
-                        <groupId>org.sonatype.central</groupId>
-                        <artifactId>central-publishing-maven-plugin</artifactId>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-antrun-plugin</artifactId>
+                        <version>3.1.0</version>
+                        <inherited>false</inherited>
+                        <executions>
+                            <execution>
+                                <id>published-set-closure</id>
+                                <phase>validate</phase>
+                                <goals>
+                                    <goal>run</goal>
+                                </goals>
+                                <configuration>
+                                    <!-- The gate's lines are INFO output, which `mvn -q` (scripts/release.sh) hides; the failure message is
+                                         an ERROR and is not hidden, so it carries them. -->
+                                    <target>
+                                        <exec executable="python3" dir="${project.basedir}" resultproperty="closure.gate.rc"
+                                              outputproperty="closure.gate.out" errorproperty="closure.gate.err" failifexecutionfails="true">
+                                            <arg value="tools/check-publish-closure.py"/>
+                                        </exec>
+                                        <fail message="The published set is not closed (tools/check-publish-closure.py exited ${closure.gate.rc}):${line.separator}${closure.gate.err}${line.separator}${closure.gate.out}">
+                                            <condition>
+                                                <not>
+                                                    <equals arg1="${closure.gate.rc}" arg2="0"/>
+                                                </not>
+                                            </condition>
+                                        </fail>
+                                        <!-- A PASSING gate still states what it examined: a green with no count is not a result. -->
+                                        <echo message="${closure.gate.out}"/>
+                                    </target>
+                                </configuration>
+                            </execution>
+                        </executions>
                     </plugin>
                 </plugins>
             </build>

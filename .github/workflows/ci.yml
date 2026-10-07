@@ -39,10 +39,12 @@ jobs:
       # `-pl '!jbct'` mirrors build.sh: the linter depends on core, so jbct self-lints in its own build.
       # #1219: every published module's in-reactor dependencies (compile/runtime) and parent pom must publish too,
       # or the release puts artifacts on Central that no consumer can resolve. Static, so it runs on every PR.
+      # #1988/#1989: publishing is opt-in, and docs/release/maven-central-publish-set.md must say what the poms decide.
       - name: Published-set dependency closure
         run: |
           python3 -B -m unittest discover -s tools -p test_publish_closure.py
           python3 tools/check-publish-closure.py
+          python3 tools/check-publish-closure.py --check-table docs/release/maven-central-publish-set.md
 
       - name: JBCT format + lint gate
         run: mvn org.pragmatica-lite:jbct-maven-plugin:check -B -pl '!jbct'
