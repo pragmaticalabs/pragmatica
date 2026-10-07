@@ -14,6 +14,7 @@ import java.util.regex.Pattern;
 
 import org.pragmatica.aether.api.ClusterEvent;
 import org.pragmatica.aether.api.ClusterEvent.CommunityMemberJoined;
+import org.pragmatica.aether.api.ClusterEvent.CommunityMemberLeft;
 import org.pragmatica.aether.api.ClusterEvent.CommunityMinted;
 import org.pragmatica.aether.api.ClusterEvent.CommunityStateChanged;
 import org.pragmatica.aether.api.ClusterEvent.Severity;
@@ -45,9 +46,10 @@ import static org.awaitility.Awaitility.await;
 /// ACTIVE) at exactly three live members, and killing one non-governor worker drops the leader's live
 /// count below the floor (ACTIVE → DEGRADED) once the community-absence window (20s default) passes.
 ///
-/// No MEMBER_LEFT is asserted for the killed worker: the roster is assignment, not liveness, and in one run
-/// at d67fb06cf none arrived within 180s (#1717): only the surviving WORKERS' SWIM confirmed the death; no core raised
-/// a worker-leave, so the directive and roster stayed and no MEMBER_LEFT arrived within 180s. The roster
+/// A force-killed worker reaches DEAD on the core (#1717: a core holds no transport link to a worker, so
+/// SWIM-FAULTY alone arms the eviction backstop for an explicit non-core role), which raises the worker
+/// leave: its directive and roster entry are removed, `MEMBER_LEFT` is emitted, and a replacement worker
+/// brings the community back to ACTIVE with the matching recovery edge and `MEMBER_JOINED`. The roster
 /// diff that emits MEMBER_LEFT is pinned in `CommunityLifecycleEventsTest$Roster`.
 ///
 /// Registered in `TEST_PORT_ALLOCATION.md`: cluster 12800-12805, SWIM UDP 12900-12905 (cluster + 100), management
@@ -89,6 +91,33 @@ class CommunityObservabilityForgeTest {
                                                                  .or(WORKERS)).isLessThan(WORKERS);
         await().atMost(BUDGET.duration())
                .untilAsserted(() -> assertThat(stateChanges(community)).anySatisfy(CommunityObservabilityForgeTest::assertDegradedEdge));
+        // #1717: the dead worker leaves every committed surface, and the leave is announced.
+        await().atMost(BUDGET.duration())
+               .untilAsserted(() -> assertThat(communityEvents(community)).filteredOn(CommunityMemberLeft.class::isInstance)
+                                                                         .extracting(event -> event.details().get("nodeId"))
+                                                                         .containsExactly(victim.id()));
+        assertThat(directive(victim)).as("the killed worker's activation directive is removed").isEmpty();
+        assertThat(roster(community)).as("the killed worker leaves the committed roster").doesNotContain(victim);
+        // Recovery: a replacement worker makes the community whole again, and the transition is announced.
+        var replacement = LifecycleAwait.nodeSettled("admit replacement worker", cluster, cluster.addWorkerNode());
+
+        await().atMost(BUDGET.duration())
+               .until(() -> field(communityJson(community), "state").equals(Option.some("ACTIVE"))
+                            && field(communityJson(community), "liveMembers").equals(Option.some(String.valueOf(WORKERS))));
+        await().atMost(BUDGET.duration())
+               .untilAsserted(() -> assertThat(stateChanges(community)).anySatisfy(event -> assertThat(event.details()).containsEntry("from", "DEGRADED")
+                                                                                                                       .containsEntry("to", "ACTIVE")));
+        await().atMost(BUDGET.duration())
+               .untilAsserted(() -> assertThat(communityEvents(community)).filteredOn(CommunityMemberJoined.class::isInstance)
+                                                                         .extracting(event -> event.details().get("nodeId"))
+                                                                         .contains(replacement.id()));
+    }
+
+    private List<NodeId> roster(String community) {
+        return leader().kvStore()
+                       .getTyped(GovernorAnnouncementKey.forCommunity(community), GovernorAnnouncementValue.class)
+                       .map(GovernorAnnouncementValue::members)
+                       .or(List.of());
     }
 
     private static void assertDegradedEdge(ClusterEvent event) {
