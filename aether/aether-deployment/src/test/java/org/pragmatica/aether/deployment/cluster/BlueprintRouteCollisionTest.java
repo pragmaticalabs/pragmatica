@@ -167,4 +167,15 @@ class BlueprintRouteCollisionTest {
         assertThat(publish("org.example:first:1.0.0", "org.example:alpha:1.0.0").isSuccess()).isTrue();
         assertThat(publish("org.example:first:1.0.0", "org.example:alpha:1.0.0").isSuccess()).isTrue();
     }
+
+    /// A republish REPLACES the blueprint: a slice it drops no longer claims its route, so the slice that takes the route over
+    /// is not refused because of the version being replaced.
+    @Test
+    void republishingTheSameBlueprint_withAnotherSliceOnTheSameRoute_replacesTheOldClaim() throws IOException {
+        slice("org.example:alpha:1.0.0", "GET", "/api/echo/health");
+        slice("org.example:beta:1.0.0", "GET", "/api/echo/health");
+
+        assertThat(publish("org.example:first:1.0.0", "org.example:alpha:1.0.0").isSuccess()).isTrue();
+        assertThat(publish("org.example:first:1.0.0", "org.example:beta:1.0.0").isSuccess()).as("alpha is dropped by the republish").isTrue();
+    }
 }
