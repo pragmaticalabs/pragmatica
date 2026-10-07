@@ -1,0 +1,13 @@
+id="org.pragmatica.aether.example:pricing-engine:1.0.0-rc4"
+
+[[slices]]
+artifact="org.pragmatica.aether.example:pricing-engine-catalog-slice:1.0.0-rc4"
+
+[[slices]]
+artifact="org.pragmatica.aether.example:pricing-engine-discount-slice:1.0.0-rc4"
+
+[[slices]]
+artifact="org.pragmatica.aether.example:pricing-engine-tax-slice:1.0.0-rc4"
+
+[[slices]]
+artifact="org.pragmatica.aether.example:pricing-engine-analytics-slice:1.0.0-rc4"

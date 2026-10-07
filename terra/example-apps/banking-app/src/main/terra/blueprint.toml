@@ -1,0 +1,13 @@
+id="org.pragmatica-lite.aether.example.banking:banking:1.0.0-rc4"
+
+[[slices]]
+artifact="org.pragmatica-lite.aether.example.banking:banking-account-account-service:1.0.0-rc4"
+
+[[slices]]
+artifact="org.pragmatica-lite.aether.example.banking:banking-exchange-exchange-rate-service:1.0.0-rc4"
+
+[[slices]]
+artifact="org.pragmatica-lite.aether.example.banking:banking-fraud-fraud-detection-service:1.0.0-rc4"
+
+[[slices]]
+artifact="org.pragmatica-lite.aether.example.banking:banking-transfer-transfer-service:1.0.0-rc4"

@@ -24,9 +24,15 @@ Transport prerequisites fix invalid-TLS plaintext fallback, port-zero reporting,
 
 Clean focused validation passed 158 tests: 36 transport, 25 routing adapter, 83 shared authentication, 11 Terra HTTP, and 3 examples. Four opt-in PostgreSQL tests were skipped in this HTTP-only run (their prior live proof remains recorded above). Another 139 focused Aether HTTP/security tests passed after a clean node build: **297 executed tests**. The downstream node reactor compiled with no skipped modules. HTTP/security/adapter/example and node JBCT gates passed.
 
-## Current next step
+## Current state and next work
 
-The user authorized autonomous work for the next few hours toward a working Terra and as many unchanged examples as practical, including investigation of streams and durable entities. Executable assembly is now implemented and verified. Next broaden examples (ecommerce, URL shortener, and step composition are candidates). Assess local stream/entity storage and recovery before claiming support; current processor refusal remains in place. Continue making cohesive validated local commits; do not push or merge.
+The expanded [application matrix](example-apps/README.md) now builds eight distributions in addition to Catalog, compiling 21 original slice implementations including both URL-shortener versions. Original business sources remain unchanged. HTTP/process tests run ecommerce, URL shortener v1/v2, and pricing; embedding tests exercise banking, step composition, PG showcase, and two-datasource comprehensive persistence against PostgreSQL. The latter retains explicit failures for its original nullable/non-optional row fields; populated joins/aggregates and arrays pass.
+
+The compiler now binds single-payload subscriptions on injected plain-interface steps and imports type tokens for keyed multi-parameter interceptors. The launcher exposes owned `startApplication()` for programs without HTTP routes. Three defects discovered on live examples are fixed in shared modules: JDBC Instant parameters, generic native PostgreSQL binary decoding, and cache maintenance completing after its business call.
+
+[Streams and durable entities](STREAMS-AND-ENTITIES.md) identifies reusable WAL/state-machine code and proposes recovery, cursor, timer, ownership, and codec requirements. These remain future work and explicitly refused by Terra. Existing foundation tests passed (28 stream WAL/recovery/retention, 41 entity fold/timer/serialization); that is not a Terra integration proof. Implement local storage ownership and codecs before admitting stream/entity resources.
+
+Continue making cohesive validated local commits; do not push or merge. Required Forge/review gates remain before publication. Windows launcher execution and cross-process database startup remain outside the verified scope.
 
 ## Build hygiene
 
@@ -37,3 +43,11 @@ Changelog fragments currently use provisional number `0`; rename them when a rea
 ## Executable assembly increment
 
 `terra/launcher` and `terra/maven-plugin` now produce an attached ZIP from Maven runtime JARs, with blueprint-selected factories, isolated JAR defaults, explicit override layers, host configuration, migration preflight, and shutdown hooks. See `launcher/README.md`. Clean validation passed 36 tests plus all touched JBCT gates; four opt-in database tests skipped. Extracted distribution served unchanged Catalog outside the checkout and shut down on SIGTERM. Windows script is supplied but untested. Maven dependency declarations locate candidate JARs; the assembler does not independently rebuild/resolve blueprint coordinates.
+
+## Expanded examples verification
+
+The clean application reactor built all 20 child modules; eight opt-in PostgreSQL tests passed, followed by a reviewed rerun of all eight. The original fixture passed nine tests with all four database tests enabled. Processor 364, runtime/launcher 27, JDBC/resource 40, generic native PostgreSQL 4, and interceptor 139 focused tests passed. Existing stream/entity foundation suites passed 69 tests. The support matrix separates process, embedding, and partial original-example behavior.
+
+Relevant Terra/resource JBCT gates pass. Forced legacy gates retain baseline debt: processor 38 lint/10 format failures, integration JDBC five lint failures, native PostgreSQL converter 43 lint failures. Changed production files are formatted; these legacy checks are not claimed green. The converter and cache fixes have separate commits from the Terra application expansion.
+
+The downstream `aether/node -am install -DskipTests` reactor passed after the shared fixes, with no skipped modules.

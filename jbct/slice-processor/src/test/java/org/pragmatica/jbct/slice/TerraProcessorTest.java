@@ -65,6 +65,51 @@ class TerraProcessorTest {
         com.google.testing.compile.CompilationSubject.assertThat(compilation).hadErrorContaining("Terra supports only");
     }
 
+    @Test void process_plainInterfaceSubscriber_retainsInjectedStepAndBindsIt() throws Exception {
+        var compilation = compile("sample.Flow", """
+            package sample;
+            import java.lang.annotation.*;
+            import org.pragmatica.aether.slice.annotation.*;
+            import org.pragmatica.lang.*;
+            @Slice public interface Flow {
+                Promise<String> echo(String input);
+                @Retention(RetentionPolicy.RUNTIME) @Target(ElementType.METHOD)
+                @ResourceQualifier(type=org.pragmatica.aether.slice.Subscriber.class, config="events")
+                @interface OnEvent {}
+                interface Listener {
+                    @OnEvent Promise<Unit> receive(String event);
+                    static Listener listener() { return _ -> Promise.unitPromise(); }
+                }
+                static Flow flow(Listener listener) { return Promise::success; }
+            }
+            """);
+        com.google.testing.compile.CompilationSubject.assertThat(compilation).succeeded();
+        org.assertj.core.api.Assertions.assertThat(compilation.generatedSourceFile("sample.FlowFactory").orElseThrow().getCharContent(false).toString())
+            .contains("ctx.retainStep(\"listener\"");
+        org.assertj.core.api.Assertions.assertThat(compilation.generatedSourceFile("sample.FlowTerraFactory").orElseThrow().getCharContent(false).toString())
+            .contains("ctx.step(\"listener\", sample.Flow.Listener.class)", "step.receive(event)");
+    }
+
+    @Test void process_multiParameterKeyedInterceptor_importsTypeToken() throws Exception {
+        var compilation = compile("sample.Keyed", """
+            package sample;
+            import java.lang.annotation.*;
+            import org.pragmatica.aether.slice.annotation.*;
+            import org.pragmatica.aether.resource.aspect.Key;
+            import org.pragmatica.lang.*;
+            @Slice public interface Keyed {
+                @Retention(RetentionPolicy.RUNTIME) @Target(ElementType.METHOD)
+                @ResourceQualifier(type=org.pragmatica.aether.slice.MethodInterceptor.class, config="cache.values")
+                @interface Cached {}
+                @Cached Promise<String> lookup(@Key String key, int version);
+                static Keyed keyed() { return (key, version) -> Promise.success(key); }
+            }
+            """);
+        com.google.testing.compile.CompilationSubject.assertThat(compilation).succeeded();
+        org.assertj.core.api.Assertions.assertThat(compilation.generatedSourceFile("sample.KeyedFactory").orElseThrow().getCharContent(false).toString())
+            .contains("import org.pragmatica.lang.type.TypeToken;", "LookupRequest::key");
+    }
+
     @Test void process_unknownTarget_refusesTypo() {
         var compilation = compile("sample.Hello", """
             package sample;

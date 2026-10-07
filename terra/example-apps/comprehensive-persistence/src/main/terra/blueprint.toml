@@ -1,0 +1,4 @@
+id="org.pragmatica.aether.example:comprehensive-persistence:1.0.0-rc4"
+
+[[slices]]
+artifact="org.pragmatica.aether.example:comprehensive-persistence-order-slice:1.0.0-rc4"

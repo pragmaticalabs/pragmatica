@@ -38,12 +38,16 @@ public final class TerraDescriptorGenerator {
             return refuse(model, "Terra requires slice.groupId, slice.artifactId and slice.version");
         }
 
-        if (model.hasTransitiveAnnotatedMethods() || model.hasConfigUpdateSubscriptions()) {
-            return refuse(model,
-                          "Terra does not yet support transitive reactive methods or live configuration callbacks");
+        if (model.hasConfigUpdateSubscriptions()) {
+            return refuse(model, "Terra does not yet support live configuration callbacks");
         }
 
-        for (var dependency : model.dependencies()) {
+        for (var dependency : java.util.stream.Stream.concat(model.dependencies().stream(),
+                                                             model.plainInterfaceModels()
+                                                                  .stream()
+                                                                  .flatMap(step -> step.dependencies()
+                                                                                       .stream()))
+                                                     .toList()) {
             if (dependency.isStreamResource() || dependency.resourceQualifier()
                                                            .map(q -> q.resourceType()
                                                                       .toString()
@@ -53,7 +57,12 @@ public final class TerraDescriptorGenerator {
             }
         }
 
-        for (var method : model.methods()) {
+        for (var method : java.util.stream.Stream.concat(model.methods().stream(),
+                                                         model.plainInterfaceModels()
+                                                              .stream()
+                                                              .flatMap(step -> step.annotatedMethods()
+                                                                                   .stream()))
+                                                 .toList()) {
             for (var binding : method.reactive()) {
                 if (!binding.category().equals("subscription") || method.parameters().size() != 1) {
                     return refuse(model,
@@ -131,6 +140,33 @@ public final class TerraDescriptorGenerator {
                                : constant.holderQualifiedName() + "." + constant.fieldName();
 
                     bindings.add("ctx.subscribe(" + args + ", event -> slice." + method.name() + "(event).mapToUnit())");
+                }
+            }
+
+            for (var step : model.plainInterfaceModels()) {
+                var dependency = model.dependencies()
+                                      .stream()
+                                      .filter(d -> d.parameterName()
+                                                    .equals(step.parameterName()))
+                                      .findFirst()
+                                      .orElseThrow();
+
+                for (var method : step.annotatedMethods()) {
+                    for (var binding : method.reactive()) {
+                        var section = binding.qualifier().configSection();
+                        var constant = topics.get(section);
+                        var args = constant == null
+                                   ? quote(section)
+                                    + ", " + environment.getTypeUtils().erasure(method.parameters().getFirst().type())
+                                    + ".class"
+                                   : constant.holderQualifiedName() + "." + constant.fieldName();
+
+                        bindings.add("ctx.step(" + quote(step.parameterName())
+                                    + ", " + dependency.interfaceQualifiedName()
+                                    + ".class).flatMap(step -> ctx.subscribe(" + args
+                                    + ", event -> step." + method.name()
+                                    + "(event).mapToUnit()))");
+                    }
                 }
             }
 

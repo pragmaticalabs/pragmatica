@@ -117,15 +117,18 @@ public final class TerraLaunchPlan {
     }
 
     public Promise<TerraHttpServer> start() {
+        return startApplication().flatMap(this::host);
+    }
+
+    /// Start the selected application without an HTTP entry point; the caller owns close().
+    public Promise<TerraApplication> startApplication() {
         var resources = SpiResourceProvider.spiResourceProvider((_, _) -> new TerraLaunchError("Resource configuration must be slice-scoped").result());
 
-        return TerraMigrations.fromDirectory(blueprint, directory, deployment)
-                              .flatMap(migrations -> TerraApplication.start(blueprint,
-                                                                            factories,
-                                                                            configuration::get,
-                                                                            resources.facade(),
-                                                                            migrations))
-                              .flatMap(this::host);
+        return TerraMigrations.fromDirectory(blueprint, directory, deployment).flatMap(migrations -> TerraApplication.start(blueprint,
+                                                                                                                            factories,
+                                                                                                                            configuration::get,
+                                                                                                                            resources.facade(),
+                                                                                                                            migrations));
     }
 
     private Promise<TerraHttpServer> host(TerraApplication application) {

@@ -14,5 +14,6 @@
         <module>launcher</module>
         <module>maven-plugin</module>
         <module>examples</module>
+        <module>example-apps</module>
     </modules>
 </project>
