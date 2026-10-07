@@ -4544,7 +4544,19 @@ Which guard applied — and why — is always visible in `message`, both on succ
 - `"...core-guard skipped (role=worker)"` — the target is a worker; the guard did not run.
 - `"...core-guard applied (role=core, available=<n>, min=<m>)"` — the target is core; the guard ran and passed.
 
-**Recovery when a core drain is rejected:** wait for an in-flight core drain to finish departing (it stops counting once membership no longer reports it), or grow core capacity, then retry. There is no override flag — the guard cannot be forced past for a core target.
+**Recovery when a core drain is rejected:** wait for an in-flight core drain to finish departing (it stops counting once membership no longer reports it), or grow core capacity, then retry. There is no override flag for this guard — `force` (below) overrides only the slice floor.
+
+**Slice `minAvailable` floor (#1720).** Independently of the budget above, and for workers as well as cores (slices run on workers), a drain is refused with `409 Conflict` when it would leave a slice the target hosts below its `minAvailable` ACTIVE instances on the remaining nodes. The remaining nodes are the cluster's counted members minus the leader's pending drains minus the target, the same rule the automatic drain (leader reconciler) applies. The refusal names every such slice and its counts. Admission is serialised against concurrent operator drains, so two requests cannot both pass against one pending-drains snapshot. Add the query parameter `force=true` (`aether nodes drain <id> --override-floor`) to override: the drain is admitted and an `OPERATOR_WARNING` event with code `slice-floor-breached-by-force` (subject: the node, message: each breached slice and its counts) is raised, so a forced breach is never silent. A REFUSED drain raises `slice-floor-drain-refused` once per target (on entering refusal), and the next admission of that target raises its recovery event `slice-floor-drain-admitted` (severity `INFO`). `aether cluster destroy` passes `force` on every drain and shutdown, because destroying a cluster takes every slice below its floor by definition.
+
+**Response (slice floor, 409 Conflict):**
+```json
+{
+  "type": "about:blank",
+  "title": "Conflict",
+  "status": 409,
+  "detail": "Cannot drain node node-2: it would leave org.example:orders:1.0.0 with 1 ACTIVE instance(s), below its minAvailable 2. Re-run with force=true to override, which takes the slice below its floor."
+}
+```
 
 **Response (success):**
 ```json
@@ -4578,7 +4590,7 @@ Which guard applied — and why — is always visible in `message`, both on succ
 
 ### POST /api/v1/nodes/shutdown/{id}
 
-Enqueue a graceful shutdown for a node via the membership-v2 DRAIN-command channel. The leader's cluster-sync heartbeat carries `NodePingCommand.DRAIN` to the target, which self-drains (finishes in-flight requests) via its `DrainProcedure` and then halts; the CTM grace-terminate backstop reaps the container if it never self-exits. No direct lifecycle KV write happens on this path.
+Enqueue a graceful shutdown for a node via the membership-v2 DRAIN-command channel. The same admission as drain applies, including the slice `minAvailable` floor and the `force=true` override described there (#1720); a refused shutdown answers `409` with `Cannot shutdown node <id>: ...`. The leader's cluster-sync heartbeat carries `NodePingCommand.DRAIN` to the target, which self-drains (finishes in-flight requests) via its `DrainProcedure` and then halts; the CTM grace-terminate backstop reaps the container if it never self-exits. No direct lifecycle KV write happens on this path.
 
 **Response:**
 ```json

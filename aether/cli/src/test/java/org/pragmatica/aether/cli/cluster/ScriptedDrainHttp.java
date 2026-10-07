@@ -75,9 +75,12 @@ final class ScriptedDrainHttp implements HttpOperations {
     }
 
     private final Step drainResponse;
+    private final List<Step> drainSequence = new CopyOnWriteArrayList<>();
+    private final AtomicInteger drainCalls = new AtomicInteger();
     private final List<Step> lifecycleScript;
     private final AtomicInteger lifecycleCalls = new AtomicInteger();
     private final List<String> requests = new CopyOnWriteArrayList<>();
+    private final List<String> requestsWithQuery = new CopyOnWriteArrayList<>();
 
     ScriptedDrainHttp(Step drainResponse, Step... lifecycleScript) {
         this.drainResponse = drainResponse;
@@ -106,6 +109,11 @@ final class ScriptedDrainHttp implements HttpOperations {
         return List.copyOf(requests);
     }
 
+    /// Every request as `METHOD path?query` — `requests()` strips the query, which the #1720 `force` flag lives in.
+    List<String> requestsWithQuery() {
+        return List.copyOf(requestsWithQuery);
+    }
+
     long lifecycleGets() {
         return requests.stream().filter(r -> r.startsWith("GET /api/v1/nodes/lifecycle/")).count();
     }
@@ -117,6 +125,8 @@ final class ScriptedDrainHttp implements HttpOperations {
     @Override
     public <T> Promise<HttpResult<T>> send(HttpRequest request, BodyHandler<T> handler) {
         requests.add(request.method() + " " + request.uri().getPath());
+        requestsWithQuery.add(request.method() + " " + request.uri().getPath()
+                              + (request.uri().getRawQuery() == null ? "" : "?" + request.uri().getRawQuery()));
 
         var path = request.uri().getPath();
         var step = request.method().equals("POST")
@@ -130,8 +140,32 @@ final class ScriptedDrainHttp implements HttpOperations {
 
     private Step postStep(String path) {
         return path.startsWith("/api/v1/nodes/drain/")
-               ? drainResponse
+               ? nextDrainStep()
                : new Step.Reply(200, "{\"success\":true,\"message\":\"ok\"}");
+    }
+
+    /// Successive answers to the drain POST; the last one repeats. Without a sequence every POST gets `drainResponse`.
+    ScriptedDrainHttp withDrainSequence(Step... steps) {
+        drainSequence.addAll(List.of(steps));
+
+        return this;
+    }
+
+    private Step nextDrainStep() {
+        if (drainSequence.isEmpty()) {
+            return drainResponse;
+        }
+
+        return drainSequence.get(Math.min(drainCalls.getAndIncrement(), drainSequence.size() - 1));
+    }
+
+    /// The 409 problem document the slice-floor guard answers (#1720), as `ProblemResponses` renders it.
+    static Step sliceFloorRefused(String nodeId) {
+        return new Step.Reply(409,
+                              "{\"type\":\"about:blank\",\"title\":\"Conflict\",\"status\":409,"
+                              + "\"detail\":\"Cannot drain node " + nodeId + ": it would leave com.example:slice-a:1.0.0 with 1"
+                              + " ACTIVE instance(s), below its minAvailable 2. Re-run with force=true to override, which takes"
+                              + " the slice below its floor.\",\"instance\":\"/api/v1/nodes/drain/" + nodeId + "\",\"requestId\":\"r-1\"}");
     }
 
     private Step endpointStep(String nodeId) {
