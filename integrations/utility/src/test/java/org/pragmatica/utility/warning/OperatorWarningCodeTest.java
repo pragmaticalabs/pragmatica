@@ -78,6 +78,15 @@ class OperatorWarningCodeTest {
             .isEqualTo(OperatorWarningCode.STREAM_CONSUMER_STATE_DIVERGED);
     }
 
+    /// #1941's resolved counterpart is a recovery, so it is INFO and paired with the not-registered condition.
+    @Test
+    void registeredAgain_isInfo_andClosesNotRegistered() {
+        assertThat(OperatorWarningCode.STREAM_CONSUMER_REGISTERED_AGAIN.level()).isEqualTo(WarningLevel.INFO);
+        assertThat(OperatorWarningCode.STREAM_CONSUMER_REGISTERED_AGAIN.recoveryOf().unwrap())
+            .isEqualTo(OperatorWarningCode.STREAM_CONSUMER_NOT_REGISTERED);
+        assertThat(OperatorWarningCode.STREAM_CONSUMER_NOT_REGISTERED.hasRecovery()).isTrue();
+    }
+
     /// Positive control for [#codes_areUnique]: the same grouping reports a duplicate when one exists.
     @Test
     void uniquenessCheck_detectsADuplicate() {

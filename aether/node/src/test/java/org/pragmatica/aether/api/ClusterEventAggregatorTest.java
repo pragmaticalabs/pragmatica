@@ -2036,13 +2036,15 @@ class ClusterEventAggregatorTest {
         assertThat(codes(h)).containsExactly("stream-consumer-state-diverged", "stream-consumer-state-repaired");
     }
 
-    /// PA5: the pairing touches exactly one pair of codes; every other code keeps the plain 60 s throttle.
+    /// The pairing touches exactly the two declared pairs of codes; every other code keeps the plain 60 s throttle.
     @Test
-    void onOperatorWarning_onlyTheDivergencePairIsPaired_otherCodesUnchanged() {
+    void onOperatorWarning_onlyTheDeclaredPairsArePaired_otherCodesUnchanged() {
         assertThat(java.util.Arrays.stream(OperatorWarningCode.values()).filter(c -> c.recoveryOf().isPresent()).toList())
-            .containsExactly(OperatorWarningCode.STREAM_CONSUMER_STATE_REPAIRED);
+            .containsExactly(OperatorWarningCode.STREAM_CONSUMER_STATE_REPAIRED,
+                             OperatorWarningCode.STREAM_CONSUMER_REGISTERED_AGAIN);
         assertThat(java.util.Arrays.stream(OperatorWarningCode.values()).filter(OperatorWarningCode::hasRecovery).toList())
-            .containsExactly(OperatorWarningCode.STREAM_CONSUMER_STATE_DIVERGED);
+            .containsExactly(OperatorWarningCode.STREAM_CONSUMER_STATE_DIVERGED,
+                             OperatorWarningCode.STREAM_CONSUMER_NOT_REGISTERED);
         var t = new AtomicLong(1_000_000L);
         var h = clocked(t);
 
@@ -2055,7 +2057,7 @@ class ClusterEventAggregatorTest {
             h.aggregator().onOperatorWarning(OperatorWarning.operatorWarning(code, "x", "m"));
         }
         assertThat(h.events()).as("one event per non-recovery code, the repeat throttled")
-                              .hasSize(OperatorWarningCode.values().length - 1);
+                              .hasSize(OperatorWarningCode.values().length - 2);
     }
 
     /// #752: a detach-found divergence is a POINT event with no recovery. Sharing the pass-found code, it opened a
@@ -2238,5 +2240,25 @@ class ClusterEventAggregatorTest {
         h.aggregator().redeliverDue();
 
         assertThat(codes(h)).containsExactly("stream-consumer-state-repaired");
+    }
+
+    /// #1941's registered-again is a recovery paired with not-registered: INFO, published only after a published
+    /// not-registered for the same subject.
+    @Test
+    void onOperatorWarning_registeredAgain_followsAPublishedNotRegistered_only() {
+        var h = Harness.create();
+        var subject = "org.example:s:1.0.0.onGhost[streams.ghost]";
+        var notRegistered = OperatorWarning.operatorWarning(OperatorWarningCode.STREAM_CONSUMER_NOT_REGISTERED, subject, "not registered");
+        var registeredAgain = OperatorWarning.operatorWarning(OperatorWarningCode.STREAM_CONSUMER_REGISTERED_AGAIN, subject, "registered again");
+
+        h.aggregator().onOperatorWarning(registeredAgain);
+        assertThat(h.events()).as("control: no recovery without its warning").isEmpty();
+        h.aggregator().onOperatorWarning(notRegistered);
+        h.aggregator().onOperatorWarning(registeredAgain);
+        h.aggregator().onOperatorWarning(registeredAgain);
+
+        assertThat(codes(h)).containsExactly("stream-consumer-not-registered", "stream-consumer-registered-again");
+        assertThat(h.events().stream().map(ClusterEvent::severity).toList())
+            .containsExactly(ClusterEvent.Severity.CRITICAL, ClusterEvent.Severity.INFO);
     }
 }
