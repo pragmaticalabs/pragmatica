@@ -1281,7 +1281,12 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
                                    ESCAPE_BACKOFF_CAP_MS,
                                    escape.framesText());
             if (state.isCancelled()) {
-                endEscapeRunOnCancel(key, state);
+                // The cancel's own hook may have run between this escape being counted and the alert being raised: it
+                // found the run unreported and reset it, so the alert just raised has nobody left to end it.
+                var lastedMs = clockMs.getAsLong() - state.escapeRunStartMs();
+
+                state.endEscapeRun();
+                raiseCancelledRecovery(key, escapes, lastedMs);
             }
         } else {
             ESCAPE_LOG.debug("Delivery pass for {}[{}] group {} threw again ({} in a row), next pass in {} ms: {}",
@@ -1321,17 +1326,7 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
         var reported = state.endEscapeRun();
 
         if (reported && cancelled) {
-            OperatorWarnings.raise(ESCAPE_LOG,
-                                   operatorWarnings,
-                                   OperatorWarningCode.STREAM_CONSUMER_DRAIN_RESTORED,
-                                   consumerSubject(key),
-                                   "Consumer group {} on {}[{}] was cancelled while its delivery passes were failing ({} consecutive "
-                                  + "passes threw over {} ms): it no longer delivers or retries here; the failure alert is over.",
-                                   key.groupId(),
-                                   key.streamName(),
-                                   key.partition(),
-                                   escapes,
-                                   lastedMs);
+            raiseCancelledRecovery(key, escapes, lastedMs);
         } else if (reported) {
             OperatorWarnings.raise(ESCAPE_LOG,
                                    operatorWarnings,
@@ -1357,6 +1352,20 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
                             key.groupId(),
                             escapes);
         }
+    }
+
+    private void raiseCancelledRecovery(ConsumerKey key, int escapes, long lastedMs) {
+        OperatorWarnings.raise(ESCAPE_LOG,
+                               operatorWarnings,
+                               OperatorWarningCode.STREAM_CONSUMER_DRAIN_RESTORED,
+                               consumerSubject(key),
+                               "Consumer group {} on {}[{}] was cancelled while its delivery passes were failing ({} consecutive "
+                              + "passes threw over {} ms): it no longer delivers or retries here; the failure alert is over.",
+                               key.groupId(),
+                               key.streamName(),
+                               key.partition(),
+                               escapes,
+                               lastedMs);
     }
 
     private static String consumerSubject(ConsumerKey key) {

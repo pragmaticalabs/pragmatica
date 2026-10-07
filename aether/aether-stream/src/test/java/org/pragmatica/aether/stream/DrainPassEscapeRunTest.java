@@ -45,6 +45,10 @@ class DrainPassEscapeRunTest {
     private final List<OperatorWarning> warnings = new CopyOnWriteArrayList<>();
     private final AtomicBoolean throwing = new AtomicBoolean(true);
     private final AtomicBoolean failingRead = new AtomicBoolean();
+    private final AtomicInteger clockReadsUntilCancel = new AtomicInteger();
+    private final java.util.concurrent.atomic.AtomicReference<Runnable> atClockRead = new java.util.concurrent.atomic.AtomicReference<>(() -> {});
+    /// Runs inside a read, on the pass's own thread, before it throws: how a test cancels the consumer mid-pass.
+    private final java.util.concurrent.atomic.AtomicReference<Runnable> duringRead = new java.util.concurrent.atomic.AtomicReference<>(() -> {});
     private final AtomicInteger reads = new AtomicInteger();
 
     private StreamPartitionManager manager;
@@ -59,7 +63,7 @@ class DrainPassEscapeRunTest {
                                            none(),
                                            (_, _, _, _) -> read(),
                                            ConsumerRuntimeState.DEAD_LETTER_APPEND_TIMEOUT,
-                                           clock::get,
+                                           this::now,
                                            (task, delay) -> {
                                                delays.add(delay.millis());
                                                scheduled.add(task);
@@ -73,8 +77,19 @@ class DrainPassEscapeRunTest {
         manager.close();
     }
 
+    /// The runtime's clock. Armed, it runs `atClockRead` on the Nth read from now: how a test lands a cancel at an exact
+    /// point inside the escape bookkeeping, without sleeping.
+    private long now() {
+        if (clockReadsUntilCancel.get() > 0 && clockReadsUntilCancel.decrementAndGet() == 0) {
+            atClockRead.get().run();
+        }
+
+        return clock.get();
+    }
+
     private Promise<List<OffHeapRingBuffer.RawEvent>> read() {
         reads.incrementAndGet();
+        duringRead.get().run();
 
         if (failingRead.get()) {
             return StreamError.General.PARTITION_NOT_LOCAL.promise();
@@ -172,6 +187,63 @@ class DrainPassEscapeRunTest {
                     assertThat(warning.subject()).isEqualTo(NOT_LOCAL + "[0]/" + GROUP);
                     assertThat(warning.message()).contains("was cancelled while its delivery passes were failing");
                 });
+    }
+
+    @Test
+    void anAbandonedConsumer_whileItsFailingAlertStands_getsTheRecovery() throws InterruptedException {
+        reportFailingRun();
+
+        runtime.abandon(NOT_LOCAL, 0, GROUP);
+        awaitWarnings(2);
+        settle();
+
+        assertThat(warningsOf(OperatorWarningCode.STREAM_CONSUMER_DRAIN_RESTORED))
+                .singleElement()
+                .satisfies(warning -> assertThat(warning.message()).contains("was cancelled while its delivery passes were failing"));
+    }
+
+    @Test
+    void anIdleReapedConsumer_whileItsFailingAlertStands_getsTheRecovery() throws InterruptedException {
+        reportFailingRun();
+
+        runtime.reapIdleConsumers(System.currentTimeMillis() + TimeUnit.MINUTES.toMillis(10));
+        awaitWarnings(2);
+        settle();
+
+        assertThat(warningsOf(OperatorWarningCode.STREAM_CONSUMER_DRAIN_RESTORED))
+                .singleElement()
+                .satisfies(warning -> assertThat(warning.message()).contains("was cancelled while its delivery passes were failing"));
+    }
+
+    /// The consumer is cancelled between the escape that reaches the threshold being counted and its alert being raised:
+    /// the cancel hook then finds the run unreported and only logs, so only the recheck after the raise can end the alert.
+    /// Deterministic: the clock seam, armed from inside the read, runs the cancel on the second clock read of the escape
+    /// bookkeeping, which is after the escape is counted and before it is reported.
+    @Test
+    void aConsumerCancelledAfterTheThresholdEscapeIsCounted_stillGetsTheRecovery() throws InterruptedException {
+        subscribe(NOT_LOCAL);
+        awaitEscapes(1);
+        for (var escape = 2; escape < ConsumerRuntimeState.ESCAPES_BEFORE_WARNING; escape++) {
+            resumeAndAwaitEscapes(escape);
+        }
+        assertThat(warnings).as("control: the alert is not yet raised").isEmpty();
+        atClockRead.set(() -> runtime.unsubscribe(NOT_LOCAL, 0, GROUP));
+        duringRead.set(() -> clockReadsUntilCancel.set(2));
+        runScheduled();
+        awaitWarnings(2);
+        settle();
+
+        assertThat(warnings.stream().map(OperatorWarning::code).toList())
+                .containsExactly(OperatorWarningCode.STREAM_CONSUMER_DRAIN_FAILING, OperatorWarningCode.STREAM_CONSUMER_DRAIN_RESTORED);
+    }
+
+    private void reportFailingRun() throws InterruptedException {
+        subscribe(NOT_LOCAL);
+        awaitEscapes(1);
+        for (var escape = 2; escape <= ConsumerRuntimeState.ESCAPES_BEFORE_WARNING; escape++) {
+            resumeAndAwaitEscapes(escape);
+        }
+        awaitWarnings(1);
     }
 
     @Test
