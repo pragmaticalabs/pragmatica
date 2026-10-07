@@ -38,8 +38,8 @@ public final class StreamErrorStatus {
             case StreamError.StreamNotFound _ -> HttpStatus.NOT_FOUND;
             case StreamError.ReplicationRefused _, StreamError.EpochDiverged _ -> HttpStatus.CONFLICT;
             case StreamError.CursorExpired _ -> HttpStatus.GONE;
-            case StreamError.StreamConfigNotYetVisible _, StreamError.MaterializeBudgetExceeded _, StreamError.ReshufflePaced _, StreamError.PartitionHeldNotMaterialized _, StreamError.StaleEpochAppend _, StreamError.StaleEpochRead _, StreamError.NotCurrentOwner _, StreamError.ReplicaQuarantined _, StreamError.NotOwnerAppend _, StreamError.OwnerNotActivated _, StreamError.OwnerCatchupPending _, StreamError.LinearizableRoundTimeout _ -> HttpStatus.SERVICE_UNAVAILABLE;
-            case StreamError.SeedRejected _, StreamError.WalReplayMismatch _, StreamError.WalHeadLost _, StreamError.RingIndexCorrupted _, StreamError.EventProcessingFailed _, StreamError.ProvenanceRegression _, StreamError.ProvenanceMismatch _, StreamError.ReplicaOffsetGap _, StreamError.ReplicaEntryConflict _ -> HttpStatus.INTERNAL_SERVER_ERROR;
+            case StreamError.StreamConfigNotYetVisible _, StreamError.MaterializeBudgetExceeded _, StreamError.ReshufflePaced _, StreamError.PartitionHeldNotMaterialized _, StreamError.StaleEpochAppend _, StreamError.StaleEpochRead _, StreamError.NotCurrentOwner _, StreamError.ReplicaQuarantined _, StreamError.NotOwnerAppend _, StreamError.OwnerNotActivated _, StreamError.OwnerCatchupPending _, StreamError.LinearizableRoundTimeout _, StreamError.ReplicaNotVerified _, StreamError.RepairNotAuthorized _, StreamError.RepairWitnessFailed _ -> HttpStatus.SERVICE_UNAVAILABLE;
+            case StreamError.SeedRejected _, StreamError.WalReplayMismatch _, StreamError.WalHeadLost _, StreamError.RingIndexCorrupted _, StreamError.EventProcessingFailed _, StreamError.ProvenanceRegression _, StreamError.ProvenanceMismatch _, StreamError.ReplicaOffsetGap _, StreamError.ReplicaEntryConflict _, StreamError.DivergenceNotEstablished _, StreamError.TruncateBelowRetained _ -> HttpStatus.INTERNAL_SERVER_ERROR;
         };
     }
 

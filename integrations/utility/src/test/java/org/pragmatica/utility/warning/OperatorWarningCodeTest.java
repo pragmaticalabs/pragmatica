@@ -87,6 +87,14 @@ class OperatorWarningCodeTest {
         assertThat(OperatorWarningCode.STREAM_CONSUMER_NOT_REGISTERED.hasRecovery()).isTrue();
     }
 
+    /// #1934: the end of a failing drain is a recovery, so it is INFO and paired with the failing condition.
+    @Test
+    void drainRestored_isInfo_andClosesDrainFailing() {
+        assertThat(OperatorWarningCode.STREAM_CONSUMER_DRAIN_RESTORED.level()).isEqualTo(WarningLevel.INFO);
+        assertThat(OperatorWarningCode.STREAM_CONSUMER_DRAIN_RESTORED.recoveryOf().unwrap())
+            .isEqualTo(OperatorWarningCode.STREAM_CONSUMER_DRAIN_FAILING);
+    }
+
     /// Positive control for [#codes_areUnique]: the same grouping reports a duplicate when one exists.
     @Test
     void uniquenessCheck_detectsADuplicate() {

@@ -2058,18 +2058,27 @@ class ClusterEventAggregatorTest {
         assertThat(codes(h)).containsExactly("stream-consumer-state-diverged", "stream-consumer-state-repaired");
     }
 
-    /// The pairing touches exactly the declared pairs of codes (the two stream pairs of #752/#1935 and the slice-floor
-    /// pair of #1720); every other code keeps the plain 60 s throttle.
+    /// The pairing touches exactly the declared pairs of codes (the two consumer pairs #752/#1935, the oversized-event refusal and the
+    /// members-unreachable wait of #1937, and the slice-floor refusal of #1720); every other code keeps the plain 60 s throttle.
     @Test
     void onOperatorWarning_onlyTheDeclaredPairsArePaired_otherCodesUnchanged() {
         assertThat(java.util.Arrays.stream(OperatorWarningCode.values()).filter(c -> c.recoveryOf().isPresent()).toList())
-            .containsExactly(OperatorWarningCode.SLICE_FLOOR_DRAIN_ADMITTED,
+            .containsExactlyInAnyOrder(OperatorWarningCode.SLICE_FLOOR_DRAIN_ADMITTED,
                              OperatorWarningCode.STREAM_CONSUMER_STATE_REPAIRED,
-                             OperatorWarningCode.STREAM_CONSUMER_REGISTERED_AGAIN);
+                             OperatorWarningCode.STREAM_CONSUMER_REGISTERED_AGAIN,
+                             OperatorWarningCode.STREAM_CONSUMER_DRAIN_RESTORED,
+                             OperatorWarningCode.STREAM_EVENT_EXCEEDS_READ_CAP_RESOLVED,
+                             OperatorWarningCode.STREAM_OWNER_PROMOTION_HOLDERS_ANSWERING,
+                             OperatorWarningCode.STREAM_CATCHUP_SOURCE_ANSWERING_RESTORED);
         assertThat(java.util.Arrays.stream(OperatorWarningCode.values()).filter(OperatorWarningCode::hasRecovery).toList())
-            .containsExactly(OperatorWarningCode.SLICE_FLOOR_DRAIN_REFUSED,
+            .containsExactlyInAnyOrder(OperatorWarningCode.SLICE_FLOOR_DRAIN_REFUSED,
                              OperatorWarningCode.STREAM_CONSUMER_STATE_DIVERGED,
-                             OperatorWarningCode.STREAM_CONSUMER_NOT_REGISTERED);
+                             OperatorWarningCode.STREAM_CONSUMER_NOT_REGISTERED,
+                             OperatorWarningCode.STREAM_CONSUMER_DRAIN_FAILING,
+                             OperatorWarningCode.STREAM_EVENT_EXCEEDS_READ_CAP,
+                             OperatorWarningCode.STREAM_OWNER_PROMOTION_HOLDERS_UNREACHABLE,
+                             OperatorWarningCode.STREAM_CATCHUP_SOURCE_NOT_ANSWERING);
+        var recoveries = java.util.Arrays.stream(OperatorWarningCode.values()).filter(c -> c.recoveryOf().isPresent()).count();
         var t = new AtomicLong(1_000_000L);
         var h = clocked(t);
 
@@ -2082,9 +2091,7 @@ class ClusterEventAggregatorTest {
             h.aggregator().onOperatorWarning(OperatorWarning.operatorWarning(code, "x", "m"));
         }
         assertThat(h.events()).as("one event per non-recovery code, the repeat throttled")
-                              .hasSize((int) java.util.Arrays.stream(OperatorWarningCode.values())
-                                                             .filter(c -> c.recoveryOf().isEmpty())
-                                                             .count());
+                              .hasSize(OperatorWarningCode.values().length - (int) recoveries);
     }
 
     /// #752: a detach-found divergence is a POINT event with no recovery. Sharing the pass-found code, it opened a
@@ -2287,5 +2294,24 @@ class ClusterEventAggregatorTest {
         assertThat(codes(h)).containsExactly("stream-consumer-not-registered", "stream-consumer-registered-again");
         assertThat(h.events().stream().map(ClusterEvent::severity).toList())
             .containsExactly(ClusterEvent.Severity.CRITICAL, ClusterEvent.Severity.INFO);
+    }
+
+    /// #1730: the catch-up source's answering-restored is a recovery paired with not-answering: INFO, published only after a published
+    /// not-answering for the same subject. Unpaired it was an ordinary WARNING that could publish with no visible warning before it.
+    @Test
+    void onOperatorWarning_catchupSourceAnsweringRestored_followsAPublishedNotAnswering_only() {
+        var h = Harness.create();
+        var subject = "orders[0]@node-b";
+        var notAnswering = OperatorWarning.operatorWarning(OperatorWarningCode.STREAM_CATCHUP_SOURCE_NOT_ANSWERING, subject, "not answering");
+        var restored = OperatorWarning.operatorWarning(OperatorWarningCode.STREAM_CATCHUP_SOURCE_ANSWERING_RESTORED, subject, "restored");
+
+        h.aggregator().onOperatorWarning(restored);
+        assertThat(h.events()).as("control: no recovery without its warning").isEmpty();
+        h.aggregator().onOperatorWarning(notAnswering);
+        h.aggregator().onOperatorWarning(restored);
+
+        assertThat(codes(h)).containsExactly("stream-catchup-source-not-answering", "stream-catchup-source-answering-restored");
+        assertThat(h.events().stream().map(ClusterEvent::severity).toList())
+            .containsExactly(ClusterEvent.Severity.WARNING, ClusterEvent.Severity.INFO);
     }
 }

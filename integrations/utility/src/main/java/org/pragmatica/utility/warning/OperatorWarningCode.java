@@ -50,6 +50,18 @@ public enum OperatorWarningCode {
     /// A blueprint publish was accepted with a deploy-time warning (#1564): a declaration with a stated
     /// replication risk, or a stream declaration the cluster accepted with a caveat.
     DEPLOY_WARNING("deploy-warning", "deployment", WarningLevel.WARNING),
+    /// A stream consumer's delivery pass has thrown on several consecutive attempts (#1934): the reader or the runtime
+    /// throws instead of reading, so the consumer delivers nothing and retries with a growing backoff. The message
+    /// names the consumer group, the partition, what was thrown and its top frames. Subject is
+    /// `stream[partition]/group`.
+    STREAM_CONSUMER_DRAIN_FAILING("stream-consumer-drain-failing", "stream-consumer", WarningLevel.WARNING),
+    /// The end of a `stream-consumer-drain-failing` run: a pass read the partition again, or the consumer was cancelled
+    /// while the alert stood. Raised only when that warning was; INFO, paired with [#STREAM_CONSUMER_DRAIN_FAILING] so
+    /// the event layer publishes it only after a published failing event for the same subject (#752 mechanism).
+    STREAM_CONSUMER_DRAIN_RESTORED("stream-consumer-drain-restored",
+                                   "stream-consumer",
+                                   WarningLevel.INFO,
+                                   STREAM_CONSUMER_DRAIN_FAILING),
     /// The replication policy refused the registration of `system:cluster-events` (#1564 B1). The node keeps
     /// running, but cluster events are not recorded until the cluster config is corrected and re-applied.
     CLUSTER_EVENTS_REGISTRATION_REFUSED("cluster-events-registration-refused",
@@ -82,6 +94,24 @@ public enum OperatorWarningCode {
     /// earlier refused by the slice floor has now been admitted (the floor cleared, or the operator forced it). INFO,
     /// published only after a published refusal for that target, and it clears the refusal's throttle window (#752).
     SLICE_FLOOR_DRAIN_ADMITTED("slice-floor-drain-admitted", "deployment", WarningLevel.INFO, SLICE_FLOOR_DRAIN_REFUSED),
+    /// A replica of a `confirmation_factor` 1 stream cut its divergent tail back to the last offset it shares with its
+    /// owner (#1730 phase 2). With that factor the acknowledgement was the old owner's alone, so the discarded offsets
+    /// may have been acknowledged and are lost; the message names them. A stream that confirms with replicas
+    /// discards only unacknowledged records on the same cut, and that is only logged.
+    STREAM_DIVERGENT_TAIL_TRUNCATED("stream-divergent-tail-truncated", "stream-replication", WarningLevel.WARNING),
+    /// #1730 phase 2: a replica's catch-up has been answered as a consumer read for a minute -- the source does not list it
+    /// as a replica of the partition -- so nothing is applied and it stays out of the in-sync set. Subject is
+    /// `stream[partition]@source`.
+    STREAM_CATCHUP_SOURCE_NOT_ANSWERING("stream-catchup-source-not-answering",
+                                        "stream-replication",
+                                        WarningLevel.WARNING),
+    /// The end of a `stream-catchup-source-not-answering` episode: the source lists the replica again and its catch-up is answered
+    /// as a replica. Raised only when that warning was; INFO, paired with [#STREAM_CATCHUP_SOURCE_NOT_ANSWERING]: the event layer
+    /// publishes it only after a published not-answering event for the same subject (#752 mechanism). Same subject.
+    STREAM_CATCHUP_SOURCE_ANSWERING_RESTORED("stream-catchup-source-answering-restored",
+                                             "stream-replication",
+                                             WarningLevel.INFO,
+                                             STREAM_CATCHUP_SOURCE_NOT_ANSWERING),
     /// A declarative stream consumer this node held as attached had no subscription in the consumer runtime (#752):
     /// found by a reconcile pass, which forgets and re-attaches it. The partition was not consumed in between while this node reported it attached.
     STREAM_CONSUMER_STATE_DIVERGED("stream-consumer-state-diverged", "stream-consumer", WarningLevel.WARNING),
@@ -117,7 +147,25 @@ public enum OperatorWarningCode {
     /// A partition's owner promotion is refused because a peer ANSWERED its watermark probe with a page cut before its
     /// first event: that event alone exceeds the peer's read cap (#1431). Not an unreachable peer; the operator raises
     /// the peer's `maxReadResponseBytes`. The message names the partition, the peer and the offset.
-    STREAM_EVENT_EXCEEDS_READ_CAP("stream-event-exceeds-read-cap", "stream-replication", WarningLevel.CRITICAL);
+    STREAM_EVENT_EXCEEDS_READ_CAP("stream-event-exceeds-read-cap", "stream-replication", WarningLevel.CRITICAL),
+    /// The recovery of a [#STREAM_EVENT_EXCEEDS_READ_CAP] (#1937), same subject: the oversized-event refusal no longer holds the
+    /// partition's promotion (the peer's cap was raised, another peer was caught up from, or this node stopped being its owner).
+    STREAM_EVENT_EXCEEDS_READ_CAP_RESOLVED("stream-event-exceeds-read-cap-resolved",
+                                           "stream-replication",
+                                           WarningLevel.INFO,
+                                           STREAM_EVENT_EXCEEDS_READ_CAP),
+    /// A partition's owner promotion waits because members that may hold records did not answer its watermark probe for longer
+    /// than the alarm window (#1937). CRITICAL: the partition is unavailable for writes until they answer or an operator acts.
+    /// The message names the partition, the silent members and the responders.
+    STREAM_OWNER_PROMOTION_HOLDERS_UNREACHABLE("stream-owner-promotion-holders-unreachable",
+                                               "stream-replication",
+                                               WarningLevel.CRITICAL),
+    /// The recovery of a [#STREAM_OWNER_PROMOTION_HOLDERS_UNREACHABLE] (#1937), same subject: every member answers again, or this
+    /// node stopped being the partition's owner.
+    STREAM_OWNER_PROMOTION_HOLDERS_ANSWERING("stream-owner-promotion-holders-answering",
+                                             "stream-replication",
+                                             WarningLevel.INFO,
+                                             STREAM_OWNER_PROMOTION_HOLDERS_UNREACHABLE);
     private final String code;
     private final String subsystem;
     private final WarningLevel level;

@@ -57,7 +57,15 @@ class OwnerActivationTest {
 
     private final List<OwnerActivation.ActivationBlock> alarms = new CopyOnWriteArrayList<>();
     private final Set<NodeId> divergent = ConcurrentHashMap.newKeySet();
+    /// The first offset at which a node in [#divergent] differs; records below it are the shared lineage.
+    private final AtomicLong divergentFrom = new AtomicLong(0L);
     private final OwnerActivation activation = gate(PromotionTestRanges.NEVER_ALARM);
+    /// Where a peer's RING begins (the gate relaxes only for a divergence at or above it); none = not known.
+    private final java.util.concurrent.atomic.AtomicReference<Option<Long>> peerTail = new java.util.concurrent.atomic.AtomicReference<>(Option.some(0L));
+
+    {
+        activation.peerRingTail((_, _, _) -> Promise.success(peerTail.get()));
+    }
 
     /// Every node holds the same lineage over any range the gate compares (`rec-<offset>`), except the nodes in
     /// [#divergent], whose records differ (`div-<offset>`). Divergence on real rings is pinned in
@@ -78,11 +86,9 @@ class OwnerActivationTest {
     }
 
     private Promise<List<OffHeapRingBuffer.RawEvent>> range(NodeId node, String stream, int partition, long from, long to) {
-        var tag = divergent.contains(node) ? "div-" : "rec-";
-
         return Promise.success(LongStream.rangeClosed(from, to)
                                          .mapToObj(offset -> OffHeapRingBuffer.RawEvent.rawEvent(offset,
-                                                                                                 (tag + offset).getBytes(StandardCharsets.UTF_8),
+                                                                                                 ((divergent.contains(node) && offset >= divergentFrom.get() ? "div-" : "rec-") + offset).getBytes(StandardCharsets.UTF_8),
                                                                                                  1L))
                                          .toList());
     }
@@ -186,6 +192,183 @@ class OwnerActivationTest {
 
         assertThat(activation.isActivated(STREAM, PARTITION)).isFalse();
         assertThat(rounds.get()).as("first attempt, then one re-drive that finds ownership gone").isEqualTo(2);
+    }
+
+    /// #1730 phase 2 (KIP-101): a candidate that was ELECTED from the committed ISR holds every acknowledged record
+    /// (an acknowledgement needs every in-sync member), so a peer whose records differ from its own within the overlap
+    /// is carrying a tail nobody acknowledged. The peer is left out of the catch-up and truncates itself when it
+    /// backfills from the new owner; the activation proceeds. Before, the first returning ex-owner with an unacknowledged
+    /// tail blocked the partition for good (`DivergentPeer`), while its own repair waited for the owner it was blocking.
+    @Test
+    void activate_isrElectedCandidate_peerDivergentInTheOverlap_isExcluded_andActivates() {
+        record.set(Option.some(isrElected()));
+        members.set(List.of(SELF, PEER_A));
+        peerWatermarks.put(PEER_A, 15L);
+        divergent.add(PEER_A);
+
+        assertThat(activate()).as("the divergent peer must not block an ISR-elected candidate").isTrue();
+        assertThat(alarms).isEmpty();
+        assertThat(catchUps).isEmpty();
+    }
+
+    /// B8 (v1890 M21): the relaxation needs the candidate to be ELECTED FROM the committed ISR, i.e. the ISR names it. A record with
+    /// a committed ISR (isrVersion > 0) that does not name this node is a candidate nobody guarantees holds every acknowledged
+    /// record: a divergent peer keeps blocking.
+    @Test
+    void activate_candidateNotInTheCommittedIsr_peerDivergentInTheOverlap_stillRefuses() {
+        record.set(Option.some(StreamPartitionOwnershipValue.streamPartitionOwnershipValue(SELF,
+                                                                                           Epoch.epoch(0L, 3L, 0),
+                                                                                           3L,
+                                                                                           HlcTimestamp.ZERO,
+                                                                                           List.of(PEER_A, PEER_B),
+                                                                                           5L)));
+        members.set(List.of(SELF, PEER_A));
+        peerWatermarks.put(PEER_A, 15L);
+        divergent.add(PEER_A);
+
+        assertThat(activate()).as("a candidate outside the committed ISR does not relax the gate").isFalse();
+        assertThat(alarms).singleElement().isInstanceOf(OwnerActivation.ActivationBlock.DivergentPeer.class);
+    }
+
+    /// A refusal WAITS, it does not block for good: a refused activation is re-driven with backoff (`OwnerActivation#redrive`) while the
+    /// node still claims the partition, and re-evaluates the peers each time. Here the first attempt is refused because the divergent
+    /// peer is in its sealed range (below its ring tail); when the peer's range is then repaired (it no longer differs) the re-drive
+    /// activates with no further demand. A divergence that persists in the sealed range stays refused and reported until an operator
+    /// picks a source (the block alarm).
+    @Test
+    void admit_refusedForASealedRangeDivergence_waits_thenActivatesOnceThePeerIsRepaired() {
+        record.set(Option.some(isrElected()));
+        members.set(List.of(SELF, PEER_A));
+        peerWatermarks.put(PEER_A, 15L);
+        divergent.add(PEER_A);
+        divergentFrom.set(10L);
+        peerTail.set(Option.some(11L));
+
+        assertThat(activation.admit(STREAM, PARTITION).isFailure()).as("refused at first").isTrue();
+        LockSupport.parkNanos(50_000_000L);
+        assertThat(alarms).as("the refusal is reported").isNotEmpty();
+        divergent.remove(PEER_A);
+
+        assertThat(eventuallyActivatedWithin(3_000L)).as("re-driven once the peer no longer diverges, with no further demand").isTrue();
+    }
+
+    /// B6 (v1890 probe F): the compare reads the peer's range through its tier, so a difference can be found in data the peer has
+    /// SEALED, where its own repair refuses to cut. That is not a relaxation case: the relaxation applies only to a divergence at
+    /// an offset the peer still holds in its ring, and a peer whose ring tail is unknown is not relaxed for (fail safe).
+    @Test
+    void activate_isrElectedCandidate_peerDivergentOnlyBelowItsRingTail_stillRefuses() {
+        record.set(Option.some(isrElected()));
+        members.set(List.of(SELF, PEER_A));
+        peerWatermarks.put(PEER_A, 15L);
+        divergent.add(PEER_A);
+        divergentFrom.set(10L);
+        peerTail.set(Option.some(11L));
+
+        assertThat(activate()).as("first divergence 10 is below the peer's ring tail 11: sealed data").isFalse();
+        assertThat(alarms).singleElement().isInstanceOf(OwnerActivation.ActivationBlock.DivergentPeer.class);
+    }
+
+    @Test
+    void activate_isrElectedCandidate_peerRingTailUnknown_isNotRelaxedFor() {
+        record.set(Option.some(isrElected()));
+        members.set(List.of(SELF, PEER_A));
+        peerWatermarks.put(PEER_A, 15L);
+        divergent.add(PEER_A);
+        peerTail.set(Option.none());
+
+        assertThat(activate()).as("unknown ring tail fails safe").isFalse();
+    }
+
+    /// Control: the divergence at or above the peer's ring tail is relaxed.
+    @Test
+    void activate_isrElectedCandidate_peerDivergentAtItsRingTail_isRelaxed() {
+        record.set(Option.some(isrElected()));
+        members.set(List.of(SELF, PEER_A));
+        peerWatermarks.put(PEER_A, 15L);
+        divergent.add(PEER_A);
+        divergentFrom.set(10L);
+        peerTail.set(Option.some(10L));
+
+        assertThat(activate()).isTrue();
+    }
+
+    /// B6 (the design's Q6): the gate relaxes ONLY for a divergence ABOVE the candidate's durable sealed floor. A peer that
+    /// differs from the candidate at or below the floor holds, in segments already sealed, something no truncation removes: the
+    /// relaxation does not apply and the activation stays refused as before.
+    @Test
+    void activate_isrElectedCandidate_peerDivergentAtOrBelowTheSealedFloor_stillRefuses() {
+        activation.sealedFloor((_, _) -> 12L);
+        record.set(Option.some(isrElected()));
+        members.set(List.of(SELF, PEER_A));
+        peerWatermarks.put(PEER_A, 15L);
+        divergent.add(PEER_A);
+        divergentFrom.set(10L);
+
+        assertThat(activate()).as("first divergence 10 is at or below the floor 12").isFalse();
+        assertThat(alarms).singleElement().isInstanceOf(OwnerActivation.ActivationBlock.DivergentPeer.class);
+    }
+
+    /// Control: the same peer, the divergence ABOVE the floor: relaxed, and the left-out peer's registry row is forgotten.
+    @Test
+    void activate_isrElectedCandidate_peerDivergentAboveTheSealedFloor_isRelaxed_andItsRowIsForgotten() {
+        var forgotten = new java.util.concurrent.CopyOnWriteArrayList<NodeId>();
+
+        activation.sealedFloor((_, _) -> 5L);
+        activation.peerRows((_, _, peer) -> forgotten.add(peer));
+        record.set(Option.some(isrElected()));
+        members.set(List.of(SELF, PEER_A));
+        peerWatermarks.put(PEER_A, 15L);
+        divergent.add(PEER_A);
+        divergentFrom.set(10L);
+
+        assertThat(activate()).as("first divergence 10 is above the floor 5").isTrue();
+        assertThat(forgotten).containsExactly(PEER_A);
+    }
+
+    @Test
+    void activate_isrElectedCandidate_divergentHighestHolder_isNotTheCatchUpSource() {
+        record.set(Option.some(isrElected()));
+        members.set(List.of(SELF, PEER_A, PEER_B));
+        peerWatermarks.put(PEER_A, 25L);
+        peerWatermarks.put(PEER_B, 22L);
+        divergent.add(PEER_A);
+
+        assertThat(activate()).isTrue();
+        assertThat(catchUps).as("the divergent ex-owner's longer tail is never pulled").containsExactly("peer-b@22");
+    }
+
+    /// Control: a record minted before #1730 carries no committed ISR, so the candidate was not elected from one and
+    /// nothing outranks the divergence: the refusal stands.
+    @Test
+    void activate_candidateWithoutACommittedIsr_peerDivergentInTheOverlap_stillRefuses() {
+        record.set(Option.some(ownedBy(SELF, 1)));
+        members.set(List.of(SELF, PEER_A));
+        peerWatermarks.put(PEER_A, 15L);
+        divergent.add(PEER_A);
+
+        assertThat(activate()).isFalse();
+        assertThat(alarms).singleElement().isInstanceOf(OwnerActivation.ActivationBlock.DivergentPeer.class);
+    }
+
+    /// Control: every peer agrees, so the ISR-elected candidate pulls from the highest as before (the exclusion is not a
+    /// way of skipping the catch-up).
+    @Test
+    void activate_isrElectedCandidate_agreeingHigherPeer_isStillTheCatchUpSource() {
+        record.set(Option.some(isrElected()));
+        members.set(List.of(SELF, PEER_A));
+        peerWatermarks.put(PEER_A, 25L);
+
+        assertThat(activate()).isTrue();
+        assertThat(catchUps).containsExactly("peer-a@25");
+    }
+
+    private static StreamPartitionOwnershipValue isrElected() {
+        return StreamPartitionOwnershipValue.streamPartitionOwnershipValue(SELF,
+                                                                           Epoch.epoch(0L, 3L, 0),
+                                                                           3L,
+                                                                           HlcTimestamp.ZERO,
+                                                                           List.of(SELF, PEER_A, PEER_B),
+                                                                           5L);
     }
 
     private boolean eventuallyActivatedWithin(long millis) {

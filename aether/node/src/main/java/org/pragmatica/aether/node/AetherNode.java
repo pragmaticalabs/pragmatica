@@ -188,6 +188,7 @@ import org.pragmatica.aether.stream.LinearizableBarrier;
 import org.pragmatica.aether.stream.DurableSealedOffsetSource;
 import org.pragmatica.aether.stream.LinearizableOwnerServe;
 import org.pragmatica.aether.stream.OwnerActivation;
+import org.pragmatica.aether.stream.VisibleBounds;
 import org.pragmatica.aether.stream.OwnerPeerReads;
 import org.pragmatica.aether.stream.OffHeapRingBuffer;
 import org.pragmatica.aether.node.projection.CommitWitness;
@@ -1977,15 +1978,61 @@ public interface AetherNode extends ManageableNode {
     ///
     /// #1431: a peer whose event exceeds its read cap is raised as its own CRITICAL operator warning (a log line plus
     /// a cluster event), naming the partition, the peer and the offset — never as an unreachable member.
+    /// An owner-promotion block as an operator event, and its end as the recovery (#1937). The oversized-event refusal and the
+    /// members-unreachable wait each raise on a transition and recover on the opposite one (flood-guarded by the sink); the other
+    /// blocks stay a WARN and the partition status read until #1574 gives them a code.
+    static OwnerActivation.BlockAlarm ownerPromotionAlarm(OperatorWarningSink sink) {
+        return new OwnerActivation.BlockAlarm() {
+            @Override
+            public Unit raise(OwnerActivation.ActivationBlock block) {
+                return raiseOwnerPromotionBlock(sink, block);
+            }
+
+            @Override
+            public Unit resolved(OwnerActivation.ActivationBlock block) {
+                return resolveOwnerPromotionBlock(sink, block);
+            }
+        };
+    }
+
+    private static String partitionSubject(OwnerActivation.ActivationBlock block) {
+        return block.streamName() + "[" + block.partition() + "]";
+    }
+
     private static Unit raiseOwnerPromotionBlock(OperatorWarningSink sink, OwnerActivation.ActivationBlock block) {
-        return block instanceof OwnerActivation.ActivationBlock.PeerEventExceedsReadCap oversized
-               ? OperatorWarnings.raise(LOG,
-                                        sink,
-                                        OperatorWarningCode.STREAM_EVENT_EXCEEDS_READ_CAP,
-                                        oversized.streamName() + "[" + oversized.partition() + "]",
-                                        "{}",
-                                        oversized.message())
-               : raiseOwnerPromotionBlock(block);
+        return switch (block) {
+            case OwnerActivation.ActivationBlock.PeerEventExceedsReadCap oversized -> OperatorWarnings.raise(LOG,
+                                                                                                             sink,
+                                                                                                             OperatorWarningCode.STREAM_EVENT_EXCEEDS_READ_CAP,
+                                                                                                             partitionSubject(oversized),
+                                                                                                             "{}",
+                                                                                                             oversized.message());
+            case OwnerActivation.ActivationBlock.HoldersUnreachable unreachable -> OperatorWarnings.raise(LOG,
+                                                                                                          sink,
+                                                                                                          OperatorWarningCode.STREAM_OWNER_PROMOTION_HOLDERS_UNREACHABLE,
+                                                                                                          partitionSubject(unreachable),
+                                                                                                          "{}",
+                                                                                                          unreachable.message());
+            default -> raiseOwnerPromotionBlock(block);
+        };
+    }
+
+    private static Unit resolveOwnerPromotionBlock(OperatorWarningSink sink, OwnerActivation.ActivationBlock block) {
+        return switch (block) {
+            case OwnerActivation.ActivationBlock.PeerEventExceedsReadCap oversized -> OperatorWarnings.raise(LOG,
+                                                                                                             sink,
+                                                                                                             OperatorWarningCode.STREAM_EVENT_EXCEEDS_READ_CAP_RESOLVED,
+                                                                                                             partitionSubject(oversized),
+                                                                                                             "Owner promotion of {} is no longer refused for a peer's oversized event.",
+                                                                                                             partitionSubject(oversized));
+            case OwnerActivation.ActivationBlock.HoldersUnreachable unreachable -> OperatorWarnings.raise(LOG,
+                                                                                                          sink,
+                                                                                                          OperatorWarningCode.STREAM_OWNER_PROMOTION_HOLDERS_ANSWERING,
+                                                                                                          partitionSubject(unreachable),
+                                                                                                          "Owner promotion of {} no longer waits for unreachable members.",
+                                                                                                          partitionSubject(unreachable));
+            default -> Unit.unit();
+        };
     }
 
     private static Unit raiseOwnerPromotionBlock(OwnerActivation.ActivationBlock block) {
@@ -5285,6 +5332,8 @@ public interface AetherNode extends ManageableNode {
         // read the identical committed StreamPartitionOwnershipValue.ownerEpoch the fence high-water derives
         // from — otherwise the recovery seam's Epoch.ZERO (0:0) is rejected by an advanced high-water (1:N).
         var streamOwnerEpochSource = KvStreamOwnerEpochSource.kvStreamOwnerEpochSource(kvStore);
+        // #1730 phase 2 (B11): the owner counts a replica's confirmation only under the committed epoch now in force.
+        streamReplicationManager.ownerEpochs(streamOwnerEpochSource);
         // #1234: the sealer retains each evicted segment until storage has it; those copies are capped at the
         // node's stream memory budget, and only past that cap are appends refused (SEALING_BEHIND).
         // #1345: WAL truncation is bounded by the refs in the latest metadata snapshot ON DISK — the watermark
@@ -5319,6 +5368,9 @@ public interface AetherNode extends ManageableNode {
         // owner-epoch history) are raised on the durable, backed-up partition flag -- the same flag the promotion
         // gate and cold-restart detection raise and read.
         streamPartitionManager.partitionFlags(PartitionFlags.kvPartitionFlags(clusterNode, kvStore, nodeCodec));
+        streamPartitionManager.operatorWarnings(operatorWarningSink);
+        // #1730 phase 2: a durable cut whose repair is not settled within twelve backfill redrive ticks is reported anyway.
+        streamPartitionManager.repairReportBound(TimeSpan.timeSpan(STREAM_BACKFILL_REDRIVE_INTERVAL.millis() * 12L).millis());
         // `[streaming] reshuffle_concurrency` — set BEFORE any materialization, since it replaces the permit
         // pool wholesale. Until 2026-08-16 this bound was a compile-time constant while the paced-materialize
         // error message named it as a config key, so an operator whose backfills were starving had nothing to
@@ -5506,7 +5558,9 @@ public interface AetherNode extends ManageableNode {
                                                           .onFailure(cause -> LOG.warn("cluster-events stream consumer wiring failed: {} — events reads return empty",
                                                                                        cause.message()));
         var streamCatchupTransport = ForwardCatchupTransport.forwardCatchupTransport(streamForwardClient,
-                                                                                     STREAM_CATCHUP_BATCH_SIZE);
+                                                                                     STREAM_CATCHUP_BATCH_SIZE,
+                                                                                     operatorWarningSink,
+                                                                                     System::currentTimeMillis);
         // Cold-start deadlock-break: a watermark+reachability probe over the same forward-read transport.
         // A REACHABLE peer answers with the highest local offset it holds (its watermark; -1 when empty), or,
         // for a partition it holds but has not materialized, its durable watermark; an UNREACHABLE peer's
@@ -5735,8 +5789,7 @@ public interface AetherNode extends ManageableNode {
                                                                                         streamTieredReader,
                                                                                         streamForwardClient::readRemoteCatchup,
                                                                                         STREAM_CATCHUP_BATCH_SIZE),
-                                                              block -> raiseOwnerPromotionBlock(operatorWarningSink,
-                                                                                                block),
+                                                              ownerPromotionAlarm(operatorWarningSink),
                                                               ownerPromotionAlarmWindow(config.timeouts()
                                                                                               .swim()
                                                                                               .suspectTimeout()),
@@ -5752,7 +5805,26 @@ public interface AetherNode extends ManageableNode {
         streamPartitionManager.ownershipRecords((stream, partition) -> kvStore.getTyped(StreamPartitionOwnershipKey.streamPartitionOwnershipKey(stream,
                                                                                                                                                 partition),
                                                                                         StreamPartitionOwnershipValue.class));
+        // #1937: the promoted owner's backfill refuses for a peer's oversized event too, and reports it the way the gate does
+        streamPartitionBackfill.blockAlarm(ownerPromotionAlarm(operatorWarningSink));
         streamPartitionManager.ownerServeGate(ownerActivation::admit);
+        // #1730 phase 2: the gate's relaxation for a divergent peer respects the candidate's durable sealed floor, and a peer it
+        // leaves out loses the row this registry kept for it from an earlier tenure.
+        ownerActivation.sealedFloor(streamSegmentIndex::lastSealedOffset);
+        ownerActivation.peerRingTail((node, stream, partition) -> node.equals(config.self())
+                                                                  ? Promise.success(streamPartitionManager.visibleBounds(stream,
+                                                                                                                         partition)
+                                                                                                          .filter(bounds -> bounds.earliestRetained() >= 0L)
+                                                                                                          .map(VisibleBounds::earliestRetained))
+                                                                  : streamForwardClient.ringTailRemote(node,
+                                                                                                       stream,
+                                                                                                       partition)
+                                                                                       .recover(_ -> Option.<Long> none()));
+        ownerActivation.peerRows((stream, partition, peer) -> streamReplicaRegistry.updateWatermark(stream,
+                                                                                                    partition,
+                                                                                                    peer,
+                                                                                                    - 1L,
+                                                                                                    ReplicationState.SYNCING));
         // #1730: a partition with no live in-sync replica has no owner to report a block, so the controller reports it.
         streamPartitionManager.ownerBlockSource((stream, partition) -> ownerActivation.blockOf(stream, partition)
                                                                                       .orElse(() -> streamReplicaSetController.noInSyncReplica(stream,
@@ -6167,7 +6239,8 @@ public interface AetherNode extends ManageableNode {
                                                                                                   streamPartitionManager::syncReplicated,
                                                                                                   streamOwnershipViews.writeAuthority(),
                                                                                                   operatorWarningSink);
-
+        // #1730 phase 2 (B7): a copy not yet compared with the committed owner of the current epoch acknowledges nothing.
+        streamReplicationReceiveHandler.ackGate(streamPartitionManager::replicaVerified);
         allEntries.add(MessageRouter.Entry.route(ReplicationMessage.ReplicateEvents.class,
                                                  streamReplicationReceiveHandler::onReplicateEvents));
         allEntries.add(MessageRouter.Entry.route(ReplicationMessage.ReplicateAck.class,

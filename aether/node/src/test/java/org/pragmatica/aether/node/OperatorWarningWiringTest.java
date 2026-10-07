@@ -62,6 +62,12 @@ class OperatorWarningWiringTest {
         assertThat(code).contains("alertManager.injectLocal(OperatorWarningCode.CLUSTER_EVENTS_REGISTRATION_REFUSED.code(),\"CRITICAL\",");
     }
 
+    /// #1934: the stream consumer runtime reports a consumer whose delivery passes keep throwing to this node's sink.
+    @Test
+    void assembly_givesTheSinkToTheStreamConsumerRuntime() {
+        assertThat(assemblyCode()).contains("streamConsumerRuntime.operatorWarnings(operatorWarningSink);");
+    }
+
     /// #1564 N2: the cluster-events local partition built at construction takes the committed
     /// `[replication.cluster_events]` factors through `ClusterEventsLimits.streamConfig` (pinned by
     /// `ClusterEventsLimitsTest`), never a separately hardcoded config.
@@ -81,7 +87,14 @@ class OperatorWarningWiringTest {
     /// #1431: the owner gate's block alarm reaches this node's sink, so an oversized peer event is an operator event.
     @Test
     void assembly_givesTheSinkToTheOwnerPromotionBlockAlarm() {
-        assertThat(assemblyCode()).contains("block->raiseOwnerPromotionBlock(operatorWarningSink,block),");
+        assertThat(assemblyCode()).contains("ownerPromotionAlarm(operatorWarningSink),");
+    }
+
+    /// #1937: the promoted owner's BACKFILL reports a peer's oversized event through the same sink, once per transition. Red
+    /// without the wiring: the backfill's alarm stays the no-op default and the refusal is only a log line.
+    @Test
+    void assembly_givesTheSinkToTheBackfillBlockAlarm() {
+        assertThat(assemblyCode()).contains("streamPartitionBackfill.blockAlarm(ownerPromotionAlarm(operatorWarningSink));");
     }
 
     /// `AetherNode.java` with line comments removed and all whitespace stripped. An unreadable file fails loudly,
