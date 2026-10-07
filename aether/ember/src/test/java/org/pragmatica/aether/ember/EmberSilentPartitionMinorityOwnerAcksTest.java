@@ -14,12 +14,10 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
-import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
-import java.util.stream.Collectors;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -47,8 +45,11 @@ import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 /// nothing once its node has lost quorum; the only acknowledgements the minority side gives are the ones inside the detection
 /// window, and that window is measured here, not assumed.
 ///
-/// Five real nodes, no drain, no kill: the owner is cut from the other four on QUIC and SWIM through the test-only
-/// [AetherNode#partitionFrom] seam, so the only thing that tells it the quorum is gone is the failure detector. A producer thread per
+/// Five real nodes, no drain, no kill: the owner's network is black-holed ([AetherNode#blackhole], the tool of #1560's fence test), so
+/// the only thing that tells it the quorum is gone is the failure detector. The black hole starts only after the cold-boot
+/// convergence window, because until then SWIM deliberately reports UNKNOWN instead of FAULTY and quorum loss is deferred. (The
+/// per-peer [AetherNode#partitionFrom] seam is not used: it drops inbound messages but leaves the QUIC connections up, and SWIM
+/// refuses to declare a peer FAULTY against a live transport connection, so it never reaches PASSIVE.) A producer thread per
 /// stream calls the owner's local write path (what `StreamWriteRouter` runs for a self-owned partition: the owner admission, the
 /// replica floor, then the confirmation barrier) back to back from the cut on. A poller reads `mayServeAsOwner`, the owner serve gate
 /// that quorum loss (PASSIVE) clears, once a millisecond; the first refusal after the cut is when PASSIVE took effect.
@@ -77,6 +78,8 @@ class EmberSilentPartitionMinorityOwnerAcksTest {
     private static final TimeSpan REQUEST = TimeSpan.timeSpan(30).seconds();
     private static final Duration REQUEST_TIMEOUT = Duration.ofSeconds(30);
     private static final long LEADER_BUDGET_MS = 90_000L;
+    /// Past `AetherNode.COLD_BOOT_CONVERGENCE_WINDOW_MS` (75 s), measured from cluster start, as in `EmberPartitionedCoreSelfFenceTest`.
+    private static final long COLD_BOOT_CLEARANCE_MS = 85_000L;
     private static final long OWNERSHIP_BUDGET_MS = 60_000L;
     /// One attempt waits at most this for the confirmation barrier, so a CF 2 attempt never outlives the observation by much.
     private static final TimeSpan ATTEMPT_BOUND = TimeSpan.timeSpan(2).seconds();
@@ -103,7 +106,7 @@ class EmberSilentPartitionMinorityOwnerAcksTest {
     @AfterEach
     void tearDown() {
         if (cluster != null) {
-            cluster.allNodes().forEach(node -> node.partitionFrom(Set.of()));
+            cluster.allNodes().forEach(node -> node.blackhole(false));
             assertThat(cluster.stop().await(STOP_BOUND).fold(Cause::message, _ -> "stopped")).isEqualTo("stopped");
         }
     }
@@ -112,6 +115,8 @@ class EmberSilentPartitionMinorityOwnerAcksTest {
     @Timeout(900)
     void silentlyPartitionedOwner_acknowledgesNothingAfterItsNodeLostQuorum_andTheWindowIsMeasured() {
         cluster = EmberTestPorts.startedCluster(PORTS, this::fiveNodes, START_BOUND);
+        var startedAtNs = System.nanoTime();
+
         awaitLeader();
 
         var leaderId = cluster.currentLeader().unwrap();
@@ -142,14 +147,19 @@ class EmberSilentPartitionMinorityOwnerAcksTest {
         assertThat(control1.acked()).as("control: the owner acknowledges the CF 1 stream before the cut: %s", control1.detail()).isTrue();
         assertThat(owner.streamPartitionManager().mayServeAsOwner(cf1Stream.engineKey(), 0)).as("control: the gate admits before the cut").isTrue();
 
-        var majority = cluster.allNodes().stream().map(AetherNode::self).filter(id -> !id.equals(ownerId)).collect(Collectors.toSet());
+        var clearanceLeftMs = COLD_BOOT_CLEARANCE_MS - (System.nanoTime() - startedAtNs) / 1_000_000L;
+
+        if (clearanceLeftMs > 0) {
+            sleepQuietly(clearanceLeftMs);
+        }
+
         var attempts1 = new CopyOnWriteArrayList<Attempt>();
         var attempts2 = new CopyOnWriteArrayList<Attempt>();
         var running = new AtomicBoolean(true);
         var passiveAtNs = new AtomicLong(0L);
         var cutAtNs = System.nanoTime();
 
-        cluster.allNodes().forEach(node -> node.partitionFrom(node.self().equals(ownerId) ? majority : Set.of(ownerId)));
+        owner.blackhole(true);
 
         var producers = List.of(producer(owner, cf1Stream, attempts1, running), producer(owner, cf2Stream, attempts2, running));
 
