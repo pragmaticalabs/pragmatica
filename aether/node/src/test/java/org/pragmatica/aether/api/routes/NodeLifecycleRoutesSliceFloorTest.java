@@ -260,7 +260,73 @@ class NodeLifecycleRoutesSliceFloorTest {
         assertThat(((HttpStatusAware) refusal).httpStatus()).isEqualTo(HttpStatus.CONFLICT);
         assertThat(refusal.message()).contains(SLICE_A, "1 ACTIVE", "minAvailable 2", "force=true");
         assertThat(pendingDrains).as("a refused drain reserves nothing").containsExactly(node(1));
-        assertThat(settledWarnings()).as("a refusal is not a forced breach").isEmpty();
+        assertThat(settledWarnings()).as("a refusal is not a forced breach, it raises exactly the refusal event")
+                                     .extracting(OperatorWarning::code)
+                                     .containsExactly(OperatorWarningCode.SLICE_FLOOR_DRAIN_REFUSED);
+    }
+
+    /// Owner rule: a warning-worthy condition raises a flood-guarded event on the transition AND a recovery event.
+    /// Three refusals of one target are one transition: one refusal event, naming the target and the slice.
+    @Test
+    void floorRefusal_raisesOneEventPerTransition_notOnePerRequest() {
+        var routes = routes();
+        host(slice("a", 3, 2), node(1), node(2), node(3));
+        pendingDrains.add(node(1));
+
+        for (int i = 0; i < 3; i++) {
+            breach(routes.drainNodeForTest(node(2).id()).await());
+        }
+
+        var raised = settledWarnings();
+
+        assertThat(raised).extracting(OperatorWarning::code).containsExactly(OperatorWarningCode.SLICE_FLOOR_DRAIN_REFUSED);
+        assertThat(raised.getFirst().subject()).isEqualTo(node(2).id());
+        assertThat(raised.getFirst().message()).contains(SLICE_A, "drain");
+    }
+
+    /// The recovery event: the same target's drain is admitted once the floor clears, and it is raised once.
+    @Test
+    void refusedDrainLaterAdmitted_raisesTheRecoveryEvent_once() {
+        var routes = routes();
+        host(slice("a", 3, 2), node(1), node(2), node(3));
+        pendingDrains.add(node(1));
+        breach(routes.drainNodeForTest(node(2).id()).await());
+        pendingDrains.remove(node(1));
+
+        assertThat(routes.drainNodeForTest(node(2).id()).await().isSuccess()).isTrue();
+
+        var raised = awaitWarnings(2);
+
+        assertThat(raised).extracting(OperatorWarning::code)
+                          .containsExactly(OperatorWarningCode.SLICE_FLOOR_DRAIN_REFUSED,
+                                           OperatorWarningCode.SLICE_FLOOR_DRAIN_ADMITTED);
+        assertThat(raised.get(1).subject()).isEqualTo(node(2).id());
+        assertThat(settledWarnings()).as("recovery is reported once").hasSize(2);
+    }
+
+    /// Control: an admission that was never refused has nothing to recover from, so no recovery event.
+    @Test
+    void admittedDrainThatWasNeverRefused_raisesNoRecoveryEvent() {
+        host(slice("a", 3, 2), node(1), node(2), node(3));
+
+        assertThat(routes().drainNodeForTest(node(1).id()).await().isSuccess()).isTrue();
+        assertThat(settledWarnings()).isEmpty();
+    }
+
+    /// Forcing a refused drain also ends the refusal: refusal, then the forced-breach warning, then the recovery.
+    @Test
+    void refusedThenForced_raisesRefusal_forcedBreach_andRecovery() {
+        var routes = routes();
+        host(slice("a", 3, 2), node(1), node(2), node(3));
+        pendingDrains.add(node(1));
+        breach(routes.drainNodeForTest(node(2).id()).await());
+
+        assertThat(routes.drainNodeForTest(node(2).id(), true).await().isSuccess()).isTrue();
+
+        assertThat(awaitWarnings(3)).extracting(OperatorWarning::code)
+                                    .containsExactlyInAnyOrder(OperatorWarningCode.SLICE_FLOOR_DRAIN_REFUSED,
+                                                               OperatorWarningCode.SLICE_FLOOR_BREACHED_BY_FORCE,
+                                                               OperatorWarningCode.SLICE_FLOOR_DRAIN_ADMITTED);
     }
 
     @Test

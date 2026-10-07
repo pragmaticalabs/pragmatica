@@ -87,6 +87,9 @@ public final class NodeLifecycleRoutes implements RouteSource {
     /// #1720: the slice `minAvailable` floor guard for operator drain and shutdown, absent for legacy callers and
     /// fixtures that wire no slice ownership (they keep the budget-only admission they always had).
     private final Option<SliceFloor> sliceFloor;
+    /// Targets whose operator drain the slice floor refused and that have not been admitted since: the refusal
+    /// event fires on entry, the recovery event on exit. Touched only inside the synchronized admission.
+    private final Set<String> floorRefusedTargets = new HashSet<>();
 
     /// The slice-floor guard the operator drain/shutdown routes consult (#1720), and the sink through which a
     /// FORCED breach is reported. `violations` is [SliceOwnershipQuery#minAvailableDrainViolations]: applied to
@@ -391,19 +394,32 @@ public final class NodeLifecycleRoutes implements RouteSource {
         remaining.removeAll(pendingDrainsSupplier.get());
         remaining.remove(node);
         var breaches = floor.violations().apply(node, remaining);
-
-        if (breaches.isEmpty()) {
-            return Result.success(org.pragmatica.lang.Unit.unit());
-        }
-
         var operation = drain
                         ? "drain"
                         : "shutdown";
 
+        if (breaches.isEmpty()) {
+            raiseFloorRecovery(floor, node, operation, "the floor cleared");
+
+            return Result.success(org.pragmatica.lang.Unit.unit());
+        }
+
         if (!force) {
+            if (floorRefusedTargets.add(node.id())) {
+                OperatorWarnings.raise(LOG,
+                                       floor.warnings(),
+                                       OperatorWarningCode.SLICE_FLOOR_DRAIN_REFUSED,
+                                       node.id(),
+                                       "Refused {} of node {}: it would breach the slice floor: {}",
+                                       operation,
+                                       node.id(),
+                                       describe(breaches));
+            }
+
             return new SliceFloorBreached(node.id(), operation, breaches).result();
         }
 
+        raiseFloorRecovery(floor, node, operation, "forced past the floor");
         OperatorWarnings.raise(LOG,
                                floor.warnings(),
                                OperatorWarningCode.SLICE_FLOOR_BREACHED_BY_FORCE,
@@ -414,6 +430,21 @@ public final class NodeLifecycleRoutes implements RouteSource {
                                describe(breaches));
 
         return Result.success(org.pragmatica.lang.Unit.unit());
+    }
+
+    /// The recovery counterpart of the refusal event: only when this target WAS refused, and once (the set is
+    /// guarded by the same monitor as admission, so a transition is reported by exactly one request).
+    private void raiseFloorRecovery(SliceFloor floor, NodeId node, String operation, String how) {
+        if (floorRefusedTargets.remove(node.id())) {
+            OperatorWarnings.raise(LOG,
+                                   floor.warnings(),
+                                   OperatorWarningCode.SLICE_FLOOR_DRAIN_ADMITTED,
+                                   node.id(),
+                                   "Admitted {} of node {} that the slice floor had refused ({})",
+                                   operation,
+                                   node.id(),
+                                   how);
+        }
     }
 
     private Result<org.pragmatica.lang.Unit> checkDrainReadiness(NodeId node, boolean requireReady) {

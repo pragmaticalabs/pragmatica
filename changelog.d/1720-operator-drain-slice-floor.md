@@ -18,6 +18,14 @@
   slice-floor 409, within the existing drain bound, instead of aborting the wave on the first refusal. Any other refusal
   returns at once, and a floor refusal that outlasts the bound still names the slice. Without this the smallest
   supported cluster (3 cores, default floor 2) could not complete a rolling restart.
+- **A refusal is an event, and so is its recovery** (owner rule: every warning-worthy condition raises a flood-guarded event on
+  the transition and a recovery event). The first floor refusal of a target raises operator warning
+  `slice-floor-drain-refused` (once per transition, not per request; the aggregator's per-`(code, subject)` window
+  also applies); when that target's drain or shutdown is next admitted, because the floor cleared or the operator forced
+  it, `slice-floor-drain-admitted` (severity INFO) is raised once. `WarningLevel.INFO` exists for recovery notices.
+  [verified: `NodeLifecycleRoutesSliceFloorTest#floorRefusal_raisesOneEventPerTransition_notOnePerRequest`,
+  `#refusedDrainLaterAdmitted_raisesTheRecoveryEvent_once`, `#admittedDrainThatWasNeverRefused_raisesNoRecoveryEvent`,
+  `#refusedThenForced_raisesRefusal_forcedBreach_andRecovery`]
 - Docs: per-operation guarantee table (automatic drain, operator drain, forced drain, destroy) in
   `slice-developers/deployment.md`, the routes and the new warning code in `management-api.md`, flags in `cli.md`.
 - Pinned by `NodeLifecycleRoutesSliceFloorTest` (the real guard against a real KV store, through the real routes, incl.

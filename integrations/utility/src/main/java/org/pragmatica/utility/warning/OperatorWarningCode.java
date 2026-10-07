@@ -69,6 +69,13 @@ public enum OperatorWarningCode {
     /// ACTIVE slice instances whose remaining count falls below the floor, so those slices run degraded, or go
     /// dark, until re-placed. The subject is the target node; the message names each slice and its counts.
     SLICE_FLOOR_BREACHED_BY_FORCE("slice-floor-breached-by-force", "deployment", WarningLevel.WARNING),
+    /// An operator drain or shutdown was REFUSED (409) because it would take a hosted slice below its `minAvailable`
+    /// floor (#1720). Raised once per target on the transition into refusal; the subject is the target node and the
+    /// message names each slice and its counts. Paired with [#SLICE_FLOOR_DRAIN_ADMITTED].
+    SLICE_FLOOR_DRAIN_REFUSED("slice-floor-drain-refused", "deployment", WarningLevel.WARNING),
+    /// The recovery notice for [#SLICE_FLOOR_DRAIN_REFUSED]: a drain or shutdown for a target that was earlier refused
+    /// by the slice floor has now been admitted (the floor cleared, or the operator forced it).
+    SLICE_FLOOR_DRAIN_ADMITTED("slice-floor-drain-admitted", "deployment", WarningLevel.INFO),
     /// A stream consumer re-read from an earlier offset because the partition's owner replaced the lineage its cursor
     /// belonged to (#1873, KIP-320): a restart without a WAL, or a failover to a replica that held less, began a new owner
     /// epoch below the consumer's cursor. The records the group processed above that offset are gone from the log and the

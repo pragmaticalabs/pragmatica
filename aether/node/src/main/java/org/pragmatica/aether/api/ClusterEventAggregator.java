@@ -923,6 +923,7 @@ public final class ClusterEventAggregator {
 
     private static Severity severityOf(WarningLevel level) {
         return switch (level) {
+            case INFO -> Severity.INFO;
             case WARNING -> Severity.WARNING;
             case CRITICAL -> Severity.CRITICAL;
         };
