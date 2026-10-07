@@ -30,6 +30,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaMigrationLockValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaStatus;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SchemaVersionValue;
+import org.pragmatica.aether.slice.SliceLoadingFailure;
 import org.pragmatica.aether.slice.repository.Location;
 import org.pragmatica.aether.slice.repository.Repository;
 import org.pragmatica.cluster.node.ClusterNode;
@@ -667,6 +668,12 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
         if (cause instanceof SchemaError.LockAcquisitionFailed) {
             return FailureClassification.TRANSIENT;
         }
+        // #1927: resolution no longer falls through to the next source when a configured repository merely could not answer; it
+        // ends as ArtifactUnavailable, which is an outage, not an absence, so the existing backoff retries it (a genuine
+        // ArtifactNotFound stays unclassified, i.e. permanent).
+        if (cause instanceof SliceLoadingFailure.Intermittent.ArtifactUnavailable) {
+            return FailureClassification.TRANSIENT;
+        }
 
         if (cause instanceof SchemaError.MigrationFailed) {
             return FailureClassification.PERMANENT;
@@ -1006,11 +1013,11 @@ class SchemaOrchestratorServiceInstance implements SchemaOrchestratorService {
     }
 
     private Promise<byte[]> resolveArtifactBytes(Artifact artifact) {
-        return repository.locate(artifact, "blueprint")
-                         .flatMap(SchemaOrchestratorServiceInstance::readLocationBytes)
-                         .orElse(() -> repository.locate(artifact)
-                                                 .flatMap(SchemaOrchestratorServiceInstance::readLocationBytes))
-                         .orElse(() -> artifactStore.resolve(artifact));
+        return Repository.orElseWhenAbsent(Repository.orElseWhenAbsent(repository.locate(artifact, "blueprint")
+                                                                                 .flatMap(SchemaOrchestratorServiceInstance::readLocationBytes),
+                                                                       () -> repository.locate(artifact)
+                                                                                       .flatMap(SchemaOrchestratorServiceInstance::readLocationBytes)),
+                                           () -> artifactStore.resolve(artifact));
     }
 
     @SuppressWarnings("JBCT-EX-01")

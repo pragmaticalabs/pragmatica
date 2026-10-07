@@ -1562,6 +1562,100 @@ class ClusterEventAggregatorTest {
         assertThat(h.events()).as("the re-registered task's first UNKNOWN is announced afresh").hasSize(3);
     }
 
+    private static OperationalEvent.ScheduledTaskFireHeld fireHeld(String eventId, long fireAt) {
+        return OperationalEvent.ScheduledTaskFireHeld.scheduledTaskFireHeld(CRON_TASK, "node-a", fireAt, 1_200L, eventId);
+    }
+
+    private static OperationalEvent.ScheduledTaskFireReleased fireReleased(String eventId, long fireAt, String outcome) {
+        return OperationalEvent.ScheduledTaskFireReleased.scheduledTaskFireReleased(CRON_TASK, "node-a", fireAt, 9_000L, outcome, eventId);
+    }
+
+    /// #1930: a fire still in flight while its ticks are skipped, and its resolution, reach the stream as typed events with
+    /// their details. The fact belongs to the node whose scheduler holds the fire, so it is published from there even when
+    /// that node is NOT the cluster-events owner (the owner gate would drop it on every node but one).
+    @Test
+    void scheduledFire_heldThenReleased_reachTheStream_evenOnANonOwner() {
+        var h = Harness.create(Harness.defaultRetention(), () -> false);
+
+        h.aggregator().onScheduledTaskFireHeld(fireHeld("held-id", 5L));
+        h.aggregator().onScheduledTaskFireReleased(fireReleased("released-id", 5L, "executed"));
+
+        var events = h.events();
+
+        assertThat(events).hasSize(2);
+        assertThat(events.get(0)).isInstanceOf(ClusterEvent.ScheduledTaskFireHeld.class);
+        assertThat(events.get(0).type()).isEqualTo("SCHEDULED_TASK_FIRE_HELD");
+        assertThat(events.get(0).severity()).isEqualTo(ClusterEvent.Severity.WARNING);
+        assertThat(events.get(0).details()).containsEntry("task", CRON_TASK)
+                                           .containsEntry("node", "node-a")
+                                           .containsEntry("fireAt", "5")
+                                           .containsEntry("inFlightMs", "1200")
+                                           .containsEntry("eventId", "held-id");
+        assertThat(events.get(1)).isInstanceOf(ClusterEvent.ScheduledTaskFireReleased.class);
+        assertThat(events.get(1).type()).isEqualTo("SCHEDULED_TASK_FIRE_RELEASED");
+        assertThat(events.get(1).severity()).isEqualTo(ClusterEvent.Severity.INFO);
+        assertThat(events.get(1).details()).containsEntry("outcome", "executed")
+                                           .containsEntry("inFlightMs", "9000")
+                                           .containsEntry("fireAt", "5");
+        assertThat(h.aggregator().trackedScheduledFires()).as("nothing left tracked").isZero();
+    }
+
+    /// No recovery without the event: a release nobody was told the hold for is not announced.
+    @Test
+    void scheduledFire_releasedWithoutAHeld_isNotAnnounced() {
+        var h = Harness.create();
+
+        h.aggregator().onScheduledTaskFireReleased(fireReleased("orphan", 5L, "executed"));
+
+        assertThat(h.events()).isEmpty();
+    }
+
+    /// One event per FIRE, not per tick: a second hold of the same task inside the window is held back, and when that fire
+    /// resolves inside the window neither it nor its release is announced.
+    @Test
+    void scheduledFire_secondFireHeldInsideTheWindow_thenResolved_announcesNothing() {
+        var physicalMillis = new AtomicLong(1_000_000L);
+        var h = harnessWithClock(physicalMillis);
+
+        h.aggregator().onScheduledTaskFireHeld(fireHeld("first", 1L));
+        h.aggregator().onScheduledTaskFireReleased(fireReleased("first-released", 1L, "executed"));
+        physicalMillis.addAndGet(10_000L);
+        h.aggregator().onScheduledTaskFireHeld(fireHeld("second", 2L));
+        h.aggregator().onScheduledTaskFireReleased(fireReleased("second-released", 2L, "failed"));
+        physicalMillis.addAndGet(60_000L);
+        h.aggregator().announceHeldFires();
+
+        assertThat(h.events().stream().map(event -> event.details().get("eventId")).toList()).containsExactly("first", "first-released");
+    }
+
+    /// A hold the window held back that is STILL in flight when the window closes is announced, by the periodic tick that
+    /// also evicts idle windows (not only when the sweep is called directly), and only once.
+    @Test
+    void scheduledFire_heldInsideTheWindow_stillInFlightAfterIt_isAnnouncedByThePeriodicTick() {
+        var physicalMillis = new AtomicLong(1_000_000L);
+        var h = harnessWithClock(physicalMillis);
+
+        h.aggregator().onScheduledTaskFireHeld(fireHeld("first", 1L));
+        h.aggregator().onScheduledTaskFireReleased(fireReleased("first-released", 1L, "executed"));
+        physicalMillis.addAndGet(10_000L);
+        h.aggregator().onScheduledTaskFireHeld(fireHeld("second", 2L));
+        h.aggregator().evictIdleThrottleWindows();
+
+        assertThat(h.events()).as("inside the window the second hold stays held").hasSize(2);
+
+        physicalMillis.addAndGet(50_000L);
+        h.aggregator().evictIdleThrottleWindows();
+        h.aggregator().evictIdleThrottleWindows();
+
+        assertThat(h.events()).hasSize(3);
+        assertThat(h.events().getLast().details()).containsEntry("eventId", "second");
+
+        h.aggregator().onScheduledTaskFireReleased(fireReleased("second-released", 2L, "unknown"));
+
+        assertThat(h.events()).hasSize(4);
+        assertThat(h.events().getLast().details()).containsEntry("outcome", "unknown");
+    }
+
     /// #1723: a RESTORED nobody was told the UNKNOWN for is not an all-clear.
     @Test
     void scheduledTaskOutcome_restoredWithNoUnknown_isNotAnnounced() {

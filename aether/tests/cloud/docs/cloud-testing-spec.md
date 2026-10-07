@@ -478,7 +478,7 @@ REQ-T08: On suite failure, continue to next suite (do not abort).
 |-------|-----------------|---------------------|
 | `00-smoke` | Yes | None -- uses CLI and HTTP helpers which work via CLUSTER_ENDPOINT |
 | `01-stability` | Partial | Soak tests skipped by default; streaming soak works if timeouts increased |
-| `02-chaos` | Yes | `kill_node` / `start_node` must use SSH-to-bastion-to-private-IP (see section 5) |
+| `02-chaos` | Yes | `kill_node` must use SSH-to-bastion-to-private-IP (see section 5) |
 | `03-scaling` | Yes | Same SSH adaptation for node operations |
 | `04-streaming` | Yes | None |
 | `05-security` | Yes | None -- cert rotation tests work since TLS is enabled |
@@ -532,10 +532,11 @@ REQ-A03: kill_node() in cloud mode:
          Map node-1..5 to private IPs 10.0.1.11..15.
          SSH via bastion: ssh -J root@${BASTION_IP} root@10.0.1.1${node_num} "docker kill aether-node"
          Note: container name is "aether-node" (not "aether-node-1") because each VM runs a single container.
-REQ-A04: start_node() in cloud mode:
-         ssh -J root@${BASTION_IP} root@10.0.1.1${node_num} "docker start aether-node"
+REQ-A04: (withdrawn, #1543) start_node() no longer exists: a killed node is replaced under a fresh id by
+         CTM auto-heal, never relaunched under its old id.
 REQ-A05: restart_all_nodes() in cloud mode:
-         For each node 1..5: SSH via bastion and restart the container.
+         waits on CTM auto-heal and the mgmt-API readiness barriers; it no longer restarts or powers on
+         any node.
 REQ-A06: Provide a node_id_to_ip() mapping function:
          node-1 -> 10.0.1.11, node-2 -> 10.0.1.12, ..., node-5 -> 10.0.1.15
 ```

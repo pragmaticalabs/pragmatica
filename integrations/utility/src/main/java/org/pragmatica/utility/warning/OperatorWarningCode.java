@@ -85,6 +85,13 @@ public enum OperatorWarningCode {
                                    "stream-consumer",
                                    WarningLevel.INFO,
                                    STREAM_CONSUMER_STATE_DIVERGED),
+    /// A slice's declarative stream consumer could not be registered at activation (#1935): the slice activated, but
+    /// that consumer will receive nothing until the cause is fixed and the slice re-activated. CRITICAL: a declared
+    /// consumer that silently never fires is a data-plane gap, not a caveat.
+    STREAM_CONSUMER_NOT_REGISTERED("stream-consumer-not-registered", "stream-subscription", WarningLevel.CRITICAL),
+    /// The resolved counterpart of [#STREAM_CONSUMER_NOT_REGISTERED] (#1935): a consumer that was raised as not
+    /// registered now registers. Raised only for a subject the not-registered warning was raised for.
+    STREAM_CONSUMER_REGISTERED_AGAIN("stream-consumer-registered-again", "stream-subscription", WarningLevel.WARNING),
     /// A stream consumer re-read from an earlier offset because the partition's owner replaced the lineage its cursor
     /// belonged to (#1873, KIP-320): a restart without a WAL, or a failover to a replica that held less, began a new owner
     /// epoch below the consumer's cursor. The records the group processed above that offset are gone from the log and the

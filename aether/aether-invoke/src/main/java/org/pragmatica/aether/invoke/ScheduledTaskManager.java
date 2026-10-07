@@ -10,6 +10,7 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
@@ -89,6 +90,25 @@ public interface ScheduledTaskManager {
     boolean tryClaim(ScheduledTaskKey key);
     /// Releases a claim taken via [#tryClaim].
     void release(ScheduledTaskKey key);
+    /// How long a fire against a REMOTE callee is awaited for its completion before its outcome is recorded as UNKNOWN
+    /// (#1930). The in-flight claim of a task is held for this long, so a SINGLE-mode task whose callee runs for longer than
+    /// the invocation timeout is still not started a second time on the next tick; it is the longest a lost response can keep a task from
+    /// firing. A callee hosted on the firing node is awaited without a bound. Not configurable per task.
+    ///
+    /// Why 10 minutes (a marked guess, CTO-accepted): scheduled tasks are periodic maintenance, so a bound well above the longest
+    /// plausible run keeps a healthy long task from ever reading as unknown, while still ending a lost response. The trade-off is
+    /// deliberate: a lost response (a message the transport dropped, with no node departure to end the wait) means up to this long
+    /// of skipped SINGLE-mode fires (each tick a recorded skipped overlap, reported to the operator once per in-flight fire),
+    /// in exchange for this guarantee, and no stronger one: a SINGLE-mode fire is not started while THIS leader still has the previous
+    /// fire in flight, up to the bound; past the bound the next fire runs; a leader change mid-fire can overlap (in-flight state is per
+    /// node); the `/inject` route takes no claim.
+    TimeSpan DEFAULT_COMPLETION_BOUND = TimeSpan.timeSpan(10).minutes();
+
+    /// The bound the manager awaits a remote fire for (see [#DEFAULT_COMPLETION_BOUND]); the trigger route holds the same
+    /// claim for the same length.
+    default TimeSpan completionBound() {
+        return DEFAULT_COMPLETION_BOUND;
+    }
 
     static ScheduledTaskManager scheduledTaskManager(ScheduledTaskRegistry registry,
                                                      SliceInvoker invoker,
@@ -96,6 +116,41 @@ public interface ScheduledTaskManager {
                                                      Consumer<KVCommand<AetherKey>> stateWriter,
                                                      Function<ScheduledTaskStateKey, Option<ScheduledTaskStateValue>> stateReader,
                                                      LeaderManager leaderManager) {
+        return scheduledTaskManager(registry,
+                                    invoker,
+                                    self,
+                                    stateWriter,
+                                    stateReader,
+                                    leaderManager,
+                                    DEFAULT_COMPLETION_BOUND,
+                                    ScheduledFireObserver.NONE);
+    }
+
+    static ScheduledTaskManager scheduledTaskManager(ScheduledTaskRegistry registry,
+                                                     SliceInvoker invoker,
+                                                     NodeId self,
+                                                     Consumer<KVCommand<AetherKey>> stateWriter,
+                                                     Function<ScheduledTaskStateKey, Option<ScheduledTaskStateValue>> stateReader,
+                                                     LeaderManager leaderManager,
+                                                     TimeSpan completionBound) {
+        return scheduledTaskManager(registry,
+                                    invoker,
+                                    self,
+                                    stateWriter,
+                                    stateReader,
+                                    leaderManager,
+                                    completionBound,
+                                    ScheduledFireObserver.NONE);
+    }
+
+    static ScheduledTaskManager scheduledTaskManager(ScheduledTaskRegistry registry,
+                                                     SliceInvoker invoker,
+                                                     NodeId self,
+                                                     Consumer<KVCommand<AetherKey>> stateWriter,
+                                                     Function<ScheduledTaskStateKey, Option<ScheduledTaskStateValue>> stateReader,
+                                                     LeaderManager leaderManager,
+                                                     TimeSpan completionBound,
+                                                     ScheduledFireObserver observer) {
         var ctxHolder = new AtomicReference<Context>();
         Function<Fsm<SchedulerState, ClusterFsmEvent>, SchedulerState> initialStateFactory = f -> buildContextAndInitialState(ctxHolder,
                                                                                                                               f,
@@ -104,7 +159,9 @@ public interface ScheduledTaskManager {
                                                                                                                               self,
                                                                                                                               stateWriter,
                                                                                                                               stateReader,
-                                                                                                                              leaderManager);
+                                                                                                                              leaderManager,
+                                                                                                                              completionBound,
+                                                                                                                              observer);
         var fsm = Fsm.fsm("scheduled-task", self.id(), initialStateFactory);
         var ctx = ctxHolder.get();
 
@@ -120,8 +177,18 @@ public interface ScheduledTaskManager {
                                                               NodeId self,
                                                               Consumer<KVCommand<AetherKey>> stateWriter,
                                                               Function<ScheduledTaskStateKey, Option<ScheduledTaskStateValue>> stateReader,
-                                                              LeaderManager leaderManager) {
-        var ctx = new Context(fsm, registry, invoker, self, stateWriter, stateReader, leaderManager);
+                                                              LeaderManager leaderManager,
+                                                              TimeSpan completionBound,
+                                                              ScheduledFireObserver observer) {
+        var ctx = new Context(fsm,
+                              registry,
+                              invoker,
+                              self,
+                              stateWriter,
+                              stateReader,
+                              leaderManager,
+                              completionBound,
+                              observer);
 
         ctxHolder.set(ctx);
 
@@ -141,6 +208,13 @@ public interface ScheduledTaskManager {
         /// already decided. Every decision that builds on "the row" (the next fire's prior, a late resolution) builds on
         /// the newer of the two by `fireSeq`, so a row in flight is never overwritten with an older fire's.
         final Map<ScheduledTaskStateKey, ScheduledTaskStateValue> submitted = new ConcurrentHashMap<>();
+        final TimeSpan completionBound;
+        final ScheduledFireObserver observer;
+
+        static final String FIRE_LEADERSHIP_LOST = "leadership-lost";
+
+        /// The fire each claimed key is running (#1930), so a skipped tick can say how long it has been in flight.
+        final Map<ScheduledTaskKey, FireInFlight> fires = new ConcurrentHashMap<>();
         final Map<ScheduledTaskKey, ScheduledFuture<?>> activeTimers = new ConcurrentHashMap<>();
         final Set<ScheduledTaskKey> inFlight = ConcurrentHashMap.newKeySet();
         final AtomicLong quorumSequence = new AtomicLong(0);
@@ -158,7 +232,9 @@ public interface ScheduledTaskManager {
                 NodeId self,
                 Consumer<KVCommand<AetherKey>> stateWriter,
                 Function<ScheduledTaskStateKey, Option<ScheduledTaskStateValue>> stateReader,
-                LeaderManager leaderManager) {
+                LeaderManager leaderManager,
+                TimeSpan completionBound,
+                ScheduledFireObserver observer) {
             this.fsm = fsm;
             this.registry = registry;
             this.invoker = invoker;
@@ -166,6 +242,8 @@ public interface ScheduledTaskManager {
             this.stateWriter = stateWriter;
             this.stateReader = stateReader;
             this.leaderManager = leaderManager;
+            this.completionBound = completionBound;
+            this.observer = observer;
             this.dormant = new Dormant(this);
             this.following = new Following(this);
             this.leading = new Leading(this);
@@ -192,6 +270,105 @@ public interface ScheduledTaskManager {
         private static boolean caughtUp(ScheduledTaskStateValue own, Option<ScheduledTaskStateValue> committed) {
             return committed.map(row -> row.equals(own) || row.fireSeq() > own.fireSeq())
                             .or(false);
+        }
+
+        /// One fire in flight: when it started, whether the operator was told a tick was skipped for it, and how it ended.
+        ///
+        /// `state` is OPEN (no tick skipped yet), HELD (the operator was told) or CLOSED (resolved or given up). A skipped
+        /// tick and the fire's resolution race, so each DECISION and its observer call are one step under this fire's lock:
+        /// a hold is announced only while OPEN, a release only if the fire was HELD, and CLOSED is final. That gives exactly
+        /// one release per hold, never a hold after the close (a hold nothing would ever resolve is a false alarm), and a
+        /// hold always announced before its release.
+        static final class FireInFlight {
+            private static final int OPEN = 0;
+            private static final int HELD = 1;
+            private static final int CLOSED = 2;
+
+            final long startedAt = System.currentTimeMillis();
+            private final AtomicInteger state = new AtomicInteger(OPEN);
+            volatile String outcome = "completed";
+
+            boolean isHeld() {
+                return state.get() == HELD;
+            }
+
+            synchronized Unit hold(Runnable announce) {
+                if (state.compareAndSet(OPEN, HELD)) {
+                    announce.run();
+                }
+
+                return Unit.unit();
+            }
+
+            synchronized Unit close(Runnable announceIfHeld) {
+                if (state.getAndSet(CLOSED) == HELD) {
+                    announceIfHeld.run();
+                }
+
+                return Unit.unit();
+            }
+        }
+
+        /// Takes the in-flight claim of `key` for a new fire, or reports that the previous fire still holds it.
+        boolean claim(ScheduledTaskKey key) {
+            if (!inFlight.add(key)) {
+                return false;
+            }
+
+            fires.put(key, new FireInFlight());
+
+            return true;
+        }
+
+        /// Gives the claim up. When a tick was skipped for this fire and the operator was told, the fire's resolution is
+        /// reported too.
+        void release(ScheduledTaskKey key) {
+            Option.option(fires.remove(key)).onPresent(fire -> fire.close(() -> observer.onFireReleased(key,
+                                                                                                        fire.startedAt,
+                                                                                                        System.currentTimeMillis() - fire.startedAt,
+                                                                                                        fire.outcome)));
+            inFlight.remove(key);
+        }
+
+        /// This node stops running tasks (it lost leadership, or its scheduler stops): the fires it announced as held are told
+        /// to the observer as released with `leadership-lost`, and the records dropped, so an operator is never left with a hold
+        /// nothing will ever resolve (#1930). A fire nobody was told about is not reported. `singleOnly` limits it to
+        /// SINGLE-mode tasks, which are the leader's; ALL-mode fires run on without leadership.
+        void announceFiresLost(boolean singleOnly) {
+            var single = registry.allTasks()
+                                 .stream()
+                                 .filter(task -> task.executionMode() == ExecutionMode.SINGLE)
+                                 .map(task -> ScheduledTaskKey.scheduledTaskKey(task.configSection(),
+                                                                                task.artifact(),
+                                                                                task.methodName()))
+                                 .collect(java.util.stream.Collectors.toSet());
+
+            fires.entrySet()
+                 .stream()
+                 .filter(entry -> entry.getValue()
+                                       .isHeld())
+                 .filter(entry -> !singleOnly || single.contains(entry.getKey()))
+                 .toList()
+                 .stream()
+                 .filter(entry -> fires.remove(entry.getKey(),
+                                               entry.getValue()))
+                 .forEach(entry -> entry.getValue()
+                                        .close(() -> observer.onFireReleased(entry.getKey(),
+                                                                             entry.getValue().startedAt,
+                                                                             System.currentTimeMillis() - entry.getValue().startedAt,
+                                                                             FIRE_LEADERSHIP_LOST)));
+        }
+
+        /// How the fire ended, for the observer to report when the claim is released.
+        void noteOutcome(ScheduledTaskKey key, String outcome) {
+            Option.option(fires.get(key)).onPresent(fire -> fire.outcome = outcome);
+        }
+
+        /// A tick found the claim taken: the first one for a fire tells the observer, the others only the state.
+        void tickSkipped(ScheduledTaskKey key) {
+            Option.option(fires.get(key)).onPresent(fire -> fire.hold(() -> observer.onFireHeld(key,
+                                                                                                fire.startedAt,
+                                                                                                System.currentTimeMillis() - fire.startedAt)));
         }
 
         void submit(ScheduledTaskStateKey key, ScheduledTaskStateValue value) {
@@ -259,6 +436,7 @@ public interface ScheduledTaskManager {
         @Override
         public void onExit() {
             TaskOps.cancelAllTimers(ctx);
+            ctx.announceFiresLost(true);
         }
 
         @Override
@@ -283,6 +461,7 @@ public interface ScheduledTaskManager {
         public void onEntry() {
             log.info("Node {} entering Stopped — all scheduled tasks cancelled", ctx.self);
             TaskOps.cancelAllTimers(ctx);
+            ctx.announceFiresLost(false);
         }
 
         @Override
@@ -412,7 +591,8 @@ public interface ScheduledTaskManager {
                 return;
             }
 
-            if (!ctx.inFlight.add(key)) {
+            if (!ctx.claim(key)) {
+                ctx.tickSkipped(key);
                 recordSkippedOverlap(ctx, task);
 
                 return;
@@ -420,7 +600,7 @@ public interface ScheduledTaskManager {
 
             LongSupplier nextFireAt = () -> System.currentTimeMillis() + interval.millis();
 
-            executeTask(ctx, task, nextFireAt).onResultRun(() -> ctx.inFlight.remove(key));
+            executeTask(ctx, task, nextFireAt).onResultRun(() -> ctx.release(key));
         }
 
         /// ALL-mode runs independently on every node (`Following` + `Leading`), so a shared,
@@ -445,9 +625,10 @@ public interface ScheduledTaskManager {
             var value = ScheduledTaskStateValue.skippedOverlapState(prior, System.currentTimeMillis());
 
             ctx.submit(key, value);
-            log.warn("Scheduled task {}.{} skipped fire: previous execution still in flight",
-                     task.configSection(),
-                     task.methodName().name());
+            // Per tick, so debug: the operator is told once per in-flight fire (ScheduledFireObserver), not once per tick.
+            log.debug("Scheduled task {}.{} skipped fire: previous execution still in flight",
+                      task.configSection(),
+                      task.methodName().name());
         }
 
         private static void startCronTimer(Context ctx, ScheduledTaskKey key, ScheduledTask task) {
@@ -498,7 +679,8 @@ public interface ScheduledTaskManager {
                 return;
             }
 
-            if (!ctx.inFlight.add(key)) {
+            if (!ctx.claim(key)) {
+                ctx.tickSkipped(key);
                 recordSkippedOverlap(ctx, task);
                 scheduleNextCronFire(ctx, key, task, cron);
 
@@ -508,7 +690,7 @@ public interface ScheduledTaskManager {
             LongSupplier nextFireAt = () -> nextCronFireAt(cron);
 
             executeTask(ctx, task, nextFireAt).onResultRun(() -> {
-                ctx.inFlight.remove(key);
+                ctx.release(key);
                 if (ctx.activeTimers.containsKey(key)) {
                     scheduleNextCronFire(ctx, key, task, cron);
                 }
@@ -537,10 +719,17 @@ public interface ScheduledTaskManager {
 
         private static Promise<Unit> executeTask(Context ctx, ScheduledTask task, LongSupplier nextFireAtSupplier) {
             var firedAt = System.currentTimeMillis();
+            var key = ScheduledTaskKey.scheduledTaskKey(task.configSection(), task.artifact(), task.methodName());
 
             return ctx.invoker.invokeAwaitingCompletion(task.artifact(),
                                                         task.methodName(),
-                                                        Unit.unit())
+                                                        Unit.unit(),
+                                                        ctx.completionBound)
+                              .onSuccess(_ -> ctx.noteOutcome(key, "executed"))
+                              .onFailure(cause -> ctx.noteOutcome(key,
+                                                                  cause instanceof SliceInvokerError.CompletionUnknown
+                                                                  ? "unknown"
+                                                                  : "failed"))
                               .onSuccess(_ -> writeSuccessState(ctx,
                                                                 task,
                                                                 nextFireAtSupplier.getAsLong(),
@@ -847,13 +1036,18 @@ public interface ScheduledTaskManager {
         }
 
         @Override
+        public TimeSpan completionBound() {
+            return ctx.completionBound;
+        }
+
+        @Override
         public boolean tryClaim(ScheduledTaskKey key) {
-            return ctx.inFlight.add(key);
+            return ctx.claim(key);
         }
 
         @Override
         public void release(ScheduledTaskKey key) {
-            ctx.inFlight.remove(key);
+            ctx.release(key);
         }
 
         @Override
