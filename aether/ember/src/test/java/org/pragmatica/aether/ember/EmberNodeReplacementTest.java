@@ -222,6 +222,8 @@ class EmberNodeReplacementTest {
         awaitCondition("the old worker is gone", () -> cluster.getNode(worker.id()).isEmpty());
         assertThat(cluster.getNode(record.replacement().id()).isPresent()).as("the replacement runs").isTrue();
         assertThat(installedVoters(awaitLeader())).as("the replacement is a worker, not a voter").doesNotContain(record.replacement());
+        assertThat(awaitLeader().membershipFsm().memberDescriptor(record.replacement()).map(descriptor -> descriptor.role()).or("none"))
+            .as("the replacement advertises the worker role").isEqualTo("worker");
     }
 
     /// #1543 E2, EXTERNAL mode: the operator names a fresh id and starts that core itself. The leader provisions nothing;

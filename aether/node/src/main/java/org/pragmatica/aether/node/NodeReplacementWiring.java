@@ -114,6 +114,26 @@ public final class NodeReplacementWiring {
                                                               .equals(in.self()));
     }
 
+    /// What is committed in the same transaction as an EXTERNAL core replacement's record: the core-admission intent the
+    /// operator-started node is admitted by (the same reservation the leader writes when it provisions a core itself), so
+    /// there is no window with a pairing and no intent, or the reverse. A CTM replacement is admitted by its own provisioning
+    /// reservation, and a worker needs no core admission, so both commit the record alone.
+    static List<KVCommand.Mutation<AetherKey, AetherValue>> admissionMutations(boolean external,
+                                                                               String role,
+                                                                               NodeId replacement,
+                                                                               String source) {
+        if (!external || !"core".equalsIgnoreCase(role)) {
+            return List.of();
+        }
+
+        return List.of(new KVCommand.Mutation<>(new AetherKey.CapacityReservationKey(replacement),
+                                                Option.<AetherValue> none(),
+                                                Option.<AetherValue> some(new AetherValue.CapacityReservationValue(source,
+                                                                                                                   "",
+                                                                                                                   "core",
+                                                                                                                   AetherValue.CapacityReservationPhase.DISPATCHED))));
+    }
+
     private static Promise<Boolean> cas(Inputs in,
                                         NodeId original,
                                         Option<NodeReplacementValue> expected,
@@ -372,9 +392,7 @@ public final class NodeReplacementWiring {
                                                   "",
                                                   0L);
             var expected = in.index().recordFor(original);
-            var alongside = external && "core".equalsIgnoreCase(role)
-                            ? List.<KVCommand.Mutation<AetherKey, AetherValue>> of(admissionIntent(replacement, source))
-                            : List.<KVCommand.Mutation<AetherKey, AetherValue>> of();
+            var alongside = admissionMutations(external, role, replacement, source);
 
             return cas(in, original, expected, record, alongside).flatMap(accepted -> {
                 if (!accepted) {
@@ -396,16 +414,11 @@ public final class NodeReplacementWiring {
             return member || paired || reserved;
         }
 
-        /// The committed core-admission intent the externally started replacement is admitted by: the same
-        /// reservation the leader writes when it provisions a core itself, committed in the same transaction as the
-        /// record so there is no window with a pairing and no intent, or the reverse.
-        private static KVCommand.Mutation<AetherKey, AetherValue> admissionIntent(NodeId replacement, String source) {
-            return new KVCommand.Mutation<>(new AetherKey.CapacityReservationKey(replacement),
-                                            Option.none(),
-                                            Option.some(new AetherValue.CapacityReservationValue(source,
-                                                                                                 "",
-                                                                                                 "core",
-                                                                                                 AetherValue.CapacityReservationPhase.DISPATCHED)));
+        private static List<KVCommand.Mutation<AetherKey, AetherValue>> admissionMutations(boolean external,
+                                                                                           String role,
+                                                                                           NodeId replacement,
+                                                                                           String source) {
+            return NodeReplacementWiring.admissionMutations(external, role, replacement, source);
         }
 
         @Override
