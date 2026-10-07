@@ -3779,8 +3779,8 @@ restart_all_nodes() {
     # lets the new leader restore (`[backup] restore = auto`). The compose project is never `down`ed: the remote volume is
     # external, and `--remove-orphans` stays off (clusters A and B share one default compose project).
     local prefix="${CLUSTER_NAME:-aether-b-node-}"
-    local compose="${COMPOSE_FILE:-${SCRIPT_DIR:-/tmp}/docker-compose-b.yml}"
-    if [ ! -f "$compose" ] || [ "${prefix}" != "aether-b-node-" ]; then
+    # The compose file is on the DOCKER HOST (`~/docker-compose-b.yml`), which is not this machine under --env remote: no local test.
+    if [ "${prefix}" != "aether-b-node-" ]; then
         log_fail "restart_all_nodes: no compose project for cluster name '${prefix}' (only aether-b-node- is restarted onto fresh ids); relaunching exited containers under their old NodeIds is not supported"
         return 1
     fi

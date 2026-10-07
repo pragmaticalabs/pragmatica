@@ -141,6 +141,14 @@ cmp -s "$mut" "${INTEG_DIR}/lib/cluster.sh" && fail "F7 mutation did not apply" 
     else fail "F7a the same-id mutation was not visible: $(grep -c AETHER_B_N1 "${WORK}/mutids/cmds")"; fi
 }
 
+# F8 (found by the first real bigboy run): under --env remote the compose file is on the DOCKER HOST, so restart_all_nodes must
+# not require it on THIS machine. The gate before the restart refused with "no compose project" and the whole suite went red.
+body_gate_only() { _compose_b_restart_onto_fresh_ids() { echo REACHED > "$D/reached"; return 1; }; restart_all_nodes; echo "rc=$?" >> "$D/verdict"; }
+scenario gate body_gate_only COMPOSE_FILE="${WORK}/not-on-this-machine.yml"
+if [ "$(cat "${WORK}/gate/reached" 2>/dev/null)" = "REACHED" ] && ! grep -q 'no compose project' "${WORK}/gate/out"; then
+    ok "F8 restart_all_nodes reaches the fresh-id restart although the compose file is not on this machine (remote docker host)"
+else fail "F8 the restart gate refused: $(head -c 300 "${WORK}/gate/out")"; fi
+
 echo "  passed: ${PASS}"
 echo "  failed: ${FAIL}"
 [ "$FAIL" -eq 0 ]
