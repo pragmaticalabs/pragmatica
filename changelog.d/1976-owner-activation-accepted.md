@@ -5,3 +5,7 @@
 - The commit now fails unless THIS write's own transaction result is accepted. A refused commit does not latch, and the
   existing re-drive retries it with backoff. After 5 consecutive refusals of one partition the operator gets one
   `LineageRefused` block (a CRITICAL log line and the partition status read); when the commit lands, one `RECOVERED` line.
+- The refusal count and the reported block belong to one tenure: they end when the commit lands, when this node stops
+  claiming the partition, or on quorum loss (the block is told as cleared), so a second stuck tenure raises again. A
+  commit that fails for want of a committed leader is a quorum condition with its own event and never counts toward the
+  per-partition alarm.
