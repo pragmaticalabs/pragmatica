@@ -215,8 +215,10 @@ class StreamCrashDurabilityTest {
     void blueprintRemoval_doesNotReloadTheSlice_noSecondStreamRingOpensItsWal() throws IOException {
         var leaderPort = cluster.getLeaderManagementPort().or(anyMgmtPort());
 
-        assertThat(walDirectoryNames()).as("control: the qualified ring's WAL directory exists before the removal").contains(STREAM_NAME);
-        assertThat(walDirectoryNames()).as("control: no bare-alias ring exists before the removal").doesNotContain(BARE_ALIAS);
+        assertThat(walDirectoryNames()).as("control: the qualified ring's WAL directory exists before the removal")
+                                       .anyMatch(name -> isRingDirectoryOf(name, STREAM_NAME));
+        assertThat(walDirectoryNames()).as("control: no bare-alias ring exists before the removal")
+                                       .noneMatch(name -> isRingDirectoryOf(name, BARE_ALIAS));
 
         var removal = httpDelete(leaderPort, "/api/v1/blueprints/" + BLUEPRINT_ID);
         var seen = new java.util.TreeSet<String>();
@@ -229,7 +231,7 @@ class StreamCrashDurabilityTest {
 
         LOG.log(System.Logger.Level.INFO, "BLUEPRINT-REMOVAL removal={0} walDirectoriesSeenAfterRemoval={1}", removal, seen);
         assertThat(seen).as("WAL directories seen for %s after the blueprint removal (removal answered %s): a bare-alias ring is a second activation", OBSERVE_AFTER_REMOVAL, removal)
-                        .doesNotContain(BARE_ALIAS);
+                        .noneMatch(name -> isRingDirectoryOf(name, BARE_ALIAS));
     }
 
     private java.util.Set<String> walDirectoryNames() throws IOException {
@@ -312,7 +314,13 @@ class StreamCrashDurabilityTest {
     private static boolean isTestEventsWal(Path walFile) {
         var parent = walFile.getParent();
 
-        return parent != null && parent.getFileName().toString().equals(STREAM_NAME);
+        return parent != null && isRingDirectoryOf(parent.getFileName().toString(), STREAM_NAME);
+    }
+
+    /// The WAL directory of a ring is `<engine key>[@<stream incarnation>]` (#1567): a stream with a committed incarnation keeps its
+    /// log under the suffixed name, so a stream re-created after a KV wipe never reopens the old life's WAL.
+    private static boolean isRingDirectoryOf(String directoryName, String engineKey) {
+        return directoryName.equals(engineKey) || directoryName.startsWith(engineKey + "@");
     }
 
     private static List<Path> walFiles(Path base) throws IOException {
