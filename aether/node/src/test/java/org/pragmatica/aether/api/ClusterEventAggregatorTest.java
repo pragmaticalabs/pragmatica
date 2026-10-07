@@ -2082,7 +2082,9 @@ class ClusterEventAggregatorTest {
             h.aggregator().onOperatorWarning(OperatorWarning.operatorWarning(code, "x", "m"));
         }
         assertThat(h.events()).as("one event per non-recovery code, the repeat throttled")
-                              .hasSize(OperatorWarningCode.values().length - 2);
+                              .hasSize((int) java.util.Arrays.stream(OperatorWarningCode.values())
+                                                             .filter(c -> c.recoveryOf().isEmpty())
+                                                             .count());
     }
 
     /// #752: a detach-found divergence is a POINT event with no recovery. Sharing the pass-found code, it opened a
