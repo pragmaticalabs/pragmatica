@@ -15,6 +15,11 @@
  */
 package org.pragmatica.utility.warning;
 
+import java.util.Arrays;
+
+import org.pragmatica.lang.Option;
+
+
 /// The single catalogue of operator-warning codes (#1574).
 ///
 /// Operators identify a warning in the cluster event log by `code`, so the kebab string is part of the
@@ -65,6 +70,38 @@ public enum OperatorWarningCode {
     /// reachable (#1835): no QUIC handshake, SWIM ALIVE or health evidence. It never joined, so it did not
     /// fail; NODE_FAILED and the CRITICAL node-health alert are reserved for members that had.
     NODE_NEVER_JOINED("node-never-joined", "membership", WarningLevel.WARNING),
+    /// A declarative stream consumer this node held as attached had no subscription in the consumer runtime (#752):
+    /// found by a reconcile pass, which forgets and re-attaches it. The partition was not consumed in between while this node reported it attached.
+    STREAM_CONSUMER_STATE_DIVERGED("stream-consumer-state-diverged", "stream-consumer", WarningLevel.WARNING),
+    /// A detach or abandon of a declarative stream consumer found no subscription in the consumer runtime (#752): delivery
+    /// had already stopped and no final cursor flush was made. A point event with the state already reconciled, so it has no
+    /// recovery and, being its own code, opens no record for [#STREAM_CONSUMER_STATE_REPAIRED] and shares no throttle
+    /// window with [#STREAM_CONSUMER_STATE_DIVERGED].
+    STREAM_CONSUMER_DETACH_FOUND_NOTHING("stream-consumer-detach-found-nothing", "stream-consumer", WarningLevel.WARNING),
+    /// The recovery of a [#STREAM_CONSUMER_STATE_DIVERGED] that a reconcile pass found (#752), same subject: the
+    /// consumer is attached again, or the partition is no longer assigned to this node. A detach-found divergence is
+    /// [#STREAM_CONSUMER_DETACH_FOUND_NOTHING], a point event with no recovery.
+    STREAM_CONSUMER_STATE_REPAIRED("stream-consumer-state-repaired",
+                                   "stream-consumer",
+                                   WarningLevel.INFO,
+                                   STREAM_CONSUMER_STATE_DIVERGED),
+    /// A slice's declarative stream consumer could not be registered at activation (#1935): the slice activated, but
+    /// that consumer will receive nothing until the cause is fixed and the slice re-activated. CRITICAL: a declared
+    /// consumer that silently never fires is a data-plane gap, not a caveat.
+    STREAM_CONSUMER_NOT_REGISTERED("stream-consumer-not-registered", "stream-subscription", WarningLevel.CRITICAL),
+    /// The resolved counterpart of [#STREAM_CONSUMER_NOT_REGISTERED] (#1935): a consumer that was raised as not
+    /// registered now registers. Raised only for a subject the not-registered warning was raised for. INFO, paired with
+    /// [#STREAM_CONSUMER_NOT_REGISTERED]: the event layer publishes it only after a published not-registered event for the
+    /// same subject (#752 mechanism).
+    STREAM_CONSUMER_REGISTERED_AGAIN("stream-consumer-registered-again",
+                                     "stream-subscription",
+                                     WarningLevel.INFO,
+                                     STREAM_CONSUMER_NOT_REGISTERED),
+    /// A stream consumer re-read from an earlier offset because the partition's owner replaced the lineage its cursor
+    /// belonged to (#1873, KIP-320): a restart without a WAL, or a failover to a replica that held less, began a new owner
+    /// epoch below the consumer's cursor. The records the group processed above that offset are gone from the log and the
+    /// records now at those offsets are delivered; the message names the group, the partition and the offsets.
+    STREAM_CONSUMER_REWOUND("stream-consumer-rewound", "stream-consumer", WarningLevel.WARNING),
     /// A partition's owner promotion is refused because a peer ANSWERED its watermark probe with a page cut before its
     /// first event: that event alone exceeds the peer's read cap (#1431). Not an unreachable peer; the operator raises
     /// the peer's `maxReadResponseBytes`. The message names the partition, the peer and the offset.
@@ -72,10 +109,18 @@ public enum OperatorWarningCode {
     private final String code;
     private final String subsystem;
     private final WarningLevel level;
+    private final Option<OperatorWarningCode> recoveryOf;
     OperatorWarningCode(String code, String subsystem, WarningLevel level) {
         this.code = code;
         this.subsystem = subsystem;
         this.level = level;
+        this.recoveryOf = Option.none();
+    }
+    OperatorWarningCode(String code, String subsystem, WarningLevel level, OperatorWarningCode recoveryOf) {
+        this.code = code;
+        this.subsystem = subsystem;
+        this.level = level;
+        this.recoveryOf = Option.some(recoveryOf);
     }
     /// The stable kebab-case identifier of the condition.
     public String code() {
@@ -86,5 +131,15 @@ public enum OperatorWarningCode {
     }
     public WarningLevel level() {
         return level;
+    }
+    /// The condition this code is the recovery of, when it is one. A recovery is only meaningful for a subject whose
+    /// condition an operator has seen, so the event layer publishes it exactly then (#752).
+    public Option<OperatorWarningCode> recoveryOf() {
+        return recoveryOf;
+    }
+    /// Whether some other code is the recovery of this one.
+    public boolean hasRecovery() {
+        return Arrays.stream(values()).anyMatch(other -> other.recoveryOf.filter(this::equals)
+                                                                         .isPresent());
     }
 }

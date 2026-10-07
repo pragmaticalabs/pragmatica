@@ -178,6 +178,11 @@ public interface ClusterTopologyManager extends TopologyManager {
         return org.pragmatica.lang.Unit.unit();
     }
 
+    /// #1543: the committed replacement pairings, read by worker surplus selection.
+    default org.pragmatica.lang.Unit setNodeReplacements(NodeReplacementIndex index) {
+        return org.pragmatica.lang.Unit.unit();
+    }
+
     Promise<Unit> provisionPlacementNode(org.pragmatica.aether.slice.kvstore.AetherValue.CommunityPlacementOperationValue operation);
 
     Promise<Unit> drainNode(NodeId targetNodeId, DrainReason reason);

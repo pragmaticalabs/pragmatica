@@ -278,7 +278,8 @@ _run_with_timeout_kill() {
     _run_with_timeout "$secs" "$@"
 }
 
-# Reap a background job: wait up to <seconds> for it to end, then kill it and its children (TERM, then KILL). Never fails.
+# Reap a background job: wait up to <seconds> for it to end, then kill it and its whole process tree (TERM, then KILL).
+# Never fails.
 # Usage: reap_bg_job <pid> [seconds]
 reap_bg_job() {
     local pid="${1:-}" bound="${2:-10}" waited=0
@@ -291,11 +292,23 @@ reap_bg_job() {
         pkill -TERM -P "$pid" 2>/dev/null || true
         kill -TERM "$pid" 2>/dev/null || true
         sleep 1
-        pkill -KILL -P "$pid" 2>/dev/null || true
-        kill -KILL "$pid" 2>/dev/null || true
+        _kill_tree "$pid"
     fi
     wait "$pid" 2>/dev/null || true
     return 0
+}
+
+# Kill <pid> and every descendant with SIGKILL (#1886). Each process is STOPPED before its children are listed, so it
+# cannot fork a replacement between the listing and its own kill, and descendants are killed before their parent, so
+# none is orphaned out of reach of `-P`. Killing the job first left a child it had just respawned, and killing only its
+# direct children left grandchildren; either survived the reap and outlived the suite.
+_kill_tree() {
+    local p="$1" c
+    kill -STOP "$p" 2>/dev/null || return 0
+    for c in $(pgrep -P "$p" 2>/dev/null); do
+        _kill_tree "$c"
+    done
+    kill -KILL "$p" 2>/dev/null || true
 }
 
 # A run-level warning: logged, AND recorded in RUN_WARNINGS_FILE (exported by run-tests.sh) so print_summary, the end-of-run
@@ -459,24 +472,6 @@ _fork_bounded() {
 # same API key — a successful read from the wrong subject.
 _live_endpoint_sticky_file() {
     printf '%s/aether-live-endpoint-%s-%s' "${TMPDIR:-/tmp}" "${CLUSTER_ID:-default}" "${AETHER_RUN_ID:-norun}"
-}
-# VMs THIS run deleted through cloud_kill_vm: one `<node id> <hetzner server id>` line each, keyed by AETHER_RUN_ID (removed on
-# exit by run-tests.sh). A deleted VM's address no longer resolves, so a later cloud_server_id on its node id is rc 3 (unknown);
-# without this record a cleanup that asks to revive "the node I killed" got a counted FAIL for a deletion the harness made.
-_cloud_deleted_vms_file() {
-    printf '%s/aether-deleted-vms-%s' "${TMPDIR:-/tmp}" "${AETHER_RUN_ID:-norun}"
-}
-# <node id> <server id>
-_cloud_record_deleted_vm() {
-    printf '%s %s\n' "$1" "${2:-?}" >> "$(_cloud_deleted_vms_file)" 2>/dev/null || true
-    return 0
-}
-# prints the server id (or ?) and returns 0 when this run deleted <node id>; returns 1 otherwise
-_cloud_deleted_vm_server() {
-    local sid
-    sid=$(awk -v n="$1" '$1 == n { print $2; found = 1 } END { exit !found }' "$(_cloud_deleted_vms_file)" 2>/dev/null | tail -1) || return 1
-    [ -n "$sid" ] || return 1
-    printf '%s' "$sid"
 }
 _pin_dead_file() {
     printf '%s/aether-pin-dead-%s-%s' "${TMPDIR:-/tmp}" "${CLUSTER_ID:-default}" "${AETHER_RUN_ID:-norun}"
@@ -1411,7 +1406,7 @@ ENV_TYPE="${ENV_TYPE:-docker}"
 export ENV_TYPE
 CLOUD_MODE="${CLOUD_MODE:-false}"   # backward compat: true maps to ENV_TYPE=cloud
 if [ "$CLOUD_MODE" = "true" ]; then ENV_TYPE="cloud"; fi
-# Sync the reverse direction: kill_node, start_node, etc. still branch on CLOUD_MODE.
+# Sync the reverse direction: kill_node, restart_all_nodes, etc. still branch on CLOUD_MODE.
 if [ "$ENV_TYPE" = "cloud" ]; then CLOUD_MODE="true"; fi
 export CLOUD_MODE
 # BASTION_IP is retained for backward-compat env templates but ignored under

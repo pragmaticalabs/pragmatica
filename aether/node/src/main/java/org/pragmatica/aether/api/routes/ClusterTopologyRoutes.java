@@ -13,6 +13,7 @@ import java.util.Set;
 import java.util.function.Supplier;
 import java.util.stream.Stream;
 
+import org.pragmatica.aether.api.ManagementServerError;
 import org.pragmatica.aether.worker.isolation.CoreAbsenceSnapshot;
 import org.pragmatica.aether.api.ManagementApiResponses.AutoHealStatusResponse;
 import org.pragmatica.aether.api.ManagementApiResponses.AutoHealToggleResponse;
@@ -35,7 +36,6 @@ import org.pragmatica.aether.deployment.membership.fsm.MembershipFsm;
 import org.pragmatica.aether.deployment.membership.ntt.QuorumLossSnapshot;
 import org.pragmatica.aether.deployment.membership.view.MembershipView;
 import org.pragmatica.lang.Cause;
-import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.aether.management.route.ManagementRoute;
 import org.pragmatica.aether.node.ManageableNode;
 import org.pragmatica.aether.slice.kvstore.AetherKey.ActivationDirectiveKey;
@@ -152,7 +152,7 @@ public final class ClusterTopologyRoutes implements RouteSource {
                            .clusterTopologyManager();
     }
 
-    private static final Cause CTM_UNAVAILABLE = Causes.cause("Cluster topology manager not available on this node (not the leader, or node not yet activated)");
+    private static final Cause CTM_UNAVAILABLE = new ManagementServerError.ServiceUnavailable("Cluster topology manager not available on this node (not the leader, or node not yet activated)");
 
     private GovernorsResponse buildGovernorsResponse() {
         var node = nodeSupplier.get();
