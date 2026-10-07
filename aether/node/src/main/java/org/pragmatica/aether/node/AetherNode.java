@@ -4860,6 +4860,7 @@ public interface AetherNode extends ManageableNode {
                                                                                                                       membershipFsmRef::get).stream()
                                                                                                                      .filter(coreAdmission::isAllowed)
                                                                                                                      .collect(Collectors.toUnmodifiableSet()),
+                                                                                            stableCdmReadyNodesSupplier,
                                                                                             id -> clusterNode.topologyManager()
                                                                                                              .get(id)
                                                                                                              .flatMap(info -> Option.option(info.labels()

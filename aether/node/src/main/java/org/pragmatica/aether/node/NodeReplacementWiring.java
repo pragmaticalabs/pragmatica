@@ -11,6 +11,7 @@ import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.BooleanSupplier;
 import java.util.function.Function;
+import java.util.stream.Stream;
 import java.util.function.LongSupplier;
 import java.util.function.Predicate;
 import java.util.function.Supplier;
@@ -30,6 +31,7 @@ import org.pragmatica.aether.deployment.cluster.NodeReplacementService.Refusal;
 import org.pragmatica.aether.deployment.cluster.ProvisionDisposition;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsm;
 import org.pragmatica.aether.config.cluster.NodeRole;
+import org.pragmatica.aether.environment.SourceName;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.NodeReplacementKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
@@ -80,6 +82,7 @@ public final class NodeReplacementWiring {
                          Supplier<Option<VoterConfiguration>> installed,
                          Supplier<Option<VoterConfiguration>> settled,
                          Supplier<Set<NodeId>> readyAdmitted,
+                         Supplier<Set<NodeId>> readyAll,
                          Function<NodeId, String> version,
                          ClusterTopologyManager ctm,
                          Function<NodeId, Promise<DrainOutcome>> drain,
@@ -115,6 +118,14 @@ public final class NodeReplacementWiring {
                                         NodeId original,
                                         Option<NodeReplacementValue> expected,
                                         NodeReplacementValue next) {
+        return cas(in, original, expected, next, List.of());
+    }
+
+    private static Promise<Boolean> cas(Inputs in,
+                                        NodeId original,
+                                        Option<NodeReplacementValue> expected,
+                                        NodeReplacementValue next,
+                                        List<KVCommand.Mutation<AetherKey, AetherValue>> alongside) {
         return leaderValue(in).fold(() -> Promise.success(false),
                                     leader -> {
                                         var key = new NodeReplacementKey(original);
@@ -126,7 +137,9 @@ public final class NodeReplacementWiring {
                                                                                                               id,
                                                                                                               leader,
                                                                                                               List.of(),
-                                                                                                              List.of(mutation));
+                                                                                                              Stream.concat(Stream.of(mutation),
+                                                                                                                            alongside.stream())
+                                                                                                                    .toList());
 
                                         return in.apply()
                                                  .apply(List.of(command))
@@ -190,7 +203,9 @@ public final class NodeReplacementWiring {
                                                   .get()
                                                   .filter(current::equals))
                             .isPresent();
-            var ready = in.readyAdmitted().get();
+            var ready = "core".equalsIgnoreCase(record.role())
+                        ? in.readyAdmitted().get()
+                        : in.readyAll().get();
             var oldAlive = alive(oldState);
 
             return new Observation(in.clock().getAsLong(),
@@ -238,7 +253,8 @@ public final class NodeReplacementWiring {
                      .provisionReplacement(record.replacement(),
                                            Option.none(),
                                            Set.copyOf(members),
-                                           NodeRole.CORE)
+                                           NodeRole.nodeRole(record.role()).or(NodeRole.CORE),
+                                           SourceName.sourceNameOrDefault(record.source()))
                      .<EffectResult> map(disposition -> switch (disposition) {
                 case ProvisionDisposition.Dispatched _ -> new EffectResult.Done();
                 case ProvisionDisposition.Deferred deferred -> new EffectResult.Deferred("provisioning deferred: " + deferred.reason());
@@ -294,6 +310,15 @@ public final class NodeReplacementWiring {
 
         @Override
         public Promise<NodeReplacementValue> begin(NodeId original, String targetVersion) {
+            return start(original, Option.none(), targetVersion);
+        }
+
+        @Override
+        public Promise<NodeReplacementValue> beginExternal(NodeId original, NodeId replacement, String targetVersion) {
+            return start(original, Option.some(replacement), targetVersion);
+        }
+
+        private Promise<NodeReplacementValue> start(NodeId original, Option<NodeId> chosen, String targetVersion) {
             if (!in.isLeader().getAsBoolean()) {
                 return new Refusal.NotLeader().promise();
             }
@@ -309,7 +334,7 @@ public final class NodeReplacementWiring {
 
             var role = descriptor.map(d -> d.role()).or("core");
 
-            if (!"core".equalsIgnoreCase(role)) {
+            if (!"core".equalsIgnoreCase(role) && !"worker".equalsIgnoreCase(role)) {
                 return new Refusal.RoleNotSupported(original, role).promise();
             }
 
@@ -324,21 +349,34 @@ public final class NodeReplacementWiring {
                 return new Refusal.AlreadyReplacing(live.get().getKey()).promise();
             }
 
-            var replacement = NodeId.randomNodeId(in.idPrefix().get());
+            var taken = chosen.filter(id -> isTaken(fsm, id));
+
+            if (taken.isPresent()) {
+                return new Refusal.ReplacementIdInUse(taken.unwrap()).promise();
+            }
+
+            var replacement = chosen.or(() -> NodeId.randomNodeId(in.idPrefix().get()));
+            var external = chosen.isPresent();
             var now = in.clock().getAsLong();
+            var source = descriptor.map(d -> d.source()).or("");
             var record = new NodeReplacementValue(replacement,
-                                                  "core",
+                                                  role.toLowerCase(),
                                                   NodeReplacementPhase.PROVISIONING,
                                                   now + in.timings().provisioningMs(),
-                                                  descriptor.map(d -> d.source()).or(""),
+                                                  source,
                                                   targetVersion,
-                                                  NodeReplacementValue.MODE_CTM,
+                                                  external
+                                                  ? NodeReplacementValue.MODE_EXTERNAL
+                                                  : NodeReplacementValue.MODE_CTM,
                                                   0,
                                                   "",
                                                   0L);
             var expected = in.index().recordFor(original);
+            var alongside = external && "core".equalsIgnoreCase(role)
+                            ? List.<KVCommand.Mutation<AetherKey, AetherValue>> of(admissionIntent(replacement, source))
+                            : List.<KVCommand.Mutation<AetherKey, AetherValue>> of();
 
-            return cas(in, original, expected, record).flatMap(accepted -> {
+            return cas(in, original, expected, record, alongside).flatMap(accepted -> {
                 if (!accepted) {
                     return new Refusal.Conflict(original).<NodeReplacementValue> promise();
                 }
@@ -347,6 +385,27 @@ public final class NodeReplacementWiring {
 
                 return Promise.success(record);
             });
+        }
+
+        private boolean isTaken(MembershipFsm fsm, NodeId id) {
+            var member = Option.option(fsm).map(f -> f.memberStates()
+                                                      .containsKey(id)).or(false);
+            var paired = in.index().all().values().stream().anyMatch(value -> id.equals(value.replacement()));
+            var reserved = in.kvStore().get(new AetherKey.CapacityReservationKey(id)).isPresent();
+
+            return member || paired || reserved;
+        }
+
+        /// The committed core-admission intent the externally started replacement is admitted by: the same
+        /// reservation the leader writes when it provisions a core itself, committed in the same transaction as the
+        /// record so there is no window with a pairing and no intent, or the reverse.
+        private static KVCommand.Mutation<AetherKey, AetherValue> admissionIntent(NodeId replacement, String source) {
+            return new KVCommand.Mutation<>(new AetherKey.CapacityReservationKey(replacement),
+                                            Option.none(),
+                                            Option.some(new AetherValue.CapacityReservationValue(source,
+                                                                                                 "",
+                                                                                                 "core",
+                                                                                                 AetherValue.CapacityReservationPhase.DISPATCHED)));
         }
 
         @Override

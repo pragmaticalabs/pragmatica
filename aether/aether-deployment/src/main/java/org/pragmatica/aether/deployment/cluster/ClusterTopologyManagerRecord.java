@@ -774,11 +774,12 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     /// ACTUAL inventory with, so it MUST be the name the desired-topology entry was published
     /// under. The worker path passes `entry.sourceName()` verbatim; the core auto-heal path above
     /// resolves it from the persisted cluster config.
-    private Promise<ProvisionDisposition> provisionReplacement(NodeId newNodeId,
-                                                               Option<NodeId> failedPeer,
-                                                               Set<NodeId> clusterMembers,
-                                                               NodeRole intendedRole,
-                                                               SourceName sourceName) {
+    @Override
+    public Promise<ProvisionDisposition> provisionReplacement(NodeId newNodeId,
+                                                              Option<NodeId> failedPeer,
+                                                              Set<NodeId> clusterMembers,
+                                                              NodeRole intendedRole,
+                                                              SourceName sourceName) {
         if (intendedRole == NodeRole.CORE && (failedPeer.filter(newNodeId::equals).isPresent() || clusterMembers.contains(newNodeId) || genesisVoters.get()
                                                                                                                                                      .get()
                                                                                                                                                      .contains(newNodeId))) {

@@ -151,6 +151,16 @@ public interface ClusterTopologyManager extends TopologyManager {
                                                        Set<NodeId> clusterMembers,
                                                        NodeRole intendedRole);
 
+    /// The source-explicit form: the replacement is stamped with `sourceName`, the source the node it replaces came from
+    /// (#1543 worker replacement). Implementations that do not distinguish sources ignore it.
+    default Promise<ProvisionDisposition> provisionReplacement(NodeId newNodeId,
+                                                               Option<NodeId> failedPeer,
+                                                               Set<NodeId> clusterMembers,
+                                                               NodeRole intendedRole,
+                                                               org.pragmatica.aether.environment.SourceName sourceName) {
+        return provisionReplacement(newNodeId, failedPeer, clusterMembers, intendedRole);
+    }
+
     /// Membership v2 / E2 — drain a specific node. Targets either the operator/scale-down
     /// flow or the overprovision-drain path. `reason` is observability-only at this layer except for
     /// [`DrainReason#isSurplusTrim`], which makes the grace-terminate backstop re-check before reaping
