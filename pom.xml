@@ -78,6 +78,8 @@
         <!-- A module the Central plugin is not bound to (every module that has not opted in) must not run the default deploy
              either (#1988). The Central plugin itself ignores this property: its own skipPublishing decides. -->
         <maven.deploy.skip>true</maven.deploy.skip>
+        <!-- The phase the Central plugin's publish goal runs in; `none` outside the release profile (see its <pluginManagement> entry). -->
+        <central.publish.phase>none</central.publish.phase>
 
         <!-- Dependencies -->
         <netty.version>4.2.18.Final</netty.version>
@@ -648,6 +650,21 @@
                         -->
                         <skipPublishing>true</skipPublishing>
                     </configuration>
+                    <executions>
+                        <!--
+                            The Central plugin's `publish` goal is injected into the deploy phase of every module that declares the plugin.
+                            It acts ONLY in a release build: without -DperformRelease=true the phase is `none`, so a plain `mvn deploy`
+                            uploads nothing to Central, unsigned or otherwise (v-1997: it used to send an unsigned bundle, and with
+                            autoPublish that is an irreversible publish from a casual command).
+                        -->
+                        <execution>
+                            <id>injected-central-publishing</id>
+                            <phase>${central.publish.phase}</phase>
+                            <goals>
+                                <goal>publish</goal>
+                            </goals>
+                        </execution>
+                    </executions>
                 </plugin>
                 <plugin>
                     <groupId>org.apache.maven.plugins</groupId>
@@ -757,6 +774,9 @@
                     <value>true</value>
                 </property>
             </activation>
+            <properties>
+                <central.publish.phase>deploy</central.publish.phase>
+            </properties>
             <build>
                 <plugins>
                     <plugin>
@@ -789,10 +809,20 @@
                                     <goal>run</goal>
                                 </goals>
                                 <configuration>
+                                    <!-- The gate's lines are INFO output, which `mvn -q` (scripts/release.sh) hides; the failure message is
+                                         an ERROR and is not hidden, so it carries them. -->
                                     <target>
-                                        <exec executable="python3" failonerror="true" dir="${project.basedir}">
+                                        <exec executable="python3" dir="${project.basedir}" resultproperty="closure.gate.rc"
+                                              outputproperty="closure.gate.out" errorproperty="closure.gate.err" failifexecutionfails="true">
                                             <arg value="tools/check-publish-closure.py"/>
                                         </exec>
+                                        <fail message="The published set is not closed (tools/check-publish-closure.py exited ${closure.gate.rc}):${line.separator}${closure.gate.err}${line.separator}${closure.gate.out}">
+                                            <condition>
+                                                <not>
+                                                    <equals arg1="${closure.gate.rc}" arg2="0"/>
+                                                </not>
+                                            </condition>
+                                        </fail>
                                     </target>
                                 </configuration>
                             </execution>

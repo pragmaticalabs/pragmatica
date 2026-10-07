@@ -82,6 +82,34 @@ class Module:
                 return (None if value is None else value == "true", None if inherited is None else inherited == "true")
         return None
 
+    def plugin_entries(self):
+        """Every publishing-plugin element in this pom's <build> (plugins and pluginManagement), as XML elements."""
+        return [plugin for plugin in self.root.findall("m:build//m:plugin", NS)
+                if text(plugin, "m:artifactId") == PUBLISHING_PLUGIN]
+
+    def raw_dependencies(self):
+        """(unresolved group, artifact, scope, optional) for each <dependencies> entry."""
+        for dependency in self.root.findall("m:dependencies/m:dependency", NS):
+            yield (text(dependency, "m:groupId") or "", text(dependency, "m:artifactId"),
+                   text(dependency, "m:scope"), text(dependency, "m:optional"))
+
+    def managed_keys(self):
+        for dependency in self.root.findall("m:dependencyManagement/m:dependencies/m:dependency", NS):
+            yield (text(dependency, "m:groupId") or "", text(dependency, "m:artifactId"))
+
+    def managed_scopes(self):
+        for dependency in self.root.findall("m:dependencyManagement/m:dependencies/m:dependency", NS):
+            yield (self.resolve(text(dependency, "m:groupId") or ""), text(dependency, "m:artifactId"),
+                   text(dependency, "m:scope"))
+
+    def default_active_profiles(self):
+        """Profiles that are on without -P: activeByDefault, or a jdk activation the gate cannot evaluate."""
+        for profile in self.root.findall("m:profiles/m:profile", NS):
+            activation = profile.find("m:activation", NS)
+            if activation is not None and (text(activation, "m:activeByDefault") == "true"
+                                           or activation.find("m:jdk", NS) is not None):
+                yield profile
+
     def managed_skip(self):
         """True/False when this pom's <pluginManagement> configures the plugin's skip (the default for a bound module)."""
         for plugin in self.root.findall("m:build/m:pluginManagement/m:plugins/m:plugin", NS):
@@ -188,6 +216,34 @@ def reaches(module, modules, root):
     return current is not None
 
 
+def unevaluable(module, by_coordinate):
+    """Shapes this gate cannot evaluate, as one message each. The gate fails CLOSED on them (#1997 review): a shape it
+    cannot read would otherwise pass as 'closed' while the real build publishes something else."""
+    found = []
+    where = f"{module.artifact_id} ({module.pom})"
+    declared = [("groupId", text(module.root, "m:groupId")), ("parent groupId", module.parent_group)]
+    declared += [("dependency groupId", group) for group, _, _, _ in module.raw_dependencies()]
+    declared += [("managed dependency groupId", group) for group, _ in module.managed_keys()]
+    for label, value in declared:
+        if value and "${" in value.replace("${project.groupId}", ""):
+            found.append(f"{where}: {label} '{value}' is a property reference the gate cannot resolve")
+    for group, artifact, scope in module.managed_scopes():
+        if scope == "import" and (group, artifact) in by_coordinate:
+            found.append(f"{where}: imports {artifact}, a reactor module, as a BOM; the gate does not read imported management")
+    for plugin in module.plugin_entries():
+        for label, value in (("skipPublishing", text(plugin, "m:configuration/m:skipPublishing")),
+                             ("inherited", text(plugin, "m:inherited"))):
+            if value is not None and value not in ("true", "false"):
+                found.append(f"{where}: {PUBLISHING_PLUGIN} {label} is '{value}', not a literal true/false")
+    for profile in module.default_active_profiles():
+        if (profile.find("m:dependencies", NS) is not None or profile.find("m:dependencyManagement", NS) is not None
+                or any(text(plugin, "m:artifactId") == PUBLISHING_PLUGIN
+                       for plugin in profile.findall(".//m:plugin", NS))):
+            found.append(f"{where}: default-active profile '{text(profile, 'm:id')}' changes dependencies or "
+                         f"{PUBLISHING_PLUGIN}; the gate evaluates the poms without profiles")
+    return found
+
+
 def violations(root_pom):
     modules = reactor(root_pom)
     root = root_pom.resolve()
@@ -195,6 +251,8 @@ def violations(root_pom):
     published = {pom: module for pom, module in modules.items() if publishes(module, modules)}
     found = []
     edges = 0
+    for module in modules.values():
+        found.extend(unevaluable(module, by_coordinate))
     for pom, module in modules.items():
         # The root's default (skipPublishing in <pluginManagement>, maven.deploy.skip) reaches a module only through its parent
         # chain. A parent-less module is unbound, so the default deploy would run and fail the release: it must skip it itself.

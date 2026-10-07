@@ -256,6 +256,56 @@ class PublishClosureTest(unittest.TestCase):
             (root / "loose" / "pom.xml").write_text(loose.replace("<version>1</version>", "<version>1</version><properties><maven.deploy.skip>true</maven.deploy.skip></properties>", 1))
             self.assertEqual(closure.violations(root / "pom.xml")[2], [])
 
+    def closed_pair(self, directory, node=None, root=None):
+        """Control: a closed two-module reactor (node publishes, depends on kit, which publishes). Overrides replace a pom."""
+        return self.reactor(directory, {
+            ".": root or root_pom(("kit", "node")),
+            "kit": pom("kit", parent="root", skip=False),
+            "node": node or pom("node", parent="root", skip=False, deps=(("kit", None, False),)),
+        })
+
+    def assert_refused(self, directory, needle, **overrides):
+        self.assertEqual(self.closed_pair(directory)[2], [], "control: the unmodified reactor is closed")
+        with tempfile.TemporaryDirectory() as other:
+            found = self.closed_pair(other, **overrides)[2]
+        self.assertTrue(any(needle in line for line in found), found)
+
+    def test_a_bom_import_of_a_reactor_module_is_refused(self):
+        bom = pom("node", parent="root", skip=False, deps=(("kit", None, False),)).replace(
+            "</project>", "<dependencyManagement><dependencies><dependency><groupId>org.pragmatica-lite</groupId>"
+            "<artifactId>kit</artifactId><version>1</version><type>pom</type><scope>import</scope></dependency>"
+            "</dependencies></dependencyManagement></project>")
+        with tempfile.TemporaryDirectory() as directory:
+            self.assert_refused(directory, "imports kit, a reactor module, as a BOM", node=bom)
+
+    def test_a_variable_group_id_is_refused(self):
+        node = pom("node", parent="root", skip=False, deps=(("kit", None, False),)).replace(
+            "<dependency><groupId>org.pragmatica-lite</groupId>", "<dependency><groupId>${some.group}</groupId>")
+        with tempfile.TemporaryDirectory() as directory:
+            self.assert_refused(directory, "dependency groupId '${some.group}' is a property reference", node=node)
+
+    def test_a_default_active_profile_that_changes_dependencies_is_refused(self):
+        node = pom("node", parent="root", skip=False, deps=(("kit", None, False),)).replace(
+            "</project>", "<profiles><profile><id>always</id><activation><activeByDefault>true</activeByDefault></activation>"
+            "<dependencies><dependency><groupId>g</groupId><artifactId>a</artifactId></dependency></dependencies>"
+            "</profile></profiles></project>")
+        with tempfile.TemporaryDirectory() as directory:
+            self.assert_refused(directory, "default-active profile 'always'", node=node)
+
+    def test_an_opt_in_profile_is_not_refused(self):
+        # Control for the shape above: the same profile without activeByDefault is only on under -P, which the gate never reads.
+        node = pom("node", parent="root", skip=False, deps=(("kit", None, False),)).replace(
+            "</project>", "<profiles><profile><id>opt</id><dependencies><dependency><groupId>g</groupId>"
+            "<artifactId>a</artifactId></dependency></dependencies></profile></profiles></project>")
+        with tempfile.TemporaryDirectory() as directory:
+            self.assertEqual(self.closed_pair(directory, node=node)[2], [])
+
+    def test_a_property_valued_skip_publishing_is_refused(self):
+        node = pom("node", parent="root", skip=False, deps=(("kit", None, False),)).replace(
+            "<skipPublishing>false</skipPublishing>", "<skipPublishing>${skip.node}</skipPublishing>")
+        with tempfile.TemporaryDirectory() as directory:
+            self.assert_refused(directory, "skipPublishing is '${skip.node}', not a literal true/false", node=node)
+
     def test_the_decision_table_is_checked_against_the_poms(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
