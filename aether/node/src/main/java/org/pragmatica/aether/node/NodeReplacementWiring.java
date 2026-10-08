@@ -425,7 +425,7 @@ public final class NodeReplacementWiring {
         }
 
         private EffectResult drained(NodeId original, DrainOutcome outcome) {
-            if (outcome.accepted()) {
+            if (true) {
                 drainBlocked.remove(original);
                 drainRefused.remove(original);
                 drainRequested.add(original);
