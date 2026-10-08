@@ -4956,11 +4956,11 @@ public interface AetherNode extends ManageableNode {
         // #2014: the leader is the only node that saw DrainRequested, so its FSM edge is the only place the
         // announced-departure mark was set. The leader's broadcast ping carries the global drain set to every
         // peer: mark each commanded node here so a follower's DEAD edge reads a planned departure as one.
-        var drainInProgress = drainInProgress(metricsCollector::reportedStates, membershipFsm::memberStates);
+        var nodeReadyAgain = nodeReadyAgain(metricsCollector::reportedStates);
 
-        metricsCollector.setDrainSetObserver(drainSetObserver(alertManager, config.self(), drainInProgress));
+        metricsCollector.setDrainSetObserver(drainSetObserver(alertManager, config.self(), nodeReadyAgain));
         // The leader never processes its own ping, so it re-derives its mark from its own registry each interval.
-        var ownDrainRecord = drainSetObserver(alertManager, config.self(), drainInProgress);
+        var ownDrainRecord = drainSetObserver(alertManager, config.self(), nodeReadyAgain);
 
         periodicTasks.defer(() -> SharedScheduler.scheduleAtFixedRate(() -> ownDrainRecord.accept(drainCommandRegistry.drainTargets()),
                                                                       config.timeouts().cluster().pingInterval()));
@@ -7721,22 +7721,20 @@ public interface AetherNode extends ManageableNode {
     /// quiesce (`AppHttpServer::onQuorumStateChange`) stays IMMEDIATE on PASSIVE — read-path
     /// protection is cheap to undo on regain; only the process-exit drain gets the window.
     /// #2014: the drain record (the leader's broadcast set, or the leader's own registry) marks each commanded node
-    /// (never self) as an announced departure on this observer. `drainInProgress` keeps a mark alive while the
-    /// drain is running. Package-private so the composition is pinned without booting a node.
+    /// (never self) as an announced departure on this observer. `nodeReadyAgain` is the only thing that ends a mark
+    /// early. Package-private so the composition is pinned without booting a node.
     static Consumer<Set<NodeId>> drainSetObserver(AlertManager alertManager,
                                                   NodeId self,
-                                                  java.util.function.Predicate<NodeId> drainInProgress) {
-        return drained -> alertManager.observeDrainSet(drained, self, System.currentTimeMillis(), drainInProgress);
+                                                  java.util.function.Predicate<NodeId> nodeReadyAgain) {
+        return drained -> alertManager.observeDrainSet(drained, self, System.currentTimeMillis(), nodeReadyAgain);
     }
 
-    /// A drain is running for `id` as far as this observer can tell: the drainee reports DRAINING (leader pong
-    /// fan or the follower's cached readiness view), or this observer's FSM still holds it DEPARTING, which
-    /// outlives the drainee's pongs. Neither is a SWIM-incarnation signal. Package-private for the pin.
-    static java.util.function.Predicate<NodeId> drainInProgress(java.util.function.Supplier<Map<NodeId, NodeReportedState>> reportedStates,
-                                                                java.util.function.Supplier<Map<NodeId, String>> memberStates) {
+    /// The node reports itself READY in the readiness view this observer holds (the leader's pong fan, or a
+    /// follower's cache of it): alive, responsive and not draining. The only evidence that ends a planned-departure
+    /// mark short of the DEAD edge (#2014). Absence from the view is NOT evidence. Package-private for the pin.
+    static java.util.function.Predicate<NodeId> nodeReadyAgain(java.util.function.Supplier<Map<NodeId, NodeReportedState>> reportedStates) {
         return id -> reportedStates.get()
-                                   .get(id) == NodeReportedState.DRAINING || "Departing".equals(memberStates.get()
-                                                                                                            .get(id));
+                                   .get(id) == NodeReportedState.READY;
     }
 
     /// #688: one DRAINING report feeds both halves of a drain — the membership FSM's acknowledgement

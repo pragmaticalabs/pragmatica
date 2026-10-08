@@ -1117,10 +1117,9 @@ public class AlertManager {
         announcedDeparture.put(nodeId.id(), System.currentTimeMillis());
     }
 
-    /// How long a node must stay absent from every drain record before a mark the broadcast created is
-    /// dropped (#2014). The drain set is LEADER-LOCAL (`DrainCommandRegistry`, in memory, not committed), so
-    /// after a leader change the new leader's pings omit a drainee that is still draining; the grace plus
-    /// the in-progress probe below carry the mark across that gap.
+    /// How long a node must stay absent from every drain record, while reporting itself READY, before a mark
+    /// the record created is dropped (#2014). The drain set is LEADER-LOCAL (`DrainCommandRegistry`, in memory,
+    /// not committed), so after a leader change the new leader's pings omit a drainee that is still draining.
     public static final long DRAIN_OMISSION_GRACE_MS = 30_000L;
 
     /// id → last wall-clock millis a drain record named the node. Only marks CREATED from a drain record are
@@ -1129,26 +1128,26 @@ public class AlertManager {
 
     /// Feed from a DRAIN RECORD: the leader's broadcast drain set on every authoritative ping (empty set
     /// included), and the leader's own registry on its tick (#2014). The mark keys on that record, never on
-    /// a membership edge: an incarnation refutation moves the FSM DEPARTING to MEMBER while the drain is still
-    /// commanded, and clearing on it silenced nothing but re-opened a CRITICAL on the leader (run 2).
+    /// a membership edge or a clock: run 2 showed a SWIM incarnation refutation clearing it mid-drain, and run 3
+    /// showed a 30 s clock expiring it before a follower's DEAD edge, which lags the drainee's halt by ~50 s.
     ///
-    /// Marks every node in `drainSet` (never `self`). A mark the record created is dropped only after the
-    /// node has been absent from the record for [`#DRAIN_OMISSION_GRACE_MS`] AND `drainInProgress` says the
-    /// drain is not running (the drainee reports DRAINING, or this observer's FSM still holds it DEPARTING,
-    /// which outlives the drainee's pongs by up to a split timeout). A withdrawn or cancelled drain meets
-    /// neither, so a later real crash of that node alerts.
+    /// Marks every node in `drainSet` (never `self`). A mark the record created is dropped only on POSITIVE
+    /// evidence that the drain is over: the node is absent from the record for [`#DRAIN_OMISSION_GRACE_MS`]
+    /// AND `nodeReadyAgain` says it reports itself READY (alive, responsive, not draining). A drainee that
+    /// halted reports nothing, so its mark stays until its DEAD edge consumes it or it rejoins; a cancelled
+    /// drain returns the node to READY, so a later real crash of it alerts.
     @Contract
     public void observeDrainSet(java.util.Set<NodeId> drainSet,
                                 NodeId self,
                                 long nowMs,
-                                java.util.function.Predicate<NodeId> drainInProgress) {
+                                java.util.function.Predicate<NodeId> nodeReadyAgain) {
         drainSet.stream().filter(id -> !id.equals(self)).forEach(id -> markFromBroadcast(id, nowMs));
         broadcastDrainSeen.keySet()
                           .stream()
                           .filter(id -> drainSet.stream()
                                                 .noneMatch(named -> named.id()
                                                                          .equals(id)))
-                          .forEach(id -> ageOut(id, nowMs, drainInProgress));
+                          .forEach(id -> ageOut(id, nowMs, nodeReadyAgain));
     }
 
     private void markFromBroadcast(NodeId id, long nowMs) {
@@ -1158,20 +1157,14 @@ public class AlertManager {
         }
     }
 
-    private void ageOut(String id, long nowMs, java.util.function.Predicate<NodeId> drainInProgress) {
+    private void ageOut(String id, long nowMs, java.util.function.Predicate<NodeId> nodeReadyAgain) {
         var lastSeen = broadcastDrainSeen.get(id);
 
         if (lastSeen == null) {
             return;
         }
 
-        if (drainInProgress.test(new NodeId(id))) {
-            broadcastDrainSeen.put(id, nowMs);
-
-            return;
-        }
-
-        if (nowMs - lastSeen >= DRAIN_OMISSION_GRACE_MS) {
+        if (nowMs - lastSeen >= DRAIN_OMISSION_GRACE_MS && nodeReadyAgain.test(new NodeId(id))) {
             announcedDeparture.remove(id);
             broadcastDrainSeen.remove(id);
         }
