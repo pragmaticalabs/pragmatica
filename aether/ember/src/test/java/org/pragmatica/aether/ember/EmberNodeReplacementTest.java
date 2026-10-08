@@ -144,12 +144,15 @@ class EmberNodeReplacementTest {
         var victim = followerOf(leader);
         var victimId = victim.self();
 
+        // SWIM declares a node dead only if it was once seen healthy: a node that goes silent during the cold boot is reported
+        // UNKNOWN for ever. Let the cluster settle first, so the crash is the kind a running node suffers.
+        sleep(30_000);
         leader.nodeReplacementService().begin(victimId, "").await(START_BOUND).onFailure(cause -> throwBecause(cause.message()));
         awaitCondition("the replacement is JOINING (or later)", () -> phaseIndex(recordOf(victimId).phase()) >= phaseIndex(NodeReplacementPhase.JOINING));
         blackhole(victimId);
         awaitTerminal(victimId);
 
-        assertThat(recordOf(victimId).phase()).isEqualTo(NodeReplacementPhase.DONE);
+        assertThat(recordOf(victimId).phase()).as("reason: %s", recordOf(victimId).reason()).isEqualTo(NodeReplacementPhase.DONE);
         assertOldGone_newVotes(victimId);
     }
 
