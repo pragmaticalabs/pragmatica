@@ -101,6 +101,7 @@ public interface AppHttpServer {
     /// Binds the operator-event sink for certificate-rotation refusals (and their recovery).
     @Contract
     void setOperatorWarningSink(OperatorWarningSink sink);
+
     Option<Integer> boundPort();
 
     @Contract
@@ -276,7 +277,6 @@ class AppHttpServerAdapter implements AppHttpServer {
     private static final Logger log = LoggerFactory.getLogger(AppHttpServerAdapter.class);
 
     private final TlsRotation tlsRotation = TlsRotation.tlsRotation("app-http");
-
     private final AppHttpConfig config;
     private final NodeId selfNodeId;
     private final HttpRouteRegistry routeRegistry;
@@ -623,7 +623,6 @@ class AppHttpServerAdapter implements AppHttpServer {
         }
 
         log.info("Rotating app HTTP server TLS certificate");
-
         // The new TLS material is built before the running listeners are touched: a bundle that does not build is
         // refused and the current certificate keeps serving, instead of stopping the listeners and restarting them
         // without TLS.

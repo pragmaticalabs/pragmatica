@@ -144,6 +144,7 @@ public interface ManagementServer {
     /// Binds the operator-event sink for certificate-rotation refusals (and their recovery).
     @Contract
     void setOperatorWarningSink(OperatorWarningSink sink);
+
     /// The real (Prometheus-backed) meter registry this server publishes `/metrics` from.
     /// Exposed so resource provisioning (#278) can inject the node's actual `MeterRegistry` into
     /// slice-facing interceptors instead of each factory fabricating its own disconnected one.
@@ -598,14 +599,15 @@ class ManagementServerImpl implements ManagementServer {
     @Override
     public Promise<Unit> rotateCertificate(org.pragmatica.net.tcp.security.CertificateBundle newBundle) {
         log.info("Rotating management server TLS certificate");
-
         // The new TLS material is built before the running listeners are touched: a bundle that does not build is
         // refused and the current certificate keeps serving, instead of stopping the listeners and restarting them
         // without TLS.
-        return tlsRotation.validate(newBundle, httpProtocol.includesH1(), httpProtocol.includesH3())
+        return tlsRotation.validate(newBundle,
+                                    httpProtocol.includesH1(),
+                                    httpProtocol.includesH3())
                           .fold(tlsRotation::<Unit> refuse,
                                 _ -> stopHttpServers().flatMap(_ -> restartWithNewBundle(newBundle))
-                                                      .onSuccessRun(tlsRotation::applied));
+                                                    .onSuccessRun(tlsRotation::applied));
     }
 
     @Override

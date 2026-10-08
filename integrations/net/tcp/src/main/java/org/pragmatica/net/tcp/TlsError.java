@@ -80,8 +80,10 @@ public sealed interface TlsError extends Cause {
     record ServerTlsRefused(String serverName, String side, Cause cause) implements TlsError {
         @Override
         public String message() {
-            return "TLS (" + side + ") configuration of server '" + serverName + "' failed to build: " + cause.message()
-                   + "; refusing to start without TLS";
+            return "TLS (" + side
+                 + ") configuration of server '" + serverName
+                 + "' failed to build: " + cause.message()
+                 + "; refusing to start without TLS";
         }
     }
 }

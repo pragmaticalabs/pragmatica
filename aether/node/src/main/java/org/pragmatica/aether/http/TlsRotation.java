@@ -2,7 +2,6 @@
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
 // Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
 // See LICENSE in the repository root for full terms.
-
 package org.pragmatica.aether.http;
 
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -28,6 +27,7 @@ import org.slf4j.LoggerFactory;
 
 import static org.pragmatica.lang.Unit.unit;
 
+
 /// Certificate rotation for one HTTP listener: the new TLS material is built BEFORE the running listener is touched.
 /// A bundle that does not build is refused with a typed cause, the listener keeps serving its current certificate,
 /// and the refusal is an operator event raised once on the transition (not per repeated attempt) with a recovery
@@ -39,7 +39,9 @@ public final class TlsRotation {
     private static final Logger log = LoggerFactory.getLogger(TlsRotation.class);
 
     private final String serverName;
+
     private final AtomicReference<OperatorWarningSink> sink = new AtomicReference<>(OperatorWarningSink.logOnly());
+
     private final AtomicBoolean refused = new AtomicBoolean();
 
     private TlsRotation(String serverName) {
@@ -61,8 +63,7 @@ public final class TlsRotation {
                  : Result.<Unit> success(unit());
 
         return h1.flatMap(_ -> includesH3
-                               ? QuicSslContextFactory.createServerFromBundle(bundle, ClientAuthPolicy.NOT_REQUESTED)
-                                                      .mapToUnit()
+                               ? QuicSslContextFactory.createServerFromBundle(bundle, ClientAuthPolicy.NOT_REQUESTED).mapToUnit()
                                : Result.<Unit> success(unit()));
     }
 

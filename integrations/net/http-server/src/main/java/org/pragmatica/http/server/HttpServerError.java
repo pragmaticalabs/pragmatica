@@ -53,8 +53,8 @@ public sealed interface HttpServerError extends Cause {
     record TlsRotationRefused(String serverName, Cause cause) implements HttpServerError {
         @Override
         public String message() {
-            return "TLS certificate rotation of HTTP server '" + serverName + "' refused, keeping the current certificate: "
-                 + cause.message();
+            return "TLS certificate rotation of HTTP server '" + serverName
+                 + "' refused, keeping the current certificate: " + cause.message();
         }
     }
 }

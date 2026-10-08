@@ -112,7 +112,8 @@ public interface Server {
                                                                                             udpHandlers,
                                                                                             serverContext,
                                                                                             clientContext)))
-                        .fold(cause -> refused(config, cause), promise -> promise);
+                        .fold(cause -> refused(config, cause),
+                              promise -> promise);
     }
 
     private static Result<Option<SslContext>> tlsContext(ServerConfig config,
@@ -121,7 +122,9 @@ public interface Server {
                                                          java.util.function.Function<TlsConfig, Result<SslContext>> factory) {
         return tls.map(configured -> factory.apply(configured)
                                             .map(Option::some)
-                                            .fold(cause -> new TlsError.ServerTlsRefused(config.name(), side, cause).<Option<SslContext>> result(),
+                                            .fold(cause -> new TlsError.ServerTlsRefused(config.name(),
+                                                                                         side,
+                                                                                         cause).<Option<SslContext>> result(),
                                                   Result::success))
                   .or(Result.success(Option.<SslContext> empty()));
     }
