@@ -61,6 +61,9 @@ class EmberNodeReplacementTest {
     private static final TimeSpan START_BOUND = TimeSpan.timeSpan(120).seconds();
     private static final TimeSpan STOP_BOUND = TimeSpan.timeSpan(60).seconds();
     private static final long DONE_BOUND_MS = 240_000L;
+    /// The compute provider the cluster's lifecycle uses, captured by `start`: what a DONE replacement must be absent from.
+    private volatile org.pragmatica.aether.environment.ComputeProvider providerInUse;
+
     private static final String TIMINGS_PROPERTY = NodeReplacementPlanner.Timings.OVERRIDE_PROPERTY;
 
     private EmberCluster cluster;
@@ -190,7 +193,13 @@ class EmberNodeReplacementTest {
         assertThat(result.voterViolations()).as("installed voters == 3 on every sample").isEmpty();
 
         if (record.phase() == NodeReplacementPhase.FAILED_KEPT_BOTH) {
-            assertThat(record.reason()).startsWith("drain did not complete").contains("oldAlive=true").contains("drain=NOT_REQUESTED");
+            // Two safe ways to keep both, each asserted as itself: the leader never saw the old node as dead and never asked it to drain, or
+            // it retired the node but could not confirm the provider terminated it (named by node, never silently DONE).
+            if (record.reason().startsWith("drain did not complete")) {
+                assertThat(record.reason()).contains("oldAlive=true").contains("drain=NOT_REQUESTED");
+            } else {
+                assertThat(record.reason()).startsWith("old node retired but its instance is not confirmed terminated at the provider").contains(victimId.id());
+            }
         } else {
             assertThat(probe.deadAfterMs()).as("DONE only after the leader read the old node as not alive").isGreaterThanOrEqualTo(0L);
             assertOldGone_newVotes(victimId);
@@ -553,9 +562,13 @@ class EmberNodeReplacementTest {
                                                 basePort -> {
                                                     var built = emberCluster(size, basePort, basePort + MGMT_OFFSET, basePort + APP_HTTP_OFFSET, prefix);
 
-                                                    if (decorator != null) {
-                                                        built.withComputeProviderDecorator(decorator::apply);
-                                                    }
+                                                    built.withComputeProviderDecorator(provider -> {
+                                                        var used = decorator == null ? provider : decorator.apply(provider);
+
+                                                        providerInUse = used;
+
+                                                        return used;
+                                                    });
 
                                                     return built;
                                                 },
@@ -629,6 +642,12 @@ class EmberNodeReplacementTest {
         awaitCondition("the replacement votes and the old node does not", () -> installedVoters(survivor).contains(replacement) && !installedVoters(survivor).contains(old));
         assertThat(installedVoters(survivor)).hasSize(size);
         awaitCondition("the old node is gone from the cluster", () -> cluster.getNode(old.id()).isEmpty());
+        assertThat(providerInUse).as("the compute provider was captured by start()").isNotNull();
+        awaitCondition("the old instance is absent from the PROVIDER's listing (terminated, not merely out of the membership)",
+                       () -> providerInUse.listInstances()
+                                          .await()
+                                          .map(listed -> listed.stream().noneMatch(instance -> instance.nodeId().filter(old.id()::equals).isPresent()))
+                                          .or(false));
     }
 
     static Set<NodeId> installedVoters(AetherNode node) {
