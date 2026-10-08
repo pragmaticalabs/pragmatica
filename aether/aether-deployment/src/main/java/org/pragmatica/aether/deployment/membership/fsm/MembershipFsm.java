@@ -2013,6 +2013,12 @@ public final class MembershipFsm {
         /// death signal, or a re-established link, cancels it. A worker observer does not have those evidence
         /// sources for its peer workers, so there both planes stay required. An unknown or blank role is never
         /// relaxed.
+        ///
+        /// Residual (v-2006, round 2): the evidence sources that veto a single signal exist only where a governor report
+        /// or worker admission reaches the node. A NON-LEADER core has no admission source (it runs on the leader) and, for
+        /// a worker not assigned to a community, no governor report, so it can still declare an UNASSIGNED worker DEAD after
+        /// a one-sided partition longer than the backstop window. [unverified: not reproduced on a live cluster; read from
+        /// the wiring]
         synchronized boolean coConfirmedDead() {
             return isNonCoreMember() && onePlaneEviction.getAsBoolean()
                    ? swimFaultySeen || livenessGoneSeen
