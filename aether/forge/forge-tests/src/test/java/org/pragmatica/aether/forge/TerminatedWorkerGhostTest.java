@@ -85,12 +85,10 @@ class TerminatedWorkerGhostTest {
         Option.option(cluster).onPresent(c -> LifecycleAwait.bestEffort("cluster stop in tearDown()", c, c.stop()));
     }
 
-    /// Known red #1717: a hard-killed worker stays `Suspect` in the leader's membership FSM and is never declared dead (measured: still
-    /// `Suspect` 300 s after the kill), so the wait at DETECTION_BUDGET (75 s: "15 seconds" is unique to it among this class's waits)
-    /// times out. The signature is that timeout only; any other failure of this test is a real failure. When the fix lands this test
-    /// passes and the tripwire fails it: remove the annotation.
+    /// #1717 (was a known red): a hard-killed worker used to stay `Suspect` in the leader's membership FSM forever. With the
+    /// worker death rule (either plane arms the backstop; evidence newer than the signal vetoes) it is declared dead at the
+    /// kill plus `splitTimeout`, and every roster forgets it.
     @Test
-    @KnownRed(ticket = "#1717", exception = ConditionTimeoutException.class, messageContains = "15 seconds")
     void hardKilledWorker_leavesEveryStatusRoster_onceMembershipDeclaresItDead() {
         var workerId = LifecycleAwait.nodeSettled("addWorkerNode in hardKilledWorker_leavesEveryStatusRoster_onceMembershipDeclaresItDead()",
                                                   cluster,
