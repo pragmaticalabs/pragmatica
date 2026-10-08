@@ -74,4 +74,14 @@ public sealed interface TlsError extends Cause {
     static TlsError wrongMode(String details) {
         return new WrongMode(details);
     }
+
+    /// A server's TLS configuration (`side`: `server` for incoming, `client` for outgoing connections) could not be built,
+    /// so the server refuses to start rather than run in plain text.
+    record ServerTlsRefused(String serverName, String side, Cause cause) implements TlsError {
+        @Override
+        public String message() {
+            return "TLS (" + side + ") configuration of server '" + serverName + "' failed to build: " + cause.message()
+                   + "; refusing to start without TLS";
+        }
+    }
 }
