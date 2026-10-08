@@ -107,6 +107,22 @@ class ReplacementBackupRenderTest {
         assertThat(script.indexOf("install -d -m 0750 /var/aether/backups")).isLessThan(script.indexOf("systemctl start"));
     }
 
+    /// v-2001 blocker, at the real seam: the node TOML the REAL composer produces for a cloud container and a cloud JVM replacement,
+    /// carrying `[backup] path = "/var/aether/backups"`, must LOAD (the node load applies the Docker `/data` rule only to an environment
+    /// that was said, and a composed cloud TOML never says one).
+    @Test
+    void theComposedCloudNodeToml_withABackupOutsideData_loads_forContainerAndJvm() {
+        for (var runtime : List.of("containers", "bare-metal")) {
+            var config = ClusterBootstrapConfigParser.parse(CLUSTER_TOML.formatted(runtime, BACKUP_NODE_CONFIG)).unwrap();
+            var source = config.sources().get("eu-1");
+            var composed = ReplacementNodeConfigComposer.compose(config, source, NodeRole.CORE, Option.some("secret"), List.of()).unwrap();
+            var toml = org.pragmatica.config.toml.TomlWriter.toToml(composed);
+
+            assertThat(toml).as(runtime + ": CONTROL the backup section is in the composed TOML").contains("path = \"/var/aether/backups\"");
+            assertThat(org.pragmatica.aether.config.ConfigLoader.loadFromString(toml).isSuccess()).as(runtime + " composed node TOML loads").isTrue();
+        }
+    }
+
     /// The controls: without `[backup]`, and with it disabled, nothing backup-related is rendered (no stray mount, no directory).
     @Test
     void noBackupOrDisabledBackup_rendersNoBackupDirectoryOrMount() {

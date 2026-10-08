@@ -517,6 +517,29 @@ class DockerComputeProviderTest {
                                                          .containsOnly(Map.entry("AETHER_BACKUP_ENABLED", "true"), Map.entry("AETHER_BACKUP_PATH", "/data/backups")));
         }
 
+        /// R1b: a backup path handed to the provider factory (the leader's effective `[backup]`, whatever its source) is refused with the
+        /// same rule as the bootstrap TOML: absolute, and under /data because the repository lives on a root-owned-elsewhere named volume.
+        @Test
+        void factory_refusesABackupPathThatIsRelativeOrOutsideData_withTheRule() {
+            for (var bad : new String[] {"relative/backups", "/var/aether/backups"}) {
+                var cloud = new org.pragmatica.aether.environment.CloudConfig("docker", Map.of(), Map.of("AETHER_BACKUP_ENABLED", "true", "AETHER_BACKUP_PATH", bad),
+                                                                              Map.of(), Map.of(), Map.of(), Map.of());
+                var result = new DockerEnvironmentIntegrationFactory().create(cloud);
+
+                assertThat(result.isFailure()).as("path " + bad).isTrue();
+                result.onFailure(cause -> assertThat(cause.message()).contains("[backup] path", bad));
+            }
+        }
+
+        @Test
+        void factory_acceptsABackupPathUnderData_andNoPathAtAll() {
+            for (var compute : List.of(Map.of("AETHER_BACKUP_ENABLED", "true", "AETHER_BACKUP_PATH", "/data/backups"), Map.<String, String>of())) {
+                var cloud = new org.pragmatica.aether.environment.CloudConfig("docker", Map.of(), compute, Map.of(), Map.of(), Map.of(), Map.of());
+
+                assertThat(new DockerEnvironmentIntegrationFactory().create(cloud).isSuccess()).as("compute " + compute).isTrue();
+            }
+        }
+
         @Test
         void buildRunCommand_backupPathOutsideData_isMountedWhereItPoints() {
             var command = replacementCommand(Map.of("AETHER_BACKUP_ENABLED", "true", "AETHER_BACKUP_PATH", "/var/aether/backups"));

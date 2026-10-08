@@ -201,6 +201,14 @@ public final class BackupRestoreCoordinator {
         }
     }
 
+    /// #1968: the node is stopping (graceful stop, drain, self-fence). A leader without `[backup]` raised a CRITICAL that only
+    /// this node's own event layer can close, so ending the term here, before the event layer goes down, is the last chance to
+    /// raise its recovery. A crash (`kill -9`) cannot be answered in-process; see the backup runbook.
+    @Contract
+    public void onNodeStopping() {
+        deactivate();
+    }
+
     @Contract
     void activate() {
         if (!leader.compareAndSet(false, true)) {
@@ -220,6 +228,18 @@ public final class BackupRestoreCoordinator {
 
         cancelPendingRetry();
         recoverBackupMissing();
+        recoverRestoreBlocked();
+    }
+
+    /// A node that raised `backup-restore-blocked` is the only one whose event layer can close it, and it stops holding the cluster when
+    /// it stops leading, stops, or restarts (a restart is a stop first). The next leader that cannot read the backup raises it again.
+    @Contract
+    private void recoverRestoreBlocked() {
+        if (blocked.compareAndSet(true, false)) {
+            warnings.emit(BackupWarning.backupWarning(Code.BACKUP_RESTORE_UNBLOCKED,
+                                                      "this node no longer leads (or is stopping), so its blocked backup restore no longer holds the cluster;"
+                                                     + " a leader that still cannot read the backup raises backup-restore-blocked again"));
+        }
     }
 
     /// #1968: a leader with no `[backup]` while the cluster's committed state says the backup is in use (typically a replacement
@@ -241,7 +261,7 @@ public final class BackupRestoreCoordinator {
     private void recoverBackupMissing() {
         if (missingReported.compareAndSet(true, false)) {
             warnings.emit(BackupWarning.backupWarning(Code.BACKUP_CONFIG_RESTORED,
-                                                      "this node no longer leads, so its missing [backup] no longer stops the cluster's backup;"
+                                                      "this node no longer leads (or is stopping), so its missing [backup] no longer stops the cluster's backup;"
                                                      + " a leader that also lacks [backup] raises backup-config-missing again"));
         }
     }
@@ -660,8 +680,8 @@ public final class BackupRestoreCoordinator {
         if (done.compareAndSet(false, true)) {
             RestoreGate.decision(kvStore).onPresent(BackupRestoreCoordinator::logDecision);
             if (blocked.compareAndSet(true, false)) {
-                warnings.emit(BackupWarning.backupWarning(Code.BACKUP_RECOVERED,
-                                                          "the backup restore is no longer blocked"));
+                warnings.emit(BackupWarning.backupWarning(Code.BACKUP_RESTORE_UNBLOCKED,
+                                                          "the backup restore is no longer blocked: the backup was read and the restore decision committed"));
             }
         }
     }

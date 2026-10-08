@@ -147,11 +147,11 @@ public final class WaveExecutor {
                                                                                                                  source));
     }
 
-    private static Result<List<ProvisionedNode>> provisionBySourceType(SourceName sourceName,
-                                                                       SourceProfile source,
-                                                                       NodeRole role,
-                                                                       int count,
-                                                                       ClusterBootstrapConfig desired) {
+    static Result<List<ProvisionedNode>> provisionBySourceType(SourceName sourceName,
+                                                               SourceProfile source,
+                                                               NodeRole role,
+                                                               int count,
+                                                               ClusterBootstrapConfig desired) {
         return switch (source.type()) {
             case CLOUD -> resolveCloudAndProvision(source, role, count, desired);
             case DOCKER -> resolveDockerAndProvision(sourceName,
@@ -204,12 +204,12 @@ public final class WaveExecutor {
                                                                            int count,
                                                                            SourceProfile source,
                                                                            ClusterName clusterName) {
-        return ProviderResolver.resolveDockerCompute().flatMap(compute -> provisionViaCompute(compute,
-                                                                                              sourceName,
-                                                                                              role,
-                                                                                              count,
-                                                                                              source,
-                                                                                              clusterName));
+        return ProviderResolver.resolveDockerCompute(source).flatMap(compute -> provisionViaCompute(compute,
+                                                                                                    sourceName,
+                                                                                                    role,
+                                                                                                    count,
+                                                                                                    source,
+                                                                                                    clusterName));
     }
 
     @SuppressWarnings("JBCT-EX-01")
@@ -738,10 +738,10 @@ public final class WaveExecutor {
     }
 
     private static Result<Unit> resolveDockerAndDestroy(SourceName sourceName, NodeRole role, int count) {
-        return ProviderResolver.resolveDockerCompute().flatMap(compute -> destroyViaCompute(compute,
-                                                                                            sourceName,
-                                                                                            role,
-                                                                                            count));
+        return ProviderResolver.resolveDockerComputeWithoutBackup().flatMap(compute -> destroyViaCompute(compute,
+                                                                                                         sourceName,
+                                                                                                         role,
+                                                                                                         count));
     }
 
     @SuppressWarnings("JBCT-EX-01")

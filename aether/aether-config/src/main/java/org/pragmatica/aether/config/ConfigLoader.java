@@ -71,15 +71,20 @@ public final class ConfigLoader {
         var envStr = overrides.getOrDefault("environment",
                                             doc.getString("cluster", "environment").or("docker"));
 
-        return Environment.environment(envStr).flatMap(environment -> assembleConfig(doc, overrides, environment));
+        return Environment.environment(envStr).flatMap(environment -> assembleConfig(doc,
+                                                                                     overrides,
+                                                                                     environment,
+                                                                                     environmentIsExplicit(doc,
+                                                                                                           overrides)));
     }
 
     @SuppressWarnings("JBCT-UTIL-01")
     private static Result<AetherConfig> assembleConfig(TomlDocument doc,
                                                        Map<String, String> overrides,
-                                                       Environment environment) {
+                                                       Environment environment,
+                                                       boolean environmentExplicit) {
         try {
-            var builder = populateBuilder(doc, environment);
+            var builder = populateBuilder(doc, environment, environmentExplicit);
 
             mergeCliOverrides(overrides, builder);
 
@@ -128,7 +133,16 @@ public final class ConfigLoader {
         return config.withStreaming(config.streaming().withReadLinearization(mode));
     }
 
-    private static AetherConfig.Builder populateBuilder(TomlDocument doc, Environment environment) {
+    /// Whether the environment was SAID (a `[cluster] environment` key or a CLI override) rather than defaulted to docker. A composed
+    /// cloud node TOML never says it, so it must not be treated as a Docker node by rules that only hold on a Docker node (#1968).
+    static boolean environmentIsExplicit(TomlDocument doc, Map<String, String> overrides) {
+        return overrides.containsKey("environment") || doc.getString("cluster", "environment")
+                                                          .isPresent();
+    }
+
+    private static AetherConfig.Builder populateBuilder(TomlDocument doc,
+                                                        Environment environment,
+                                                        boolean environmentExplicit) {
         var builder = AetherConfig.builder().withEnvironment(environment);
 
         populateClusterConfig(doc, builder);
@@ -139,7 +153,7 @@ public final class ConfigLoader {
         populateTtmConfig(doc, builder);
         populateSliceConfig(doc, builder);
         populateAppHttpConfig(doc, builder);
-        populateBackupConfig(doc, builder);
+        populateBackupConfig(doc, builder, environment, environmentExplicit);
         populateDhtReplicationConfig(doc, builder);
         populateTimeoutsConfig(doc, builder);
         populateStorageConfig(doc, builder);
@@ -438,32 +452,110 @@ public final class ConfigLoader {
         return JwtConfig.jwtConfig(jwksUrl, issuer, audience, roleClaim, cacheTtl, clockSkew).unwrap();
     }
 
-    private static void populateBackupConfig(TomlDocument doc, AetherConfig.Builder builder) {
-        backupConfigFrom(doc, System::getenv).onPresent(builder::backup);
+    private static void populateBackupConfig(TomlDocument doc,
+                                             AetherConfig.Builder builder,
+                                             Environment environment,
+                                             boolean environmentExplicit) {
+        effectiveBackup(doc, System::getenv, environment, environmentExplicit).onPresent(builder::backup);
+    }
+
+    /// The node's effective `[backup]` (TOML merged with the environment variables), refused when its path is unwritable for `environment`.
+    static Option<BackupConfig> effectiveBackup(TomlDocument doc,
+                                                org.pragmatica.lang.Functions.Fn1<String, String> env,
+                                                Environment environment,
+                                                boolean environmentExplicit) {
+        var backup = backupConfigFrom(doc, env);
+
+        backup.onPresent(value -> checkBackupPath(value, environment, environmentExplicit).getOrThrow(IllegalArgumentException::new,
+                                                                                                      "invalid [backup]"));
+
+        return backup;
+    }
+
+    /// #1968: the same rule the bootstrap config applies to a source's `node_config` (`BackupPathRule`), applied to the EFFECTIVE path of a
+    /// node in a container environment, wherever it came from (TOML, `AETHER_BACKUP_PATH` of a compose file or of a provisioner). Docker:
+    /// absolute and under `/data` (named volume); Kubernetes: absolute; LOCAL runs on the host and keeps its relative default.
+    static Result<Unit> checkBackupPath(BackupConfig backup, Environment environment, boolean environmentExplicit) {
+        if (backup.path().isBlank() || environment == Environment.LOCAL || !environmentExplicit) {
+            return Result.unitResult();
+        }
+
+        return org.pragmatica.aether.environment.BackupPathRule.refusal(backup.path(),
+                                                                        environment == Environment.DOCKER)
+                                                               .fold(Result::unitResult,
+                                                                     reason -> ConfigError.invalidConfig("[backup] path " + reason).result());
     }
 
     /// `[backup]` (#1532/#1533), each key overridable by its `AETHER_BACKUP_*` environment variable (#1968): a node minted
     /// without a TOML of its own (a Docker replacement) receives the backup configuration from its provisioner's
     /// environment, and an env-only compose cluster configures it the same way. Environment wins per key, as `AETHER_API_KEYS`
-    /// does. Empty when the merged `enabled` is false.
+    /// does, and a blank variable counts as unset. A key the environment sets to a DIFFERENT value than the TOML is logged at
+    /// startup (key and source only, never the values: a remote can carry a credential). Empty when the merged `enabled` is false.
     static Option<BackupConfig> backupConfigFrom(TomlDocument doc,
                                                  org.pragmatica.lang.Functions.Fn1<String, String> env) {
-        var enabled = envValue(env, ClusterIdentityEnv.BACKUP_ENABLED).orElse(doc.getString("backup", "enabled"))
-                              .map(ConfigLoader::toBooleanValue)
-                              .or(false);
+        return backupConfigFrom(doc, env, notice -> log.warn("{}", notice), summary -> log.info("{}", summary));
+    }
+
+    static Option<BackupConfig> backupConfigFrom(TomlDocument doc,
+                                                 org.pragmatica.lang.Functions.Fn1<String, String> env,
+                                                 java.util.function.Consumer<String> overrideNotice) {
+        return backupConfigFrom(doc,
+                                env,
+                                overrideNotice,
+                                _ -> {});
+    }
+
+    /// `sourceNotice` receives, once, which source each key came from (`environment`, `TOML` or `default`), never a value.
+    static Option<BackupConfig> backupConfigFrom(TomlDocument doc,
+                                                 org.pragmatica.lang.Functions.Fn1<String, String> env,
+                                                 java.util.function.Consumer<String> overrideNotice,
+                                                 java.util.function.Consumer<String> sourceNotice) {
+        var sources = new java.util.LinkedHashMap<String, String>();
+        var enabled = backupKey(doc, env, ClusterIdentityEnv.BACKUP_ENABLED, "enabled", overrideNotice, sources).map(ConfigLoader::toBooleanValue)
+                               .or(false);
 
         if (!enabled) {
             return Option.empty();
         }
 
-        var path = envValue(env, ClusterIdentityEnv.BACKUP_PATH).orElse(doc.getString("backup", "path")).or("");
-        var remote = envValue(env, ClusterIdentityEnv.BACKUP_REMOTE).orElse(doc.getString("backup", "remote")).or("");
-        var restore = BackupConfig.RestoreMode.restoreMode(envValue(env, ClusterIdentityEnv.BACKUP_RESTORE).orElse(doc.getString("backup",
-                                                                                                                                 "restore"))
-                                                                   .or("auto")).getOrThrow(IllegalArgumentException::new,
-                                                                                           "invalid [backup]");
+        var path = backupKey(doc, env, ClusterIdentityEnv.BACKUP_PATH, "path", overrideNotice, sources).or("");
+        var remote = backupKey(doc, env, ClusterIdentityEnv.BACKUP_REMOTE, "remote", overrideNotice, sources).or("");
+        var restore = BackupConfig.RestoreMode.restoreMode(backupKey(doc,
+                                                                     env,
+                                                                     ClusterIdentityEnv.BACKUP_RESTORE,
+                                                                     "restore",
+                                                                     overrideNotice,
+                                                                     sources).or("auto")).getOrThrow(IllegalArgumentException::new,
+                                                                                                     "invalid [backup]");
+
+        sourceNotice.accept("[backup] configuration sources: " + sources);
 
         return Option.some(BackupConfig.backupConfig(true, path, remote, restore));
+    }
+
+    /// One `[backup]` key: the environment's value when set, else the TOML's. The notice names the key and BOTH sources, not values.
+    private static Option<String> backupKey(TomlDocument doc,
+                                            org.pragmatica.lang.Functions.Fn1<String, String> env,
+                                            String envName,
+                                            String tomlKey,
+                                            java.util.function.Consumer<String> overrideNotice,
+                                            java.util.Map<String, String> sources) {
+        var fromEnv = envValue(env, envName);
+        var fromToml = doc.getString("backup", tomlKey);
+
+        fromEnv.flatMap(value -> fromToml.filter(toml -> !toml.strip()
+                                                              .equals(value.strip())))
+               .onPresent(_ -> overrideNotice.accept("[backup] " + tomlKey
+                                                    + ": the environment variable " + envName
+                                                    + " overrides the value in the node TOML; remove one of them to end the ambiguity"));
+        sources.put(tomlKey,
+                    fromEnv.isPresent()
+                    ? "environment"
+                    : fromToml.isPresent()
+                      ? "TOML"
+                      : "default");
+
+        return fromEnv.orElse(fromToml);
     }
 
     private static Option<String> envValue(org.pragmatica.lang.Functions.Fn1<String, String> env, String name) {

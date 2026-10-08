@@ -558,6 +558,10 @@ restore = "auto"
 | `remote` | string | `""` | Git remote the leader pushes to, fast-forward only |
 | `restore` | string | `"auto"` | `auto`: a cold start restores the backup head (fresh when empty); `fresh`: ignore the backup |
 
+Each key is overridable by an environment variable: `AETHER_BACKUP_ENABLED`, `AETHER_BACKUP_PATH`, `AETHER_BACKUP_REMOTE`, `AETHER_BACKUP_RESTORE`.
+**The environment wins over the TOML, per key**; a blank variable counts as unset. When the environment value differs from the TOML value the node logs a
+WARN at startup naming the key and both sources (never the values). A Docker node has no TOML of its own and is configured by these variables alone.
+
 The leader writes the backup on change (#1532); a whole-cluster restart is a regular start of fresh cores
 followed by the restore (#1533). See the [backup-recovery runbook](../operators/runbooks/backup-recovery.md).
 
