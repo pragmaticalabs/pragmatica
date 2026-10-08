@@ -257,8 +257,69 @@ class BinaryRowReadLivePgTest {
             assertThat(secondExecution("SELECT $1::FLOAT8 AS val", 2.5d).get("val", String.class)).isEqualTo("2.5");
         }
 
+        @Test void float4() {
+            assertThat(secondExecution("SELECT $1::FLOAT4 AS val", 1.25f).get("val", String.class)).isEqualTo("1.25");
+        }
+
+        @Test void time() {
+            assertThat(secondExecution("SELECT $1::TIME AS val", LocalTime.of(3, 4, 5, 123_456_000)).get("val", String.class))
+                .isEqualTo("03:04:05.123456");
+        }
+
+        @Test void timestamp() {
+            assertThat(secondExecution("SELECT $1::TIMESTAMP AS val", LocalDateTime.of(2026, 1, 2, 3, 4, 5, 123_456_000)).get("val", String.class))
+                .isEqualTo("2026-01-02T03:04:05.123456");
+        }
+
         @Test void bytea() {
             assertThat(secondExecution("SELECT $1::BYTEA AS val", new byte[]{0, -1, 7}).get("val", String.class)).isEqualTo("\\x00ff07");
+        }
+    }
+
+    /// `PgRow.getString` reads through the OFFSET overload of the converter (the row's whole data buffer plus an offset and
+    /// a length), a different code path from `get(col, String.class)`.
+    @Nested
+    class GetString {
+        @Test void int8() {
+            assertThat(secondExecution("SELECT $1::INT8 AS val", 9_000_000_000L).getString("val")).isEqualTo("9000000000");
+        }
+
+        @Test void float4() {
+            assertThat(secondExecution("SELECT $1::FLOAT4 AS val", 1.25f).getString("val")).isEqualTo("1.25");
+        }
+
+        @Test void bool() {
+            assertThat(secondExecution("SELECT $1::BOOL AS val", true).getString("val")).isEqualTo("true");
+        }
+
+        @Test void bytea() {
+            assertThat(secondExecution("SELECT $1::BYTEA AS val", new byte[]{0, -1, 7}).getString("val")).isEqualTo("\\x00ff07");
+        }
+
+        @Test void uuid() {
+            var id = UUID.fromString("123e4567-e89b-12d3-a456-426614174000");
+
+            assertThat(secondExecution("SELECT $1::UUID AS val", id).getString("val")).isEqualTo(id.toString());
+        }
+
+        @Test void time() {
+            assertThat(secondExecution("SELECT $1::TIME AS val", LocalTime.of(3, 4, 5, 123_456_000)).getString("val")).isEqualTo("03:04:05.123456");
+        }
+
+        @Test void timestamp() {
+            assertThat(secondExecution("SELECT $1::TIMESTAMP AS val", LocalDateTime.of(2026, 1, 2, 3, 4, 5, 123_456_000)).getString("val"))
+                .isEqualTo("2026-01-02T03:04:05.123456");
+        }
+
+        @Test void timestamptz() {
+            var instant = Instant.parse("2026-01-02T03:04:05.123456Z");
+
+            assertThat(secondExecution("SELECT $1::TIMESTAMPTZ AS val", instant.atOffset(ZoneOffset.UTC)).getString("val"))
+                .isEqualTo("2026-01-02T03:04:05.123456Z");
+        }
+
+        @Test void date() {
+            assertThat(secondExecution("SELECT $1::DATE AS val", LocalDate.of(2026, 1, 2)).getString("val")).isEqualTo("2026-01-02");
         }
     }
 }
