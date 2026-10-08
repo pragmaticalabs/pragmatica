@@ -70,6 +70,7 @@ import org.pragmatica.aether.deployment.cluster.CoreVoterReconciler;
 import org.pragmatica.aether.deployment.cluster.NodeReplacementIndex;
 import org.pragmatica.aether.deployment.cluster.CommunityRetirementIndex;
 import org.pragmatica.aether.node.backup.BackupGenesis;
+import org.pragmatica.aether.node.backup.BackupPreflight;
 import org.pragmatica.aether.node.backup.BackupRestoreCoordinator;
 import org.pragmatica.aether.node.backup.BackupWarning;
 import org.pragmatica.aether.node.backup.GitBackupRepository;
@@ -119,6 +120,7 @@ import org.pragmatica.aether.http.AppHttpServer;
 import org.pragmatica.aether.http.HttpRoutePublisher;
 import org.pragmatica.aether.http.HttpRouteRegistry;
 import org.pragmatica.aether.http.SecurityOverrideSynchronizer;
+import org.pragmatica.aether.http.TlsRotation;
 import org.pragmatica.aether.http.forward.AccessibilityFilter;
 import org.pragmatica.aether.http.forward.HttpForwardMessage;
 import org.pragmatica.aether.http.security.SecurityValidator;
@@ -591,6 +593,26 @@ public interface AetherNode extends ManageableNode {
                                          Runnable identityRefusedExit,
                                          Runnable gossipKeyDivergedExit,
                                          Fn1<Option<String>, String> environment) {
+        return aetherNode(config,
+                          delegateRouter,
+                          nodeCodec,
+                          jvmExit,
+                          identityRefusedExit,
+                          gossipKeyDivergedExit,
+                          environment,
+                          BackupPreflight::requireGit);
+    }
+
+    /// The same boot with the `[backup]` git probe supplied (#2007): production passes [BackupPreflight#requireGit]; a boot
+    /// test passes a stand-in for a git that is missing, hangs or is fine, and counts whether it was asked.
+    static Result<AetherNode> aetherNode(AetherNodeConfig config,
+                                         MessageRouter.DelegateRouter delegateRouter,
+                                         SliceCodec nodeCodec,
+                                         Runnable jvmExit,
+                                         Runnable identityRefusedExit,
+                                         Runnable gossipKeyDivergedExit,
+                                         Fn1<Option<String>, String> environment,
+                                         Supplier<Result<Unit>> gitProbe) {
         return config.validate()
                      .flatMap(_ -> createNode(config,
                                               delegateRouter,
@@ -598,7 +620,8 @@ public interface AetherNode extends ManageableNode {
                                               jvmExit,
                                               identityRefusedExit,
                                               gossipKeyDivergedExit,
-                                              environment));
+                                              environment,
+                                              gitProbe));
     }
 
     /// #1549: the `CLUSTER_EVENTS_MAX_*` overrides are checked before anything is built — an out-of-range
@@ -609,15 +632,24 @@ public interface AetherNode extends ManageableNode {
                                                  Runnable jvmExit,
                                                  Runnable identityRefusedExit,
                                                  Runnable gossipKeyDivergedExit,
-                                                 Fn1<Option<String>, String> environment) {
-        return ClusterEventsLimits.clusterEventsLimits(environment).flatMap(limits -> createNodeWithBootToken(config,
-                                                                                                              delegateRouter,
-                                                                                                              nodeCodec,
-                                                                                                              jvmExit,
-                                                                                                              identityRefusedExit,
-                                                                                                              gossipKeyDivergedExit,
-                                                                                                              BootToken.bootToken(),
-                                                                                                              limits));
+                                                 Fn1<Option<String>, String> environment,
+                                                 Supplier<Result<Unit>> gitProbe) {
+        return requireBackupGit(config, gitProbe).flatMap(_ -> ClusterEventsLimits.clusterEventsLimits(environment))
+                               .flatMap(limits -> createNodeWithBootToken(config,
+                                                                          delegateRouter,
+                                                                          nodeCodec,
+                                                                          jvmExit,
+                                                                          identityRefusedExit,
+                                                                          gossipKeyDivergedExit,
+                                                                          BootToken.bootToken(),
+                                                                          limits));
+    }
+
+    /// #2007: `[backup]` shells out to git, so a node that has it enabled and cannot run git refuses to boot here, naming `[backup]` and
+    /// git, instead of leaving the restore BLOCKED and cluster-state writes refused after the cluster is up.
+    private static Result<Unit> requireBackupGit(AetherNodeConfig config, Supplier<Result<Unit>> gitProbe) {
+        return enabledBackup(config).fold(() -> Result.success(Unit.unit()),
+                                          _ -> gitProbe.get());
     }
 
     private static Result<AetherNode> createNodeWithBootToken(AetherNodeConfig config,
@@ -3970,6 +4002,7 @@ public interface AetherNode extends ManageableNode {
                                                         Option.some(taskGroupOwnerResolver),
                                                         accessibilityFilter);
 
+        appHttpServer.setOperatorWarningSink(operatorWarningSink);
         appHttpServer.setInvocationAdmission(org.pragmatica.aether.invoke.InvocationAdmission.gated(inFlightTrackerForDrain,
                                                                                                     () -> workerProjectionFreshRef.get()
                                                                                                                                   .getAsBoolean()));
@@ -6390,7 +6423,8 @@ public interface AetherNode extends ManageableNode {
         var certRenewalScheduler = createCertRenewalScheduler(config,
                                                               clusterNode,
                                                               appHttpServer,
-                                                              managementServerRef::get);
+                                                              managementServerRef::get,
+                                                              operatorWarningSink);
         var startTimeMs = System.currentTimeMillis();
         var nodeLifecycle = NodeLifecycle.nodeLifecycle();
         var node = new aetherNode(workerMetadataChannel,
@@ -6610,6 +6644,7 @@ public interface AetherNode extends ManageableNode {
                                                   NodeLifecycleRoutes.SliceFloor.sliceFloor(SliceOwnershipQuery.minAvailableDrainViolations(kvStore),
                                                                                             operatorWarningSink));
 
+                                                  managementServer.setOperatorWarningSink(operatorWarningSink);
                                                   managementServerRef.set(Option.some(managementServer));
                                                   // #278: expose the node's real MeterRegistry to slice-facing resource
                                                   // provisioning so MetricsInterceptorFactory records into the SAME
@@ -8749,13 +8784,15 @@ public interface AetherNode extends ManageableNode {
     private static Option<CertificateRenewalScheduler> createCertRenewalScheduler(AetherNodeConfig config,
                                                                                   RabiaNode<KVCommand<AetherKey>> clusterNode,
                                                                                   AppHttpServer appHttpServer,
-                                                                                  Supplier<Option<ManagementServer>> managementServerSupplier) {
+                                                                                  Supplier<Option<ManagementServer>> managementServerSupplier,
+                                                                                  OperatorWarningSink warningSink) {
         return config.certificateProvider()
                      .flatMap(provider -> buildCertRenewalScheduler(config,
                                                                     provider,
                                                                     clusterNode,
                                                                     appHttpServer,
-                                                                    managementServerSupplier));
+                                                                    managementServerSupplier,
+                                                                    warningSink));
     }
 
     @SuppressWarnings("JBCT-PAT-01")
@@ -8763,7 +8800,8 @@ public interface AetherNode extends ManageableNode {
                                                                                  org.pragmatica.net.tcp.security.CertificateProvider provider,
                                                                                  RabiaNode<KVCommand<AetherKey>> clusterNode,
                                                                                  AppHttpServer appHttpServer,
-                                                                                 Supplier<Option<ManagementServer>> managementServerSupplier) {
+                                                                                 Supplier<Option<ManagementServer>> managementServerSupplier,
+                                                                                 OperatorWarningSink warningSink) {
         var nodeId = config.self().id();
         var hostname = resolveHostname(config);
 
@@ -8774,7 +8812,8 @@ public interface AetherNode extends ManageableNode {
                                                                 bundle,
                                                                 clusterNode,
                                                                 appHttpServer,
-                                                                managementServerSupplier))
+                                                                managementServerSupplier,
+                                                                warningSink))
                        .option();
     }
 
@@ -8784,22 +8823,29 @@ public interface AetherNode extends ManageableNode {
                                                                          CertificateBundle bundle,
                                                                          RabiaNode<KVCommand<AetherKey>> clusterNode,
                                                                          AppHttpServer appHttpServer,
-                                                                         Supplier<Option<ManagementServer>> managementServerSupplier) {
+                                                                         Supplier<Option<ManagementServer>> managementServerSupplier,
+                                                                         OperatorWarningSink warningSink) {
+        var renewalAlarm = TlsRotation.clusterRenewal();
+
+        renewalAlarm.useSink(warningSink);
+
         return CertificateRenewalScheduler.certificateRenewalScheduler(provider,
                                                                        nodeId,
                                                                        hostname,
                                                                        newBundle -> onCertificateRenewed(newBundle,
                                                                                                          clusterNode,
                                                                                                          appHttpServer,
-                                                                                                         managementServerSupplier),
+                                                                                                         managementServerSupplier,
+                                                                                                         renewalAlarm),
                                                                        bundle.notAfter());
     }
 
-    @SuppressWarnings("JBCT-PAT-01")
-    private static void onCertificateRenewed(CertificateBundle newBundle,
-                                             RabiaNode<KVCommand<AetherKey>> clusterNode,
-                                             AppHttpServer appHttpServer,
-                                             Supplier<Option<ManagementServer>> managementServerSupplier) {
+    @SuppressWarnings({"JBCT-PAT-01", "JBCT-RET-01"})
+    static void onCertificateRenewed(CertificateBundle newBundle,
+                                     RabiaNode<KVCommand<AetherKey>> clusterNode,
+                                     AppHttpServer appHttpServer,
+                                     Supplier<Option<ManagementServer>> managementServerSupplier,
+                                     TlsRotation renewalAlarm) {
         var log = LoggerFactory.getLogger(AetherNode.class);
 
         log.info("Certificate renewed, valid until {}", newBundle.notAfter());
@@ -8808,14 +8854,20 @@ public interface AetherNode extends ManageableNode {
                                                                 QuicTlsProvider.CLUSTER_PROTOCOL),
                    QuicSslContextFactory.createClientFromBundle(newBundle, QuicTlsProvider.CLUSTER_PROTOCOL))
               .id()
-              .onSuccess(tuple -> triggerCertRotation(clusterNode,
-                                                      tuple.first(),
-                                                      tuple.last(),
-                                                      newBundle,
-                                                      appHttpServer,
-                                                      managementServerSupplier))
-              .onFailure(cause -> log.error("Failed to build SSL contexts from renewed certificate: {}",
-                                            cause.message()));
+              .onSuccess(tuple -> {
+                             renewalAlarm.applied();
+                             triggerCertRotation(clusterNode,
+                                                 tuple.first(),
+                                                 tuple.last(),
+                                                 newBundle,
+                                                 appHttpServer,
+                                                 managementServerSupplier);
+                         })
+              .onFailure(cause -> {
+                             log.error("Failed to build SSL contexts from renewed certificate: {}",
+                                       cause.message());
+                             renewalAlarm.renewalRefused(cause);
+                         });
     }
 
     @SuppressWarnings("JBCT-PAT-01")

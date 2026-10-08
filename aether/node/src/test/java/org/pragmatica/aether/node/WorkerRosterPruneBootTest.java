@@ -6,9 +6,6 @@ package org.pragmatica.aether.node;
 
 import org.pragmatica.cluster.metrics.MetricObservation;
 
-import java.io.IOException;
-import java.io.UncheckedIOException;
-import java.net.ServerSocket;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.List;
@@ -102,7 +99,7 @@ class WorkerRosterPruneBootTest {
 
     private void seedRosterWithWorker() {
         node.membershipFsm().onMemberDescriptor(NodeInfo.nodeInfo(WORKER,
-            nodeAddress("localhost", freePort()).unwrap(), Map.of(NodeInfo.LABEL_ROLE, "worker")));
+            nodeAddress("localhost", ClusterTestPorts.freeClusterPort()).unwrap(), Map.of(NodeInfo.LABEL_ROLE, "worker")));
         assertThat(node.membershipFsm().isTrackedAndNotDead(WORKER)).isTrue();
         node.metricsCollector().onClusterSyncPong(new ClusterSyncPong(WORKER, new MetricObservation(0L, System.nanoTime(), System.currentTimeMillis(), Map.of("cpu", 0.5)),
                                    0L, 0L, 0L, 0L, 0L, "", java.util.List.of(), java.util.List.of(), java.util.List.of(), org.pragmatica.lang.Option.none()));
@@ -132,7 +129,7 @@ class WorkerRosterPruneBootTest {
     /// (TopologyObserver requires it), mutual self-signed QUIC TLS, management and app HTTP off.
     private static AetherNodeConfig minimalConfig(Path storageRoot) {
         var self = NodeId.nodeId("worker-roster-prune-boot-" + UUID.randomUUID()).unwrap();
-        var selfInfo = NodeInfo.nodeInfo(self, nodeAddress("localhost", freePort()).unwrap());
+        var selfInfo = NodeInfo.nodeInfo(self, nodeAddress("localhost", ClusterTestPorts.freeClusterPort()).unwrap());
 
         return AetherNodeConfig.builder()
                                .self(self)
@@ -150,13 +147,5 @@ class WorkerRosterPruneBootTest {
                                .managementHttpProtocol(HttpProtocol.H1)
                                .storageConfig(HermeticStorage.nodeStorageIn(storageRoot, false))
                                .build();
-    }
-
-    private static int freePort() {
-        try (var socket = new ServerSocket(0)) {
-            return socket.getLocalPort();
-        } catch (IOException e) {
-            throw new UncheckedIOException(e);
-        }
     }
 }
