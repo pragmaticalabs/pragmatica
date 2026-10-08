@@ -646,7 +646,8 @@ public final class MembershipFsm {
         withMember(id,
                    tracking -> tracking.inTransition(() -> {
                        tracking.updateDescriptor(admittedDescriptor);
-                       if (tracking.deathSignalNotOlderThan(monotonicNanos.getAsLong() - java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(Math.max(0L, observedAgoMs)))) {
+                       if (tracking.deathSignalNotOlderThan(monotonicNanos.getAsLong() - java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(Math.max(0L,
+                                                                                                                                                     observedAgoMs)))) {
                        return;
                    }
 
