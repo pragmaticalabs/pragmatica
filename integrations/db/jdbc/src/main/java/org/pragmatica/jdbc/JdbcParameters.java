@@ -36,6 +36,8 @@ public final class JdbcParameters {
 
     private JdbcParameters() {}
 
+    /// JDBC boundary: mirrors `PreparedStatement.setObject`, whose callers already run inside the driver's `SQLException` handling.
+    @SuppressWarnings({"JBCT-RET-01", "JBCT-EX-01"})
     public static void bind(PreparedStatement statement, int index, Object value) throws SQLException {
         if (value instanceof Instant instant) {
             statement.setTimestamp(index, Timestamp.from(instant), Calendar.getInstance(UTC));
