@@ -8840,7 +8840,7 @@ public interface AetherNode extends ManageableNode {
                                                                        bundle.notAfter());
     }
 
-    @SuppressWarnings("JBCT-PAT-01")
+    @SuppressWarnings({"JBCT-PAT-01", "JBCT-RET-01"})
     static void onCertificateRenewed(CertificateBundle newBundle,
                                      RabiaNode<KVCommand<AetherKey>> clusterNode,
                                      AppHttpServer appHttpServer,
@@ -8855,18 +8855,19 @@ public interface AetherNode extends ManageableNode {
                    QuicSslContextFactory.createClientFromBundle(newBundle, QuicTlsProvider.CLUSTER_PROTOCOL))
               .id()
               .onSuccess(tuple -> {
-                  renewalAlarm.applied();
-                  triggerCertRotation(clusterNode,
-                                      tuple.first(),
-                                      tuple.last(),
-                                      newBundle,
-                                      appHttpServer,
-                                      managementServerSupplier);
-              })
+                             renewalAlarm.applied();
+                             triggerCertRotation(clusterNode,
+                                                 tuple.first(),
+                                                 tuple.last(),
+                                                 newBundle,
+                                                 appHttpServer,
+                                                 managementServerSupplier);
+                         })
               .onFailure(cause -> {
-                  log.error("Failed to build SSL contexts from renewed certificate: {}", cause.message());
-                  renewalAlarm.renewalRefused(cause);
-              });
+                             log.error("Failed to build SSL contexts from renewed certificate: {}",
+                                       cause.message());
+                             renewalAlarm.renewalRefused(cause);
+                         });
     }
 
     @SuppressWarnings("JBCT-PAT-01")

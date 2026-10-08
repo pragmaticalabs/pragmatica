@@ -26,13 +26,14 @@ import java.security.PrivateKey;
 import java.security.Signature;
 import java.security.cert.CertificateFactory;
 
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.utils.Causes;
+
 import org.bouncycastle.asn1.pkcs.PrivateKeyInfo;
 import org.bouncycastle.openssl.PEMKeyPair;
 import org.bouncycastle.openssl.PEMParser;
 import org.bouncycastle.openssl.jcajce.JcaPEMKeyConverter;
-import org.pragmatica.lang.Result;
-import org.pragmatica.lang.Unit;
-import org.pragmatica.lang.utils.Causes;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -59,9 +60,8 @@ final class KeyPairCheck {
         return switch (identity) {
             case TlsConfig.Identity.SelfSigned() -> Result.success(unit());
             case TlsConfig.Identity.FromFiles(var certPath, var keyPath, _) -> Result.lift(Causes::fromThrowable,
-                                                                                           () -> new byte[][]{Files.readAllBytes(certPath),
-                                                                                                              Files.readAllBytes(keyPath)})
-                                                                                     .flatMap(pems -> verdict(pems[0], pems[1]));
+                                                                                           () -> new byte[][]{Files.readAllBytes(certPath), Files.readAllBytes(keyPath)}).flatMap(pems -> verdict(pems[0],
+                                                                                                                                                                                                  pems[1]));
             case TlsConfig.Identity.FromProvider(var certPem, var keyPem) -> verdict(certPem, keyPem);
         };
     }
@@ -81,6 +81,7 @@ final class KeyPairCheck {
         }
     }
 
+    @SuppressWarnings("JBCT-EX-01")
     private static boolean signatureVerifies(byte[] certificatePem, byte[] privateKeyPem) throws GeneralSecurityException, IOException {
         var publicKey = CertificateFactory.getInstance("X.509")
                                           .generateCertificate(new ByteArrayInputStream(certificatePem))
@@ -109,6 +110,7 @@ final class KeyPairCheck {
     }
 
     /// PKCS#8, PKCS#1 and SEC1 PEM: the cluster's own provider writes SEC1 `EC PRIVATE KEY`.
+    @SuppressWarnings("JBCT-EX-01")
     private static PrivateKey privateKey(byte[] pem) throws IOException {
         var converter = new JcaPEMKeyConverter();
 

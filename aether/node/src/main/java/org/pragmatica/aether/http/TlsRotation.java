@@ -45,7 +45,9 @@ public final class TlsRotation {
     private final String subjectKind;
     private final OperatorWarningCode refusedCode;
     private final OperatorWarningCode restoredCode;
+
     private final AtomicReference<OperatorWarningSink> sink = new AtomicReference<>(OperatorWarningSink.logOnly());
+
     private final AtomicBoolean refused = new AtomicBoolean();
 
     private TlsRotation(String serverName,
@@ -109,8 +111,8 @@ public final class TlsRotation {
     /// A renewal refused where there is no promise to fail (the scheduler's callback): log it and raise the event.
     @Contract
     public void renewalRefused(Cause cause) {
-        raiseRefused("TLS certificate renewal of the cluster " + subjectKind + " refused, keeping the current certificate: "
-                     + cause.message());
+        raiseRefused("TLS certificate renewal of the cluster " + subjectKind
+                    + " refused, keeping the current certificate: " + cause.message());
     }
 
     private void raiseRefused(String message) {
