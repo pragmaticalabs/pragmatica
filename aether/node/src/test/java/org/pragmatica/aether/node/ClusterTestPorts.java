@@ -56,6 +56,19 @@ public final class ClusterTestPorts {
         throw new IllegalStateException("no cluster port with free UDP, TCP and SWIM UDP after " + ATTEMPTS + " attempts");
     }
 
+    /// A port free on BOTH TCP and UDP, for a listener whose protocol (H1, H3, BOTH) the test does not fix. Not for a
+    /// cluster port: that one also needs the SWIM port, see [#freeClusterPort].
+    public static int freeTcpAndUdpPort() {
+        for (int attempt = 0; attempt < ATTEMPTS; attempt++) {
+            var candidate = udpCandidate();
+
+            if (tcpFree(candidate) && udpFree(candidate) && ISSUED.add(candidate)) {
+                return candidate;
+            }
+        }
+        throw new IllegalStateException("no port free on both TCP and UDP after " + ATTEMPTS + " attempts");
+    }
+
     /// True when every port a node on `clusterPort` binds is free right now.
     public static boolean isFreeClusterPort(int clusterPort) {
         return udpFree(clusterPort) && tcpFree(clusterPort) && udpFree(clusterPort + SWIM_OFFSET);
