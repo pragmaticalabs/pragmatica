@@ -476,8 +476,29 @@ public final class NodeLifecycleRoutes implements RouteSource {
     /// #1543 E: the old node's drain in a replacement goes through the SAME admission as `POST /nodes/drain` (readiness, the
     /// core disruption budget, #1720's slice floor), and is never forced. Success means the drain command was enqueued; a
     /// refusal is the cause the operator would have received.
+    ///
+    /// A drain already under way is not asked for again: the reconciler repeats this call every tick (and a new leader
+    /// repeats it without knowing the old one's request), and a second admission of a node that is already DRAINING is refused
+    /// for want of readiness, which is not a block of any kind. "Under way" is the commanded set or the node's own reported
+    /// state, so it holds across a leader change.
     public Promise<Unit> admitReplacementDrain(NodeId node) {
+        if (drainUnderWay(node)) {
+            return Promise.unitPromise();
+        }
+
         return Promise.resolved(admitOperatorDrain(node, true, false).map(_ -> Unit.unit()));
+    }
+
+    /// Whether a drain of `node` is already commanded or reported by the node itself.
+    public boolean drainUnderWay(NodeId node) {
+        return pendingDrainsSupplier.get()
+                                    .contains(node) || readLifecycleState(node).filter(state -> state == NodeReportedState.DRAINING)
+                                                                         .isPresent();
+    }
+
+    /// Whether `cause` is the slice floor holding a drain back: the one refusal a replacement reports as "blocked".
+    public static boolean isSliceFloorRefusal(org.pragmatica.lang.Cause cause) {
+        return cause instanceof SliceFloorBreached;
     }
 
     /// The transition itself: the membership FSM confirmed `node` DEAD on this node. A target refused by the slice floor

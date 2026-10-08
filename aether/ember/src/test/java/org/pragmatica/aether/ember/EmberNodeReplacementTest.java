@@ -39,9 +39,10 @@ import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 /// - follower and LEADER replacement at 3 cores: the installed voter set has exactly N members on every sample (a one-out-
 ///   one-in swap, never a shrink), the old node ends gone and the new one votes, a successor leader is elected when the
 ///   old one was the leader, and every ACKED write is in the final KV (a refused write is retryable, never lost);
-/// - the old node killed (kill -9) while the replacement is JOINING: the replacement still completes, and the dead old node
+/// - the old node crashed SILENTLY (`blackhole`: the process stops answering, no SWIM leave; `killNode` is a graceful stop and is
+///   not used for crashes) while the replacement is JOINING: the replacement still completes, and the dead old node
 ///   is never drained;
-/// - the old LEADER killed mid-swap: the cluster converges to a terminal record, with N voters and a leader, never stuck;
+/// - the old LEADER crashed (blackhole) mid-swap: the cluster converges to a terminal record, with N voters and a leader, never stuck;
 /// - a replacement that never boots: the record is ROLLED_BACK at its join deadline and the old node is untouched.
 /// The phase budgets are shortened by the `aether.replacement.timings.ms` property so the never-joins case does not wait
 /// ten minutes.
@@ -63,12 +64,13 @@ class EmberNodeReplacementTest {
 
     private EmberCluster cluster;
     private String priorTimings;
+    private final Set<String> blackholed = java.util.concurrent.ConcurrentHashMap.newKeySet();
 
     @BeforeEach
     void shortBudgets() {
         priorTimings = System.getProperty(TIMINGS_PROPERTY);
         // provisioning, joining, swapping, canary, canaryWait, draining, retiring (ms)
-        System.setProperty(TIMINGS_PROPERTY, "60000,60000,90000,60000,0,90000,60000");
+        System.setProperty(TIMINGS_PROPERTY, "60000,60000,90000,60000,3000,90000,60000");
     }
 
     @AfterEach
@@ -144,7 +146,7 @@ class EmberNodeReplacementTest {
 
         leader.nodeReplacementService().begin(victimId, "").await(START_BOUND).onFailure(cause -> throwBecause(cause.message()));
         awaitCondition("the replacement is JOINING (or later)", () -> phaseIndex(recordOf(victimId).phase()) >= phaseIndex(NodeReplacementPhase.JOINING));
-        cluster.killNode(victimId.id()).await(START_BOUND);
+        blackhole(victimId);
         awaitTerminal(victimId);
 
         assertThat(recordOf(victimId).phase()).isEqualTo(NodeReplacementPhase.DONE);
@@ -160,7 +162,7 @@ class EmberNodeReplacementTest {
 
         leader.nodeReplacementService().begin(oldLeader, "").await(START_BOUND).onFailure(cause -> throwBecause(cause.message()));
         awaitCondition("the replacement reached SWAPPING", () -> phaseIndex(recordOf(oldLeader).phase()) >= phaseIndex(NodeReplacementPhase.SWAPPING));
-        cluster.killNode(oldLeader.id()).await(START_BOUND);
+        blackhole(oldLeader);
         awaitTerminal(oldLeader);
 
         assertThat(recordOf(oldLeader).phase()).as("a terminal outcome, never stuck").isIn(NodeReplacementPhase.DONE,
@@ -255,6 +257,95 @@ class EmberNodeReplacementTest {
         assertOldGone_newVotes(victim, 3);
     }
 
+    // ---- v-2008 round: events, canary death, slow provider ------------------------------------------------------------
+
+    /// B3: the operator events of a replacement follow the COMMITTED transition and are raised by the cluster-events owner, so the
+    /// recovery of "started" is published whichever node is leader when the replacement completes. A replaced LEADER is the case
+    /// where the leader that raised "started" is gone by the time "completed" commits.
+    @Test
+    @Timeout(600)
+    void followerReplacement_publishesStartedAndCompleted_control() {
+        eventsScenario(false, "evf");
+    }
+
+    @Test
+    @Timeout(600)
+    void leaderReplacement_publishesStartedAndCompleted_acrossTheLeaderChange() {
+        eventsScenario(true, "evl");
+    }
+
+    private void eventsScenario(boolean replaceLeader, String prefix) {
+        start(3, prefix);
+        var leader = awaitLeader();
+        var victim = replaceLeader ? leader.self() : followerOf(leader).self();
+
+        leader.nodeReplacementService().begin(victim, "").await(START_BOUND).onFailure(cause -> throwBecause(cause.message()));
+        awaitTerminal(victim);
+        assertThat(recordOf(victim).phase()).isEqualTo(NodeReplacementPhase.DONE);
+        awaitCondition("the replacement's events reach the cluster-events stream", 60_000L, () -> replacementCodes(victim).contains("node-replacement-completed"));
+        assertThat(replacementCodes(victim)).as("opened and closed, once each").containsExactly("node-replacement-started", "node-replacement-completed");
+    }
+
+    private List<String> replacementCodes(NodeId subject) {
+        return awaitLeader().eventAggregator()
+                            .events()
+                            .await(TimeSpan.timeSpan(30).seconds())
+                            .or(List.of())
+                            .stream()
+                            .filter(org.pragmatica.aether.api.ClusterEvent.OperatorWarning.class::isInstance)
+                            .map(org.pragmatica.aether.api.ClusterEvent.OperatorWarning.class::cast)
+                            .filter(event -> subject.id().equals(event.details().get("subject")))
+                            .map(event -> event.details().get("code"))
+                            .toList();
+    }
+
+    /// B5: the replacement crashes silently right after the swap. The canary waits long enough for SWIM to declare the death, the
+    /// swap is reverted, and the healthy original survives and votes again.
+    @Test
+    @Timeout(900)
+    void replacementThatCrashesInTheCanary_isRevertedAndTheOriginalSurvives() {
+        System.setProperty(TIMINGS_PROPERTY, "60000,60000,90000,150000,60000,90000,60000");
+        start(3, "rpy");
+        var leader = awaitLeader();
+        var victim = followerOf(leader).self();
+        var watch = Watch.begin(this, 3).watching(victim);
+
+        leader.nodeReplacementService().begin(victim, "").await(START_BOUND).onFailure(cause -> throwBecause(cause.message()));
+        awaitCondition("the swap is done and the canary runs", 180_000L, () -> phaseIndex(recordOf(victim).phase()) >= phaseIndex(NodeReplacementPhase.CANARY));
+        var replacement = recordOf(victim).replacement();
+
+        blackhole(replacement);
+        awaitTerminal(victim);
+        var result = watch.finish();
+
+        assertThat(recordOf(victim).phase()).as("reason: %s", recordOf(victim).reason()).isEqualTo(NodeReplacementPhase.ROLLED_BACK);
+        assertThat(result.phases()).as("the original was never drained").doesNotContain(NodeReplacementPhase.DRAINING_OLD, NodeReplacementPhase.RETIRING_OLD);
+        assertThat(result.lostAckedWrites()).isEmpty();
+        awaitCondition("the original votes again and the dead replacement does not",
+                       120_000L,
+                       () -> installedVoters(awaitLeader()).contains(victim) && !installedVoters(awaitLeader()).contains(replacement));
+        assertThat(cluster.getNode(victim.id()).isPresent()).as("the original is running").isTrue();
+    }
+
+    /// B4: a provider that takes 40 s to create the node. The reconciler must not run the provision again while the first is
+    /// pending, must not roll back, and the replacement completes with exactly one create.
+    @Test
+    @Timeout(900)
+    void slowProvider_isCalledOnce_andTheReplacementStillCompletes() {
+        var creates = new AtomicInteger();
+
+        start(3, "rps", delegate -> new SlowCreateProvider(delegate, creates));
+        var leader = awaitLeader();
+        var victim = followerOf(leader).self();
+
+        leader.nodeReplacementService().begin(victim, "").await(START_BOUND).onFailure(cause -> throwBecause(cause.message()));
+        awaitTerminal(victim);
+
+        assertThat(recordOf(victim).phase()).as("reason: %s", recordOf(victim).reason()).isEqualTo(NodeReplacementPhase.DONE);
+        assertThat(creates.get()).as("one create for one replacement").isEqualTo(1);
+        assertOldGone_newVotes(victim, 3);
+    }
+
     /// The instrument can fail: a sampler that never reports a violation proves nothing. Here the electorate is shrunk ON
     /// PURPOSE (a plain reconfiguration to two members, no replacement involved) while the sampler expects three, and the
     /// sampler must report it.
@@ -279,21 +370,45 @@ class EmberNodeReplacementTest {
     // ---- scenario plumbing -------------------------------------------------------------------------------------------
 
     private void start(int size, String prefix) {
+        start(size, prefix, null);
+    }
+
+    private void start(int size,
+                       String prefix,
+                       java.util.function.Function<org.pragmatica.aether.environment.ComputeProvider, org.pragmatica.aether.environment.ComputeProvider> decorator) {
         cluster = EmberTestPorts.startedCluster(new EmberTestPorts.Block(EmberTestPorts.POOL_FIRST,
                                                                           EmberTestPorts.POOL_LAST,
                                                                           EmberTestPorts.POOL_STEP,
                                                                           2 * size + 4,
                                                                           MGMT_OFFSET,
                                                                           APP_HTTP_OFFSET),
-                                                basePort -> emberCluster(size, basePort, basePort + MGMT_OFFSET, basePort + APP_HTTP_OFFSET, prefix),
+                                                basePort -> {
+                                                    var built = emberCluster(size, basePort, basePort + MGMT_OFFSET, basePort + APP_HTTP_OFFSET, prefix);
+
+                                                    if (decorator != null) {
+                                                        built.withComputeProviderDecorator(decorator::apply);
+                                                    }
+
+                                                    return built;
+                                                },
                                                 START_BOUND);
+    }
+
+    /// Abrupt death: the node stops answering, with no SWIM leave. (`killNode` is `stop()`, a graceful departure.)
+    private void blackhole(NodeId id) {
+        blackholed.add(id.id());
+        cluster.blackhole(id.id()).await(START_BOUND);
+    }
+
+    private List<AetherNode> live() {
+        return cluster.allNodes().stream().filter(node -> !blackholed.contains(node.self().id())).toList();
     }
 
     private AetherNode awaitLeader() {
         var found = new AetherNode[1];
 
         awaitCondition("a leader is elected", () -> {
-            found[0] = cluster.currentLeader().flatMap(cluster::getNode).filter(AetherNode::isLeader).or((AetherNode) null);
+            found[0] = live().stream().filter(AetherNode::isLeader).findFirst().orElse(null);
 
             return found[0] != null;
         });
@@ -302,7 +417,7 @@ class EmberNodeReplacementTest {
     }
 
     private AetherNode followerOf(AetherNode leader) {
-        return cluster.allNodes().stream().filter(node -> !node.self().equals(leader.self())).findFirst().orElseThrow();
+        return live().stream().filter(node -> !node.self().equals(leader.self())).findFirst().orElseThrow();
     }
 
     /// The newest committed record for `original` any node knows: nodes apply the leader's commits at slightly different
@@ -310,7 +425,7 @@ class EmberNodeReplacementTest {
     private NodeReplacementValue recordOf(NodeId original) {
         NodeReplacementValue newest = null;
 
-        for (var node : new ArrayList<>(cluster.allNodes())) {
+        for (var node : new ArrayList<>(live())) {
             var found = node.nodeReplacementService().status(original).or((NodeReplacementValue) null);
 
             if (found != null && (newest == null || found.epoch() > newest.epoch())) {
@@ -421,7 +536,7 @@ class EmberNodeReplacementTest {
 
         private void sample() {
             while (running.get()) {
-                for (var node : new ArrayList<>(test.cluster.allNodes())) {
+                for (var node : new ArrayList<>(test.live())) {
                     var voters = installedVoters(node);
 
                     if (voters.contains(node.self())) {
@@ -434,6 +549,14 @@ class EmberNodeReplacementTest {
                 }
                 Option.option(watched).onPresent(this::notePhase);
                 sleep(50);
+            }
+        }
+
+        private void joinSampler() {
+            try {
+                sampler.join(2_000L);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
             }
         }
 
@@ -455,7 +578,7 @@ class EmberNodeReplacementTest {
                 var i = sequence.incrementAndGet();
                 var key = new AetherKey.LogLevelKey("e1.write." + i);
                 var value = new AetherValue.LogLevelValue("e1.write." + i, "INFO", System.currentTimeMillis());
-                var leader = test.cluster.currentLeader().flatMap(test.cluster::getNode).or((AetherNode) null);
+                var leader = test.live().stream().filter(AetherNode::isLeader).findFirst().orElse(null);
 
                 if (leader != null) {
                     var outcome = leader.<Object> apply(List.of(new KVCommand.Put<AetherKey, AetherValue>(key, value))).await(TimeSpan.timeSpan(5).seconds());
@@ -470,12 +593,41 @@ class EmberNodeReplacementTest {
 
         Result finish() {
             running.set(false);
+            joinSampler();
+            // The sampler may have stopped between the terminal commit and its next look: note the phase once more, so the
+            // phases reported are the phases the cluster reached.
+            Option.option(watched).onPresent(this::notePhase);
             sleep(300);
             var finalLeader = test.awaitLeader();
             var lost = acked.stream().filter(key -> finalLeader.kvStore().get(key).isEmpty()).map(AetherKey.LogLevelKey::loggerName).toList();
 
             return new Result(List.copyOf(violations), lost, acked.size(), voterSamples.get(), List.copyOf(phases));
         }
+    }
+
+    /// Delays every create by 40 s (a cloud VM boot) and counts the calls.
+    private static final class SlowCreateProvider implements org.pragmatica.aether.environment.ComputeProvider {
+        private final org.pragmatica.aether.environment.ComputeProvider delegate;
+        private final AtomicInteger creates;
+
+        SlowCreateProvider(org.pragmatica.aether.environment.ComputeProvider delegate, AtomicInteger creates) {
+            this.delegate = delegate;
+            this.creates = creates;
+        }
+
+        @Override public org.pragmatica.aether.environment.ProviderDefaults providerDefaults() {return delegate.providerDefaults();}
+
+        @Override
+        public org.pragmatica.lang.Promise<org.pragmatica.aether.environment.InstanceInfo> createFrom(org.pragmatica.aether.environment.ProvisionRequest request) {
+            creates.incrementAndGet();
+
+            return org.pragmatica.lang.Promise.<org.pragmatica.lang.Unit> promise(TimeSpan.timeSpan(40).seconds(), p -> p.succeed(org.pragmatica.lang.Unit.unit()))
+                                              .flatMap(_ -> delegate.createFrom(request));
+        }
+
+        @Override public org.pragmatica.lang.Promise<org.pragmatica.lang.Unit> terminate(org.pragmatica.aether.environment.InstanceId instanceId) {return delegate.terminate(instanceId);}
+        @Override public org.pragmatica.lang.Promise<List<org.pragmatica.aether.environment.InstanceInfo>> listInstances() {return delegate.listInstances();}
+        @Override public org.pragmatica.lang.Promise<org.pragmatica.aether.environment.InstanceInfo> instanceStatus(org.pragmatica.aether.environment.InstanceId instanceId) {return delegate.instanceStatus(instanceId);}
     }
 
     /// A provider that reports a provision as successful but never boots a node: the replacement never joins.

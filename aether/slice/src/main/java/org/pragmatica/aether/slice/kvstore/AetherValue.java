@@ -3009,14 +3009,21 @@ public sealed interface AetherValue {
             this(replacement, role, phase, phaseDeadlineMs, "", "", MODE_CTM, 0, "", 0L);
         }
 
-        /// The same record in `next` phase with its own deadline, `attempt` reset, the epoch advanced and `reason` set.
+        /// The same record in `next` phase with its own deadline, the epoch advanced and `reason` set. `attempt` counts how often
+        /// the SAME phase was committed again (a marker such as join-overdue or drain-blocked); a new phase starts at 0.
         public NodeReplacementValue advanced(NodeReplacementPhase next, long deadlineMs, String why) {
-            return new NodeReplacementValue(replacement, role, next, deadlineMs, source, targetVersion, mode, 0, why, epoch + 1);
-        }
-
-        /// The same phase re-entered: the attempt counted, the epoch advanced.
-        public NodeReplacementValue retried(long deadlineMs) {
-            return new NodeReplacementValue(replacement, role, phase, deadlineMs, source, targetVersion, mode, attempt + 1, reason, epoch + 1);
+            return new NodeReplacementValue(replacement,
+                                            role,
+                                            next,
+                                            deadlineMs,
+                                            source,
+                                            targetVersion,
+                                            mode,
+                                            next == phase
+                                            ? attempt + 1
+                                            : 0,
+                                            why,
+                                            epoch + 1);
         }
     }
 

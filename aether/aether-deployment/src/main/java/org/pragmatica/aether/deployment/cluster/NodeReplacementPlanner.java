@@ -79,13 +79,24 @@ public final class NodeReplacementPlanner {
         /// retiring, in milliseconds, comma-separated). Meant for the integration harness, where a "never joins" case must
         /// not wait ten minutes; an unparsable or short value is ignored and the defaults apply.
         public static final String OVERRIDE_PROPERTY = "aether.replacement.timings.ms";
+        /// How long the replacement must stay healthy before the original is drained. A node that dies right after the swap is
+        /// not declared dead by SWIM until its suspicion window has run out, so a canary that passes on its first look
+        /// certifies a corpse; this is longer than the default suspect timeout, so a silent death is seen before the original
+        /// is destroyed. [unverified: the suspect window itself, which is configurable; a cluster that raises it must raise this.]
+        public static final long DEFAULT_CANARY_WAIT_MS = 30_000L;
 
         public static Timings defaults() {
             return parse(System.getProperty(OVERRIDE_PROPERTY, ""));
         }
 
         public static Timings parse(String commaSeparated) {
-            var fallback = new Timings(120_000L, 600_000L, 180_000L, 120_000L, 0L, 600_000L, 300_000L);
+            var fallback = new Timings(120_000L,
+                                       600_000L,
+                                       180_000L,
+                                       120_000L,
+                                       DEFAULT_CANARY_WAIT_MS,
+                                       600_000L,
+                                       300_000L);
             var parts = commaSeparated.isBlank()
                         ? new String[0]
                         : commaSeparated.split(",");
@@ -196,7 +207,7 @@ public final class NodeReplacementPlanner {
 
         if (o.replacementKnown() && !o.replacementAlive()) {
             return o.oldIsVoter() && !o.replacementIsVoter()
-                   ? rollBack(r, o, "replacement died before the swap")
+                   ? rollBackWhenSettled(r, o, "replacement died before the swap")
                    : Plan.commit(r.advanced(NodeReplacementPhase.FAILED_KEPT_BOTH,
                                             o.now(),
                                             "replacement died after the swap"));
@@ -204,7 +215,7 @@ public final class NodeReplacementPlanner {
 
         if (o.now() > r.phaseDeadlineMs()) {
             return o.oldIsVoter() && !o.replacementIsVoter()
-                   ? rollBack(r, o, "swap deadline")
+                   ? rollBackWhenSettled(r, o, "swap deadline")
                    : Plan.commit(r.advanced(NodeReplacementPhase.FAILED_KEPT_BOTH,
                                             o.now(),
                                             "swap applied but not settled"));
@@ -272,7 +283,9 @@ public final class NodeReplacementPlanner {
     }
 
     private static Plan reverting(NodeReplacementValue r, Observation o, Timings t) {
-        if (o.oldIsVoter() && !o.replacementIsVoter() && o.rosterSettled()) {
+        // A worker holds no seat, so a settled "roll back" of a kept-both worker pair has nothing to swap back: it only gives the
+        // replacement up.
+        if (!isCore(r) || (o.oldIsVoter() && !o.replacementIsVoter() && o.rosterSettled())) {
             return Plan.act(Effect.TERMINATE_REPLACEMENT,
                             r.advanced(NodeReplacementPhase.ROLLED_BACK, o.now(), r.reason()),
                             r.advanced(NodeReplacementPhase.ROLLED_BACK, o.now(), r.reason()));
@@ -296,6 +309,14 @@ public final class NodeReplacementPlanner {
             return Plan.commit(r.advanced(NodeReplacementPhase.RETIRING_OLD,
                                           o.now() + t.retiringMs(),
                                           ""));
+        }
+
+        if (replacementLost(o)) {
+            return o.oldDrain() == DrainState.NOT_REQUESTED
+                   ? revertOrKeep(r, o, t, "replacement died before the old node was drained")
+                   : Plan.commit(r.advanced(NodeReplacementPhase.FAILED_KEPT_BOTH,
+                                            o.now(),
+                                            "replacement died while the old node drains"));
         }
 
         if (o.now() > r.phaseDeadlineMs()) {
@@ -334,6 +355,14 @@ public final class NodeReplacementPlanner {
             return Plan.commit(r.advanced(NodeReplacementPhase.DONE, o.now(), ""));
         }
 
+        if (replacementLost(o)) {
+            // The original is still up and the replacement is gone: do not finish destroying the one node that is left of the
+            // pair. Both are kept for the operator (settle) or for auto-heal to repair.
+            return Plan.commit(r.advanced(NodeReplacementPhase.FAILED_KEPT_BOTH,
+                                          o.now(),
+                                          "replacement died before the old node retired"));
+        }
+
         if (o.now() > r.phaseDeadlineMs()) {
             return Plan.commit(r.advanced(NodeReplacementPhase.DONE,
                                           o.now(),
@@ -341,6 +370,21 @@ public final class NodeReplacementPlanner {
         }
 
         return Plan.act(Effect.RETIRE_OLD);
+    }
+
+    /// A swap that was already requested can still install, so the replacement is terminated only once the engine reports the
+    /// roster settled and the original still holds its seat; until then the answer is not known and the record holds.
+    /// The replacement was seen and is gone while the original is still alive: the original is the only node of the pair left.
+    private static boolean replacementLost(Observation o) {
+        return o.oldAlive()
+               && o.replacementKnown()
+               && !o.replacementAlive();
+    }
+
+    private static Plan rollBackWhenSettled(NodeReplacementValue r, Observation o, String why) {
+        return o.rosterSettled()
+               ? rollBack(r, o, why)
+               : Plan.hold();
     }
 
     private static Plan rollBack(NodeReplacementValue r, Observation o, String why) {

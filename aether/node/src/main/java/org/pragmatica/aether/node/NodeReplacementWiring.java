@@ -71,6 +71,11 @@ public final class NodeReplacementWiring {
         public static DrainOutcome blocked(String why) {
             return new DrainOutcome(false, why);
         }
+
+        /// Not admitted now, and not by the slice floor: nothing to report as blocked, ask again next tick.
+        public static DrainOutcome pending() {
+            return new DrainOutcome(false, "");
+        }
     }
 
     public record Inputs(NodeId self,
@@ -86,6 +91,7 @@ public final class NodeReplacementWiring {
                          Function<NodeId, String> version,
                          ClusterTopologyManager ctm,
                          Function<NodeId, Promise<DrainOutcome>> drain,
+                         Predicate<NodeId> draining,
                          Supplier<String> idPrefix,
                          Predicate<NodeId> dhtHolds,
                          OperatorWarningSink warnings,
@@ -171,12 +177,15 @@ public final class NodeReplacementWiring {
                                     });
     }
 
-    private static Unit announce(Inputs in,
-                                 NodeId original,
-                                 Option<NodeReplacementValue> before,
-                                 NodeReplacementValue after) {
+    /// The operator events of one committed transition. Called from the index on EVERY node as the record is applied, and
+    /// acted on only by the node that owns the cluster-events partition (see `AetherNode`): the owner is the same node for
+    /// the opening event and its recovery, which the leader is not once the leader is the node being replaced.
+    public static Unit announce(OperatorWarningSink warnings,
+                                NodeId original,
+                                Option<NodeReplacementValue> before,
+                                NodeReplacementValue after) {
         NodeReplacementAnnouncements.of(original, before, after).forEach(a -> OperatorWarnings.raise(LOG,
-                                                                                                     in.warnings(),
+                                                                                                     warnings,
                                                                                                      a.code(),
                                                                                                      a.subject(),
                                                                                                      "{}",
@@ -249,7 +258,8 @@ public final class NodeReplacementWiring {
                 return DrainState.COMPLETE;
             }
 
-            return drainRequested.contains(original)
+            return drainRequested.contains(original) || in.draining()
+                                                          .test(original)
                    ? DrainState.IN_PROGRESS
                    : DrainState.NOT_REQUESTED;
         }
@@ -265,7 +275,21 @@ public final class NodeReplacementWiring {
             };
         }
 
+        /// Idempotent across leaders: provisioning commits a capacity reservation for the replacement's id BEFORE the provider is
+        /// called, so a new leader that finds the record still PROVISIONING (the old leader died between dispatch and its
+        /// commit) finds the reservation too and must not dispatch the same id again; the join deadline bounds the wait.
         private Promise<EffectResult> provision(NodeId original, NodeReplacementValue record) {
+            var reservation = in.kvStore()
+                                .getTyped(new AetherKey.CapacityReservationKey(record.replacement()),
+                                          AetherValue.CapacityReservationValue.class);
+
+            if (reservation.isPresent()) {
+                return Promise.success(reservation.filter(value -> value.phase() == AetherValue.CapacityReservationPhase.RELEASED)
+                                                  .isPresent()
+                                       ? new EffectResult.Failed("the capacity reservation for the replacement was refused")
+                                       : new EffectResult.Done());
+            }
+
             var members = Option.option(in.membership().get()).map(fsm -> fsm.memberStates()
                                                                              .keySet()).or(Set.of());
 
@@ -292,31 +316,35 @@ public final class NodeReplacementWiring {
         private Promise<EffectResult> drain(NodeId original) {
             return in.drain()
                      .apply(original)
-                     .<EffectResult> map(outcome -> {
-                                             if (outcome.accepted()) {
-                                             drainBlocked.remove(original);
-                                             drainRequested.add(original);
-
-                                             return new EffectResult.Done();
-                                         }
-
-                                             drainBlocked.put(original,
-                                                              outcome.blockedBy());
-
-                                             return new EffectResult.Deferred("drain blocked");
-                                         })
-                     .recover(cause -> {
-                                  drainBlocked.put(original,
-                                                   cause.message());
-
-                                  return new EffectResult.Deferred("drain refused");
-                              });
+                     .<EffectResult> map(outcome -> drained(original, outcome))
+                     .recover(cause -> new EffectResult.Deferred("drain admission failed: " + cause.message()));
         }
 
-        @Override
-        public Unit announce(NodeId original, Option<NodeReplacementValue> before, NodeReplacementValue after) {
-            return NodeReplacementWiring.announce(in, original, before, after);
+        private EffectResult drained(NodeId original, DrainOutcome outcome) {
+            if (outcome.accepted()) {
+                drainBlocked.remove(original);
+                drainRequested.add(original);
+
+                return new EffectResult.Done();
+            }
+
+            if (outcome.blockedBy().isEmpty()) {
+                // Refused for a reason that is not the slice floor: nothing an operator can act on. Ask again.
+                drainBlocked.remove(original);
+
+                return new EffectResult.Deferred("drain not admitted yet");
+            }
+
+            drainBlocked.put(original, outcome.blockedBy());
+
+            return new EffectResult.Deferred("drain blocked");
         }
+    }
+
+    /// A replacement holds the cluster's one slot while it runs AND while it waits, kept-both, for an operator to settle it: the
+    /// kept pair still holds an extra node, and beginning over it would orphan the kept replacement and leave its event open.
+    static boolean holdsCapacity(NodeReplacementPhase phase) {
+        return phase == NodeReplacementPhase.FAILED_KEPT_BOTH || !NodeReplacementReconciler.isTerminal(phase);
     }
 
     private static final class Service implements NodeReplacementService {
@@ -362,7 +390,7 @@ public final class NodeReplacementWiring {
                          .all()
                          .entrySet()
                          .stream()
-                         .filter(entry -> !NodeReplacementReconciler.isTerminal(entry.getValue().phase()))
+                         .filter(entry -> holdsCapacity(entry.getValue().phase()))
                          .findAny();
 
             if (live.isPresent()) {
@@ -398,8 +426,6 @@ public final class NodeReplacementWiring {
                 if (!accepted) {
                     return new Refusal.Conflict(original).<NodeReplacementValue> promise();
                 }
-
-                announce(in, original, Option.none(), record);
 
                 return Promise.success(record);
             });
@@ -455,8 +481,6 @@ public final class NodeReplacementWiring {
                 if (!accepted) {
                     return new Refusal.Conflict(original).<Unit> promise();
                 }
-
-                announce(in, original, Option.some(record), next);
 
                 return Promise.unitPromise();
             });
