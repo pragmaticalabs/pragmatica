@@ -539,7 +539,8 @@ class AppHttpServerAdapter implements AppHttpServer {
     }
 
     private Promise<Unit> tolerateBindFailureWhenH1Serves(Promise<Unit> h3Start) {
-        return config.httpProtocol().includesH1()
+        return config.httpProtocol()
+                     .includesH1()
                ? h3Start.recover(AppHttpServerAdapter::logH3DisabledAndReturnUnit)
                : h3Start;
     }
