@@ -461,6 +461,10 @@ public final class NodeReplacementWiring {
         Set<NodeId> readyAll();
         /// The index of committed pairings the node's reconcilers and event announcer read.
         NodeReplacementIndex pairings();
+        /// Whether this node's membership view reads `id` as alive: the predicate the reconciler's observation uses for the old node.
+        boolean memberAlive(NodeId id);
+        /// Whether a drain of `id` was ever accepted by this node's reconciler.
+        boolean drainRequested(NodeId id);
     }
 
     private static final class Service implements NodeReplacementService, Wired {
@@ -477,6 +481,16 @@ public final class NodeReplacementWiring {
         public Set<NodeId> readyAll() {
             return in.readyAll()
                      .get();
+        }
+
+        @Override
+        public boolean memberAlive(NodeId id) {
+            return alive(Option.option(in.membership().get()).flatMap(fsm -> Option.option(fsm.memberStates().get(id))));
+        }
+
+        @Override
+        public boolean drainRequested(NodeId id) {
+            return environment.drainRequested.contains(id);
         }
 
         @Override

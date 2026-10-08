@@ -137,22 +137,18 @@ class EmberNodeReplacementTest {
         }
     }
 
-    /// The tripwire's phase budgets: the same as every other scenario except DRAINING_OLD, 30 s instead of 90 s. Today a blackholed,
-    /// never-yet-healthy old node is declared dead by the leader only when the peer-side liveness sweep (pingInterval x 8, 80 s in
-    /// Ember) or the node's own quorum-loss self-drain (~66 s) closes its open channel, so the leader's view of it flips ~67-80 s
-    /// after the crash. With a 90 s DRAINING_OLD budget (entered ~13 s after the crash) that race could go either way, which made the
-    /// tripwire fire on a CI run where Dead arrived first (phase DONE). 30 s ends the budget ~43 s after the crash: well before any
-    /// observed Dead edge, so today's outcome is deterministically FAILED_KEPT_BOTH, yet long enough that a real #2021 fix (detection
-    /// in seconds) lets the replacement complete and trips this test.
-    private static final String TRIPWIRE_TIMINGS = "60000,60000,90000,60000,3000,30000,60000";
-    private static final String TRIPWIRE_NAME = "tripwire2021_oldNodeCrashedAtColdBoot_endsKeptBoth_withoutRequestingTheDrain";
-    private static final String REAL_TEST_NAME = "oldNodeKilledWhileTheReplacementIsJoining_stillCompletes_andTheCorpseIsNeverDrained";
+    /// The cold-boot crash's phase budgets: the same as every other scenario except DRAINING_OLD, 30 s instead of 90 s. How long the
+    /// leader takes to read a blackholed old node as Dead after a cold-boot crash is bimodal (#2021): about 7 s when SWIM had already seen it
+    /// healthy, 67-80 s when the live-transport veto has to wait for the peer-side liveness sweep (pingInterval x 8, 80 s in Ember) or the
+    /// node's own quorum-loss self-drain. A 30 s DRAINING_OLD budget ends ~43 s after the crash, so BOTH outcomes are reachable and the test
+    /// below must hold on either.
+    private static final String COLD_BOOT_TIMINGS = "60000,60000,90000,60000,3000,30000,60000";
 
-    /// The assertion that is meant to hold: an old core that crashes abruptly during JOINING right after cluster start ends DONE.
-    /// It cannot hold yet: SWIM never saw the node healthy, so it reports UNKNOWN and the live-transport veto keeps the leader from
-    /// seeing it Dead inside the draining budget (#2021). Disabled until #2021 lands; [#TRIPWIRE_NAME] guards it meanwhile.
+    /// The assertion that is meant to hold once the leader reads a crashed old node as Dead within seconds in every case (#2021): the
+    /// same crash always ends DONE. It cannot hold yet. Disabled until #2021 lands;
+    /// `coldBootCrashOfTheOldNode_endsSafely_whicheverWayDeadnessIsDetected` states what must hold meanwhile.
     @Test
-    @Disabled("enable when #2021 lands; tripwire " + TRIPWIRE_NAME + " guards this")
+    @Disabled("enable when #2021 lands; coldBootCrashOfTheOldNode_endsSafely_whicheverWayDeadnessIsDetected holds the safety invariant meanwhile")
     @Timeout(600)
     void oldNodeKilledWhileTheReplacementIsJoining_stillCompletes_andTheCorpseIsNeverDrained() {
         var victimId = crashOldNodeWhileTheReplacementIsJoining("rpk", 0L);
@@ -161,19 +157,110 @@ class EmberNodeReplacementTest {
         assertOldGone_newVotes(victimId);
     }
 
-    /// Today's outcome of the same crash, pinned: the drain is never requested (the leader still reads the old node as alive) and
-    /// the record ends FAILED_KEPT_BOTH, the safe terminal state. ENABLED so that the day #2021 changes the outcome this goes red
-    /// and says what to do; a disabled test would stay silent.
+    /// The safety invariant of the cold-boot crash, which holds on BOTH outcomes the timing of Dead detection allows (#2021): the record
+    /// ends DONE or FAILED_KEPT_BOTH and nothing else; a kept-both record says the drain was never requested of the still-alive-looking
+    /// corpse; a DONE record was reached only after the leader read the old node as not alive, and the replacement votes in its seat.
+    /// Throughout: the leader never read the old node as alive while the record retired it, never accepted a drain for it while it read
+    /// alive, and no sampled electorate ever had a lost seat or a double voter. The outcome and the kill-to-Dead latency are printed.
     @Test
     @Timeout(600)
-    void tripwire2021_oldNodeCrashedAtColdBoot_endsKeptBoth_withoutRequestingTheDrain() {
-        System.setProperty(TIMINGS_PROPERTY, TRIPWIRE_TIMINGS);
-        var victimId = crashOldNodeWhileTheReplacementIsJoining("rpk", 0L);
-        var record = recordOf(victimId);
-        var landed = "#2021 landed: delete this tripwire and enable " + REAL_TEST_NAME + " (phase was " + record.phase() + ", reason: " + record.reason() + ")";
+    void coldBootCrashOfTheOldNode_endsSafely_whicheverWayDeadnessIsDetected() {
+        System.setProperty(TIMINGS_PROPERTY, COLD_BOOT_TIMINGS);
+        var probe = new SafetyProbe(this);
+        var watch = new Watch[1];
+        var victimId = crashOldNodeWhileTheReplacementIsJoining("rpk",
+                                                               0L,
+                                                               victim -> watch[0] = Watch.begin(this, 3).watching(victim),
+                                                               probe::begin);
+        var result = watch[0].finish();
 
-        assertThat(record.phase()).as(landed).isEqualTo(NodeReplacementPhase.FAILED_KEPT_BOTH);
-        assertThat(record.reason()).as(landed).startsWith("drain did not complete").contains("oldAlive=true").contains("drain=NOT_REQUESTED");
+        probe.finish();
+        var record = recordOf(victimId);
+        var deadAfter = probe.deadAfterMs() < 0 ? "never seen" : probe.deadAfterMs() + " ms";
+
+        System.out.println("EMBER-REPLACEMENT cold-boot outcome=" + record.phase() + " leader read the old node as not alive: " + deadAfter + " after the kill");
+        assertThat(record.phase()).as("a safe terminal outcome, reason: %s", record.reason())
+                                  .isIn(NodeReplacementPhase.DONE, NodeReplacementPhase.FAILED_KEPT_BOTH);
+        assertThat(probe.violations()).as("safety violations sampled during the run").isEmpty();
+        assertThat(result.voterViolations()).as("installed voters == 3 on every sample").isEmpty();
+
+        if (record.phase() == NodeReplacementPhase.FAILED_KEPT_BOTH) {
+            assertThat(record.reason()).startsWith("drain did not complete").contains("oldAlive=true").contains("drain=NOT_REQUESTED");
+        } else {
+            assertThat(probe.deadAfterMs()).as("DONE only after the leader read the old node as not alive").isGreaterThanOrEqualTo(0L);
+            assertOldGone_newVotes(victimId);
+        }
+    }
+
+    /// Samples the leader's own view of the crashed old node every 20 ms from the kill: when it first read it as not alive, and any
+    /// moment the leader was seen retiring it, or holding an accepted drain for it, while it still read it alive. The record phase
+    /// and the drain flag are read BEFORE the liveness (Dead is terminal), so a stale read can only hide a violation, never invent one.
+    private static final class SafetyProbe {
+        private final EmberNodeReplacementTest test;
+        private final AtomicBoolean running = new AtomicBoolean(true);
+        private final List<String> violations = new CopyOnWriteArrayList<>();
+        private volatile long killedAtNanos;
+        private volatile long deadAtNanos = -1L;
+        private volatile NodeId old;
+        private Thread sampler;
+
+        SafetyProbe(EmberNodeReplacementTest test) {
+            this.test = test;
+        }
+
+        void begin(NodeId victim) {
+            old = victim;
+            killedAtNanos = System.nanoTime();
+            sampler = Thread.ofPlatform().daemon().start(this::sample);
+        }
+
+        private void sample() {
+            while (running.get()) {
+                test.live().stream().filter(AetherNode::isLeader).findFirst().ifPresent(this::look);
+                sleep(20);
+            }
+        }
+
+        private void look(AetherNode leader) {
+            if (!(leader.nodeReplacementService() instanceof org.pragmatica.aether.node.NodeReplacementWiring.Wired wired)) {
+                violations.add("the node's replacement service does not expose its wiring");
+                return;
+            }
+            var record = test.recordOf(old);
+            var retiring = record != null && (record.phase() == NodeReplacementPhase.RETIRING_OLD || record.phase() == NodeReplacementPhase.DONE);
+            var drained = wired.drainRequested(old);
+            var alive = wired.memberAlive(old);
+
+            if (!alive && deadAtNanos < 0) {
+                deadAtNanos = System.nanoTime();
+            }
+
+            if (alive && retiring) {
+                violations.add("the record was " + record.phase() + " while the leader read " + old.id() + " as alive");
+            }
+
+            if (alive && drained) {
+                violations.add("the leader accepted a drain of " + old.id() + " while it read it as alive");
+            }
+        }
+
+        void finish() {
+            running.set(false);
+
+            try {
+                sampler.join(2_000L);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        }
+
+        long deadAfterMs() {
+            return deadAtNanos < 0 ? -1L : (deadAtNanos - killedAtNanos) / 1_000_000L;
+        }
+
+        List<String> violations() {
+            return List.copyOf(violations);
+        }
     }
 
     /// The same crash on a cluster that has run long enough for SWIM to have seen every member healthy. (SWIM does not declare a
@@ -191,12 +278,21 @@ class EmberNodeReplacementTest {
     /// Starts a replacement of a follower, crashes (blackholes) that follower while the record is in JOINING, waits for a terminal
     /// phase and returns the follower's id.
     private NodeId crashOldNodeWhileTheReplacementIsJoining(String prefix, long settleMs) {
+        return crashOldNodeWhileTheReplacementIsJoining(prefix, settleMs, _ -> {}, _ -> {});
+    }
+
+    /// As above, with a hook run on the victim before the replacement begins and another run just before the crash.
+    private NodeId crashOldNodeWhileTheReplacementIsJoining(String prefix,
+                                                            long settleMs,
+                                                            java.util.function.Consumer<NodeId> beforeBegin,
+                                                            java.util.function.Consumer<NodeId> beforeKill) {
         start(3, prefix);
         var leader = awaitLeader();
         var victim = followerOf(leader);
         var victimId = victim.self();
 
         sleep(settleMs);
+        beforeBegin.accept(victimId);
         leader.nodeReplacementService().begin(victimId, "").await(START_BOUND).onFailure(cause -> throwBecause(cause.message()));
         awaitCondition("the replacement is JOINING", () -> recordOf(victimId).phase() == NodeReplacementPhase.JOINING);
         // The crash must land while the record is in JOINING: sample the phase at the moment of the crash, print it, and fail
@@ -205,6 +301,7 @@ class EmberNodeReplacementTest {
 
         System.out.println("EMBER-REPLACEMENT kill of " + victimId.id() + " at record phase " + phaseAtKill + " (settle " + settleMs + " ms)");
         assertThat(phaseAtKill).as("the kill window (JOINING) was missed").isEqualTo(NodeReplacementPhase.JOINING);
+        beforeKill.accept(victimId);
         blackhole(victimId);
         System.out.println("EMBER-REPLACEMENT kill landed; record phase now " + recordOf(victimId).phase());
         awaitTerminal(victimId);
