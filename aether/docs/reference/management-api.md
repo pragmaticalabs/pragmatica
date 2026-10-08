@@ -4621,8 +4621,19 @@ its admission together with the replacement record. `targetVersion` is the versi
 Cores and workers are supported; a worker replacement swaps no voter seat.
 
 **Response:** the committed record: `original`, `replacement`, `role`, `phase`, `mode`, `source`, `targetVersion`, `attempt`,
-`reason`, `phaseDeadlineMs`, `epoch`. `404` unknown node; `400` unsupported role; `409` another replacement in progress, the
-chosen id is already a member/paired/reserved, or the record changed concurrently.
+`reason`, `phaseDeadlineMs`, `epoch`.
+
+Statuses, from `NodeReplacementRoutes.asManagementError`: `404` unknown node. `400` the node or replacement id does not parse,
+or the node's role is not supported (`RoleNotSupported`). `401`/`403` the caller is not authorized (OPERATOR required). Every
+other refusal is `409`, never `500`:
+- another replacement is already in progress for the node, or the record changed concurrently;
+- the chosen replacement id is already a member, paired or reserved (`ReplacementIdInUse`);
+- a core replacement whose chosen id was a voter at genesis (`FormerVoterIdentity`: a core needs a fresh voter identity; restore the
+  original WAL for a same-identity restart);
+- an externally started replacement whose node has no provisioning source while the capacity ledger counts (`SourceRequired`), or that
+  would exceed the fleet node limit (`FleetFull`);
+- the node that received the request is not the leader any more (`NotLeader`; retry, the route targets the leader);
+- replacement is not available on the node (`Unavailable`, a node built without the replacement service).
 
 ### GET /api/v1/nodes/replacements
 
@@ -4632,8 +4643,9 @@ Every replacement record, ordered by original node id, with the fields above. `p
 ### POST /api/v1/nodes/replacements/settle/{id}
 
 Settle a replacement that stopped in `FAILED_KEPT_BOTH` (both nodes kept). Body `{"outcome": "keep-new"}` finishes retiring the
-old node; `{"outcome": "roll-back"}` gives the new node up. `400` for any other outcome; `409` when the replacement is not in
-`FAILED_KEPT_BOTH`.
+old node; `{"outcome": "roll-back"}` gives the new node up. `400` for any other outcome or an id that does not parse; `409` when the node has no replacement in `FAILED_KEPT_BOTH`
+(`NothingToSettle`; an unknown node reads the same way), the record changed concurrently, or the node is not
+the leader (`NotLeader`); `401`/`403` when the caller is not authorized.
 
 ### POST /api/v1/nodes/promote/{id}
 
