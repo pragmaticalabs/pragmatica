@@ -65,7 +65,8 @@ public final class NodeReplacementPlanner {
                               DrainState oldDrain,
                               String drainBlockedBy,
                               boolean oldDecommissioned,
-                              boolean handoffSettled) {}
+                              boolean handoffSettled,
+                              String drainRefusal) {}
 
     /// Phase budgets. Every phase is bounded, so every replacement ends in a terminal phase.
     public record Timings(long provisioningMs,
@@ -335,9 +336,17 @@ public final class NodeReplacementPlanner {
                ? "drain did not complete (leader's view: oldAlive=" + o.oldAlive()
                 + ", drain=" + o.oldDrain()
                 + ", replacementKnown=" + o.replacementKnown()
-                + ", replacementAlive=" + o.replacementAlive()
+                + ", replacementAlive=" + o.replacementAlive() + refusal(o)
                 + ")"
                : DRAIN_BLOCKED + o.drainBlockedBy();
+    }
+
+    /// Why the drain admission last said no, when it said no for a reason other than the slice floor (which has its own marker).
+    private static String refusal(Observation o) {
+        return o.drainRefusal()
+                .isEmpty()
+               ? ""
+               : ", drain refused: " + o.drainRefusal();
     }
 
     private static Plan retiringOld(NodeReplacementValue r, Observation o, Timings t) {

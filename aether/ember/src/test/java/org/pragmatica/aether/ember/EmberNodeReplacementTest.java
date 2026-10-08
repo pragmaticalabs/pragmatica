@@ -164,7 +164,7 @@ class EmberNodeReplacementTest {
         var landed = "#2021 landed: delete this tripwire and enable " + REAL_TEST_NAME + " (phase was " + record.phase() + ", reason: " + record.reason() + ")";
 
         assertThat(record.phase()).as(landed).isEqualTo(NodeReplacementPhase.FAILED_KEPT_BOTH);
-        assertThat(record.reason()).as(landed).startsWith("drain did not complete").contains("drain=NOT_REQUESTED");
+        assertThat(record.reason()).as(landed).startsWith("drain did not complete").contains("oldAlive=true").contains("drain=NOT_REQUESTED");
     }
 
     /// The same crash on a cluster that has run long enough for SWIM to have seen every member healthy. (SWIM does not declare a

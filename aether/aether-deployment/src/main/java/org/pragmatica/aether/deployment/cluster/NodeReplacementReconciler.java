@@ -65,7 +65,29 @@ public interface NodeReplacementReconciler {
     static NodeReplacementReconciler nodeReplacementReconciler(Environment environment,
                                                                Timings timings,
                                                                TimeSpan commitBound) {
-        record reconciler(Environment environment, Timings timings, AtomicBoolean running, TimeSpan commitBound) implements NodeReplacementReconciler {
+        return nodeReplacementReconciler(environment,
+                                         timings,
+                                         commitBound,
+                                         effect -> defaultEffectBound(effect, timings));
+    }
+
+    /// How long an effect may stay unanswered before the tick gives up on it (an effect that outlives its bound is treated as not
+    /// done yet and the planner decides again). PROVISION gets twice its budget, every other effect 30 s.
+    static TimeSpan defaultEffectBound(Effect effect, Timings timings) {
+        return effect == Effect.PROVISION
+               ? TimeSpan.timeSpan(Math.max(30_000L, 2 * timings.provisioningMs())).millis()
+               : TimeSpan.timeSpan(30).seconds();
+    }
+
+    static NodeReplacementReconciler nodeReplacementReconciler(Environment environment,
+                                                               Timings timings,
+                                                               TimeSpan commitBound,
+                                                               java.util.function.Function<Effect, TimeSpan> effectBounds) {
+        record reconciler(Environment environment,
+                          Timings timings,
+                          AtomicBoolean running,
+                          TimeSpan commitBound,
+                          java.util.function.Function<Effect, TimeSpan> effectBounds) implements NodeReplacementReconciler {
             @Override
             public Promise<Unit> reconcile() {
                 if (!environment.isLeader() || !running.compareAndSet(false, true)) {
@@ -111,7 +133,7 @@ public interface NodeReplacementReconciler {
                 return environment.execute(plan.effect(),
                                            original,
                                            record)
-                                  .timeout(effectBound(plan.effect()))
+                                  .timeout(effectBounds.apply(plan.effect()))
                                   .recover(cause -> new EffectResult.Deferred("effect not finished: " + cause.message()))
                                   .flatMap(result -> settle(original, record, plan, result));
             }
@@ -129,12 +151,6 @@ public interface NodeReplacementReconciler {
                 };
             }
 
-            private TimeSpan effectBound(Effect effect) {
-                return effect == Effect.PROVISION
-                       ? TimeSpan.timeSpan(Math.max(30_000L, 2 * timings.provisioningMs())).millis()
-                       : TimeSpan.timeSpan(30).seconds();
-            }
-
             private Promise<Unit> commit(NodeId original, NodeReplacementValue before, NodeReplacementValue next) {
                 return environment.commit(original, before, next)
                                   .timeout(commitBound)
@@ -143,7 +159,7 @@ public interface NodeReplacementReconciler {
             }
         }
 
-        return new reconciler(environment, timings, new AtomicBoolean(), commitBound);
+        return new reconciler(environment, timings, new AtomicBoolean(), commitBound, effectBounds);
     }
 
     static boolean isTerminal(NodeReplacementPhase phase) {
