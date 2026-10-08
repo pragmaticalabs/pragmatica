@@ -579,26 +579,26 @@ public record Main(String[] args) {
     /// defaults, which silently drops the operator's TLS, port, peers and secret settings.
     private Option<AetherConfig> loadConfig() {
         return resolveConfig(findArg("--config=")).onFailure(this::refuseConfig)
-                                                  .expect("unreachable: refuseConfig exits");
+                            .expect("unreachable: refuseConfig exits");
     }
 
     /// Package-private and pure so the decision is testable without a process: no argument gives no configuration; an argument that is
     /// blank, names no regular file, or names a file that does not load and validate gives a failure naming the argument and the cause.
     static Result<Option<AetherConfig>> resolveConfig(Option<String> givenPath) {
-        return givenPath.fold(() -> Result.success(Option.<AetherConfig>none()),
-                              Main::loadGivenConfig);
+        return givenPath.fold(() -> Result.success(Option.<AetherConfig> none()), Main::loadGivenConfig);
     }
 
     private static Result<Option<AetherConfig>> loadGivenConfig(String raw) {
         var given = raw.strip();
 
         if (given.isEmpty()) {
-            return Causes.cause("--config= was given with an empty path; give the path of the node configuration file or omit the argument")
-                         .result();
+            return Causes.cause("--config= was given with an empty path; give the path of the node configuration file or omit the argument").result();
         }
 
-        return Result.lift(Causes::fromThrowable, () -> Path.of(given))
-                     .mapError(cause -> Causes.cause("--config=" + printable(given) + " is not a valid path: " + cause.message()))
+        return Result.lift(Causes::fromThrowable,
+                           () -> Path.of(given))
+                     .mapError(cause -> Causes.cause("--config=" + printable(given)
+                                                    + " is not a valid path: " + cause.message()))
                      .flatMap(path -> loadExisting(given, path));
     }
 
@@ -609,8 +609,8 @@ public record Main(String[] args) {
 
         return ConfigLoader.load(path)
                            .map(Option::some)
-                           .mapError(cause -> Causes.cause("config file '" + given + "' (--config=) could not be loaded or validated: "
-                                                          + cause.message()));
+                           .mapError(cause -> Causes.cause("config file '" + given
+                                                          + "' (--config=) could not be loaded or validated: " + cause.message()));
     }
 
     private static String printable(String value) {
