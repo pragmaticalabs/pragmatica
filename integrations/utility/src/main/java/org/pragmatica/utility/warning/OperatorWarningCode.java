@@ -75,9 +75,23 @@ public enum OperatorWarningCode {
     /// A cold start cannot read the KV backup (unreachable, undecodable); cluster-state writes stay refused
     /// until it can, or until a restart with `[backup] restore = "fresh"` (#1533).
     BACKUP_RESTORE_BLOCKED("backup-restore-blocked", "kv-backup", WarningLevel.CRITICAL),
+    /// The end of a [#BACKUP_RESTORE_BLOCKED] on this node (#1968): the restore could read the backup and decided, or this node stopped
+    /// leading or is stopping, so its blocked restore no longer holds the cluster. INFO, paired with the warning: the event layer
+    /// publishes it only after that warning for the same subject. A leader that still cannot read the backup raises the warning again.
+    BACKUP_RESTORE_UNBLOCKED("backup-restore-unblocked", "kv-backup", WarningLevel.INFO, BACKUP_RESTORE_BLOCKED),
     /// Another cluster holds the backup head at this cluster's own lineage and incarnation (a different
     /// incarnation id); this cluster backs up nothing until an operator resolves the fork (#1533).
     BACKUP_FORKED("backup-forked", "kv-backup", WarningLevel.CRITICAL),
+    /// This node became the leader without a `[backup]` while the cluster's committed state says the backup is in use (a
+    /// committed restore decision other than DISABLED, or a committed cluster configuration that enables it): nothing is
+    /// backed up while it leads (#1968). Typically a replacement provisioned without the cluster's `[backup]`. The committed
+    /// setting is kept, never downgraded to DISABLED; the operator restarts this node with the cluster's `[backup]`, or
+    /// moves leadership to a node that has it.
+    BACKUP_CONFIG_MISSING("backup-config-missing", "kv-backup", WarningLevel.CRITICAL),
+    /// This node, which led without a `[backup]`, no longer leads (#1968). INFO, paired with [#BACKUP_CONFIG_MISSING]: the
+    /// event layer publishes it only after that warning for the same subject. It ends this node's part of the condition; a
+    /// leader that also lacks `[backup]` raises the warning again.
+    BACKUP_CONFIG_RESTORED("backup-config-restored", "kv-backup", WarningLevel.INFO, BACKUP_CONFIG_MISSING),
     /// A configured core member died on this node's membership view without this node ever observing it
     /// reachable (#1835): no QUIC handshake, SWIM ALIVE or health evidence. It never joined, so it did not
     /// fail; NODE_FAILED and the CRITICAL node-health alert are reserved for members that had.
