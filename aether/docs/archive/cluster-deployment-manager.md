@@ -6,7 +6,7 @@
 > **Current simplified design**:
 > - No separate AllocationEngine (allocation logic embedded in ClusterDeploymentManager)
 > - No allocations keys (ClusterDeploymentManager writes directly to `slices/{node-id}/{artifact}`)
-> - See architecture-overview.md and kv-schema-simplified.md for
+> - See [architecture-overview.md](../architecture/00-overview.md) and kv-schema-simplified.md for
     current design
 >
 > This document is kept for historical reference but should not be used for implementation.

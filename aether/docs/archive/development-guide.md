@@ -374,7 +374,7 @@ public record PlaceOrderRequest(String customerId, List<LineItem> items) {
 }
 ```
 
-This follows the parse-don't-validate pattern from the [Getting Started](../getting-started.md) guide — invalid objects can never exist because the factory method returns `Result<T>`, not the raw type.
+This follows the parse-don't-validate pattern from the [Getting Started](../slice-developers/getting-started.md) guide — invalid objects can never exist because the factory method returns `Result<T>`, not the raw type.
 
 ## Testing Slices
 

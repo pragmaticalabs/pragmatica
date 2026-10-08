@@ -841,6 +841,6 @@ GET /api/infra/circuitbreaker/states
 
 ## Related Documents
 
-- Infrastructure Services - Built-in services (artifact repo, DHT)
+- [Infrastructure Services](infra-services.md) - Built-in services (artifact repo, DHT)
 - [Slice Factory Generation](../../../jbct/slice-processor/docs/SLICE-FACTORY-GENERATION.md) - How slices are instantiated
-- Slice Developer Guide - How to write slices
+- [Slice Developer Guide](../slice-developers/slice-patterns.md) - How to write slices
