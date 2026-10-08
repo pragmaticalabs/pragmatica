@@ -168,8 +168,9 @@ final class NettyHttpServer implements HttpServer {
                                             EventLoopGroup bossGroup,
                                             EventLoopGroup workerGroup,
                                             boolean ownsGroups) {
-        return config.tls().map(tls -> TlsContextFactory.create(tls).map(Option::some))
-                     .or(Result.success(Option.<SslContext>empty()))
+        return config.tls()
+                     .map(tls -> TlsContextFactory.create(tls).map(Option::some))
+                     .or(Result.success(Option.<SslContext> empty()))
                      .fold(cause -> tlsBuildFailed(config, cause, ownsGroups, bossGroup, workerGroup),
                            sslContext -> bindConfigured(config, handler, bossGroup, workerGroup, ownsGroups, sslContext));
     }
@@ -184,6 +185,7 @@ final class NettyHttpServer implements HttpServer {
         var failure = new HttpServerError.TlsFailed(config.name(), config.port(), cause);
 
         log.error("HTTP server '{}' will not start: {}", config.name(), failure.message());
+
         return releaseGroupsOnBindFailure(ownsGroups, bossGroup, workerGroup).fold(_ -> failure.promise());
     }
 
@@ -221,7 +223,6 @@ final class NettyHttpServer implements HttpServer {
                                boolean ownsGroups) {
         if (future.isSuccess()) {
             var protocol = sslContext.map(_ -> "HTTPS").or("HTTP");
-
             var boundPort = ((InetSocketAddress) future.channel().localAddress()).getPort();
 
             log.info("{} server '{}' started on port {}", protocol, config.name(), boundPort);
