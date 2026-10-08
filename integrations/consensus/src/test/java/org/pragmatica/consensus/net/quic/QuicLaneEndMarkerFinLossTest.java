@@ -62,6 +62,8 @@ class QuicLaneEndMarkerFinLossTest {
     private static final NodeAddress UNUSED_ADDRESS = new NodeAddress("127.0.0.1", 9000);
     private static final TimeSpan AWAIT = TimeSpan.timeSpan(20).seconds();
     private static final StreamType LANE = StreamType.FORWARD;
+    /// 4000 x 64 KB = 250 MB, far beyond the stream's flow-control window.
+    private static final int MAX_BLOCKING_WRITES = 4000;
 
     private final SliceCodec codec = LaneProbe.codec();
     private final List<Object> receivedByAcceptor = new CopyOnWriteArrayList<>();
@@ -176,20 +178,26 @@ class QuicLaneEndMarkerFinLossTest {
         var atAcceptor = acceptorSide.get().stream(LANE).unwrap();
 
         atAcceptor.config().setAutoRead(false);
+        stream.config().setWriteBufferWaterMark(new io.netty.channel.WriteBufferWaterMark(8 * 1024, 64 * 1024));
         LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(300));
         io.netty.channel.ChannelFuture last = null;
+        var blockedAfter = -1;
 
-        for (var n = 0; n < 4000; n++) {
+        // Write until netty itself reports the stream not writable (flow control exhausted, the write queue
+        // above the water mark), bounded by a write count so a regression cannot spin forever.
+        for (var n = 0; n < MAX_BLOCKING_WRITES && blockedAfter < 0; n++) {
             last = stream.writeAndFlush(Unpooled.wrappedBuffer(new byte[64 * 1024]));
             if (n % 16 == 15) {
-                LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(50));
-                if (!last.isDone()) {
-                    break;
+                LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(20));
+                if (!stream.isWritable()) {
+                    blockedAfter = n + 1;
                 }
             }
         }
-        LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(500));
-        assertThat(last.isDone()).as("precondition: the stream is flow-control blocked").isFalse();
+        assertThat(blockedAfter).as("precondition: the stream became not writable within " + MAX_BLOCKING_WRITES + " writes of 64 KB").isPositive();
+        LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(200));
+        assertThat(stream.isWritable()).as("precondition: the stream is still not writable").isFalse();
+        assertThat(last.isDone()).as("precondition: the last write is stuck behind flow control").isFalse();
 
         stream.pipeline().fireExceptionCaught(new IllegalStateException("injected"));
         var deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
