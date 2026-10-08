@@ -302,16 +302,16 @@ public final class ProviderResolver {
     /// The source's `[backup]` as `AETHER_BACKUP_*`; empty when the source has none, it is disabled, or it has no path.
     static Map<String, String> backupEnvironment(SourceProfile source) {
         return source.nodeConfig()
-                     .flatMap(doc -> NodeUserDataRenderer.backupPath(doc)
-                                                         .map(path -> BackupConfig.backupConfig(true,
-                                                                                                path,
-                                                                                                doc.getString("backup", "remote")
-                                                                                                   .map(String::strip)
-                                                                                                   .or(""),
-                                                                                                doc.getString("backup", "restore")
-                                                                                                   .flatMap(raw -> BackupConfig.RestoreMode.restoreMode(raw)
-                                                                                                                               .option())
-                                                                                                   .or(BackupConfig.RestoreMode.AUTO))))
+                     .flatMap(doc -> NodeUserDataRenderer.backupPath(doc).map(path -> BackupConfig.backupConfig(true,
+                                                                                                                path,
+                                                                                                                doc.getString("backup",
+                                                                                                                              "remote")
+                                                                                                                   .map(String::strip)
+                                                                                                                   .or(""),
+                                                                                                                doc.getString("backup",
+                                                                                                                              "restore")
+                                                                                                                   .flatMap(raw -> BackupConfig.RestoreMode.restoreMode(raw).option())
+                                                                                                                   .or(BackupConfig.RestoreMode.AUTO))))
                      .map(BackupConfig::asEnvironment)
                      .or(Map.of());
     }

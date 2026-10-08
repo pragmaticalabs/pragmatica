@@ -248,12 +248,9 @@ public final class ClusterBootstrapConfigParser {
                                                             SourceName name,
                                                             String section,
                                                             SourceType type) {
-        return Result.all(parseProvider(doc, section), parseReplacementCeiling(doc, section)).map((provider, ceiling) -> assembleSourceProfile(doc,
-                                                                                                                                               name,
-                                                                                                                                               section,
-                                                                                                                                               type,
-                                                                                                                                               provider,
-                                                                                                                                               ceiling))
+        return Result.all(parseProvider(doc, section),
+                          parseReplacementCeiling(doc, section))
+                     .map((provider, ceiling) -> assembleSourceProfile(doc, name, section, type, provider, ceiling))
                      .flatMap(profile -> validateBackupPath(section, profile));
     }
 
@@ -264,7 +261,9 @@ public final class ClusterBootstrapConfigParser {
     private static Result<SourceProfile> validateBackupPath(String section, SourceProfile profile) {
         var path = profile.nodeConfig().flatMap(NodeUserDataRenderer::backupPath);
 
-        return path.map(value -> backupPathVerdict(section, profile.type(), value.strip()).map(_ -> profile))
+        return path.map(value -> backupPathVerdict(section,
+                                                   profile.type(),
+                                                   value.strip()).map(_ -> profile))
                    .or(Result.success(profile));
     }
 
@@ -272,11 +271,15 @@ public final class ClusterBootstrapConfigParser {
         var field = section + ".node_config.backup.path";
 
         if (!path.startsWith("/")) {
-            return parseFailed(field + " '" + path + "' must be an absolute path: it is mounted into the node's container or created on its host").result();
+            return parseFailed(field
+                              + " '" + path
+                              + "' must be an absolute path: it is mounted into the node's container or created on its host").result();
         }
 
         if (type == SourceType.DOCKER && !path.equals("/data") && !path.startsWith("/data/")) {
-            return parseFailed(field + " '" + path + "' must be under /data for a docker source: its repository lives on a named volume, "
+            return parseFailed(field
+                              + " '" + path
+                              + "' must be under /data for a docker source: its repository lives on a named volume, "
                               + "which Docker creates root-owned everywhere except under /data, so the node could not write it").result();
         }
 

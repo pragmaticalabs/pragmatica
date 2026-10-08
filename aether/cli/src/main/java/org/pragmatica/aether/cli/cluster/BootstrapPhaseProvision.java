@@ -430,9 +430,9 @@ sealed interface BootstrapPhaseProvision {
                                                                        SourceProfile source,
                                                                        ClusterName clusterName) {
         return ProviderResolver.resolveDockerCompute(source).flatMap(compute -> provisionWithCompute(compute,
-                                                                                               sourceName,
-                                                                                               source,
-                                                                                               clusterName));
+                                                                                                     sourceName,
+                                                                                                     source,
+                                                                                                     clusterName));
     }
 
     @SuppressWarnings({"JBCT-PAT-01", "JBCT-EX-01"})

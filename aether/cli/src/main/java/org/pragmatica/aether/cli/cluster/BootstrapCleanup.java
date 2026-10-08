@@ -1208,7 +1208,7 @@ sealed interface BootstrapCleanup {
         System.out.printf("  Removing container %s...%n", container.containerId());
 
         return ProviderResolver.resolveDockerComputeWithoutBackup().flatMap(compute -> terminateInstance(compute,
-                                                                                            container.containerId()));
+                                                                                                         container.containerId()));
     }
 
     private static Result<Unit> removeRemoteConfig(CreatedResource.SshDeployedConfig config) {

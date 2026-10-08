@@ -205,11 +205,11 @@ public final class WaveExecutor {
                                                                            SourceProfile source,
                                                                            ClusterName clusterName) {
         return ProviderResolver.resolveDockerCompute(source).flatMap(compute -> provisionViaCompute(compute,
-                                                                                              sourceName,
-                                                                                              role,
-                                                                                              count,
-                                                                                              source,
-                                                                                              clusterName));
+                                                                                                    sourceName,
+                                                                                                    role,
+                                                                                                    count,
+                                                                                                    source,
+                                                                                                    clusterName));
     }
 
     @SuppressWarnings("JBCT-EX-01")
@@ -739,9 +739,9 @@ public final class WaveExecutor {
 
     private static Result<Unit> resolveDockerAndDestroy(SourceName sourceName, NodeRole role, int count) {
         return ProviderResolver.resolveDockerComputeWithoutBackup().flatMap(compute -> destroyViaCompute(compute,
-                                                                                            sourceName,
-                                                                                            role,
-                                                                                            count));
+                                                                                                         sourceName,
+                                                                                                         role,
+                                                                                                         count));
     }
 
     @SuppressWarnings("JBCT-EX-01")
