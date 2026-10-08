@@ -182,7 +182,17 @@ public final class ProviderResolver {
                                                                                               firewallIds)));
     }
 
+    /// Test seam (package-private): a factory that replaces the SERVICE-LOADED Docker one, so a test can read the [CloudConfig] a
+    /// caller hands the provider without a Docker daemon. Null in production.
+    static volatile EnvironmentIntegrationFactory dockerFactoryOverride;
+
     private static Result<EnvironmentIntegrationFactory> lookupFactory(String providerName) {
+        var override = dockerFactoryOverride;
+
+        if (override != null && "docker".equals(providerName)) {
+            return Result.success(override);
+        }
+
         return EnvironmentIntegrationFactory.forProvider(providerName).toResult(factoryNotFound(providerName));
     }
 

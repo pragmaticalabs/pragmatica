@@ -11,6 +11,7 @@ import org.pragmatica.config.toml.TomlParser;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /// #1968: `[backup]` is read from the node TOML, and each key is overridable by its `AETHER_BACKUP_*` variable. A node minted
 /// without a TOML of its own (a Docker replacement) therefore gets the backup configuration from its provisioner's environment.
@@ -100,5 +101,48 @@ class ConfigLoaderBackupEnvTest {
         assertThat(summaries).hasSize(1);
         assertThat(summaries.getFirst()).contains("path=environment", "remote=TOML", "restore=default", "enabled=TOML")
                                         .doesNotContain("/env/path", "/toml/path", "secret-remote");
+    }
+
+    /// The path rule applies to the EFFECTIVE path, so a bad value arriving only through the environment (a compose file's
+    /// AETHER_BACKUP_PATH, a provisioner's) is refused exactly as a TOML one is (R1b).
+    @Test
+    void anEnvironmentOnlyPath_isRefusedForADockerNode_whenRelativeOrOutsideData() {
+        var doc = TomlParser.parse("").unwrap();
+
+        for (var bad : new String[] {"relative/backups", "/var/aether/backups", "/database/x"}) {
+            var env = Map.of("AETHER_BACKUP_ENABLED", "true", "AETHER_BACKUP_PATH", bad);
+
+            assertThatThrownBy(() -> ConfigLoader.effectiveBackup(doc, env::get, Environment.DOCKER))
+                .as("docker node, env path " + bad)
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("[backup] path").hasMessageContaining(bad.strip());
+        }
+    }
+
+    @Test
+    void anEnvironmentOnlyPath_underData_isAcceptedForADockerNode() {
+        var doc = TomlParser.parse("").unwrap();
+
+        assertThat(ConfigLoader.effectiveBackup(doc, Map.of("AETHER_BACKUP_ENABLED", "true", "AETHER_BACKUP_PATH", "/data/backups")::get, Environment.DOCKER)
+                               .isPresent()).isTrue();
+    }
+
+    @Test
+    void theEnvironmentPathRule_isPerEnvironment_kubernetesNeedsAbsolute_localKeepsItsRelativeDefault() {
+        var doc = TomlParser.parse("").unwrap();
+
+        assertThatThrownBy(() -> ConfigLoader.effectiveBackup(doc, Map.of("AETHER_BACKUP_ENABLED", "true", "AETHER_BACKUP_PATH", "rel")::get, Environment.KUBERNETES))
+            .isInstanceOf(IllegalArgumentException.class);
+        assertThat(ConfigLoader.effectiveBackup(doc, Map.of("AETHER_BACKUP_ENABLED", "true", "AETHER_BACKUP_PATH", "/var/aether/backups")::get, Environment.KUBERNETES).isPresent()).isTrue();
+        assertThat(ConfigLoader.effectiveBackup(doc, Map.of("AETHER_BACKUP_ENABLED", "true", "AETHER_BACKUP_PATH", "./aether-backups")::get, Environment.LOCAL).isPresent()).isTrue();
+    }
+
+    /// An invalid path fails the WHOLE load (not just a helper): the loader wraps the refusal as an invalid-config error.
+    @Test
+    void aTomlPathOutsideData_failsTheLoad_forADockerEnvironment() {
+        var result = ConfigLoader.loadFromString("[cluster]\nenvironment = \"docker\"\n[backup]\nenabled = true\npath = \"/srv/backups\"\n");
+
+        assertThat(result.isFailure()).isTrue();
+        result.onFailure(cause -> assertThat(cause.message()).contains("under /data"));
     }
 }

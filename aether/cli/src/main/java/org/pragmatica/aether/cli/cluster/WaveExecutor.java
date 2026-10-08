@@ -147,7 +147,7 @@ public final class WaveExecutor {
                                                                                                                  source));
     }
 
-    private static Result<List<ProvisionedNode>> provisionBySourceType(SourceName sourceName,
+    static Result<List<ProvisionedNode>> provisionBySourceType(SourceName sourceName,
                                                                        SourceProfile source,
                                                                        NodeRole role,
                                                                        int count,

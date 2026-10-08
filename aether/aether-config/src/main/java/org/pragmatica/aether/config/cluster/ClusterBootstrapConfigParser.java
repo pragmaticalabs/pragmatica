@@ -13,6 +13,7 @@ import java.util.Set;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
+import org.pragmatica.aether.environment.BackupPathRule;
 import org.pragmatica.aether.environment.SourceName;
 import org.pragmatica.config.toml.TomlDocument;
 import org.pragmatica.config.toml.TomlParser;
@@ -268,22 +269,9 @@ public final class ClusterBootstrapConfigParser {
     }
 
     private static Result<String> backupPathVerdict(String section, SourceType type, String path) {
-        var field = section + ".node_config.backup.path";
-
-        if (!path.startsWith("/")) {
-            return parseFailed(field
-                              + " '" + path
-                              + "' must be an absolute path: it is mounted into the node's container or created on its host").result();
-        }
-
-        if (type == SourceType.DOCKER && !path.equals("/data") && !path.startsWith("/data/")) {
-            return parseFailed(field
-                              + " '" + path
-                              + "' must be under /data for a docker source: its repository lives on a named volume, "
-                              + "which Docker creates root-owned everywhere except under /data, so the node could not write it").result();
-        }
-
-        return Result.success(path);
+        return BackupPathRule.refusal(path, type == SourceType.DOCKER)
+                             .map(reason -> section + ".node_config.backup.path " + reason)
+                             .fold(() -> Result.success(path), reason -> parseFailed(reason).<String> result());
     }
 
     /// #1049 — `replacement_ceiling` is optional (absent → the runtime's ten-minute default), but a

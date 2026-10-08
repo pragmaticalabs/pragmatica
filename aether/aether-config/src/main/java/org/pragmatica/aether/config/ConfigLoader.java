@@ -139,7 +139,7 @@ public final class ConfigLoader {
         populateTtmConfig(doc, builder);
         populateSliceConfig(doc, builder);
         populateAppHttpConfig(doc, builder);
-        populateBackupConfig(doc, builder);
+        populateBackupConfig(doc, builder, environment);
         populateDhtReplicationConfig(doc, builder);
         populateTimeoutsConfig(doc, builder);
         populateStorageConfig(doc, builder);
@@ -438,8 +438,32 @@ public final class ConfigLoader {
         return JwtConfig.jwtConfig(jwksUrl, issuer, audience, roleClaim, cacheTtl, clockSkew).unwrap();
     }
 
-    private static void populateBackupConfig(TomlDocument doc, AetherConfig.Builder builder) {
-        backupConfigFrom(doc, System::getenv).onPresent(builder::backup);
+    private static void populateBackupConfig(TomlDocument doc, AetherConfig.Builder builder, Environment environment) {
+        effectiveBackup(doc, System::getenv, environment).onPresent(builder::backup);
+    }
+
+    /// The node's effective `[backup]` (TOML merged with the environment variables), refused when its path is unwritable for `environment`.
+    static Option<BackupConfig> effectiveBackup(TomlDocument doc,
+                                                org.pragmatica.lang.Functions.Fn1<String, String> env,
+                                                Environment environment) {
+        var backup = backupConfigFrom(doc, env);
+
+        backup.onPresent(value -> refuseUnwritableBackupPath(value, environment));
+        return backup;
+    }
+
+    /// #1968: the same rule the bootstrap config applies to a source's `node_config` (`BackupPathRule`), applied to the EFFECTIVE path of a
+    /// node in a container environment, wherever it came from (TOML, `AETHER_BACKUP_PATH` of a compose file or of a provisioner). Docker:
+    /// absolute and under `/data` (named volume); Kubernetes: absolute; LOCAL runs on the host and keeps its relative default.
+    static void refuseUnwritableBackupPath(BackupConfig backup, Environment environment) {
+        if (backup.path().isBlank() || environment == Environment.LOCAL) {
+            return;
+        }
+
+        org.pragmatica.aether.environment.BackupPathRule.refusal(backup.path(), environment == Environment.DOCKER)
+                                                        .onPresent(reason -> {
+                                                            throw new IllegalArgumentException("[backup] path " + reason);
+                                                        });
     }
 
     /// `[backup]` (#1532/#1533), each key overridable by its `AETHER_BACKUP_*` environment variable (#1968): a node minted

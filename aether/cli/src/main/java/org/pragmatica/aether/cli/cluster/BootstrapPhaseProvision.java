@@ -394,7 +394,7 @@ sealed interface BootstrapPhaseProvision {
     }
 
     @SuppressWarnings("JBCT-PAT-01")
-    private static Result<List<ProvisionedNode>> provisionSource(BootstrapContext ctx,
+    static Result<List<ProvisionedNode>> provisionSource(BootstrapContext ctx,
                                                                  SourceName sourceName,
                                                                  SourceProfile source,
                                                                  int managementPort,
