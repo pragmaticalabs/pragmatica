@@ -7,7 +7,6 @@ package org.pragmatica.aether.http;
 
 import java.io.IOException;
 import java.net.InetSocketAddress;
-import java.net.ServerSocket;
 import java.net.Socket;
 
 import org.junit.jupiter.api.Test;
@@ -100,8 +99,6 @@ class AppHttpServerTlsFailClosedTest {
     }
 
     private static int freeTcpPort() throws IOException {
-        try (var socket = new ServerSocket(0)) {
-            return socket.getLocalPort();
-        }
+        return org.pragmatica.aether.node.ClusterTestPorts.freeTcpAndUdpPort();
     }
 }
