@@ -8,7 +8,6 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
-import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 
 
@@ -21,7 +20,7 @@ import org.pragmatica.lang.Result;
 /// lists against the real factories.
 ///
 /// A source supplies provider-specific keys in `[source.<name>.node_config.cloud.credentials]`; the
-/// source's `region` / `zone` fill `region` (aws), `zone` (gcp) and `location` (azure). The scalar
+/// source's `region` / `zone` fill `region` (aws), `zone` (gcp, never inferred from `zones`: a zone is chosen) and `location` (azure). The scalar
 /// `credentials` field is one value, so it can only be the hetzner `api_token`.
 public interface CloudCredentialSchema {
     static List<String> requiredKeys(String provider) {
@@ -84,8 +83,7 @@ public interface CloudCredentialSchema {
     private static void applyLocation(Map<String, String> credentials, SourceProfile source, String provider) {
         switch (provider) {
             case "aws" -> source.region().onPresent(value -> credentials.put("region", value));
-            case "gcp" -> source.zone().orElse(Option.from(source.effectiveZones().stream().findFirst())).onPresent(value -> credentials.put("zone",
-                                                                                                                                             value));
+            case "gcp" -> source.zone().onPresent(value -> credentials.put("zone", value));
             case "azure" -> source.region().onPresent(value -> credentials.put("location", value));
             default -> {}
         }

@@ -18,6 +18,7 @@ import org.pragmatica.lang.Option;
 
 import java.nio.file.Path;
 import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
@@ -35,7 +36,7 @@ class ClusterConfigGeneratorTest {
         return new ClusterConfigAnswers("prod-eu",
                                          VERSION,
                                          SourceType.CLOUD,
-                                         Option.some(new CloudAnswers(CloudProviderName.HETZNER, "hel1", "cpx32", "HCLOUD_TOKEN", "~/.ssh/id_ed25519.pub")),
+                                         Option.some(new CloudAnswers(CloudProviderName.HETZNER, "hel1", "", "cpx32", Map.of("api_token", "HCLOUD_TOKEN"), "~/.ssh/id_ed25519.pub")),
                                          Option.none(),
                                          split(5, 0),
                                          Option.none(),
@@ -51,7 +52,7 @@ class ClusterConfigGeneratorTest {
         return new ClusterConfigAnswers("prod-eu",
                                          VERSION,
                                          SourceType.CLOUD,
-                                         Option.some(new CloudAnswers(provider, "eu-west-1", "t3.medium", "AWS_ACCESS_KEY", "~/.ssh/id_ed25519.pub")),
+                                         Option.some(new CloudAnswers(provider, "eu-west-1", provider == CloudProviderName.GCP ? "eu-west-1-b" : "", "t3.medium", CloudAnswers.defaultEnvVars(provider), "~/.ssh/id_ed25519.pub")),
                                          Option.none(),
                                          split(5, 0),
                                          Option.none(),
@@ -196,6 +197,28 @@ class ClusterConfigGeneratorTest {
                                             .flatMap(ClusterBootstrapConfigValidator::validate)
                                             .onFailure(c -> fail("Validator rejected generated " + provider + " TOML: " + c.message()));
             }
+        }
+
+        /// #2059 — what the operator names reaches the generated `${env:...}`: the answer used to be asked for, echoed in the
+        /// summary and silently dropped (the generator hard-coded its own names).
+        @Test
+        void generate_cloudOnAws_carriesTheOperatorsEnvVarNamesThrough() {
+            var envVars = Map.of("access_key_id", "MY_AWS_ID", "secret_access_key", "MY_AWS_SECRET");
+            var answers = new ClusterConfigAnswers("prod-eu", VERSION, SourceType.CLOUD,
+                                                   Option.some(new CloudAnswers(CloudProviderName.AWS, "eu-west-1", "", "t3.medium", envVars, "~/.ssh/id_ed25519.pub")),
+                                                   Option.none(), split(5, 0), Option.none(), FirewallPreset.STANDARD, Option.none(), Option.none(),
+                                                   List.of(), new TlsAnswers.AutoGenerate(), new SecretAnswers.AutoGenerate());
+            var toml = ClusterConfigGenerator.generate(answers);
+
+            assertThat(toml).contains("access_key_id = \"${env:MY_AWS_ID}\"").contains("secret_access_key = \"${env:MY_AWS_SECRET}\"");
+            assertThat(toml).doesNotContain("AWS_ACCESS_KEY_ID").doesNotContain("AWS_SECRET_ACCESS_KEY");
+        }
+
+        @Test
+        void generate_cloudOnGcp_writesTheOperatorsZone_andNeverDerivesOne() {
+            var toml = ClusterConfigGenerator.generate(cloudAnswersFor(CloudProviderName.GCP));
+
+            assertThat(toml).contains("zone = \"eu-west-1-b\"").doesNotContain("eu-west-1-a");
         }
 
         @Test

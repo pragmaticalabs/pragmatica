@@ -132,6 +132,20 @@ class CloudCredentialComposeTest {
         }
     }
 
+    /// A zone is chosen, never inferred: `zones` alone does not satisfy gcp's required `zone`.
+    @Test
+    void gcp_zonesListAlone_doesNotStandInForTheRequiredZone() {
+        var fields = new LinkedHashMap<>(fieldsOf("gcp"));
+
+        fields.remove("zone");
+        fields.put("zones", "[\"europe-west1-b\"]");
+
+        var composed = compose("gcp", fields, nodeCredentialsOf("gcp"));
+
+        assertThat(composed.isFailure()).isTrue();
+        composed.onFailure(cause -> assertThat(cause.message()).contains("zone"));
+    }
+
     @Test
     void aws_scalarCredentials_isNotMisreadAsAnAccessKey() {
         var fields = new LinkedHashMap<>(fieldsOf("aws"));
@@ -184,7 +198,7 @@ class CloudCredentialComposeTest {
             """);
 
         toml.append("provider = \"").append(provider).append("\"\n");
-        fields.forEach((key, value) -> toml.append(key).append(" = \"").append(value).append("\"\n"));
+        fields.forEach((key, value) -> toml.append(key).append(" = ").append(value.startsWith("[") ? value : "\"" + value + "\"").append("\n"));
         toml.append("\n[source.s.core]\ncount = 3\ninstance_type = \"t\"\nimage = \"i\"\n");
         toml.append("\n[runtime.default]\ntype = \"container\"\nimage = \"ghcr.io/pragmaticalabs/aether-node:1.0.0\"\n");
         if (!credentials.isEmpty()) {

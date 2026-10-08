@@ -19,7 +19,9 @@ import java.util.Map;
 import java.util.function.Consumer;
 import java.util.function.IntConsumer;
 import java.util.regex.Pattern;
+import java.util.stream.Collectors;
 import java.util.stream.IntStream;
+import java.util.stream.Stream;
 import java.util.concurrent.TimeUnit;
 
 import org.pragmatica.aether.config.AlertConfig;
@@ -31,6 +33,7 @@ import org.pragmatica.aether.environment.ClusterName;
 import org.pragmatica.aether.environment.AutoHealConfig;
 import org.pragmatica.aether.config.AppHttpConfig;
 import org.pragmatica.aether.config.BackupConfig;
+import org.pragmatica.aether.config.cluster.CloudCredentialSchema;
 import org.pragmatica.aether.config.ConfigLoader;
 import org.pragmatica.aether.config.HttpProtocol;
 import org.pragmatica.aether.config.MembershipConfigBinding;
@@ -390,16 +393,11 @@ public record Main(String[] args) {
     /// (`aether/docs/reference/node-operations.md#exit-codes`).
     static final int CLOUD_INTEGRATION_REFUSED_EXIT_CODE = 69;
 
-    /// The `[cloud.credentials]` keys each provider's factory requires (read from its `validateCredentials`), so the refusal can tell the
-    /// operator what to add. The CLI overlay renders only `api_token` (the aws, gcp and azure keys are not rendered: #2059).
-    static final Map<String, String> REQUIRED_CREDENTIAL_KEYS = Map.of("hetzner",
-                                                                       "api_token",
-                                                                       "aws",
-                                                                       "access_key_id, secret_access_key, region",
-                                                                       "gcp",
-                                                                       "project_id, service_account_email, private_key_pem, zone",
-                                                                       "azure",
-                                                                       "tenant_id, client_id, client_secret, subscription_id, resource_group, location");
+    /// The `[cloud.credentials]` keys each provider's factory requires, so the refusal can tell the operator what to add. Derived from
+    /// `CloudCredentialSchema` (pinned against the factories by `CloudCredentialSchemaTest`), the one list the CLI also validates with.
+    static final Map<String, String> REQUIRED_CREDENTIAL_KEYS = Stream.of("hetzner", "aws", "gcp", "azure").collect(Collectors.toUnmodifiableMap(provider -> provider,
+                                                                                                                                                 provider -> String.join(", ",
+                                                                                                                                                                         CloudCredentialSchema.requiredKeys(provider))));
 
     /// The node's cloud integration (#2058). No `[cloud]` section: none, deliberately (docker compose, forge, bare runs). A `[cloud]`
     /// section whose integration cannot be created REFUSES the boot: without it the leader cannot provision, replace or scale, and the
@@ -429,7 +427,7 @@ public record Main(String[] args) {
     private static Cause cloudIntegrationRefusal(String provider, Cause cause) {
         var keys = Option.option(REQUIRED_CREDENTIAL_KEYS.get(provider))
                          .map(required -> " The provider's [cloud.credentials] TOML keys must provide: " + required
-                                         + " (the bootstrap overlay renders only api_token; add the rest under [source.<name>.node_config.cloud.credentials])")
+                                         + " (the bootstrap overlay renders the source's node_config [cloud.credentials], its region/zone/location and, for hetzner, its credentials; add the missing ones under [source.<name>.node_config.cloud.credentials])")
                          .or("");
 
         return Causes.cause("the [cloud] section names provider '" + provider
