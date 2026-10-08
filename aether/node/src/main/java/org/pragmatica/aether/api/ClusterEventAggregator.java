@@ -168,6 +168,10 @@ public final class ClusterEventAggregator {
     private final HlcClock hlcClock;
     private final NodeId selfNode;
     private final AtomicLong quorumSequence = new AtomicLong();
+
+    /// True while THIS node drains because the leader commanded it (#2014); wired by `AetherNode`.
+    private final java.util.concurrent.atomic.AtomicReference<BooleanSupplier> selfCommandedDrain = new java.util.concurrent.atomic.AtomicReference<>(() -> false);
+
     private final ConcurrentHashMap<String, Long> deploymentStartTimes = new ConcurrentHashMap<>();
 
     private final ConcurrentHashMap<String, Long> nodeJoinTimes = new ConcurrentHashMap<>();
@@ -1195,6 +1199,12 @@ public final class ClusterEventAggregator {
                       });
     }
 
+    /// Wire the "this node is draining by command" probe (#2014), from the local `DrainProcedure`.
+    @Contract
+    public void bindSelfCommandedDrain(BooleanSupplier selfCommandedDrain) {
+        this.selfCommandedDrain.set(selfCommandedDrain);
+    }
+
     /// Quorum transitions, UN-gated via {@link #emitLocal} (#926) — previously both leader-gated.
     ///
     /// QUORUM_LOST is the most severe event this class emits (CRITICAL) and was the least emittable.
@@ -1239,6 +1249,15 @@ public final class ClusterEventAggregator {
                                                 Map.of("observedBy", selfNode.id())));
             }
             case PASSIVE -> {
+                if (selfCommandedDrain.get().getAsBoolean()) {
+                    // #2014: the leader COMMANDED this node to drain and its own drain took consensus passive.
+                    // Planned work. A REAL quorum loss on a survivor, or a QUORUM_LOSS self-drain, never gets here.
+                    LOG.info("Node {} went passive because it is draining by command — planned, not quorum loss",
+                             selfNode.id());
+
+                    return;
+                }
+
                 if (event.demoted()) {
                     // #2014: a voter reconfiguration removed this node while the cluster kept its quorum
                     // (`ClusterStateNotification#demoted`, #1790). Planned work: it is not quorum loss,

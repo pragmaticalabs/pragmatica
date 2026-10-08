@@ -67,17 +67,41 @@ class EmberPlannedDepartureAlertsTest {
     @Test
     @Timeout(600)
     void followerDrain_raisesNoCriticalAlertOrEvent_andNoQuorumLost_onAnyNode() {
+        followerDrainScenario(false);
+    }
+
+    /// Run 2's exact shape, forced: a SWIM incarnation refutation moves the leader's FSM DEPARTING to MEMBER while
+    /// the drain is still commanded. The leader must still report a planned departure.
+    @Test
+    @Timeout(600)
+    void followerDrain_withAnIncarnationRefutationMidDrain_stillRaisesNothing() {
+        followerDrainScenario(true);
+    }
+
+    private void followerDrainScenario(boolean refuteMidDrain) {
         start();
         var leaderId = cluster.currentLeader().unwrap();
         var drainee = followerOf(leaderId);
         var nodes = List.copyOf(cluster.allNodes());
+        var survivorIds = survivors(nodes, drainee).stream().map(n -> n.self().id()).collect(java.util.stream.Collectors.toSet());
 
         assertThat(drain(drainee)).as("drain admitted").startsWith("2");
+
+        if (refuteMidDrain) {
+            var leader = cluster.getNode(leaderId).unwrap();
+
+            leader.membershipFsm().onSwimHealthy(nodeId(drainee), 1_000_000L);
+            awaitCondition(() -> "the leader's FSM took the refutation (DEPARTING to MEMBER); state " + leader.membershipFsm().memberStates().get(nodeId(drainee)),
+                           ADMISSION_BUDGET_MS,
+                           () -> "Member".equals(leader.membershipFsm().memberStates().get(nodeId(drainee))));
+        }
+
         awaitCondition("the drained node left the cluster", DEPARTURE_BUDGET_MS, () -> cluster.getNode(drainee).isEmpty());
-        // The edge must have RUN on the observers for the absence below to mean anything.
-        awaitCondition("an observer recorded the announced departure",
-                       DEPARTURE_BUDGET_MS,
-                       () -> nodes.stream().anyMatch(n -> !n.self().id().equals(drainee) && announcedNodeLeft(n, drainee)));
+        // Positive control: EVERY survivor processed the departure and reported it as announced. An absence below
+        // from a survivor that never saw the edge would pass vacuously.
+        awaitCondition(() -> "every survivor holds the announced departure record; observers that do: " + departureObservers(nodes, drainee) + " of " + survivorIds,
+                       EVENT_REPLICATION_BUDGET_MS,
+                       () -> departureObservers(nodes, drainee).containsAll(survivorIds));
         sleepQuietly(SETTLE_MS);
 
         assertThat(criticalSurfaces(nodes)).as("CRITICAL alerts/events anywhere after a planned follower drain").isEmpty();
@@ -130,9 +154,15 @@ class EmberPlannedDepartureAlertsTest {
                        EVENT_REPLICATION_BUDGET_MS,
                        () -> survivors(nodes, leaderId, drainee).stream().anyMatch(n -> criticalNodeFailed(n, leaderId)));
         awaitCondition("the drainee is gone", DEPARTURE_BUDGET_MS, () -> cluster.getNode(drainee).isEmpty());
-        sleepQuietly(SETTLE_MS);
-
         var survivors = survivors(nodes, leaderId, drainee);
+        var survivorIds = survivors.stream().map(n -> n.self().id()).collect(java.util.stream.Collectors.toSet());
+
+        // Positive control: every surviving observer reported the drainee's departure as announced. Under a
+        // notifier that never announces (mutation m1) they report a CRITICAL NodeFailed instead and this goes red.
+        awaitCondition(() -> "every surviving observer holds the announced departure record; observers that do: " + departureObservers(survivors, drainee) + " of " + survivorIds,
+                       EVENT_REPLICATION_BUDGET_MS,
+                       () -> departureObservers(survivors, drainee).containsAll(survivorIds));
+        sleepQuietly(SETTLE_MS);
 
         assertThat(survivors).isNotEmpty();
         assertThat(survivors).noneMatch(n -> criticalNodeFailed(n, drainee))
@@ -177,6 +207,15 @@ class EmberPlannedDepartureAlertsTest {
 
     private static List<ClusterEvent> events(AetherNode node) {
         return node.eventAggregator().events().await().or(List.of());
+    }
+
+    /// Ids of the observers whose announced `NodeLeft` for `subject` is readable from any of `readers`.
+    private static java.util.Set<String> departureObservers(List<AetherNode> readers, String subject) {
+        return readers.stream()
+                      .flatMap(n -> events(n).stream())
+                      .filter(e -> e instanceof ClusterEvent.NodeLeft && subject.equals(e.details().get("nodeId")) && "DrainRequested".equals(e.details().get("cause")))
+                      .map(e -> e.details().get("observedBy"))
+                      .collect(java.util.stream.Collectors.toSet());
     }
 
     private static boolean announcedNodeLeft(AetherNode observer, String departed) {

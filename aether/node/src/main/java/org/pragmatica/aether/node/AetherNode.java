@@ -3840,6 +3840,7 @@ public interface AetherNode extends ManageableNode {
         // injected items on cross-node reads. AlertManager emits AlertInjected; InvocationTraceStore
         // emits TraceInjected through a thin sink that keeps the aether-invoke module free of any
         // ClusterEvent dependency.
+        eventAggregator.bindSelfCommandedDrain(drainProcedure::isCommandedDrain);
         alertManager.bindEventSink(eventAggregator::emit, clusterEventsHlcClock);
         alertManager.bindClusterEventsSource(eventAggregator::events);
         // #957: AlertForwarder was never constructed anywhere in src/main, so no alert left this
@@ -4809,7 +4810,7 @@ public interface AetherNode extends ManageableNode {
             // through the same `Stopped` transition. Folded into the EXISTING listener because
             // `onTransition` is a single-listener setter — registering a second one would silently
             // replace the transition journal.
-            noteTransitionForAlerts(alertManager, record);
+            alertManager.noteMembershipTransition(record.nodeId(), record.cause());
             onFsmTransition(transitionJournal, quorumLossDetectorRef, record);
             reconcileReplicaSetOnCountedBoundary(clusterEventsControllerRef, record);
             // #1720: a floor-refused operator drain target that has now reached DEAD closes its refusal on this edge.
@@ -4955,7 +4956,14 @@ public interface AetherNode extends ManageableNode {
         // #2014: the leader is the only node that saw DrainRequested, so its FSM edge is the only place the
         // announced-departure mark was set. The leader's broadcast ping carries the global drain set to every
         // peer: mark each commanded node here so a follower's DEAD edge reads a planned departure as one.
-        metricsCollector.setDrainSetObserver(drainSetObserver(alertManager, config.self()));
+        var drainInProgress = drainInProgress(metricsCollector::reportedStates, membershipFsm::memberStates);
+
+        metricsCollector.setDrainSetObserver(drainSetObserver(alertManager, config.self(), drainInProgress));
+        // The leader never processes its own ping, so it re-derives its mark from its own registry each interval.
+        var ownDrainRecord = drainSetObserver(alertManager, config.self(), drainInProgress);
+
+        periodicTasks.defer(() -> SharedScheduler.scheduleAtFixedRate(() -> ownDrainRecord.accept(drainCommandRegistry.drainTargets()),
+                                                                      config.timeouts().cluster().pingInterval()));
         // Workers renew core contact from identified core ping OR pong responses. This is
         // reachability evidence only; all mutations still require committed core authority.
         var coreAbsenceDetector = CoreAbsenceDetector.coreAbsenceDetector(config.timeouts().cluster().coreAbsence(),
@@ -7712,20 +7720,23 @@ public interface AetherNode extends ManageableNode {
     /// (the minority measures `T` from its own local-quorum-loss observation). The read-path
     /// quiesce (`AppHttpServer::onQuorumStateChange`) stays IMMEDIATE on PASSIVE — read-path
     /// protection is cheap to undo on regain; only the process-exit drain gets the window.
-    /// Feeds one FSM transition to the alert manager (#926 round 2 mark, #2014 clear). A drain withdrawn
-    /// (#1054) or refuted by a newer incarnation leaves the node a MEMBER: its announced-departure mark
-    /// must not outlive the drain and silence a later real crash. Package-private so it is pinned.
-    static void noteTransitionForAlerts(AlertManager alertManager, MembershipTransitionRecord record) {
-        alertManager.noteMembershipTransition(record.nodeId(), record.cause());
-        if ("Departing".equals(record.fromState()) && "Member".equals(record.toState())) {
-            alertManager.clearAnnouncedDeparture(record.nodeId());
-        }
+    /// #2014: the drain record (the leader's broadcast set, or the leader's own registry) marks each commanded node
+    /// (never self) as an announced departure on this observer. `drainInProgress` keeps a mark alive while the
+    /// drain is running. Package-private so the composition is pinned without booting a node.
+    static Consumer<Set<NodeId>> drainSetObserver(AlertManager alertManager,
+                                                  NodeId self,
+                                                  java.util.function.Predicate<NodeId> drainInProgress) {
+        return drained -> alertManager.observeDrainSet(drained, self, System.currentTimeMillis(), drainInProgress);
     }
 
-    /// #2014: the leader's broadcast drain set marks each commanded node (never self) as an announced
-    /// departure on this observer. Package-private so the composition is pinned without booting a node.
-    static Consumer<Set<NodeId>> drainSetObserver(AlertManager alertManager, NodeId self) {
-        return drained -> alertManager.observeDrainSet(drained, self, System.currentTimeMillis());
+    /// A drain is running for `id` as far as this observer can tell: the drainee reports DRAINING (leader pong
+    /// fan or the follower's cached readiness view), or this observer's FSM still holds it DEPARTING, which
+    /// outlives the drainee's pongs. Neither is a SWIM-incarnation signal. Package-private for the pin.
+    static java.util.function.Predicate<NodeId> drainInProgress(java.util.function.Supplier<Map<NodeId, NodeReportedState>> reportedStates,
+                                                                java.util.function.Supplier<Map<NodeId, String>> memberStates) {
+        return id -> reportedStates.get()
+                                   .get(id) == NodeReportedState.DRAINING || "Departing".equals(memberStates.get()
+                                                                                                            .get(id));
     }
 
     /// #688: one DRAINING report feeds both halves of a drain — the membership FSM's acknowledgement
