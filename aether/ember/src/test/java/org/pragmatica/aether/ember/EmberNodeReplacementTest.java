@@ -137,43 +137,19 @@ class EmberNodeReplacementTest {
         }
     }
 
-    /// The tripwire's phase budgets: the same as every other scenario except DRAINING_OLD, 30 s instead of 90 s. Today a blackholed,
-    /// never-yet-healthy old node is declared dead by the leader only when the peer-side liveness sweep (pingInterval x 8, 80 s in
-    /// Ember) or the node's own quorum-loss self-drain (~66 s) closes its open channel, so the leader's view of it flips ~67-80 s
-    /// after the crash. With a 90 s DRAINING_OLD budget (entered ~13 s after the crash) that race could go either way, which made the
-    /// tripwire fire on a CI run where Dead arrived first (phase DONE). 30 s ends the budget ~43 s after the crash: well before any
-    /// observed Dead edge, so today's outcome is deterministically FAILED_KEPT_BOTH, yet long enough that a real #2021 fix (detection
-    /// in seconds) lets the replacement complete and trips this test.
-    private static final String TRIPWIRE_TIMINGS = "60000,60000,90000,60000,3000,30000,60000";
-    private static final String TRIPWIRE_NAME = "tripwire2021_oldNodeCrashedAtColdBoot_endsKeptBoth_withoutRequestingTheDrain";
-    private static final String REAL_TEST_NAME = "oldNodeKilledWhileTheReplacementIsJoining_stillCompletes_andTheCorpseIsNeverDrained";
-
-    /// The assertion that is meant to hold: an old core that crashes abruptly during JOINING right after cluster start ends DONE.
-    /// It cannot hold yet: SWIM never saw the node healthy, so it reports UNKNOWN and the live-transport veto keeps the leader from
-    /// seeing it Dead inside the draining budget (#2021). Disabled until #2021 lands; [#TRIPWIRE_NAME] guards it meanwhile.
+    /// The assertion that is meant to hold once the leader reads a crashed old node as Dead within seconds in every case (#2021): an old
+    /// core that crashes abruptly during JOINING right after cluster start ends DONE. It cannot hold yet: how long the leader takes to read
+    /// such a node as Dead is bimodal (about 7 s when SWIM had already seen it healthy, 43+ s, typically 67-80 s, when it had not), so the
+    /// outcome is DONE or FAILED_KEPT_BOTH depending on timing. Disabled until #2021 lands. The enabled safety invariant for the same
+    /// crash (either outcome is safe, an unsafe one fails) arrives with #2042, which this PR is the base of.
     @Test
-    @Disabled("enable when #2021 lands; tripwire " + TRIPWIRE_NAME + " guards this")
+    @Disabled("enable when #2021 lands")
     @Timeout(600)
     void oldNodeKilledWhileTheReplacementIsJoining_stillCompletes_andTheCorpseIsNeverDrained() {
         var victimId = crashOldNodeWhileTheReplacementIsJoining("rpk", 0L);
 
         assertThat(recordOf(victimId).phase()).as("reason: %s", recordOf(victimId).reason()).isEqualTo(NodeReplacementPhase.DONE);
         assertOldGone_newVotes(victimId);
-    }
-
-    /// Today's outcome of the same crash, pinned: the drain is never requested (the leader still reads the old node as alive) and
-    /// the record ends FAILED_KEPT_BOTH, the safe terminal state. ENABLED so that the day #2021 changes the outcome this goes red
-    /// and says what to do; a disabled test would stay silent.
-    @Test
-    @Timeout(600)
-    void tripwire2021_oldNodeCrashedAtColdBoot_endsKeptBoth_withoutRequestingTheDrain() {
-        System.setProperty(TIMINGS_PROPERTY, TRIPWIRE_TIMINGS);
-        var victimId = crashOldNodeWhileTheReplacementIsJoining("rpk", 0L);
-        var record = recordOf(victimId);
-        var landed = "#2021 landed: delete this tripwire and enable " + REAL_TEST_NAME + " (phase was " + record.phase() + ", reason: " + record.reason() + ")";
-
-        assertThat(record.phase()).as(landed).isEqualTo(NodeReplacementPhase.FAILED_KEPT_BOTH);
-        assertThat(record.reason()).as(landed).startsWith("drain did not complete").contains("oldAlive=true").contains("drain=NOT_REQUESTED");
     }
 
     /// The same crash on a cluster that has run long enough for SWIM to have seen every member healthy. (SWIM does not declare a

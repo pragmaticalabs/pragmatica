@@ -39,7 +39,8 @@ import static org.pragmatica.net.tcp.NodeAddress.nodeAddress;
 /// committed record as it is applied. The gating FUNCTION is pinned by `NodeReplacementEnvTest`; this pins the line in `AetherNode`
 /// that hands it the node's REAL owner check and the node's REAL warning sink. A single booted node is the owner of the one-partition
 /// stream, so a committed pairing applied to its index must reach its event aggregator as `node-replacement-started`. Deleting the
-/// wiring, or gating it on a constant, leaves the unit pins green and the events silent.
+/// wiring, or gating it on the constant `false`, leaves the unit pins green and the events silent. Gating it on the constant `true` is NOT
+/// caught here: a single node is the owner anyway, so the owner check is only pinned by `NodeReplacementEnvTest`.
 class NodeReplacementOwnerGateBootTest {
     private static final TimeSpan START_BOUND = timeSpan(30).seconds();
     private static final String STARTED = "node-replacement-started";
