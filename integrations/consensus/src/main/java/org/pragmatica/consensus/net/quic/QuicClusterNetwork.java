@@ -1628,6 +1628,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
         // and RECONNECTED routed processViewChange(RECONNECT) from the PeerState chokepoint
         // before attach() returned. Only post-attach bookkeeping remains here.
         var phaseBefore = state.phase();
+
         installActivityKick(connection);
         var outcome = state.attach(connection, System.nanoTime());
 
@@ -2053,7 +2054,8 @@ public class QuicClusterNetwork implements ClusterNetwork {
     @Contract
     private void installActivityKick(QuicPeerConnection connection) {
         Result.lift(() -> serializer.encode(new NetworkMessage.KeepAlive(self.id())))
-              .onSuccess(frame -> connection.activityKick(frame, () -> blackholed))
+              .onSuccess(frame -> connection.activityKick(frame,
+                                                          () -> blackholed))
               .onFailure(cause -> log.warn("Activity kick not installed for peer {}: {}",
                                            connection.peerId(),
                                            cause.message()));

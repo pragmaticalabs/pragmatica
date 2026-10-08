@@ -29,6 +29,7 @@ import org.pragmatica.lang.Option;
 import io.netty.buffer.Unpooled;
 import io.netty.handler.codec.quic.QuicStreamChannel;
 
+
 /// #1727 (M2 mitigation) — the activity kick of ONE [QuicPeerConnection].
 ///
 /// netty-quic can strand lost stream data: when its retransmission timer is already due while the
@@ -84,7 +85,6 @@ final class QuicActivityKick {
         }
 
         lastDataWriteNanos.set(System.nanoTime());
-
         if (running.compareAndSet(false, true)) {
             schedule();
         }
@@ -94,7 +94,6 @@ final class QuicActivityKick {
     @Contract
     void stop() {
         stopped = true;
-
         var task = pending;
 
         if (task != null) {
@@ -114,17 +113,18 @@ final class QuicActivityKick {
     private void tick() {
         if (stopped || !alive.getAsBoolean()) {
             running.set(false);
+
             return;
         }
 
         if (windowOpen()) {
             kick();
             schedule();
+
             return;
         }
 
         running.set(false);
-
         // A data write that landed between the window check and the release must not be lost.
         if (windowOpen() && running.compareAndSet(false, true)) {
             schedule();
@@ -141,14 +141,11 @@ final class QuicActivityKick {
             return;
         }
 
-        controlLane.get()
-                   .filter(lane -> lane.isActive() && lane.isWritable())
-                   .onPresent(this::send);
+        controlLane.get().filter(lane -> lane.isActive() && lane.isWritable()).onPresent(this::send);
     }
 
     private void send(QuicStreamChannel lane) {
         kicksSent.incrementAndGet();
-
         var _ = lane.writeAndFlush(Unpooled.wrappedBuffer(frame));
     }
 }

@@ -208,14 +208,13 @@ public final class QuicPeerConnection {
             return;
         }
 
-        Option.option(connection.eventLoop())
-              .onPresent(loop -> activityKick = new QuicActivityKick(() -> stream(StreamType.CONTROL),
-                                                                     loop,
-                                                                     connection::isActive,
-                                                                     suppressed,
-                                                                     frame,
-                                                                     intervalMs,
-                                                                     windowMs));
+        Option.option(connection.eventLoop()).onPresent(loop -> activityKick = new QuicActivityKick(() -> stream(StreamType.CONTROL),
+                                                                                                    loop,
+                                                                                                    connection::isActive,
+                                                                                                    suppressed,
+                                                                                                    frame,
+                                                                                                    intervalMs,
+                                                                                                    windowMs));
     }
 
     /// #1727 (M2) — a lane data write was accepted on one of this connection's streams.
@@ -226,7 +225,9 @@ public final class QuicPeerConnection {
 
     /// Visible for tests: kick frames sent so far.
     long activityKicksSent() {
-        return Option.option(activityKick).map(QuicActivityKick::kicksSent).or(0L);
+        return Option.option(activityKick)
+                     .map(QuicActivityKick::kicksSent)
+                     .or(0L);
     }
 
     /// Lazily (re)open a missing long-lived `lane` stream on this live connection, invoking
