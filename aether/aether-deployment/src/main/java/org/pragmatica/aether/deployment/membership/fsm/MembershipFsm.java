@@ -1373,6 +1373,11 @@ public final class MembershipFsm {
         return org.pragmatica.lang.Unit.unit();
     }
 
+    /// Whether this node evicts a worker or spot on a single death plane (see [#setOnePlaneWorkerEviction]).
+    public boolean onePlaneWorkerEviction() {
+        return onePlaneWorkerEviction;
+    }
+
     /// Indirectly observed assigned workers cannot be declared dead from missing direct probes.
     public org.pragmatica.lang.Unit setJoinGraceReapEligibility(Predicate<NodeId> eligibility) {
         joinGraceReapEligibility = eligibility;
