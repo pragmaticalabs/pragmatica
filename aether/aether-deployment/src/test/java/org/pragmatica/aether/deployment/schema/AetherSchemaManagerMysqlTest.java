@@ -4,13 +4,17 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.schema;
 
+import org.pragmatica.db.migration.SchemaHistoryRepository;
+
+import org.pragmatica.db.migration.MigrationDialects;
+
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
-import org.pragmatica.aether.deployment.schema.SchemaHistoryRepository.MigrationStatus;
+import org.pragmatica.db.migration.SchemaHistoryRepository.MigrationStatus;
 import org.pragmatica.aether.resource.db.DatabaseConnectorConfig;
 import org.pragmatica.aether.resource.db.DatabaseType;
 import org.pragmatica.aether.resource.db.PoolConfig;

@@ -71,6 +71,9 @@
             <version>${javapoet.version}</version>
         </dependency>
 
+        <!-- Terra backend compiler tests use the real target contract. -->
+        <dependency><groupId>org.pragmatica-lite</groupId><artifactId>terra-runtime</artifactId><version>${project.version}</version><scope>test</scope></dependency>
+        <dependency><groupId>org.pragmatica-lite.aether</groupId><artifactId>slice-annotations</artifactId><version>${project.version}</version><scope>test</scope></dependency>
         <!-- Testing -->
         <dependency>
             <groupId>org.junit.jupiter</groupId>

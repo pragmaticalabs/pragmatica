@@ -23,6 +23,8 @@ import org.pragmatica.http.ProblemDetail;
 import org.pragmatica.http.ResponseSerializer;
 import org.pragmatica.http.routing.JsonCodecAdapter;
 import org.pragmatica.http.routing.RequestRouter;
+import org.pragmatica.http.routing.ParameterError;
+import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.http.routing.Route;
 import org.pragmatica.http.routing.RouteMountMode;
 import org.pragmatica.http.routing.RouteMounting;
@@ -348,15 +350,35 @@ public interface SliceRouter {
             /// mapper so a transient cause answers 503 (#1737) — the generated mapper's `default` is a
             /// hard-coded 500 that cannot see [Cause#isTransient].
             private HttpError resolveHttpError(Cause cause) {
-                return Option.from(cause.stream()
-                                        .filter(HttpError.class::isInstance)
-                                        .map(HttpError.class::cast)
-                                        .findFirst()).or(() -> mapWithTransientFallback(cause));
+                return Option.from(cause.stream().flatMap(this::boundaryError).findFirst()).or(() -> mapWithTransientFallback(cause));
+            }
+
+            private java.util.stream.Stream<HttpError> boundaryError(Cause cause) {
+                return switch (cause) {
+                    case HttpError error -> java.util.stream.Stream.of(error);
+                    case ParameterError.PathMismatch _ -> java.util.stream.Stream.of(HttpStatus.NOT_FOUND.with(cause));
+                    case ParameterError _ -> java.util.stream.Stream.of(HttpStatus.BAD_REQUEST.with(cause));
+                    default -> java.util.stream.Stream.empty();
+                };
             }
 
             private HttpError mapWithTransientFallback(Cause cause) {
-                return errorMapper.orElse(ErrorMapper.defaultMapper())
-                                  .map(cause);
+                var mapped = errorMapper.orElse(ErrorMapper.defaultMapper()).map(cause);
+
+                return cause instanceof Causes.CompositeCause composite && mapped.status() == HttpStatus.INTERNAL_SERVER_ERROR
+                       ? mapComposite(composite, mapped)
+                       : mapped;
+            }
+
+            /// A composite preserves a domain mapping only when every member has the same status.
+            /// Mixed failures retain the outer 500 rather than concealing a server fault as a client error.
+            private HttpError mapComposite(Causes.CompositeCause cause, HttpError fallback) {
+                var statuses = cause.stream().map(this::resolveHttpError).map(HttpError::status).distinct().toList();
+
+                return statuses.size() == 1
+                       ? statuses.getFirst()
+                                 .with(cause)
+                       : fallback;
             }
 
             private HttpResponseData notFound(HttpRequestContext request) {

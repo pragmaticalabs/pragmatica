@@ -50,7 +50,7 @@ public record CacheMethodInterceptor(CacheBackend cache,
 
             return lookup(key).flatMap(opt -> opt.map(cached -> Promise.<R> success((R) cached))
                                                  .or(() -> method.apply(request)
-                                                                 .onSuccess(value -> store(key, value))));
+                                                                 .flatMap(value -> store(key, value).map(_ -> value))));
         };
     }
 
@@ -77,7 +77,9 @@ public record CacheMethodInterceptor(CacheBackend cache,
             var key = extractKey(request);
 
             return method.apply(request)
-                         .onSuccess(_ -> cache.remove(key));
+                         .flatMap(value -> cache.remove(key)
+                                                .recover(cause -> skippedBecause("remove", key, cause))
+                                                .map(_ -> value));
         };
     }
 

@@ -15,6 +15,7 @@
  */
 package org.pragmatica.http.server;
 
+import java.net.InetSocketAddress;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -166,7 +167,19 @@ final class NettyHttpServer implements HttpServer {
                                             EventLoopGroup bossGroup,
                                             EventLoopGroup workerGroup,
                                             boolean ownsGroups) {
-        var sslContext = config.tls().await().flatMap(TlsContextFactory::create).option();
+        return config.tls().map(tls -> TlsContextFactory.create(tls).map(Option::some))
+                     .or(Result.success(Option.empty()))
+                     .fold(cause -> releaseGroupsOnBindFailure(ownsGroups, bossGroup, workerGroup)
+                                        .fold(_ -> cause.promise()),
+                           sslContext -> bindConfigured(config, handler, bossGroup, workerGroup, ownsGroups, sslContext));
+    }
+
+    private static Promise<HttpServer> bindConfigured(HttpServerConfig config,
+                                                      BiConsumer<HttpRequest, ResponseWriter> handler,
+                                                      EventLoopGroup bossGroup,
+                                                      EventLoopGroup workerGroup,
+                                                      boolean ownsGroups,
+                                                      Option<SslContext> sslContext) {
         var socketOptions = config.socketOptions();
         var bootstrap = new ServerBootstrap().group(bossGroup, workerGroup)
                                              .channel(NioServerSocketChannel.class)
@@ -196,8 +209,8 @@ final class NettyHttpServer implements HttpServer {
         if (future.isSuccess()) {
             var protocol = sslContext.map(_ -> "HTTPS").or("HTTP");
 
-            log.info("{} server '{}' started on port {}", protocol, config.name(), config.port());
-            promise.succeed(new NettyHttpServer(config.port(),
+            log.info("{} server '{}' started on port {}", protocol, config.name(), ((InetSocketAddress) future.channel().localAddress()).getPort());
+            promise.succeed(new NettyHttpServer(((InetSocketAddress) future.channel().localAddress()).getPort(),
                                                 Option.option(bossGroup),
                                                 Option.option(workerGroup),
                                                 Option.option(future.channel()),
@@ -407,6 +420,8 @@ final class NettyHttpServer implements HttpServer {
         private final boolean keepAlive;
         private final io.netty.handler.codec.http.HttpHeaders responseHeaders;
 
+        private final Promise<Unit> flushed = Promise.promise();
+
         private final java.util.concurrent.atomic.AtomicBoolean written = new java.util.concurrent.atomic.AtomicBoolean(false);
 
         NettyResponseWriter(ChannelHandlerContext ctx, String requestId, boolean keepAlive) {
@@ -425,8 +440,13 @@ final class NettyHttpServer implements HttpServer {
 
         @Override
         public void write(HttpStatus status, byte[] body, ContentType contentType) {
+            writeAsync(status, body, contentType);
+        }
+
+        @Override
+        public Promise<Unit> writeAsync(HttpStatus status, byte[] body, ContentType contentType) {
             if (!written.compareAndSet(false, true)) {
-                return;
+                return flushed;
             }
 
             var nettyStatus = HttpResponseStatus.valueOf(status.code());
@@ -446,6 +466,14 @@ final class NettyHttpServer implements HttpServer {
             if (!keepAlive) {
                 future.addListener(ChannelFutureListener.CLOSE);
             }
+            future.addListener((ChannelFuture result) -> {
+                if (result.isSuccess()) {
+                    flushed.succeed(Unit.unit());
+                } else {
+                    flushed.fail(org.pragmatica.lang.utils.Causes.fromThrowable(result.cause()));
+                }
+            });
+            return flushed;
         }
     }
 

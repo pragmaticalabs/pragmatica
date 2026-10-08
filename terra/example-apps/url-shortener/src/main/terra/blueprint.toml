@@ -1,0 +1,9 @@
+id = "org.pragmatica.aether.example:url-shortener:1.0.0"
+
+[[slices]]
+artifact = "org.pragmatica.aether.example:url-shortener-url-shortener:1.0.0"
+instances = 1
+
+[[slices]]
+artifact = "org.pragmatica.aether.example:url-shortener-analytics:1.0.0"
+instances = 1

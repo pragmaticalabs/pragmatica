@@ -1,0 +1,5 @@
+#!/bin/sh
+set -eu
+terra_app_home=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+if [ -n "${JAVA_HOME:-}" ]; then terra_java="$JAVA_HOME/bin/java"; else terra_java=java; fi
+exec "$terra_java" --enable-preview -cp "$terra_app_home/lib/*" org.pragmatica.terra.launcher.TerraMain "$terra_app_home/application" "$@"

@@ -60,11 +60,13 @@
         <!-- e2e-tests requires examples to be installed first, enabled via -Pwith-e2e profile -->
         <module>http-handler-api</module>
         <module>http-routing-adapter</module>
+        <module>http-security</module>
         <!-- Split node modules - ordered by dependency -->
         <module>aether-metrics</module>
         <module>aether-dht</module>
         <module>aether-storage</module>
         <module>aether-invoke</module>
+        <module>db-migrations</module>
         <module>aether-deployment</module>
         <module>aether-control</module>
         <!-- TTM modules - after control and metrics -->

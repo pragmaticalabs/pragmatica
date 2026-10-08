@@ -1,0 +1,3 @@
+### Changed (2026-10-07 — share database migration execution between runtimes)
+- Shared database migration execution/history is extracted into `aether/db-migrations`; Aether retains its policy/error adapter and distributed orchestration. Persisted formats and execution algorithms are retained. [mechanism: `AetherSchemaManager` delegates to `SchemaMigrations`]
+- Existing parser, dialect, and history-evolution tests move with the engine; Aether manager and schema-route tests continue through the compatibility adapter. Runtime-neutral errors are translated back to the established Aether errors, including composite failures. [mechanism: `SharedSchemaAdapter`]

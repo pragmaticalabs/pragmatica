@@ -1,0 +1,14 @@
+# The same blueprint syntax as Aether. Source roots are compiled together for this demonstration.
+[[slices]]
+artifact = "org.pragmatica.example:terra-shop:1.0.0-rc4"
+instances = 3
+[[slices]]
+artifact = "org.pragmatica.example:terra-catalog:1.0.0-rc4"
+[[slices]]
+artifact = "org.pragmatica.example:terra-pricing-service:1.0.0-rc4"
+[[slices]]
+artifact = "org.pragmatica.example:terra-counter:1.0.0-rc4"
+[[slices]]
+artifact = "org.pragmatica.example:terra-events:1.0.0-rc4"
+[[slices]]
+artifact = "org.pragmatica.example:terra-sink:1.0.0-rc4"

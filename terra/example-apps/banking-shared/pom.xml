@@ -1,0 +1,43 @@
+<?xml version='1.0' encoding='utf-8'?>
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+    <modelVersion>4.0.0</modelVersion>
+    <parent>
+        <groupId>org.pragmatica-lite</groupId>
+        <artifactId>terra-example-apps</artifactId>
+        <version>1.0.0-rc4</version>
+    </parent>
+    <artifactId>terra-banking-shared</artifactId>
+    <properties>
+        <terra.example.artifact>banking-shared</terra.example.artifact>
+        <terra.example.group>org.pragmatica-lite.aether.example.banking</terra.example.group>
+    </properties>
+    <dependencies />
+    <build>
+        <resources>
+            <resource>
+                <directory>${project.basedir}/../../../examples/banking/shared/src/main/resources</directory>
+            </resource>
+        </resources>
+        <plugins>
+            <plugin>
+                <groupId>org.codehaus.mojo</groupId>
+                <artifactId>build-helper-maven-plugin</artifactId>
+                <version>3.6.0</version>
+                <executions>
+                    <execution>
+                        <id>unchanged-source</id>
+                        <phase>generate-sources</phase>
+                        <goals>
+                            <goal>add-source</goal>
+                        </goals>
+                        <configuration>
+                            <sources>
+                                <source>${project.basedir}/../../../examples/banking/shared/src/main/java</source>
+                            </sources>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+    </build>
+</project>

@@ -70,6 +70,7 @@ The limits are cumulative per month, so a second release in the same month needs
 | `aether/aether-ttm-onnx` | `org.pragmatica-lite.aether:aether-ttm-onnx` | jar | skip | runtime internal of the node (ships inside the node jar and image) or Aether tooling; not a dependency of a slice |
 | `aether/cli` | `org.pragmatica-lite.aether:cli` | jar | skip | runtime internal of the node (ships inside the node jar and image) or Aether tooling; not a dependency of a slice |
 | `aether/dashboard` | `org.pragmatica-lite.aether:dashboard` | jar | skip | runtime internal of the node (ships inside the node jar and image) or Aether tooling; not a dependency of a slice |
+| `aether/db-migrations` | `org.pragmatica-lite.aether:db-migrations` | jar | skip | shared runtime implementation bundled with Aether/Terra; not a generated slice-project dependency |
 | `aether/dead-surface-gate` | `org.pragmatica-lite.aether:dead-surface-gate` | jar | skip | build gate or build instrument; produces no consumer-facing artifact |
 | `aether/e2e-tests/echo-slice` | `org.pragmatica-lite.aether.test:echo-slice` | jar | skip | end-to-end test slice |
 | `aether/e2e-tests/echo-slice-v2` | `org.pragmatica-lite.aether.test:echo-slice-v2` | jar | skip | end-to-end test slice |
@@ -89,6 +90,7 @@ The limits are cumulative per month, so a second release in the same month needs
 | `aether/forge/forge-simulator` | `org.pragmatica-lite.aether:forge-simulator` | jar | skip | Forge dev simulator; ships as its own jar/image |
 | `aether/http-handler-api` | `org.pragmatica-lite.aether:http-handler-api` | jar | publish | compile/runtime dependency of http-routing-adapter |
 | `aether/http-routing-adapter` | `org.pragmatica-lite.aether:http-routing-adapter` | jar | publish | template dependency (`jbct init`, provided) |
+| `aether/http-security` | `org.pragmatica-lite.aether:http-security` | jar | skip | shared runtime implementation bundled with Aether/Terra; not a generated slice-project dependency |
 | `aether/node` | `org.pragmatica-lite.aether:node` | jar | skip | runtime internal of the node (ships inside the node jar and image) or Aether tooling; not a dependency of a slice |
 | `aether/pg-tools` | `org.pragmatica-lite.aether:aether-pg-tools` | pom | publish | parent pom of a published module; a consumer resolves it to read the child (parent of pg-codegen) |
 | `aether/pg-tools/pg-codegen` | `org.pragmatica-lite.aether:pg-codegen` | jar | publish | added by `jbct add-persistence` (and `jbct init --with-persistence`): annotation-processor path and dependency |
@@ -199,8 +201,35 @@ The limits are cumulative per month, so a second release in the same month needs
 | `jbct/slice-processor` | `org.pragmatica-lite:slice-processor` | jar | publish | template dependency (provided) and the compiler `annotationProcessorPaths` entry |
 | `jbct/slice-processor-tests` | `org.pragmatica-lite:slice-processor-tests` | jar | skip | build gate or build instrument; produces no consumer-facing artifact |
 | `script-gate` | `org.pragmatica-lite:script-gate` | jar | skip | build gate or build instrument; produces no consumer-facing artifact |
+| `terra` | `org.pragmatica-lite:terra` | pom | skip | Terra runtime/build tooling built from this checkout and bundled in executable distributions; Central publication is not enabled in this increment |
+| `terra/example-apps` | `org.pragmatica-lite:terra-example-apps` | pom | skip | example or test fixture built from unchanged source directories; not a consumer artifact |
+| `terra/example-apps/banking-account` | `org.pragmatica-lite:terra-banking-account` | jar | skip | example or test fixture built from unchanged source directories; not a consumer artifact |
+| `terra/example-apps/banking-app` | `org.pragmatica-lite:terra-banking-app` | jar | skip | example or test fixture built from unchanged source directories; not a consumer artifact |
+| `terra/example-apps/banking-exchange` | `org.pragmatica-lite:terra-banking-exchange` | jar | skip | example or test fixture built from unchanged source directories; not a consumer artifact |
+| `terra/example-apps/banking-fraud` | `org.pragmatica-lite:terra-banking-fraud` | jar | skip | example or test fixture built from unchanged source directories; not a consumer artifact |
+| `terra/example-apps/banking-shared` | `org.pragmatica-lite:terra-banking-shared` | jar | skip | example or test fixture built from unchanged source directories; not a consumer artifact |
+| `terra/example-apps/banking-transfer` | `org.pragmatica-lite:terra-banking-transfer` | jar | skip | example or test fixture built from unchanged source directories; not a consumer artifact |
+| `terra/example-apps/comprehensive-persistence` | `org.pragmatica-lite:terra-comprehensive-persistence` | jar | skip | example or test fixture built from unchanged source directories; not a consumer artifact |
+| `terra/example-apps/ecommerce-app` | `org.pragmatica-lite:terra-ecommerce-app` | jar | skip | example or test fixture built from unchanged source directories; not a consumer artifact |
+| `terra/example-apps/ecommerce-fulfillment` | `org.pragmatica-lite:terra-ecommerce-fulfillment` | jar | skip | example or test fixture built from unchanged source directories; not a consumer artifact |
+| `terra/example-apps/ecommerce-inventory` | `org.pragmatica-lite:terra-ecommerce-inventory` | jar | skip | example or test fixture built from unchanged source directories; not a consumer artifact |
+| `terra/example-apps/ecommerce-order` | `org.pragmatica-lite:terra-ecommerce-order` | jar | skip | example or test fixture built from unchanged source directories; not a consumer artifact |
+| `terra/example-apps/ecommerce-payment` | `org.pragmatica-lite:terra-ecommerce-payment` | jar | skip | example or test fixture built from unchanged source directories; not a consumer artifact |
+| `terra/example-apps/ecommerce-pricing` | `org.pragmatica-lite:terra-ecommerce-pricing` | jar | skip | example or test fixture built from unchanged source directories; not a consumer artifact |
+| `terra/example-apps/ecommerce-shared` | `org.pragmatica-lite:terra-ecommerce-shared` | jar | skip | example or test fixture built from unchanged source directories; not a consumer artifact |
+| `terra/example-apps/pg-showcase` | `org.pragmatica-lite:terra-pg-showcase` | jar | skip | example or test fixture built from unchanged source directories; not a consumer artifact |
+| `terra/example-apps/pricing-engine` | `org.pragmatica-lite:terra-pricing-engine` | jar | skip | example or test fixture built from unchanged source directories; not a consumer artifact |
+| `terra/example-apps/step-composition` | `org.pragmatica-lite:terra-step-composition` | jar | skip | example or test fixture built from unchanged source directories; not a consumer artifact |
+| `terra/example-apps/tests` | `org.pragmatica-lite:terra-example-app-tests` | jar | skip | example or test fixture built from unchanged source directories; not a consumer artifact |
+| `terra/example-apps/url-shortener` | `org.pragmatica-lite:terra-url-shortener` | jar | skip | example or test fixture built from unchanged source directories; not a consumer artifact |
+| `terra/example-apps/url-shortener-v2` | `org.pragmatica-lite:terra-url-shortener-v2` | jar | skip | example or test fixture built from unchanged source directories; not a consumer artifact |
+| `terra/examples` | `org.pragmatica-lite:terra-examples` | jar | skip | example or test fixture built from unchanged source directories; not a consumer artifact |
+| `terra/http` | `org.pragmatica-lite:terra-http` | jar | skip | Terra runtime/build tooling built from this checkout and bundled in executable distributions; Central publication is not enabled in this increment |
+| `terra/launcher` | `org.pragmatica-lite:terra-launcher` | jar | skip | Terra runtime/build tooling built from this checkout and bundled in executable distributions; Central publication is not enabled in this increment |
+| `terra/maven-plugin` | `org.pragmatica-lite:terra-maven-plugin` | maven-plugin | skip | Terra runtime/build tooling built from this checkout and bundled in executable distributions; Central publication is not enabled in this increment |
+| `terra/runtime` | `org.pragmatica-lite:terra-runtime` | jar | skip | Terra runtime/build tooling built from this checkout and bundled in executable distributions; Central publication is not enabled in this increment |
 | `test-logging` | `org.pragmatica-lite:test-logging` | jar | skip | test support; consumers take their own test dependencies, the template adds none |
 | `test-plan-witness` | `org.pragmatica-lite:test-plan-witness` | jar | skip | build gate or build instrument; produces no consumer-facing artifact |
 | `testing` | `org.pragmatica-lite:testing` | jar | skip | test support; consumers take their own test dependencies, the template adds none |
 
-33 modules publish, 114 skip (147 reactor modules; `forge-tests`, `e2e-tests` and `cloud-tests` are reactor modules only under their profiles and never publish).
+33 modules publish, 144 skip (177 reactor modules; `forge-tests`, `e2e-tests` and `cloud-tests` are reactor modules only under their profiles and never publish).

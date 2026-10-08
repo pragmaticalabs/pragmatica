@@ -1,0 +1,5 @@
+# Explicitly public demo. Production deployments can choose api-key or jwt.
+[http]
+port = 8080
+security_mode = "none"
+version_mode = "path"

@@ -1,0 +1,4 @@
+id="org.pragmatica.aether.example:step-composition:1.0.0-rc4"
+
+[[slices]]
+artifact="org.pragmatica.aether.example:step-composition-order-processor:1.0.0-rc4"

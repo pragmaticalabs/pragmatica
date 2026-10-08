@@ -30,6 +30,8 @@ Three storage/persistence concepts that are distinct and must not be conflated:
 
 ## Deployment & Lifecycle
 
+Migration execution/history now lives in the shared [`db-migrations`](../../db-migrations/README.md) module, used by Aether’s existing adapter and Terra startup. Aether retains leases, deployment gating, status, and HTTP error projection. Persisted history and ownership formats are retained by the extraction. [mechanism: `AetherSchemaManager` delegates to `SchemaMigrations` and maps shared failures back to `SchemaError`]
+
 | # | Feature | Status | Description |
 |---|---------|--------|-------------|
 | 1 | Blueprint management | Battle-tested | Declarative TOML-based deployment specs with dependency ordering, validation, pub-sub orphan detection, and status tracking. A slice's `instances` is at least 3 and defaults to 3 (#1495): the parser refuses fewer with the typed `SliceSpecError.InstancesBelowMinimum`, transitive dependencies deploy at 3, and `POST /api/v1/deploy` applies the same floor and default `[verified: BlueprintParserTest.InstanceFloorCases, DeployRouteStatusTest.InstanceFloor — unit level]` |
@@ -265,6 +267,8 @@ Three storage/persistence concepts that are distinct and must not be conflated:
 | 91 | TLS default for containers | Complete | TLS enabled by default for DOCKER and KUBERNETES environments (LOCAL remains plain for development) |
 | 92 | RBAC — per-route security | Complete | Per-route security via routes.toml `[security]` section (public/authenticated/role:name), type-safe SecurityPolicy with `canAccess()` and deny-by-default for unknown values, route-level enforcement in AppHttpServer, Principal/SecurityContext injection in handlers, blueprint operator overrides with strengthen_only policy, security metadata in KV-Store, dashboard security badges, security denial metrics |
 | 203 | Security hardening (RC1) | Complete | QUIC cluster transport mandates a real `TlsConfig` with deterministic CA derived from `AETHER_CLUSTER_SECRET` — no plaintext mode, no `AETHER_INSECURE_DEV_MODE` escape hatch, ALPN `"aether-cluster/1"` pinned. Dev-mode (`AETHER_INSECURE_DEV_MODE`) is refused at node startup when operator TLS certificates are configured (`TlsConfig.hasProvidedCertificates()`), and is propagated to replacements only when present (isolated, not in the cluster-identity allow-list). Node startup also aborts when cluster name is missing/empty. PostgreSQL `InsecureTrustManagerFactory` still gated behind an explicit system-property opt-in. Cloud config `toString()` redacts secrets. SQL injection prevention in PG LISTEN/UNLISTEN. SSH command injection prevention via image name validation. Bootstrap API key stored to file with 600 permissions instead of stdout. Docker Compose scaffold emits `AETHER_CLUSTER_SECRET` as a required `${...}` shell reference, never a literal or a random fallback (#684) |
+
+HTTP API-key and JWT/JWKS verification is shared with Terra through `aether/http-security`; Aether retains cluster-managed API keys and its existing request policy pipeline. Shared slice routing also retains declared error statuses for consistently mapped composite validation failures.
 
 ## Embeddable Runtime
 

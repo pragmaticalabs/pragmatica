@@ -1,0 +1,6 @@
+[cache.calls]
+cache_name = "calls"
+strategy = "CACHE_ASIDE"
+ttl_seconds = 60
+max_entries = 100
+mode = "LOCAL"
