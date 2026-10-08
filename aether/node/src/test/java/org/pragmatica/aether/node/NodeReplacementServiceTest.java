@@ -389,7 +389,7 @@ class NodeReplacementServiceTest {
         assertThat(phaseAfter(rolledBack, counted)).isEqualTo(CapacityReservationPhase.RELEASED);
         assertThat(phaseAfter(done, counted)).isEqualTo(CapacityReservationPhase.OBSERVED);
         assertThat(NodeReplacementWiring.settleReservation(rolledBack, Option.some(uncounted)).getFirst().replacement().isEmpty()).as("uncounted: dropped").isTrue();
-        assertThat(NodeReplacementWiring.settleReservation(done, Option.some(uncounted)).getFirst().replacement().isEmpty()).as("uncounted: dropped").isTrue();
+        assertThat(NodeReplacementWiring.settleReservation(done, Option.some(uncounted))).as("uncounted, node arrived: kept, it is the live node's only admission intent").isEmpty();
         assertThat(NodeReplacementWiring.settleReservation(keptBoth, Option.some(counted))).as("both nodes are kept: nothing settles yet").isEmpty();
     }
 

@@ -110,6 +110,20 @@ class NodeReplacementCapacityLedgerTest {
         assertThat(store.get(key).isEmpty()).as("and the id is no longer admissible").isTrue();
     }
 
+    /// v-2042 round 4: a node that ARRIVED on an uncounted reservation (no counting ledger) keeps it at DONE. Dropping it would leave a live
+    /// worker with no admission intent, refused the next time it has to be admitted again (its community assignment lost).
+    @Test
+    void anUncountedReservation_isKeptByAReplacementThatReachedDone_forTheLiveNode() {
+        var key = new AetherKey.CapacityReservationKey(FRESH);
+
+        store.process(store.createBatch(List.of(new KVCommand.Put(LeaderKey.INSTANCE, LEADER))));
+        transaction(NodeReplacementWiring.admissionMutations(true, "worker", FRESH, "pool", Option.none()));
+        var done = new NodeReplacementValue(FRESH, "worker", NodeReplacementPhase.DONE, 0L, "pool", "", NodeReplacementValue.MODE_EXTERNAL, 0, "", 5L);
+
+        assertThat(NodeReplacementWiring.settleReservation(done, store.getTyped(key, CapacityReservationValue.class))).isEmpty();
+        assertThat(store.getTyped(key, CapacityReservationValue.class).unwrap().intendedRole()).isEqualTo("worker");
+    }
+
     /// v-2042 M1(a): a replacement that reaches DONE hands its reservation to the lifecycle as OBSERVED (what it writes when it sees
     /// the instance), so retiring the node later returns the counted slot and drops the reservation: the id stops being admissible.
     @Test

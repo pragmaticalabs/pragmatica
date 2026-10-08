@@ -206,6 +206,9 @@ public final class NodeReplacementWiring {
         var key = new AetherKey.CapacityReservationKey(next.replacement());
 
         return reservation.filter(value -> value.phase() == AetherValue.CapacityReservationPhase.DISPATCHED)
+                          // An uncounted reservation holds no slot, but it is the only admission intent a node of a ledger-less cluster has: a worker that
+                          // loses its community assignment is admitted again on it. A node that did arrive keeps it; only a rollback (never arrived) drops it.
+                          .filter(value -> !(UNCOUNTED.equals(value.sourceBinding()) && next.phase() == NodeReplacementPhase.DONE))
                           .<KVCommand.Mutation<AetherKey, AetherValue>> map(value -> new KVCommand.Mutation<>(key,
                                                                                                               Option.<AetherValue> some(value),
                                                                                                               settled(next.phase(),
