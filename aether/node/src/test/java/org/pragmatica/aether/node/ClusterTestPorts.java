@@ -59,8 +59,12 @@ public final class ClusterTestPorts {
     /// A port free on BOTH TCP and UDP, for a listener whose protocol (H1, H3, BOTH) the test does not fix. Not for a
     /// cluster port: that one also needs the SWIM port, see [#freeClusterPort].
     public static int freeTcpAndUdpPort() {
+        return freeTcpAndUdpPort(ClusterTestPorts::udpCandidate);
+    }
+
+    static int freeTcpAndUdpPort(IntSupplier candidates) {
         for (int attempt = 0; attempt < ATTEMPTS; attempt++) {
-            var candidate = udpCandidate();
+            var candidate = candidates.getAsInt();
 
             if (tcpFree(candidate) && udpFree(candidate) && ISSUED.add(candidate)) {
                 return candidate;

@@ -87,15 +87,12 @@ write_fixture
 sed -i.bak 's#curl -s localhost 2>/dev/null || true#curl -s localhost:8080 2>/dev/null || true#' "$SUITE"; rm -f "${SUITE}.bak"
 if lint > /dev/null; then fail "L5 an edited waived line kept its waiver"; else ok "L5 editing the waived line voids its waiver"; fi
 
-# L6 — multiset
+# L6 — multiset: a second identical flagged line in the SAME function (same file, rule, function and text, so only the count differs)
 write_fixture
-cat >> "$SUITE" <<'F'
-test_four() {
+sed -i.bak '/^    curl -s localhost 2>\/dev\/null || true$/a\
     curl -s localhost 2>/dev/null || true
-}
-run_test "four" test_four
-F
-if lint > /dev/null; then fail "L6 a second identical flagged line was absorbed by one entry"; else ok "L6 a second identical flagged line needs its own entry"; fi
+' "$SUITE"; rm -f "${SUITE}.bak"
+if [ "$(grep -c 'curl -s localhost 2>/dev/null || true' "$SUITE")" = 2 ] && ! lint > /dev/null; then ok "L6 a second identical flagged line in the same function needs its own entry"; else fail "L6 a second identical flagged line in one function was absorbed by one entry (or the fixture did not apply)"; fi
 
 # L8 — whitespace-only edits
 write_fixture
