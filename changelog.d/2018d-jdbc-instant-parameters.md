@@ -1,2 +1,0 @@
-### Fixed
-- `Instant` JDBC parameters are bound as a `Timestamp` with a UTC calendar for queries, updates and batches, including transactional resource calls. pgjdbc refuses `setObject(Instant)` ("Can't infer the SQL type"); the UTC-calendar binding stores the same UTC instant in a `timestamptz` and a `timestamp` column on any JVM time zone. A `timestamp` column should be read back with a UTC calendar (`getTimestamp(col, utc)`).

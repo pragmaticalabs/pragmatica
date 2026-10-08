@@ -29,7 +29,8 @@ import java.util.TimeZone;
 /// An `Instant` is bound as a `Timestamp` WITH A UTC CALENDAR. pgjdbc refuses `setObject(Instant)`, and a plain
 /// `Timestamp` (or `OffsetDateTime`) binding stores the JVM-zone wall clock into a `timestamp` (without time zone)
 /// column, so the stored value moves with `-Duser.timezone`. With the UTC calendar both a `timestamptz` and a
-/// `timestamp` column receive the same UTC instant on every JVM zone. Reading a `timestamp` column back with the
+/// `timestamp` column receive the same UTC instant on every JVM zone, for instants from 1582-10-15 onward (`Timestamp` is
+/// hybrid Julian/Gregorian, PostgreSQL proleptic Gregorian, so earlier instants shift by days). Reading a `timestamp` column back with the
 /// default-calendar `getTimestamp` is still JVM-zone dependent: read it with a UTC calendar.
 public final class JdbcParameters {
     private static final TimeZone UTC = TimeZone.getTimeZone("UTC");
