@@ -160,7 +160,14 @@ class EmberNodeReplacementTest {
         sleep(settleMs);
         leader.nodeReplacementService().begin(victimId, "").await(START_BOUND).onFailure(cause -> throwBecause(cause.message()));
         awaitCondition("the replacement is JOINING", () -> recordOf(victimId).phase() == NodeReplacementPhase.JOINING);
+        // The crash must land while the record is in JOINING: sample the phase at the moment of the crash, print it, and fail
+        // the test if the window was missed, so a green result can never come from a crash after JOINING finished.
+        var phaseAtKill = recordOf(victimId).phase();
+
+        System.out.println("EMBER-REPLACEMENT kill of " + victimId.id() + " at record phase " + phaseAtKill + " (settle " + settleMs + " ms)");
+        assertThat(phaseAtKill).as("the kill window (JOINING) was missed").isEqualTo(NodeReplacementPhase.JOINING);
         blackhole(victimId);
+        System.out.println("EMBER-REPLACEMENT kill landed; record phase now " + recordOf(victimId).phase());
         awaitTerminal(victimId);
 
         assertThat(recordOf(victimId).phase()).as("reason: %s", recordOf(victimId).reason()).isEqualTo(NodeReplacementPhase.DONE);
