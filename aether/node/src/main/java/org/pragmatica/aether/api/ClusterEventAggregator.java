@@ -168,6 +168,10 @@ public final class ClusterEventAggregator {
     private final HlcClock hlcClock;
     private final NodeId selfNode;
     private final AtomicLong quorumSequence = new AtomicLong();
+
+    /// True while THIS node drains because the leader commanded it (#2014); wired by `AetherNode`.
+    private final java.util.concurrent.atomic.AtomicReference<BooleanSupplier> selfCommandedDrain = new java.util.concurrent.atomic.AtomicReference<>(() -> false);
+
     private final ConcurrentHashMap<String, Long> deploymentStartTimes = new ConcurrentHashMap<>();
 
     private final ConcurrentHashMap<String, Long> nodeJoinTimes = new ConcurrentHashMap<>();
@@ -1195,6 +1199,12 @@ public final class ClusterEventAggregator {
                       });
     }
 
+    /// Wire the "this node is draining by command" probe (#2014), from the local `DrainProcedure`.
+    @Contract
+    public void bindSelfCommandedDrain(BooleanSupplier selfCommandedDrain) {
+        this.selfCommandedDrain.set(selfCommandedDrain);
+    }
+
     /// Quorum transitions, UN-gated via {@link #emitLocal} (#926) — previously both leader-gated.
     ///
     /// QUORUM_LOST is the most severe event this class emits (CRITICAL) and was the least emittable.
@@ -1239,6 +1249,24 @@ public final class ClusterEventAggregator {
                                                 Map.of("observedBy", selfNode.id())));
             }
             case PASSIVE -> {
+                if (selfCommandedDrain.get().getAsBoolean()) {
+                    // #2014: the leader COMMANDED this node to drain and its own drain took consensus passive.
+                    // Planned work. A REAL quorum loss on a survivor, or a QUORUM_LOSS self-drain, never gets here.
+                    LOG.info("Node {} went passive because it is draining by command — planned, not quorum loss",
+                             selfNode.id());
+
+                    return;
+                }
+
+                if (event.demoted()) {
+                    // #2014: a voter reconfiguration removed this node while the cluster kept its quorum
+                    // (`ClusterStateNotification#demoted`, #1790). Planned work: it is not quorum loss,
+                    // so it neither pages nor needs a recovery event.
+                    LOG.info("Node {} left the electorate by reconfiguration — observing a live quorum", selfNode.id());
+
+                    return;
+                }
+
                 LOG.warn("Quorum lost on {} — consensus unavailable, cluster observability degraded", selfNode.id());
                 emitLocal(new QuorumLost(hlcClock.now(),
                                          Severity.CRITICAL,
@@ -1336,6 +1364,19 @@ public final class ClusterEventAggregator {
                                  Severity.CRITICAL,
                                  "Node " + departed.id() + " failed (confirmed departure)",
                                  Map.of("nodeId", departed.id(), "observedBy", selfNode.id())));
+    }
+
+    /// A confirmed departure this node saw ANNOUNCED (an operator or controller drain, #2014). The stream
+    /// keeps the record — a departure is history — but as an INFO `NodeLeft`, not a CRITICAL `NodeFailed`:
+    /// a planned drain or replacement must not page. Same un-gated, per-observer contract as
+    /// [`#onConfirmedDeparture`]; an UNPLANNED death never reaches this method.
+    @Contract
+    public void onAnnouncedDeparture(NodeId departed) {
+        LOG.info("Node {} departed gracefully (announced drain), observed by {}", departed.id(), selfNode.id());
+        emitLocal(new NodeLeft(hlcClock.now(),
+                               Severity.INFO,
+                               "Node " + departed.id() + " departed (announced drain)",
+                               Map.of("nodeId", departed.id(), "observedBy", selfNode.id(), "cause", "DrainRequested")));
     }
 
     /// Departure-push overrun sink (issue #427, D4). The gracefully-departing node reports the chunks
