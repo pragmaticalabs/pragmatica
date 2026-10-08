@@ -111,15 +111,17 @@ public interface NodeReplacementService {
         record SourceRequired(NodeId node) implements Refusal {
             @Override
             public String message() {
-                return "Node " + node.id() + " has no provisioning source, so the capacity slot of an externally started replacement could never be returned; "
-                       + "start the replacement through the leader (omit the replacement id) or give the node a source";
+                return "Node " + node.id()
+                     + " has no provisioning source, so the capacity slot of an externally started replacement could never be returned; "
+                     + "start the replacement through the leader (omit the replacement id) or give the node a source";
             }
         }
 
         record FleetFull(int allocated) implements Refusal {
             @Override
             public String message() {
-                return "The fleet is at its node limit (" + allocated + " allocated); an externally started replacement would exceed it";
+                return "The fleet is at its node limit (" + allocated
+                     + " allocated); an externally started replacement would exceed it";
             }
         }
 
