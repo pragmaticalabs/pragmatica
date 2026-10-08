@@ -158,6 +158,24 @@ class BinaryRowReadLivePgTest {
         }
     }
 
+    /// The latest timestamps PostgreSQL accepts (year 294276) overflowed the microsecond arithmetic and decoded to a wrong
+    /// instant; the earliest (4713 BC) must decode too.
+    @Nested
+    class TimestampRange {
+        @Test void latestValidTimestamp() {
+            var row = secondExecution("SELECT CASE WHEN $1::INT4 = 1 THEN '294276-12-31 23:59:59.999999'::TIMESTAMP ELSE NULL END AS val", 1);
+
+            assertThat(row.get("val", LocalDateTime.class)).isEqualTo(LocalDateTime.of(294276, 12, 31, 23, 59, 59, 999_999_000));
+            assertThat(row.get("val", Instant.class)).isEqualTo(LocalDateTime.of(294276, 12, 31, 23, 59, 59, 999_999_000).toInstant(ZoneOffset.UTC));
+        }
+
+        @Test void earliestValidTimestamp() {
+            var row = secondExecution("SELECT CASE WHEN $1::INT4 = 1 THEN '4713-01-01 00:00:00 BC'::TIMESTAMP ELSE NULL END AS val", 1);
+
+            assertThat(row.get("val", LocalDateTime.class)).isEqualTo(LocalDateTime.of(-4712, 1, 1, 0, 0));
+        }
+    }
+
     @Nested
     class Arrays {
         @Test void typedIntegerArray() {

@@ -10,9 +10,12 @@ import org.pragmatica.postgres.net.SqlException;
 ///
 /// PostgreSQL encodes `infinity` and `-infinity` as the extreme integers (`int32` for `date`, `int64` for the
 /// timestamps). Decoded as ordinary offsets they become dates millions of years away that look valid, so they are refused
-/// by name instead. Arithmetic is exact: an offset that does not fit a Java `Instant` fails rather than wrapping.
+/// by name instead. The epoch shift is applied in seconds so the whole valid PostgreSQL range decodes without overflow.
 final class PgTemporal {
     private static final LocalDate PG_EPOCH = LocalDate.of(2000, 1, 1);
+    /// Seconds from 1970-01-01 to 2000-01-01. Added to SECONDS, not to microseconds: the micros sum overflows `long` for the
+    /// latest valid PostgreSQL timestamps (year 294276), which then wrapped to a wrong instant.
+    private static final long PG_EPOCH_SECONDS = 946_684_800L;
 
     private PgTemporal() {}
 
@@ -29,13 +32,7 @@ final class PgTemporal {
             throw new SqlException("PostgreSQL timestamp '" + infinityName(pgMicros == Long.MAX_VALUE) + "' has no Instant representation");
         }
 
-        try {
-            var epochMicros = Math.addExact(pgMicros, BinaryCodec.PG_EPOCH_MICROS_OFFSET);
-
-            return Instant.ofEpochSecond(Math.floorDiv(epochMicros, 1_000_000L), Math.floorMod(epochMicros, 1_000_000L) * 1000L);
-        } catch (ArithmeticException | java.time.DateTimeException outOfRange) {
-            throw new SqlException("PostgreSQL timestamp " + pgMicros + " is outside the range of Instant");
-        }
+        return Instant.ofEpochSecond(Math.floorDiv(pgMicros, 1_000_000L) + PG_EPOCH_SECONDS, Math.floorMod(pgMicros, 1_000_000L) * 1000L);
     }
 
     private static String infinityName(boolean positive) {
