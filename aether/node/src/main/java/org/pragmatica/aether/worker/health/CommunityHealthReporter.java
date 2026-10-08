@@ -14,6 +14,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.GovernorAnnouncementValue
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.aether.worker.health.CommunityHealthMessage.MemberDeparture;
 import org.pragmatica.aether.worker.health.CommunityHealthMessage.MemberHealth;
 import org.pragmatica.aether.worker.health.CommunityHealthMessage.Request;
 import org.pragmatica.aether.worker.health.CommunityHealthMessage.Report;
@@ -36,6 +37,8 @@ public final class CommunityHealthReporter {
     private final TimeSource clock;
     private final org.pragmatica.lang.io.TimeSpan freshness;
     private final Map<NodeId, Direct> direct = new HashMap<>();
+    /// Members this governor's SWIM has declared terminally DEAD, with the boot token last observed for each.
+    private final Map<NodeId, Long> departed = new HashMap<>();
 
     private CommunityHealthReporter(NodeId self,
                                     Function<String, Option<GovernorAnnouncementValue>> authority,
@@ -78,6 +81,29 @@ public final class CommunityHealthReporter {
                observation.sequence(),
                membershipIncarnation,
                org.pragmatica.lang.io.TimeSpan.timeSpan(Math.max(0, nowMillis - observation.observedAtMs())).millis());
+
+        return org.pragmatica.lang.Unit.unit();
+    }
+
+    /// #1717 — the governor's own failure detector (SWIM, via this node's MembershipFsm) reached terminal DEAD
+    /// for `node`. Relayed to the core in every report of this community until the member leaves it. Only a
+    /// non-core member of THIS governor's community, with a boot token this governor actually observed (a pong),
+    /// is relayed: no observed token, no relay. The member's direct entry is dropped so it can never again be
+    /// reported alive. Absence or silence NEVER reaches this method; the caller is the DEAD edge itself.
+    public synchronized org.pragmatica.lang.Unit recordTerminalDeath(NodeId node) {
+        var community = assignment.apply(self);
+
+        if (node.equals(self) || core.test(node) || community.isEmpty() || assignment.apply(node)
+                                                                                     .filter(value -> community.filter(value::equals)
+                                                                                                               .isPresent())
+                                                                                     .isEmpty()) {
+            return org.pragmatica.lang.Unit.unit();
+        }
+
+        Option.option(direct.remove(node))
+              .filter(value -> value.membershipIncarnation() > 0)
+              .onPresent(value -> departed.put(node,
+                                               value.membershipIncarnation()));
 
         return org.pragmatica.lang.Unit.unit();
     }
@@ -146,6 +172,9 @@ public final class CommunityHealthReporter {
         direct.keySet().removeIf(node -> assignment.apply(node)
                                                    .filter(request.communityId()::equals)
                                                    .isEmpty());
+        departed.keySet().removeIf(node -> assignment.apply(node)
+                                                     .filter(request.communityId()::equals)
+                                                     .isEmpty());
         long now = clock.nanoTime();
         var members = direct.entrySet()
                             .stream()
@@ -170,6 +199,12 @@ public final class CommunityHealthReporter {
                           request.governorTerm(),
                           request.incarnation(),
                           request.sequence(),
-                          members);
+                          members,
+                          departed.entrySet()
+                                  .stream()
+                                  .sorted(Map.Entry.comparingByKey())
+                                  .map(entry -> new MemberDeparture(entry.getKey(),
+                                                                    entry.getValue()))
+                                  .toList());
     }
 }

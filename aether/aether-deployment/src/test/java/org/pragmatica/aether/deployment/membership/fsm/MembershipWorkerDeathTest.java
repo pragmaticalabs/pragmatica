@@ -209,6 +209,71 @@ class MembershipWorkerDeathTest {
         assertThat(state(membership, workers.get(2))).isEqualTo("Member");
     }
 
+    /// #1717 — the governor relays its SWIM-confirmed death of a non-governor worker, the only signal a core can
+    /// receive for it. It arms the backstop and ends DEAD with the REMOVED edge.
+    @Test
+    void governorReportedDeath_reachesDead_andEmitsTheRemovedEdge() {
+        var membership = fsm();
+        var edges = new CopyOnWriteArrayList<MembershipDeltaEdge>();
+        var id = new NodeId("worker-gd");
+
+        membership.onMembershipDelta(edges::add);
+        membership.onGovernorHealthy(id, "community", new NodeId("governor"), 1, 4, worker());
+        membership.onGovernorReportedDead(id, 4);
+
+        assertThat(awaitTrue(() -> "Dead".equals(state(membership, id)), 3_000))
+            .as("a governor-relayed SWIM death evicts after the window; state=%s", state(membership, id)).isTrue();
+        assertThat(edges.stream().map(MembershipDeltaEdge::kind).toList()).contains(MembershipDeltaEdge.Kind.REMOVED);
+    }
+
+    /// (c) A later positive report vetoes the relayed death inside the window.
+    @Test
+    void governorReportedDeath_thenPositiveReportInsideTheWindow_isVetoed() {
+        var membership = fsm();
+        var id = new NodeId("worker-veto");
+        var governor = new NodeId("governor");
+
+        membership.onGovernorHealthy(id, "community", governor, 1, 4, worker());
+        membership.onGovernorReportedDead(id, 4);
+        membership.onGovernorHealthy(id, "community", governor, 1, 4, worker());
+
+        assertThat(awaitTrue(() -> "Dead".equals(state(membership, id)), 3 * BACKSTOP_MS)).isFalse();
+        assertThat(state(membership, id)).isEqualTo("Member");
+    }
+
+    @Test
+    void governorReportedDeath_forACore_aWrongBootToken_orAnUnclassifiedMember_isRefused() {
+        var membership = fsm();
+        var core = new NodeId("core-9");
+        var worker = new NodeId("worker-token");
+        var mystery = new NodeId("mystery-2");
+
+        membership.seed(java.util.Set.of(core));
+        membership.onGovernorHealthy(worker, "community", new NodeId("governor"), 1, 4, worker());
+        membership.onSwimHealthy(mystery, 1);
+        membership.onGovernorReportedDead(core, 1);
+        membership.onGovernorReportedDead(worker, 99);
+        membership.onGovernorReportedDead(mystery, 1);
+
+        assertThat(awaitTrue(() -> membership.memberStates().containsValue("Dead"), 3 * BACKSTOP_MS))
+            .as("a core, another process's token, and an unclassified member are never evicted by a relay").isFalse();
+        assertThat(membership.refusedProcessEvidenceCount()).as("the wrong token is refused and counted").isGreaterThan(0);
+    }
+
+    /// The relay is the only governor-sourced removal signal. A governor that dies or falls silent relays
+    /// nothing, so with no relayed death no member is evicted however long evidence is absent.
+    @Test
+    void governorSilence_withNoRelayedDeath_evictsNobody() {
+        var membership = fsm();
+        var governor = new NodeId("governor");
+        var workers = java.util.List.of(new NodeId("s-a"), new NodeId("s-b"), new NodeId("s-c"));
+
+        workers.forEach(w -> membership.onGovernorHealthy(w, "community", governor, 1, 4, worker()));
+
+        assertThat(awaitTrue(() -> membership.memberStates().containsValue("Dead"), 4 * BACKSTOP_MS)).isFalse();
+        workers.forEach(w -> assertThat(state(membership, w)).isEqualTo("Member"));
+    }
+
     /// The waiver is for workers and spots only. A core is dialed, so its liveness plane exists and must
     /// still be required: SWIM-FAULTY alone must never kill a core.
     @Test

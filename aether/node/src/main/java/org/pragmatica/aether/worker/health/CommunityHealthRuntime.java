@@ -29,7 +29,8 @@ public record CommunityHealthRuntime(NodeId self,
                                      Supplier<String> lifecycle,
                                      LongSupplier incarnation,
                                      BiConsumer<NodeId, ProtocolMessage> send,
-                                     Consumer<CommunityHealthIndex.GovernorEvidence> positiveEvidence) {
+                                     Consumer<CommunityHealthIndex.GovernorEvidence> positiveEvidence,
+                                     Consumer<CommunityHealthIndex.GovernorDeparture> departure) {
     public org.pragmatica.lang.Unit poll() {
         reporter.recordSelf(lifecycle.get(), incarnation.getAsLong());
         if (!core.getAsBoolean()) {
@@ -58,6 +59,7 @@ public record CommunityHealthRuntime(NodeId self,
     public org.pragmatica.lang.Unit onReport(CommunityHealthMessage.Report report) {
         if (core.getAsBoolean() && index.acceptAuthenticated(report)) {
             index.positiveEvidence(report.communityId()).forEach(positiveEvidence);
+            index.acceptedDepartures(report).forEach(departure);
         }
 
         return org.pragmatica.lang.Unit.unit();

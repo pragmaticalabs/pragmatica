@@ -291,8 +291,9 @@ SHAPE org.pragmatica.aether.worker.governor.CommunityPlacementMessage$DrainCompl
 SHAPE org.pragmatica.aether.worker.governor.CommunityPlacementMessage$DrainRequested (sender:org.pragmatica.consensus.NodeId,operationId:java.lang.String)
 SHAPE org.pragmatica.aether.worker.governor.GovernorAuthorityMessage$Request (sender:org.pragmatica.consensus.NodeId,communityId:java.lang.String,requestId:long,expectedTerm:long,tcpAddress:java.lang.String)
 SHAPE org.pragmatica.aether.worker.governor.GovernorAuthorityMessage$Response (sender:org.pragmatica.consensus.NodeId,communityId:java.lang.String,requestId:long,authority:org.pragmatica.lang.Option<org.pragmatica.aether.slice.kvstore.AetherValue$GovernorAnnouncementValue>)
+SHAPE org.pragmatica.aether.worker.health.CommunityHealthMessage$MemberDeparture (node:org.pragmatica.consensus.NodeId,bootToken:long)
 SHAPE org.pragmatica.aether.worker.health.CommunityHealthMessage$MemberHealth (node:org.pragmatica.consensus.NodeId,incarnation:long,alive:boolean,ready:boolean,observationAge:org.pragmatica.lang.io.TimeSpan)
-SHAPE org.pragmatica.aether.worker.health.CommunityHealthMessage$Report (sender:org.pragmatica.consensus.NodeId,communityId:java.lang.String,governorTerm:long,incarnation:java.lang.String,sequence:long,members:java.util.List<org.pragmatica.aether.worker.health.CommunityHealthMessage$MemberHealth>)
+SHAPE org.pragmatica.aether.worker.health.CommunityHealthMessage$Report (sender:org.pragmatica.consensus.NodeId,communityId:java.lang.String,governorTerm:long,incarnation:java.lang.String,sequence:long,members:java.util.List<org.pragmatica.aether.worker.health.CommunityHealthMessage$MemberHealth>,departures:java.util.List<org.pragmatica.aether.worker.health.CommunityHealthMessage$MemberDeparture>)
 SHAPE org.pragmatica.aether.worker.health.CommunityHealthMessage$Request (sender:org.pragmatica.consensus.NodeId,communityId:java.lang.String,governorTerm:long,incarnation:java.lang.String,sequence:long)
 SHAPE org.pragmatica.aether.worker.metadata.WorkerMetadataMessage$Chunk (sender:org.pragmatica.consensus.NodeId,requestId:long,incarnation:java.lang.String,generation:long,scope:java.lang.String,hash:java.lang.String,offset:int,bytes:byte[],error:java.lang.String)
 SHAPE org.pragmatica.aether.worker.metadata.WorkerMetadataMessage$ChunkRequest (sender:org.pragmatica.consensus.NodeId,requestId:long,incarnation:java.lang.String,generation:long,scope:java.lang.String,hash:java.lang.String,offset:int)
@@ -677,6 +678,7 @@ TAG  org.pragmatica.aether.worker.governor.CommunityPlacementMessage$DrainComple
 TAG  org.pragmatica.aether.worker.governor.CommunityPlacementMessage$DrainRequested 1685
 TAG  org.pragmatica.aether.worker.governor.GovernorAuthorityMessage$Request 1678
 TAG  org.pragmatica.aether.worker.governor.GovernorAuthorityMessage$Response 1679
+TAG  org.pragmatica.aether.worker.health.CommunityHealthMessage$MemberDeparture 2132
 TAG  org.pragmatica.aether.worker.health.CommunityHealthMessage$MemberHealth 1703
 TAG  org.pragmatica.aether.worker.health.CommunityHealthMessage$Report 1702
 TAG  org.pragmatica.aether.worker.health.CommunityHealthMessage$Request 1701

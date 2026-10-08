@@ -19,8 +19,11 @@ import org.pragmatica.aether.worker.health.CommunityHealthMessage.Request;
 import org.pragmatica.aether.worker.health.CommunityHealthMessage.Report;
 
 
-/// Ephemeral, explicitly governor-observed positive evidence. Missing or stale evidence makes a
-/// worker unavailable for placement; it cannot authorize membership removal or provider deletion.
+/// Ephemeral, explicitly governor-observed evidence. Positive health: missing or stale evidence makes a
+/// worker unavailable for placement; staleness alone NEVER authorizes membership removal or provider deletion.
+/// Terminal death (#1717): the only removal signal this index surfaces is a [MemberDeparture] the committed
+/// governor of the challenged term relays after ITS OWN failure detector reached terminal DEAD for the member
+/// ([#acceptedDepartures]); a report that fails the challenge/authority fence yields none.
 /// A challenge bounds network delay and prevents an old report renewing freshness after restart.
 public final class CommunityHealthIndex {
     private final NodeId self;
@@ -36,6 +39,8 @@ public final class CommunityHealthIndex {
     /// a different token is another process claiming the NodeId (terminal removal) and is ignored.
     private final Map<NodeId, Long> memberTokens = new HashMap<>();
     private long sequence;
+    /// Departures already surfaced to the consumer, so one relayed death is applied once per member.
+    private final java.util.Set<NodeId> relayed = new java.util.HashSet<>();
 
     private record Pending(Request request, NodeId governor, long sentAt) {}
 
@@ -111,7 +116,7 @@ public final class CommunityHealthIndex {
     /// Accept a report whose sender was already bound by the transport. This method checks
     /// governor authority and challenge provenance; it does not authenticate a sender field.
     public synchronized boolean acceptAuthenticated(Report report) {
-        if (report.members().size() > maximumMembers) {
+        if (report.members().size() > maximumMembers || report.departures().size() > maximumMembers) {
             return false;
         }
 
@@ -195,8 +200,31 @@ public final class CommunityHealthIndex {
                                                       .isPresent());
     }
 
+    /// A terminal-death fact relayed by the committed governor of `governorTerm` (#1717).
+    public record GovernorDeparture(String community, NodeId governor, long governorTerm, NodeId node, long bootToken) {}
+
+    /// The departures of a report that [#acceptAuthenticated] has just accepted, each at most once per member:
+    /// only for a member assigned to the report's community, carrying the boot token this index pinned for it
+    /// (equality; the first token seen pins). Call only after acceptance — the challenge and term fence live there.
+    public synchronized java.util.List<GovernorDeparture> acceptedDepartures(Report report) {
+        return report.departures()
+                     .stream()
+                     .filter(departure -> assignment.apply(departure.node())
+                                                    .filter(report.communityId()::equals)
+                                                    .isPresent())
+                     .filter(departure -> departure.bootToken() > 0 && memberTokens.computeIfAbsent(departure.node(),
+                                                                                                    _ -> departure.bootToken()) == departure.bootToken())
+                     .filter(departure -> relayed.add(departure.node()))
+                     .map(departure -> new GovernorDeparture(report.communityId(),
+                                                             report.sender(),
+                                                             report.governorTerm(),
+                                                             departure.node(),
+                                                             departure.bootToken()))
+                     .toList();
+    }
+
     /// Provenance travels with any positive membership tap; consumers must never reinterpret
-    /// absence from this list as a death report.
+    /// absence from this list as a death report. A death is reported only explicitly, as a [GovernorDeparture].
     public record GovernorEvidence(String community, NodeId governor, long governorTerm, MemberHealth member) {}
 
     public synchronized java.util.List<GovernorEvidence> positiveEvidence(String community) {
@@ -264,6 +292,9 @@ public final class CommunityHealthIndex {
         memberTokens.keySet().removeIf(node -> assignment.apply(node)
                                                          .filter(communities::contains)
                                                          .isEmpty());
+        relayed.removeIf(node -> assignment.apply(node)
+                                           .filter(communities::contains)
+                                           .isEmpty());
 
         return org.pragmatica.lang.Unit.unit();
     }

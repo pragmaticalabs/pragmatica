@@ -4680,7 +4680,9 @@ public interface AetherNode extends ManageableNode {
                                                                                                                                         message),
                                                                                                     evidence -> recordGovernorEvidence(membershipFsm,
                                                                                                                                        kvStore,
-                                                                                                                                       evidence));
+                                                                                                                                       evidence),
+                                                                                                    departure -> membershipFsm.onGovernorReportedDead(departure.node(),
+                                                                                                                                                      departure.bootToken()));
 
         allEntries.add(MessageRouter.Entry.route(org.pragmatica.aether.worker.health.CommunityHealthMessage.Request.class,
                                                  communityHealthRuntime::onRequest));
@@ -5034,6 +5036,8 @@ public interface AetherNode extends ManageableNode {
 
         membershipFsm.onConfirmedDeparture(departed -> {
             onMembershipDeath(departed, dropDeadPeerLink, quorumLossDetectorRef, leaderReconcilerRef);
+            // #1717: a governor relays its community's SWIM-confirmed deaths to the core in its next report
+            communityHealthReporter.recordTerminalDeath(departed);
         });
         // #1777 R1b: the pong cadence the leader already receives is what notices that time passed (the overdue bound)
         // and that a member's departure is now committed (it is no longer waited for, and its report is dropped); no timer

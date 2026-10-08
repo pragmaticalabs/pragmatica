@@ -129,7 +129,7 @@ class CommunityObservationAuthorityTest {
         var sent = new ArrayList<ProtocolMessage>();
         var evidence = new ArrayList<CommunityHealthIndex.GovernorEvidence>();
         return new CommunityHealthRuntime(core, directory, index, reporter, _ -> Option.some(authority.get()), () -> true,
-            () -> "READY", () -> 1, (_, message) -> sent.add(message), evidence::add);
+            () -> "READY", () -> 1, (_, message) -> sent.add(message), evidence::add, _ -> {});
     }
 
     private static GovernorAnnouncementValue announcement(NodeId governor, long term) {

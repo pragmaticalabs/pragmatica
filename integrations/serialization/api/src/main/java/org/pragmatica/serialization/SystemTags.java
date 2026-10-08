@@ -618,6 +618,8 @@ public interface SystemTags {
         pin(table, 2129, "org.pragmatica.aether.slice.kvstore.AetherKey.NodeReplacementKey");
         pin(table, 2130, "org.pragmatica.aether.slice.kvstore.AetherValue.NodeReplacementValue");
         pin(table, 2131, "org.pragmatica.aether.slice.kvstore.AetherValue.NodeReplacementPhase");
+        // #1717: the terminal death a community governor relays to the core in its health report
+        pin(table, 2132, "org.pragmatica.aether.worker.health.CommunityHealthMessage.MemberDeparture");
         // ---- 2132..16383 RESERVED ----
         rejectDuplicateTags(table);
 

@@ -614,7 +614,9 @@ public final class MembershipFsm {
     }
 
     /// The caller supplies already validated, fresh, term-fenced governor evidence and the
-    /// committed worker descriptor. This ingress never manufactures a negative membership event.
+    /// committed worker descriptor. This ingress carries POSITIVE evidence only and never manufactures a
+    /// negative membership event; a governor-sourced death arrives only through [#onGovernorReportedDead],
+    /// and only as the governor's relay of its own SWIM-confirmed terminal DEAD (never from stale or missing reports).
     @Contract
     public void onGovernorHealthy(NodeId id,
                                   String community,
@@ -642,6 +644,37 @@ public final class MembershipFsm {
                        if (tracking.bumpHealthyStreakReachedThreshold()) {
                        tracking.dispatch(new UpHysteresisMet());
                    }
+                   }));
+    }
+
+    /// #1717 — the committed governor of this member's community relays that ITS OWN failure detector (SWIM)
+    /// reached terminal DEAD for the member. A core dials and probes only cores and governors, so for a
+    /// non-governor worker this is the only death signal the core can receive. The caller has already fenced
+    /// it (challenge, committed governor, exact governor term, community assignment, pinned boot token).
+    /// Here it is process evidence: refused for a core, an unclassified member, a DEAD/DEPARTING identity or a
+    /// different boot token. Accepted, it arms the SAME eviction backstop as any death plane, and any later
+    /// positive evidence for the member (governor / admission / SWIM-healthy) vetoes it inside the window.
+    /// This is the ONLY removal signal sourced from the governor: silence and staleness are never one.
+    @Contract
+    public void onGovernorReportedDead(NodeId id, long bootToken) {
+        if (bootToken == 0) {
+            return;
+        }
+
+        withMember(id,
+                   tracking -> tracking.inTransition(() -> {
+                       if (!tracking.isNonCoreMember() || !admitsProcessEvidence(id,
+                                                                                 tracking,
+                                                                                 bootToken,
+                                                                                 "governor death report")) {
+                       return;
+                   }
+
+                       tracking.resetHealthyStreak();
+                       tracking.stampDoubt(wallClockMs.getAsLong());
+                       tracking.dispatch(new LivenessGone());
+                       tracking.markGovernorDeath();
+                       maybeConfirmDeparture(tracking);
                    }));
     }
 
@@ -1491,6 +1524,9 @@ public final class MembershipFsm {
         private int healthyStreak = 0;
         private boolean swimFaultySeen = false;
         private boolean livenessGoneSeen = false;
+        /// The member's community governor relayed its SWIM-confirmed terminal death (#1717). Cleared with the
+        /// other death flags by any later positive evidence.
+        private boolean governorDeathSeen = false;
         /// Wave-4 exactly-once JOINED/REMOVED pairing (the spec's tangential consideration):
         /// set on the JOINED edge (first entry into MEMBER), cleared when the REMOVED edge is
         /// emitted on death. A member whose `everJoined` is false emits NO delta on death (it
@@ -1921,18 +1957,23 @@ public final class MembershipFsm {
         /// relaxed: it still needs both planes.
         synchronized boolean coConfirmedDead() {
             return isNonCoreMember()
-                   ? swimFaultySeen || livenessGoneSeen
+                   ? swimFaultySeen || livenessGoneSeen || governorDeathSeen
                    : swimFaultySeen && livenessGoneSeen;
         }
 
-        private boolean isNonCoreMember() {
-            return !descriptor.isCore() && ("worker".equalsIgnoreCase(descriptor.role()) || "spot".equalsIgnoreCase(descriptor.role()));
+        synchronized void markGovernorDeath() {
+            governorDeathSeen = true;
+        }
+
+        boolean isNonCoreMember() {
+            return ! descriptor.isCore() && ("worker".equalsIgnoreCase(descriptor.role()) || "spot".equalsIgnoreCase(descriptor.role()));
         }
 
         @Contract
         synchronized void clearConfirmedDeath() {
             swimFaultySeen = false;
             livenessGoneSeen = false;
+            governorDeathSeen = false;
             cancelEvictionBackstop();
         }
 
