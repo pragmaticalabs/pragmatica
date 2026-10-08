@@ -531,7 +531,6 @@ class AppHttpServerAdapter implements AppHttpServer {
     private Promise<Unit> startH3Server() {
         var quicTls = tls.map(cfg -> QuicSslContextFactory.createServer(cfg, ClientAuthPolicy.NOT_REQUESTED))
                          .or(QuicSslContextFactory.createSelfSignedServer());
-
         // A QUIC context that cannot be built refuses the start (fail closed). Only a later BIND failure of the
         // HTTP/3 listener is still non-fatal, as before.
         return quicTls.fold(cause -> quicTlsRefused(cause),

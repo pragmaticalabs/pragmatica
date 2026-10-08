@@ -15,10 +15,6 @@ import java.security.cert.CertificateFactory;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
-import org.bouncycastle.asn1.pkcs.PrivateKeyInfo;
-import org.bouncycastle.openssl.PEMKeyPair;
-import org.bouncycastle.openssl.PEMParser;
-import org.bouncycastle.openssl.jcajce.JcaPEMKeyConverter;
 import org.pragmatica.http.server.HttpServerError;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
@@ -36,6 +32,10 @@ import org.pragmatica.utility.warning.OperatorWarningCode;
 import org.pragmatica.utility.warning.OperatorWarningSink;
 import org.pragmatica.utility.warning.OperatorWarnings;
 
+import org.bouncycastle.asn1.pkcs.PrivateKeyInfo;
+import org.bouncycastle.openssl.PEMKeyPair;
+import org.bouncycastle.openssl.PEMParser;
+import org.bouncycastle.openssl.jcajce.JcaPEMKeyConverter;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -52,7 +52,6 @@ import static org.pragmatica.lang.Unit.unit;
 /// Not covered: a bind failure AFTER the old listener is stopped (the port taken in the gap) still leaves no listener.
 public final class TlsRotation {
     private static final Logger log = LoggerFactory.getLogger(TlsRotation.class);
-
     private static final byte[] KEY_CHECK_CHALLENGE = "tls-rotation-key-check".getBytes(StandardCharsets.UTF_8);
 
     private final String serverName;
@@ -83,24 +82,20 @@ public final class TlsRotation {
                  : Result.<Unit> success(unit());
 
         return h1.flatMap(_ -> includesH3
-                               ? QuicSslContextFactory.createServerFromBundle(bundle, ClientAuthPolicy.NOT_REQUESTED)
-                                                      .mapToUnit()
+                               ? QuicSslContextFactory.createServerFromBundle(bundle, ClientAuthPolicy.NOT_REQUESTED).mapToUnit()
                                : Result.<Unit> success(unit()))
                  .flatMap(_ -> keyMatchesCertificate(bundle));
     }
 
     private static Result<Unit> keyMatchesCertificate(CertificateBundle bundle) {
-        return Result.lift(Causes::fromThrowable,
-                           () -> signatureVerifies(bundle))
-                     .flatMap(matches -> matches
-                                         ? Result.<Unit> success(unit())
-                                         : Causes.cause("the private key does not match the certificate's public key")
-                                                 .<Unit> result());
+        return Result.lift(Causes::fromThrowable, () -> signatureVerifies(bundle)).flatMap(matches -> matches
+                                                                                                      ? Result.<Unit> success(unit())
+                                                                                                      : Causes.cause("the private key does not match the certificate's public key").<Unit> result());
     }
 
+    @SuppressWarnings("JBCT-EX-01")
     private static boolean signatureVerifies(CertificateBundle bundle) throws GeneralSecurityException, IOException {
-        var certificate = CertificateFactory.getInstance("X.509")
-                                            .generateCertificate(new ByteArrayInputStream(bundle.certificatePem()));
+        var certificate = CertificateFactory.getInstance("X.509").generateCertificate(new ByteArrayInputStream(bundle.certificatePem()));
         var publicKey = certificate.getPublicKey();
         var privateKey = privateKey(bundle.privateKeyPem());
         var algorithm = signatureAlgorithm(publicKey.getAlgorithm());
@@ -126,6 +121,7 @@ public final class TlsRotation {
     }
 
     /// Reads PKCS#8, PKCS#1 and SEC1 PEM keys: the cluster's own provider writes SEC1 `EC PRIVATE KEY`.
+    @SuppressWarnings("JBCT-EX-01")
     private static PrivateKey privateKey(byte[] pem) throws IOException {
         var converter = new JcaPEMKeyConverter();
 

@@ -485,7 +485,6 @@ class ManagementServerImpl implements ManagementServer {
     private Promise<Unit> startH3Server() {
         var quicTls = tls.map(cfg -> QuicSslContextFactory.createServer(cfg, ClientAuthPolicy.NOT_REQUESTED))
                          .or(QuicSslContextFactory.createSelfSignedServer());
-
         // A QUIC context that cannot be built refuses the start: an HTTP/3 listener configured for TLS must not
         // silently not exist (nor, in BOTH mode, leave the node reporting a start that bound only some listeners).
         return quicTls.fold(cause -> quicTlsRefused("management-h3", cause), this::startH3WithSslContext);
