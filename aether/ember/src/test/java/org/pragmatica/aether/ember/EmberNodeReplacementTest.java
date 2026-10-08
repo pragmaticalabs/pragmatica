@@ -165,7 +165,20 @@ class EmberNodeReplacementTest {
     @Test
     @Timeout(600)
     void coldBootCrashOfTheOldNode_endsSafely_whicheverWayDeadnessIsDetected() {
-        System.setProperty(TIMINGS_PROPERTY, COLD_BOOT_TIMINGS);
+        assertColdBootCrashEndsSafely(COLD_BOOT_TIMINGS);
+    }
+
+    /// The same invariant with the default 90 s DRAINING_OLD budget, which outlasts either Dead-detection mode (about 7 s, or 67-80 s), so
+    /// the record normally ends DONE and the DONE branch (including the old instance being terminated) is exercised on purpose instead of
+    /// by the 7 s mode turning up. Safety is asserted on whichever outcome occurs; the outcome is printed.
+    @Test
+    @Timeout(600)
+    void coldBootCrashOfTheOldNode_withTheDefaultBudget_endsSafely_normallyDone() {
+        assertColdBootCrashEndsSafely("60000,60000,90000,60000,3000,90000,60000");
+    }
+
+    private void assertColdBootCrashEndsSafely(String timings) {
+        System.setProperty(TIMINGS_PROPERTY, timings);
         var probe = new SafetyProbe(this);
         var watch = new Watch[1];
         var victimId = crashOldNodeWhileTheReplacementIsJoining("rpk",
@@ -178,7 +191,7 @@ class EmberNodeReplacementTest {
         var record = recordOf(victimId);
         var deadAfter = probe.deadAfterMs() < 0 ? "never seen" : probe.deadAfterMs() + " ms";
 
-        System.out.println("EMBER-REPLACEMENT cold-boot outcome=" + record.phase() + " leader read the old node as not alive: " + deadAfter + " after the kill");
+        System.out.println("EMBER-REPLACEMENT cold-boot (timings " + timings + ") outcome=" + record.phase() + " leader read the old node as not alive: " + deadAfter + " after the kill");
         assertThat(record.phase()).as("a safe terminal outcome, reason: %s", record.reason())
                                   .isIn(NodeReplacementPhase.DONE, NodeReplacementPhase.FAILED_KEPT_BOTH);
         assertThat(probe.violations()).as("safety violations sampled during the run").isEmpty();
