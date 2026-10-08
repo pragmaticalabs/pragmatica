@@ -1750,7 +1750,8 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                .flatMap(listed -> goneAtProvider(listed)
                                                   ? confirmedAbsent(node, listed, seenBefore)
                                                   : lifecycleManager.terminateNode(node, source)
-                                                                    .flatMap(_ -> lifecycleManager.instancesForNode(node, source))
+                                                                    .flatMap(_ -> lifecycleManager.instancesForNode(node,
+                                                                                                                    source))
                                                                     .flatMap(after -> goneAtProvider(after)
                                                                                       ? Promise.unitPromise()
                                                                                       : stillListed(after)))
@@ -1760,8 +1761,8 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     /// An empty listing is absence only for an instance seen before; listed-and-stopped instances were seen by this very listing.
     private static Promise<Unit> confirmedAbsent(NodeId node, List<InstanceInfo> listed, boolean seenBefore) {
         return listed.isEmpty() && !seenBefore
-               ? Causes.cause("the provider lists no instance of " + node.id() + " and has never listed one (an unlabelled or unattributable VM, or a lagging listing): not confirmed gone")
-                       .promise()
+               ? Causes.cause("the provider lists no instance of " + node.id()
+                             + " and has never listed one (an unlabelled or unattributable VM, or a lagging listing): not confirmed gone").promise()
                : Promise.unitPromise();
     }
 

@@ -211,17 +211,22 @@ public interface ClusterTopologyManager extends TopologyManager {
     /// VM), so an instance never listed stays unconfirmed, with a failure that names the node. Idempotent: a repeat finds the
     /// listing empty after the terminate it already did only if it saw the instance, so a new leader that never saw it re-asks.
     /// Honours the retirement refusal of [#drainNode] (a voter is not reaped). Reusable by any retirement path.
-    default Promise<Unit> reapRetired(NodeId node, org.pragmatica.aether.environment.SourceName source, boolean seenBefore) {
-        return org.pragmatica.lang.utils.Causes.cause("reap of " + node.id() + ": this topology manager cannot confirm termination")
+    default Promise<Unit> reapRetired(NodeId node,
+                                      org.pragmatica.aether.environment.SourceName source,
+                                      boolean seenBefore) {
+        return org.pragmatica.lang.utils.Causes.cause("reap of " + node.id()
+                                                     + ": this topology manager cannot confirm termination")
                                                .promise();
     }
 
     /// #1543: whether the provider lists at least one instance (in any status) of `node`: the observation that lets a later empty
     /// listing count as "gone". A failed listing is a failure.
     default Promise<Boolean> instanceListed(NodeId node, org.pragmatica.aether.environment.SourceName source) {
-        return org.pragmatica.lang.utils.Causes.cause("listing of " + node.id() + ": this topology manager cannot list instances")
+        return org.pragmatica.lang.utils.Causes.cause("listing of " + node.id()
+                                                     + ": this topology manager cannot list instances")
                                                .promise();
     }
+
     /// #1049 — what the compute provider reports about the instance behind the auto-heal replacement
     /// minted as `nodeId`: [ReplacementInstanceState#PRESENT] while it provisions or runs,
     /// [ReplacementInstanceState#FAILED] once every listed instance is stopping or terminated,

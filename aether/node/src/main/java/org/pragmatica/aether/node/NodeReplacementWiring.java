@@ -262,13 +262,13 @@ public final class NodeReplacementWiring {
 
         return submit(in,
                       key,
-                      Stream.concat(Stream.of(mutation),
-                                    alongside.stream())
-                            .toList());
+                      Stream.concat(Stream.of(mutation), alongside.stream()).toList());
     }
 
     /// One leader transaction over `mutations`, accepted only if the transaction was.
-    private static Promise<Boolean> submit(Inputs in, AetherKey key, List<KVCommand.Mutation<AetherKey, AetherValue>> mutations) {
+    private static Promise<Boolean> submit(Inputs in,
+                                           AetherKey key,
+                                           List<KVCommand.Mutation<AetherKey, AetherValue>> mutations) {
         return leaderValue(in).fold(() -> Promise.success(false),
                                     leader -> {
                                         var id = UUID.randomUUID().toString();
@@ -444,12 +444,20 @@ public final class NodeReplacementWiring {
 
             reapSince.putIfAbsent(node,
                                   in.clock().getAsLong());
-
             var reservation = reservationOf(node);
             var source = SourceName.sourceNameOrDefault(record.source());
             var confirmed = isExternalKind(reservation)
-                            ? in.ctm().drainNode(node, DrainReason.REPLACED).flatMap(_ -> departedThenReleased(node, reservation.unwrap(), !boundedByRetiring))
-                            : in.ctm().drainNode(node, DrainReason.REPLACED).flatMap(_ -> in.ctm().reapRetired(node, source, seen.contains(node)));
+                            ? in.ctm()
+                                .drainNode(node, DrainReason.REPLACED)
+                                .flatMap(_ -> departedThenReleased(node,
+                                                                   reservation.unwrap(),
+                                                                   !boundedByRetiring))
+                            : in.ctm()
+                                .drainNode(node, DrainReason.REPLACED)
+                                .flatMap(_ -> in.ctm()
+                                                .reapRetired(node,
+                                                             source,
+                                                             seen.contains(node)));
 
             return confirmed.<EffectResult> map(_ -> confirmedGone(node))
                             .recover(cause -> notConfirmed(node, cause, boundedByRetiring));
@@ -458,7 +466,9 @@ public final class NodeReplacementWiring {
         /// External node: confirmed by leaving the membership (no provider call), then, when the reservation is not settled by the record's
         /// own commit (a retiring old node, not a rolled-back replacement), the reservation is released: a counted one is marked RELEASED
         /// (the lifecycle returns the slot once), an uncounted one is dropped.
-        private Promise<Unit> departedThenReleased(NodeId node, AetherValue.CapacityReservationValue reservation, boolean releaseHere) {
+        private Promise<Unit> departedThenReleased(NodeId node,
+                                                   AetherValue.CapacityReservationValue reservation,
+                                                   boolean releaseHere) {
             if (!departed(node)) {
                 return Causes.cause("external node " + node.id() + " has not left the membership yet").promise();
             }
@@ -475,10 +485,12 @@ public final class NodeReplacementWiring {
                                                                                                 reservation.intendedRole(),
                                                                                                 AetherValue.CapacityReservationPhase.RELEASED));
 
-            return submit(in, key, List.of(new KVCommand.Mutation<>(key, Option.<AetherValue> some(reservation), released)))
-                    .flatMap(accepted -> accepted
-                                         ? Promise.<Unit> unitPromise()
-                                         : Causes.<Unit> cause("the release of the reservation of " + node.id() + " was not accepted").promise());
+            return submit(in,
+                          key,
+                          List.of(new KVCommand.Mutation<>(key, Option.<AetherValue> some(reservation), released))).flatMap(accepted -> accepted
+                                                                                                                                        ? Promise.<Unit> unitPromise()
+                                                                                                                                        : Causes.<Unit> cause("the release of the reservation of " + node.id()
+                                                                                                                                                             + " was not accepted").promise());
         }
 
         private EffectResult confirmedGone(NodeId node) {
@@ -505,7 +517,8 @@ public final class NodeReplacementWiring {
         private Promise<EffectResult> drain(NodeId original, NodeReplacementValue record) {
             return observeInstances(original, record).flatMap(_ -> in.drain()
                                                                      .apply(original)
-                                                                     .<EffectResult> map(outcome -> drained(original, outcome))
+                                                                     .<EffectResult> map(outcome -> drained(original,
+                                                                                                            outcome))
                                                                      .recover(cause -> new EffectResult.Deferred("drain admission failed: " + cause.message())));
         }
 
@@ -515,35 +528,40 @@ public final class NodeReplacementWiring {
         private Promise<Unit> observeInstances(NodeId original, NodeReplacementValue record) {
             var source = SourceName.sourceNameOrDefault(record.source());
 
-            return Stream.of(original, record.replacement())
+            return Stream.of(original,
+                             record.replacement())
                          .filter(node -> !isExternalKind(reservationOf(node)))
                          .map(node -> in.ctm()
                                         .instanceListed(node, source)
                                         .onSuccess(listed -> {
-                                            if (listed) {
-                                                seen.add(node);
-                                            }
-                                        })
+                                  if (listed) {
+                                  seen.add(node);
+                              }
+                              })
                                         .<Unit> map(_ -> Unit.unit())
                                         .recover(_ -> Unit.unit()))
-                         .reduce(Promise.unitPromise(), (all, one) -> all.flatMap(_ -> one));
+                         .reduce(Promise.unitPromise(),
+                                 (all, one) -> all.flatMap(_ -> one));
         }
 
         private Option<AetherValue.CapacityReservationValue> reservationOf(NodeId node) {
             return in.kvStore()
-                     .getTyped(new AetherKey.CapacityReservationKey(node), AetherValue.CapacityReservationValue.class);
+                     .getTyped(new AetherKey.CapacityReservationKey(node),
+                               AetherValue.CapacityReservationValue.class);
         }
 
         /// A reservation written by an EXTERNAL admission carries no provider binding (`""`, or the uncounted marker); the provider
         /// registry cannot resolve either, so such a node has no provider listing or terminate to ask: it is confirmed gone by leaving the
         /// membership. A reservation with a real binding, or none, goes through the provider.
         private static boolean isExternalKind(Option<AetherValue.CapacityReservationValue> reservation) {
-            return reservation.filter(value -> value.sourceBinding().isEmpty() || UNCOUNTED.equals(value.sourceBinding())).isPresent();
+            return reservation.filter(value -> value.sourceBinding()
+                                                    .isEmpty() || UNCOUNTED.equals(value.sourceBinding()))
+                              .isPresent();
         }
 
         private boolean departed(NodeId node) {
             return Option.option(in.membership().get())
-                         .map(fsm -> fsm.memberStates().get(node))
+                         .flatMap(fsm -> Option.option(fsm.memberStates().get(node)))
                          .filter(state -> !"Dead".equals(state))
                          .isEmpty();
         }
