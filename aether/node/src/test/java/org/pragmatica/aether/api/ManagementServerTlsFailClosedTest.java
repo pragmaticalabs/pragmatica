@@ -66,13 +66,15 @@ class ManagementServerTlsFailClosedTest {
 
         var outcome = server.start().await(START_BOUND);
 
+        var listening = connects(port);
+
         server.stop().await(START_BOUND);
+        assertThat(listening).as("nothing listens on the management port after the refusal").isFalse();
         assertThat(outcome.isFailure()).as("start must fail, not serve plain HTTP").isTrue();
         outcome.onFailure(cause -> {
             assertThat(cause).isInstanceOf(HttpServerError.TlsFailed.class);
             assertThat(cause.message()).contains("TLS").contains("management");
         });
-        assertThat(connects(port)).as("nothing listens on the management port after the refusal").isFalse();
     }
 
     private static ManagementServer managementServerWithMissingCertificate(int port) {

@@ -36,13 +36,15 @@ class AppHttpServerTlsFailClosedTest {
 
         var outcome = server.start().await(timeSpan(30).seconds());
 
+        var listening = connects(port);
+
         server.stop().await(timeSpan(30).seconds());
+        assertThat(listening).as("nothing listens on the app port after the refusal").isFalse();
         assertThat(outcome.isFailure()).as("start must fail, not serve plain HTTP").isTrue();
         outcome.onFailure(cause -> {
             assertThat(cause).isInstanceOf(HttpServerError.TlsFailed.class);
             assertThat(cause.message()).contains("TLS").contains("app-http");
         });
-        assertThat(connects(port)).as("nothing listens on the app port after the refusal").isFalse();
     }
 
     private static AppHttpServer appHttpServerWithMissingCertificate(int port) {
