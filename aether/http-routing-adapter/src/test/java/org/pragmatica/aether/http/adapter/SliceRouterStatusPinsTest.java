@@ -32,6 +32,10 @@ class SliceRouterStatusPinsTest {
         default -> HttpError.httpError(HttpStatus.INTERNAL_SERVER_ERROR, cause);
     };
 
+    private static final ErrorMapper COMPOSITE_422_MAPPER = cause -> cause instanceof Causes.CompositeCause
+                                                                      ? HttpError.httpError(HttpStatus.UNPROCESSABLE_ENTITY, cause)
+                                                                      : GENERATED_STYLE_MAPPER.map(cause);
+
     /// A spacer mismatch normally ends as the router's own 404 at route lookup and never reaches a handler (#764); when
     /// the cause does arrive as a handler failure it is a parameter error like the others and answers 400, the same as the
     /// management API.
@@ -74,6 +78,23 @@ class SliceRouterStatusPinsTest {
         assertThat(send(route, "/items")).isEqualTo(400);
     }
 
+    /// A mapper that answers a composite with a non-500 status has decided; member-by-member resolution only
+    /// re-derives a 500, so the mapper's 422 wins over the members' 400 ...
+    @Test
+    void handle_customMapperAnswering422ForUniformComposite_winsOverMemberResolution() {
+        var route = failingRoute(composite(new ParameterError.InvalidParameter("limit"), new ParameterError.MissingParameter("offset")));
+
+        assertThat(send(route, "/items", COMPOSITE_422_MAPPER)).isEqualTo(422);
+    }
+
+    /// ... and over the 500 that mixed members would otherwise answer.
+    @Test
+    void handle_customMapperAnswering422ForMixedComposite_winsOverMemberResolution() {
+        var route = failingRoute(composite(new ParameterError.InvalidParameter("limit"), Causes.cause("storage failure")));
+
+        assertThat(send(route, "/items", COMPOSITE_422_MAPPER)).isEqualTo(422);
+    }
+
     private static Cause composite(Cause first, Cause second) {
         return Result.allOf(List.<Result<String>>of(first.result(), second.result())).fold(cause -> cause, _ -> Causes.cause("unreachable"));
     }
@@ -83,7 +104,11 @@ class SliceRouterStatusPinsTest {
     }
 
     private static int send(Route<?> route, String path) {
-        var router = SliceRouter.sliceRouter(route, GENERATED_STYLE_MAPPER, JsonMapper.defaultJsonMapper());
+        return send(route, path, GENERATED_STYLE_MAPPER);
+    }
+
+    private static int send(Route<?> route, String path, ErrorMapper mapper) {
+        var router = SliceRouter.sliceRouter(route, mapper, JsonMapper.defaultJsonMapper());
 
         return router.handle(HttpRequestContext.httpRequestContext(path, "GET", Map.of(), Map.of(), "test"))
                      .await(timeSpan(5).seconds())
