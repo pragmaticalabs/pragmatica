@@ -13,6 +13,7 @@ import java.util.Set;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
+import org.pragmatica.aether.environment.BackupPathRule;
 import org.pragmatica.aether.environment.SourceName;
 import org.pragmatica.config.toml.TomlDocument;
 import org.pragmatica.config.toml.TomlParser;
@@ -248,12 +249,30 @@ public final class ClusterBootstrapConfigParser {
                                                             SourceName name,
                                                             String section,
                                                             SourceType type) {
-        return Result.all(parseProvider(doc, section), parseReplacementCeiling(doc, section)).map((provider, ceiling) -> assembleSourceProfile(doc,
-                                                                                                                                               name,
-                                                                                                                                               section,
-                                                                                                                                               type,
-                                                                                                                                               provider,
-                                                                                                                                               ceiling));
+        return Result.all(parseProvider(doc, section),
+                          parseReplacementCeiling(doc, section))
+                     .map((provider, ceiling) -> assembleSourceProfile(doc, name, section, type, provider, ceiling))
+                     .flatMap(profile -> validateBackupPath(section, profile));
+    }
+
+    /// #1968: the repository path a source's `node_config` `[backup]` names is mounted into the node's container (or created on its
+    /// host), so it must be absolute: a relative one renders a mount Docker refuses. A **Docker** source's node has no host directory:
+    /// its repository lives on a per-node named volume, which Docker creates root-owned for any mount point except under `/data`
+    /// (where the image's `aether` user owns it), so there the path must also be under `/data`. Refused at load, not at first write.
+    private static Result<SourceProfile> validateBackupPath(String section, SourceProfile profile) {
+        var path = profile.nodeConfig().flatMap(NodeUserDataRenderer::backupPath);
+
+        return path.map(value -> backupPathVerdict(section,
+                                                   profile.type(),
+                                                   value.strip()).map(_ -> profile))
+                   .or(Result.success(profile));
+    }
+
+    private static Result<String> backupPathVerdict(String section, SourceType type, String path) {
+        return BackupPathRule.refusal(path, type == SourceType.DOCKER)
+                             .map(reason -> section + ".node_config.backup.path " + reason)
+                             .fold(() -> Result.success(path),
+                                   reason -> parseFailed(reason).<String> result());
     }
 
     /// #1049 — `replacement_ceiling` is optional (absent → the runtime's ten-minute default), but a

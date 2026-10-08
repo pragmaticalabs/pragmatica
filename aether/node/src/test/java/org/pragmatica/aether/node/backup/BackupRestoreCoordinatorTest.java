@@ -116,6 +116,167 @@ class BackupRestoreCoordinatorTest {
                                  ++slot);
     }
 
+    /// #1968: a leader with no `[backup]` while the committed state says the backup is in use must not quietly downgrade it: it keeps
+    /// the committed setting and says so, once per leadership term, with a recovery event when it stops leading.
+    @Nested
+    class LeaderWithoutBackup {
+        @Test
+        void aLeaderWithoutBackup_overACommittedBackupDecision_warnsOnce_andKeepsTheCommittedSetting() {
+            commitMarker(BackupRestoreOutcome.FRESH);
+            var coordinator = coordinator(Option.none());
+
+            coordinator.activate();
+            coordinator.activate();
+
+            assertThat(codes()).as("raised once for the term, however many times leadership is re-announced")
+                               .containsExactly(Code.BACKUP_CONFIG_MISSING);
+            assertThat(outcome()).as("the committed setting is kept, never downgraded to DISABLED").isEqualTo(BackupRestoreOutcome.FRESH);
+        }
+
+        @Test
+        void losingLeadership_afterTheWarning_raisesTheRecoveryOnce() {
+            commitMarker(BackupRestoreOutcome.RESTORED);
+            var coordinator = coordinator(Option.none());
+
+            coordinator.activate();
+            coordinator.deactivate();
+            coordinator.deactivate();
+
+            assertThat(codes()).containsExactly(Code.BACKUP_CONFIG_MISSING, Code.BACKUP_CONFIG_RESTORED);
+        }
+
+        /// The false-alert guard: the warning is for a leader that has NO backup source. One that has it, over the same committed decision,
+        /// must stay silent (a CRITICAL on a healthy backup would train operators to ignore the code).
+        @Test
+        void aLeaderWithABackupSource_overACommittedBackupDecision_raisesNothing() {
+            commitMarker(BackupRestoreOutcome.RESTORED);
+            var coordinator = coordinator(Option.some(source(Option.none(), RestoreMode.AUTO)));
+
+            coordinator.activate();
+            coordinator.deactivate();
+
+            assertThat(codes()).doesNotContain(Code.BACKUP_CONFIG_MISSING, Code.BACKUP_CONFIG_RESTORED);
+        }
+
+        /// A node that stops while it leads without a backup can never lead again, so its CRITICAL's recovery is raised on the way
+        /// down (AetherNode.stop calls this before the event layer goes). Once, however the stop and a leadership loss interleave.
+        @Test
+        void aNodeStoppingWhileItLeadsWithoutBackup_raisesTheRecoveryOnce() {
+            commitMarker(BackupRestoreOutcome.RESTORED);
+            var coordinator = coordinator(Option.none());
+
+            coordinator.activate();
+            coordinator.onNodeStopping();
+
+            assertThat(codes()).as("the stop alone closes the alert").containsExactly(Code.BACKUP_CONFIG_MISSING, Code.BACKUP_CONFIG_RESTORED);
+
+            coordinator.deactivate();
+            coordinator.onNodeStopping();
+
+            assertThat(codes()).as("and a later leadership loss or second stop adds nothing")
+                               .containsExactly(Code.BACKUP_CONFIG_MISSING, Code.BACKUP_CONFIG_RESTORED);
+        }
+
+        @Test
+        void aNodeStoppingThatNeverWarned_raisesNoRecovery() {
+            commitMarker(BackupRestoreOutcome.DISABLED);
+            var coordinator = coordinator(Option.none());
+
+            coordinator.activate();
+            coordinator.onNodeStopping();
+
+            assertThat(codes()).isEmpty();
+        }
+
+        @Test
+        void aCommittedClusterConfigurationThatEnablesBackup_isEnoughToWarn() {
+            commitClusterConfig("""
+                                config_version = "1.0.0"
+
+                                [cluster]
+                                name = "restore-test"
+                                version = "1.0.0"
+
+                                [operations.ports]
+                                cluster = 6000
+                                management = 5160
+                                app_http = 8070
+
+                                [source.eu-1]
+                                type = "cloud"
+                                provider = "hetzner"
+                                region = "eu-central"
+
+                                [source.eu-1.core]
+                                count = 3
+
+                                [source.eu-1.node_config.backup]
+                                enabled = true
+                                path = "/var/aether/backups"
+                                """);
+
+            coordinator(Option.none()).activate();
+
+            assertThat(codes()).contains(Code.BACKUP_CONFIG_MISSING);
+        }
+
+        /// The controls: a cluster that genuinely runs without a backup (a DISABLED decision), a leader that has its `[backup]`,
+        /// and no committed state at all raise nothing, and the recovery is never raised without the warning.
+        @Test
+        void noWarning_whenTheClusterRunsWithoutBackup_orTheLeaderHasIt_orNothingIsCommitted() {
+            commitMarker(BackupRestoreOutcome.DISABLED);
+            var disabledCluster = coordinator(Option.none());
+
+            disabledCluster.activate();
+            disabledCluster.deactivate();
+            assertThat(codes()).as("DISABLED committed: the cluster has no backup to downgrade").isEmpty();
+
+            warnings.clear();
+            var withBackup = coordinator(Option.some(source(Option.none(), RestoreMode.AUTO)));
+
+            withBackup.activate();
+            withBackup.deactivate();
+            assertThat(codes()).as("the leader has [backup]").isEmpty();
+        }
+
+        @Test
+        void noWarning_whenNothingIsCommitted_theColdDecisionStaysUnchanged() {
+            var coordinator = coordinator(Option.none());
+
+            runToCompletion(coordinator);
+
+            assertThat(codes()).isEmpty();
+            assertThat(outcome()).as("an unconfigured cluster still commits DISABLED").isEqualTo(BackupRestoreOutcome.DISABLED);
+        }
+
+        private List<Code> codes() {
+            return warnings.stream().map(BackupWarning::code).toList();
+        }
+
+        @SuppressWarnings({"unchecked", "rawtypes"})
+        private void commitMarker(BackupRestoreOutcome outcome) {
+            kvStore.processCommitted(kvStore.createBatch((List) List.of(new KVCommand.Put<>(AetherKey.BackupRestoreKey.SINGLETON,
+                                                                                            BackupRestoreValue.decided(outcome)))),
+                                     ++slot);
+        }
+
+        @SuppressWarnings({"unchecked", "rawtypes"})
+        private void commitClusterConfig(String toml) {
+            var value = new ClusterConfigValue(Option.some(toml),
+                                               "restore-test",
+                                               "1.0.0",
+                                               CLUSTER_CONFIG.desiredTopology(),
+                                               3,
+                                               5,
+                                               "bootstrap-seed",
+                                               1L,
+                                               0L);
+
+            kvStore.processCommitted(kvStore.createBatch((List) List.of(new KVCommand.Put<>(AetherKey.ClusterConfigKey.CURRENT, value))),
+                                     ++slot);
+        }
+    }
+
     @Nested
     class Decision {
         @Test
@@ -440,7 +601,39 @@ class BackupRestoreCoordinatorTest {
 
             assertThat(outcome()).isEqualTo(BackupRestoreOutcome.FRESH);
             assertThat(warnings).extracting(BackupWarning::code)
-                                .containsExactly(Code.BACKUP_RESTORE_BLOCKED, Code.BACKUP_RECOVERED);
+                                .containsExactly(Code.BACKUP_RESTORE_BLOCKED, Code.BACKUP_RESTORE_UNBLOCKED);
+        }
+
+        /// A block that is still standing when its node stops leading, or stops, is closed on the way out (the next leader that still
+        /// cannot read the backup raises it again): only this node's event layer can close what it opened, and a restart is a stop first.
+        @Test
+        void aBlockedNode_thatStopsOrLosesLeadership_raisesTheUnblockedRecoveryOnce() {
+            var remotePath = temp.resolve("never.git");
+            var coordinator = coordinator(Option.some(source(Option.some(remotePath.toString()), RestoreMode.AUTO)));
+
+            coordinator.activate();
+            worker.advance(0);
+            fireRetries(2);
+            assertThat(warnings).extracting(BackupWarning::code).as("CONTROL: blocked and still blocked").containsExactly(Code.BACKUP_RESTORE_BLOCKED);
+
+            coordinator.onNodeStopping();
+            coordinator.deactivate();
+            coordinator.onNodeStopping();
+
+            assertThat(warnings).extracting(BackupWarning::code).containsExactly(Code.BACKUP_RESTORE_BLOCKED, Code.BACKUP_RESTORE_UNBLOCKED);
+        }
+
+        @Test
+        void aNodeThatWasNeverBlocked_raisesNoUnblockedOnStop() {
+            var remote = bareRemote(temp.resolve("ok.git"));
+            var coordinator = coordinator(Option.some(source(Option.some(remote), RestoreMode.AUTO)));
+
+            coordinator.activate();
+            worker.advance(0);
+            fireRetries(1);
+            coordinator.onNodeStopping();
+
+            assertThat(warnings).extracting(BackupWarning::code).doesNotContain(Code.BACKUP_RESTORE_BLOCKED, Code.BACKUP_RESTORE_UNBLOCKED);
         }
 
         @Test

@@ -2473,6 +2473,8 @@ public interface AetherNode extends ManageableNode {
                           // #932: the stream replica-set controller and backfill executor own one
                           // thread each per node; neither had a close on the stop path.
                           Runnable streamReplicationShutdown,
+                          // #1968: ends a backup-less leader's open backup-config-missing alert before the event layer stops.
+                          Runnable backupCoordinatorStop,
                           // #903: the provider whose shared (unattributed) scope only node shutdown
                           // can close.
                           Option<SpiResourceProvider> spiResourceProvider,
@@ -2611,6 +2613,8 @@ public interface AetherNode extends ManageableNode {
                 // still-unarmed thunks and refuses a late arm() (#644): a cluster-formation promise
                 // resolving after this line must not schedule work for a torn-down node.
                 periodicTasks.cancel();
+                // #1968: first, while the cluster-event layer can still carry the recovery of a backup-config-missing alert.
+                backupCoordinatorStop.run();
                 kvBackupService.onPresent(KvBackupService::stop);
                 router.route(ClusterStateNotification.passive());
                 router.quiesce();
@@ -6559,6 +6563,7 @@ public interface AetherNode extends ManageableNode {
                                   kvBackupService,
                                   leaderTerm,
                                   streamReplicationShutdown,
+                                  backupRestoreCoordinator::onNodeStopping,
                                   resourceProviderSetup.spiProvider(),
                                   replacementWiring.service());
 
@@ -6787,6 +6792,7 @@ public interface AetherNode extends ManageableNode {
                                                                         kvBackupService,
                                                                         leaderTerm,
                                                                         streamReplicationShutdown,
+                                                                        backupRestoreCoordinator::onNodeStopping,
                                                                         resourceProviderSetup.spiProvider(),
                                                                         replacementWiring.service());
                                               }
