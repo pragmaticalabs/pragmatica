@@ -4596,6 +4596,8 @@ public interface AetherNode extends ManageableNode {
                                                                       },
                                                                       TimeSpan.timeSpan(100).millis()));
         communityDirectory.restore(kvStore.snapshot());
+        // #1717: one-plane worker eviction only where an evidence source exists to veto it (a core)
+        membershipFsm.setOnePlaneWorkerEviction(!configuredWorker(config));
         membershipFsm.setJoinGraceReapEligibility(node -> configuredWorker(config) || (communityDirectory.assignment(node)
                                                                                                          .isEmpty() && !workerAdmissionAllowed(node,
                                                                                                                                                membershipFsm,
@@ -8099,7 +8101,8 @@ public interface AetherNode extends ManageableNode {
                                                                                                                                    store.getTyped(new AetherKey.NodePlacementKey(member.node()),
                                                                                                                                                   AetherValue.NodePlacementValue.class)
                                                                                                                                         .map(AetherValue.NodePlacementValue::sourceName)
-                                                                                                                                        .or(""))));
+                                                                                                                                        .or("")),
+                                                              java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(evidence.observedAgoNanos())));
     }
 
     private static void sendObservationProbe(RabiaNode<KVCommand<AetherKey>> clusterNode, NodeId peer) {
