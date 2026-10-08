@@ -392,18 +392,20 @@ public record Main(String[] args) {
 
     /// The `[cloud.credentials]` keys each provider's factory requires (read from its `validateCredentials`), so the refusal can tell the
     /// operator what to add. The CLI overlay renders only `api_token` (the aws, gcp and azure keys are not rendered: a separate ticket, see the changelog).
-    private static final Map<String, String> REQUIRED_CREDENTIAL_KEYS = Map.of("hetzner",
+    static final Map<String, String> REQUIRED_CREDENTIAL_KEYS = Map.of("hetzner",
                                                                                "api_token",
                                                                                "aws",
                                                                                "access_key_id, secret_access_key, region",
                                                                                "gcp",
                                                                                "project_id, service_account_email, private_key_pem, zone",
                                                                                "azure",
-                                                                               "tenant_id, client_id, client_secret, subscription_id");
+                                                                               "tenant_id, client_id, client_secret, subscription_id, resource_group, location");
 
     /// The node's cloud integration (#2058). No `[cloud]` section: none, deliberately (docker compose, forge, bare runs). A `[cloud]`
     /// section whose integration cannot be created REFUSES the boot: without it the leader cannot provision, replace or scale, and the
-    /// node used to log one line and run without it until the first incident.
+    /// node used to log one line and run without it until the first incident. "Cannot be created" includes a factory THROWING on a
+    /// malformed provider setting (a non-numeric `ssh_key_ids`), lifted into the same refusal rather than an uncaught exception; and a
+    /// docker section can be refused too: its provider rejects a `[backup] path` outside `/data` (the named-volume rule, #1968).
     private Option<EnvironmentIntegration> resolveEnvironment(Option<AetherConfig> aetherConfig) {
         return resolveCloudIntegration(aetherConfig.flatMap(config -> config.cloud()
                                                                             .map(cloud -> withEffectiveBackup(cloud,
@@ -416,7 +418,8 @@ public record Main(String[] args) {
     static Result<Option<EnvironmentIntegration>> resolveCloudIntegration(Option<CloudConfig> cloudConfig,
                                                                           Fn1<Result<EnvironmentIntegration>, CloudConfig> create) {
         return cloudConfig.fold(() -> Result.success(Option.<EnvironmentIntegration> none()),
-                                cloud -> create.apply(cloud)
+                                cloud -> Result.lift(Causes::fromThrowable, () -> create.apply(cloud))
+                                               .flatMap(created -> created)
                                                .map(Option::some)
                                                .mapError(cause -> cloudIntegrationRefusal(cloud.provider(),
                                                                                           cause)));
@@ -424,7 +427,7 @@ public record Main(String[] args) {
 
     private static Cause cloudIntegrationRefusal(String provider, Cause cause) {
         var keys = Option.option(REQUIRED_CREDENTIAL_KEYS.get(provider))
-                         .map(required -> " The provider's [cloud.credentials] must provide: " + required
+                         .map(required -> " The provider's [cloud.credentials] TOML keys must provide: " + required
                                          + " (the bootstrap overlay renders only api_token; add the rest under [source.<name>.node_config.cloud.credentials])")
                          .or("");
 
