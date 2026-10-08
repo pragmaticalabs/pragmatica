@@ -225,7 +225,9 @@ public final class QuicPeerConnection {
 
     /// Visible for tests: the kick was stopped (the connection closed).
     boolean activityKickStopped() {
-        return Option.option(activityKick).map(QuicActivityKick::isStopped).or(false);
+        return Option.option(activityKick)
+                     .map(QuicActivityKick::isStopped)
+                     .or(false);
     }
 
     /// Visible for tests: kick frames sent so far.
