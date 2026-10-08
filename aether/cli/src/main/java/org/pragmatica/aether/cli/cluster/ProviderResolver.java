@@ -11,6 +11,7 @@ import java.util.Map;
 import java.util.stream.Collectors;
 
 import org.pragmatica.aether.config.BackupConfig;
+import org.pragmatica.aether.config.cluster.CloudCredentialSchema;
 import org.pragmatica.aether.config.cluster.NodeRole;
 import org.pragmatica.aether.config.cluster.NodeUserDataRenderer;
 import org.pragmatica.aether.config.cluster.RoleSubTable;
@@ -239,14 +240,7 @@ public final class ProviderResolver {
                                         String userData,
                                         Option<ClusterName> clusterName,
                                         List<FirewallId> firewallIds) {
-        var credentials = new HashMap<String, String>();
-
-        source.credentials()
-              .onPresent(c -> {
-                             credentials.put("credentials_file", c);
-                             credentials.put("api_token", c);
-                             credentials.put("access_key", c);
-                         });
+        var credentials = CloudCredentialSchema.credentials(source, providerName);
         var compute = new HashMap<String, String>();
 
         source.region().onPresent(r -> compute.put("region", r));
@@ -267,7 +261,7 @@ public final class ProviderResolver {
         var discovery = clusterName.map(ProviderResolver::discoveryFor).or(Map.<String, String> of());
 
         return new CloudConfig(providerName,
-                               Map.copyOf(credentials),
+                               credentials,
                                Map.copyOf(compute),
                                Map.of(),
                                discovery,

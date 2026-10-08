@@ -197,10 +197,10 @@ public interface BootstrapOverlayGenerator {
             return Option.empty();
         }
 
-        return source.credentials()
-                     .filter(token -> !token.isBlank())
-                     .map(token -> Section.section("cloud.credentials",
-                                                   Map.of("api_token", token)));
+        return source.provider()
+                     .map(provider -> CloudCredentialSchema.credentials(source, provider.value()))
+                     .filter(credentials -> !credentials.isEmpty())
+                     .map(credentials -> Section.section("cloud.credentials", Map.<String, Object> copyOf(credentials)));
     }
 
     private static Option<Section> cloudDiscoverySection(ClusterBootstrapConfig config, SourceProfile source) {
