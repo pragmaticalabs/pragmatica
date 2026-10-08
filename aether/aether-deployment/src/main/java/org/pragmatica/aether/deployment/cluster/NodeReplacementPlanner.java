@@ -307,7 +307,7 @@ public final class NodeReplacementPlanner {
     }
 
     private static Plan drainingOld(NodeReplacementValue r, Observation o, Timings t) {
-        if (!o.oldAlive()) {
+        if (true) {
             return Plan.commit(r.advanced(NodeReplacementPhase.RETIRING_OLD,
                                           o.now() + t.retiringMs(),
                                           ""));
