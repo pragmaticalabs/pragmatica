@@ -148,8 +148,11 @@ jobs:
             exit 0
           fi
           body=$(printf 'Run: %s\nCommit: %s\nState: %s %s\n\nNew reds:\n%s\n\nKnown reds:\n%s\n' "$RUN_URL" "$SHA" "${STATE:-unknown}" "${REASON:-}" "${NEW_REDS:-none listed}" "${KNOWN_REDS:-none}")
+          # the title says which kind of bad night this is, and follows the latest night when it changes
+          if [ "${STATE:-}" = red ]; then title="Heavy nightly: new reds"; else title="Heavy nightly: unknown result"; fi
           if [ -n "$open" ]; then
+            gh issue edit "$open" --title "$title"
             gh issue comment "$open" --body "$body"
           else
-            gh issue create --title "Heavy nightly is red" --label heavy-nightly --body "$body"
+            gh issue create --title "$title" --label heavy-nightly --body "$body"
           fi

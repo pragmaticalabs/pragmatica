@@ -153,8 +153,19 @@ class NotifyJob(unittest.TestCase):
 
             return (work / "log").read_text() if (work / "log").exists() else ""
 
-    def test_red_night_without_an_issue_creates_one(self):
-        self.assertIn("gh issue create", self.notify("failure", "red"))
+    def test_red_night_without_an_issue_creates_one_titled_new_reds(self):
+        log = self.notify("failure", "red")
+        self.assertIn("gh issue create --title Heavy nightly: new reds", log)
+
+    def test_an_unknown_night_creates_an_issue_titled_unknown_result(self):
+        for state in ("unknown", "", None):
+            log = self.notify("failure", state)
+            self.assertIn("gh issue create --title Heavy nightly: unknown result", log, f"state={state!r}")
+            self.assertNotIn("Heavy nightly: new reds", log, f"state={state!r}")
+
+    def test_the_title_follows_the_latest_night_on_an_open_issue(self):
+        self.assertIn("gh issue edit 42 --title Heavy nightly: new reds", self.notify("failure", "red", "42"))
+        self.assertIn("gh issue edit 42 --title Heavy nightly: unknown result", self.notify("failure", "unknown", "42"))
 
     def test_red_night_with_an_open_issue_comments(self):
         log = self.notify("failure", "red", "42")
