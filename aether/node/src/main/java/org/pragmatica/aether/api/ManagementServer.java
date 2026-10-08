@@ -112,6 +112,8 @@ import org.pragmatica.http.server.HttpServer;
 import org.pragmatica.http.server.HttpServerConfig;
 import org.pragmatica.http.HttpRequest;
 import org.pragmatica.http.server.ResponseWriter;
+import org.pragmatica.aether.http.TlsRotation;
+import org.pragmatica.utility.warning.OperatorWarningSink;
 import org.pragmatica.net.tcp.ClientAuthPolicy;
 import org.pragmatica.net.tcp.QuicSslContextFactory;
 import org.pragmatica.http.websocket.WebSocketEndpoint;
@@ -138,6 +140,10 @@ public interface ManagementServer {
     Promise<Unit> start();
     Promise<Unit> stop();
     Promise<Unit> rotateCertificate(org.pragmatica.net.tcp.security.CertificateBundle newBundle);
+
+    /// Binds the operator-event sink for certificate-rotation refusals (and their recovery).
+    @Contract
+    void setOperatorWarningSink(OperatorWarningSink sink);
     /// The real (Prometheus-backed) meter registry this server publishes `/metrics` from.
     /// Exposed so resource provisioning (#278) can inject the node's actual `MeterRegistry` into
     /// slice-facing interceptors instead of each factory fabricating its own disconnected one.
@@ -214,6 +220,7 @@ class ManagementServerImpl implements ManagementServer {
     private static final Logger log = LoggerFactory.getLogger(ManagementServerImpl.class);
     private static final int MAX_CONTENT_LENGTH = 64 * 1024 * 1024;
 
+    private final TlsRotation tlsRotation = TlsRotation.tlsRotation("management");
     private final int port;
     private final Supplier<ManageableNode> nodeSupplier;
     private final AlertManager alertManager;
@@ -592,7 +599,18 @@ class ManagementServerImpl implements ManagementServer {
     public Promise<Unit> rotateCertificate(org.pragmatica.net.tcp.security.CertificateBundle newBundle) {
         log.info("Rotating management server TLS certificate");
 
-        return stopHttpServers().flatMap(_ -> restartWithNewBundle(newBundle));
+        // The new TLS material is built before the running listeners are touched: a bundle that does not build is
+        // refused and the current certificate keeps serving, instead of stopping the listeners and restarting them
+        // without TLS.
+        return tlsRotation.validate(newBundle, httpProtocol.includesH1(), httpProtocol.includesH3())
+                          .fold(tlsRotation::<Unit> refuse,
+                                _ -> stopHttpServers().flatMap(_ -> restartWithNewBundle(newBundle))
+                                                      .onSuccessRun(tlsRotation::applied));
+    }
+
+    @Override
+    public void setOperatorWarningSink(OperatorWarningSink sink) {
+        tlsRotation.useSink(sink);
     }
 
     /// Certificate rotation empties the slots with `take()` rather than `close()`: the listeners are

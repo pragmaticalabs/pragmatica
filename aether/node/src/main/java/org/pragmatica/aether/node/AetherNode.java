@@ -4001,6 +4001,7 @@ public interface AetherNode extends ManageableNode {
                                                         Option.some(taskGroupOwnerResolver),
                                                         accessibilityFilter);
 
+        appHttpServer.setOperatorWarningSink(operatorWarningSink);
         appHttpServer.setInvocationAdmission(org.pragmatica.aether.invoke.InvocationAdmission.gated(inFlightTrackerForDrain,
                                                                                                     () -> workerProjectionFreshRef.get()
                                                                                                                                   .getAsBoolean()));
@@ -6641,6 +6642,7 @@ public interface AetherNode extends ManageableNode {
                                                   NodeLifecycleRoutes.SliceFloor.sliceFloor(SliceOwnershipQuery.minAvailableDrainViolations(kvStore),
                                                                                             operatorWarningSink));
 
+                                                  managementServer.setOperatorWarningSink(operatorWarningSink);
                                                   managementServerRef.set(Option.some(managementServer));
                                                   // #278: expose the node's real MeterRegistry to slice-facing resource
                                                   // provisioning so MetricsInterceptorFactory records into the SAME

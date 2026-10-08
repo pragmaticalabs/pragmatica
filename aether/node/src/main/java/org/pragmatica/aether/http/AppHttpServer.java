@@ -76,6 +76,7 @@ import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.Deadline;
 import org.pragmatica.messaging.MessageReceiver;
+import org.pragmatica.utility.warning.OperatorWarningSink;
 import org.pragmatica.net.tcp.ClientAuthPolicy;
 import org.pragmatica.net.tcp.QuicSslContextFactory;
 import org.pragmatica.net.tcp.TlsConfig;
@@ -96,6 +97,10 @@ public interface AppHttpServer {
     Promise<Unit> start();
     Promise<Unit> stop();
     Promise<Unit> rotateCertificate(CertificateBundle newBundle);
+
+    /// Binds the operator-event sink for certificate-rotation refusals (and their recovery).
+    @Contract
+    void setOperatorWarningSink(OperatorWarningSink sink);
     Option<Integer> boundPort();
 
     @Contract
@@ -269,6 +274,8 @@ public interface AppHttpServer {
 
 class AppHttpServerAdapter implements AppHttpServer {
     private static final Logger log = LoggerFactory.getLogger(AppHttpServerAdapter.class);
+
+    private final TlsRotation tlsRotation = TlsRotation.tlsRotation("app-http");
 
     private final AppHttpConfig config;
     private final NodeId selfNodeId;
@@ -616,6 +623,23 @@ class AppHttpServerAdapter implements AppHttpServer {
         }
 
         log.info("Rotating app HTTP server TLS certificate");
+
+        // The new TLS material is built before the running listeners are touched: a bundle that does not build is
+        // refused and the current certificate keeps serving, instead of stopping the listeners and restarting them
+        // without TLS.
+        return tlsRotation.validate(newBundle,
+                                    config.httpProtocol().includesH1(),
+                                    config.httpProtocol().includesH3())
+                          .fold(tlsRotation::<Unit> refuse,
+                                _ -> rotateValidated(newBundle));
+    }
+
+    @Override
+    public void setOperatorWarningSink(OperatorWarningSink sink) {
+        tlsRotation.useSink(sink);
+    }
+
+    private Promise<Unit> rotateValidated(CertificateBundle newBundle) {
         var previous = context.currentServers();
         var currentRoutes = context.currentRoutes();
 
@@ -629,7 +653,8 @@ class AppHttpServerAdapter implements AppHttpServer {
                             .onSuccess(pair -> context.dispatch(new AppHttpEvents.CertRotationApplied(pair.server(),
                                                                                                       pair.h3(),
                                                                                                       currentRoutes)))
-                            .mapToUnit();
+                            .mapToUnit()
+                            .onSuccessRun(tlsRotation::applied);
     }
 
     private Promise<AppHttpContext.ServerPair> restartWithNewBundle(CertificateBundle newBundle) {

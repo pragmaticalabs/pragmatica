@@ -47,4 +47,14 @@ public sealed interface HttpServerError extends Cause {
                  + "; refusing to start without TLS";
         }
     }
+
+    /// A certificate rotation was refused because the new TLS material did not build; the listener keeps serving
+    /// its current certificate.
+    record TlsRotationRefused(String serverName, Cause cause) implements HttpServerError {
+        @Override
+        public String message() {
+            return "TLS certificate rotation of HTTP server '" + serverName + "' refused, keeping the current certificate: "
+                 + cause.message();
+        }
+    }
 }

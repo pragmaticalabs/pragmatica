@@ -175,7 +175,18 @@ public enum OperatorWarningCode {
     STREAM_OWNER_LINEAGE_COMMITTED("stream-owner-lineage-committed",
                                    "stream-replication",
                                    WarningLevel.INFO,
-                                   STREAM_OWNER_LINEAGE_REFUSED);
+                                   STREAM_OWNER_LINEAGE_REFUSED),
+    /// A node's HTTP listener refused a TLS certificate rotation because the new certificate bundle did not build into a TLS
+    /// context (a malformed or mismatched certificate or key). The listener keeps serving the PREVIOUS certificate, which
+    /// expires; nothing is replaced and nothing falls back to plain HTTP. Subject is the listener (`management`, `app-http`).
+    /// Raised on the transition into refusal, not on every repeated refusal.
+    HTTP_TLS_ROTATION_REFUSED("http-tls-rotation-refused", "http-listener", WarningLevel.WARNING),
+    /// The recovery of an [#HTTP_TLS_ROTATION_REFUSED], same subject: a later rotation built and the listener now serves the
+    /// rotated certificate.
+    HTTP_TLS_ROTATION_RESTORED("http-tls-rotation-restored",
+                               "http-listener",
+                               WarningLevel.INFO,
+                               HTTP_TLS_ROTATION_REFUSED);
     private final String code;
     private final String subsystem;
     private final WarningLevel level;

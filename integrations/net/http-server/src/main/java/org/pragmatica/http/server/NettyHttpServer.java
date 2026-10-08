@@ -169,7 +169,7 @@ final class NettyHttpServer implements HttpServer {
                                             EventLoopGroup workerGroup,
                                             boolean ownsGroups) {
         return config.tls()
-                     .map(tls -> TlsContextFactory.create(tls).map(Option::some))
+                     .map(tls -> TlsContextFactory.createServer(tls).map(Option::some))
                      .or(Result.success(Option.<SslContext> empty()))
                      .fold(cause -> tlsBuildFailed(config, cause, ownsGroups, bossGroup, workerGroup),
                            sslContext -> bindConfigured(config, handler, bossGroup, workerGroup, ownsGroups, sslContext));
