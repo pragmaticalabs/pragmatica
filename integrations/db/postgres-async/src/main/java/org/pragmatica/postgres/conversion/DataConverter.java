@@ -22,6 +22,8 @@ import org.pragmatica.postgres.net.PgWriter;
 import org.pragmatica.lang.Functions.Fn3;
 
 import static org.pragmatica.postgres.conversion.TemporalConversions.*;
+import org.pragmatica.postgres.util.HexConverter;
+
 import static org.pragmatica.postgres.util.HexConverter.parseHexBinary;
 
 
@@ -131,9 +133,29 @@ public class DataConverter {
     public String toString(Oid oid, byte[] value, boolean binary) {
         if (value == null) return null;
 
-        if (binary) return new String(value, encoding);
+        if (binary) return binaryText(oid, value);
 
         return StringConversions.asString(oid, new String(value, encoding));
+    }
+
+    /// A `String` read of a BINARY column decodes the value by the column's type first, then formats it: the raw wire bytes
+    /// are not text (an int8 read as text is garbage). The rendering is the decoded value's canonical Java form
+    /// (`LocalDate`, `Instant`, `UUID`, ... `toString`), `\\x` hex for bytea, and `true`/`false` for bool; it is not
+    /// PostgreSQL's own text rendering. Text-like and unrecognised columns keep the bytes as text.
+    private String binaryText(Oid oid, byte[] value) {
+        return switch (oid) {
+            case INT2, INT4, INT8 -> toLong(oid, value, true).toString();
+            case FLOAT4 -> Float.toString(ByteBuffer.wrap(value).getFloat());
+            case FLOAT8 -> Double.toString(ByteBuffer.wrap(value).getDouble());
+            case BOOL -> toBoolean(oid, value, true).toString();
+            case UUID -> toUuid(value, true).toString();
+            case BYTEA -> "\\x" + HexConverter.printHexBinary(value).toLowerCase(java.util.Locale.ROOT);
+            case DATE -> toLocalDate(oid, value, true).toString();
+            case TIME, TIMETZ -> toLocalTime(oid, value, true).toString();
+            case TIMESTAMP -> toLocalDateTime(oid, value, true).toString();
+            case TIMESTAMPTZ -> toInstant(oid, value, true).toString();
+            default -> new String(value, encoding);
+        };
     }
 
     public Character toChar(Oid oid, byte[] value, boolean binary) {
@@ -272,15 +294,12 @@ public class DataConverter {
                 case DATE -> {
                     int days = ByteBuffer.wrap(value).getInt();
 
-                    yield LocalDate.of(2000, 1, 1).plusDays(days);
+                    yield PgTemporal.date(days);
                 }
                 case TIMESTAMP, TIMESTAMPTZ -> {
                     long pgMicros = ByteBuffer.wrap(value).getLong();
-                    long epochMicros = pgMicros + BinaryCodec.PG_EPOCH_MICROS_OFFSET;
-                    long epochSecs = Math.floorDiv(epochMicros, 1_000_000);
-                    int nanoAdj = (int)(Math.floorMod(epochMicros, 1_000_000) * 1000);
 
-                    yield LocalDateTime.ofInstant(Instant.ofEpochSecond(epochSecs, nanoAdj), ZoneOffset.UTC).toLocalDate();
+                    yield LocalDateTime.ofInstant(PgTemporal.timestamp(pgMicros), ZoneOffset.UTC).toLocalDate();
                 }
                 default -> TemporalConversions.toLocalDate(oid, new String(value, encoding));
             };
@@ -296,16 +315,13 @@ public class DataConverter {
             return switch (oid) {
                 case TIMESTAMP, TIMESTAMPTZ -> {
                     long pgMicros = ByteBuffer.wrap(value).getLong();
-                    long epochMicros = pgMicros + BinaryCodec.PG_EPOCH_MICROS_OFFSET;
-                    long epochSecs = Math.floorDiv(epochMicros, 1_000_000);
-                    int nanoAdj = (int)(Math.floorMod(epochMicros, 1_000_000) * 1000);
 
-                    yield LocalDateTime.ofInstant(Instant.ofEpochSecond(epochSecs, nanoAdj), ZoneOffset.UTC);
+                    yield LocalDateTime.ofInstant(PgTemporal.timestamp(pgMicros), ZoneOffset.UTC);
                 }
                 case DATE -> {
                     int days = ByteBuffer.wrap(value).getInt();
 
-                    yield LocalDate.of(2000, 1, 1).plusDays(days).atStartOfDay();
+                    yield PgTemporal.date(days).atStartOfDay();
                 }
                 default -> TemporalConversions.toLocalDateTime(oid, new String(value, encoding));
             };
@@ -331,11 +347,8 @@ public class DataConverter {
                 }
                 case TIMESTAMP, TIMESTAMPTZ -> {
                     long pgMicros = ByteBuffer.wrap(value).getLong();
-                    long epochMicros = pgMicros + BinaryCodec.PG_EPOCH_MICROS_OFFSET;
-                    long epochSecs = Math.floorDiv(epochMicros, 1_000_000);
-                    int nanoAdj = (int)(Math.floorMod(epochMicros, 1_000_000) * 1000);
 
-                    yield LocalDateTime.ofInstant(Instant.ofEpochSecond(epochSecs, nanoAdj), ZoneOffset.UTC).toLocalTime();
+                    yield LocalDateTime.ofInstant(PgTemporal.timestamp(pgMicros), ZoneOffset.UTC).toLocalTime();
                 }
                 default -> TemporalConversions.toLocalTime(oid, new String(value, encoding));
             };
@@ -351,16 +364,13 @@ public class DataConverter {
             return switch (oid) {
                 case TIMESTAMP, TIMESTAMPTZ -> {
                     long pgMicros = ByteBuffer.wrap(value).getLong();
-                    long epochMicros = pgMicros + BinaryCodec.PG_EPOCH_MICROS_OFFSET;
-                    long epochSecs = Math.floorDiv(epochMicros, 1_000_000);
-                    int nanoAdj = (int)(Math.floorMod(epochMicros, 1_000_000) * 1000);
 
-                    yield Instant.ofEpochSecond(epochSecs, nanoAdj);
+                    yield PgTemporal.timestamp(pgMicros);
                 }
                 case DATE -> {
                     int days = ByteBuffer.wrap(value).getInt();
 
-                    yield LocalDate.of(2000, 1, 1).plusDays(days).atStartOfDay().toInstant(ZoneOffset.UTC);
+                    yield PgTemporal.date(days).atStartOfDay().toInstant(ZoneOffset.UTC);
                 }
                 default -> TemporalConversions.toInstant(oid, new String(value, encoding));
             };
@@ -389,7 +399,7 @@ public class DataConverter {
     public String toString(Oid oid, byte[] data, int offset, int length, boolean binary) {
         if (length == -1) return null;
 
-        if (binary) return new String(data, offset, length, encoding);
+        if (binary) return binaryText(oid, Arrays.copyOfRange(data, offset, offset + length));
 
         return StringConversions.asString(oid, new String(data, offset, length, encoding));
     }
@@ -530,15 +540,12 @@ public class DataConverter {
                 case DATE -> {
                     int days = ByteBuffer.wrap(data, offset, 4).getInt();
 
-                    yield LocalDate.of(2000, 1, 1).plusDays(days);
+                    yield PgTemporal.date(days);
                 }
                 case TIMESTAMP, TIMESTAMPTZ -> {
                     long pgMicros = ByteBuffer.wrap(data, offset, 8).getLong();
-                    long epochMicros = pgMicros + BinaryCodec.PG_EPOCH_MICROS_OFFSET;
-                    long epochSecs = Math.floorDiv(epochMicros, 1_000_000);
-                    int nanoAdj = (int)(Math.floorMod(epochMicros, 1_000_000) * 1000);
 
-                    yield LocalDateTime.ofInstant(Instant.ofEpochSecond(epochSecs, nanoAdj), ZoneOffset.UTC).toLocalDate();
+                    yield LocalDateTime.ofInstant(PgTemporal.timestamp(pgMicros), ZoneOffset.UTC).toLocalDate();
                 }
                 default -> TemporalConversions.toLocalDate(oid, new String(data, offset, length, encoding));
             };
@@ -554,16 +561,13 @@ public class DataConverter {
             return switch (oid) {
                 case TIMESTAMP, TIMESTAMPTZ -> {
                     long pgMicros = ByteBuffer.wrap(data, offset, 8).getLong();
-                    long epochMicros = pgMicros + BinaryCodec.PG_EPOCH_MICROS_OFFSET;
-                    long epochSecs = Math.floorDiv(epochMicros, 1_000_000);
-                    int nanoAdj = (int)(Math.floorMod(epochMicros, 1_000_000) * 1000);
 
-                    yield LocalDateTime.ofInstant(Instant.ofEpochSecond(epochSecs, nanoAdj), ZoneOffset.UTC);
+                    yield LocalDateTime.ofInstant(PgTemporal.timestamp(pgMicros), ZoneOffset.UTC);
                 }
                 case DATE -> {
                     int days = ByteBuffer.wrap(data, offset, 4).getInt();
 
-                    yield LocalDate.of(2000, 1, 1).plusDays(days).atStartOfDay();
+                    yield PgTemporal.date(days).atStartOfDay();
                 }
                 default -> TemporalConversions.toLocalDateTime(oid, new String(data, offset, length, encoding));
             };
@@ -589,11 +593,8 @@ public class DataConverter {
                 }
                 case TIMESTAMP, TIMESTAMPTZ -> {
                     long pgMicros = ByteBuffer.wrap(data, offset, 8).getLong();
-                    long epochMicros = pgMicros + BinaryCodec.PG_EPOCH_MICROS_OFFSET;
-                    long epochSecs = Math.floorDiv(epochMicros, 1_000_000);
-                    int nanoAdj = (int)(Math.floorMod(epochMicros, 1_000_000) * 1000);
 
-                    yield LocalDateTime.ofInstant(Instant.ofEpochSecond(epochSecs, nanoAdj), ZoneOffset.UTC).toLocalTime();
+                    yield LocalDateTime.ofInstant(PgTemporal.timestamp(pgMicros), ZoneOffset.UTC).toLocalTime();
                 }
                 default -> TemporalConversions.toLocalTime(oid, new String(data, offset, length, encoding));
             };
@@ -609,16 +610,13 @@ public class DataConverter {
             return switch (oid) {
                 case TIMESTAMP, TIMESTAMPTZ -> {
                     long pgMicros = ByteBuffer.wrap(data, offset, 8).getLong();
-                    long epochMicros = pgMicros + BinaryCodec.PG_EPOCH_MICROS_OFFSET;
-                    long epochSecs = Math.floorDiv(epochMicros, 1_000_000);
-                    int nanoAdj = (int)(Math.floorMod(epochMicros, 1_000_000) * 1000);
 
-                    yield Instant.ofEpochSecond(epochSecs, nanoAdj);
+                    yield PgTemporal.timestamp(pgMicros);
                 }
                 case DATE -> {
                     int days = ByteBuffer.wrap(data, offset, 4).getInt();
 
-                    yield LocalDate.of(2000, 1, 1).plusDays(days).atStartOfDay().toInstant(ZoneOffset.UTC);
+                    yield PgTemporal.date(days).atStartOfDay().toInstant(ZoneOffset.UTC);
                 }
                 default -> TemporalConversions.toInstant(oid, new String(data, offset, length, encoding));
             };
