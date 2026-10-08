@@ -256,4 +256,4 @@ These abstractions make the components KV-Store-ready without coupling them to t
 
 - [Architecture Overview](../architecture/00-overview.md) — cluster architecture
 - [Consensus Architecture](../architecture/01-consensus.md) — Rabia protocol, KV-Store
-- [Hierarchical Storage Spec](../specs/hierarchical-storage-spec.md) — AHSE, storage tiers, metadata store
+- [Hierarchical Storage Spec](../specs/future/hierarchical-storage-spec.md) — AHSE, storage tiers, metadata store

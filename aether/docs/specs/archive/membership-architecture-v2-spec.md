@@ -352,7 +352,7 @@ Lost capacity is always recovered via fresh-ULID provisioning, never via departe
 
 ### 12.7 Node death → terminal removal + fresh-ULID recovery
 
-**Terminal-removal invariant:** a dead NodeId NEVER returns under the same identity. Once a node leaves the presence-derived view (SWIM-converged departure / sustained QUIC loss past `nttDepartureTimeout`), NTT terminally removes it; recovery is *always* a brand-new node with a new ULID NodeId minted by auto-heal. Consequently **runtime auto-restart of aether-node must be disabled** (`--restart no` / `restart: "no"` / systemd `Restart=no`): a runtime that revives a crashed container under the same NodeId resurrects a terminally-removed identity and corrupts membership. See [`../operator/deployment-recovery.md`](../operator/deployment-recovery.md) for the operator-facing rule.
+**Terminal-removal invariant:** a dead NodeId NEVER returns under the same identity. Once a node leaves the presence-derived view (SWIM-converged departure / sustained QUIC loss past `nttDepartureTimeout`), NTT terminally removes it; recovery is *always* a brand-new node with a new ULID NodeId minted by auto-heal. Consequently **runtime auto-restart of aether-node must be disabled** (`--restart no` / `restart: "no"` / systemd `Restart=no`): a runtime that revives a crashed container under the same NodeId resurrects a terminally-removed identity and corrupts membership. See [`../operator/deployment-recovery.md`](../../operators/deployment-recovery.md) for the operator-facing rule.
 
 The cluster distinguishes two cases by **duration, not identity**:
 
