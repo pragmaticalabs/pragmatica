@@ -101,9 +101,10 @@ capture > "$BASE"
 sed -i.bak 's#^    curl -s localhost 2>/dev/null || true#        curl   -s   localhost   2>/dev/null   ||   true#' "$SUITE"; rm -f "${SUITE}.bak"
 if grep -q 'curl   -s   localhost' "$SUITE" && lint > /dev/null; then ok "L8 indent and inner-whitespace edits of the waived R2 line keep its waiver"; else fail "L8 a whitespace-only edit voided the waiver (or did not apply)"; fi
 
-# L9 — same content, other file
+# L9 — same content, other file: MOVE the waived line to another file, so the count is unchanged and only the file differs
 write_fixture
 OTHER="${IT}/suites/99-fixture/test-other.sh"
+sed -i.bak 's#curl -s localhost 2>/dev/null || true#true#' "$SUITE"; rm -f "${SUITE}.bak"
 cat > "$OTHER" <<'F'
 #!/bin/bash
 test_x() {
@@ -111,7 +112,7 @@ test_x() {
 }
 run_test "x" test_x
 F
-if lint > /dev/null; then fail "L9 the same flagged line in another file was absorbed by the first file's waiver"; else ok "L9 the same flagged content in another file is a new finding"; fi
+if lint > /dev/null; then fail "L9 the waived content, moved to another file, kept the first file's waiver"; else ok "L9 the same flagged content in another file is a new finding (file is part of the key)"; fi
 rm -f "$OTHER"
 
 # L10 — R1 key names the warn
