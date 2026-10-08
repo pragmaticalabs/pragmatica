@@ -116,6 +116,7 @@ public final class NodeReplacementWiring {
                          Supplier<String> idPrefix,
                          Predicate<NodeId> dhtHolds,
                          Supplier<Set<NodeId>> genesisVoters,
+                         java.util.function.IntSupplier fleetLimit,
                          OperatorWarningSink warnings,
                          LongSupplier clock,
                          NodeReplacementPlanner.Timings timings) {}
@@ -142,14 +143,24 @@ public final class NodeReplacementWiring {
                                                               .equals(in.self()));
     }
 
+    /// The binding of an EXTERNAL reservation written while the fleet ledger could not count it (no ledger, or its inventory is not
+    /// complete). The marker travels with the reservation, so whatever later settles it knows whether a slot was taken: it returns a
+    /// slot only for a counted reservation and never for this one.
+    static final String UNCOUNTED = "external-uncounted";
+
+    /// The ledger, when it is in a state that can count a slot (it exists and its inventory is complete, as CTM requires).
+    static Option<AetherValue.CapacityLedgerValue> countable(Option<AetherValue.CapacityLedgerValue> ledger) {
+        return ledger.filter(AetherValue.CapacityLedgerValue::inventoryComplete);
+    }
+
     /// What is committed in the same transaction as an EXTERNAL replacement's record: the admission intent the operator-started node
     /// is admitted by, a capacity reservation for its role (core admission and `AetherNode.workerAdmissionAllowed` both admit on
     /// it; the same reservation the leader writes when it provisions a node itself), so there is no window with a pairing and no
     /// intent, or the reverse. A CTM replacement is admitted by its own provisioning reservation, so it commits the record alone.
     ///
-    /// The fleet counter is counted up in the same transaction when the ledger exists, exactly as CTM's own reservation does, so the
-    /// release that later returns the slot ([#releaseUnarrived] when the node never arrives, the lifecycle's release when it was
-    /// observed and retired) is symmetric with this acquire and never decrements a slot that was not counted.
+    /// The fleet counter is counted up in the same transaction when the ledger can count, exactly as CTM's own reservation does, so the
+    /// settlement that later returns the slot ([#settleReservation]) is symmetric with this acquire and returns only a slot that was
+    /// taken; a reservation the ledger could not count carries [#UNCOUNTED] so it is dropped without touching the counter.
     static List<KVCommand.Mutation<AetherKey, AetherValue>> admissionMutations(boolean external,
                                                                                String role,
                                                                                NodeId replacement,
@@ -159,40 +170,60 @@ public final class NodeReplacementWiring {
             return List.of();
         }
 
+        var countable = countable(ledger);
         var reservation = new KVCommand.Mutation<AetherKey, AetherValue>(new AetherKey.CapacityReservationKey(replacement),
                                                                          Option.<AetherValue> none(),
                                                                          Option.<AetherValue> some(new AetherValue.CapacityReservationValue(source,
-                                                                                                                                            "",
+                                                                                                                                            countable.isPresent()
+                                                                                                                                            ? ""
+                                                                                                                                            : UNCOUNTED,
                                                                                                                                             role.toLowerCase(java.util.Locale.ROOT),
                                                                                                                                             AetherValue.CapacityReservationPhase.DISPATCHED)));
-        var counted = ledger.<KVCommand.Mutation<AetherKey, AetherValue>> map(current -> new KVCommand.Mutation<>(AetherKey.CapacityLedgerKey.INSTANCE,
-                                                                                                                  Option.<AetherValue> some(current),
-                                                                                                                  Option.<AetherValue> some(new AetherValue.CapacityLedgerValue(current.allocated() + 1,
-                                                                                                                                                                                current.version() + 1,
-                                                                                                                                                                                current.inventoryComplete()))));
+        var counted = countable.<KVCommand.Mutation<AetherKey, AetherValue>> map(current -> new KVCommand.Mutation<>(AetherKey.CapacityLedgerKey.INSTANCE,
+                                                                                                                     Option.<AetherValue> some(current),
+                                                                                                                     Option.<AetherValue> some(new AetherValue.CapacityLedgerValue(current.allocated() + 1,
+                                                                                                                                                                                   current.version() + 1,
+                                                                                                                                                                                   current.inventoryComplete()))));
 
         return counted.fold(() -> List.of(reservation), ledgerMutation -> List.of(reservation, ledgerMutation));
     }
 
-    /// The release that goes with a rolled-back EXTERNAL replacement whose node never arrived: its reservation is still `DISPATCHED`
-    /// (the lifecycle moves it to `OBSERVED` only when it sees the instance), so the id would stay admissible for ever. Marking it
-    /// `RELEASED` in the terminal commit hands it to the lifecycle's own refusal reconciliation, which returns the counted slot and
-    /// drops the reservation. A reservation that was observed is left to the lifecycle's release of the terminated node.
-    static List<KVCommand.Mutation<AetherKey, AetherValue>> releaseUnarrived(NodeReplacementValue next,
-                                                                             Option<AetherValue.CapacityReservationValue> reservation) {
-        if (!NodeReplacementValue.MODE_EXTERNAL.equals(next.mode()) || next.phase() != NodeReplacementPhase.ROLLED_BACK) {
+    /// The reservation of an EXTERNAL replacement is settled in the commit that ends the replacement, in the same transaction:
+    /// - ROLLED_BACK with the node never observed (still `DISPATCHED`): a counted reservation becomes `RELEASED`, which hands it to the
+    ///   lifecycle's refusal reconciliation (it returns the counted slot and drops the reservation); an uncounted one is deleted.
+    ///   Either way the id stops being admissible.
+    /// - DONE (the replacement is a member now, admitted by the voter set, not by the reservation): a counted `DISPATCHED` reservation
+    ///   becomes `OBSERVED`, exactly what the lifecycle writes when it sees the instance, so the slot is returned when the node is
+    ///   later retired and the id stops being admissible then; an uncounted one is deleted.
+    /// A reservation already `OBSERVED` is the lifecycle's to release.
+    static List<KVCommand.Mutation<AetherKey, AetherValue>> settleReservation(NodeReplacementValue next,
+                                                                              Option<AetherValue.CapacityReservationValue> reservation) {
+        if (!NodeReplacementValue.MODE_EXTERNAL.equals(next.mode()) || (next.phase() != NodeReplacementPhase.ROLLED_BACK && next.phase() != NodeReplacementPhase.DONE)) {
             return List.of();
         }
 
+        var key = new AetherKey.CapacityReservationKey(next.replacement());
+
         return reservation.filter(value -> value.phase() == AetherValue.CapacityReservationPhase.DISPATCHED)
-                          .<KVCommand.Mutation<AetherKey, AetherValue>> map(value -> new KVCommand.Mutation<>(new AetherKey.CapacityReservationKey(next.replacement()),
+                          .<KVCommand.Mutation<AetherKey, AetherValue>> map(value -> new KVCommand.Mutation<>(key,
                                                                                                               Option.<AetherValue> some(value),
-                                                                                                              Option.<AetherValue> some(new AetherValue.CapacityReservationValue(value.sourceName(),
-                                                                                                                                                                                 value.sourceBinding(),
-                                                                                                                                                                                 value.intendedRole(),
-                                                                                                                                                                                 AetherValue.CapacityReservationPhase.RELEASED))))
+                                                                                                              settled(next.phase(),
+                                                                                                                      value)))
                           .fold(() -> List.<KVCommand.Mutation<AetherKey, AetherValue>> of(),
                                 List::of);
+    }
+
+    private static Option<AetherValue> settled(NodeReplacementPhase phase, AetherValue.CapacityReservationValue value) {
+        if (UNCOUNTED.equals(value.sourceBinding())) {
+            return Option.none();
+        }
+
+        return Option.<AetherValue> some(new AetherValue.CapacityReservationValue(value.sourceName(),
+                                                                                  value.sourceBinding(),
+                                                                                  value.intendedRole(),
+                                                                                  phase == NodeReplacementPhase.DONE
+                                                                                  ? AetherValue.CapacityReservationPhase.OBSERVED
+                                                                                  : AetherValue.CapacityReservationPhase.RELEASED));
     }
 
     /// Hands the pairings to the two reconcilers that must treat them as capacity on purpose. One call, so that what each receives is
@@ -289,7 +320,7 @@ public final class NodeReplacementWiring {
                                 .getTyped(new AetherKey.CapacityReservationKey(next.replacement()),
                                           AetherValue.CapacityReservationValue.class);
 
-            return cas(in, original, Option.some(expected), next, releaseUnarrived(next, reservation));
+            return cas(in, original, Option.some(expected), next, settleReservation(next, reservation));
         }
 
         @Override
@@ -426,6 +457,8 @@ public final class NodeReplacementWiring {
     /// What the wired replacement service was given, readable for the boot test that pins the node's wiring.
     public interface Wired {
         Set<NodeId> genesisVoters();
+        /// The ready view a WORKER replacement's readiness is read from.
+        Set<NodeId> readyAll();
         /// The index of committed pairings the node's reconcilers and event announcer read.
         NodeReplacementIndex pairings();
     }
@@ -437,6 +470,12 @@ public final class NodeReplacementWiring {
         @Override
         public Set<NodeId> genesisVoters() {
             return in.genesisVoters()
+                     .get();
+        }
+
+        @Override
+        public Set<NodeId> readyAll() {
+            return in.readyAll()
                      .get();
         }
 
@@ -503,6 +542,21 @@ public final class NodeReplacementWiring {
 
             if (former.isPresent()) {
                 return new Refusal.FormerVoterIdentity(former.unwrap()).promise();
+            }
+
+            var ledger = countable(in.kvStore()
+                                     .getTyped(AetherKey.CapacityLedgerKey.INSTANCE,
+                                               AetherValue.CapacityLedgerValue.class));
+            var sourceName = descriptor.map(d -> d.source()).or("");
+
+            if (chosen.isPresent() && ledger.isPresent() && sourceName.isBlank()) {
+                return new Refusal.SourceRequired(original).promise();
+            }
+
+            if (chosen.isPresent() && ledger.filter(counted -> counted.allocated() >= in.fleetLimit()
+                                                                                        .getAsInt())
+                                            .isPresent()) {
+                return new Refusal.FleetFull(ledger.unwrap().allocated()).promise();
             }
 
             var replacement = chosen.or(() -> NodeId.randomNodeId(in.idPrefix().get()));

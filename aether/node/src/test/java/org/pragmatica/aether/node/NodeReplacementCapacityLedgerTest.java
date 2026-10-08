@@ -78,7 +78,7 @@ class NodeReplacementCapacityLedgerTest {
 
         var rolledBack = new NodeReplacementValue(FRESH, "core", NodeReplacementPhase.ROLLED_BACK, 0L, "pool", "", NodeReplacementValue.MODE_EXTERNAL, 0, "join deadline", 3L);
 
-        transaction(NodeReplacementWiring.releaseUnarrived(rolledBack, store.getTyped(key, CapacityReservationValue.class)));
+        transaction(NodeReplacementWiring.settleReservation(rolledBack, store.getTyped(key, CapacityReservationValue.class)));
         assertThat(store.getTyped(key, CapacityReservationValue.class).unwrap().phase()).isEqualTo(CapacityReservationPhase.RELEASED);
 
         var lifecycle = CapacityControlledLifecycle.capacityControlledLifecycle(provider(), CORE, store, this::process, () -> true, () -> 10);
@@ -90,19 +90,46 @@ class NodeReplacementCapacityLedgerTest {
         assertThat(store.get(key).isEmpty()).as("and the id is no longer admissible").isTrue();
     }
 
+    /// v-2042 M1(c): a reservation written while the ledger could not count it (here: no ledger at all) must settle WITHOUT
+    /// returning a slot, even when a ledger exists by the time it settles. It is dropped, the counter is not touched.
     @Test
-    void withoutTheCountedSlot_theSameReleaseWouldHaveTakenOneThatWasNeverCounted() {
+    void aReservationThatWasNeverCounted_isDroppedWithoutReturningASlot() {
+        store.process(store.createBatch(List.of(new KVCommand.Put(LeaderKey.INSTANCE, LEADER))));
+        var key = new AetherKey.CapacityReservationKey(FRESH);
+
+        transaction(NodeReplacementWiring.admissionMutations(true, "core", FRESH, "pool", Option.none()));
+        assertThat(store.getTyped(key, CapacityReservationValue.class).unwrap().sourceBinding()).as("marked as uncounted").isEqualTo(NodeReplacementWiring.UNCOUNTED);
+        seedLedger(4);
+
+        var rolledBack = new NodeReplacementValue(FRESH, "core", NodeReplacementPhase.ROLLED_BACK, 0L, "pool", "", NodeReplacementValue.MODE_EXTERNAL, 0, "join deadline", 3L);
+
+        transaction(NodeReplacementWiring.settleReservation(rolledBack, store.getTyped(key, CapacityReservationValue.class)));
+        CapacityControlledLifecycle.capacityControlledLifecycle(provider(), CORE, store, this::process, () -> true, () -> 10).reconcileRefusals().await().unwrap();
+
+        assertThat(ledger().allocated()).as("nothing was taken, nothing is returned").isEqualTo(4);
+        assertThat(store.get(key).isEmpty()).as("and the id is no longer admissible").isTrue();
+    }
+
+    /// v-2042 M1(a): a replacement that reaches DONE hands its reservation to the lifecycle as OBSERVED (what it writes when it sees
+    /// the instance), so retiring the node later returns the counted slot and drops the reservation: the id stops being admissible.
+    @Test
+    void aReplacementThatReachedDone_returnsItsSlotAndItsIdWhenTheNodeIsRetired() {
         seedLedger(4);
         var key = new AetherKey.CapacityReservationKey(FRESH);
 
-        // The control: the reservation written WITHOUT the ledger increment (the shape before the fix).
-        transaction(NodeReplacementWiring.admissionMutations(true, "core", FRESH, "pool", Option.none()));
-        var rolledBack = new NodeReplacementValue(FRESH, "core", NodeReplacementPhase.ROLLED_BACK, 0L, "pool", "", NodeReplacementValue.MODE_EXTERNAL, 0, "join deadline", 3L);
+        transaction(NodeReplacementWiring.admissionMutations(true, "core", FRESH, "pool", Option.some(ledger())));
+        var done = new NodeReplacementValue(FRESH, "core", NodeReplacementPhase.DONE, 0L, "pool", "", NodeReplacementValue.MODE_EXTERNAL, 0, "", 5L);
 
-        transaction(NodeReplacementWiring.releaseUnarrived(rolledBack, store.getTyped(key, CapacityReservationValue.class)));
-        CapacityControlledLifecycle.capacityControlledLifecycle(provider(), CORE, store, this::process, () -> true, () -> 10).reconcileRefusals().await().unwrap();
+        transaction(NodeReplacementWiring.settleReservation(done, store.getTyped(key, CapacityReservationValue.class)));
+        assertThat(store.getTyped(key, CapacityReservationValue.class).unwrap().phase()).isEqualTo(CapacityReservationPhase.OBSERVED);
+        assertThat(ledger().allocated()).as("the live node holds its slot").isEqualTo(5);
 
-        assertThat(ledger().allocated()).as("the instrument sees the asymmetry: 3, one slot returned that was never counted").isEqualTo(3);
+        var lifecycle = CapacityControlledLifecycle.capacityControlledLifecycle(provider(), CORE, store, this::process, () -> true, () -> 10);
+
+        lifecycle.terminateNode(FRESH, org.pragmatica.aether.environment.SourceName.sourceName("pool").unwrap()).await().unwrap();
+
+        assertThat(ledger().allocated()).as("retiring it returns the slot, once").isEqualTo(4);
+        assertThat(store.get(key).isEmpty()).as("and its id is no longer admissible").isTrue();
     }
 
     private static NodeLifecycleManager provider() {

@@ -70,6 +70,16 @@ class NodeReplacementWiringBootTest {
             .as("the configured genesis set: a single-node cluster's genesis voter is itself").isEqualTo(Set.of(self));
     }
 
+    /// The ready view a WORKER replacement reads (`readyAll`) is the node's real stable ready set: a booted core is in its own view.
+    @Test
+    @Timeout(value = 120, unit = SECONDS)
+    void theReplacementService_readsTheNodesRealReadyView() {
+        node = bootedNode();
+
+        await().atMost(30, SECONDS).alias("the node's own ready view contains the node")
+               .untilAsserted(() -> assertThat(((NodeReplacementWiring.Wired) node.nodeReplacementService()).readyAll()).contains(self));
+    }
+
     @Test
     @Timeout(value = 120, unit = SECONDS)
     void connectReconcilers_ran_theReconcilersHoldThePairings() {

@@ -104,6 +104,7 @@ class NodeReplacementEnvTest {
                                                 () -> "fresh",
                                                 node -> false,
                                                 Set::of,
+                                                () -> Integer.MAX_VALUE,
                                                 OperatorWarningSink.logOnly(),
                                                 () -> now,
                                                 timings);

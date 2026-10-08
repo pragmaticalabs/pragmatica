@@ -4957,6 +4957,9 @@ public interface AetherNode extends ManageableNode {
                                                                                             () -> clusterNode.genesisVoters()
                                                                                                              .map(voters -> Set.copyOf(voters.members()))
                                                                                                              .or(Set.of()),
+                                                                                            () -> config.autoHeal()
+                                                                                                        .maxNodes()
+                                                                                                        .or(Integer.MAX_VALUE),
                                                                                             operatorWarningSink,
                                                                                             System::currentTimeMillis,
                                                                                             NodeReplacementPlanner.Timings.defaults()));

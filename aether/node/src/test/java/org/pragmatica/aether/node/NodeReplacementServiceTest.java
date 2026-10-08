@@ -58,6 +58,7 @@ class NodeReplacementServiceTest {
     private Set<NodeId> readyAll = Set.of();
     private Set<NodeId> readyAdmitted = Set.of();
     private Set<NodeId> genesis = Set.of();
+    private int fleetLimit = Integer.MAX_VALUE;
     private NodeReplacementWiring.Wiring wiring;
 
     NodeReplacementServiceTest() {
@@ -117,6 +118,7 @@ class NodeReplacementServiceTest {
                                                 () -> "fresh",
                                                 node -> false,
                                                 () -> genesis,
+                                                () -> fleetLimit,
                                                 OperatorWarningSink.logOnly(),
                                                 () -> 1_000L,
                                                 NodeReplacementPlanner.Timings.parse("60000,60000,60000,60000,0,60000,60000"));
@@ -259,7 +261,7 @@ class NodeReplacementServiceTest {
 
         stored.put(new AetherKey.CapacityReservationKey(FRESH), reservation);
 
-        var released = NodeReplacementWiring.releaseUnarrived(rolledBack, Option.some(reservation));
+        var released = NodeReplacementWiring.settleReservation(rolledBack, Option.some(reservation));
 
         assertThat(released).hasSize(1);
         assertThat(((CapacityReservationValue) released.getFirst().replacement().unwrap()).phase()).isEqualTo(CapacityReservationPhase.RELEASED);
@@ -274,10 +276,10 @@ class NodeReplacementServiceTest {
         var ctmMode = new NodeReplacementValue(FRESH, "core", NodeReplacementPhase.ROLLED_BACK, 0L, "", "", NodeReplacementValue.MODE_CTM, 0, "", 1L);
         var running = new NodeReplacementValue(FRESH, "core", NodeReplacementPhase.JOINING, 0L, "", "", NodeReplacementValue.MODE_EXTERNAL, 0, "", 1L);
 
-        assertThat(NodeReplacementWiring.releaseUnarrived(external, Option.some(observed))).as("the lifecycle releases an observed node").isEmpty();
-        assertThat(NodeReplacementWiring.releaseUnarrived(ctmMode, Option.some(dispatched))).as("CTM owns its own reservation").isEmpty();
-        assertThat(NodeReplacementWiring.releaseUnarrived(running, Option.some(dispatched))).as("only a terminal rollback releases").isEmpty();
-        assertThat(NodeReplacementWiring.releaseUnarrived(external, Option.none())).isEmpty();
+        assertThat(NodeReplacementWiring.settleReservation(external, Option.some(observed))).as("the lifecycle releases an observed node").isEmpty();
+        assertThat(NodeReplacementWiring.settleReservation(ctmMode, Option.some(dispatched))).as("CTM owns its own reservation").isEmpty();
+        assertThat(NodeReplacementWiring.settleReservation(running, Option.some(dispatched))).as("only a terminal rollback releases").isEmpty();
+        assertThat(NodeReplacementWiring.settleReservation(external, Option.none())).isEmpty();
     }
 
     @Test
@@ -354,5 +356,76 @@ class NodeReplacementServiceTest {
         assertThat(leaderSurge.get().get()).as("the leader reconciler counts only a CORE replacement as core capacity").containsExactly(corePair);
         assertThat(surge.get().get()).as("the placement reconciler's surge is every pairing's replacement").containsExactlyInAnyOrder(workerPair, corePair);
         assertThat(shield.get().get()).as("and its shield also holds the originals").contains(OLD_WORKER, OLD_CORE, workerPair, corePair);
+    }
+
+    // ---- v-2042 M1 residuals: how an EXTERNAL admission is counted and settled ---------------------------------------
+
+    @Test
+    void admission_isCountedOnlyWhenTheLedgerCanCount_andSaysSo() {
+        var counting = new CapacityLedgerValue(4, 7, true);
+        var incomplete = new CapacityLedgerValue(4, 7, false);
+
+        var counted = NodeReplacementWiring.admissionMutations(true, "core", FRESH, "pool", Option.some(counting));
+        var noLedger = NodeReplacementWiring.admissionMutations(true, "core", FRESH, "pool", Option.none());
+        var notCountable = NodeReplacementWiring.admissionMutations(true, "core", FRESH, "pool", Option.some(incomplete));
+
+        assertThat(counted).as("reservation + ledger").hasSize(2);
+        assertThat(((CapacityReservationValue) counted.getFirst().replacement().unwrap()).sourceBinding()).isEmpty();
+        assertThat(noLedger).as("no ledger: the reservation alone").hasSize(1);
+        assertThat(((CapacityReservationValue) noLedger.getFirst().replacement().unwrap()).sourceBinding()).isEqualTo(NodeReplacementWiring.UNCOUNTED);
+        assertThat(notCountable).as("an incomplete inventory cannot count either").hasSize(1);
+        assertThat(((CapacityReservationValue) notCountable.getFirst().replacement().unwrap()).sourceBinding()).isEqualTo(NodeReplacementWiring.UNCOUNTED);
+    }
+
+    @Test
+    void settleReservation_returnsOnlyWhatWasCounted_andOnlyAtTheEnd() {
+        var counted = new CapacityReservationValue("pool", "", "core", CapacityReservationPhase.DISPATCHED);
+        var uncounted = new CapacityReservationValue("pool", NodeReplacementWiring.UNCOUNTED, "core", CapacityReservationPhase.DISPATCHED);
+        var rolledBack = new NodeReplacementValue(FRESH, "core", NodeReplacementPhase.ROLLED_BACK, 0L, "pool", "", NodeReplacementValue.MODE_EXTERNAL, 0, "x", 1L);
+        var done = new NodeReplacementValue(FRESH, "core", NodeReplacementPhase.DONE, 0L, "pool", "", NodeReplacementValue.MODE_EXTERNAL, 0, "", 1L);
+        var keptBoth = new NodeReplacementValue(FRESH, "core", NodeReplacementPhase.FAILED_KEPT_BOTH, 0L, "pool", "", NodeReplacementValue.MODE_EXTERNAL, 0, "x", 1L);
+
+        assertThat(phaseAfter(rolledBack, counted)).isEqualTo(CapacityReservationPhase.RELEASED);
+        assertThat(phaseAfter(done, counted)).isEqualTo(CapacityReservationPhase.OBSERVED);
+        assertThat(NodeReplacementWiring.settleReservation(rolledBack, Option.some(uncounted)).getFirst().replacement().isEmpty()).as("uncounted: dropped").isTrue();
+        assertThat(NodeReplacementWiring.settleReservation(done, Option.some(uncounted)).getFirst().replacement().isEmpty()).as("uncounted: dropped").isTrue();
+        assertThat(NodeReplacementWiring.settleReservation(keptBoth, Option.some(counted))).as("both nodes are kept: nothing settles yet").isEmpty();
+    }
+
+    private static CapacityReservationPhase phaseAfter(NodeReplacementValue next, CapacityReservationValue reservation) {
+        return ((CapacityReservationValue) NodeReplacementWiring.settleReservation(next, Option.some(reservation)).getFirst().replacement().unwrap()).phase();
+    }
+
+    /// M1(b): an EXTERNAL replacement is refused when the fleet is at its limit, like every other admission.
+    @Test
+    void beginExternal_isRefusedWhenTheFleetIsFull_butNotWhenThereIsRoomOrNoLedger() {
+        stored.put(AetherKey.CapacityLedgerKey.INSTANCE, new CapacityLedgerValue(5, 1, true));
+        fleetLimit = 5;
+        var full = wiring.service().beginExternal(OLD_CORE, FRESH, "").await();
+
+        assertThat(full.isFailure()).isTrue();
+        full.onFailure(cause -> assertThat(cause).isInstanceOf(Refusal.FleetFull.class));
+        assertThat(commands).isEmpty();
+
+        fleetLimit = 6;
+        assertThat(wiring.service().beginExternal(OLD_CORE, FRESH, "").await().isSuccess()).as("room for one more").isTrue();
+    }
+
+    /// M1(d): with a counting ledger an EXTERNAL replacement needs a source name (a slot with no source can never be returned); a
+    /// CTM replacement and a ledger-less cluster are not held to it.
+    @Test
+    void beginExternal_withACountingLedger_requiresASource() {
+        descriptors.put(OLD_CORE, new MemberDescriptor(Option.none(), "core", ""));
+        stored.put(AetherKey.CapacityLedgerKey.INSTANCE, new CapacityLedgerValue(1, 1, true));
+        var refused = wiring.service().beginExternal(OLD_CORE, FRESH, "").await();
+
+        assertThat(refused.isFailure()).isTrue();
+        refused.onFailure(cause -> assertThat(cause).isInstanceOf(Refusal.SourceRequired.class));
+        assertThat(wiring.service().begin(OLD_CORE, "").await().isSuccess()).as("control: a CTM replacement needs no reservation").isTrue();
+
+        commands.clear();
+        index.remove(new AetherKey.NodeReplacementKey(OLD_CORE));
+        stored.remove(AetherKey.CapacityLedgerKey.INSTANCE);
+        assertThat(wiring.service().beginExternal(OLD_CORE, FRESH, "").await().isSuccess()).as("control: no ledger, nothing to return").isTrue();
     }
 }
