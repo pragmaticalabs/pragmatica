@@ -26,11 +26,12 @@ class ClusterTestPortsTest {
     private static final int SWIM = CoreSwimHealthDetector.SWIM_PORT_OFFSET;
     /// TCP-only: the port is for an HTTP/1 management server and nothing UDP ever binds it.
     /// Reservation forms caught: `ServerSocket(0`, `ServerSocket(0, backlog, addr)`, any `ServerSocketChannel`, and an
-    /// address built on port 0 (`new InetSocketAddress(0)`, `new InetSocketAddress(loopback, 0)`).
+    /// explicit `bind(new InetSocketAddress(..., 0))`. A bare `new InetSocketAddress(.., 0)` is NOT matched: it is also
+    /// how a live `HttpServer.create(...)` binds (GitBackupRepositoryTest), which would be a false positive.
     /// KNOWN GAP (#2016): a port held in a variable (`new ServerSocket(port)`, `bind(addrOf(p))`) is not caught. Such a
     /// call is also how tests deliberately HOLD a taken port, so no text pattern separates the two without false
     /// positives; telling them apart needs data flow (the port came from a closed socket), which this scan cannot see.
-    private static final java.util.regex.Pattern RESERVES = java.util.regex.Pattern.compile("ServerSocket\\(\\s*0|ServerSocketChannel|InetSocketAddress\\(\\s*0\\s*\\)|getLoopbackAddress\\(\\)\\s*,\\s*0\\s*\\)");
+    private static final java.util.regex.Pattern RESERVES = java.util.regex.Pattern.compile("ServerSocket\\(\\s*0|ServerSocketChannel|\\.bind\\(\\s*new (?:java\\.net\\.)?InetSocketAddress\\([^()]*(?:\\([^()]*\\))?[^()]*\\b0\\s*\\)\\s*\\)");
     private static final String TCP_ONLY_MANAGEMENT_TEST = "ManagementServerDhtCatchUpGaugeTest.java";
 
     @Test
