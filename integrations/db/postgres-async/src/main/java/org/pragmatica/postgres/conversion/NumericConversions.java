@@ -96,7 +96,7 @@ final class NumericConversions {
         var scale = buffer.getShort(offset + 6);
 
         if (sign == NUMERIC_SIGN_NAN || sign == NUMERIC_SIGN_POSITIVE_INFINITY || sign == NUMERIC_SIGN_NEGATIVE_INFINITY) {
-            throw new IllegalArgumentException("NUMERIC special value has no BigDecimal representation: " + specialName(sign));
+            return returnError(Oid.NUMERIC, "BigDecimal (the NUMERIC value " + specialName(sign) + " has none)");
         }
 
         var value = BigDecimal.ZERO;
