@@ -5,9 +5,7 @@
 package org.pragmatica.aether.node;
 
 import java.io.IOException;
-import java.io.UncheckedIOException;
 import java.net.InetSocketAddress;
-import java.net.ServerSocket;
 import java.net.Socket;
 import java.nio.file.Path;
 import java.util.List;
@@ -142,7 +140,7 @@ class AetherNodeBrokenTlsBootTest {
                                                    Option<TlsConfig> tls,
                                                    HttpProtocol managementProtocol) {
         var self = NodeId.nodeId("broken-tls-boot-test").unwrap();
-        var selfInfo = NodeInfo.nodeInfo(self, nodeAddress("localhost", freePort()).unwrap());
+        var selfInfo = NodeInfo.nodeInfo(self, nodeAddress("localhost", ClusterTestPorts.freeClusterPort()).unwrap());
 
         return AetherNodeConfig.builder()
                                 .self(self)
@@ -172,10 +170,6 @@ class AetherNodeBrokenTlsBootTest {
     }
 
     private static int freePort() {
-        try (var socket = new ServerSocket(0)) {
-            return socket.getLocalPort();
-        } catch (IOException e) {
-            throw new UncheckedIOException(e);
-        }
+        return org.pragmatica.aether.node.ClusterTestPorts.freeTcpAndUdpPort();
     }
 }
