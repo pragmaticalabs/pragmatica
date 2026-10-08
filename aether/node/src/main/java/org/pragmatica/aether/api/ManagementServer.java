@@ -109,9 +109,12 @@ import org.pragmatica.dht.DHTAntiEntropy;
 import org.pragmatica.dht.DHTNode;
 import org.pragmatica.http.routing.RouteSource;
 import org.pragmatica.http.server.HttpServer;
+import org.pragmatica.http.server.HttpServerError;
 import org.pragmatica.http.server.HttpServerConfig;
 import org.pragmatica.http.HttpRequest;
 import org.pragmatica.http.server.ResponseWriter;
+import org.pragmatica.aether.http.TlsRotation;
+import org.pragmatica.utility.warning.OperatorWarningSink;
 import org.pragmatica.net.tcp.ClientAuthPolicy;
 import org.pragmatica.net.tcp.QuicSslContextFactory;
 import org.pragmatica.http.websocket.WebSocketEndpoint;
@@ -138,6 +141,11 @@ public interface ManagementServer {
     Promise<Unit> start();
     Promise<Unit> stop();
     Promise<Unit> rotateCertificate(org.pragmatica.net.tcp.security.CertificateBundle newBundle);
+
+    /// Binds the operator-event sink for certificate-rotation refusals (and their recovery).
+    @Contract
+    void setOperatorWarningSink(OperatorWarningSink sink);
+
     /// The real (Prometheus-backed) meter registry this server publishes `/metrics` from.
     /// Exposed so resource provisioning (#278) can inject the node's actual `MeterRegistry` into
     /// slice-facing interceptors instead of each factory fabricating its own disconnected one.
@@ -214,6 +222,7 @@ class ManagementServerImpl implements ManagementServer {
     private static final Logger log = LoggerFactory.getLogger(ManagementServerImpl.class);
     private static final int MAX_CONTENT_LENGTH = 64 * 1024 * 1024;
 
+    private final TlsRotation tlsRotation = TlsRotation.tlsRotation("management");
     private final int port;
     private final Supplier<ManageableNode> nodeSupplier;
     private final AlertManager alertManager;
@@ -476,11 +485,17 @@ class ManagementServerImpl implements ManagementServer {
     private Promise<Unit> startH3Server() {
         var quicTls = tls.map(cfg -> QuicSslContextFactory.createServer(cfg, ClientAuthPolicy.NOT_REQUESTED))
                          .or(QuicSslContextFactory.createSelfSignedServer());
+        // A QUIC context that cannot be built refuses the start: an HTTP/3 listener configured for TLS must not
+        // silently not exist (nor, in BOTH mode, leave the node reporting a start that bound only some listeners).
+        return quicTls.fold(cause -> quicTlsRefused("management-h3", cause), this::startH3WithSslContext);
+    }
 
-        return quicTls.onFailure(cause -> log.error("Failed to create QUIC SSL context for management server: {}",
-                                                    cause.message()))
-                      .map(this::startH3WithSslContext)
-                      .or(Promise.success(unit()));
+    private Promise<Unit> quicTlsRefused(String serverName, Cause cause) {
+        var failure = new HttpServerError.TlsFailed(serverName, port, cause);
+
+        log.error("HTTP server '{}' will not start: {}", serverName, failure.message());
+
+        return failure.promise();
     }
 
     private Promise<Unit> startH3WithSslContext(io.netty.handler.codec.quic.QuicSslContext quicSslContext) {
@@ -591,8 +606,21 @@ class ManagementServerImpl implements ManagementServer {
     @Override
     public Promise<Unit> rotateCertificate(org.pragmatica.net.tcp.security.CertificateBundle newBundle) {
         log.info("Rotating management server TLS certificate");
+        // The new TLS material is built before the running listeners are touched: a bundle that does not build is
+        // refused and the current certificate keeps serving, instead of stopping the listeners and restarting them
+        // without TLS.
+        return tlsRotation.validate(newBundle,
+                                    httpProtocol.includesH1(),
+                                    httpProtocol.includesH3())
+                          .fold(tlsRotation::<Unit> refuse,
+                                _ -> stopHttpServers().flatMap(_ -> restartWithNewBundle(newBundle))
+                                                    .onSuccessRun(tlsRotation::applied));
+    }
 
-        return stopHttpServers().flatMap(_ -> restartWithNewBundle(newBundle));
+    @Contract
+    @Override
+    public void setOperatorWarningSink(OperatorWarningSink sink) {
+        tlsRotation.useSink(sink);
     }
 
     /// Certificate rotation empties the slots with `take()` rather than `close()`: the listeners are

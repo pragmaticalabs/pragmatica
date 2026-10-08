@@ -2075,10 +2075,21 @@ public class QuicClusterNetwork implements ClusterNetwork {
     /// runs while every entity forward vanished. One ERROR naming the message class, and a typed
     /// [WriteOutcome.EncodeFailed] the existing non-`Sent` handling already fails fast on.
     private Result<byte[]> encodeLoudly(Message.Wired message, NodeId peerId) {
-        return Result.lift(() -> serializer.encode(message)).onFailure(cause -> log.error("Message encode FAILED for {} to {} — message dropped: {}",
-                                                                                          message.getClass().getName(),
-                                                                                          peerId,
-                                                                                          cause.message()));
+        return Result.lift(() -> serializer.encode(message))
+                     .flatMap(QuicClusterNetwork::nonEmptyFrame)
+                     .onFailure(cause -> log.error("Message encode FAILED for {} to {} — message dropped: {}",
+                                                   message.getClass().getName(),
+                                                   peerId,
+                                                   cause.message()));
+    }
+
+    /// #1727 (M1) — a zero-length frame is the lane-end marker ([QuicPeerConnection#laneEndFrame]); the
+    /// receiver ends the lane on it. A message that encoded to nothing would end the lane mid-stream,
+    /// so it is refused here like any other encode failure.
+    private static Result<byte[]> nonEmptyFrame(byte[] bytes) {
+        return bytes.length == 0
+               ? Causes.cause("message encoded to zero bytes — a zero-length frame ends the lane").result()
+               : Result.success(bytes);
     }
 
     /// The single lane data write: accounts it on the owning connection (#1727 supersede-time observation:
