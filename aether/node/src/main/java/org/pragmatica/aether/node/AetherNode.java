@@ -3748,7 +3748,8 @@ public interface AetherNode extends ManageableNode {
                                                                                                                                      TimeSpan.timeSpan(45).seconds());
 
         clusterTopologyManager.installCommunityPlacement(placementReconciler);
-        placementReconciler.protectReplacements(nodeReplacements::retirementProtected);
+        placementReconciler.protectReplacements(nodeReplacements::retirementProtected,
+                                                nodeReplacements::surgeReplacements);
         // Item-8 graft: best-effort SelfDrainInitiated emit on drain initiation. The aggregator is
         // forward-declared to DrainProcedure (constructed earlier) via this ref; the emitter lambda
         // resolves it lazily and no-ops until bound. NOT leader-gated — the draining node is the only

@@ -172,7 +172,7 @@ class CommunityPlacementReconcilerTest {
         var replacement = new NodeId("a-replacement");
 
         seedSurgeWorker(replacement);
-        reconciler.protectReplacements(() -> Set.of(OLD, replacement));
+        reconciler.protectReplacements(() -> Set.of(OLD, replacement), () -> Set.of(replacement));
         reconciler.reconcile().await();
 
         assertThat(store.getTyped(new AetherKey.CommunityPlacementOperationKey("stable"), CommunityPlacementOperationValue.class)
@@ -188,10 +188,37 @@ class CommunityPlacementReconcilerTest {
         var replacement = new NodeId("a-replacement");
 
         seedSurgeWorker(replacement);
-        reconciler.protectReplacements(() -> Set.of(replacement));
+        reconciler.protectReplacements(() -> Set.of(replacement), () -> Set.of(replacement));
         reconciler.reconcile().await();
 
         assertThat(current().previousNode().unwrap()).isEqualTo(OLD);
+    }
+
+    /// v-2042: a community of size 2 already holds its two members; a live pairing adds a surge replacement as the THIRD. The
+    /// shield keeps the pairing's nodes from being removed, but the third member still counted as an excess, so the reduction
+    /// removed whichever UNSHIELDED member sorted first: an innocent one. While a pairing is live the surge is not an excess.
+    @Test
+    void surgeReplacement_isNotAnExcess_theReductionNeverRemovesAnInnocentMember() {
+        var original = new NodeId("a-original");
+        var innocent = new NodeId("b-innocent");
+        var replacement = new NodeId("c-replacement");
+        var sizeTwoInOldZone = CONFIG.replace("target_size = 1", "target_size = 2").replace("zone = \"new\"", "zone = \"old\"");
+
+        seed(new KVCommand.Put<>(LeaderKey.INSTANCE, new LeaderValue(CORE, 1)));
+        seed(new KVCommand.Put<>(AetherKey.ClusterConfigKey.CURRENT,
+            new AetherValue.ClusterConfigValue(Option.some(sizeTwoInOldZone), "test", "1.0.0", List.of(), 3, 3, "forge", 1, 0)));
+        for (var member : List.of(original, innocent, replacement)) {
+            seed(new KVCommand.Put<>(new AetherKey.ActivationDirectiveKey(member), new AetherValue.ActivationDirectiveValue(AetherValue.ActivationDirectiveValue.WORKER, "stable", "")));
+            seed(new KVCommand.Put<>(new AetherKey.NodePlacementKey(member), new AetherValue.NodePlacementValue("pool", Option.some("old"), member.id() + "-instance")));
+            ready.add(member);
+        }
+        reconciler.protectReplacements(() -> Set.of(original, replacement), () -> Set.of(replacement));
+        reconciler.reconcile().await();
+
+        var operation = store.getTyped(new AetherKey.CommunityPlacementOperationKey("stable"), CommunityPlacementOperationValue.class);
+
+        assertThat(operation.flatMap(value -> value.previousNode()).map(NodeId::id).or("none"))
+            .as("no member is removed while the third is a pairing's surge replacement").isEqualTo("none");
     }
 
     @Test

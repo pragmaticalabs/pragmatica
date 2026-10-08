@@ -39,9 +39,53 @@ class NodeReplacementWiringAdmissionTest {
     }
 
     @Test
-    void ctmCoreAndWorkers_commitTheRecordAlone() {
+    void ctmReplacement_commitsTheRecordAlone() {
         assertThat(NodeReplacementWiring.admissionMutations(false, "core", FRESH, "")).isEmpty();
-        assertThat(NodeReplacementWiring.admissionMutations(true, "worker", FRESH, "")).isEmpty();
+        assertThat(NodeReplacementWiring.admissionMutations(false, "worker", FRESH, "")).isEmpty();
+    }
+
+    /// v-2042: worker admission is decided by `AetherNode.workerAdmissionAllowed`, which admits a worker only on a committed
+    /// capacity reservation for its role (or a local environment authorization). An EXTERNAL worker replacement therefore needs the
+    /// reservation committed with its record, exactly like a core; without it the operator-started worker is never admitted.
+    @Test
+    void externalWorker_commitsTheReservationWorkerAdmissionAdmitsBy() {
+        var mutations = NodeReplacementWiring.admissionMutations(true, "worker", FRESH, "hetzner");
+
+        assertThat(mutations).as("an EXTERNAL worker replacement commits its admission intent").hasSize(1);
+        var mutation = mutations.getFirst();
+
+        assertThat(mutation.key()).isEqualTo(new AetherKey.CapacityReservationKey(FRESH));
+        var reservation = (CapacityReservationValue) mutation.replacement().unwrap();
+
+        assertThat(AetherNode.workerAdmissionAllowed(FRESH, workerMemberFsm(), storeHolding(Option.some(reservation)), configWithoutEnvironment()))
+            .as("the committed intent admits the worker").isTrue();
+        assertThat(AetherNode.workerAdmissionAllowed(FRESH, workerMemberFsm(), storeHolding(Option.none()), configWithoutEnvironment()))
+            .as("control: without it the same worker is refused").isFalse();
+    }
+
+    private static MembershipFsm workerMemberFsm() {
+        var fsm = mock(MembershipFsm.class);
+
+        when(fsm.memberDescriptor(any())).thenReturn(Option.some(new MemberDescriptor(Option.none(), "worker", "")));
+
+        return fsm;
+    }
+
+    @SuppressWarnings("unchecked")
+    private static org.pragmatica.cluster.state.kvstore.KVStore<AetherKey, AetherValue> storeHolding(Option<CapacityReservationValue> reservation) {
+        var store = mock(org.pragmatica.cluster.state.kvstore.KVStore.class);
+
+        when(store.getTyped(any(), any())).thenReturn(reservation);
+
+        return store;
+    }
+
+    private static AetherNodeConfig configWithoutEnvironment() {
+        var config = mock(AetherNodeConfig.class);
+
+        when(config.environment()).thenReturn(Option.none());
+
+        return config;
     }
 
     private static MembershipFsm coreMemberFsm() {
