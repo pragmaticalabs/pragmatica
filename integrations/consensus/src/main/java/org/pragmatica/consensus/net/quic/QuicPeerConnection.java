@@ -346,7 +346,18 @@ public final class QuicPeerConnection {
                   retired.streamId(),
                   peerId,
                   kept.streamId());
-        var _ = retired.writeAndFlush(new DefaultQuicStreamFrame(Unpooled.EMPTY_BUFFER, true));
+        var _ = retired.writeAndFlush(laneEndFrame());
+    }
+
+    /// #1727 (M1) — the frame that ends a lane: a zero-length frame (the 4-byte length prefix, zero
+    /// payload) carrying the FIN. A bare FIN is not safe: quiche drops a FIN that first arrives on a
+    /// retransmission of data the receiver has already read, so the FIN is never surfaced and the
+    /// handover stalls. Here the FIN rides on bytes that are new to every copy of the stream, and the
+    /// receiver ends the lane on the frame itself ([QuicLaneDataHandler]) without depending on the FIN.
+    /// The prefix is written raw: a [DefaultQuicStreamFrame] bypasses the pipeline's length prepender.
+    /// No other writer produces a zero-length frame — every message encodes to at least its type tag.
+    static DefaultQuicStreamFrame laneEndFrame() {
+        return new DefaultQuicStreamFrame(Unpooled.wrappedBuffer(new byte[LENGTH_PREFIX_BYTES]), true);
     }
 
     /// #1578 — `stream` ended from the other side: its FIN arrived (the other side retired it under
@@ -365,7 +376,7 @@ public final class QuicPeerConnection {
         }
 
         if (stream.isActive()) {
-            var _ = stream.writeAndFlush(new DefaultQuicStreamFrame(Unpooled.EMPTY_BUFFER, true));
+            var _ = stream.writeAndFlush(laneEndFrame());
         }
     }
 
@@ -387,6 +398,7 @@ public final class QuicPeerConnection {
         connection.close().sync();
     }
 
+    private static final int LENGTH_PREFIX_BYTES = 4;
     private static final Logger log = LoggerFactory.getLogger(QuicPeerConnection.class);
 
     private void closeLongLivedStreams() {
