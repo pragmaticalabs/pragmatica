@@ -243,6 +243,11 @@ class QuicClusterNetworkEncodeFailureTest {
         var risk = connection.laneWritesAtRisk(System.nanoTime());
 
         assertThat(risk.lanesAtRisk()).as("a CONTROL message on the CONSENSUS fallback stream is a CONSENSUS write").isEqualTo(1);
+
+        network.writeIfWritableForTest(consensusStream, new byte[] {1}, peerId, StreamType.FORWARD);
+
+        assertThat(connection.laneWritesAtRisk(System.nanoTime()).lanesAtRisk())
+            .as("two message lanes that both fell back to the CONSENSUS stream are one lane").isEqualTo(1);
     }
 
     // --- Helpers ---
