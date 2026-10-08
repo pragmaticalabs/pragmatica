@@ -208,6 +208,38 @@ class QuicClusterNetworkEncodeFailureTest {
         assertThat(connection.laneWritesAtRisk(System.nanoTime()).unflushedLanes()).isEqualTo(1);
     }
 
+    /// #1727 — accounting is keyed by the stream actually written. A CONTROL message that fell back to the
+    /// CONSENSUS stream is a CONSENSUS write; a data-lane message written on the CONTROL stream is not counted.
+    @Test
+    void accountingFollowsTheStreamActuallyWritten_notTheMessagesLane() {
+        var network = network();
+        var peerId = new NodeId("keyed-peer");
+        var channel = mock(QuicChannel.class);
+        @SuppressWarnings("unchecked")
+        var attribute = (io.netty.util.Attribute<QuicPeerConnection>) mock(io.netty.util.Attribute.class);
+        var connection = QuicPeerConnection.quicPeerConnection(peerId, channel);
+        var consensusStream = writableStream();
+        var controlStream = writableStream();
+
+        lenient().when(attribute.get()).thenReturn(connection);
+        lenient().when(channel.attr(PeerOpenedLaneRouter.PEER_CONNECTION)).thenReturn(attribute);
+        lenient().when(consensusStream.parent()).thenReturn(channel);
+        lenient().when(controlStream.parent()).thenReturn(channel);
+        connection.registerStream(StreamType.CONSENSUS, consensusStream);
+        connection.registerStream(StreamType.CONTROL, controlStream);
+
+        network.writeIfWritableForTest(controlStream, new byte[] {1}, peerId, StreamType.FORWARD);
+
+        assertThat(connection.laneWritesAtRisk(System.nanoTime()).lanesAtRisk())
+            .as("a FORWARD message written on the CONTROL stream is a CONTROL write: not counted").isZero();
+
+        network.writeIfWritableForTest(consensusStream, new byte[] {1}, peerId, StreamType.CONTROL);
+
+        var risk = connection.laneWritesAtRisk(System.nanoTime());
+
+        assertThat(risk.lanesAtRisk()).as("a CONTROL message on the CONSENSUS fallback stream is a CONSENSUS write").isEqualTo(1);
+    }
+
     // --- Helpers ---
 
     /// A mock QUIC lane stream that is active + writable and returns a self-listening future.

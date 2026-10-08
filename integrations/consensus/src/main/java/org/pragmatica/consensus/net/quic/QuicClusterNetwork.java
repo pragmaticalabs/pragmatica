@@ -2090,9 +2090,12 @@ public class QuicClusterNetwork implements ClusterNetwork {
     /// ride the CONTROL lane, so noting them would keep the kick running forever (measured by v-2023: 9.8
     /// kicks/s on an idle link). Control traffic is covered by that keepalive.
     @Contract
-    private ChannelFuture trackedWrite(QuicStreamChannel ch, StreamType lane, byte[] bytes) {
+    private ChannelFuture trackedWrite(QuicStreamChannel ch, StreamType messageLane, byte[] bytes) {
         var owner = Option.option(ch.parent()).flatMap(parent -> Option.option(parent.attr(PeerOpenedLaneRouter.PEER_CONNECTION)
                                                                                      .get()));
+        // Keyed by the stream actually written: a message falls back to the CONSENSUS stream when its own lane
+        // has none, so the message's lane would mis-attribute the write (and the CONTROL exclusion with it).
+        var lane = owner.flatMap(connection -> connection.laneOf(ch)).or(messageLane);
 
         owner.onPresent(connection -> connection.laneWriteStarted(lane));
         var future = ch.writeAndFlush(Unpooled.wrappedBuffer(bytes));

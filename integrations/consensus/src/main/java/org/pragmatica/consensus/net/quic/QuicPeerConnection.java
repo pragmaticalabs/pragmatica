@@ -366,6 +366,19 @@ public final class QuicPeerConnection {
         return queue;
     }
 
+    /// The lane `stream` is registered under on this connection, if any. Accounting is keyed by the stream
+    /// actually written, not by the message's lane: a message falls back to the CONSENSUS stream when its own
+    /// lane has none.
+    Option<StreamType> laneOf(QuicStreamChannel stream) {
+        for (var lane : StreamType.values()) {
+            if (longLivedStreams[lane.streamIndex()] == stream) {
+                return Option.some(lane);
+            }
+        }
+
+        return Option.none();
+    }
+
     /// Get a long-lived stream, if already opened.
     public Option<QuicStreamChannel> stream(StreamType type) {
         return option(longLivedStreams[type.streamIndex()]);
