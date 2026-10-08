@@ -69,6 +69,10 @@ class CommunityObservabilityForgeTest {
 
     @Test
     void communityLifecycle_isObservableThroughTheRouteAndEvents_fromFormationToDegradation() {
+        // The pool is 2 x cores = 6 slots, all taken by 3 cores + 3 workers, and a force-killed node does not hand its
+        // slot back (its stop() outlasts the 1 s kill timeout, which skips the release). One spare slot is what lets the
+        // replacement worker below join.
+        assertThat(cluster.withAdditionalNodeSlots(1).isSuccess()).isTrue();
         LifecycleAwait.settled("start community-obs cluster", cluster, cluster.start());
         await().atMost(BUDGET.duration())
                .until(() -> cluster.currentLeader().isPresent());
