@@ -20,5 +20,6 @@
 - **`backup-restore-blocked` now has a recovery event, `backup-restore-unblocked`** (INFO), raised when the restore decides, and when the blocked node stops leading or
   stops (a restart is a stop first). `[verified: BackupRestoreCoordinatorTest.Blocked, BackupWarningOperatorEventTest, ClusterEventAggregatorTest]`
 - A dead Docker node's backup volume is kept on purpose (reattachment belongs to #1569); the runbook says how to reclaim it.
+- `[unverified: that WaveExecutor and BootstrapPhaseProvision pass the source to ProviderResolver.resolveDockerCompute(source) (the call that forwards [backup] to the Docker nodes the CLI provisions): replacing either call with resolveDockerComputeWithoutBackup() leaves every test green; the teardown-only provider is named for what it omits, which is a structural guard, not a pin]`
 - Not in this change: #1968 item 2 (the harness restarting the whole cluster onto fresh ids). `[unverified: a leader that CRASHES while lacking [backup] leaves its
   backup-config-missing event without a recovery]`
