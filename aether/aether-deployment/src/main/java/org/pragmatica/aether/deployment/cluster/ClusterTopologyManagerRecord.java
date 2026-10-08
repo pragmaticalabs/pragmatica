@@ -2136,7 +2136,11 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     }
 
     private Set<NodeId> unprotectedNodeIds(List<InstanceInfo> instances) {
+        var pairedAndLive = nodeReplacements.get().retirementProtected();
+
         return nodeIdsOf(instances).filter(nodeId -> !nodeId.equals(observer.self().id()))
+                        // #1543 E: a live pairing protects its replacement (possibly still booting on a new leader) and its original
+                        .filter(nodeId -> !pairedAndLive.contains(nodeId))
                         .filter(this::unprotectedOrParked)
                         .collect(Collectors.toSet());
     }

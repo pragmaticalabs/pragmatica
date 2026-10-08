@@ -1434,6 +1434,42 @@ class ClusterTopologyManagerActuatorTest {
                                                          .isEqualTo(Map.of("aether-cluster", CLUSTER, "aether-role", "core"));
         }
 
+        /// #1543 E (v-1970 gap): a replacement still booting across a leader change is not tracked, not in flight on the NEW
+        /// leader and not alive to SWIM yet, so the replay would reap it as an orphan. A live pairing protects it.
+        @Test
+        void activationReplay_pairedReplacementThatIsStillBooting_isNotReaped() {
+            var pairings = NodeReplacementIndex.nodeReplacementIndex();
+
+            pairings.put(new AetherKey.NodeReplacementKey(PEER_C),
+                         new AetherValue.NodeReplacementValue(DEAD, "core", AetherValue.NodeReplacementPhase.JOINING, 0L));
+            lifecycleManager.addInstance(DEAD, CLUSTER, "core");
+            var paired = ctmWithDrainGrace(GRACE);
+
+            paired.setNodeReplacements(pairings);
+            paired.activate();
+            assertThat(lifecycleManager.listCalls.get()).as("control: the inventory read happened").isEqualTo(1);
+            settleFor(Duration.ofMillis(600));
+
+            assertThat(lifecycleManager.terminatedNodeIds()).as("a booting paired replacement is not an orphan").isEmpty();
+        }
+
+        /// Control for the test above: the same instance under a TERMINAL pairing is an orphan and is reaped.
+        @Test
+        void activationReplay_replacementOfATerminalPairing_isAnOrphanAgain() {
+            var pairings = NodeReplacementIndex.nodeReplacementIndex();
+
+            pairings.put(new AetherKey.NodeReplacementKey(PEER_C),
+                         new AetherValue.NodeReplacementValue(DEAD, "core", AetherValue.NodeReplacementPhase.ROLLED_BACK, 0L));
+            lifecycleManager.addInstance(DEAD, CLUSTER, "core");
+            var ended = ctmWithDrainGrace(GRACE);
+
+            ended.setNodeReplacements(pairings);
+            ended.activate();
+            await().atMost(Duration.ofSeconds(5)).until(() -> lifecycleManager.terminatedNodeIds().contains(DEAD));
+
+            assertThat(lifecycleManager.terminatedNodeIds()).containsExactly(DEAD);
+        }
+
         /// "Absent past a short grace": a node unprotected at the first read that becomes tracked before the second
         /// read is never terminated.
         @Test

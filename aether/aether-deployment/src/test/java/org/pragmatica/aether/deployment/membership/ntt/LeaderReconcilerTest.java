@@ -244,6 +244,25 @@ class LeaderReconcilerTest {
         assertThat(ctm.provisionReplacementCalls()).hasSize(2);
     }
 
+    /// #1543 N6: a live pairing's replacement that has not joined yet is capacity. Two cores short of 5, one of them already
+    /// on its way as a pairing's replacement: auto-heal provisions ONE, not two. The control is the same cluster with no pairing.
+    @Test
+    void pendingPairingReplacement_countsAsCapacity_autoHealDoesNotProvisionTheSeatTwice() {
+        configuredCoreCount.set(3);
+        observeCoreHealthy(PEER_A);
+        observeCoreHealthy(PEER_B);
+        reconciler.activate();
+        scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
+        configuredCoreCount.set(5);
+        reconciler.setSurgeReplacements(() -> Set.of(NodeId.randomNodeId()));
+        reconciler.onConfigChange();
+        fireDebouncedReconcile();
+        advancePastProvisioningGates();
+        triggerAndFireReconcile();
+
+        assertThat(ctm.provisionReplacementCalls()).as("one seat is already being filled by the pairing").hasSize(1);
+    }
+
     @Test
     void targetRaisedBeforeFirstPass_usesVerifiedInstalledElectorateAsFormationEvidence() {
         configuredCoreCount.set(3);
@@ -1050,6 +1069,24 @@ class LeaderReconcilerTest {
             assertThat(ctm.drainNodeCalls())
                 .as("a young ephemeral non-slice-owner must be drainable — the grace does not block it")
                 .hasSize(1);
+        }
+
+        /// #1543 E (v-1970 gap): a paired replacement is surge capacity, not surplus. With one live pairing the +1 member
+        /// must not be counted as surplus, so the reconciler dispatches no drain for it (and re-arms no follow-up). The control
+        /// is the same cluster without the surge: its surplus IS drained.
+        @Test
+        void surplusDrain_surgeReplacement_isNotCountedAsSurplus_controlWithoutItDrains() {
+            configuredCoreCount.set(3);
+            seedClusterWithPeers(PEER_A, PEER_B);
+            var surge = NodeId.randomNodeId();
+
+            seedYoungPeers(surge);
+            reconciler.setSurgeReplacements(() -> Set.of(surge));
+
+            reconciler.activate();
+            scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
+
+            assertThat(ctm.drainNodeCalls()).as("the paired surge node is not surplus").isEmpty();
         }
 
         @Test

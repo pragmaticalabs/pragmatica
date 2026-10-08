@@ -108,6 +108,39 @@ public enum OperatorWarningCode {
     /// earlier refused by the slice floor has now been admitted (the floor cleared, or the operator forced it). INFO,
     /// published only after a published refusal for that target, and it clears the refusal's throttle window (#752).
     SLICE_FLOOR_DRAIN_ADMITTED("slice-floor-drain-admitted", "deployment", WarningLevel.INFO, SLICE_FLOOR_DRAIN_REFUSED),
+    /// A node replacement (#1543) was committed: a fresh-id node is taking over from the subject (the ORIGINAL node). Raised once,
+    /// when the record is first committed. Closed by [#NODE_REPLACEMENT_COMPLETED] or [#NODE_REPLACEMENT_ROLLED_BACK].
+    NODE_REPLACEMENT_STARTED("node-replacement-started", "replacement", WarningLevel.INFO),
+    /// The recovery of [#NODE_REPLACEMENT_STARTED], same subject: the replacement took over and the original is retired.
+    NODE_REPLACEMENT_COMPLETED("node-replacement-completed", "replacement", WarningLevel.INFO, NODE_REPLACEMENT_STARTED),
+    /// The recovery of [#NODE_REPLACEMENT_STARTED], same subject, for a replacement that did not happen: the replacement was given
+    /// up (it never joined, died, failed its canary or the swap) and the original is untouched.
+    NODE_REPLACEMENT_ROLLED_BACK("node-replacement-rolled-back",
+                                 "replacement",
+                                 WarningLevel.WARNING,
+                                 NODE_REPLACEMENT_STARTED),
+    /// The replacement has not joined by the middle of its join budget; the replacement is rolled back at the end of it. Closed by
+    /// [#NODE_REPLACEMENT_JOINED].
+    NODE_REPLACEMENT_JOIN_OVERDUE("node-replacement-join-overdue", "replacement", WarningLevel.WARNING),
+    /// The recovery of [#NODE_REPLACEMENT_JOIN_OVERDUE], same subject: the replacement joined after all.
+    NODE_REPLACEMENT_JOINED("node-replacement-joined", "replacement", WarningLevel.INFO, NODE_REPLACEMENT_JOIN_OVERDUE),
+    /// Draining the original is held back by the slice `minAvailable` floor (never forced). Raised once on the transition into
+    /// the block; closed by [#NODE_REPLACEMENT_DRAIN_UNBLOCKED]. A drain that merely is not admitted yet is not reported.
+    NODE_REPLACEMENT_DRAIN_BLOCKED("node-replacement-drain-blocked", "replacement", WarningLevel.WARNING),
+    /// The recovery of [#NODE_REPLACEMENT_DRAIN_BLOCKED], same subject: the floor cleared and the drain was admitted.
+    NODE_REPLACEMENT_DRAIN_UNBLOCKED("node-replacement-drain-unblocked",
+                                     "replacement",
+                                     WarningLevel.INFO,
+                                     NODE_REPLACEMENT_DRAIN_BLOCKED),
+    /// The replacement ended with BOTH nodes kept (a drain that never completed, a swap that applied but did not settle, a
+    /// replacement lost after the original began to retire): the cluster runs one node over its size until an operator settles
+    /// it. Closed by [#NODE_REPLACEMENT_SETTLED].
+    NODE_REPLACEMENT_FAILED_KEPT_BOTH("node-replacement-failed-kept-both", "replacement", WarningLevel.WARNING),
+    /// The recovery of [#NODE_REPLACEMENT_FAILED_KEPT_BOTH], same subject: an operator kept the new node or gave it up.
+    NODE_REPLACEMENT_SETTLED("node-replacement-settled",
+                             "replacement",
+                             WarningLevel.INFO,
+                             NODE_REPLACEMENT_FAILED_KEPT_BOTH),
     /// A replica of a `confirmation_factor` 1 stream cut its divergent tail back to the last offset it shares with its
     /// owner (#1730 phase 2). With that factor the acknowledgement was the old owner's alone, so the discarded offsets
     /// may have been acknowledged and are lost; the message names them. A stream that confirms with replicas

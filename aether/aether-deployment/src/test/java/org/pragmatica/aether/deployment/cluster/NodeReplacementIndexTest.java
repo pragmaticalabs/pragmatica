@@ -103,4 +103,34 @@ class NodeReplacementIndexTest {
         index.remove(new NodeReplacementKey(OLD));
         assertThat(index.voterSwaps()).isEmpty();
     }
+
+    /// #1543 E: a pairing being REVERTED after a failed canary swaps the seat BACK: the replacement leaves, the original
+    /// returns, and both stay protected until the swap-back is installed.
+    @Test
+    void reverting_reversesTheSwap_andProtectsBoth() {
+        var index = NodeReplacementIndex.nodeReplacementIndex();
+
+        index.put(new NodeReplacementKey(OLD), new NodeReplacementValue(NEW, "core", NodeReplacementPhase.REVERTING, 0L));
+
+        assertThat(index.voterSwaps()).containsExactly(Map.entry(NEW, OLD));
+        assertThat(index.retirementProtected()).contains(OLD, NEW);
+    }
+
+    /// B3: a transition is seen exactly as committed, with the record it replaced, on every node that applies it.
+    @Test
+    void everyAppliedRecord_isReportedWithTheOneItReplaced() {
+        var index = NodeReplacementIndex.nodeReplacementIndex();
+        var seen = new java.util.ArrayList<String>();
+        var first = new NodeReplacementValue(NEW, "core", NodeReplacementPhase.PROVISIONING, 0L);
+
+        index.onTransition((original, before, after) -> {
+            seen.add(original.id() + ":" + before.map(value -> value.phase().name()).or("-") + ">" + after.phase());
+
+            return org.pragmatica.lang.Unit.unit();
+        });
+        index.put(new NodeReplacementKey(OLD), first);
+        index.put(new NodeReplacementKey(OLD), first.advanced(NodeReplacementPhase.JOINING, 1L, ""));
+
+        assertThat(seen).containsExactly("old:->PROVISIONING", "old:PROVISIONING>JOINING");
+    }
 }
