@@ -86,8 +86,9 @@ emit_finding() {
     local rel="${file#$REPO_ROOT/}"
     local content key
     content=$(sed -n "${line}p" "$file" | normalise_content)
-    # Detail text may cite other line numbers ("preceding log_warn at line 14"); they are location, not identity.
-    detail=$(printf '%s' "$detail" | sed -E 's/ (from |at )?line [0-9]+//g')
+    # Detail text may cite other line numbers (R3 "from line 14"); they are location, not identity. The R1 detail carries the
+    # text of the preceding log_warn instead, so the key names the pair, not just the log_pass line.
+    detail=$(printf '%s' "$detail" | sed -E 's/ (from |at )?line [0-9]+//g' | normalise_content)
     key=$(printf "[%s] %s :: %s — %s" "$rule" "$rel" "$content" "$detail")
     printf '%s\n' "$key" >> "$FINDINGS_FILE"
     printf '%s\t%s:%s\n' "$key" "$rel" "$line" >> "$LOCATIONS_FILE"
@@ -110,6 +111,9 @@ lint_r1_warn_then_pass() {
         !in_test { next }
         /log_warn/ {
             warn_line = NR
+            warn_text = $0
+            gsub(/^[ \t]+|[ \t]+$/, "", warn_text)
+            gsub(/[ \t]+/, " ", warn_text)
             warn_seen = 1
             opt_out = 0
             next
@@ -120,7 +124,7 @@ lint_r1_warn_then_pass() {
         }
         warn_seen && /log_pass/ {
             if (!opt_out && (NR - warn_line) <= 5) {
-                print FILENAME ":" NR ":warn-then-pass-demotion (preceding log_warn at line " warn_line ")"
+                print FILENAME ":" NR ":warn-then-pass-demotion (preceding " warn_text ")"
             }
             warn_seen = 0
         }
