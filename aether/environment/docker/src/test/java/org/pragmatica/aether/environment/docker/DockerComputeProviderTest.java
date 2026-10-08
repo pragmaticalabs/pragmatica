@@ -532,6 +532,15 @@ class DockerComputeProviderTest {
         }
 
         @Test
+        void factory_refusesABackupPathWithANul_insteadOfThrowing() {
+            var cloud = new org.pragmatica.aether.environment.CloudConfig("docker", Map.of(), Map.of("AETHER_BACKUP_ENABLED", "true", "AETHER_BACKUP_PATH", "/data/b\0x"),
+                                                                          Map.of(), Map.of(), Map.of(), Map.of());
+            var result = new DockerEnvironmentIntegrationFactory().create(cloud);
+
+            assertThat(result.isFailure()).isTrue();
+        }
+
+        @Test
         void factory_acceptsABackupPathUnderData_andNoPathAtAll() {
             for (var compute : List.of(Map.of("AETHER_BACKUP_ENABLED", "true", "AETHER_BACKUP_PATH", "/data/backups"), Map.<String, String>of())) {
                 var cloud = new org.pragmatica.aether.environment.CloudConfig("docker", Map.of(), compute, Map.of(), Map.of(), Map.of(), Map.of());

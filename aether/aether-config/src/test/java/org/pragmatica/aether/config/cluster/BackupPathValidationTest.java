@@ -86,4 +86,15 @@ class BackupPathValidationTest {
             assertThat(ClusterBootstrapConfigParser.parse(DOCKER.formatted(backup("true", bad))).isFailure()).as("docker source, path " + bad).isTrue();
         }
     }
+
+    /// A NUL in the value (TOML `\u0000`) is a refusal naming the field on both source types, never an exception out of the parser.
+    @Test
+    void aNulInThePath_isRefusedByTheParser_notThrown() {
+        for (var template : new String[] {CLOUD, DOCKER}) {
+            var result = ClusterBootstrapConfigParser.parse(template.formatted("[source.s.node_config.backup]\nenabled = true\npath = \"/data/b\\u0000x\"\n"));
+
+            assertThat(result.isFailure()).isTrue();
+            result.onFailure(cause -> assertThat(cause.message()).contains("source.s.node_config.backup.path", "not a valid path"));
+        }
+    }
 }
