@@ -136,7 +136,11 @@ class MainCloudIntegrationBootTest {
         var err = dir.resolve("err.txt");
         var builder = new ProcessBuilder(command).redirectOutput(out.toFile()).redirectError(err.toFile());
 
+        // The child's environment is stated, not inherited: without a cluster secret TLS setup fails before the WAL gate (found on bigboy,
+        // whose environment differs from a developer shell that exports one).
         builder.environment().put("AETHER_CLUSTER_NAME", "test-cluster");
+        builder.environment().put("AETHER_CLUSTER_SECRET", "test-cluster-secret-for-2058");
+        builder.environment().remove("AETHER_INSECURE_DEV_MODE");
         var child = builder.start();
 
         if (!child.waitFor(DEADLINE_SECONDS, TimeUnit.SECONDS)) {
