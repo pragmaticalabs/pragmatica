@@ -27,6 +27,8 @@ on:
 jobs:
   heavy-forge-tests:
     outputs:
+      state: ${{ steps.summary.outputs.state }}
+      reason: ${{ steps.summary.outputs.reason }}
       new_reds: ${{ steps.summary.outputs.new_reds }}
       known_reds: ${{ steps.summary.outputs.known_reds }}
     # A labelled event for some other label must not start (or cancel) a Heavy run.
@@ -89,50 +91,14 @@ jobs:
 
       # Counts <testcase> elements, never the <testsuite tests="N"> attribute, which reads 0 for
       # @Nested classes.
+      # The state (ok | red | unknown) goes to the notify job. UNKNOWN (no report, a report that does not parse, zero testcases) fails this
+      # step: a run that examined nothing is never green. pipefail so the script's exit code survives the tee.
       - name: Summarise failsafe reports
         id: summary
         if: always()
         run: |
-          python3 - <<'EOF' | tee -a "$GITHUB_STEP_SUMMARY"
-          import glob, os, re, xml.etree.ElementTree as ET
-          files = sorted(glob.glob('aether/forge/forge-tests/target/failsafe-reports/TEST-*.xml'))
-          print('### Heavy forge tests: failsafe reports\n')
-          print('| class | testcases | failures | errors | skipped | seconds |')
-          print('|---|---|---|---|---|---|')
-          total = {'cases': 0, 'failures': 0, 'errors': 0, 'skipped': 0}
-          known = []
-          new = []
-          for f in files:
-              suite = ET.parse(f).getroot()
-              cases = suite.findall('testcase')
-              # @KnownRed (a ticketed, enabled tripwire) reports an absorbed failure as a skipped testcase "known red #N: ..."
-              for c in cases:
-                  if c.find('failure') is not None or c.find('error') is not None:
-                      new.append(f"{suite.get('name', f).rsplit('.', 1)[-1]}.{c.get('name')}")
-                  s = c.find('skipped')
-                  # an aborted test carries its reason in the element TEXT ("org.opentest4j.TestAbortedException: known red #N: ..."), not in a message attribute
-                  hit = re.search(r'known red #\d+[^\n]*', (s.get('message') or '') + '\n' + (s.text or '')) if s is not None else None
-                  if hit:
-                      known.append((suite.get('name', f).rsplit('.', 1)[-1], c.get('name'), hit.group(0)[:200]))
-              failures = sum(1 for c in cases if c.find('failure') is not None)
-              errors = sum(1 for c in cases if c.find('error') is not None)
-              skipped = sum(1 for c in cases if c.find('skipped') is not None)
-              name = suite.get('name', f).rsplit('.', 1)[-1]
-              print(f"| {name} | {len(cases)} | {failures} | {errors} | {skipped} | {suite.get('time', '?')} |")
-              total['cases'] += len(cases); total['failures'] += failures
-              total['errors'] += errors; total['skipped'] += skipped
-          print(f"\n**{len(files)} report files, {total['cases']} testcases, {total['failures']} failures, "
-                f"{total['errors']} errors, {total['skipped']} skipped**")
-          print(f"\n### Known reds ({len(known)}): ticketed failures that did not fail this run; a NEW red is a row of the table above\n")
-          print('| class | test | known red |')
-          print('|---|---|---|')
-          for cls, name, message in known:
-              print(f"| {cls} | {name} | {message} |")
-          # job outputs for the notify job (multi-line values use a delimiter)
-          with open(os.environ['GITHUB_OUTPUT'], 'a') as out:
-              out.write('new_reds<<__END__\n' + '\n'.join(new) + '\n__END__\n')
-              out.write('known_reds<<__END__\n' + '\n'.join(f"{c}.{n} ({m})" for c, n, m in known) + '\n__END__\n')
-          EOF
+          set -o pipefail
+          python3 tools/heavy-forge-summary.py | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: Upload Heavy forge test results
         uses: actions/upload-artifact@v6
@@ -165,19 +131,23 @@ jobs:
           RESULT: ${{ needs.heavy-forge-tests.result }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           SHA: ${{ github.sha }}
+          STATE: ${{ needs.heavy-forge-tests.outputs.state }}
+          REASON: ${{ needs.heavy-forge-tests.outputs.reason }}
           NEW_REDS: ${{ needs.heavy-forge-tests.outputs.new_reds }}
           KNOWN_REDS: ${{ needs.heavy-forge-tests.outputs.known_reds }}
         run: |
           set -euo pipefail
           gh label create heavy-nightly --description "the nightly Heavy forge run" --force >/dev/null
           open=$(gh issue list --label heavy-nightly --state open --json number --jq '.[0].number // empty')
-          if [ "$RESULT" = success ]; then
+          # Close ONLY on a night that is both a green job and a summary that read real reports (state ok). Anything else, including a missing or
+          # unknown state, keeps the issue open: an unknown night is never green.
+          if [ "$RESULT" = success ] && [ "${STATE:-}" = ok ]; then
             if [ -n "$open" ]; then
               gh issue close "$open" --comment "Green: $RUN_URL ($SHA)"
             fi
             exit 0
           fi
-          body=$(printf 'Run: %s\nCommit: %s\n\nNew reds:\n%s\n\nKnown reds:\n%s\n' "$RUN_URL" "$SHA" "${NEW_REDS:-none listed}" "${KNOWN_REDS:-none}")
+          body=$(printf 'Run: %s\nCommit: %s\nState: %s %s\n\nNew reds:\n%s\n\nKnown reds:\n%s\n' "$RUN_URL" "$SHA" "${STATE:-unknown}" "${REASON:-}" "${NEW_REDS:-none listed}" "${KNOWN_REDS:-none}")
           if [ -n "$open" ]; then
             gh issue comment "$open" --body "$body"
           else

@@ -15,24 +15,29 @@ import org.junit.jupiter.api.extension.ExtendWith;
 ///
 /// The test keeps asserting the CORRECT behaviour. [KnownRedExtension] gives three outcomes:
 ///   - the test fails with the declared signature (`exception` instance whose message, or a cause's, contains `messageContains`):
-///     reported as ABORTED, i.e. a skipped testcase whose message is `known red #<ticket>: ...`; the nightly lists it in its
+///     reported as ABORTED, i.e. a skipped testcase whose text is `known red #<ticket>: ...`; the nightly lists it in its
 ///     "Known reds" table and does not fail on it;
 ///   - the test fails any other way: a REAL failure, so a test broken for a new reason cannot hide behind the old ticket;
 ///   - the test passes: FAILS with "remove @KnownRed", so the fix landing flips the tripwire. There is deliberately no "tolerate a
-///     pass" mode: a tripwire that accepts a pass cannot flip, which makes it a disabled test in disguise. An intermittent failure is
-///     not a known red; leave it unannotated and let it show.
+///     pass" mode: a tripwire that accepts a pass cannot flip, which makes it a disabled test in disguise.
+///
+/// Placement: a TEST METHOD (`@Test`, `@RepeatedTest`, `@ParameterizedTest`, `@TestTemplate`, also inside a `@Nested` class), nothing else.
+/// The target is `METHOD`, so a class-level use does not compile (a class-level tripwire cannot flip per test, and an absorbed failing
+/// `@BeforeAll` leaves no testcase in the report); `KnownRedExtensionTest` pins that target and scans the test classes for the annotation
+/// on a method that is not a test. A signature that would absorb everything (blank `messageContains` or `ticket`, or a catch-all exception
+/// class) is itself a failure of the annotated test.
 ///
 /// Take the signature from the real failure (the nightly's log), not from the ticket's prose.
 @Retention(RetentionPolicy.RUNTIME)
-@Target({ElementType.TYPE, ElementType.METHOD})
+@Target(ElementType.METHOD)
 @ExtendWith(KnownRedExtension.class)
 public @interface KnownRed {
     /// The ticket, e.g. `#1717`.
     String ticket();
 
-    /// The expected failure's class (matched with `isInstance`).
+    /// The expected failure's class (matched with `isInstance`); not a catch-all (`Throwable`, `Exception`, `RuntimeException`, `Error`).
     Class<? extends Throwable> exception();
 
-    /// A substring of the expected failure's message, or of a cause's.
+    /// A non-blank substring of the expected failure's message, or of a cause's.
     String messageContains();
 }
