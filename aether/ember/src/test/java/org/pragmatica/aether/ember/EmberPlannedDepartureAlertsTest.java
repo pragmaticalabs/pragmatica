@@ -52,6 +52,7 @@ class EmberPlannedDepartureAlertsTest {
     private static final long LEADER_BUDGET_MS = 90_000L;
     private static final long DEPARTURE_BUDGET_MS = 120_000L;
     private static final long SETTLE_MS = 20_000L;
+    private static final long ADMISSION_BUDGET_MS = 90_000L;
 
     private EmberCluster cluster;
 
@@ -95,8 +96,7 @@ class EmberPlannedDepartureAlertsTest {
                        DEPARTURE_BUDGET_MS,
                        () -> nodes.stream()
                                   .filter(n -> !n.self().id().equals(victim))
-                                  .anyMatch(n -> n.alertManager().getActiveNodeHealthAlerts().stream().anyMatch(a -> a.nodeId().id().equals(victim))
-                                                 && criticalNodeFailed(n, victim)));
+                                  .anyMatch(n -> hasCriticalAlert(n, victim)));
         assertThat(announcedNodeLeft(nodes.getFirst(), victim)).as("an unplanned death is never recorded as an announced departure").isFalse();
     }
 
@@ -119,7 +119,7 @@ class EmberPlannedDepartureAlertsTest {
         assertThat(cluster.killNode(leaderId).await(STOP_BOUND).isSuccess()).isTrue();
         awaitCondition("a survivor raised CRITICAL for the leader kill (unplanned stays loud)",
                        DEPARTURE_BUDGET_MS,
-                       () -> survivors(nodes, leaderId, drainee).stream().anyMatch(n -> criticalNodeFailed(n, leaderId)));
+                       () -> survivors(nodes, leaderId, drainee).stream().anyMatch(n -> hasCriticalAlert(n, leaderId)));
         awaitCondition("the drainee is gone", DEPARTURE_BUDGET_MS, () -> cluster.getNode(drainee).isEmpty());
         sleepQuietly(SETTLE_MS);
 
@@ -176,6 +176,15 @@ class EmberPlannedDepartureAlertsTest {
                                               && "DrainRequested".equals(e.details().get("cause")));
     }
 
+    /// The node-health alert is local state on the observer, so unlike the cluster-events stream (whose read
+    /// can lag or gap on a replica) it is a reliable positive control that an unplanned death is loud.
+    private static boolean hasCriticalAlert(AetherNode observer, String failed) {
+        return observer.alertManager()
+                       .getActiveNodeHealthAlerts()
+                       .stream()
+                       .anyMatch(a -> a.nodeId().id().equals(failed));
+    }
+
     private static boolean criticalNodeFailed(AetherNode observer, String failed) {
         return events(observer).stream()
                                .anyMatch(e -> e instanceof ClusterEvent.NodeFailed && failed.equals(e.details().get("nodeId"))
@@ -201,7 +210,22 @@ class EmberPlannedDepartureAlertsTest {
                     .toList();
     }
 
+    /// The drain route reads the leader's readiness view (filled from pongs), which is empty for the first
+    /// seconds after formation: it answers 404 "Node lifecycle not found" until the target has ponged. First
+    /// run (2026-10-08) hit exactly that in every arm and exercised nothing, so retry until admitted.
     private String drain(String nodeId) {
+        var deadline = System.currentTimeMillis() + ADMISSION_BUDGET_MS;
+        var response = drainOnce(nodeId);
+
+        while (!response.startsWith("2") && System.currentTimeMillis() < deadline) {
+            sleepQuietly(1_000L);
+            response = drainOnce(nodeId);
+        }
+
+        return response;
+    }
+
+    private String drainOnce(String nodeId) {
         var port = cluster.getLeaderManagementPort().or(-1);
         var request = HttpRequest.newBuilder()
                                  .uri(URI.create("http://127.0.0.1:" + port + "/api/v1/nodes/drain/" + nodeId))
