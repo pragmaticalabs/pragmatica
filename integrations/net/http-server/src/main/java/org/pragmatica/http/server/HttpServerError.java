@@ -35,4 +35,14 @@ public sealed interface HttpServerError extends Cause {
             return "Failed to start HTTP server: " + reason;
         }
     }
+
+    /// The TLS configuration could not be turned into a server context; the server refuses to start rather
+    /// than listening in plain text.
+    record TlsFailed(String serverName, int port, Cause cause) implements HttpServerError {
+        @Override
+        public String message() {
+            return "TLS configuration of HTTP server '" + serverName + "' (port " + port + ") failed to build: "
+                   + cause.message() + "; refusing to start without TLS";
+        }
+    }
 }
