@@ -391,15 +391,15 @@ public record Main(String[] args) {
     static final int CLOUD_INTEGRATION_REFUSED_EXIT_CODE = 69;
 
     /// The `[cloud.credentials]` keys each provider's factory requires (read from its `validateCredentials`), so the refusal can tell the
-    /// operator what to add. The CLI overlay renders only `api_token` (the aws, gcp and azure keys are not rendered: a separate ticket, see the changelog).
+    /// operator what to add. The CLI overlay renders only `api_token` (the aws, gcp and azure keys are not rendered: #2059).
     static final Map<String, String> REQUIRED_CREDENTIAL_KEYS = Map.of("hetzner",
-                                                                               "api_token",
-                                                                               "aws",
-                                                                               "access_key_id, secret_access_key, region",
-                                                                               "gcp",
-                                                                               "project_id, service_account_email, private_key_pem, zone",
-                                                                               "azure",
-                                                                               "tenant_id, client_id, client_secret, subscription_id, resource_group, location");
+                                                                       "api_token",
+                                                                       "aws",
+                                                                       "access_key_id, secret_access_key, region",
+                                                                       "gcp",
+                                                                       "project_id, service_account_email, private_key_pem, zone",
+                                                                       "azure",
+                                                                       "tenant_id, client_id, client_secret, subscription_id, resource_group, location");
 
     /// The node's cloud integration (#2058). No `[cloud]` section: none, deliberately (docker compose, forge, bare runs). A `[cloud]`
     /// section whose integration cannot be created REFUSES the boot: without it the leader cannot provision, replace or scale, and the
@@ -418,7 +418,8 @@ public record Main(String[] args) {
     static Result<Option<EnvironmentIntegration>> resolveCloudIntegration(Option<CloudConfig> cloudConfig,
                                                                           Fn1<Result<EnvironmentIntegration>, CloudConfig> create) {
         return cloudConfig.fold(() -> Result.success(Option.<EnvironmentIntegration> none()),
-                                cloud -> Result.lift(Causes::fromThrowable, () -> create.apply(cloud))
+                                cloud -> Result.lift(Causes::fromThrowable,
+                                                     () -> create.apply(cloud))
                                                .flatMap(created -> created)
                                                .map(Option::some)
                                                .mapError(cause -> cloudIntegrationRefusal(cloud.provider(),
