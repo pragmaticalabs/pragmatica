@@ -37,6 +37,8 @@ import org.pragmatica.utility.warning.OperatorWarningSink;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyBoolean;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -64,7 +66,8 @@ class NodeReplacementEnvTest {
         states.put(OLD, "Member");
         when(ctm.provisionReplacement(any(), any(), any(), any(), any())).thenReturn(Promise.success(ProvisionDisposition.dispatched()));
         when(ctm.drainNode(any(), any())).thenAnswer(call -> Promise.unitPromise());
-        when(ctm.reapRetired(any(), any())).thenAnswer(call -> Promise.unitPromise());
+        when(ctm.reapRetired(any(), any(), anyBoolean())).thenAnswer(call -> Promise.unitPromise());
+        when(ctm.instanceListed(any(), any())).thenAnswer(call -> Promise.success(true));
         wiring = NodeReplacementWiring.wire(inputs(NodeReplacementPlanner.Timings.parse("60000,60000,60000,60000,0,60000,60000")));
     }
 
@@ -226,14 +229,14 @@ class NodeReplacementEnvTest {
     @Test
     void retiring_isNotDone_untilTheTerminationIsConfirmed() {
         states.put(OLD, "Dead");
-        when(ctm.reapRetired(any(), any())).thenAnswer(call -> org.pragmatica.lang.utils.Causes.cause("instance of core-old: still listed at the provider after terminate").<org.pragmatica.lang.Unit> promise());
+        when(ctm.reapRetired(any(), any(), anyBoolean())).thenAnswer(call -> org.pragmatica.lang.utils.Causes.cause("instance of core-old: still listed at the provider after terminate").<org.pragmatica.lang.Unit> promise());
         record(NodeReplacementPhase.RETIRING_OLD, 999_999L);
         wiring.reconciler().reconcile().await();
         wiring.reconciler().reconcile().await();
 
         assertThat(commands).as("a refused termination commits nothing: no DONE").isEmpty();
 
-        when(ctm.reapRetired(any(), any())).thenAnswer(call -> Promise.unitPromise());
+        when(ctm.reapRetired(any(), any(), anyBoolean())).thenAnswer(call -> Promise.unitPromise());
         wiring.reconciler().reconcile().await();
         wiring.reconciler().reconcile().await();
 
@@ -245,7 +248,7 @@ class NodeReplacementEnvTest {
     @Test
     void retiringOverdue_withAnUnconfirmedTermination_isKeptBoth_namingTheInstanceAndTheCause() {
         states.put(OLD, "Dead");
-        when(ctm.reapRetired(any(), any())).thenAnswer(call -> org.pragmatica.lang.utils.Causes.cause("instance of core-old: still listed at the provider after terminate: [i-1 Running]").<org.pragmatica.lang.Unit> promise());
+        when(ctm.reapRetired(any(), any(), anyBoolean())).thenAnswer(call -> org.pragmatica.lang.utils.Causes.cause("instance of core-old: still listed at the provider after terminate: [i-1 Running]").<org.pragmatica.lang.Unit> promise());
         record(NodeReplacementPhase.RETIRING_OLD, 5_000L);
         wiring.reconciler().reconcile().await();
         now = 6_000L;
@@ -261,7 +264,7 @@ class NodeReplacementEnvTest {
     /// retiring budget the pair is kept, with the cause.
     @Test
     void aRollbackThatCannotTerminateTheReplacement_isKeptBoth_afterTheRetiringBudget() {
-        when(ctm.reapRetired(any(), any())).thenAnswer(call -> org.pragmatica.lang.utils.Causes.cause("instance of core-new: quota").<org.pragmatica.lang.Unit> promise());
+        when(ctm.reapRetired(any(), any(), anyBoolean())).thenAnswer(call -> org.pragmatica.lang.utils.Causes.cause("instance of core-new: quota").<org.pragmatica.lang.Unit> promise());
         record(NodeReplacementPhase.PROVISIONING, 500L);
         wiring.reconciler().reconcile().await();
 
@@ -274,6 +277,31 @@ class NodeReplacementEnvTest {
 
         assertThat(committed.phase()).isEqualTo(NodeReplacementPhase.FAILED_KEPT_BOTH);
         assertThat(committed.reason()).contains("could not be rolled back").contains("instance of core-new: quota");
+    }
+
+    /// An old node the provider listed while it was up (before the drain) that then self-halts is confirmed gone by an empty listing:
+    /// the reap is asked with seenBefore=true. A node never listed is asked with seenBefore=false, which the CTM refuses to call gone.
+    @Test
+    void anOldNodeListedBeforeTheDrain_isReapedAsSeen_andANeverListedOneIsNot() {
+        record(NodeReplacementPhase.DRAINING_OLD, 999_999L);
+        wiring.reconciler().reconcile().await();
+
+        verify(ctm).instanceListed(eq(OLD), any());
+
+        states.put(OLD, "Dead");
+        commands.clear();
+        index.remove(new AetherKey.NodeReplacementKey(OLD));
+        record(NodeReplacementPhase.RETIRING_OLD, 999_999L);
+        wiring.reconciler().reconcile().await();
+
+        verify(ctm).reapRetired(eq(OLD), any(), eq(true));
+
+        var fresh = NodeReplacementWiring.wire(inputs(NodeReplacementPlanner.Timings.parse("60000,60000,60000,60000,0,60000,60000")));
+
+        commands.clear();
+        fresh.reconciler().reconcile().await();
+
+        verify(ctm).reapRetired(eq(OLD), any(), eq(false));
     }
 
     // ---- B3: the owner gate -------------------------------------------------------------------------------------------

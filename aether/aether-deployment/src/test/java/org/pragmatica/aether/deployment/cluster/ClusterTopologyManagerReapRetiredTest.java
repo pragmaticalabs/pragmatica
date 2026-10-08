@@ -101,13 +101,44 @@ class ClusterTopologyManagerReapRetiredTest {
     }
 
     private org.pragmatica.lang.Result<Unit> reap() {
-        return ctm.reapRetired(OLD, SourceName.DEFAULT).await();
+        return reap(true);
+    }
+
+    private org.pragmatica.lang.Result<Unit> reap(boolean seenBefore) {
+        return ctm.reapRetired(OLD, SourceName.DEFAULT, seenBefore).await();
     }
 
     @Test
-    void emptyListing_isGone_withoutATerminate_soANewLeaderCanRepeatIt() {
-        assertThat(reap().isSuccess()).isTrue();
+    void emptyListing_ofAnInstanceSeenBefore_isGone_withoutATerminate_soANewLeaderCanRepeatIt() {
+        assertThat(reap(true).isSuccess()).isTrue();
         assertThat(terminates.get()).isZero();
+    }
+
+    /// v-2008 r6: an empty listing proves nothing for an instance the provider never listed (a dispatched replacement that has not
+    /// appeared yet, an unlabelled VM): not confirmed gone, and the failure names the node.
+    @Test
+    void emptyListing_ofAnInstanceNeverListed_isNotGone_andNamesTheNode() {
+        var result = reap(false);
+
+        assertThat(result.isFailure()).as("one empty listing is not a confirmation").isTrue();
+        result.onFailure(cause -> assertThat(cause.message()).contains(OLD.id()).contains("never listed"));
+        assertThat(terminates.get()).isZero();
+    }
+
+    @Test
+    void anInstanceListedNowAsTerminated_needsNoEarlierObservation() {
+        providerLists(oldInstance("i-1", InstanceStatus.TERMINATED));
+
+        assertThat(reap(false).isSuccess()).as("this very listing saw it").isTrue();
+    }
+
+    @Test
+    void instanceListed_isTrueForAnyStatus_falseWhenNothingIsListed_andFailsWhenTheListingFails() {
+        assertThat(ctm.instanceListed(OLD, SourceName.DEFAULT).await().unwrap()).isFalse();
+        providerLists(oldInstance("i-1", InstanceStatus.TERMINATED));
+        assertThat(ctm.instanceListed(OLD, SourceName.DEFAULT).await().unwrap()).isTrue();
+        listing.set(EnvironmentError.operationNotSupported("provider API down").promise());
+        assertThat(ctm.instanceListed(OLD, SourceName.DEFAULT).await().isFailure()).as("a failed listing is not 'nothing listed'").isTrue();
     }
 
     @Test
@@ -125,7 +156,7 @@ class ClusterTopologyManagerReapRetiredTest {
     void aLiveInstance_isTerminated_andConfirmedGoneByASecondListing() {
         providerLists(oldInstance("i-1", InstanceStatus.RUNNING));
 
-        assertThat(reap().isSuccess()).isTrue();
+        assertThat(reap(false).isSuccess()).as("listed now, terminated, then an empty listing after the accepted terminate").isTrue();
         assertThat(terminates.get()).isEqualTo(1);
     }
 

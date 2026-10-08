@@ -501,6 +501,24 @@ class NodeReplacementReconcilerTest {
         assertThat(model.phases).doesNotContain(NodeReplacementPhase.ROLLED_BACK);
     }
 
+    /// The REVERTING path terminates the replacement too: when that cannot be confirmed the pair is kept, never reported rolled back.
+    @Test
+    void reverting_isKeptBoth_notRolledBack_whenTheReplacementCannotBeTerminated() {
+        var model = new Model();
+
+        model.begin(NodeReplacementPhase.REVERTING);
+        model.newKnown = true;
+        model.newAlive = true;
+        model.oldVoter = true;
+        model.newVoter = false;
+        model.terminateResult = new EffectResult.Failed("still listed");
+        driver(model).reconcile().await();
+
+        assertThat(model.records.get(OLD).phase()).isEqualTo(NodeReplacementPhase.FAILED_KEPT_BOTH);
+        assertThat(model.records.get(OLD).reason()).contains("could not be rolled back");
+        assertThat(model.phases).doesNotContain(NodeReplacementPhase.ROLLED_BACK);
+    }
+
     @Test
     void timingsOverride_parsesSevenValues_andIgnoresAnythingElse() {
         assertThat(Timings.parse("1,2,3,4,5,6,7")).isEqualTo(new Timings(1, 2, 3, 4, 5, 6, 7));

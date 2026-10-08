@@ -1728,7 +1728,14 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     }
 
     @Override
-    public Promise<Unit> reapRetired(NodeId node, SourceName source) {
+    public Promise<Boolean> instanceListed(NodeId node, SourceName source) {
+        return lifecycleManager.instancesForNode(node, source)
+                               .map(listed -> !listed.isEmpty())
+                               .mapError(cause -> Causes.cause("instance of " + node.id() + ": " + cause.message()));
+    }
+
+    @Override
+    public Promise<Unit> reapRetired(NodeId node, SourceName source, boolean seenBefore) {
         if (!active.get()) {
             return Causes.cause("reap of " + node.id() + " needs the active topology manager").promise();
         }
@@ -1741,14 +1748,21 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
 
         return lifecycleManager.instancesForNode(node, source)
                                .flatMap(listed -> goneAtProvider(listed)
-                                                  ? Promise.unitPromise()
+                                                  ? confirmedAbsent(node, listed, seenBefore)
                                                   : lifecycleManager.terminateNode(node, source)
-                                                                    .flatMap(_ -> lifecycleManager.instancesForNode(node,
-                                                                                                                    source))
+                                                                    .flatMap(_ -> lifecycleManager.instancesForNode(node, source))
                                                                     .flatMap(after -> goneAtProvider(after)
                                                                                       ? Promise.unitPromise()
-                                                                                      : stillListed(node, after)))
+                                                                                      : stillListed(after)))
                                .mapError(cause -> Causes.cause("instance of " + node.id() + ": " + cause.message()));
+    }
+
+    /// An empty listing is absence only for an instance seen before; listed-and-stopped instances were seen by this very listing.
+    private static Promise<Unit> confirmedAbsent(NodeId node, List<InstanceInfo> listed, boolean seenBefore) {
+        return listed.isEmpty() && !seenBefore
+               ? Causes.cause("the provider lists no instance of " + node.id() + " and has never listed one (an unlabelled or unattributable VM, or a lagging listing): not confirmed gone")
+                       .promise()
+               : Promise.unitPromise();
     }
 
     /// Nothing listed, or every listed instance stopping or terminated. Any instance provisioning, running or in a status the
@@ -1759,7 +1773,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         return state == ReplacementInstanceState.ABSENT || state == ReplacementInstanceState.FAILED;
     }
 
-    private static Promise<Unit> stillListed(NodeId node, List<InstanceInfo> instances) {
+    private static Promise<Unit> stillListed(List<InstanceInfo> instances) {
         return Causes.cause("still listed at the provider after terminate: " + instances.stream()
                                                                                         .map(instance -> instance.id()
                                                                                                                  .value()

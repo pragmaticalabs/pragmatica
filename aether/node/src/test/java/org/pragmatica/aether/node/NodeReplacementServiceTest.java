@@ -35,6 +35,7 @@ import org.pragmatica.utility.warning.OperatorWarningSink;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -67,7 +68,8 @@ class NodeReplacementServiceTest {
         member(OLD_DHT, "dht");
         when(ctm.provisionReplacement(any(), any(), any(), any(), any())).thenReturn(Promise.success(ProvisionDisposition.dispatched()));
         when(ctm.drainNode(any(), any())).thenAnswer(call -> Promise.unitPromise());
-        when(ctm.reapRetired(any(), any())).thenAnswer(call -> Promise.unitPromise());
+        when(ctm.reapRetired(any(), any(), anyBoolean())).thenAnswer(call -> Promise.unitPromise());
+        when(ctm.instanceListed(any(), any())).thenAnswer(call -> Promise.success(true));
         wiring = NodeReplacementWiring.wire(inputs());
     }
 
@@ -287,6 +289,7 @@ class NodeReplacementServiceTest {
     void theReconcilersCommit_ofAnExternalRollback_carriesTheRelease() {
         var reservation = new CapacityReservationValue("hetzner", "", "core", CapacityReservationPhase.DISPATCHED);
 
+        states.remove(FRESH);
         stored.put(new AetherKey.CapacityReservationKey(FRESH), reservation);
         index.put(new AetherKey.NodeReplacementKey(OLD_CORE),
                   new NodeReplacementValue(FRESH, "core", NodeReplacementPhase.JOINING, 999L, "hetzner", "", NodeReplacementValue.MODE_EXTERNAL, 0, "", 1L));
