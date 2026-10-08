@@ -62,6 +62,7 @@ class QuicActivityKickWiringTest {
     private static final TimeSpan AWAIT = TimeSpan.timeSpan(30).seconds();
     private static final long ONE_WAY_DELAY_MS = 300;
     private static final String PAD = "x".repeat(400);
+    private static final long LOSS_TIMER_MAX_NANOS = TimeUnit.MILLISECONDS.toNanos(150);
 
     private final List<QuicClusterNetwork> networks = new java.util.ArrayList<>();
     private QuicActivityKickStrandedLossTest.DelayRelay relay;
@@ -97,16 +98,22 @@ class QuicActivityKickWiringTest {
 
         var connection = lowNet.activeConnectionForTests(high).unwrap();
         var deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+        var timer = -1L;
 
         while (System.nanoTime() < deadline) {
-            var timer = QuicheStall.quicheTimerNanos(connection.connection());
-
-            if (timer > 0 && timer < TimeUnit.MILLISECONDS.toNanos(150)) {
+            timer = QuicheStall.quicheTimerNanos(connection.connection());
+            if (timer > 0 && timer < LOSS_TIMER_MAX_NANOS) {
                 break;
             }
             LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(1));
         }
-        QuicheStall.induceLateTimer(connection.connection());
+        assertThat(timer).as("quiche armed the loss timer for A once B was acked").isBetween(1L, LOSS_TIMER_MAX_NANOS);
+        assertThat(received.stream().anyMatch(probe -> probe.marker().equals("A" + PAD))).as("A not delivered before the induction").isFalse();
+
+        var reading = QuicheStall.induceLateTimer(connection.connection());
+
+        System.out.println("WIRING-READING " + reading);
+        assertThat(reading.quicheTimerBefore()).as("quiche's timer was due when connectionSend ran").isLessThanOrEqualTo(0);
 
         awaitTrue(() -> received.stream().anyMatch(probe -> probe.marker().equals("A" + PAD)),
                   "the production kick recovered the stranded data A");
