@@ -15,6 +15,7 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.function.LongSupplier;
@@ -622,6 +623,22 @@ public final class MembershipFsm {
                                   long governorTerm,
                                   long bootToken,
                                   MemberDescriptor admittedDescriptor) {
+        onGovernorHealthy(id, community, governor, governorTerm, bootToken, admittedDescriptor, 0L);
+    }
+
+    /// `observedAgoMs` is how long before NOW the governor's first-hand observation (the member's last pong)
+    /// was made: the report's own freshness window lets a report generated AFTER the member died still say
+    /// "alive" for up to `communityAbsence`, so the evidence instant, not the report's arrival, is what can
+    /// prove life. Evidence that is not NEWER than the death signal that armed the backstop is ignored
+    /// entirely (#1717): it describes a member that was alive before the signal and proves nothing since.
+    @Contract
+    public void onGovernorHealthy(NodeId id,
+                                  String community,
+                                  NodeId governor,
+                                  long governorTerm,
+                                  long bootToken,
+                                  MemberDescriptor admittedDescriptor,
+                                  long observedAgoMs) {
         if (community.isBlank() || governorTerm < 0 || bootToken == 0 || !("worker".equalsIgnoreCase(admittedDescriptor.role()) || "spot".equalsIgnoreCase(admittedDescriptor.role()))) {
             return;
         }
@@ -629,6 +646,11 @@ public final class MembershipFsm {
         withMember(id,
                    tracking -> tracking.inTransition(() -> {
                        tracking.updateDescriptor(admittedDescriptor);
+                       if (tracking.deathSignalNotOlderThan(monotonicNanos.getAsLong() - java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(Math.max(0L,
+                                                                                                                                                     observedAgoMs)))) {
+                       return;
+                   }
+
                        if (tracking.descriptor()
                                    .isCore() || !admitsProcessEvidence(id, tracking, bootToken, "governor report")) {
                        return;
@@ -638,7 +660,6 @@ public final class MembershipFsm {
                                                                              community,
                                                                              governor,
                                                                              governorTerm));
-                       tracking.clearConfirmedDeath();
                        if (tracking.bumpHealthyStreakReachedThreshold()) {
                        tracking.dispatch(new UpHysteresisMet());
                    }
@@ -661,7 +682,6 @@ public final class MembershipFsm {
                    }
 
                        tracking.dispatch(new MembershipEvent.WorkerAdmissionHealthy(bootToken));
-                       tracking.clearConfirmedDeath();
                        if (tracking.bumpHealthyStreakReachedThreshold()) {
                        tracking.dispatch(new UpHysteresisMet());
                    }
@@ -721,7 +741,11 @@ public final class MembershipFsm {
     /// Transport reported a peer connection established for `id`.
     @Contract
     public void onPeerConnected(NodeId id) {
-        withMember(id, tracking -> tracking.dispatch(new PeerConnected()));
+        withMember(id,
+                   tracking -> tracking.inTransition(() -> {
+                       tracking.dispatch(new PeerConnected());
+                       tracking.clearTransportDeath();
+                   }));
     }
 
     /// Transport reported a peer connection dropped for `id`. Drives MEMBER→SUSPECT, so it is also a
@@ -1176,6 +1200,7 @@ public final class MembershipFsm {
             tracking.stampDoubt(wallClockMs.getAsLong());
             tracking.dispatch(new SwimFaulty(incarnation));
             tracking.markSwimFaulty();
+            tracking.noteDeathSignal(monotonicNanos.getAsLong());
             maybeConfirmDeparture(tracking);
         });
     }
@@ -1193,6 +1218,7 @@ public final class MembershipFsm {
             tracking.stampDoubt(wallClockMs.getAsLong());
             tracking.dispatch(new LivenessGone());
             tracking.markLivenessGone();
+            tracking.noteDeathSignal(monotonicNanos.getAsLong());
             maybeConfirmDeparture(tracking);
         });
     }
@@ -1317,6 +1343,41 @@ public final class MembershipFsm {
         eligibleTracking(id).onPresent(action);
     }
 
+    /// Monotonic source for the death-signal instant and the evidence instant it is compared with (#1717). Both are
+    /// measured on THIS node, so a wall-clock step (NTP, VM resume) between the signal and a report cannot make fresh
+    /// evidence look older than the signal. Remaining skew is cross-node: the evidence age carries the worker's own
+    /// wall-clock term (governor clock minus worker `observedAtMs`, admitted up to `MAX_AGE_MS`), so a worker clock
+    /// behind by more than ~15 s can still make fresh evidence look old. [unverified: cross-node skew > 15 s, bounded
+    /// by MAX_AGE_MS]
+    private volatile LongSupplier monotonicNanos = System::nanoTime;
+
+    /// Test seam for the monotonic source; production keeps `System::nanoTime`.
+    public org.pragmatica.lang.Unit setMonotonicClock(LongSupplier clock) {
+        monotonicNanos = clock;
+
+        return org.pragmatica.lang.Unit.unit();
+    }
+
+    private volatile boolean onePlaneWorkerEviction = true;
+
+    /// #1717 — whether THIS node may evict a worker or spot on a single death plane. A core holds evidence
+    /// sources for a member (governor reports, worker admission) that veto a wrong signal inside the backstop
+    /// window, so one plane is enough there. A worker node holds none of them for its peer workers (governor
+    /// reports are consumed on cores only, and a SWIM-healthy edge does not re-fire), so a one-sided partition
+    /// between two live workers lasting longer than the window would declare a live peer DEAD and raise a false
+    /// CRITICAL. A worker node therefore keeps requiring BOTH planes. Default true (core behaviour); the node
+    /// wiring switches it off on a worker.
+    public org.pragmatica.lang.Unit setOnePlaneWorkerEviction(boolean enabled) {
+        onePlaneWorkerEviction = enabled;
+
+        return org.pragmatica.lang.Unit.unit();
+    }
+
+    /// Whether this node evicts a worker or spot on a single death plane (see [#setOnePlaneWorkerEviction]).
+    public boolean onePlaneWorkerEviction() {
+        return onePlaneWorkerEviction;
+    }
+
     /// Indirectly observed assigned workers cannot be declared dead from missing direct probes.
     public org.pragmatica.lang.Unit setJoinGraceReapEligibility(Predicate<NodeId> eligibility) {
         joinGraceReapEligibility = eligibility;
@@ -1375,7 +1436,8 @@ public final class MembershipFsm {
                                           wallClockMs.getAsLong(),
                                           departureTimeout,
                                           joinGrace,
-                                          node -> joinGraceReapEligibility.test(node));
+                                          node -> joinGraceReapEligibility.test(node),
+                                          () -> onePlaneWorkerEviction);
         // M10 (Wave 7): the join-grace reaper — armed on first observation; cancelled on promotion
         // to MEMBER / on death; re-armed on a fenced rejoin (all inside the dispatch chokepoint).
         tracking.armJoinGrace();
@@ -1581,7 +1643,9 @@ public final class MembershipFsm {
                                long firstTrackedAtMs,
                                TimeSpan departureTimeout,
                                TimeSpan joinGrace,
-                               Predicate<NodeId> joinGraceReapEligibility) {
+                               Predicate<NodeId> joinGraceReapEligibility,
+                               BooleanSupplier onePlaneEviction) {
+            this.onePlaneEviction = onePlaneEviction;
             this.id = id;
             this.fsm = fsm;
             this.onEnteredDead = onEnteredDead;
@@ -1906,14 +1970,64 @@ public final class MembershipFsm {
             livenessGoneSeen = true;
         }
 
+        /// Monotonic nanos of the LATEST death signal of the current episode (nanoTime has an arbitrary origin and may be
+        /// negative, so "armed" is a separate flag). Cleared with the flags.
+        private final BooleanSupplier onePlaneEviction;
+        private long deathSignalAtNanos;
+        private boolean deathSignalArmed;
+
+        /// The LATEST death signal wins: evidence is compared against the most recent signal, so a report observed
+        /// between an early link drop and a later SWIM-FAULTY (the worker died in between) cannot veto the death.
+        /// `nowNanos` is the node's MONOTONIC time (see [MembershipFsm#monotonicNanos]).
+        @Contract
+        synchronized void noteDeathSignal(long nowNanos) {
+            deathSignalAtNanos = nowNanos;
+            deathSignalArmed = true;
+        }
+
+        /// True when a death signal is armed and the proposed evidence instant is not newer than it.
+        synchronized boolean deathSignalNotOlderThan(long evidenceAtNanos) {
+            return deathSignalArmed && evidenceAtNanos - deathSignalAtNanos <= 0;
+        }
+
+        /// A re-established link vetoes the TRANSPORT plane of a death (the drain path's rule): the signal was a
+        /// drop, and the link is back. SWIM-FAULTY is untouched.
+        @Contract
+        synchronized void clearTransportDeath() {
+            livenessGoneSeen = false;
+            if (!swimFaultySeen) {
+                deathSignalArmed = false;
+                cancelEvictionBackstop();
+            }
+        }
+
+        /// Death is co-confirmed by two planes: SWIM-FAULTY and liveness-gone (the QUIC disconnect tap). For a core
+        /// BOTH exist (every other core dials and probes it) and both are required.
+        ///
+        /// A worker or spot is observed differently per node (#1717): a core holds the worker's QUIC link and probes
+        /// it through SWIM, but a worker killed young shows only one plane (SWIM never probed it, or the link
+        /// dropped first), and requiring both left a killed worker SUSPECT forever: no DEAD edge, so no REMOVED
+        /// delta, no worker leave, and its directive, roster entry and #731 footprint persisted. On a node that
+        /// [`#onePlaneWorkerEviction`] allows (a core), EITHER plane for an EXPLICIT non-core role arms the eviction
+        /// backstop; the window is the veto: governor / admission / SWIM-healthy evidence NEWER than the latest
+        /// death signal, or a re-established link, cancels it. A worker observer does not have those evidence
+        /// sources for its peer workers, so there both planes stay required. An unknown or blank role is never
+        /// relaxed.
         synchronized boolean coConfirmedDead() {
-            return swimFaultySeen && livenessGoneSeen;
+            return isNonCoreMember() && onePlaneEviction.getAsBoolean()
+                   ? swimFaultySeen || livenessGoneSeen
+                   : swimFaultySeen && livenessGoneSeen;
+        }
+
+        private boolean isNonCoreMember() {
+            return ! descriptor.isCore() && ("worker".equalsIgnoreCase(descriptor.role()) || "spot".equalsIgnoreCase(descriptor.role()));
         }
 
         @Contract
         synchronized void clearConfirmedDeath() {
             swimFaultySeen = false;
             livenessGoneSeen = false;
+            deathSignalArmed = false;
             cancelEvictionBackstop();
         }
 
