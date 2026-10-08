@@ -22,6 +22,7 @@ import java.util.function.Supplier;
 
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
@@ -98,9 +99,44 @@ public interface Server {
         return server(config, channelHandlers, Option.some(udpHandlers));
     }
 
+    /// A TLS configuration that cannot be built refuses the start, typed, before any event loop exists: a server (or its
+    /// outgoing connections) configured for TLS never silently runs in plain text.
     private static Promise<Server> server(ServerConfig config,
                                           Supplier<List<ChannelHandler>> channelHandlers,
                                           Option<Supplier<List<ChannelHandler>>> udpHandlers) {
+        var serverTls = tlsContext(config, "server", config.tls(), TlsContextFactory::createServer);
+        var clientTls = tlsContext(config, "client", config.clientTls(), TlsContextFactory::createClient);
+
+        return serverTls.flatMap(serverContext -> clientTls.map(clientContext -> bindServer(config,
+                                                                                            channelHandlers,
+                                                                                            udpHandlers,
+                                                                                            serverContext,
+                                                                                            clientContext)))
+                        .fold(cause -> refused(config, cause), promise -> promise);
+    }
+
+    private static Result<Option<SslContext>> tlsContext(ServerConfig config,
+                                                         String side,
+                                                         Option<TlsConfig> tls,
+                                                         java.util.function.Function<TlsConfig, Result<SslContext>> factory) {
+        return tls.map(configured -> factory.apply(configured)
+                                            .map(Option::some)
+                                            .fold(cause -> new TlsError.ServerTlsRefused(config.name(), side, cause).<Option<SslContext>> result(),
+                                                  Result::success))
+                  .or(Result.success(Option.<SslContext> empty()));
+    }
+
+    private static Promise<Server> refused(ServerConfig config, Cause cause) {
+        log.error("Server '{}' will not start: {}", config.name(), cause.message());
+
+        return cause.promise();
+    }
+
+    private static Promise<Server> bindServer(ServerConfig config,
+                                              Supplier<List<ChannelHandler>> channelHandlers,
+                                              Option<Supplier<List<ChannelHandler>>> udpHandlers,
+                                              Option<SslContext> sslContext,
+                                              Option<SslContext> clientSslContext) {
         record server(String name,
                       int port,
                       EventLoopGroup bossGroup,
@@ -173,10 +209,6 @@ public interface Server {
                 return promise;
             }
         }
-        // Handle TLS configuration for server (incoming connections)
-        var sslContext = config.tls().await().flatMap(TlsContextFactory::createServer).option();
-        // Handle TLS configuration for client (outgoing connections)
-        var clientSslContext = config.clientTls().await().flatMap(TlsContextFactory::createClient).option();
         var bossGroup = new MultiThreadIoEventLoopGroup(1, NioIoHandler.newFactory());
         var workerGroup = new MultiThreadIoEventLoopGroup(NioIoHandler.newFactory());
         var socketOptions = config.socketOptions();
