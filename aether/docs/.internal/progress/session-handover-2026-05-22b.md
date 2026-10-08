@@ -9,7 +9,7 @@
 ## TL;DR for the next session
 
 1. **The 02-chaos fight surfaced a real structural gap, not a local bug.** Aether has four parallel membership state machines (Rabia consensus / SWIM / NodeLifecycleKey FSM / MembershipView) with no closed convergence loop. The TODO-RC2 in `restore_cluster_baseline` is the first observed symptom; the second (`pick_non_leader` skipping stale ON_DUTY candidates) is the same gap.
-2. **Decision made: build a lifecycle reconciler + command primitive in RC1 (not RC2).** Spec drafted at [`aether/docs/specs/cluster-convergence-reconciler-spec.md`](../../specs/cluster-convergence-reconciler-spec.md). 8 open decisions; **D1 already resolved (Option A')**, D2-D8 to walk through one-at-a-time.
+2. **Decision made: build a lifecycle reconciler + command primitive in RC1 (not RC2).** Spec drafted at `aether/docs/specs/cluster-convergence-reconciler-spec.md`. 8 open decisions; **D1 already resolved (Option A')**, D2-D8 to walk through one-at-a-time.
 3. **Path 2 v2 (COLD_BOOT-only leader-failover gate) is sitting uncommitted in the working tree.** It works (test-kill-leader 5p/0f) but introduced regressions elsewhere (kill-node 1p/4f, self-drain 3p/4f) — those regressions are now understood to be the same structural gap the reconciler will fix, NOT a regression from Path 2 itself.
 4. **02-chaos is NOT passing end-to-end.** That goal moves from "patch tests" to "build reconciler" — same goal, deeper fix.
 

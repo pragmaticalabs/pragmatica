@@ -94,7 +94,7 @@ This allows developers to write business logic without worrying about distribute
 
 ## Cluster Controller Architecture
 
-**See [metrics-and-control.md](metrics-and-control.md) for complete specification.**
+**See metrics-and-control.md for complete specification.**
 
 ### Controller Concept
 
@@ -202,11 +202,11 @@ Each layer can veto or modify decisions from lower layers.
 - Leader shapes metrics to minimize token costs
 - AI decisions translate to KV-Store updates
 - Layered autonomy: decision tree (required) → SLM → LLM → user (all optional)
-- See [metrics-and-control.md](metrics-and-control.md) for architecture details
+- See metrics-and-control.md for architecture details
 
 ## Metrics Collection Strategy
 
-**See [metrics-and-control.md](metrics-and-control.md) for complete specification.**
+**See metrics-and-control.md for complete specification.**
 
 ### Core Metrics
 

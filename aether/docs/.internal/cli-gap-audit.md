@@ -141,7 +141,7 @@ Resolved in commit (Phase B.1 — error envelope standardization). The framework
 
 Resolved in commit (Phase B.2 — state authority cleanup). Original framing of "fix the projection OR demote it" was reframed by deeper investigation: **both endpoints are needed by design**; the real issues were silent inconsistencies and missing documentation.
 
-**Foundational spec**: the `state-authority.md` spec (removed; see git history) — declared the two-endpoint contract. **Note (membership-v2):** the FSM/`kvState`-as-KV-direct model below has since been scrapped; `kvState` is now a node-reported readiness field (`NodeReportedState`) and is never read from the KV-Store. See [`../specs/membership-architecture-v2-spec.md`](../specs/membership-architecture-v2-spec.md).
+**Foundational spec**: the `state-authority.md` spec (removed; see git history) — declared the two-endpoint contract. **Note (membership-v2):** the FSM/`kvState`-as-KV-direct model below has since been scrapped; `kvState` is now a node-reported readiness field (`NodeReportedState`) and is never read from the KV-Store. See [`../specs/membership-architecture-v2-spec.md`](../specs/archive/membership-architecture-v2-spec.md).
 
 **What landed**:
 - **F1**: `/api/nodes/lifecycle` (mass form) switched from MembershipView-derived to KV-direct, matching the `/{id}` single form. Both list and get share authority now.

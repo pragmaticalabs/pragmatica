@@ -2,7 +2,7 @@
 
 ## ⚡ Top Priority Next Session
 
-**Implement the membership-architecture redesign per [`aether/docs/specs/membership-architecture-spec.md`](../../specs/membership-architecture-spec.md).**
+**Implement the membership-architecture redesign per `aether/docs/specs/membership-architecture-spec.md`.**
 
 Begin with Phase R1 (Rabia `Paused` state). Full phased plan in §9 of the spec. ~15-20 days of work; each phase is independently testable.
 
@@ -142,7 +142,7 @@ Even with QUIC fully demoted (no `register/unregisterPeer`, no `TopologyChangeNo
 
 ### TASK 1 (priority): Implement the membership-architecture redesign
 
-A complete specification has been written at **[`aether/docs/specs/membership-architecture-spec.md`](../../specs/membership-architecture-spec.md)**. This is the principled answer to the chronic cross-layer signal-flow bugs we chased all session. **Read it first, then begin implementation.**
+A complete specification has been written at **`aether/docs/specs/membership-architecture-spec.md`**. This is the principled answer to the chronic cross-layer signal-flow bugs we chased all session. **Read it first, then begin implementation.**
 
 The spec proposes:
 - Strict 8-layer one-way signal flow (Transport → SWIM → HealthReconciler → TopologyObserver → Rabia → Leader Election → Auto-Heal → Node Lifecycle)
