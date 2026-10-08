@@ -389,6 +389,7 @@ public record Main(String[] args) {
     /// config file (#2052), 78 the refused identity. A supervisor must not restart with the same configuration: it fails identically
     /// (`aether/docs/reference/node-operations.md#exit-codes`).
     static final int CLOUD_INTEGRATION_REFUSED_EXIT_CODE = 69;
+
     /// The `[cloud.credentials]` keys each provider's factory requires (read from its `validateCredentials`), so the refusal can tell the
     /// operator what to add. The CLI overlay renders only `api_token` (the aws, gcp and azure keys are not rendered: a separate ticket, see the changelog).
     private static final Map<String, String> REQUIRED_CREDENTIAL_KEYS = Map.of("hetzner",
@@ -405,28 +406,31 @@ public record Main(String[] args) {
     /// node used to log one line and run without it until the first incident.
     private Option<EnvironmentIntegration> resolveEnvironment(Option<AetherConfig> aetherConfig) {
         return resolveCloudIntegration(aetherConfig.flatMap(config -> config.cloud()
-                                                                            .map(cloud -> withEffectiveBackup(cloud, config.backup()))),
+                                                                            .map(cloud -> withEffectiveBackup(cloud,
+                                                                                                              config.backup()))),
                                        EnvironmentIntegrationFactory::createFromConfig).onFailure(this::refuseCloudIntegration)
-                                                                                      .expect("unreachable: refuseCloudIntegration exits");
+                                      .expect("unreachable: refuseCloudIntegration exits");
     }
 
     /// Package-private and pure with the factory injected, so the decision is testable per provider without a process.
     static Result<Option<EnvironmentIntegration>> resolveCloudIntegration(Option<CloudConfig> cloudConfig,
                                                                           Fn1<Result<EnvironmentIntegration>, CloudConfig> create) {
-        return cloudConfig.fold(() -> Result.success(Option.<EnvironmentIntegration>none()),
+        return cloudConfig.fold(() -> Result.success(Option.<EnvironmentIntegration> none()),
                                 cloud -> create.apply(cloud)
                                                .map(Option::some)
-                                               .mapError(cause -> cloudIntegrationRefusal(cloud.provider(), cause)));
+                                               .mapError(cause -> cloudIntegrationRefusal(cloud.provider(),
+                                                                                          cause)));
     }
 
     private static Cause cloudIntegrationRefusal(String provider, Cause cause) {
         var keys = Option.option(REQUIRED_CREDENTIAL_KEYS.get(provider))
                          .map(required -> " The provider's [cloud.credentials] must provide: " + required
-                                          + " (the bootstrap overlay renders only api_token; add the rest under [source.<name>.node_config.cloud.credentials])")
+                                         + " (the bootstrap overlay renders only api_token; add the rest under [source.<name>.node_config.cloud.credentials])")
                          .or("");
 
-        return Causes.cause("the [cloud] section names provider '" + provider + "' but its integration could not be created: "
-                            + cause.message() + "." + keys);
+        return Causes.cause("the [cloud] section names provider '" + provider
+                           + "' but its integration could not be created: " + cause.message()
+                           + "." + keys);
     }
 
     /// The operator signal: FATAL in the log, on stderr, and a distinct exit code (a node that never booted cannot raise a cluster event).
