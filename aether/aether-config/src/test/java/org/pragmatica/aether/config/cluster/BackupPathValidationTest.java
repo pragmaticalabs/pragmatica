@@ -79,4 +79,11 @@ class BackupPathValidationTest {
     void aDisabledBackup_isNotValidated() {
         assertThat(ClusterBootstrapConfigParser.parse(DOCKER.formatted(backup("false", "relative/path"))).isSuccess()).isTrue();
     }
+
+    @Test
+    void aDockerSource_refusesDotDotEscapesAndSiblingsOfData() {
+        for (var bad : new String[] {"/data/../etc", "/database/x"}) {
+            assertThat(ClusterBootstrapConfigParser.parse(DOCKER.formatted(backup("true", bad))).isFailure()).as("docker source, path " + bad).isTrue();
+        }
+    }
 }

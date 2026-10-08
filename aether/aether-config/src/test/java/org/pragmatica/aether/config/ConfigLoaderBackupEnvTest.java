@@ -112,7 +112,7 @@ class ConfigLoaderBackupEnvTest {
         for (var bad : new String[] {"relative/backups", "/var/aether/backups", "/database/x"}) {
             var env = Map.of("AETHER_BACKUP_ENABLED", "true", "AETHER_BACKUP_PATH", bad);
 
-            assertThatThrownBy(() -> ConfigLoader.effectiveBackup(doc, env::get, Environment.DOCKER))
+            assertThatThrownBy(() -> ConfigLoader.effectiveBackup(doc, env::get, Environment.DOCKER, true))
                 .as("docker node, env path " + bad)
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("[backup] path").hasMessageContaining(bad.strip());
@@ -123,7 +123,7 @@ class ConfigLoaderBackupEnvTest {
     void anEnvironmentOnlyPath_underData_isAcceptedForADockerNode() {
         var doc = TomlParser.parse("").unwrap();
 
-        assertThat(ConfigLoader.effectiveBackup(doc, Map.of("AETHER_BACKUP_ENABLED", "true", "AETHER_BACKUP_PATH", "/data/backups")::get, Environment.DOCKER)
+        assertThat(ConfigLoader.effectiveBackup(doc, Map.of("AETHER_BACKUP_ENABLED", "true", "AETHER_BACKUP_PATH", "/data/backups")::get, Environment.DOCKER, true)
                                .isPresent()).isTrue();
     }
 
@@ -131,10 +131,10 @@ class ConfigLoaderBackupEnvTest {
     void theEnvironmentPathRule_isPerEnvironment_kubernetesNeedsAbsolute_localKeepsItsRelativeDefault() {
         var doc = TomlParser.parse("").unwrap();
 
-        assertThatThrownBy(() -> ConfigLoader.effectiveBackup(doc, Map.of("AETHER_BACKUP_ENABLED", "true", "AETHER_BACKUP_PATH", "rel")::get, Environment.KUBERNETES))
+        assertThatThrownBy(() -> ConfigLoader.effectiveBackup(doc, Map.of("AETHER_BACKUP_ENABLED", "true", "AETHER_BACKUP_PATH", "rel")::get, Environment.KUBERNETES, true))
             .isInstanceOf(IllegalArgumentException.class);
-        assertThat(ConfigLoader.effectiveBackup(doc, Map.of("AETHER_BACKUP_ENABLED", "true", "AETHER_BACKUP_PATH", "/var/aether/backups")::get, Environment.KUBERNETES).isPresent()).isTrue();
-        assertThat(ConfigLoader.effectiveBackup(doc, Map.of("AETHER_BACKUP_ENABLED", "true", "AETHER_BACKUP_PATH", "./aether-backups")::get, Environment.LOCAL).isPresent()).isTrue();
+        assertThat(ConfigLoader.effectiveBackup(doc, Map.of("AETHER_BACKUP_ENABLED", "true", "AETHER_BACKUP_PATH", "/var/aether/backups")::get, Environment.KUBERNETES, true).isPresent()).isTrue();
+        assertThat(ConfigLoader.effectiveBackup(doc, Map.of("AETHER_BACKUP_ENABLED", "true", "AETHER_BACKUP_PATH", "./aether-backups")::get, Environment.LOCAL, true).isPresent()).isTrue();
     }
 
     /// An invalid path fails the WHOLE load (not just a helper): the loader wraps the refusal as an invalid-config error.
@@ -144,5 +144,31 @@ class ConfigLoaderBackupEnvTest {
 
         assertThat(result.isFailure()).isTrue();
         result.onFailure(cause -> assertThat(cause.message()).contains("under /data"));
+    }
+
+    /// v-2001 blocker: the rule keys on an environment that was SAID. A TOML with no `[cluster] environment` defaults to docker and must
+    /// not be treated as a Docker node; the composed cloud node TOML never carries the key.
+    @Test
+    void aDefaultedEnvironment_isNotRestricted() {
+        var doc = TomlParser.parse("[backup]\nenabled = true\npath = \"/var/aether/backups\"\n").unwrap();
+
+        assertThat(ConfigLoader.environmentIsExplicit(doc, Map.of())).isFalse();
+        assertThat(ConfigLoader.effectiveBackup(doc, Map.<String, String>of()::get, Environment.DOCKER, false).isPresent()).isTrue();
+        assertThat(ConfigLoader.loadFromString("[backup]\nenabled = true\npath = \"/var/aether/backups\"\n").isSuccess()).isTrue();
+        assertThat(ConfigLoader.environmentIsExplicit(TomlParser.parse("[cluster]\nenvironment = \"docker\"\n").unwrap(), Map.of())).isTrue();
+        assertThat(ConfigLoader.environmentIsExplicit(doc, Map.of("environment", "docker"))).as("a CLI override says it too").isTrue();
+    }
+
+    @Test
+    void aDockerNode_refusesDotDotEscapesAndSiblingsOfData() {
+        var doc = TomlParser.parse("").unwrap();
+
+        for (var bad : new String[] {"/data/../etc", "/database/x", "/data/../../etc/backups"}) {
+            assertThatThrownBy(() -> ConfigLoader.effectiveBackup(doc, Map.of("AETHER_BACKUP_ENABLED", "true", "AETHER_BACKUP_PATH", bad)::get, Environment.DOCKER, true))
+                .as("docker node, path " + bad).isInstanceOf(IllegalArgumentException.class);
+        }
+
+        assertThat(ConfigLoader.effectiveBackup(doc, Map.of("AETHER_BACKUP_ENABLED", "true", "AETHER_BACKUP_PATH", "/data/a/../b")::get, Environment.DOCKER, true).isPresent())
+            .as("a path that normalises to a place under /data is fine").isTrue();
     }
 }

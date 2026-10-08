@@ -4,6 +4,8 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.environment;
 
+import java.nio.file.Path;
+
 import org.pragmatica.lang.Option;
 
 
@@ -13,6 +15,8 @@ import org.pragmatica.lang.Option;
 /// creates root-owned for every mount point except under `/data` (where the image's `aether` user owns it), so there the path must also
 /// be `/data` or under it. A bind mount (cloud, SSH) is created and owned by uid 1000 by the renderer, so it accepts any absolute path.
 public interface BackupPathRule {
+    Path DATA = Path.of("/data");
+
     /// Why `path` cannot be written by the node, or empty when it can. `namedVolume`: the repository lives on a Docker named volume.
     static Option<String> refusal(String path, boolean namedVolume) {
         var value = path.strip();
@@ -21,8 +25,10 @@ public interface BackupPathRule {
             return Option.some("'" + value
                               + "' must be an absolute path: it is mounted into the node's container or created on its host");
         }
+        // Normalised first, then compared by path COMPONENTS: "/data/../etc" is /etc, and "/database" is not under "/data".
+        var normalised = Path.of(value).normalize();
 
-        if (namedVolume && !value.equals("/data") && !value.startsWith("/data/")) {
+        if (namedVolume && !normalised.startsWith(DATA)) {
             return Option.some("'" + value
                               + "' must be under /data for a docker node: its repository lives on a named volume, "
                               + "which Docker creates root-owned everywhere except under /data, so the node could not write it");

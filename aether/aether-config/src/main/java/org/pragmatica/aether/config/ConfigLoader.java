@@ -71,15 +71,20 @@ public final class ConfigLoader {
         var envStr = overrides.getOrDefault("environment",
                                             doc.getString("cluster", "environment").or("docker"));
 
-        return Environment.environment(envStr).flatMap(environment -> assembleConfig(doc, overrides, environment));
+        return Environment.environment(envStr).flatMap(environment -> assembleConfig(doc,
+                                                                                     overrides,
+                                                                                     environment,
+                                                                                     environmentIsExplicit(doc,
+                                                                                                           overrides)));
     }
 
     @SuppressWarnings("JBCT-UTIL-01")
     private static Result<AetherConfig> assembleConfig(TomlDocument doc,
                                                        Map<String, String> overrides,
-                                                       Environment environment) {
+                                                       Environment environment,
+                                                       boolean environmentExplicit) {
         try {
-            var builder = populateBuilder(doc, environment);
+            var builder = populateBuilder(doc, environment, environmentExplicit);
 
             mergeCliOverrides(overrides, builder);
 
@@ -128,7 +133,16 @@ public final class ConfigLoader {
         return config.withStreaming(config.streaming().withReadLinearization(mode));
     }
 
-    private static AetherConfig.Builder populateBuilder(TomlDocument doc, Environment environment) {
+    /// Whether the environment was SAID (a `[cluster] environment` key or a CLI override) rather than defaulted to docker. A composed
+    /// cloud node TOML never says it, so it must not be treated as a Docker node by rules that only hold on a Docker node (#1968).
+    static boolean environmentIsExplicit(TomlDocument doc, Map<String, String> overrides) {
+        return overrides.containsKey("environment") || doc.getString("cluster", "environment")
+                                                          .isPresent();
+    }
+
+    private static AetherConfig.Builder populateBuilder(TomlDocument doc,
+                                                        Environment environment,
+                                                        boolean environmentExplicit) {
         var builder = AetherConfig.builder().withEnvironment(environment);
 
         populateClusterConfig(doc, builder);
@@ -139,7 +153,7 @@ public final class ConfigLoader {
         populateTtmConfig(doc, builder);
         populateSliceConfig(doc, builder);
         populateAppHttpConfig(doc, builder);
-        populateBackupConfig(doc, builder, environment);
+        populateBackupConfig(doc, builder, environment, environmentExplicit);
         populateDhtReplicationConfig(doc, builder);
         populateTimeoutsConfig(doc, builder);
         populateStorageConfig(doc, builder);
@@ -438,18 +452,22 @@ public final class ConfigLoader {
         return JwtConfig.jwtConfig(jwksUrl, issuer, audience, roleClaim, cacheTtl, clockSkew).unwrap();
     }
 
-    private static void populateBackupConfig(TomlDocument doc, AetherConfig.Builder builder, Environment environment) {
-        effectiveBackup(doc, System::getenv, environment).onPresent(builder::backup);
+    private static void populateBackupConfig(TomlDocument doc,
+                                             AetherConfig.Builder builder,
+                                             Environment environment,
+                                             boolean environmentExplicit) {
+        effectiveBackup(doc, System::getenv, environment, environmentExplicit).onPresent(builder::backup);
     }
 
     /// The node's effective `[backup]` (TOML merged with the environment variables), refused when its path is unwritable for `environment`.
     static Option<BackupConfig> effectiveBackup(TomlDocument doc,
                                                 org.pragmatica.lang.Functions.Fn1<String, String> env,
-                                                Environment environment) {
+                                                Environment environment,
+                                                boolean environmentExplicit) {
         var backup = backupConfigFrom(doc, env);
 
-        backup.onPresent(value -> checkBackupPath(value, environment).getOrThrow(IllegalArgumentException::new,
-                                                                                 "invalid [backup]"));
+        backup.onPresent(value -> checkBackupPath(value, environment, environmentExplicit).getOrThrow(IllegalArgumentException::new,
+                                                                                                      "invalid [backup]"));
 
         return backup;
     }
@@ -457,8 +475,8 @@ public final class ConfigLoader {
     /// #1968: the same rule the bootstrap config applies to a source's `node_config` (`BackupPathRule`), applied to the EFFECTIVE path of a
     /// node in a container environment, wherever it came from (TOML, `AETHER_BACKUP_PATH` of a compose file or of a provisioner). Docker:
     /// absolute and under `/data` (named volume); Kubernetes: absolute; LOCAL runs on the host and keeps its relative default.
-    static Result<Unit> checkBackupPath(BackupConfig backup, Environment environment) {
-        if (backup.path().isBlank() || environment == Environment.LOCAL) {
+    static Result<Unit> checkBackupPath(BackupConfig backup, Environment environment, boolean environmentExplicit) {
+        if (backup.path().isBlank() || environment == Environment.LOCAL || !environmentExplicit) {
             return Result.unitResult();
         }
 
