@@ -658,7 +658,6 @@ public final class MembershipFsm {
                                                                              community,
                                                                              governor,
                                                                              governorTerm));
-                       tracking.clearConfirmedDeath();
                        if (tracking.bumpHealthyStreakReachedThreshold()) {
                        tracking.dispatch(new UpHysteresisMet());
                    }
@@ -681,7 +680,6 @@ public final class MembershipFsm {
                    }
 
                        tracking.dispatch(new MembershipEvent.WorkerAdmissionHealthy(bootToken));
-                       tracking.clearConfirmedDeath();
                        if (tracking.bumpHealthyStreakReachedThreshold()) {
                        tracking.dispatch(new UpHysteresisMet());
                    }

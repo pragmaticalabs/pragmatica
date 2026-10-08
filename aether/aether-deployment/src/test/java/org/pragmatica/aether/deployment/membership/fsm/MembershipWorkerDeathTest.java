@@ -332,6 +332,21 @@ class MembershipWorkerDeathTest {
         assertThat(awaitTrue(() -> "Dead".equals(state(membership, id)), 3 * BACKSTOP_MS)).isFalse();
     }
 
+    /// SWIM-healthy at the SAME incarnation does not move a SUSPECT member back to MEMBER, yet it retracts the
+    /// death signal (a healthy sample retracts both planes): only the explicit clear in `healthy` does that.
+    @Test
+    void swimHealthyAtTheSameIncarnation_retractsTheSignalWithoutLeavingSuspect() {
+        var membership = fsm();
+        var id = new NodeId("worker-swim-same-inc");
+
+        membership.onWorkerAdmissionHealthy(id, 1, worker());
+        membership.onSwimFaulty(id, 5);
+        pause(5);
+        membership.onSwimHealthy(id, 5);
+
+        assertThat(awaitTrue(() -> "Dead".equals(state(membership, id)), 3 * BACKSTOP_MS)).isFalse();
+    }
+
     /// The waiver is for workers and spots only. A core is dialed, so its liveness plane exists and must
     /// still be required: SWIM-FAULTY alone must never kill a core.
     @Test
