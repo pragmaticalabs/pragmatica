@@ -156,7 +156,11 @@ class QuicClusterNetworkEncodeFailureTest {
             assertThat(outcome).isInstanceOf(WriteOutcome.Sent.class);
             assertThat(connection.activityKicksSent()).as("a KeepAlive must not open the kick window").isZero();
 
-            network.writeIfWritableForTest(laneStream, new byte[] {1, 2, 3}, peerId, StreamType.FORWARD);
+            var dataStream = writableStream();
+
+            lenient().when(dataStream.parent()).thenReturn(channel);
+            connection.registerStream(StreamType.FORWARD, dataStream);
+            network.writeIfWritableForTest(dataStream, new byte[] {1, 2, 3}, peerId, StreamType.FORWARD);
             Thread.sleep(200);
 
             assertThat(connection.activityKicksSent()).as("control: a data-lane write opens it").isPositive();
@@ -225,6 +229,7 @@ class QuicClusterNetworkEncodeFailureTest {
         lenient().when(channel.attr(PeerOpenedLaneRouter.PEER_CONNECTION)).thenReturn(attribute);
         lenient().when(consensusStream.parent()).thenReturn(channel);
         lenient().when(controlStream.parent()).thenReturn(channel);
+        lenient().when(consensusStream.config()).thenReturn(mock(io.netty.handler.codec.quic.QuicStreamChannelConfig.class));
         connection.registerStream(StreamType.CONSENSUS, consensusStream);
         connection.registerStream(StreamType.CONTROL, controlStream);
 
