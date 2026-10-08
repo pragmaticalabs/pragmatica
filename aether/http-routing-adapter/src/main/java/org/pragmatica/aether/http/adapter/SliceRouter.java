@@ -349,14 +349,18 @@ public interface SliceRouter {
             /// through to the slice error mapper; a 500 it leaves unmapped is re-derived by the default
             /// mapper so a transient cause answers 503 (#1737) — the generated mapper's `default` is a
             /// hard-coded 500 that cannot see [Cause#isTransient].
+            ///
+            /// A composite is resolved member by member ([#mapComposite]): it keeps a status only when EVERY member agrees,
+            /// so a parameter error next to a server fault answers 500, never the client error that would conceal it.
             private HttpError resolveHttpError(Cause cause) {
-                return Option.from(cause.stream().flatMap(this::boundaryError).findFirst()).or(() -> mapWithTransientFallback(cause));
+                return cause instanceof Causes.CompositeCause
+                       ? mapWithTransientFallback(cause)
+                       : Option.from(cause.stream().flatMap(this::boundaryError).findFirst()).or(() -> mapWithTransientFallback(cause));
             }
 
             private java.util.stream.Stream<HttpError> boundaryError(Cause cause) {
                 return switch (cause) {
                     case HttpError error -> java.util.stream.Stream.of(error);
-                    case ParameterError.PathMismatch _ -> java.util.stream.Stream.of(HttpStatus.NOT_FOUND.with(cause));
                     case ParameterError _ -> java.util.stream.Stream.of(HttpStatus.BAD_REQUEST.with(cause));
                     default -> java.util.stream.Stream.empty();
                 };
