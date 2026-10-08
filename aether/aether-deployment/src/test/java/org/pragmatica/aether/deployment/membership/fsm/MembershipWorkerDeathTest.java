@@ -282,6 +282,56 @@ class MembershipWorkerDeathTest {
         assertThat(awaitTrue(() -> "Dead".equals(state(membership, id)), 15_000)).isTrue();
     }
 
+    private static MemberDescriptor spot() {
+        return new MemberDescriptor(Option.none(), "spot", "source");
+    }
+
+    /// A spot is a non-core role like a worker: it is evicted on either plane, and the role is not just a literal
+    /// nobody exercises.
+    @Test
+    void killedSpot_reachesDead_onEitherPlane() {
+        var bySwim = fsm();
+        var byTransport = fsm();
+        var a = new NodeId("spot-a");
+        var b = new NodeId("spot-b");
+
+        bySwim.onWorkerAdmissionHealthy(a, 1, spot());
+        bySwim.onSwimFaulty(a, 1);
+        byTransport.onWorkerAdmissionHealthy(b, 1, spot());
+        byTransport.onLivenessGone(b);
+
+        assertThat(awaitTrue(() -> "Dead".equals(state(bySwim, a)), 15_000)).as("spot, SWIM plane").isTrue();
+        assertThat(awaitTrue(() -> "Dead".equals(state(byTransport, b)), 15_000)).as("spot, transport plane").isTrue();
+    }
+
+    /// Each evidence source vetoes a death signal on its own: governor (above), admission and SWIM-healthy.
+    @Test
+    void admissionEvidenceAfterTheSignal_vetoes() {
+        var membership = fsm();
+        var id = new NodeId("worker-admission-veto");
+
+        membership.onWorkerAdmissionHealthy(id, 1, worker());
+        membership.onLivenessGone(id);
+        pause(5);
+        membership.onWorkerAdmissionHealthy(id, 1, worker());
+
+        assertThat(awaitTrue(() -> "Dead".equals(state(membership, id)), 3 * BACKSTOP_MS)).isFalse();
+        assertThat(state(membership, id)).isEqualTo("Member");
+    }
+
+    @Test
+    void swimHealthyAfterTheSignal_vetoes() {
+        var membership = fsm();
+        var id = new NodeId("worker-swim-veto");
+
+        membership.onWorkerAdmissionHealthy(id, 1, worker());
+        membership.onSwimFaulty(id, 1);
+        pause(5);
+        membership.onSwimHealthy(id, 2);
+
+        assertThat(awaitTrue(() -> "Dead".equals(state(membership, id)), 3 * BACKSTOP_MS)).isFalse();
+    }
+
     /// The waiver is for workers and spots only. A core is dialed, so its liveness plane exists and must
     /// still be required: SWIM-FAULTY alone must never kill a core.
     @Test
