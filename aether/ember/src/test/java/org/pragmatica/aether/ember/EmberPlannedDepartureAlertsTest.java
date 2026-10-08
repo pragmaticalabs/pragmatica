@@ -53,6 +53,7 @@ class EmberPlannedDepartureAlertsTest {
     private static final long DEPARTURE_BUDGET_MS = 120_000L;
     private static final long SETTLE_MS = 20_000L;
     private static final long ADMISSION_BUDGET_MS = 90_000L;
+    private static final long EVENT_REPLICATION_BUDGET_MS = 120_000L;
 
     private EmberCluster cluster;
 
@@ -92,11 +93,16 @@ class EmberPlannedDepartureAlertsTest {
         var nodes = List.copyOf(cluster.allNodes());
 
         assertThat(cluster.blackhole(victim).await(STOP_BOUND).isSuccess()).isTrue();
-        awaitCondition("an observer raised CRITICAL for the unplanned death",
+        var observers = nodes.stream().filter(n -> !n.self().id().equals(victim)).toList();
+
+        awaitCondition("an observer raised the CRITICAL node-health alert for the unplanned death",
                        DEPARTURE_BUDGET_MS,
-                       () -> nodes.stream()
-                                  .filter(n -> !n.self().id().equals(victim))
-                                  .anyMatch(n -> hasCriticalAlert(n, victim)));
+                       () -> observers.stream().anyMatch(n -> hasCriticalAlert(n, victim)));
+        // The operator surface: the cluster-events stream. Bounded long enough for replication; on failure the
+        // message carries what every observer actually holds, so a replication LOSS is visible, not smoothed over.
+        awaitCondition(() -> "an observer's cluster-events stream carries CRITICAL NodeFailed for the unplanned death; held: " + eventDump(observers, victim),
+                       EVENT_REPLICATION_BUDGET_MS,
+                       () -> observers.stream().anyMatch(n -> criticalNodeFailed(n, victim)));
         assertThat(announcedNodeLeft(nodes.getFirst(), victim)).as("an unplanned death is never recorded as an announced departure").isFalse();
     }
 
@@ -117,9 +123,12 @@ class EmberPlannedDepartureAlertsTest {
                                      .filter(n -> !n.self().id().equals(drainee) && !n.self().id().equals(leaderId))
                                      .allMatch(n -> n.alertManager().hasAnnouncedDeparture(nodeId(drainee))));
         assertThat(cluster.killNode(leaderId).await(STOP_BOUND).isSuccess()).isTrue();
-        awaitCondition("a survivor raised CRITICAL for the leader kill (unplanned stays loud)",
+        awaitCondition("a survivor raised the CRITICAL alert for the leader kill (unplanned stays loud)",
                        DEPARTURE_BUDGET_MS,
                        () -> survivors(nodes, leaderId, drainee).stream().anyMatch(n -> hasCriticalAlert(n, leaderId)));
+        awaitCondition(() -> "a survivor's cluster-events stream carries CRITICAL NodeFailed for the leader kill; held: " + eventDump(survivors(nodes, leaderId, drainee), leaderId),
+                       EVENT_REPLICATION_BUDGET_MS,
+                       () -> survivors(nodes, leaderId, drainee).stream().anyMatch(n -> criticalNodeFailed(n, leaderId)));
         awaitCondition("the drainee is gone", DEPARTURE_BUDGET_MS, () -> cluster.getNode(drainee).isEmpty());
         sleepQuietly(SETTLE_MS);
 
@@ -185,6 +194,20 @@ class EmberPlannedDepartureAlertsTest {
                        .anyMatch(a -> a.nodeId().id().equals(failed));
     }
 
+    /// Per observer: how many events it can read and how many NodeFailed/NodeLeft name `subject`.
+    private static String eventDump(List<AetherNode> observers, String subject) {
+        return observers.stream()
+                        .map(n -> {
+                            var all = events(n);
+
+                            return n.self().id() + "[events=" + all.size()
+                                   + " failed=" + all.stream().filter(e -> e instanceof ClusterEvent.NodeFailed && subject.equals(e.details().get("nodeId"))).count()
+                                   + " left=" + all.stream().filter(e -> e instanceof ClusterEvent.NodeLeft && subject.equals(e.details().get("nodeId"))).count() + "]";
+                        })
+                        .toList()
+                        .toString();
+    }
+
     private static boolean criticalNodeFailed(AetherNode observer, String failed) {
         return events(observer).stream()
                                .anyMatch(e -> e instanceof ClusterEvent.NodeFailed && failed.equals(e.details().get("nodeId"))
@@ -210,19 +233,19 @@ class EmberPlannedDepartureAlertsTest {
                     .toList();
     }
 
-    /// The drain route reads the leader's readiness view (filled from pongs), which is empty for the first
-    /// seconds after formation: it answers 404 "Node lifecycle not found" until the target has ponged. First
-    /// run (2026-10-08) hit exactly that in every arm and exercised nothing, so retry until admitted.
+    /// Waits for the signal the drain route itself reads: the LEADER's readiness view (`reportedStates`, filled
+    /// from pongs) reporting the target READY. Right after formation that view is empty and the drain POST
+    /// answers 404 "Node lifecycle not found" (run 1, 2026-10-08, every arm) although the node is a live
+    /// member: the GET route answers 503 for that condition (#1868) but the drain POST path still says 404 [see
+    /// f-2014-report.md]. One POST after the signal, no retry: a refusal must fail the test, not be smoothed over.
     private String drain(String nodeId) {
-        var deadline = System.currentTimeMillis() + ADMISSION_BUDGET_MS;
-        var response = drainOnce(nodeId);
+        var leader = cluster.getNode(cluster.currentLeader().unwrap()).unwrap();
 
-        while (!response.startsWith("2") && System.currentTimeMillis() < deadline) {
-            sleepQuietly(1_000L);
-            response = drainOnce(nodeId);
-        }
+        awaitCondition("the leader's readiness view reports " + nodeId + " READY",
+                       ADMISSION_BUDGET_MS,
+                       () -> leader.metricsCollector().reportedStates().get(nodeId(nodeId)) == org.pragmatica.aether.metrics.NodeReportedState.READY);
 
-        return response;
+        return drainOnce(nodeId);
     }
 
     private String drainOnce(String nodeId) {
@@ -244,6 +267,10 @@ class EmberPlannedDepartureAlertsTest {
     }
 
     private static void awaitCondition(String what, long budgetMs, BooleanSupplier condition) {
+        awaitCondition(() -> what, budgetMs, condition);
+    }
+
+    private static void awaitCondition(Supplier<String> what, long budgetMs, BooleanSupplier condition) {
         var deadline = System.currentTimeMillis() + budgetMs;
 
         while (System.currentTimeMillis() < deadline) {
@@ -254,7 +281,7 @@ class EmberPlannedDepartureAlertsTest {
             sleepQuietly(500L);
         }
 
-        assertThat(condition.getAsBoolean()).as(what).isTrue();
+        assertThat(condition.getAsBoolean()).as(what.get()).isTrue();
     }
 
     private static void sleepQuietly(long millis) {
