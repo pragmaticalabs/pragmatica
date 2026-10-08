@@ -455,6 +455,46 @@ class MembershipWorkerDeathTest {
                 state(membership, id)).isTrue();
     }
 
+    /// v-2006 wrap probe: the evidence-vs-signal comparison is written overflow-safe (`a - b <= 0`) because `System.nanoTime()`
+    /// has an arbitrary origin and wraps. Here the injected monotonic clock sits just below `Long.MAX_VALUE` at the death
+    /// signal and wraps to a large negative value before a FRESH report arrives: the report is genuinely newer and must
+    /// veto. Rewritten as `a <= b` it reads the wrapped value as ancient, ignores the report, and evicts a live worker.
+    @Test
+    void monotonicClockWrap_freshEvidenceStillVetoes() {
+        var mono = new java.util.concurrent.atomic.AtomicLong(Long.MAX_VALUE - 1_000_000L);
+        var membership = fsm();
+        var id = new NodeId("w-wrap");
+        var governor = new NodeId("governor");
+
+        membership.setMonotonicClock(mono::get);
+        membership.onGovernorHealthy(id, "community", governor, 1, 4, worker());
+        membership.onLivenessGone(id);
+        mono.addAndGet(5_000_000L);
+        assertThat(mono.get()).as("precondition: the clock wrapped past Long.MAX_VALUE").isNegative();
+        membership.onGovernorHealthy(id, "community", governor, 1, 4, worker(), 0L);
+
+        assertThat(awaitTrue(() -> "Dead".equals(state(membership, id)), 3 * BACKSTOP_MS)).isFalse();
+        assertThat(state(membership, id)).as("evidence 5 ms after the signal is newer across the wrap").isEqualTo("Member");
+    }
+
+    /// The other direction across the wrap: evidence observed BEFORE the signal (60 s earlier) is stale and ignored.
+    @Test
+    void monotonicClockWrap_staleEvidenceStillIgnored() {
+        var mono = new java.util.concurrent.atomic.AtomicLong(Long.MAX_VALUE - 1_000_000L);
+        var membership = fsm();
+        var id = new NodeId("w-wrap-stale");
+        var governor = new NodeId("governor");
+
+        membership.setMonotonicClock(mono::get);
+        membership.onGovernorHealthy(id, "community", governor, 1, 4, worker());
+        membership.onLivenessGone(id);
+        mono.addAndGet(5_000_000L);
+        membership.onGovernorHealthy(id, "community", governor, 1, 4, worker(), 60_000L);
+
+        assertThat(awaitTrue(() -> "Dead".equals(state(membership, id)), 15_000))
+            .as("evidence from before the signal is stale across the wrap too; state=%s", state(membership, id)).isTrue();
+    }
+
     private static MembershipFsm workerObserverFsm() {
         var membership = fsm();
 
