@@ -8027,7 +8027,8 @@ public interface AetherNode extends ManageableNode {
                                                                                                                                    store.getTyped(new AetherKey.NodePlacementKey(member.node()),
                                                                                                                                                   AetherValue.NodePlacementValue.class)
                                                                                                                                         .map(AetherValue.NodePlacementValue::sourceName)
-                                                                                                                                        .or(""))));
+                                                                                                                                        .or("")),
+                                                              java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(evidence.observedAgoNanos())));
     }
 
     private static void sendObservationProbe(RabiaNode<KVCommand<AetherKey>> clusterNode, NodeId peer) {

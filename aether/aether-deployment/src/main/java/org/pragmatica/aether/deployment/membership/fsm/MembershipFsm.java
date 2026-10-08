@@ -622,6 +622,22 @@ public final class MembershipFsm {
                                   long governorTerm,
                                   long bootToken,
                                   MemberDescriptor admittedDescriptor) {
+        onGovernorHealthy(id, community, governor, governorTerm, bootToken, admittedDescriptor, 0L);
+    }
+
+    /// `observedAgoMs` is how long before NOW the governor's first-hand observation (the member's last pong)
+    /// was made: the report's own freshness window lets a report generated AFTER the member died still say
+    /// "alive" for up to `communityAbsence`, so the evidence instant, not the report's arrival, is what can
+    /// prove life. Evidence that is not NEWER than the death signal that armed the backstop is ignored
+    /// entirely (#1717): it describes a member that was alive before the signal and proves nothing since.
+    @Contract
+    public void onGovernorHealthy(NodeId id,
+                                  String community,
+                                  NodeId governor,
+                                  long governorTerm,
+                                  long bootToken,
+                                  MemberDescriptor admittedDescriptor,
+                                  long observedAgoMs) {
         if (community.isBlank() || governorTerm < 0 || bootToken == 0 || !("worker".equalsIgnoreCase(admittedDescriptor.role()) || "spot".equalsIgnoreCase(admittedDescriptor.role()))) {
             return;
         }
@@ -629,6 +645,10 @@ public final class MembershipFsm {
         withMember(id,
                    tracking -> tracking.inTransition(() -> {
                        tracking.updateDescriptor(admittedDescriptor);
+                       if (tracking.deathSignalNotOlderThan(wallClockMs.getAsLong() - Math.max(0L, observedAgoMs))) {
+                       return;
+                   }
+
                        if (tracking.descriptor()
                                    .isCore() || !admitsProcessEvidence(id, tracking, bootToken, "governor report")) {
                        return;
@@ -721,7 +741,11 @@ public final class MembershipFsm {
     /// Transport reported a peer connection established for `id`.
     @Contract
     public void onPeerConnected(NodeId id) {
-        withMember(id, tracking -> tracking.dispatch(new PeerConnected()));
+        withMember(id,
+                   tracking -> tracking.inTransition(() -> {
+                       tracking.dispatch(new PeerConnected());
+                       tracking.clearTransportDeath();
+                   }));
     }
 
     /// Transport reported a peer connection dropped for `id`. Drives MEMBER→SUSPECT, so it is also a
@@ -1176,6 +1200,7 @@ public final class MembershipFsm {
             tracking.stampDoubt(wallClockMs.getAsLong());
             tracking.dispatch(new SwimFaulty(incarnation));
             tracking.markSwimFaulty();
+            tracking.noteDeathSignal(wallClockMs.getAsLong());
             maybeConfirmDeparture(tracking);
         });
     }
@@ -1193,6 +1218,7 @@ public final class MembershipFsm {
             tracking.stampDoubt(wallClockMs.getAsLong());
             tracking.dispatch(new LivenessGone());
             tracking.markLivenessGone();
+            tracking.noteDeathSignal(wallClockMs.getAsLong());
             maybeConfirmDeparture(tracking);
         });
     }
@@ -1906,6 +1932,32 @@ public final class MembershipFsm {
             livenessGoneSeen = true;
         }
 
+        /// Wall-clock ms of the FIRST death signal of the current episode (-1 = none armed). Cleared with the flags.
+        private long deathSignalAtMs = -1L;
+
+        @Contract
+        synchronized void noteDeathSignal(long nowMs) {
+            if (deathSignalAtMs < 0) {
+                deathSignalAtMs = nowMs;
+            }
+        }
+
+        /// True when a death signal is armed and the proposed evidence instant is not newer than it.
+        synchronized boolean deathSignalNotOlderThan(long evidenceAtMs) {
+            return deathSignalAtMs >= 0 && evidenceAtMs <= deathSignalAtMs;
+        }
+
+        /// A re-established link vetoes the TRANSPORT plane of a death (the drain path's rule): the signal was a
+        /// drop, and the link is back. SWIM-FAULTY is untouched.
+        @Contract
+        synchronized void clearTransportDeath() {
+            livenessGoneSeen = false;
+            if (!swimFaultySeen) {
+                deathSignalAtMs = -1L;
+                cancelEvictionBackstop();
+            }
+        }
+
         /// Death is co-confirmed by two planes: SWIM-FAULTY and liveness-gone (the QUIC disconnect tap). A core
         /// is dialed and probed by every other core, so for it BOTH planes exist and both are required.
         ///
@@ -1926,13 +1978,14 @@ public final class MembershipFsm {
         }
 
         private boolean isNonCoreMember() {
-            return !descriptor.isCore() && ("worker".equalsIgnoreCase(descriptor.role()) || "spot".equalsIgnoreCase(descriptor.role()));
+            return ! descriptor.isCore() && ("worker".equalsIgnoreCase(descriptor.role()) || "spot".equalsIgnoreCase(descriptor.role()));
         }
 
         @Contract
         synchronized void clearConfirmedDeath() {
             swimFaultySeen = false;
             livenessGoneSeen = false;
+            deathSignalAtMs = -1L;
             cancelEvictionBackstop();
         }
 

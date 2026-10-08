@@ -50,6 +50,14 @@ class MembershipWorkerDeathTest {
         return condition.getAsBoolean();
     }
 
+    private static void pause(long ms) {
+        try {
+            Thread.sleep(ms);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
     private static String state(MembershipFsm fsm, NodeId id) {
         return fsm.memberStates().get(id);
     }
@@ -81,6 +89,7 @@ class MembershipWorkerDeathTest {
 
         membership.onGovernorHealthy(id, "community", governor, 1, 1, worker());
         membership.onSwimFaulty(id, 1);
+        pause(5);
         membership.onGovernorHealthy(id, "community", governor, 1, 1, worker());
 
         assertThat(awaitTrue(() -> "Dead".equals(state(membership, id)), 3 * BACKSTOP_MS))
@@ -113,6 +122,7 @@ class MembershipWorkerDeathTest {
 
         membership.onGovernorHealthy(id, "community", governor, 1, 1, worker());
         membership.onLivenessGone(id);
+        pause(5);
         membership.onGovernorHealthy(id, "community", governor, 1, 1, worker());
 
         assertThat(awaitTrue(() -> "Dead".equals(state(membership, id)), 3 * BACKSTOP_MS)).isFalse();
@@ -207,6 +217,69 @@ class MembershipWorkerDeathTest {
         assertThat(awaitTrue(() -> "Dead".equals(state(membership, workers.get(0))), 3_000)).isTrue();
         assertThat(state(membership, workers.get(1))).isEqualTo("Member");
         assertThat(state(membership, workers.get(2))).isEqualTo("Member");
+    }
+
+    /// #1717 (community case, measured on bigboy): the governor keeps reporting a dead worker alive for up to
+    /// `communityAbsence` after its last pong. That evidence is OLDER than the link drop, so it must not veto it.
+    @Test
+    void staleGovernorTail_olderThanTheDrop_thenSilence_reachesDead() {
+        var membership = fsm();
+        var id = new NodeId("worker-stale-tail");
+        var governor = new NodeId("governor");
+
+        membership.onGovernorHealthy(id, "community", governor, 1, 4, worker());
+        membership.onLivenessGone(id);
+        pause(5);
+        membership.onGovernorHealthy(id, "community", governor, 1, 4, worker(), 60_000L);
+        membership.onGovernorHealthy(id, "community", governor, 1, 4, worker(), 61_000L);
+
+        assertThat(awaitTrue(() -> "Dead".equals(state(membership, id)), 15_000))
+            .as("evidence older than the drop proves nothing; state=%s", state(membership, id)).isTrue();
+    }
+
+    /// The same sequence with a FRESH pong after the drop is the live worker: vetoed.
+    @Test
+    void governorEvidenceNewerThanTheDrop_vetoes() {
+        var membership = fsm();
+        var id = new NodeId("worker-fresh-pong");
+        var governor = new NodeId("governor");
+
+        membership.onGovernorHealthy(id, "community", governor, 1, 4, worker());
+        membership.onLivenessGone(id);
+        pause(5);
+        membership.onGovernorHealthy(id, "community", governor, 1, 4, worker(), 0L);
+
+        assertThat(awaitTrue(() -> "Dead".equals(state(membership, id)), 3 * BACKSTOP_MS)).isFalse();
+        assertThat(state(membership, id)).isEqualTo("Member");
+    }
+
+    /// A live worker whose link drops and comes back, with no other evidence source (a worker's view of a peer
+    /// worker, a non-leader core, a governor re-election): the re-established link vetoes the transport death.
+    @Test
+    void transportBlipThenReconnect_isNeverEvicted() {
+        var membership = fsm();
+        var id = new NodeId("worker-blip");
+
+        membership.onWorkerAdmissionHealthy(id, 1, worker());
+        membership.onPeerDisconnected(id);
+        membership.onLivenessGone(id);
+        pause(5);
+        membership.onPeerConnected(id);
+
+        assertThat(awaitTrue(() -> "Dead".equals(state(membership, id)), 3 * BACKSTOP_MS)).isFalse();
+    }
+
+    /// The reconnect veto covers the transport plane only: a SWIM-FAULTY death still evicts.
+    @Test
+    void reconnect_doesNotVetoSwimFaulty() {
+        var membership = fsm();
+        var id = new NodeId("worker-faulty-reconnect");
+
+        membership.onWorkerAdmissionHealthy(id, 1, worker());
+        membership.onSwimFaulty(id, 1);
+        membership.onPeerConnected(id);
+
+        assertThat(awaitTrue(() -> "Dead".equals(state(membership, id)), 15_000)).isTrue();
     }
 
     /// The waiver is for workers and spots only. A core is dialed, so its liveness plane exists and must
