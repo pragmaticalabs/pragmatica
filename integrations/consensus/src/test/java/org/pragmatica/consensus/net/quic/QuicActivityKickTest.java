@@ -136,10 +136,10 @@ class QuicActivityKickTest {
         assertThat(connection.activityKicksSent()).isGreaterThan(atOneWindow + 5);
     }
 
-    /// A connection that is no peer's active connection (superseded, draining) still kicks: the kick is
+    /// A connection that is no peer's active connection still kicks: the kick is
     /// owned by the connection and needs nothing from the transport's keepalive.
     @Test
-    void drainingConnection_notAttachedToAnyPeer_stillKicks() throws Exception {
+    void connectionAttachedToNoPeer_stillKicks() throws Exception {
         var control = controlStream();
         var connection = withKick(channel(), control, INTERVAL_MS, WINDOW_MS);
 

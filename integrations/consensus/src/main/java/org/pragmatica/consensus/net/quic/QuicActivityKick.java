@@ -40,8 +40,8 @@ import io.netty.handler.codec.quic.QuicStreamChannel;
 /// tiny frame (the existing KeepAlive, sender-side only, no wire change) on the CONTROL lane every
 /// [#intervalMs] until [#windowMs] pass with no data write. Zero cost when idle.
 ///
-/// Owned by the CONNECTION, not by the peer's active connection: a superseded or draining connection
-/// gets no regular keepalive, which is exactly where stranded data is lost at close. [#stop] ends it.
+/// Owned by the CONNECTION, not by the peer's active connection, so it needs nothing from the transport's
+/// regular keepalive. [#stop] ends it.
 /// The real fix is upstream netty (defer the elapsed timer instead of running it inline); remove this
 /// when the pinned netty has it.
 final class QuicActivityKick {

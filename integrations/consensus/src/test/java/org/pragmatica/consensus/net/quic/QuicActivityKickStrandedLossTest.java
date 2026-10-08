@@ -71,6 +71,7 @@ class QuicActivityKickStrandedLossTest {
     private static final TimeSpan AWAIT = TimeSpan.timeSpan(30).seconds();
     private static final StreamType LANE = StreamType.FORWARD;
     private static final long ONE_WAY_DELAY_MS = 300;
+    private static final TimeSpan RECOVERY_BOUND = TimeSpan.timeSpan(3).seconds();
     /// Padding makes each data packet far larger than any ACK-only packet, so the relay can tell them apart.
     private static final String PAD = "x".repeat(400);
     private static final int DATA_PACKET_MIN_BYTES = 300;
@@ -104,7 +105,8 @@ class QuicActivityKickStrandedLossTest {
 
         dialerSide.noteLaneWrite();
 
-        awaitTrue(() -> received("A" + PAD), "the kick re-queued and delivered the stranded data A");
+        awaitTrue(() -> received("A" + PAD), RECOVERY_BOUND, "the kick re-queued and delivered the stranded data A");
+        assertThat(reading.nettyTimerArmedAfter()).as("positive control: netty had no timer after the induced stall").isFalse();
         assertThat(reading.quicheTimerAfter()).as("positive control: the stall state was reached in this run").isEqualTo(-1);
     }
 
@@ -206,7 +208,11 @@ class QuicActivityKickStrandedLossTest {
     }
 
     private static void awaitTrue(BooleanSupplier condition, String what) {
-        var deadline = System.nanoTime() + AWAIT.nanos();
+        awaitTrue(condition, AWAIT, what);
+    }
+
+    private static void awaitTrue(BooleanSupplier condition, TimeSpan bound, String what) {
+        var deadline = System.nanoTime() + bound.nanos();
 
         while (System.nanoTime() < deadline) {
             if (condition.getAsBoolean()) {
