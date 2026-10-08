@@ -122,6 +122,49 @@ class QuicClusterNetworkEncodeFailureTest {
         verify(laneStream, times(1)).writeAndFlush(any());
     }
 
+    /// #1727 (M2) idle pin, found by v-2023: the transport's own KeepAlive rides the CONTROL lane through the
+    /// same write path, so noting CONTROL writes re-opened the kick window every second and the kick never
+    /// went idle (9.8 kicks/s on an idle link). The KeepAlive goes through the real send path here; the
+    /// DATA-lane write below is the control showing the same fixture does kick.
+    @Test
+    void keepAliveOnTheControlLane_doesNotOpenTheKickWindow_butADataLaneWriteDoes() throws Exception {
+        var loop = new io.netty.channel.DefaultEventLoop();
+
+        try {
+            var network = network();
+            var peerId = new NodeId("idle-kick-peer");
+            var laneStream = writableStream();
+            var channel = mock(QuicChannel.class);
+            @SuppressWarnings("unchecked")
+            var attribute = (io.netty.util.Attribute<QuicPeerConnection>) mock(io.netty.util.Attribute.class);
+
+            lenient().when(channel.isActive()).thenReturn(true);
+            lenient().when(channel.eventLoop()).thenReturn(loop);
+            var connection = QuicPeerConnection.quicPeerConnection(peerId, channel);
+
+            lenient().when(attribute.get()).thenReturn(connection);
+            lenient().when(channel.attr(PeerOpenedLaneRouter.PEER_CONNECTION)).thenReturn(attribute);
+            lenient().when(laneStream.parent()).thenReturn(channel);
+            connection.laneOpener(QuicPeerConnection.LaneOpener.noop());
+            connection.registerStream(StreamType.CONTROL, laneStream);
+            connection.activityKick(new byte[] {1}, () -> false, 20, 300);
+            network.seedPeerForTests(peerId, connectedPeerState(peerId, connection));
+
+            var outcome = network.writeToStreamForTests(peerId, new NetworkMessage.KeepAlive(peerId), connection);
+            Thread.sleep(200);
+
+            assertThat(outcome).isInstanceOf(WriteOutcome.Sent.class);
+            assertThat(connection.activityKicksSent()).as("a KeepAlive must not open the kick window").isZero();
+
+            network.writeIfWritableForTest(laneStream, new byte[] {1, 2, 3}, peerId, StreamType.FORWARD);
+            Thread.sleep(200);
+
+            assertThat(connection.activityKicksSent()).as("control: a data-lane write opens it").isPositive();
+        } finally {
+            loop.shutdownGracefully(0, 1, java.util.concurrent.TimeUnit.SECONDS);
+        }
+    }
+
     // --- Helpers ---
 
     /// A mock QUIC lane stream that is active + writable and returns a self-listening future.

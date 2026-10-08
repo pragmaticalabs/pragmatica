@@ -2042,8 +2042,16 @@ public class QuicClusterNetwork implements ClusterNetwork {
     /// #1727 (M2) — a lane data write opens (or extends) the owning connection's activity kick window. The
     /// owner is the connection the stream belongs to, not the peer's active one: a superseded connection
     /// gets no regular keepalive. A stream without an owner (a fixture) is skipped.
+    ///
+    /// CONTROL-lane writes are NOT noted: the transport's own 1 s KeepAlive and the kick itself ride the
+    /// CONTROL lane, so noting them would re-open the window every second and the kick would never go idle
+    /// (measured by v-2023: 9.8 kicks/s on an idle link). Control traffic is covered by that keepalive.
     @Contract
-    private void noteLaneWrite(QuicStreamChannel ch) {
+    private void noteLaneWrite(QuicStreamChannel ch, StreamType lane) {
+        if (lane == StreamType.CONTROL) {
+            return;
+        }
+
         Option.option(ch.parent())
               .flatMap(parent -> Option.option(parent.attr(PeerOpenedLaneRouter.PEER_CONNECTION).get()))
               .onPresent(QuicPeerConnection::noteLaneWrite);
@@ -2227,7 +2235,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
         if (ch.isWritable()) {
             quicMetrics.onMessageSent();
             quicMetrics.onBytesSent(bytes.length);
-            noteLaneWrite(ch);
+            noteLaneWrite(ch, streamType);
             ch.writeAndFlush(Unpooled.wrappedBuffer(bytes))
               .addListener(future -> onLaneWriteResult(future, ch, bytes, peerId, streamType, resendVia));
 
@@ -2351,7 +2359,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
         if (ch.isActive() && ch.isWritable()) {
             quicMetrics.onMessageSent();
             quicMetrics.onBytesSent(bytes.length);
-            noteLaneWrite(ch);
+            noteLaneWrite(ch, streamType);
             ch.writeAndFlush(Unpooled.wrappedBuffer(bytes))
               .addListener(future -> handleWriteResult(future, peerId, streamType));
 
@@ -2395,7 +2403,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
         log.debug("Write to peer {} on a retired {} stream or connection failed — resending once on the stream the lane resolves to now",
                   peerId,
                   streamType);
-        noteLaneWrite(current);
+        noteLaneWrite(current, streamType);
         current.writeAndFlush(Unpooled.wrappedBuffer(bytes))
                .addListener(future -> handleWriteResult(future, peerId, streamType));
     }
