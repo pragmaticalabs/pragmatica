@@ -140,7 +140,7 @@ class AetherNodeBackupGitPreflightBootTest {
 
     private AetherNodeConfig config(boolean backupEnabled) {
         var self = NodeId.nodeId("backup-git-preflight-boot-test").unwrap();
-        var selfInfo = NodeInfo.nodeInfo(self, nodeAddress("localhost", freePort()).unwrap());
+        var selfInfo = NodeInfo.nodeInfo(self, nodeAddress("localhost", ClusterTestPorts.freeClusterPort()).unwrap());
 
         return AetherNodeConfig.builder()
                                 .self(self)
@@ -166,14 +166,6 @@ class AetherNodeBackupGitPreflightBootTest {
 
     private static int port(AetherNodeConfig config) {
         return config.topology().coreNodes().getFirst().address().port();
-    }
-
-    private static int freePort() {
-        try (var socket = new ServerSocket(0)) {
-            return socket.getLocalPort();
-        } catch (IOException e) {
-            throw new java.io.UncheckedIOException(e);
-        }
     }
 
     private static boolean isFree(int port) {
