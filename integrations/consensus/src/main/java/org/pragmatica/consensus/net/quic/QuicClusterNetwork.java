@@ -2031,10 +2031,12 @@ public class QuicClusterNetwork implements ClusterNetwork {
     /// runs while every entity forward vanished. One ERROR naming the message class, and a typed
     /// [WriteOutcome.EncodeFailed] the existing non-`Sent` handling already fails fast on.
     private Result<byte[]> encodeLoudly(Message.Wired message, NodeId peerId) {
-        return Result.lift(() -> serializer.encode(message)).flatMap(QuicClusterNetwork::nonEmptyFrame).onFailure(cause -> log.error("Message encode FAILED for {} to {} — message dropped: {}",
-                                                                                          message.getClass().getName(),
-                                                                                          peerId,
-                                                                                          cause.message()));
+        return Result.lift(() -> serializer.encode(message))
+                     .flatMap(QuicClusterNetwork::nonEmptyFrame)
+                     .onFailure(cause -> log.error("Message encode FAILED for {} to {} — message dropped: {}",
+                                                   message.getClass().getName(),
+                                                   peerId,
+                                                   cause.message()));
     }
 
     /// #1727 (M1) — a zero-length frame is the lane-end marker ([QuicPeerConnection#laneEndFrame]); the

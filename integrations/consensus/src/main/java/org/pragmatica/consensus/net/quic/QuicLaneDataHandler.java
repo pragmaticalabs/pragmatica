@@ -88,6 +88,7 @@ final class QuicLaneDataHandler extends SimpleChannelInboundHandler<ByteBuf> {
             // #1727 (M1) — the lane-end marker (see QuicPeerConnection#laneEndFrame): the other side
             // finished this lane. Released here, not on the FIN, which quiche may never surface.
             streamEnded(ctx);
+
             return;
         }
 
