@@ -62,7 +62,7 @@ class AetherNodeDrainSetObserverTest {
 
         blackholeAfter(alerts, 0L, Set.of(DRAINED));
         assertThat(alerts.hasAnnouncedDeparture(DRAINED)).isTrue();
-        blackholeAfter(alerts, AlertManager.DRAIN_OMISSION_GRACE_MS + 1, Set.of());
+        blackholeAfter(alerts, 30_001L, Set.of());
 
         assertThat(alerts.hasAnnouncedDeparture(DRAINED)).as("the cancelled drain's mark is gone").isFalse();
         alerts.onNodeFailed(DRAINED, SELF);
@@ -76,7 +76,7 @@ class AetherNodeDrainSetObserverTest {
         var alerts = alerts();
 
         blackholeAfter(alerts, 0L, Set.of(DRAINED));
-        blackholeAfter(alerts, AlertManager.DRAIN_OMISSION_GRACE_MS - 1, Set.of());
+        blackholeAfter(alerts, 29_999L, Set.of());   // literal: 1 ms inside the 30 s grace, independent of the constant
 
         assertThat(alerts.hasAnnouncedDeparture(DRAINED)).isTrue();
     }
@@ -103,7 +103,7 @@ class AetherNodeDrainSetObserverTest {
         blackholeAfter(alerts, 0L, Set.of(DRAINED));
         alerts.onNodeFailed(DRAINED, SELF);
         blackholeAfter(alerts, 1_000L, Set.of(DRAINED));
-        blackholeAfter(alerts, 1_000L + AlertManager.DRAIN_OMISSION_GRACE_MS + 1, Set.of());
+        blackholeAfter(alerts, 31_001L, Set.of());
 
         assertThat(alerts.hasAnnouncedDeparture(DRAINED)).isFalse();
     }
