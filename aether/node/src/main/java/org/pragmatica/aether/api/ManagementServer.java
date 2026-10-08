@@ -610,6 +610,7 @@ class ManagementServerImpl implements ManagementServer {
                                                     .onSuccessRun(tlsRotation::applied));
     }
 
+    @Contract
     @Override
     public void setOperatorWarningSink(OperatorWarningSink sink) {
         tlsRotation.useSink(sink);

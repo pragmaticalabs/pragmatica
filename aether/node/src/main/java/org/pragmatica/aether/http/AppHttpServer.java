@@ -633,6 +633,7 @@ class AppHttpServerAdapter implements AppHttpServer {
                                 _ -> rotateValidated(newBundle));
     }
 
+    @Contract
     @Override
     public void setOperatorWarningSink(OperatorWarningSink sink) {
         tlsRotation.useSink(sink);

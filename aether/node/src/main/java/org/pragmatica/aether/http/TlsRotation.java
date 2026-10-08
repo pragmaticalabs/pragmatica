@@ -9,6 +9,7 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import org.pragmatica.http.server.HttpServerError;
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
@@ -52,6 +53,7 @@ public final class TlsRotation {
         return new TlsRotation(serverName);
     }
 
+    @Contract
     public void useSink(OperatorWarningSink operatorWarningSink) {
         sink.set(operatorWarningSink);
     }
@@ -90,6 +92,7 @@ public final class TlsRotation {
         return typed.promise();
     }
 
+    @Contract
     public void applied() {
         if (refused.compareAndSet(true, false)) {
             OperatorWarnings.raise(log,
