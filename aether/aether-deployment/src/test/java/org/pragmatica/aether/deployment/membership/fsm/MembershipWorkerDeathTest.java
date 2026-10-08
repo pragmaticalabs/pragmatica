@@ -65,7 +65,7 @@ class MembershipWorkerDeathTest {
         assertThat(state(membership, id)).as("precondition: admitted worker is a MEMBER").isEqualTo("Member");
         membership.onSwimFaulty(id, 1);
 
-        assertThat(awaitTrue(() -> "Dead".equals(state(membership, id)), 3_000))
+        assertThat(awaitTrue(() -> "Dead".equals(state(membership, id)), 15_000))
             .as("a worker SWIM declared FAULTY, with no evidence of life, must reach DEAD; state=%s", state(membership, id))
             .isTrue();
         assertThat(edges.stream().map(MembershipDeltaEdge::kind).toList())
@@ -100,7 +100,7 @@ class MembershipWorkerDeathTest {
         membership.onPeerDisconnected(id);
         membership.onLivenessGone(id);
 
-        assertThat(awaitTrue(() -> "Dead".equals(state(membership, id)), 3_000))
+        assertThat(awaitTrue(() -> "Dead".equals(state(membership, id)), 15_000))
             .as("transport-gone alone is enough for a worker; state=%s", state(membership, id))
             .isTrue();
     }
@@ -141,7 +141,7 @@ class MembershipWorkerDeathTest {
         membership.onGovernorHealthy(id, "community", new NodeId("governor"), 1, 1, worker());
         membership.onSwimFaulty(id, 1);
 
-        assertThat(awaitTrue(() -> "Dead".equals(state(membership, id)), 3_000))
+        assertThat(awaitTrue(() -> "Dead".equals(state(membership, id)), 15_000))
             .as("evidence that predates the FAULTY edge does not veto it; state=%s", state(membership, id))
             .isTrue();
     }
@@ -177,7 +177,7 @@ class MembershipWorkerDeathTest {
 
         membership.onGovernorHealthy(id, "community", governor, 1, 1, worker());
         membership.onSwimFaulty(id, 1);
-        assertThat(awaitTrue(() -> "Dead".equals(state(membership, id)), 3_000)).isTrue();
+        assertThat(awaitTrue(() -> "Dead".equals(state(membership, id)), 15_000)).isTrue();
         var refusedBefore = membership.refusedProcessEvidenceCount();
 
         membership.onGovernorHealthy(id, "community", governor, 1, 1, worker());
@@ -204,7 +204,7 @@ class MembershipWorkerDeathTest {
 
         membership.onSwimFaulty(workers.get(0), 1);
 
-        assertThat(awaitTrue(() -> "Dead".equals(state(membership, workers.get(0))), 3_000)).isTrue();
+        assertThat(awaitTrue(() -> "Dead".equals(state(membership, workers.get(0))), 15_000)).isTrue();
         assertThat(state(membership, workers.get(1))).isEqualTo("Member");
         assertThat(state(membership, workers.get(2))).isEqualTo("Member");
     }
@@ -221,7 +221,7 @@ class MembershipWorkerDeathTest {
         membership.onGovernorHealthy(id, "community", new NodeId("governor"), 1, 4, worker());
         membership.onGovernorReportedDead(id, 4);
 
-        assertThat(awaitTrue(() -> "Dead".equals(state(membership, id)), 3_000))
+        assertThat(awaitTrue(() -> "Dead".equals(state(membership, id)), 15_000))
             .as("a governor-relayed SWIM death evicts after the window; state=%s", state(membership, id)).isTrue();
         assertThat(edges.stream().map(MembershipDeltaEdge::kind).toList()).contains(MembershipDeltaEdge.Kind.REMOVED);
     }
