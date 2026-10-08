@@ -131,6 +131,32 @@ class HttpServerTlsStartupTest {
         }
     }
 
+    /// Each half valid, the key from another certificate: the context would build and then complete no handshake.
+    @Test
+    void start_keyDoesNotMatchCertificate_failsInsteadOfOpeningADeadTlsListener() {
+        var certificateOwner = bundle("startup-cert-node");
+        var keyOwner = bundle("startup-key-node");
+        var identity = new TlsConfig.Identity.FromProvider(certificateOwner.certificatePem(), keyOwner.privateKeyPem());
+        var port = freeTcpPort();
+        var config = HttpServerConfig.httpServerConfig("mismatch-tls", port)
+                                     .withTls(new TlsConfig.Server(identity, org.pragmatica.lang.Option.none()));
+        var outcome = HttpServer.httpServer(config, (_, writer) -> writer.okText("must not serve")).await(timeSpan(WAIT_MS).millis());
+
+        outcome.onSuccess(HttpServer::stop);
+        assertThat(outcome.isFailure()).as("startup must refuse the mismatched pair").isTrue();
+        outcome.onFailure(cause -> {
+            assertThat(cause).isInstanceOf(HttpServerError.TlsFailed.class);
+            assertThat(cause.message()).contains("does not match");
+        });
+    }
+
+    private static org.pragmatica.net.tcp.security.CertificateBundle bundle(String nodeId) {
+        return org.pragmatica.net.tcp.security.SelfSignedCertificateProvider.selfSignedCertificateProvider("startup-secret".getBytes())
+                                                                            .unwrap()
+                                                                            .issueCertificate(nodeId, "localhost")
+                                                                            .unwrap();
+    }
+
     private static boolean connects(Socket socket, int port) {
         try {
             socket.connect(new InetSocketAddress("127.0.0.1", port), 2_000);

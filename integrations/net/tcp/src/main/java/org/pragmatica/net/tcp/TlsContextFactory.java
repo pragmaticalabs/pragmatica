@@ -190,6 +190,10 @@ public final class TlsContextFactory {
     }
 
     private static Result<KeyMaterial> loadIdentity(TlsConfig.Identity identity) {
+        return loadUncheckedIdentity(identity).flatMap(keyMaterial -> KeyPairCheck.check(identity).map(_ -> keyMaterial));
+    }
+
+    private static Result<KeyMaterial> loadUncheckedIdentity(TlsConfig.Identity identity) {
         return switch (identity) {
             case TlsConfig.Identity.SelfSigned() -> generateSelfSigned();
             case TlsConfig.Identity.FromFiles(var certPath, var keyPath, var password) -> loadFromFiles(certPath,

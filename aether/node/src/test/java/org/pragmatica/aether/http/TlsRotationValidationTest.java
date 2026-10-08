@@ -30,8 +30,8 @@ class TlsRotationValidationTest {
 
         assertThat(rotation.validate(garbage, true, false).isFailure()).as("H1 branch").isTrue();
         assertThat(rotation.validate(garbage, false, true).isFailure()).as("H3 branch alone").isTrue();
-        assertThat(rotation.validate(garbage, false, false).isFailure())
-            .as("control: with no protocol to build, only the key check runs and the garbage key fails it").isTrue();
+        assertThat(rotation.validate(garbage, false, false).isSuccess())
+            .as("control: with no protocol to build, nothing is built and nothing fails").isTrue();
     }
 
     @Test

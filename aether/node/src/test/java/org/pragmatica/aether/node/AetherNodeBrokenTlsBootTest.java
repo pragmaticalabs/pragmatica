@@ -58,7 +58,7 @@ class AetherNodeBrokenTlsBootTest {
                                         base.apiVersionHeaderName(),
                                         Option.some(new AppHttpConfig.AppTls("/missing/app-cert.pem", "/missing/app-key.pem")));
 
-        assertRefused(appHttp, AetherNodeConfig.MANAGEMENT_DISABLED, Option.none(), appPort);
+        assertRefused(appHttp, AetherNodeConfig.MANAGEMENT_DISABLED, Option.none(), HttpProtocol.H1, appPort);
     }
 
     @Test
@@ -67,25 +67,74 @@ class AetherNodeBrokenTlsBootTest {
         var managementPort = freePort();
         var brokenTls = Option.some(TlsConfig.server(Path.of("/missing/node-cert.pem"), Path.of("/missing/node-key.pem")));
 
-        assertRefused(AppHttpConfig.insecureAppHttpConfig(freePort()), managementPort, brokenTls, managementPort);
+        assertRefused(AppHttpConfig.insecureAppHttpConfig(freePort()), managementPort, brokenTls, HttpProtocol.H1, managementPort);
     }
 
-    private void assertRefused(AppHttpConfig appHttp, int managementPort, Option<TlsConfig> tls, int listenerPort) throws Exception {
-        node = AetherNode.aetherNode(minimalConfig(appHttp, managementPort, tls), () -> {})
+    /// HTTP/3-only: the QUIC context cannot be built and the node used to report a successful start with no listener.
+    @Test
+    @Timeout(value = 90, unit = SECONDS)
+    void start_refuses_whenManagementTlsCannotBeBuiltOverH3Only() throws Exception {
+        var brokenTls = Option.some(TlsConfig.server(Path.of("/missing/node-cert.pem"), Path.of("/missing/node-key.pem")));
+
+        assertRefused(AppHttpConfig.insecureAppHttpConfig(freePort()), freePort(), brokenTls, HttpProtocol.H3, 0);
+    }
+
+    @Test
+    @Timeout(value = 90, unit = SECONDS)
+    void start_refuses_whenAppHttpTlsCannotBeBuiltOverH3Only() throws Exception {
+        var base = AppHttpConfig.insecureAppHttpConfig(freePort());
+        var appHttp = new AppHttpConfig(base.enabled(), base.port(), base.apiKeys(), base.maxRequestSize(), base.securityMode(),
+                                        base.jwtConfig(), HttpProtocol.H3, base.apiVersioningDetection(),
+                                        base.apiVersionHeaderName(), Option.none());
+        var brokenTls = Option.some(TlsConfig.server(Path.of("/missing/node-cert.pem"), Path.of("/missing/node-key.pem")));
+
+        assertRefused(appHttp, AetherNodeConfig.MANAGEMENT_DISABLED, brokenTls, HttpProtocol.H1, 0);
+    }
+
+    /// A certificate and key that are each valid but do not belong together build a TLS context and then complete no
+    /// handshake. The boot refuses them.
+    @Test
+    @Timeout(value = 90, unit = SECONDS)
+    void start_refuses_whenAppHttpCertificateAndKeyDoNotMatch(@org.junit.jupiter.api.io.TempDir Path dir) throws Exception {
+        var certificateOwner = org.pragmatica.aether.http.TlsProbe.validBundle("boot-cert-node");
+        var keyOwner = org.pragmatica.aether.http.TlsProbe.validBundle("boot-key-node");
+
+        java.nio.file.Files.write(dir.resolve("app.crt"), certificateOwner.certificatePem());
+        java.nio.file.Files.write(dir.resolve("app.key"), keyOwner.privateKeyPem());
+        var appPort = freePort();
+        var base = AppHttpConfig.insecureAppHttpConfig(appPort);
+        var appHttp = new AppHttpConfig(base.enabled(), base.port(), base.apiKeys(), base.maxRequestSize(), base.securityMode(),
+                                        base.jwtConfig(), base.httpProtocol(), base.apiVersioningDetection(),
+                                        base.apiVersionHeaderName(),
+                                        Option.some(new AppHttpConfig.AppTls(dir.resolve("app.crt").toString(),
+                                                                             dir.resolve("app.key").toString())));
+
+        assertRefused(appHttp, AetherNodeConfig.MANAGEMENT_DISABLED, Option.none(), HttpProtocol.H1, appPort);
+    }
+
+    private void assertRefused(AppHttpConfig appHttp,
+                               int managementPort,
+                               Option<TlsConfig> tls,
+                               HttpProtocol managementProtocol,
+                               int listenerPort) throws Exception {
+        node = AetherNode.aetherNode(minimalConfig(appHttp, managementPort, tls, managementProtocol), () -> {})
                          .fold(cause -> {
                                    throw new AssertionError("assembly failed before start: " + cause.message());
                                },
                                booted -> booted);
 
         var started = node.start().await(timeSpan(45).seconds());
-        var listening = connects(listenerPort);
+        var listening = managementProtocol == HttpProtocol.H1 && connects(listenerPort);
 
         assertThat(listening).as("nothing listens on the configured port, TLS or plain").isFalse();
         assertThat(started.isFailure()).as("the node refuses to start").isTrue();
         started.onFailure(cause -> assertThat(cause).isInstanceOf(HttpServerError.TlsFailed.class));
     }
 
-    private static AetherNodeConfig minimalConfig(AppHttpConfig appHttp, int managementPort, Option<TlsConfig> tls) {
+    private static AetherNodeConfig minimalConfig(AppHttpConfig appHttp,
+                                                   int managementPort,
+                                                   Option<TlsConfig> tls,
+                                                   HttpProtocol managementProtocol) {
         var self = NodeId.nodeId("broken-tls-boot-test").unwrap();
         var selfInfo = NodeInfo.nodeInfo(self, nodeAddress("localhost", freePort()).unwrap());
 
@@ -102,7 +151,7 @@ class AetherNodeBrokenTlsBootTest {
                                 .certificateProvider(Option.none())
                                 .configProvider(Option.none())
                                 .environment(Option.none())
-                                .managementHttpProtocol(HttpProtocol.H1)
+                                .managementHttpProtocol(managementProtocol)
                                 .storageConfig(Map.of())
                                 .build();
     }

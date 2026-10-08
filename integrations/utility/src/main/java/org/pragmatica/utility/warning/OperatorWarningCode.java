@@ -186,7 +186,17 @@ public enum OperatorWarningCode {
     HTTP_TLS_ROTATION_RESTORED("http-tls-rotation-restored",
                                "http-listener",
                                WarningLevel.INFO,
-                               HTTP_TLS_ROTATION_REFUSED);
+                               HTTP_TLS_ROTATION_REFUSED),
+    /// A renewed node certificate did not build into the cluster transport's QUIC server and client contexts (or its private key
+    /// does not match it), so the renewal is refused and the transport keeps its current certificate, which expires. Nothing
+    /// downstream (the HTTP listeners' rotation) runs for a refused bundle. Subject is `cluster-quic`. Raised once on the
+    /// transition into refusal.
+    CLUSTER_TLS_RENEWAL_REFUSED("cluster-tls-renewal-refused", "cluster-transport", WarningLevel.WARNING),
+    /// The recovery of a [#CLUSTER_TLS_RENEWAL_REFUSED], same subject: a later renewal built and was applied.
+    CLUSTER_TLS_RENEWAL_RESTORED("cluster-tls-renewal-restored",
+                                 "cluster-transport",
+                                 WarningLevel.INFO,
+                                 CLUSTER_TLS_RENEWAL_REFUSED);
     private final String code;
     private final String subsystem;
     private final WarningLevel level;
