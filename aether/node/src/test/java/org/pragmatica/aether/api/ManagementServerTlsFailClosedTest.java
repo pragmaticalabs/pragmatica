@@ -8,7 +8,6 @@ package org.pragmatica.aether.api;
 import java.io.IOException;
 import java.lang.reflect.Modifier;
 import java.net.InetSocketAddress;
-import java.net.ServerSocket;
 import java.net.Socket;
 import java.util.Map;
 import java.util.Set;
@@ -145,8 +144,6 @@ class ManagementServerTlsFailClosedTest {
     }
 
     private static int freeTcpPort() throws IOException {
-        try (var socket = new ServerSocket(0)) {
-            return socket.getLocalPort();
-        }
+        return org.pragmatica.aether.node.ClusterTestPorts.freeTcpAndUdpPort();
     }
 }
