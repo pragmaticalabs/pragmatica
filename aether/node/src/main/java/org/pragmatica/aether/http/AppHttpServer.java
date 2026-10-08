@@ -62,6 +62,7 @@ import org.pragmatica.http.CommonContentType;
 import org.pragmatica.http.HttpStatus;
 import org.pragmatica.http.ProblemDetail;
 import org.pragmatica.http.server.HttpServer;
+import org.pragmatica.http.server.HttpServerError;
 import org.pragmatica.http.server.HttpServerConfig;
 import org.pragmatica.http.HttpRequest;
 import org.pragmatica.http.server.ResponseWriter;
@@ -531,11 +532,18 @@ class AppHttpServerAdapter implements AppHttpServer {
         var quicTls = tls.map(cfg -> QuicSslContextFactory.createServer(cfg, ClientAuthPolicy.NOT_REQUESTED))
                          .or(QuicSslContextFactory.createSelfSignedServer());
 
-        return quicTls.onFailure(cause -> log.error("Failed to create QUIC SSL context: {}",
-                                                    cause.message()))
-                      .map(this::startH3WithSslContext)
-                      .or(Promise::unitPromise)
-                      .recover(AppHttpServerAdapter::logH3DisabledAndReturnUnit);
+        // A QUIC context that cannot be built refuses the start (fail closed). Only a later BIND failure of the
+        // HTTP/3 listener is still non-fatal, as before.
+        return quicTls.fold(cause -> quicTlsRefused(cause),
+                            context -> startH3WithSslContext(context).recover(AppHttpServerAdapter::logH3DisabledAndReturnUnit));
+    }
+
+    private Promise<Unit> quicTlsRefused(Cause cause) {
+        var failure = new HttpServerError.TlsFailed("app-http-h3", config.port(), cause);
+
+        log.error("HTTP server 'app-http-h3' will not start: {}", failure.message());
+
+        return failure.promise();
     }
 
     private static Unit logH3DisabledAndReturnUnit(Cause cause) {

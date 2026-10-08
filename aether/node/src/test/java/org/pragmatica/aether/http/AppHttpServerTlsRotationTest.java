@@ -54,6 +54,15 @@ class AppHttpServerTlsRotationTest {
             assertThat(TlsProbe.countOf(events, "http-tls-rotation-refused")).as("a repeated refusal is not re-raised").isEqualTo(1);
             assertThat(TlsProbe.countOf(events, "http-tls-rotation-restored")).as("no recovery while still refused").isZero();
 
+            var mismatched = server.rotateCertificate(TlsProbe.mismatchedBundle()).await(timeSpan(60).seconds());
+
+            assertThat(mismatched.isFailure()).as("a key that does not match the certificate is refused").isTrue();
+            mismatched.onFailure(cause -> assertThat(cause).isInstanceOf(HttpServerError.TlsRotationRefused.class));
+            assertThat(TlsProbe.sameCertificate(original, TlsProbe.presentedCertificate(port)))
+                .as("after a mismatched bundle the listener still presents its CURRENT certificate").isTrue();
+            assertThat(TlsProbe.httpsStatus(port)).as("and still answers HTTPS").isPositive();
+            assertThat(TlsProbe.countOf(events, "http-tls-rotation-refused")).as("the mismatch is not re-raised").isEqualTo(1);
+
             var good = TlsProbe.validBundle("app-rotation-node");
             var applied = server.rotateCertificate(good).await(timeSpan(60).seconds());
 

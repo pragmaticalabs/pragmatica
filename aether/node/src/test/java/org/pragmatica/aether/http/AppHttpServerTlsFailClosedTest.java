@@ -13,6 +13,8 @@ import java.net.Socket;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.pragmatica.aether.config.AppHttpConfig;
+import org.pragmatica.aether.config.HttpProtocol;
+import org.pragmatica.net.tcp.TlsConfig;
 import org.pragmatica.aether.config.TimeoutsConfig.ForwardingTimeouts;
 import org.pragmatica.aether.update.DeploymentManager;
 import org.pragmatica.consensus.NodeId;
@@ -32,7 +34,7 @@ class AppHttpServerTlsFailClosedTest {
     @Timeout(60)
     void start_unbuildableAppTls_failsAndOpensNoListener() throws Exception {
         var port = freeTcpPort();
-        var server = appHttpServerWithMissingCertificate(port);
+        var server = appHttpServerWithMissingCertificate(port, HttpProtocol.H1);
 
         var outcome = server.start().await(timeSpan(30).seconds());
 
@@ -47,7 +49,19 @@ class AppHttpServerTlsFailClosedTest {
         });
     }
 
-    private static AppHttpServer appHttpServerWithMissingCertificate(int port) {
+    @Test
+    @Timeout(60)
+    void start_unbuildableTlsOverH3Only_failsTyped() throws Exception {
+        var server = appHttpServerWithMissingCertificate(freeTcpPort(), HttpProtocol.H3);
+
+        var outcome = server.start().await(timeSpan(30).seconds());
+
+        server.stop().await(timeSpan(30).seconds());
+        assertThat(outcome.isFailure()).as("an HTTP/3-only start with unbuildable TLS must fail, not report success").isTrue();
+        outcome.onFailure(cause -> assertThat(cause).isInstanceOf(HttpServerError.TlsFailed.class));
+    }
+
+    private static AppHttpServer appHttpServerWithMissingCertificate(int port, HttpProtocol protocol) {
         var base = AppHttpConfig.insecureAppHttpConfig(port);
         var config = new AppHttpConfig(base.enabled(),
                                        base.port(),
@@ -55,7 +69,7 @@ class AppHttpServerTlsFailClosedTest {
                                        base.maxRequestSize(),
                                        base.securityMode(),
                                        base.jwtConfig(),
-                                       base.httpProtocol(),
+                                       protocol,
                                        base.apiVersioningDetection(),
                                        base.apiVersionHeaderName(),
                                        Option.some(new AppHttpConfig.AppTls("/missing/app-cert.pem", "/missing/app-key.pem")));
@@ -68,7 +82,8 @@ class AppHttpServerTlsFailClosedTest {
                                            Option.none(),
                                            Option.none(),
                                            Option.none(),
-                                           Option.none(),
+                                           Option.some(TlsConfig.server(java.nio.file.Path.of("/missing/cluster-cert.pem"),
+                                                                        java.nio.file.Path.of("/missing/cluster-key.pem"))),
                                            Option.none(),
                                            Option.none(),
                                            Option.none(),

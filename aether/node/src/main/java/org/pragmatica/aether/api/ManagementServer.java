@@ -109,6 +109,7 @@ import org.pragmatica.dht.DHTAntiEntropy;
 import org.pragmatica.dht.DHTNode;
 import org.pragmatica.http.routing.RouteSource;
 import org.pragmatica.http.server.HttpServer;
+import org.pragmatica.http.server.HttpServerError;
 import org.pragmatica.http.server.HttpServerConfig;
 import org.pragmatica.http.HttpRequest;
 import org.pragmatica.http.server.ResponseWriter;
@@ -485,10 +486,17 @@ class ManagementServerImpl implements ManagementServer {
         var quicTls = tls.map(cfg -> QuicSslContextFactory.createServer(cfg, ClientAuthPolicy.NOT_REQUESTED))
                          .or(QuicSslContextFactory.createSelfSignedServer());
 
-        return quicTls.onFailure(cause -> log.error("Failed to create QUIC SSL context for management server: {}",
-                                                    cause.message()))
-                      .map(this::startH3WithSslContext)
-                      .or(Promise.success(unit()));
+        // A QUIC context that cannot be built refuses the start: an HTTP/3 listener configured for TLS must not
+        // silently not exist (nor, in BOTH mode, leave the node reporting a start that bound only some listeners).
+        return quicTls.fold(cause -> quicTlsRefused("management-h3", cause), this::startH3WithSslContext);
+    }
+
+    private Promise<Unit> quicTlsRefused(String serverName, Cause cause) {
+        var failure = new HttpServerError.TlsFailed(serverName, port, cause);
+
+        log.error("HTTP server '{}' will not start: {}", serverName, failure.message());
+
+        return failure.promise();
     }
 
     private Promise<Unit> startH3WithSslContext(io.netty.handler.codec.quic.QuicSslContext quicSslContext) {

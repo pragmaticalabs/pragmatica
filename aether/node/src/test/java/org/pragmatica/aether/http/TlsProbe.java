@@ -44,6 +44,17 @@ public final class TlsProbe {
                                             .unwrap();
     }
 
+    /// Each half valid, but the key belongs to another certificate: every context builds, no handshake can complete.
+    public static CertificateBundle mismatchedBundle() {
+        var certificateOwner = validBundle("mismatch-cert-node");
+        var keyOwner = validBundle("mismatch-key-node");
+
+        return new CertificateBundle(certificateOwner.certificatePem(),
+                                     keyOwner.privateKeyPem(),
+                                     certificateOwner.caCertificatePem(),
+                                     certificateOwner.notAfter());
+    }
+
     public static CertificateBundle garbageBundle() {
         return new CertificateBundle("not a certificate".getBytes(), "not a key".getBytes(), new byte[0], Instant.now());
     }

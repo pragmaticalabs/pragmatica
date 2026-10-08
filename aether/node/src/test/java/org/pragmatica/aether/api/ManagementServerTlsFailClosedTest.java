@@ -62,7 +62,7 @@ class ManagementServerTlsFailClosedTest {
     @Timeout(60)
     void start_unbuildableTls_failsAndOpensNoListener() throws IOException {
         var port = freeTcpPort();
-        var server = managementServerWithMissingCertificate(port);
+        var server = managementServerWithMissingCertificate(port, HttpProtocol.H1);
 
         var outcome = server.start().await(START_BOUND);
 
@@ -77,7 +77,32 @@ class ManagementServerTlsFailClosedTest {
         });
     }
 
-    private static ManagementServer managementServerWithMissingCertificate(int port) {
+    /// HTTP/3-only: the QUIC context cannot be built, and `start()` used to SUCCEED with no listener at all.
+    @Test
+    @Timeout(60)
+    void start_unbuildableTlsOverH3Only_failsTyped() throws IOException {
+        var server = managementServerWithMissingCertificate(freeTcpPort(), HttpProtocol.H3);
+
+        var outcome = server.start().await(START_BOUND);
+
+        server.stop().await(START_BOUND);
+        assertThat(outcome.isFailure()).as("an HTTP/3-only start with unbuildable TLS must fail, not report success").isTrue();
+        outcome.onFailure(cause -> assertThat(cause).isInstanceOf(HttpServerError.TlsFailed.class));
+    }
+
+    @Test
+    @Timeout(60)
+    void start_unbuildableTlsOverBoth_failsTyped() throws IOException {
+        var server = managementServerWithMissingCertificate(freeTcpPort(), HttpProtocol.BOTH);
+
+        var outcome = server.start().await(START_BOUND);
+
+        server.stop().await(START_BOUND);
+        assertThat(outcome.isFailure()).isTrue();
+        outcome.onFailure(cause -> assertThat(cause).isInstanceOf(HttpServerError.TlsFailed.class));
+    }
+
+    private static ManagementServer managementServerWithMissingCertificate(int port, HttpProtocol protocol) {
         var node = mock(ManageableNode.class, NONE_OR_MOCK);
 
         return ManagementServer.managementServer(port,
@@ -99,7 +124,7 @@ class ManagementServerTlsFailClosedTest {
                                                  Map::of,
                                                  Option.none(),
                                                  Option.none(),
-                                                 HttpProtocol.H1,
+                                                 protocol,
                                                  ForwardingTimeouts.forwardingTimeouts(),
                                                  Option.none(),
                                                  Option.none(),
