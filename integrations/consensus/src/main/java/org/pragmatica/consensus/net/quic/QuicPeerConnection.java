@@ -20,6 +20,8 @@ import java.util.Deque;
 import java.util.EnumMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicIntegerArray;
+import java.util.concurrent.atomic.AtomicLongArray;
 import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 
@@ -116,6 +118,10 @@ public final class QuicPeerConnection {
     private final int consensusWatermarkHighBytes;
     private volatile LaneOpener laneOpener = LaneOpener.noop();
     private volatile QuicActivityKick activityKick;
+    /// #1727 — per lane: writes handed to the stream and not yet accepted by quiche, and when the lane was
+    /// last written. Read at supersede time to count what the immediate close would discard.
+    private final AtomicIntegerArray pendingLaneWrites = new AtomicIntegerArray(StreamType.values().length);
+    private final AtomicLongArray lastLaneWriteNanos = new AtomicLongArray(StreamType.values().length);
     /// #718 — lanes with a lazy open IN FLIGHT, each mapped to the messages waiting on it. A present
     /// key IS the in-flight marker; [#completeLaneOpen] removing it IS the release. Guarded by this
     /// instance's monitor.
@@ -216,6 +222,57 @@ public final class QuicPeerConnection {
                                                                                                     intervalMs,
                                                                                                     windowMs));
     }
+
+    /// #1727 — a write on `lane` was handed to its stream: it is unflushed until [#laneWriteCompleted], and
+    /// a data lane (not CONTROL) opens or extends the activity kick window.
+    @Contract
+    void laneWriteStarted(StreamType lane) {
+        pendingLaneWrites.incrementAndGet(lane.streamIndex());
+        lastLaneWriteNanos.set(lane.streamIndex(), System.nanoTime());
+        if (lane != StreamType.CONTROL) {
+            noteLaneWrite();
+        }
+    }
+
+    /// #1727 — the write on `lane` completed (accepted by quiche, or failed).
+    @Contract
+    void laneWriteCompleted(StreamType lane) {
+        pendingLaneWrites.decrementAndGet(lane.streamIndex());
+    }
+
+    /// #1727 — lanes whose writes an immediate close of this connection would discard, as far as it is
+    /// observable: lanes with unflushed writes, and lanes written within [#SUPERSEDE_RISK_WINDOW_NANOS].
+    LaneWriteRisk laneWritesAtRisk(long nowNanos) {
+        var unflushed = 0;
+        var recent = 0;
+        var atRisk = 0;
+
+        for (var lane : StreamType.values()) {
+            var index = lane.streamIndex();
+            var isUnflushed = pendingLaneWrites.get(index) > 0;
+            var written = lastLaneWriteNanos.get(index);
+            var isRecent = written != 0 && nowNanos - written <= SUPERSEDE_RISK_WINDOW_NANOS;
+
+            unflushed += isUnflushed
+                         ? 1
+                         : 0;
+            recent += isRecent
+                      ? 1
+                      : 0;
+            atRisk += isUnflushed || isRecent
+                      ? 1
+                      : 0;
+        }
+
+        return new LaneWriteRisk(unflushed, recent, atRisk);
+    }
+
+    /// Lanes at risk at close time: `lanesAtRisk` counts a lane once even if it is both unflushed and recent.
+    record LaneWriteRisk(int unflushedLanes, int recentLanes, int lanesAtRisk) {}
+
+    /// A guess, not a derived figure: long enough to cover a LAN round trip plus a PTO or two for a write that
+    /// is still unacked, short enough that a lane idle for a while does not count. Tune from the campaign data.
+    static final long SUPERSEDE_RISK_WINDOW_NANOS = java.util.concurrent.TimeUnit.SECONDS.toNanos(2);
 
     /// #1727 (M2) — a lane data write was accepted on one of this connection's streams.
     @Contract

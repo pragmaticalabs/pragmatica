@@ -165,6 +165,49 @@ class QuicClusterNetworkEncodeFailureTest {
         }
     }
 
+    /// #1727 — the immediate close of a superseded connection records itself and the lanes it put at risk
+    /// (unflushed or written in the last 2 s) in the transport metrics. The accounting is pinned in
+    /// [QuicSupersedeObservationTest].
+    @Test
+    void closingASupersededConnection_recordsTheCloseAndTheLanesAtRisk() {
+        var network = network();
+        var channel = mock(QuicChannel.class);
+
+        lenient().when(channel.isActive()).thenReturn(true);
+        var superseded = QuicPeerConnection.quicPeerConnection(new NodeId("sup-peer"), new NodeId("a"), channel);
+
+        superseded.laneWriteStarted(StreamType.FORWARD);
+        superseded.laneWriteStarted(StreamType.CONSENSUS);
+        superseded.laneWriteCompleted(StreamType.CONSENSUS);
+
+        network.closeSupersededConnectionForTests(superseded, QuicPeerConnection.quicPeerConnection(new NodeId("sup-peer"), new NodeId("a"), channel));
+
+        assertThat(network.quicMetrics().supersededCloseCount()).isEqualTo(1);
+        assertThat(network.quicMetrics().supersededLaneStreamsAtRiskCount()).as("FORWARD unflushed + CONSENSUS recent").isEqualTo(2);
+        assertThat(network.quicMetrics().snapshot()).containsKeys("quic_superseded_closes_total", "quic_superseded_lane_streams_at_risk_total");
+    }
+
+    /// #1727 — the production write path accounts the write on the stream's owning connection: a lane write
+    /// whose future has not completed is an unflushed lane at supersede time.
+    @Test
+    void aLaneWriteThroughTheProductionPath_isAccountedOnTheOwningConnection() {
+        var network = network();
+        var peerId = new NodeId("accounting-peer");
+        var laneStream = writableStream();
+        var channel = mock(QuicChannel.class);
+        @SuppressWarnings("unchecked")
+        var attribute = (io.netty.util.Attribute<QuicPeerConnection>) mock(io.netty.util.Attribute.class);
+        var connection = QuicPeerConnection.quicPeerConnection(peerId, channel);
+
+        lenient().when(attribute.get()).thenReturn(connection);
+        lenient().when(channel.attr(PeerOpenedLaneRouter.PEER_CONNECTION)).thenReturn(attribute);
+        lenient().when(laneStream.parent()).thenReturn(channel);
+
+        network.writeIfWritableForTest(laneStream, new byte[] {1, 2, 3}, peerId, StreamType.FORWARD);
+
+        assertThat(connection.laneWritesAtRisk(System.nanoTime()).unflushedLanes()).isEqualTo(1);
+    }
+
     // --- Helpers ---
 
     /// A mock QUIC lane stream that is active + writable and returns a self-listening future.

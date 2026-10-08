@@ -26,6 +26,7 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ThreadLocalRandom;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.BooleanSupplier;
@@ -72,6 +73,7 @@ import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
 
 import io.netty.buffer.Unpooled;
+import io.netty.channel.ChannelFuture;
 import io.netty.channel.EventLoop;
 import io.netty.handler.codec.quic.QuicSslContext;
 import io.netty.handler.codec.quic.QuicStreamChannel;
@@ -970,9 +972,48 @@ public class QuicClusterNetwork implements ClusterNetwork {
 
     /// Close an incumbent connection superseded by a fresh adopt-newer handshake. Routes through
     /// the same close path evictStaleConnection uses: counts the close in metrics, then closes.
-    private void closeSupersededConnection(QuicPeerConnection superseded) {
+    private void closeSupersededConnection(QuicPeerConnection superseded, QuicPeerConnection replacement) {
+        observeSupersede(superseded, replacement);
         quicMetrics.onConnectionClosed();
         closeDroppedConnection(superseded);
+    }
+
+    /// #1727 — what is at risk when a superseded connection is closed at once. The close discards frames
+    /// quiche accepted but the peer has not acked, and there is no public API for acked bytes, so this counts
+    /// what IS observable: lanes with writes not yet accepted by quiche (unflushed) and lanes written within
+    /// [QuicPeerConnection#SUPERSEDE_RISK_WINDOW_NANOS] (possibly unacked). The cloud campaign reads the rate
+    /// from `quic_superseded_lane_streams_at_risk_total` to decide whether a drain-before-close is needed.
+    @Contract
+    private void observeSupersede(QuicPeerConnection superseded, QuicPeerConnection replacement) {
+        var risk = superseded.laneWritesAtRisk(System.nanoTime());
+
+        quicMetrics.onSupersededClose(risk.lanesAtRisk());
+        log.info("Superseding connection to peer {} ({}): {} lane stream(s) with writes at risk of being discarded"
+                + " by the immediate close — {} with unflushed writes, {} written within {} ms (unacked writes are"
+                + " not observable)",
+                 superseded.peerId(),
+                 supersedeShape(superseded, replacement),
+                 risk.lanesAtRisk(),
+                 risk.unflushedLanes(),
+                 risk.recentLanes(),
+                 TimeUnit.NANOSECONDS.toMillis(QuicPeerConnection.SUPERSEDE_RISK_WINDOW_NANOS));
+    }
+
+    /// Same dialer on both connections = the designated dialer re-dialed (same-direction re-dial); different
+    /// dialers = the dual-dial race, and the superseded connection is the loser.
+    static String supersedeShape(QuicPeerConnection superseded, QuicPeerConnection replacement) {
+        return superseded.initiator()
+                         .flatMap(old -> replacement.initiator()
+                                                    .map(old::equals))
+                         .map(same -> same
+                                      ? "same-direction re-dial"
+                                      : "dual-dial loser")
+                         .or("unknown direction");
+    }
+
+    /// Test seam for the supersede-time observation and close.
+    void closeSupersededConnectionForTests(QuicPeerConnection superseded, QuicPeerConnection replacement) {
+        closeSupersededConnection(superseded, replacement);
     }
 
     @Override
@@ -1635,7 +1676,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
         journalAttach(peerId, origin, phaseBefore, outcome);
         // Adopt-newer: a still-active but aged incumbent was displaced by this fresh handshake.
         // Close the displaced OLD link through the same path evictStaleConnection uses.
-        outcome.superseded().onPresent(this::closeSupersededConnection);
+        outcome.superseded().onPresent(old -> closeSupersededConnection(old, connection));
         boolean isReconnect;
 
         switch (outcome.result()) {
@@ -2039,22 +2080,25 @@ public class QuicClusterNetwork implements ClusterNetwork {
                                                                                           cause.message()));
     }
 
-    /// #1727 (M2) — a lane data write opens (or extends) the owning connection's activity kick window. The
-    /// owner is the connection the stream belongs to, not the peer's active one: a superseded connection
-    /// gets no regular keepalive. A stream without an owner (a fixture) is skipped.
+    /// The single lane data write: accounts it on the owning connection (#1727 supersede-time observation:
+    /// unflushed and recent writes) and opens (or extends) the connection's activity kick window (#1727 M2).
+    /// The owner is the connection the stream belongs to, not the peer's active one. A stream without an
+    /// owner (a fixture) is just written.
     ///
-    /// CONTROL-lane writes are NOT noted: the transport's own 1 s KeepAlive and the kick itself ride the
-    /// CONTROL lane, so noting them would re-open the window every second and the kick would never go idle
-    /// (measured by v-2023: 9.8 kicks/s on an idle link). Control traffic is covered by that keepalive.
+    /// CONTROL-lane writes do not open the kick window: the transport's own 1 s KeepAlive and the kick itself
+    /// ride the CONTROL lane, so noting them would keep the kick running forever (measured by v-2023: 9.8
+    /// kicks/s on an idle link). Control traffic is covered by that keepalive.
     @Contract
-    private void noteLaneWrite(QuicStreamChannel ch, StreamType lane) {
-        if (lane == StreamType.CONTROL) {
-            return;
-        }
+    private ChannelFuture trackedWrite(QuicStreamChannel ch, StreamType lane, byte[] bytes) {
+        var owner = Option.option(ch.parent()).flatMap(parent -> Option.option(parent.attr(PeerOpenedLaneRouter.PEER_CONNECTION)
+                                                                                     .get()));
 
-        Option.option(ch.parent())
-              .flatMap(parent -> Option.option(parent.attr(PeerOpenedLaneRouter.PEER_CONNECTION).get()))
-              .onPresent(QuicPeerConnection::noteLaneWrite);
+        owner.onPresent(connection -> connection.laneWriteStarted(lane));
+        var future = ch.writeAndFlush(Unpooled.wrappedBuffer(bytes));
+
+        owner.onPresent(connection -> future.addListener(_ -> connection.laneWriteCompleted(lane)));
+
+        return future;
     }
 
     /// #1727 (M2) — give the connection its activity kick before it can carry traffic. The frame is the
@@ -2235,9 +2279,12 @@ public class QuicClusterNetwork implements ClusterNetwork {
         if (ch.isWritable()) {
             quicMetrics.onMessageSent();
             quicMetrics.onBytesSent(bytes.length);
-            noteLaneWrite(ch, streamType);
-            ch.writeAndFlush(Unpooled.wrappedBuffer(bytes))
-              .addListener(future -> onLaneWriteResult(future, ch, bytes, peerId, streamType, resendVia));
+            trackedWrite(ch, streamType, bytes).addListener(future -> onLaneWriteResult(future,
+                                                                                        ch,
+                                                                                        bytes,
+                                                                                        peerId,
+                                                                                        streamType,
+                                                                                        resendVia));
 
             return new WriteOutcome.Sent(peerId);
         }
@@ -2359,9 +2406,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
         if (ch.isActive() && ch.isWritable()) {
             quicMetrics.onMessageSent();
             quicMetrics.onBytesSent(bytes.length);
-            noteLaneWrite(ch, streamType);
-            ch.writeAndFlush(Unpooled.wrappedBuffer(bytes))
-              .addListener(future -> handleWriteResult(future, peerId, streamType));
+            trackedWrite(ch, streamType, bytes).addListener(future -> handleWriteResult(future, peerId, streamType));
 
             return Promise.success(unit());
         }
@@ -2403,9 +2448,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
         log.debug("Write to peer {} on a retired {} stream or connection failed — resending once on the stream the lane resolves to now",
                   peerId,
                   streamType);
-        noteLaneWrite(current, streamType);
-        current.writeAndFlush(Unpooled.wrappedBuffer(bytes))
-               .addListener(future -> handleWriteResult(future, peerId, streamType));
+        trackedWrite(current, streamType, bytes).addListener(future -> handleWriteResult(future, peerId, streamType));
     }
 
     private void handleWriteResult(Future<? super Void> future, NodeId peerId, StreamType streamType) {
