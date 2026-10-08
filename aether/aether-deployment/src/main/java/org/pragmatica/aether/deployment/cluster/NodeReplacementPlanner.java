@@ -284,7 +284,14 @@ public final class NodeReplacementPlanner {
 
     private static Plan reverting(NodeReplacementValue r, Observation o, Timings t) {
         // A worker holds no seat, so a settled "roll back" of a kept-both worker pair has nothing to swap back: it only gives the
-        // replacement up.
+        // replacement up, and only while the original is there to carry on: with the original gone the replacement is the last
+        // node of the pair and is kept.
+        if (!isCore(r) && !o.oldAlive()) {
+            return Plan.commit(r.advanced(NodeReplacementPhase.FAILED_KEPT_BOTH,
+                                          o.now(),
+                                          "the original is gone; the replacement is kept"));
+        }
+
         if (!isCore(r) || (o.oldIsVoter() && !o.replacementIsVoter() && o.rosterSettled())) {
             return Plan.act(Effect.TERMINATE_REPLACEMENT,
                             r.advanced(NodeReplacementPhase.ROLLED_BACK, o.now(), r.reason()),

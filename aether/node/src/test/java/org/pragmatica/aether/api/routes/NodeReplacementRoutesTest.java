@@ -87,12 +87,42 @@ class NodeReplacementRoutesTest {
     }
 
     @Test
-    void list_isSortedByOriginal() {
+    void list_isSortedByOriginal_notInTheOrderTheServiceHoldsThem() {
         service.records.put(NodeId.nodeId("b-2").unwrap(), record(CHOSEN, NodeReplacementValue.MODE_CTM));
         service.records.put(NodeId.nodeId("a-1").unwrap(), record(CHOSEN, NodeReplacementValue.MODE_CTM));
 
         assertThat(routes.list()).extracting(NodeReplacementRoutes.ReplacementEntry::original)
                                  .containsExactly("a-1", "b-2");
+    }
+
+    /// A blank id is "no id": the leader provisions the node (CTM), it is not an EXTERNAL replacement of a node called "".
+    @Test
+    void replace_withABlankId_isTheSameAsNoId_theLeaderProvisions() {
+        routes.replace("old-1", new ReplaceNodeRequest("   ", null)).await();
+        routes.replace("old-1", new ReplaceNodeRequest("", null)).await();
+
+        assertThat(service.calls).containsExactly("begin old-1 ", "begin old-1 ");
+    }
+
+    /// All three routes are answered by the leader (it drives the phases and commits the records) and are what the route table
+    /// says they are.
+    @Test
+    void theRoutesAreLeaderBound_withTheDocumentedMethodAndPath() {
+        assertThat(org.pragmatica.aether.management.route.ManagementRoute.NODE_REPLACE.target()).isEqualTo(org.pragmatica.aether.management.route.RouteTarget.LEADER);
+        assertThat(org.pragmatica.aether.management.route.ManagementRoute.NODE_REPLACEMENTS.target()).isEqualTo(org.pragmatica.aether.management.route.RouteTarget.LEADER);
+        assertThat(org.pragmatica.aether.management.route.ManagementRoute.NODE_REPLACEMENT_SETTLE.target()).isEqualTo(org.pragmatica.aether.management.route.RouteTarget.LEADER);
+    }
+
+    /// B1 (v-2042): a node that has no replacement service answers with a refusal; it never throws.
+    @Test
+    void aNodeWithoutAService_refusesInsteadOfThrowing() {
+        var node = mock(ManageableNode.class, org.mockito.Mockito.CALLS_REAL_METHODS);
+        var unavailable = NodeReplacementRoutes.nodeReplacementRoutes(() -> node);
+        var result = unavailable.replace("old-1", new ReplaceNodeRequest(null, null)).await();
+
+        assertThat(result.isFailure()).isTrue();
+        result.onFailure(cause -> assertThat(cause).isInstanceOf(ManagementServerError.Conflict.class));
+        assertThat(unavailable.list()).isEmpty();
     }
 
     private static HttpStatus statusOf(Cause refusal) {
@@ -122,7 +152,7 @@ class NodeReplacementRoutesTest {
 
     private static final class RecordingService implements NodeReplacementService {
         final List<String> calls = new ArrayList<>();
-        final Map<NodeId, NodeReplacementValue> records = new java.util.HashMap<>();
+        final Map<NodeId, NodeReplacementValue> records = new java.util.LinkedHashMap<>();
         Cause refuse;
 
         @Override

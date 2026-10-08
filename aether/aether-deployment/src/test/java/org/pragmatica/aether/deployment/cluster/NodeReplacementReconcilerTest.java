@@ -683,4 +683,44 @@ class NodeReplacementReconcilerTest {
             Thread.currentThread().interrupt();
         }
     }
+
+    /// v-2042 H8b: a worker's failed canary gives the replacement up while the original still serves, but with the original gone the
+    /// replacement is the last node of the pair and is kept (never terminated).
+    @Test
+    void workerCanaryFailure_withTheOriginalGone_keepsTheReplacement_withTheOriginalAlive_givesItUp() {
+        var gone = new Model();
+
+        gone.records.put(OLD, new NodeReplacementValue(NEW, "worker", NodeReplacementPhase.CANARY, gone.clock.get() + 10_000));
+        gone.newKnown = true;
+        gone.newAlive = false;
+        gone.oldAlive = false;
+        driver(gone).reconcile().await();
+
+        assertThat(gone.records.get(OLD).phase()).isEqualTo(NodeReplacementPhase.FAILED_KEPT_BOTH);
+        assertThat(gone.effects).doesNotContain("TERMINATE_REPLACEMENT");
+
+        var serving = new Model();
+
+        serving.records.put(OLD, new NodeReplacementValue(NEW, "worker", NodeReplacementPhase.CANARY, serving.clock.get() + 10_000));
+        serving.newKnown = true;
+        serving.newAlive = false;
+        driver(serving).reconcile().await();
+
+        assertThat(serving.records.get(OLD).phase()).as("control: with the original alive the replacement is given up").isEqualTo(NodeReplacementPhase.ROLLED_BACK);
+    }
+
+    /// v-2042 nit: settling a kept-both worker pair as "roll back" must not terminate the last node when the original is gone.
+    @Test
+    void workerRevertingFromASettle_withTheOriginalGone_keepsTheReplacement() {
+        var model = new Model();
+
+        model.records.put(OLD, new NodeReplacementValue(NEW, "worker", NodeReplacementPhase.REVERTING, model.clock.get() + 10_000));
+        model.newKnown = true;
+        model.newAlive = true;
+        model.oldAlive = false;
+        driver(model).reconcile().await();
+
+        assertThat(model.records.get(OLD).phase()).isEqualTo(NodeReplacementPhase.FAILED_KEPT_BOTH);
+        assertThat(model.effects).doesNotContain("TERMINATE_REPLACEMENT");
+    }
 }

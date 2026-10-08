@@ -71,7 +71,7 @@ public interface ManageableNode {
     /// #1543 E: begin, inspect and settle node replacements. Only a running node has one; a test double that never
     /// touches replacement routes need not.
     default org.pragmatica.aether.deployment.cluster.NodeReplacementService nodeReplacementService() {
-        throw new UnsupportedOperationException("node replacement is not available on this node");
+        return org.pragmatica.aether.deployment.cluster.NodeReplacementService.unavailable();
     }
 
     default org.pragmatica.consensus.rabia.VoterReconfigurationStatus voterReconfigurationStatus() {

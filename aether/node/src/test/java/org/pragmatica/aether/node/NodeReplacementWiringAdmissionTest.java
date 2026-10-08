@@ -24,7 +24,7 @@ class NodeReplacementWiringAdmissionTest {
 
     @Test
     void externalCore_commitsTheReservationCoreAdmissionAdmitsBy() {
-        var mutations = NodeReplacementWiring.admissionMutations(true, "core", FRESH, "hetzner");
+        var mutations = NodeReplacementWiring.admissionMutations(true, "core", FRESH, "hetzner", Option.none());
 
         assertThat(mutations).hasSize(1);
         var mutation = mutations.getFirst();
@@ -40,8 +40,8 @@ class NodeReplacementWiringAdmissionTest {
 
     @Test
     void ctmReplacement_commitsTheRecordAlone() {
-        assertThat(NodeReplacementWiring.admissionMutations(false, "core", FRESH, "")).isEmpty();
-        assertThat(NodeReplacementWiring.admissionMutations(false, "worker", FRESH, "")).isEmpty();
+        assertThat(NodeReplacementWiring.admissionMutations(false, "core", FRESH, "", Option.none())).isEmpty();
+        assertThat(NodeReplacementWiring.admissionMutations(false, "worker", FRESH, "", Option.none())).isEmpty();
     }
 
     /// v-2042: worker admission is decided by `AetherNode.workerAdmissionAllowed`, which admits a worker only on a committed
@@ -49,7 +49,7 @@ class NodeReplacementWiringAdmissionTest {
     /// reservation committed with its record, exactly like a core; without it the operator-started worker is never admitted.
     @Test
     void externalWorker_commitsTheReservationWorkerAdmissionAdmitsBy() {
-        var mutations = NodeReplacementWiring.admissionMutations(true, "worker", FRESH, "hetzner");
+        var mutations = NodeReplacementWiring.admissionMutations(true, "worker", FRESH, "hetzner", Option.none());
 
         assertThat(mutations).as("an EXTERNAL worker replacement commits its admission intent").hasSize(1);
         var mutation = mutations.getFirst();
