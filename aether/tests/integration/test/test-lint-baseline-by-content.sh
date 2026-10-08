@@ -10,6 +10,11 @@
 #   L4 a NEW violation turns lint red and names file:line;
 #   L5 editing the waived line voids its waiver (waivers are not blanket per file);
 #   L6 two identical flagged lines need two entries (multiset, not set);
+#   L8 a whitespace-only edit of a waived line (indent, inner runs) keeps its waiver;
+#   L9 the same flagged content in ANOTHER file is a new finding (the file is part of the key);
+#   L10 an R1 waiver names the log_warn too: the same log_pass under a different log_warn is a new finding;
+#   L11 fixing a waived finding while adding an identical line in ANOTHER function is a new finding (swap not hidden by the count);
+#   L12 the rule is part of the key: an R4 finding is not covered by an R2 entry with the same text;
 #   L7 the shipped baseline carries no line-number keys and is green against the real tree.
 #
 #   bash aether/tests/integration/test/test-lint-baseline-by-content.sh
@@ -82,15 +87,65 @@ write_fixture
 sed -i.bak 's#curl -s localhost 2>/dev/null || true#curl -s localhost:8080 2>/dev/null || true#' "$SUITE"; rm -f "${SUITE}.bak"
 if lint > /dev/null; then fail "L5 an edited waived line kept its waiver"; else ok "L5 editing the waived line voids its waiver"; fi
 
-# L6 — multiset
+# L6 — multiset: a second identical flagged line in the SAME function (same file, rule, function and text, so only the count differs)
 write_fixture
-cat >> "$SUITE" <<'F'
-test_four() {
+sed -i.bak '/^    curl -s localhost 2>\/dev\/null || true$/a\
+    curl -s localhost 2>/dev/null || true
+' "$SUITE"; rm -f "${SUITE}.bak"
+if [ "$(grep -c 'curl -s localhost 2>/dev/null || true' "$SUITE")" = 2 ] && ! lint > /dev/null; then ok "L6 a second identical flagged line in the same function needs its own entry"; else fail "L6 a second identical flagged line in one function was absorbed by one entry (or the fixture did not apply)"; fi
+
+# L8 — whitespace-only edits
+write_fixture
+capture > "$BASE"
+sed -i.bak 's#^    curl -s localhost 2>/dev/null || true#        curl   -s   localhost   2>/dev/null   ||   true#' "$SUITE"; rm -f "${SUITE}.bak"
+if grep -q 'curl   -s   localhost' "$SUITE" && lint > /dev/null; then ok "L8 indent and inner-whitespace edits of the waived R2 line keep its waiver"; else fail "L8 a whitespace-only edit voided the waiver (or did not apply)"; fi
+
+# L9 — same content, other file: MOVE the waived line to another file under the SAME function name, so only the file differs
+write_fixture
+OTHER="${IT}/suites/99-fixture/test-other.sh"
+sed -i.bak 's#curl -s localhost 2>/dev/null || true#true#' "$SUITE"; rm -f "${SUITE}.bak"
+cat > "$OTHER" <<'F'
+#!/bin/bash
+test_two() {
     curl -s localhost 2>/dev/null || true
 }
-run_test "four" test_four
+run_test "two" test_two
 F
-if lint > /dev/null; then fail "L6 a second identical flagged line was absorbed by one entry"; else ok "L6 a second identical flagged line needs its own entry"; fi
+if lint > /dev/null; then fail "L9 the waived content, moved to another file, kept the first file's waiver"; else ok "L9 the same flagged content in another file is a new finding (file is part of the key)"; fi
+rm -f "$OTHER"
+
+# L10 — R1 key names the warn
+write_fixture
+sed -i.bak 's#log_warn "soft"#log_warn "a different soft gate"#' "$SUITE"; rm -f "${SUITE}.bak"
+if grep -q 'different soft gate' "$SUITE" && ! lint > /dev/null; then ok "L10 the same log_pass under a different log_warn is a new R1 finding"; else fail "L10 changing the log_warn kept the old R1 waiver (or did not apply)"; fi
+
+# L11 — swap across functions: remove the waived curl from test_two, add the identical line to a new function (count unchanged)
+write_fixture
+capture > "$BASE"
+sed -i.bak 's#curl -s localhost 2>/dev/null || true#true#' "$SUITE"; rm -f "${SUITE}.bak"
+cat >> "$SUITE" <<'F'
+test_five() {
+    curl -s localhost 2>/dev/null || true
+}
+run_test "five" test_five
+F
+if lint > /dev/null; then fail "L11 an identical flagged line in another function was absorbed by the waiver of the fixed one"; else ok "L11 same text in a different function is a new finding"; fi
+
+# L12 — rule is part of the key: one line flagged by R2 and R4; re-label the R4 entry as R2
+write_fixture
+cat >> "$SUITE" <<'F'
+test_six() {
+    [ "$s" -ge 200 ] && [ "$s" -lt 400 ] 2>/dev/null || true
+}
+run_test "six" test_six
+F
+capture > "$BASE"
+lint > /dev/null || fail "L12 setup: the captured baseline must be green for its own tree"
+grep -q '^\[R4\]' "$BASE" || fail "L12 the capture carries no [R4] entry: the rule is not in the key"
+# The assertion does not depend on the guards above: with the rule dropped from the key the relabel is a no-op, the
+# baseline still covers everything, lint stays green, and THIS check fails.
+sed -i.bak 's#^\[R4\]#[R2]#' "$BASE"; rm -f "${BASE}.bak"
+if lint > /dev/null; then fail "L12 an R2 entry covered an R4 finding with the same file and text"; else ok "L12 the same file and content under a different rule is a new finding"; fi
 
 # L7 — shipped baseline
 if grep -qE '\.sh:[0-9]+ ' "${INTEG_DIR}/lint-baseline.txt"; then fail "L7 shipped baseline carries a line-number key"; else ok "L7 shipped baseline carries no line-number keys"; fi
