@@ -166,6 +166,40 @@ class QuicLaneEndMarkerFinLossTest {
         assertThat(caught.get()).as("and does not surface as an exception in the pipeline").isZero();
     }
 
+    /// An error path must never hang. On a FLOW-CONTROL-BLOCKED stream the marker would queue behind the
+    /// blocked writes; the stream must still close within the bound (a bare close() does; endLaneThenClose
+    /// without a guard did not). Adapted from v-2020's probe.
+    @Test
+    void errorPathCloseOnAFlowControlBlockedStream_closesWithinTheBound() {
+        connect();
+        var stream = dialerSide.stream(LANE).unwrap();
+        var atAcceptor = acceptorSide.get().stream(LANE).unwrap();
+
+        atAcceptor.config().setAutoRead(false);
+        LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(300));
+        io.netty.channel.ChannelFuture last = null;
+
+        for (var n = 0; n < 4000; n++) {
+            last = stream.writeAndFlush(Unpooled.wrappedBuffer(new byte[64 * 1024]));
+            if (n % 16 == 15) {
+                LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(50));
+                if (!last.isDone()) {
+                    break;
+                }
+            }
+        }
+        LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(500));
+        assertThat(last.isDone()).as("precondition: the stream is flow-control blocked").isFalse();
+
+        stream.pipeline().fireExceptionCaught(new IllegalStateException("injected"));
+        var deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+
+        while (stream.isActive() && System.nanoTime() < deadline) {
+            LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(20));
+        }
+        assertThat(stream.isActive()).as("the errored stream closed within 5 s").isFalse();
+    }
+
     /// After the marker both halves are finished and the stream closes at BOTH ends, returning its credit.
     private void awaitStreamClosedAtBothEnds(QuicStreamChannel atAcceptor, QuicStreamChannel atDialer) {
         awaitTrue(() -> !atAcceptor.isActive() && !atDialer.isActive(), "the retired stream closed at both ends");

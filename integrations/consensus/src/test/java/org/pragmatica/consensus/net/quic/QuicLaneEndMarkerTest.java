@@ -109,66 +109,112 @@ class QuicLaneEndMarkerTest {
         assertThat(frame.content().readInt()).isZero();
     }
 
-    /// Item 3 — the error path ends the lane with the marker before closing, so the peer releases its lane
-    /// even if a bare FIN would be lost.
-    @Test
-    void exceptionCaught_endsTheLaneWithTheMarker_thenCloses() {
+    /// A mock writable, active stream whose executor captures the scheduled backstop.
+    private record ErrorPath(Harness harness, io.netty.channel.ChannelFuture written,
+                             java.util.concurrent.atomic.AtomicReference<io.netty.util.concurrent.GenericFutureListener> listener,
+                             java.util.concurrent.atomic.AtomicReference<Runnable> backstop) {}
+
+    @SuppressWarnings("unchecked")
+    private static ErrorPath errorPath(boolean active, boolean writable) {
         var harness = harness();
         var written = mock(io.netty.channel.ChannelFuture.class);
         var listener = new java.util.concurrent.atomic.AtomicReference<io.netty.util.concurrent.GenericFutureListener>();
+        var backstop = new java.util.concurrent.atomic.AtomicReference<Runnable>();
+        var executor = mock(io.netty.util.concurrent.EventExecutor.class);
 
-        when(harness.stream().isActive()).thenReturn(true);
+        when(harness.stream().isActive()).thenReturn(active);
+        when(harness.stream().isWritable()).thenReturn(writable);
         when(harness.ctx().writeAndFlush(any())).thenReturn(written);
+        when(harness.ctx().executor()).thenReturn(executor);
         when(written.addListener(any())).thenAnswer(invocation -> {
             listener.set(invocation.getArgument(0));
             return written;
         });
+        when(executor.schedule(any(Runnable.class), org.mockito.ArgumentMatchers.anyLong(), any())).thenAnswer(invocation -> {
+            backstop.set(invocation.getArgument(0));
+            return null;
+        });
 
-        harness.handler().exceptionCaught(harness.ctx(), new IllegalStateException("boom"));
+        return new ErrorPath(harness, written, listener, backstop);
+    }
 
-        verify(harness.ctx(), never()).close();
-        verify(harness.ctx()).writeAndFlush(org.mockito.ArgumentMatchers.argThat(QuicLaneEndMarkerTest::isLaneEnd));
-        try {
-            listener.get().operationComplete(written);
-        } catch (Exception e) {
-            throw new AssertionError(e);
-        }
-        verify(harness.ctx()).close();
+    /// Item 3 — the error path ends the lane with the marker before closing, so the peer releases its lane
+    /// even if a bare FIN would be lost. The close follows the marker write.
+    @Test
+    void exceptionCaught_endsTheLaneWithTheMarker_thenCloses() throws Exception {
+        var path = errorPath(true, true);
+        var ctx = path.harness().ctx();
+
+        path.harness().handler().exceptionCaught(ctx, new IllegalStateException("boom"));
+
+        verify(ctx, never()).close();
+        verify(ctx).writeAndFlush(org.mockito.ArgumentMatchers.argThat(QuicLaneEndMarkerTest::isLaneEnd));
+        path.listener().get().operationComplete(path.written());
+        verify(ctx).close();
+    }
+
+    /// An error path must not hang: if the marker write never completes (flow-control blocked behind
+    /// queued writes), the bounded backstop closes the stream anyway, and only once.
+    @Test
+    void exceptionCaught_whenTheMarkerWriteNeverCompletes_theBackstopStillCloses() throws Exception {
+        var path = errorPath(true, true);
+        var ctx = path.harness().ctx();
+
+        path.harness().handler().exceptionCaught(ctx, new IllegalStateException("boom"));
+
+        verify(ctx, never()).close();
+        assertThat(path.backstop().get()).as("a backstop close is scheduled").isNotNull();
+        path.backstop().get().run();
+        verify(ctx, times(1)).close();
+        path.listener().get().operationComplete(path.written());
+        verify(ctx, times(1)).close();
+    }
+
+    /// A stream that is not writable (the marker would queue behind blocked writes) is closed at once,
+    /// with nothing written.
+    @Test
+    void exceptionCaught_onANonWritableStream_closesAtOnce_writingNothing() {
+        var path = errorPath(true, false);
+        var ctx = path.harness().ctx();
+
+        path.harness().handler().exceptionCaught(ctx, new IllegalStateException("boom"));
+
+        verify(ctx).close();
+        verify(ctx, never()).writeAndFlush(any());
     }
 
     /// A dead stream has nothing to write to: it is only closed.
     @Test
     void exceptionCaught_onADeadStream_justCloses() {
-        var harness = harness();
+        var path = errorPath(false, true);
+        var ctx = path.harness().ctx();
 
-        when(harness.stream().isActive()).thenReturn(false);
+        path.harness().handler().exceptionCaught(ctx, new IllegalStateException("boom"));
 
-        harness.handler().exceptionCaught(harness.ctx(), new IllegalStateException("boom"));
-
-        verify(harness.ctx()).close();
-        verify(harness.ctx(), never()).writeAndFlush(any());
+        verify(ctx).close();
+        verify(ctx, never()).writeAndFlush(any());
     }
 
-    /// Item 3 — a lane refused for want of a verified connection is ended with the marker too.
+    /// Item 3 — a lane refused for want of a verified connection is ended with the marker and then
+    /// CLOSED: the close follows the write, and the backstop closes it if the write never completes.
     @Test
-    void refusedUnverifiedLane_endsWithTheMarker_beforeClosing() {
-        var harness = harness();
-        var written = mock(io.netty.channel.ChannelFuture.class);
+    void refusedUnverifiedLane_endsWithTheMarker_andIsEventuallyClosed() throws Exception {
+        var path = errorPath(true, true);
+        var ctx = path.harness().ctx();
         var parent = mock(QuicChannel.class);
         @SuppressWarnings("unchecked")
         var noConnection = (Attribute<QuicPeerConnection>) mock(Attribute.class);
 
-        when(harness.stream().isActive()).thenReturn(true);
-        when(harness.stream().parent()).thenReturn(parent);
+        when(path.harness().stream().parent()).thenReturn(parent);
         when(parent.attr(PeerOpenedLaneRouter.PEER_CONNECTION)).thenReturn(noConnection);
-        when(harness.ctx().writeAndFlush(any())).thenReturn(written);
-        when(written.addListener(any())).thenReturn(written);
 
         new PeerOpenedLaneRouter(LaneProbe.codec(), QuicTransportMetrics.quicTransportMetrics(), (_, message) -> {}, LoggerFactory.getLogger(QuicLaneEndMarkerTest.class))
-            .attach(harness.ctx(), mock(io.netty.channel.ChannelHandler.class), LANE);
+            .attach(ctx, mock(io.netty.channel.ChannelHandler.class), LANE);
 
-        verify(harness.ctx()).writeAndFlush(org.mockito.ArgumentMatchers.argThat(QuicLaneEndMarkerTest::isLaneEnd));
-        verify(harness.ctx(), never()).close();
+        verify(ctx).writeAndFlush(org.mockito.ArgumentMatchers.argThat(QuicLaneEndMarkerTest::isLaneEnd));
+        verify(ctx, never()).close();
+        path.backstop().get().run();
+        verify(ctx, times(1)).close();
     }
 
     private static boolean isLaneEnd(Object message) {

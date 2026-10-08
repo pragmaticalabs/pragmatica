@@ -20,6 +20,8 @@ import java.util.Deque;
 import java.util.EnumMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
 
 import org.pragmatica.consensus.NodeId;
@@ -361,18 +363,39 @@ public final class QuicPeerConnection {
         return new DefaultQuicStreamFrame(Unpooled.wrappedBuffer(new byte[LENGTH_PREFIX_BYTES]), true);
     }
 
-    /// #1727 (M1) — the error-path finish: end the lane with the marker frame, THEN close. A bare close()
-    /// sends a bare FIN, which the peer may never see (see [#laneEndFrame]), so it would not release its
-    /// lane. A stream that is already dead is just closed: there is nothing to write to.
+    /// #1727 (M1) — the error-path finish: end the lane with the marker, THEN close. A bare close() sends a
+    /// bare FIN, which the peer may never see (see [#laneEndFrame]), so it would not release its lane.
+    ///
+    /// An error path must never be able to hang. A stream that is dead or not writable (flow-control
+    /// blocked: the marker would queue behind the blocked writes and its future would wait for credit the
+    /// peer may never grant) is closed at once; otherwise the close is also scheduled as a bounded backstop,
+    /// so it happens whether or not the marker write completes.
     @Contract
     static void endLaneThenClose(ChannelHandlerContext ctx) {
-        if (!ctx.channel().isActive()) {
+        endLaneThenClose(ctx, CLOSE_BACKSTOP_MS);
+    }
+
+    @Contract
+    static void endLaneThenClose(ChannelHandlerContext ctx, long backstopMs) {
+        var channel = ctx.channel();
+
+        if (!channel.isActive() || !channel.isWritable()) {
             ctx.close();
 
             return;
         }
 
-        ctx.writeAndFlush(laneEndFrame()).addListener(_ -> ctx.close());
+        var closed = new AtomicBoolean();
+        Runnable closeOnce = () -> closeOnce(ctx, closed);
+
+        ctx.writeAndFlush(laneEndFrame()).addListener(_ -> closeOnce.run());
+        ctx.executor().schedule(closeOnce, backstopMs, TimeUnit.MILLISECONDS);
+    }
+
+    private static void closeOnce(ChannelHandlerContext ctx, AtomicBoolean closed) {
+        if (closed.compareAndSet(false, true)) {
+            ctx.close();
+        }
     }
 
     /// #1578 — `stream` ended from the other side: its FIN arrived (the other side retired it under
@@ -414,6 +437,7 @@ public final class QuicPeerConnection {
     }
 
     private static final int LENGTH_PREFIX_BYTES = 4;
+    static final long CLOSE_BACKSTOP_MS = 1_000;
     private static final Logger log = LoggerFactory.getLogger(QuicPeerConnection.class);
 
     private void closeLongLivedStreams() {
