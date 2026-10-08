@@ -696,7 +696,7 @@ class EmberNodeReplacementTest {
         static Watch begin(EmberNodeReplacementTest test, int expectedVoters) {
             var watch = new Watch(test, expectedVoters);
 
-            watch.sampler = Thread.ofPlatform().daemon().start(watch::sample);
+            watch.sampler = Thread.ofPlatform().daemon().unstarted(watch::sample);
             watch.writer = Thread.ofPlatform().daemon().start(watch::write);
 
             return watch;
