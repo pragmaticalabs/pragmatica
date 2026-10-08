@@ -531,10 +531,17 @@ class AppHttpServerAdapter implements AppHttpServer {
     private Promise<Unit> startH3Server() {
         var quicTls = tls.map(cfg -> QuicSslContextFactory.createServer(cfg, ClientAuthPolicy.NOT_REQUESTED))
                          .or(QuicSslContextFactory.createSelfSignedServer());
-        // A QUIC context that cannot be built refuses the start (fail closed). Only a later BIND failure of the
-        // HTTP/3 listener is still non-fatal, as before.
+        // A QUIC context that cannot be built refuses the start (fail closed). A BIND failure of the HTTP/3 listener is
+        // non-fatal only when HTTP/1.1 also serves (BOTH); with HTTP/3 as the only app protocol it would leave the node
+        // running with no app listener at all, so it is propagated.
         return quicTls.fold(cause -> quicTlsRefused(cause),
-                            context -> startH3WithSslContext(context).recover(AppHttpServerAdapter::logH3DisabledAndReturnUnit));
+                            context -> tolerateBindFailureWhenH1Serves(startH3WithSslContext(context)));
+    }
+
+    private Promise<Unit> tolerateBindFailureWhenH1Serves(Promise<Unit> h3Start) {
+        return config.httpProtocol().includesH1()
+               ? h3Start.recover(AppHttpServerAdapter::logH3DisabledAndReturnUnit)
+               : h3Start;
     }
 
     private Promise<Unit> quicTlsRefused(Cause cause) {
