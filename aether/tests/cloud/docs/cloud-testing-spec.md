@@ -33,8 +33,8 @@
 > **2026-08-27 update:** the decision is now final for this release. `aether/docker/aether-lb/`
 > (the orphaned, unbuildable Dockerfile referencing a nonexistent `aether/lb` module) has been
 > deleted. There is no plan to reintroduce a standalone `aether-lb` deployable. Whether an LB
-> should return as a *mode* of `aether-node` built on `PassiveNode` (currently dead code, never
-> instantiated anywhere in the runtime) remains an open question, but only if the owner
+> should return as a *mode* of `aether-node` built on a passive node (the former `PassiveNode`, dead code, was removed in rc4, #2033;
+> nothing in the runtime was ever instantiating it) remains an open question, but only if the owner
 > confirms ingress AB/canary routing is actually roadmapped — deploy-side canary
 > (`aether deploy --canary`) already ships today and does not require it. See #560.
 
