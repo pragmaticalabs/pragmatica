@@ -64,6 +64,7 @@ class NodeReplacementEnvTest {
         states.put(OLD, "Member");
         when(ctm.provisionReplacement(any(), any(), any(), any(), any())).thenReturn(Promise.success(ProvisionDisposition.dispatched()));
         when(ctm.drainNode(any(), any())).thenAnswer(call -> Promise.unitPromise());
+        when(ctm.reapRetired(any(), any())).thenAnswer(call -> Promise.unitPromise());
         wiring = NodeReplacementWiring.wire(inputs(NodeReplacementPlanner.Timings.parse("60000,60000,60000,60000,0,60000,60000")));
     }
 
@@ -216,6 +217,63 @@ class NodeReplacementEnvTest {
         wiring.reconciler().reconcile().await();
 
         verify(ctm).provisionReplacement(any(), any(), any(), any(), any());
+    }
+
+    // ---- #1543: DONE only after the provider's instance is confirmed gone ----------------------------------------------
+
+    /// The old node has left the cluster (Dead) and its hand-off is settled, so the cluster is already correct; the replacement is still
+    /// not DONE while the termination of its instance is not confirmed, and it IS DONE the tick after the confirmation arrives.
+    @Test
+    void retiring_isNotDone_untilTheTerminationIsConfirmed() {
+        states.put(OLD, "Dead");
+        when(ctm.reapRetired(any(), any())).thenAnswer(call -> org.pragmatica.lang.utils.Causes.cause("instance of core-old: still listed at the provider after terminate").<org.pragmatica.lang.Unit> promise());
+        record(NodeReplacementPhase.RETIRING_OLD, 999_999L);
+        wiring.reconciler().reconcile().await();
+        wiring.reconciler().reconcile().await();
+
+        assertThat(commands).as("a refused termination commits nothing: no DONE").isEmpty();
+
+        when(ctm.reapRetired(any(), any())).thenAnswer(call -> Promise.unitPromise());
+        wiring.reconciler().reconcile().await();
+        wiring.reconciler().reconcile().await();
+
+        assertThat(committedRecord().phase()).isEqualTo(NodeReplacementPhase.DONE);
+    }
+
+    /// At the deadline with the instance still not confirmed gone the record is FAILED_KEPT_BOTH, and its reason (which the operator
+    /// event carries) names the instance and the last cause.
+    @Test
+    void retiringOverdue_withAnUnconfirmedTermination_isKeptBoth_namingTheInstanceAndTheCause() {
+        states.put(OLD, "Dead");
+        when(ctm.reapRetired(any(), any())).thenAnswer(call -> org.pragmatica.lang.utils.Causes.cause("instance of core-old: still listed at the provider after terminate: [i-1 Running]").<org.pragmatica.lang.Unit> promise());
+        record(NodeReplacementPhase.RETIRING_OLD, 5_000L);
+        wiring.reconciler().reconcile().await();
+        now = 6_000L;
+        wiring.reconciler().reconcile().await();
+
+        var committed = committedRecord();
+
+        assertThat(committed.phase()).isEqualTo(NodeReplacementPhase.FAILED_KEPT_BOTH);
+        assertThat(committed.reason()).contains("not confirmed terminated").contains("instance of core-old").contains("i-1 Running");
+    }
+
+    /// A rollback is ROLLED_BACK only once the replacement's instance is confirmed gone; if the termination keeps failing past the
+    /// retiring budget the pair is kept, with the cause.
+    @Test
+    void aRollbackThatCannotTerminateTheReplacement_isKeptBoth_afterTheRetiringBudget() {
+        when(ctm.reapRetired(any(), any())).thenAnswer(call -> org.pragmatica.lang.utils.Causes.cause("instance of core-new: quota").<org.pragmatica.lang.Unit> promise());
+        record(NodeReplacementPhase.PROVISIONING, 500L);
+        wiring.reconciler().reconcile().await();
+
+        assertThat(commands).as("within the budget the termination is retried, nothing is rolled back").isEmpty();
+
+        now = 62_000L;
+        wiring.reconciler().reconcile().await();
+
+        var committed = committedRecord();
+
+        assertThat(committed.phase()).isEqualTo(NodeReplacementPhase.FAILED_KEPT_BOTH);
+        assertThat(committed.reason()).contains("could not be rolled back").contains("instance of core-new: quota");
     }
 
     // ---- B3: the owner gate -------------------------------------------------------------------------------------------

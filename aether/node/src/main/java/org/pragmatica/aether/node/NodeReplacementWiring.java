@@ -44,6 +44,7 @@ import org.pragmatica.cluster.state.kvstore.LeaderKey;
 import org.pragmatica.cluster.state.kvstore.LeaderValue;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.rabia.VoterConfiguration;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
@@ -297,6 +298,11 @@ public final class NodeReplacementWiring {
         private final Set<NodeId> drainRequested = ConcurrentHashMap.newKeySet();
         private final Map<NodeId, String> drainBlocked = new ConcurrentHashMap<>();
         private final Map<NodeId, String> drainRefused = new ConcurrentHashMap<>();
+        // Nodes whose provider instance a listing after the terminate showed gone, why the last attempt on a node did not, and
+        // when the attempts on a node began. Held per leader: a new leader repeats the (idempotent) confirmation.
+        private final Set<NodeId> reaped = ConcurrentHashMap.newKeySet();
+        private final Map<NodeId, String> reapFailure = new ConcurrentHashMap<>();
+        private final Map<NodeId, Long> reapSince = new ConcurrentHashMap<>();
 
         Env(Inputs in) {
             this.in = in;
@@ -354,7 +360,10 @@ public final class NodeReplacementWiring {
                                    drainBlocked.getOrDefault(original, ""),
                                    oldState.filter(name -> !"Dead".equals(name)).isEmpty(),
                                    !in.dhtHolds().test(original),
-                                   drainRefused.getOrDefault(original, ""));
+                                   drainRefused.getOrDefault(original, ""),
+                                   reaped.contains(original),
+                                   reapFailure.getOrDefault(original,
+                                                            reapFailure.getOrDefault(record.replacement(), "")));
         }
 
         private DrainState drainState(NodeId original, boolean oldAlive) {
@@ -372,9 +381,9 @@ public final class NodeReplacementWiring {
         public Promise<EffectResult> execute(Effect effect, NodeId original, NodeReplacementValue record) {
             return switch (effect) {
                 case PROVISION -> provision(original, record);
-                case TERMINATE_REPLACEMENT -> terminate(record.replacement());
+                case TERMINATE_REPLACEMENT -> terminate(record.replacement(), record, true);
                 case DRAIN_OLD -> drain(original);
-                case RETIRE_OLD -> terminate(original);
+                case RETIRE_OLD -> terminate(original, record, false);
                 case NONE -> Promise.success(new EffectResult.Done());
             };
         }
@@ -410,11 +419,46 @@ public final class NodeReplacementWiring {
                      .recover(cause -> new EffectResult.Failed(cause.message()));
         }
 
-        private Promise<EffectResult> terminate(NodeId node) {
+        /// Done only when the provider's own listing, taken after the terminate, shows the instance gone. A refusal, a listing that
+        /// fails or an instance still listed is Deferred with its cause (never read as gone) and tried again on the next tick; a
+        /// rollback gives up after the retirement budget (Failed, which keeps the pair for the operator), while the retirement's
+        /// own deadline is the planner's.
+        private Promise<EffectResult> terminate(NodeId node, NodeReplacementValue record, boolean boundedByRetiring) {
+            if (reaped.contains(node)) {
+                return Promise.success(new EffectResult.Done());
+            }
+
+            reapSince.putIfAbsent(node,
+                                  in.clock().getAsLong());
+
             return in.ctm()
                      .drainNode(node, DrainReason.REPLACED)
-                     .<EffectResult> map(_ -> new EffectResult.Done())
-                     .recover(cause -> new EffectResult.Deferred("terminate refused: " + cause.message()));
+                     .flatMap(_ -> in.ctm()
+                                     .reapRetired(node,
+                                                  SourceName.sourceNameOrDefault(record.source())))
+                     .<EffectResult> map(_ -> confirmedGone(node))
+                     .recover(cause -> notConfirmed(node, cause, boundedByRetiring));
+        }
+
+        private EffectResult confirmedGone(NodeId node) {
+            reaped.add(node);
+            reapFailure.remove(node);
+            reapSince.remove(node);
+
+            return new EffectResult.Done();
+        }
+
+        private EffectResult notConfirmed(NodeId node, Cause cause, boolean boundedByRetiring) {
+            reapFailure.put(node, cause.message());
+            if (boundedByRetiring && in.clock().getAsLong() - reapSince.getOrDefault(node,
+                                                                                     in.clock().getAsLong()) > in.timings()
+                                                                                                                 .retiringMs()) {
+                reapSince.remove(node);
+
+                return new EffectResult.Failed(cause.message());
+            }
+
+            return new EffectResult.Deferred("termination not confirmed: " + cause.message());
         }
 
         private Promise<EffectResult> drain(NodeId original) {
