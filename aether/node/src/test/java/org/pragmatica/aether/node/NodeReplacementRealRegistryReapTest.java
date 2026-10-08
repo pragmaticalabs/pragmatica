@@ -261,6 +261,47 @@ class NodeReplacementRealRegistryReapTest {
         assertThat(store.getTyped(AetherKey.CapacityLedgerKey.INSTANCE, CapacityLedgerValue.class).unwrap().allocated()).isEqualTo(4);
     }
 
+    /// Ledger-less cluster: the reservation carries the uncounted marker, which the registry refuses just as it refuses `""`. A rolled-back
+    /// EXTERNAL replacement reaches ROLLED_BACK without a provider call and the never-counted reservation is dropped (not released: a
+    /// release would hand back a slot nobody took).
+    @Test
+    void anUncountedExternalRollback_isConfirmedByDeparture_andTheReservationIsDropped_withoutAProviderCall() {
+        put(AetherKey.CapacityLedgerKey.INSTANCE, new CapacityLedgerValue(4, 1, true));
+        put(new AetherKey.CapacityReservationKey(FRESH), new CapacityReservationValue("west", NodeReplacementWiring.UNCOUNTED, "core", CapacityReservationPhase.DISPATCHED));
+        record(new NodeReplacementValue(FRESH, "core", NodeReplacementPhase.JOINING, 1L, "west", "", NodeReplacementValue.MODE_EXTERNAL, 0, "", 1L));
+
+        wiring.reconciler().reconcile().await();
+
+        assertThat(committed().unwrap().phase()).isEqualTo(NodeReplacementPhase.ROLLED_BACK);
+        assertThat(reservation(FRESH).isEmpty()).as("dropped in the same transaction").isTrue();
+        assertThat(lists.get() + terminates.get()).as("no provider call").isZero();
+
+        lifecycle.reconcileRefusals().await().unwrap();
+
+        assertThat(store.getTyped(AetherKey.CapacityLedgerKey.INSTANCE, CapacityLedgerValue.class).unwrap().allocated()).as("nothing was taken, nothing is returned").isEqualTo(4);
+    }
+
+    /// The retiring variant: an EXTERNAL-joined old node on an uncounted reservation is confirmed by departure and its reservation dropped; the
+    /// ledger is untouched (a RELEASED marker would make the lifecycle decrement a slot that was never counted).
+    @Test
+    void aRetiredUncountedExternalNode_hasItsReservationDropped_andTheLedgerIsUntouched() {
+        put(AetherKey.CapacityLedgerKey.INSTANCE, new CapacityLedgerValue(4, 1, true));
+        put(new AetherKey.CapacityReservationKey(OLD), new CapacityReservationValue("west", NodeReplacementWiring.UNCOUNTED, "core", CapacityReservationPhase.DISPATCHED));
+        states.put(OLD, "Dead");
+        record(new NodeReplacementValue(FRESH, "core", NodeReplacementPhase.RETIRING_OLD, 999_999L, "west", "", NodeReplacementValue.MODE_CTM, 0, "", 1L));
+
+        wiring.reconciler().reconcile().await();
+        wiring.reconciler().reconcile().await();
+
+        assertThat(committed().unwrap().phase()).isEqualTo(NodeReplacementPhase.DONE);
+        assertThat(reservation(OLD).isEmpty()).as("dropped, not marked released").isTrue();
+        assertThat(lists.get() + terminates.get()).as("no provider call").isZero();
+
+        lifecycle.reconcileRefusals().await().unwrap();
+
+        assertThat(store.getTyped(AetherKey.CapacityLedgerKey.INSTANCE, CapacityLedgerValue.class).unwrap().allocated()).isEqualTo(4);
+    }
+
     /// A provider-backed source (real binding): a failed listing is not gone, an empty listing of an instance never listed is not gone,
     /// and an instance that is listed is terminated and confirmed; only then DONE.
     @Test
