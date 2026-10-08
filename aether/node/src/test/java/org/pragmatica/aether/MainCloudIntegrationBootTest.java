@@ -4,7 +4,6 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether;
 
-import java.net.ServerSocket;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -13,6 +12,7 @@ import java.util.Map;
 import java.util.concurrent.TimeUnit;
 
 import org.pragmatica.aether.environment.CloudConfig;
+import org.pragmatica.aether.node.ClusterTestPorts;
 import org.pragmatica.aether.environment.EnvironmentIntegrationFactory;
 import org.pragmatica.lang.Option;
 
@@ -227,10 +227,8 @@ class MainCloudIntegrationBootTest {
         return new Run(child.exitValue(), Files.readString(out), Files.readString(err));
     }
 
-    private static int freePort() throws Exception {
-        try (var socket = new ServerSocket(0)) {
-            return socket.getLocalPort();
-        }
+    private static int freePort() {
+        return ClusterTestPorts.freeTcpAndUdpPort();
     }
 
     /// `[storage.streams] wal_path` (the section the loader reads) under a regular file: the WAL directory cannot be created anywhere, so
