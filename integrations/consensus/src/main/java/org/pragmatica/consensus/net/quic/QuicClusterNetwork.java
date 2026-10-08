@@ -1628,6 +1628,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
         // and RECONNECTED routed processViewChange(RECONNECT) from the PeerState chokepoint
         // before attach() returned. Only post-attach bookkeeping remains here.
         var phaseBefore = state.phase();
+        installActivityKick(connection);
         var outcome = state.attach(connection, System.nanoTime());
 
         journalAttach(peerId, origin, phaseBefore, outcome);
@@ -2037,6 +2038,27 @@ public class QuicClusterNetwork implements ClusterNetwork {
                                                                                           cause.message()));
     }
 
+    /// #1727 (M2) — a lane data write opens (or extends) the owning connection's activity kick window. The
+    /// owner is the connection the stream belongs to, not the peer's active one: a superseded connection
+    /// gets no regular keepalive. A stream without an owner (a fixture) is skipped.
+    @Contract
+    private void noteLaneWrite(QuicStreamChannel ch) {
+        Option.option(ch.parent())
+              .flatMap(parent -> Option.option(parent.attr(PeerOpenedLaneRouter.PEER_CONNECTION).get()))
+              .onPresent(QuicPeerConnection::noteLaneWrite);
+    }
+
+    /// #1727 (M2) — give the connection its activity kick before it can carry traffic. The frame is the
+    /// existing KeepAlive, encoded once; the kick is silenced while blackholed like the keepalive itself.
+    @Contract
+    private void installActivityKick(QuicPeerConnection connection) {
+        Result.lift(() -> serializer.encode(new NetworkMessage.KeepAlive(self.id())))
+              .onSuccess(frame -> connection.activityKick(frame, () -> blackholed))
+              .onFailure(cause -> log.warn("Activity kick not installed for peer {}: {}",
+                                           connection.peerId(),
+                                           cause.message()));
+    }
+
     private static WriteOutcome encodeFailedOutcome(NodeId peerId, Message.Wired message) {
         return new WriteOutcome.EncodeFailed(peerId,
                                              message.getClass().getName());
@@ -2203,6 +2225,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
         if (ch.isWritable()) {
             quicMetrics.onMessageSent();
             quicMetrics.onBytesSent(bytes.length);
+            noteLaneWrite(ch);
             ch.writeAndFlush(Unpooled.wrappedBuffer(bytes))
               .addListener(future -> onLaneWriteResult(future, ch, bytes, peerId, streamType, resendVia));
 
@@ -2326,6 +2349,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
         if (ch.isActive() && ch.isWritable()) {
             quicMetrics.onMessageSent();
             quicMetrics.onBytesSent(bytes.length);
+            noteLaneWrite(ch);
             ch.writeAndFlush(Unpooled.wrappedBuffer(bytes))
               .addListener(future -> handleWriteResult(future, peerId, streamType));
 
@@ -2369,6 +2393,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
         log.debug("Write to peer {} on a retired {} stream or connection failed — resending once on the stream the lane resolves to now",
                   peerId,
                   streamType);
+        noteLaneWrite(current);
         current.writeAndFlush(Unpooled.wrappedBuffer(bytes))
                .addListener(future -> handleWriteResult(future, peerId, streamType));
     }

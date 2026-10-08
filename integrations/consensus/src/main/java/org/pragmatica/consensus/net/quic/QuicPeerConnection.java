@@ -20,6 +20,7 @@ import java.util.Deque;
 import java.util.EnumMap;
 import java.util.List;
 import java.util.Map;
+import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 
 import org.pragmatica.consensus.NodeId;
@@ -114,6 +115,7 @@ public final class QuicPeerConnection {
     private final int consensusWatermarkLowBytes;
     private final int consensusWatermarkHighBytes;
     private volatile LaneOpener laneOpener = LaneOpener.noop();
+    private volatile QuicActivityKick activityKick;
     /// #718 — lanes with a lazy open IN FLIGHT, each mapped to the messages waiting on it. A present
     /// key IS the in-flight marker; [#completeLaneOpen] removing it IS the release. Guarded by this
     /// instance's monitor.
@@ -189,6 +191,42 @@ public final class QuicPeerConnection {
         this.laneOpener = opener == null
                           ? LaneOpener.noop()
                           : opener;
+    }
+
+    /// #1727 (M2) — install the activity kick: after a lane data write ([#noteLaneWrite]) a CONTROL-lane
+    /// frame is written every 100 ms until 5 s pass with no data write. `frame` is the already-encoded
+    /// KeepAlive; `suppressed` silences it (fault-injection blackhole). A connection whose channel has no
+    /// event loop (unit fixtures) gets no kick.
+    @Contract
+    public void activityKick(byte[] frame, BooleanSupplier suppressed) {
+        activityKick(frame, suppressed, QuicActivityKick.DEFAULT_INTERVAL_MS, QuicActivityKick.DEFAULT_WINDOW_MS);
+    }
+
+    @Contract
+    void activityKick(byte[] frame, BooleanSupplier suppressed, long intervalMs, long windowMs) {
+        if (activityKick != null) {
+            return;
+        }
+
+        Option.option(connection.eventLoop())
+              .onPresent(loop -> activityKick = new QuicActivityKick(() -> stream(StreamType.CONTROL),
+                                                                     loop,
+                                                                     connection::isActive,
+                                                                     suppressed,
+                                                                     frame,
+                                                                     intervalMs,
+                                                                     windowMs));
+    }
+
+    /// #1727 (M2) — a lane data write was accepted on one of this connection's streams.
+    @Contract
+    public void noteLaneWrite() {
+        Option.option(activityKick).onPresent(QuicActivityKick::noteDataWrite);
+    }
+
+    /// Visible for tests: kick frames sent so far.
+    long activityKicksSent() {
+        return Option.option(activityKick).map(QuicActivityKick::kicksSent).or(0L);
     }
 
     /// Lazily (re)open a missing long-lived `lane` stream on this live connection, invoking
@@ -383,6 +421,7 @@ public final class QuicPeerConnection {
     @Contract
     @SuppressWarnings("JBCT-UTIL-01")
     private void closeSync() throws Exception {
+        Option.option(activityKick).onPresent(QuicActivityKick::stop);
         closeLongLivedStreams();
         connection.close().sync();
     }
