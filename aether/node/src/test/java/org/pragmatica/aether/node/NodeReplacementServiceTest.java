@@ -67,6 +67,7 @@ class NodeReplacementServiceTest {
         member(OLD_DHT, "dht");
         when(ctm.provisionReplacement(any(), any(), any(), any(), any())).thenReturn(Promise.success(ProvisionDisposition.dispatched()));
         when(ctm.drainNode(any(), any())).thenAnswer(call -> Promise.unitPromise());
+        when(ctm.reapRetired(any(), any())).thenAnswer(call -> Promise.unitPromise());
         wiring = NodeReplacementWiring.wire(inputs());
     }
 
