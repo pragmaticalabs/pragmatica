@@ -14,6 +14,7 @@
   `POST /api/v1/nodes/replacements/settle/{id}` (`{"outcome": "keep-new" | "roll-back"}`, for `FAILED_KEPT_BOTH`). Refusals answer
   404 (unknown node), 400 (unsupported role, bad outcome) and 409 (one at a time, id in use, nothing to settle, concurrent change),
   never 500. Documented in `management-api.md`.
+- **Worker paths of the v-2008 rechecks:** a worker replacement lost before the old worker is drained is rolled back (there is no seat to swap back), settling a kept-both worker pair as "roll back" only gives the replacement up, and the leader reconciler counts only CORE pairings' replacements as core capacity (`coreSurgeReplacements`).
 - **The "in-flight node replacement" INFO line, logged on every reconcile pass, is now DEBUG.**
 - [verified: `NodeReplacementReconcilerTest` worker rows; `CommunityPlacementReconcilerTest` (+3: unpaired extra member is reduced,
   a paired original and replacement are both protected, the protected replacement is never the one removed; probes reddened each);
