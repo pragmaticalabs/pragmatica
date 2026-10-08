@@ -79,6 +79,35 @@ class BootstrapPhaseDeployCloudSshRestartTest {
                                            List.of());
     }
 
+    /// A cloud source whose `node_config` enables `[backup]` (#1968): the CLI's first start must give the node the backup volume.
+    private static SourceProfile cloudSourceWithBackup() {
+        var backup = org.pragmatica.config.toml.TomlParser.parse("[backup]\nenabled = true\npath = \"/var/aether/backups\"\n").unwrap();
+
+        return SourceProfile.sourceProfile(sourceNameOrDefault("eu-1"),
+                                           SourceType.CLOUD,
+                                           Option.some(CloudProviderName.HETZNER),
+                                           Option.empty(),
+                                           Option.empty(),
+                                           Option.empty(),
+                                           List.of(),
+                                           Option.some("aether"),
+                                           Option.some("/home/op/.ssh/aether_id_ed25519"),
+                                           Option.empty(),
+                                           LoadBalancerMode.NONE,
+                                           List.of(),
+                                           Option.empty(),
+                                           Map.of(),
+                                           Map.of(NodeRole.CORE,
+                                                  RoleSubTable.roleSubTable(NodeRole.CORE,
+                                                                            Option.some(3),
+                                                                            Option.empty(),
+                                                                            Option.empty(),
+                                                                            "default")),
+                                           List.of(),
+                                           Option.some(backup),
+                                           Option.empty());
+    }
+
     private static SourceProfile cloudSourceWithKey(String keyPath) {
         return SourceProfile.sourceProfile(sourceNameOrDefault("eu-1"),
                                            SourceType.CLOUD,
@@ -851,6 +880,67 @@ class BootstrapPhaseDeployCloudSshRestartTest {
     }
 
     // --- Bug 16-B: image comes from RuntimeProfile when set, falls back to derived otherwise ---
+
+    /// #1968: the CLI's FIRST START is the container that actually runs, so it must carry the backup volume the install-only
+    /// cloud-init cannot give it: the host directory is created and bind-mounted at `[backup] path`, before `docker run`.
+    @Test
+    void deployCloudSource_containerStart_carriesTheBackupVolumeOfTheSourcesBackup() {
+        var ctx = contextWithRuntimeImage(cloudSourceWithBackup(), "registry/aether-node:1.0.0");
+        var commands = new ConcurrentLinkedQueue<String>();
+        Fn3<Result<String>, String, String, SshConfig> sshExec = (host, command, config) -> {
+            commands.add(command);
+            return Result.success("");
+        };
+
+        var result = BootstrapPhaseDeploy.deployCloudSource(ctx, ctx.config().sources().get("eu-1"), sourceNameOrDefault("eu-1"),
+                                                            alwaysHealthy(), sshExec, envWithKey("/home/op/.ssh/aether_id_ed25519"));
+
+        assertTrue(result.isSuccess(), () -> "Cloud deploy must succeed; got: " + result);
+        var starts = commands.stream().filter(c -> c.contains("docker run")).toList();
+        assertEquals(3, starts.size(), "CONTROL: one first start per core");
+        for (var cmd : starts) {
+            assertTrue(cmd.contains("-v /opt/aether/backups:/var/aether/backups"), () -> "backup volume expected. Got: " + cmd);
+            assertTrue(cmd.contains("install -d -m 0750 -o 1000 -g 1000 /opt/aether/backups"), () -> "host directory expected. Got: " + cmd);
+            assertTrue(cmd.indexOf("install -d -m 0750 -o 1000 -g 1000 /opt/aether/backups") < cmd.indexOf("docker run"), () -> "created before docker run: " + cmd);
+        }
+    }
+
+    @Test
+    void deployCloudSource_jvmStart_createsTheBackupDirectory() {
+        var ctx = contextWithJvmRuntime(cloudSourceWithBackup());
+        var commands = new ConcurrentLinkedQueue<String>();
+        Fn3<Result<String>, String, String, SshConfig> sshExec = (host, command, config) -> {
+            commands.add(command);
+            return Result.success("");
+        };
+
+        var result = BootstrapPhaseDeploy.deployCloudSource(ctx, ctx.config().sources().get("eu-1"), sourceNameOrDefault("eu-1"),
+                                                            alwaysHealthy(), sshExec, envWithKey("/home/op/.ssh/aether_id_ed25519"));
+
+        assertTrue(result.isSuccess(), () -> "Cloud deploy must succeed; got: " + result);
+        var starts = commands.stream().filter(c -> c.contains("systemctl start")).toList();
+        assertEquals(3, starts.size(), "CONTROL: one first start per core");
+        for (var cmd : starts) {
+            assertTrue(cmd.contains("install -d -m 0750 /var/aether/backups"), () -> "backup directory expected. Got: " + cmd);
+            assertTrue(cmd.indexOf("install -d -m 0750 /var/aether/backups") < cmd.indexOf("systemctl start"), () -> "created before the unit starts: " + cmd);
+        }
+    }
+
+    /// The controls: a source without `[backup]` starts exactly as before, and the SSH-source start builder carries it too.
+    @Test
+    void firstStart_withoutBackup_addsNoBackupVolumeOrDirectory_andTheSshStartCarriesItWhenSet() {
+        var plain = BootstrapPhaseDeploy.buildStartCommand("img:1", CLUSTER_NAME, "eu-1-core-0", NodeRole.CORE, SourceName.DEFAULT, Option.none(),
+                                                           8090, 8091, "p", CLUSTER_SECRET, emptyEnv());
+        var plainJvm = BootstrapPhaseDeploy.buildJvmStartCommand("eu-1-core-0", NodeRole.CORE, SourceName.DEFAULT, Option.none(), 8090, 8091, "p",
+                                                                 CLUSTER_SECRET, CLUSTER_NAME, emptyEnv());
+
+        assertFalse(plain.contains("/opt/aether/backups") || plain.contains("install -d"), plain);
+        assertFalse(plainJvm.contains("install -d -m 0750"), plainJvm);
+        var ssh = BootstrapPhaseDeploy.buildSshStartCommand("img:1", CLUSTER_NAME, "eu-1-core-0", NodeRole.CORE, SourceName.DEFAULT, Option.none(),
+                                                            8090, 8091, "p", CLUSTER_SECRET, emptyEnv(), Option.some("/var/aether/backups"));
+
+        assertTrue(ssh.contains("-v /opt/aether/backups:/var/aether/backups"), ssh);
+    }
 
     /// #1543 part C: `{version}` in the runtime profile's image follows `[cluster] version` on the CLI re-launch too,
     /// never reaching `docker run` as a literal.

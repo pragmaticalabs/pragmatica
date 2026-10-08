@@ -17,6 +17,15 @@ class ClusterIdentityEnvTest {
     }
 
     @Test
+    void backupVars_areTheFourBackupKeys_andNotIdentity() {
+        assertThat(ClusterIdentityEnv.BACKUP_VARS).containsExactly("AETHER_BACKUP_ENABLED",
+                                                                   "AETHER_BACKUP_PATH",
+                                                                   "AETHER_BACKUP_REMOTE",
+                                                                   "AETHER_BACKUP_RESTORE");
+        assertThat(ClusterIdentityEnv.IDENTITY_VARS).doesNotContainAnyElementsOf(ClusterIdentityEnv.BACKUP_VARS);
+    }
+
+    @Test
     void identityVars_retainExistingClusterIdentityVars() {
         assertThat(ClusterIdentityEnv.IDENTITY_VARS).contains("AETHER_CLUSTER_NAME");
         assertThat(ClusterIdentityEnv.IDENTITY_VARS).contains("AETHER_CLUSTER_SECRET");

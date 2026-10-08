@@ -12,6 +12,7 @@ import org.pragmatica.lang.Option;
 import java.util.List;
 import java.util.Map;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
@@ -98,5 +99,62 @@ class ProviderResolverTest {
               .onFailure(cause -> assertTrue(cause.message().contains("names no credential env var"),
                                              "the failure must name the real problem — the handle, not a "
                                              + "supposedly-unset env var: " + cause.message()));
+    }
+
+    private static final String DOCKER_WITH_BACKUP = """
+            config_version = "1.0.0"
+
+            [cluster]
+            name = "dock"
+            version = "1.0.0"
+
+            [source.local]
+            type = "docker"
+
+            [source.local.node_config.backup]
+            enabled = true
+            path = "/data/backups"
+            remote = "/data/backup-remote/kv.git"
+            restore = "fresh"
+            """;
+
+    private static final String DOCKER_BACKUP_DISABLED = DOCKER_WITH_BACKUP.replace("enabled = true", "enabled = false");
+
+    private static final String DOCKER_NO_BACKUP = """
+            config_version = "1.0.0"
+
+            [cluster]
+            name = "dock"
+            version = "1.0.0"
+
+            [source.local]
+            type = "docker"
+            """;
+
+    /// #1968: CLI-side Docker provisioning hands the provider the source's `[backup]` as AETHER_BACKUP_* (the CTM path does the same
+    /// from the leader's effective backup), so the nodes it starts run the backup the operator declared. Read from the provider
+    /// the resolver actually builds, not from the helper.
+    @Test
+    void resolveDockerCompute_forASourceWithBackup_givesTheProviderTheSourcesBackupEnvironment() {
+        var source = ClusterBootstrapConfigParser.parse(DOCKER_WITH_BACKUP).unwrap().sources().get("local");
+
+        var provider = ProviderResolver.resolveDockerCompute(source).unwrap();
+
+        assertTrue(provider instanceof org.pragmatica.aether.environment.docker.DockerComputeProvider, "CONTROL: the Docker provider was built");
+        assertEquals(Map.of("AETHER_BACKUP_ENABLED", "true",
+                            "AETHER_BACKUP_PATH", "/data/backups",
+                            "AETHER_BACKUP_REMOTE", "/data/backup-remote/kv.git",
+                            "AETHER_BACKUP_RESTORE", "fresh"),
+                     ((org.pragmatica.aether.environment.docker.DockerComputeProvider) provider).config().backupEnv());
+    }
+
+    @Test
+    void resolveDockerCompute_forASourceWithoutAnEnabledBackup_givesTheProviderNone() {
+        for (var toml : List.of(DOCKER_NO_BACKUP, DOCKER_BACKUP_DISABLED)) {
+            var source = ClusterBootstrapConfigParser.parse(toml).unwrap().sources().get("local");
+            var provider = (org.pragmatica.aether.environment.docker.DockerComputeProvider) ProviderResolver.resolveDockerCompute(source).unwrap();
+
+            assertTrue(provider.config().backupEnv().isEmpty(), "no enabled [backup]: nothing to forward; got " + provider.config().backupEnv());
+        }
     }
 }

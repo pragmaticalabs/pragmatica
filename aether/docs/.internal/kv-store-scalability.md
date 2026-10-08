@@ -4,7 +4,7 @@
 
 Assessment of data stored in the Rabia consensus KV-store, how it scales with cluster size, and architectural implications for the planned 2-layer cluster topology.
 
-> **Note (membership-v2).** Node membership/readiness state is **not** stored in the KV-Store — it is presence-derived (SWIM/QUIC via NTT) and heartbeat-reported/leader-cached. The earlier `NodeLifecycleValue` entry referenced by older drafts has been removed from this assessment. See [`../specs/membership-architecture-v2-spec.md`](../specs/membership-architecture-v2-spec.md). The scaling analysis below (endpoint/slice-node/route cardinality, consensus replication cost, 2-layer registry split) is unaffected and remains current.
+> **Note (membership-v2).** Node membership/readiness state is **not** stored in the KV-Store — it is presence-derived (SWIM/QUIC via NTT) and heartbeat-reported/leader-cached. The earlier `NodeLifecycleValue` entry referenced by older drafts has been removed from this assessment. See [`../specs/membership-architecture-v2-spec.md`](../specs/archive/membership-architecture-v2-spec.md). The scaling analysis below (endpoint/slice-node/route cardinality, consensus replication cost, 2-layer registry split) is unaffected and remains current.
 
 ## Current KV-Store Contents
 

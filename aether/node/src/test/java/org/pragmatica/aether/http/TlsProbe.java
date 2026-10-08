@@ -7,7 +7,6 @@ package org.pragmatica.aether.http;
 
 import java.io.IOException;
 import java.net.InetSocketAddress;
-import java.net.ServerSocket;
 import java.net.Socket;
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -130,9 +129,7 @@ public final class TlsProbe {
     }
 
     public static int freeTcpPort() throws IOException {
-        try (var socket = new ServerSocket(0)) {
-            return socket.getLocalPort();
-        }
+        return org.pragmatica.aether.node.ClusterTestPorts.freeTcpAndUdpPort();
     }
 
     private static SSLContext trustAll() throws Exception {

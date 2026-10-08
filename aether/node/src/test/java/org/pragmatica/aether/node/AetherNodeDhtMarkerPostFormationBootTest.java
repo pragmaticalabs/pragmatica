@@ -4,9 +4,6 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.node;
 
-import java.io.IOException;
-import java.io.UncheckedIOException;
-import java.net.ServerSocket;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.util.Base64;
@@ -427,7 +424,7 @@ class AetherNodeDhtMarkerPostFormationBootTest {
                                                   Option<StorageEncryptionConfig> storageEncryption,
                                                   StorageConfig artifactsConfig) {
         var self = NodeId.nodeId("dht-marker-post-formation-" + UUID.randomUUID()).unwrap();
-        var selfInfo = NodeInfo.nodeInfo(self, nodeAddress("localhost", freePort()).unwrap());
+        var selfInfo = NodeInfo.nodeInfo(self, nodeAddress("localhost", ClusterTestPorts.freeClusterPort()).unwrap());
 
         return AetherNodeConfig.builder()
                                 .self(self).coreNodes(List.of(selfInfo)).managementPort(AetherNodeConfig.MANAGEMENT_DISABLED)
@@ -437,13 +434,5 @@ class AetherNodeDhtMarkerPostFormationBootTest {
                                 .managementHttpProtocol(HttpProtocol.H1)
                                 .storageConfig(Map.of("artifacts", artifactsConfig))
                                 .build().withStorageEncryption(storageEncryption);
-    }
-
-    private static int freePort() {
-        try (var socket = new ServerSocket(0)) {
-            return socket.getLocalPort();
-        } catch (IOException e) {
-            throw new UncheckedIOException(e);
-        }
     }
 }
