@@ -16,11 +16,15 @@ below covers what happens *inside* the process once a stop signal — from eithe
 | `1` | Fatal startup failure — a boot-time gate refused to proceed. Causes: `AETHER_CLUSTER_NAME` unset, the container's `aether.cluster` label disagreeing with the configured cluster name, `AETHER_INSECURE_DEV_MODE=true` combined with real operator TLS certificates, or `node.start()` itself failing. The log line immediately before exit names the specific cause. | `Main#exitWithError`, `Main#verifyClusterLabelConsistency`, `Main#enforceClusterNamePresent` |
 | `2` | Drain-completed self-exit — the membership v2 drain procedure (spec §8.2) ran its sequence to completion (stop accepting new app-layer work, quiesce in-flight requests, emit SWIM `LEAVE`) and halts the process itself once done. This is a **normal**, expected exit for a node that was told to drain, not a failure. | `AetherNode#aetherNode` (default `jvmExit` callback), `DrainProcedure` |
 | `3` | Shutdown did not complete within the bound (see below) — the process was killed while still trying to stop. | `Main#shutdownNode` |
+| `65` | Configuration refused (#2052) — a config file was GIVEN with `--config=` and is missing, not a regular file, unparseable, or fails validation. The node does NOT boot on defaults. A `FATAL: refusing to start: …` line naming the file and the cause goes to the log AND to stderr. With no `--config=` at all the node still boots on defaults (deliberate: forge, tests, bare `java -jar`). | `Main#refuseConfig` (via `Main#resolveConfig`) |
 | `78` | Identity refused (`EX_CONFIG`, #1558) — the running cluster already knows this NodeId under a different boot token, so it treats this process as a second process claiming a retired identity and refuses it. The process logs `FATAL: this node's identity <id> was refused by the cluster` and halts itself. See [Control state recovery](../operators/durable-control-recovery.md). | `AetherNode#exitRefusedIdentity` (via `BootTokens#onSelfRefused`) |
 
 A supervisor should treat these codes as follows:
 
 - `1`: do not restart with the same configuration. It will fail identically.
+- `65`: do not restart with the same configuration. It fails identically; fix or replace the file named in the `FATAL` line
+  (the image entrypoint and the cloud-init unit always pass `--config=`, so a Docker or cloud node whose baked or rendered config
+  is broken lands here). Exclude it from automatic restart-on-failure policies (for example systemd `RestartPreventExitStatus=65`).
 - `2`: a normal drain-completed exit. The node has left the cluster. Bring capacity back as a **new node
   under a fresh NodeId**, never by restarting under the drained NodeId: identity removal is terminal.
 - `3`: the process was killed while still trying to stop. It is safe to restart, but check the thread

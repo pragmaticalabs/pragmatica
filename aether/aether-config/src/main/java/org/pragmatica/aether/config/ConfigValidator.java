@@ -24,19 +24,13 @@ public final class ConfigValidator {
     /// minimum of 5 from the 2026-09-12 ruling. The policy minimum is enforced where configs are
     /// CREATED — `CoreWorkerSplit`, reached from `aether cluster init` and `scaffold`.
     ///
-    /// WHAT A FAILURE HERE ACTUALLY DOES, because it is not what this class looks like (#1019 round-1
-    /// review, S1): `ConfigLoader.load` calls [#validate] and `Main` loads through `ConfigLoader`, so
-    /// this does run on every node boot — but `Main#loadConfigFile` is
-    /// `ConfigLoader.load(path).onFailure(log::error).option()`, so a validation failure is LOGGED AND
-    /// DISCARDED and the node boots with NO CONFIG AT ALL. It does not refuse to start.
+    /// WHAT A FAILURE HERE ACTUALLY DOES (#1019 round-1 review S1, corrected by #2052): `ConfigLoader.load` calls [#validate] and `Main`
+    /// loads a GIVEN `--config=` file through it, so this runs on every such node boot, and a validation failure REFUSES the boot:
+    /// `Main#resolveConfig` fails and `Main#refuseConfig` exits 65 with a FATAL line on stderr naming the file and the cause. (Before
+    /// #2052 the failure was logged and discarded and the node booted on defaults without the file's TLS, port and secret settings.)
     ///
-    /// That makes raising this floor worse than a refusal, not safer than one. A 3-node cluster whose
-    /// config stopped validating would boot without its TLS, port and secret settings, and
-    /// `Main#configuredClusterNodes` would report 0 — which takes `Main#discoverCloudCorePeers` off its
-    /// `expected > 0` arm, leaving `expectedClusterSize` to fall through to the RESOLVED peer count. On
-    /// a cloud node that resolves nothing, `ClusterSizeGate.enforce(0)` then aborts the boot citing
-    /// "Expected cluster size 0", a diagnostic that names neither the config file nor the floor that
-    /// rejected it. The refusal that stops a sub-3-node start is [ClusterSizeGate], not this.
+    /// That makes raising this floor as consequential as raising [ClusterSizeGate]'s: a 3-node cluster whose config stopped validating
+    /// could no longer restart. With NO config file given nothing here runs, and [ClusterSizeGate] is the only floor on that boot.
     private static final int MINIMUM_CLUSTER_SIZE = 3;
     /// Upper bound on the CONSENSUS tier, not on the fleet. `[cluster] nodes` is the quorum basis
     /// (`TopologyConfig#clusterSize`) and every consensus round is broadcast across it. Fleet size is

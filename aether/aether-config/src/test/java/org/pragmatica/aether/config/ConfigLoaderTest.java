@@ -927,23 +927,19 @@ class ConfigLoaderTest {
                     .onSuccess(config -> assertThat(config.appHttp().tls().isPresent()).isFalse());
     }
 
-    /// #1019 round-1 review, S1 — what a boot-time config validation failure actually DOES.
+    /// #1019 round-1 review S1, corrected by #2052 — what a boot-time config validation failure DOES.
     ///
-    /// Round 1 justified keeping `ConfigValidator`'s floor at 3 by saying that raising it "would refuse
-    /// to start clusters that are running today". That names the wrong enforcer. `Main#loadConfigFile`
-    /// is `ConfigLoader.load(path).onFailure(log::error).option()`, so a validation failure is
-    /// discarded and the node boots with NO CONFIG — it is `ClusterSizeGate`, piped into
-    /// `Main#abortBoot`, that refuses a start.
+    /// It used to be discarded: `Main#loadConfigFile` applied `.option()` and the node booted on defaults, so this test pinned
+    /// "a rejected config yields an EMPTY Option". That was true of the composition and false as a safety property, and it let a
+    /// node boot without its TLS, port and secret settings. Since #2052 `Main#resolveConfig` keeps the failure and
+    /// `Main#refuseConfig` exits 65; the process-level refusal is pinned by `MainConfigGivenBootTest` (a child JVM). What is
+    /// observable from this module, and pinned here, is the half those depend on: a rejected config is a FAILURE result with a cause,
+    /// not an empty value, so nothing downstream can mistake "config rejected" for "no config supplied".
     ///
-    /// The distinction is load-bearing for anyone deciding where a new rule belongs, and a comment
-    /// stating it is an unverified claim. This pins the half that is observable from this module: a
-    /// rejected config yields an EMPTY `Option` through the exact composition `Main` uses, so nothing
-    /// downstream of it can distinguish "config rejected" from "no config supplied".
-    ///
-    /// `nodes = 2` is below the structural floor and would be rejected by any floor this class might
-    /// ever carry, so the test speaks about the discard, not about the value of the floor.
+    /// `nodes = 2` is below the structural floor and would be rejected by any floor this class might ever carry, so the test speaks
+    /// about the failure, not about the value of the floor.
     @Test
-    void load_validationFailure_becomesAnEmptyOptionRatherThanAnAbort() {
+    void load_validationFailure_isAFailureResultWithACause_notAnEmptyValue() {
         var rejected = """
             [cluster]
             environment = "docker"
@@ -953,17 +949,15 @@ class ConfigLoaderTest {
         var result = ConfigLoader.loadFromString(rejected);
 
         assertThat(result.isFailure()).isTrue();
-        // The `.option()` that `Main#loadConfigFile` applies. A node reaching this branch continues.
-        assertThat(result.option().isEmpty()).isTrue();
+        result.onFailure(cause -> assertThat(cause.message()).isNotBlank());
 
-        // Positive control: the identical composition yields a PRESENT config for an accepted count,
-        // so the emptiness above is the rejection and not an always-empty accessor.
+        // Positive control: an accepted count loads, so the failure above is the rejection and not an always-failing loader.
         var accepted = """
             [cluster]
             environment = "docker"
             nodes = 3
             """;
 
-        assertThat(ConfigLoader.loadFromString(accepted).option().isPresent()).isTrue();
+        assertThat(ConfigLoader.loadFromString(accepted).isSuccess()).isTrue();
     }
 }
