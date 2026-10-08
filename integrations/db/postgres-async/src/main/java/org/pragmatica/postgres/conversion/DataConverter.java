@@ -240,6 +240,7 @@ public class DataConverter {
                 case INT8 -> BigDecimal.valueOf(ByteBuffer.wrap(value).getLong());
                 case FLOAT4 -> BigDecimal.valueOf(ByteBuffer.wrap(value).getFloat());
                 case FLOAT8 -> BigDecimal.valueOf(ByteBuffer.wrap(value).getDouble());
+                case NUMERIC -> NumericConversions.binaryNumericToBigDecimal(value, 0);
                 default -> new BigDecimal(new String(value, encoding));
             };
         }
@@ -257,6 +258,7 @@ public class DataConverter {
                 case INT8 -> (double) ByteBuffer.wrap(value).getLong();
                 case FLOAT4 -> (double) ByteBuffer.wrap(value).getFloat();
                 case FLOAT8 -> ByteBuffer.wrap(value).getDouble();
+                case NUMERIC -> NumericConversions.binaryNumericToDouble(value, 0);
                 default -> NumericConversions.toDouble(oid, new String(value, encoding));
             };
         }
@@ -498,6 +500,7 @@ public class DataConverter {
                 case INT8 -> BigDecimal.valueOf(ByteBuffer.wrap(data, offset, 8).getLong());
                 case FLOAT4 -> BigDecimal.valueOf(ByteBuffer.wrap(data, offset, 4).getFloat());
                 case FLOAT8 -> BigDecimal.valueOf(ByteBuffer.wrap(data, offset, 8).getDouble());
+                case NUMERIC -> NumericConversions.binaryNumericToBigDecimal(data, offset);
                 default -> new BigDecimal(new String(data, offset, length, encoding));
             };
         }
@@ -515,6 +518,7 @@ public class DataConverter {
                 case INT8 -> (double) ByteBuffer.wrap(data, offset, 8).getLong();
                 case FLOAT4 -> (double) ByteBuffer.wrap(data, offset, 4).getFloat();
                 case FLOAT8 -> ByteBuffer.wrap(data, offset, 8).getDouble();
+                case NUMERIC -> NumericConversions.binaryNumericToDouble(data, offset);
                 default -> NumericConversions.toDouble(oid, new String(data, offset, length, encoding));
             };
         }
