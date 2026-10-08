@@ -39,6 +39,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -286,7 +287,7 @@ class NodeReplacementEnvTest {
         record(NodeReplacementPhase.DRAINING_OLD, 999_999L);
         wiring.reconciler().reconcile().await();
 
-        verify(ctm).instanceListed(eq(OLD), any());
+        verify(ctm, atLeastOnce()).instanceListed(eq(OLD), any());
 
         states.put(OLD, "Dead");
         commands.clear();
@@ -302,6 +303,25 @@ class NodeReplacementEnvTest {
         fresh.reconciler().reconcile().await();
 
         verify(ctm).reapRetired(eq(OLD), any(), eq(false));
+    }
+
+    /// A replacement that was up (the membership read it alive) and was then lost before any drain is listed while it is up, so its rollback
+    /// is confirmed by an empty listing instead of waiting for an instance that already vanished: the reap is asked with seenBefore=true.
+    @Test
+    void aReplacementObservedWhileUp_isReapedAsSeen_whenItIsLaterRolledBack() {
+        states.put(NEW, "Member");
+        record(NodeReplacementPhase.CANARY, 999_999L);
+        wiring.reconciler().reconcile().await();
+
+        verify(ctm).instanceListed(eq(NEW), any());
+
+        states.remove(NEW);
+        commands.clear();
+        index.remove(new AetherKey.NodeReplacementKey(OLD));
+        record(NodeReplacementPhase.PROVISIONING, 500L);
+        wiring.reconciler().reconcile().await();
+
+        verify(ctm).reapRetired(eq(NEW), any(), eq(true));
     }
 
     // ---- B3: the owner gate -------------------------------------------------------------------------------------------

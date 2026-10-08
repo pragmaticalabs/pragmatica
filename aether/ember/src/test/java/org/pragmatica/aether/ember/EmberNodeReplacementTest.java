@@ -296,6 +296,23 @@ class EmberNodeReplacementTest {
         assertOldGone_newVotes(victimId);
     }
 
+    /// The leak the confirmed reap closes, made deterministic: an original node the lifecycle has never observed (no capacity
+    /// reservation, as for a node bootstrapped outside the CTM until a listing sees it) crashes on a settled cluster. The CTM's own reap
+    /// of the departed node is refused for want of a reservation and is not retried, so only the replacement's confirmed reap can
+    /// remove the corpse: DONE must leave the old instance absent from the PROVIDER's listing.
+    @Test
+    @Timeout(600)
+    void oldNodeCrashedWithoutAnObservedReservation_isStillReaped_andLeavesTheProviderListing() {
+        var victimId = crashOldNodeWhileTheReplacementIsJoining("rpz", 30_000L, victim -> forgetReservation(victim), _ -> {});
+
+        assertThat(recordOf(victimId).phase()).as("reason: %s", recordOf(victimId).reason()).isEqualTo(NodeReplacementPhase.DONE);
+        assertOldGone_newVotes(victimId);
+    }
+
+    private void forgetReservation(NodeId node) {
+        awaitLeader().<Object> apply(List.of(new KVCommand.Remove<AetherKey>(new AetherKey.CapacityReservationKey(node)))).await(START_BOUND);
+    }
+
     /// Starts a replacement of a follower, crashes (blackholes) that follower while the record is in JOINING, waits for a terminal
     /// phase and returns the follower's id.
     private NodeId crashOldNodeWhileTheReplacementIsJoining(String prefix, long settleMs) {

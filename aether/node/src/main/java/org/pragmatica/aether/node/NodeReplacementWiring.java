@@ -317,6 +317,7 @@ public final class NodeReplacementWiring {
         private final Map<NodeId, Long> reapSince = new ConcurrentHashMap<>();
         // Nodes whose instance a provider listing showed while they were still up: only for these does a later EMPTY listing mean gone.
         private final Set<NodeId> seen = ConcurrentHashMap.newKeySet();
+        private final Set<NodeId> observing = ConcurrentHashMap.newKeySet();
 
         Env(Inputs in) {
             this.in = in;
@@ -359,6 +360,9 @@ public final class NodeReplacementWiring {
                         ? in.readyAdmitted().get()
                         : in.readyAll().get();
             var oldAlive = alive(oldState);
+
+            noteLiveInstance(original, record, oldAlive);
+            noteLiveInstance(record.replacement(), record, alive(newState));
 
             return new Observation(in.clock().getAsLong(),
                                    oldAlive,
@@ -542,6 +546,25 @@ public final class NodeReplacementWiring {
                                         .recover(_ -> Unit.unit()))
                          .reduce(Promise.unitPromise(),
                                  (all, one) -> all.flatMap(_ -> one));
+        }
+
+        /// A node the membership reads as up is asked about at the provider once, in the background: an instance listed while the node was
+        /// up is one a later empty listing can call gone. This is the observation point for a replacement that crashes before any drain
+        /// (a canary death) and for an old node on a leader that took over after the drain. A failed or empty listing observes nothing.
+        private void noteLiveInstance(NodeId node, NodeReplacementValue record, boolean up) {
+            if (!up || seen.contains(node) || isExternalKind(reservationOf(node)) || !observing.add(node)) {
+                return;
+            }
+
+            in.ctm()
+              .instanceListed(node,
+                              SourceName.sourceNameOrDefault(record.source()))
+              .onSuccess(listed -> {
+                  if (listed) {
+                  seen.add(node);
+              }
+              })
+              .onResultRun(() -> observing.remove(node));
         }
 
         private Option<AetherValue.CapacityReservationValue> reservationOf(NodeId node) {
