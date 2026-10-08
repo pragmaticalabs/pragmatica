@@ -143,10 +143,12 @@ test_six() {
 run_test "six" test_six
 F
 capture > "$BASE"
-if [ "$(grep -c '^\[R4\]' "$BASE")" = 1 ] && lint > /dev/null; then
-    sed -i.bak 's#^\[R4\]#[R2]#' "$BASE"; rm -f "${BASE}.bak"
-    if lint > /dev/null; then fail "L12 an R2 entry covered an R4 finding with the same text"; else ok "L12 the rule is part of the key"; fi
-else fail "L12 setup: expected one R4 entry and a green baseline"; fi
+lint > /dev/null || fail "L12 setup: the captured baseline must be green for its own tree"
+grep -q '^\[R4\]' "$BASE" || fail "L12 the capture carries no [R4] entry: the rule is not in the key"
+# The assertion does not depend on the guards above: with the rule dropped from the key the relabel is a no-op, the
+# baseline still covers everything, lint stays green, and THIS check fails.
+sed -i.bak 's#^\[R4\]#[R2]#' "$BASE"; rm -f "${BASE}.bak"
+if lint > /dev/null; then fail "L12 an R2 entry covered an R4 finding with the same file and text"; else ok "L12 the same file and content under a different rule is a new finding"; fi
 
 # L7 — shipped baseline
 if grep -qE '\.sh:[0-9]+ ' "${INTEG_DIR}/lint-baseline.txt"; then fail "L7 shipped baseline carries a line-number key"; else ok "L7 shipped baseline carries no line-number keys"; fi
