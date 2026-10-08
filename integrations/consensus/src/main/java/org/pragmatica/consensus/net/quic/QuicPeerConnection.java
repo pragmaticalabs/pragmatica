@@ -223,6 +223,11 @@ public final class QuicPeerConnection {
         Option.option(activityKick).onPresent(QuicActivityKick::noteDataWrite);
     }
 
+    /// Visible for tests: the kick was stopped (the connection closed).
+    boolean activityKickStopped() {
+        return Option.option(activityKick).map(QuicActivityKick::isStopped).or(false);
+    }
+
     /// Visible for tests: kick frames sent so far.
     long activityKicksSent() {
         return Option.option(activityKick)

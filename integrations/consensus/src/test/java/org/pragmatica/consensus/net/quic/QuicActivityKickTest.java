@@ -150,21 +150,45 @@ class QuicActivityKickTest {
         verify(control, org.mockito.Mockito.atLeastOnce()).writeAndFlush(any());
     }
 
-    /// Closing the connection ends the kick, even inside the window.
+    /// Closing the connection stops the kick. Observed on the kick itself: closing also drops the lane
+    /// streams, so "no more frames" alone would hold even if the kick kept ticking.
     @Test
     void close_stopsTheKick() throws Exception {
         var connection = withKick(channel(), controlStream(), INTERVAL_MS, 10 * WINDOW_MS);
 
         connection.noteLaneWrite();
         sleep(WINDOW_MS / 2);
-        connection.close();
-        sleep(INTERVAL_MS * 3);
-        var atClose = connection.activityKicksSent();
+        assertThat(connection.activityKickStopped()).as("running before close").isFalse();
 
+        connection.close().await(org.pragmatica.lang.io.TimeSpan.timeSpan(5).seconds());
+
+        assertThat(connection.activityKickStopped()).as("stopped by close").isTrue();
+    }
+
+    /// A stopped kick sends nothing more even with a live CONTROL lane and an open window, and a data write
+    /// no longer restarts it.
+    @Test
+    void stoppedKick_sendsNothingMore_andIgnoresLaterWrites() throws Exception {
+        var control = controlStream();
+        var kick = new QuicActivityKick(() -> org.pragmatica.lang.Option.some(control),
+                                        loop,
+                                        () -> true,
+                                        () -> false,
+                                        FRAME,
+                                        INTERVAL_MS,
+                                        10 * WINDOW_MS);
+
+        kick.noteDataWrite();
+        sleep(WINDOW_MS / 2);
+        kick.stop();
+        sleep(INTERVAL_MS * 3);
+        var atStop = kick.kicksSent();
+
+        kick.noteDataWrite();
         sleep(WINDOW_MS);
 
-        assertThat(atClose).isPositive();
-        assertThat(connection.activityKicksSent()).isEqualTo(atClose);
+        assertThat(atStop).isPositive();
+        assertThat(kick.kicksSent()).isEqualTo(atStop);
     }
 
     /// Cost check at the PRODUCTION interval and window: a writer hammering the connection at ~1000

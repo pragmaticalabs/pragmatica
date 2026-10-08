@@ -101,6 +101,10 @@ final class QuicActivityKick {
         }
     }
 
+    boolean isStopped() {
+        return stopped;
+    }
+
     long kicksSent() {
         return kicksSent.get();
     }
