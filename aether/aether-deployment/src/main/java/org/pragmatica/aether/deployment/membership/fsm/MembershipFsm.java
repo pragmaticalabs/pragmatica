@@ -1961,6 +1961,7 @@ public final class MembershipFsm {
                    : swimFaultySeen && livenessGoneSeen;
         }
 
+        @Contract
         synchronized void markGovernorDeath() {
             governorDeathSeen = true;
         }
