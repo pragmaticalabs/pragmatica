@@ -148,7 +148,7 @@ public final class NodeReplacementWiring {
     /// The binding of an EXTERNAL reservation written while the fleet ledger could not count it (no ledger, or its inventory is not
     /// complete). The marker travels with the reservation, so whatever later settles it knows whether a slot was taken: it returns a
     /// slot only for a counted reservation and never for this one.
-    static final String UNCOUNTED = "external-uncounted";
+    static final String UNCOUNTED = org.pragmatica.aether.deployment.cluster.CapacityControlledLifecycle.UNCOUNTED_BINDING;
 
     /// The ledger, when it is in a state that can count a slot (it exists and its inventory is complete, as CTM requires).
     static Option<AetherValue.CapacityLedgerValue> countable(Option<AetherValue.CapacityLedgerValue> ledger) {

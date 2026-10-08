@@ -302,6 +302,40 @@ class NodeReplacementRealRegistryReapTest {
         assertThat(store.getTyped(AetherKey.CapacityLedgerKey.INSTANCE, CapacityLedgerValue.class).unwrap().allocated()).isEqualTo(4);
     }
 
+    /// R4 (negative): a replacement the CTM dispatched but the provider has NEVER listed, followed by one empty listing, is not rolled back:
+    /// an empty listing proves nothing about an instance that may simply not have appeared yet.
+    @Test
+    void aDispatchedReplacementNeverListed_isNotRolledBack_onOneEmptyListing() {
+        put(AetherKey.CapacityLedgerKey.INSTANCE, new CapacityLedgerValue(5, 1, true));
+        put(new AetherKey.CapacityReservationKey(FRESH), new CapacityReservationValue("west", realBinding, "core", CapacityReservationPhase.DISPATCHED));
+        record(new NodeReplacementValue(FRESH, "core", NodeReplacementPhase.PROVISIONING, 1L, "west", "", NodeReplacementValue.MODE_CTM, 0, "", 1L));
+        listing.set(Promise.success(List.of()));
+
+        wiring.reconciler().reconcile().await();
+        wiring.reconciler().reconcile().await();
+
+        assertThat(committed().unwrap().phase()).as("still PROVISIONING: nothing confirms the dispatched instance is gone").isEqualTo(NodeReplacementPhase.PROVISIONING);
+        assertThat(lists.get()).as("the provider WAS asked").isPositive();
+        assertThat(terminates.get()).isZero();
+    }
+
+    /// R5: the drain backstop's reap of an EXTERNAL node (reservation without a provider binding) is a quiet success, with no provider
+    /// call and no refusal; a provider-bound node is still terminated through the provider.
+    @Test
+    void terminatingAnExternalNode_makesNoProviderCall_andARefusalIsNotRaised() {
+        put(new AetherKey.CapacityReservationKey(FRESH), new CapacityReservationValue("west", "", "core", CapacityReservationPhase.OBSERVED));
+        put(new AetherKey.CapacityReservationKey(OLD), new CapacityReservationValue("west", realBinding, "core", CapacityReservationPhase.OBSERVED));
+        put(AetherKey.CapacityLedgerKey.INSTANCE, new CapacityLedgerValue(5, 1, true));
+
+        assertThat(lifecycle.terminateNode(FRESH).await().isSuccess()).as("external: nothing to terminate, no refusal").isTrue();
+        assertThat(lifecycle.terminateNode(FRESH, WEST).await().isSuccess()).isTrue();
+        assertThat(lists.get() + terminates.get()).as("no provider call for the external node").isZero();
+
+        listing.set(Promise.success(List.of(instance(OLD, "i-1", InstanceStatus.RUNNING))));
+        assertThat(lifecycle.terminateNode(OLD).await().isSuccess()).as("control: a provider-bound node is terminated").isTrue();
+        assertThat(terminates.get()).isEqualTo(1);
+    }
+
     /// A provider-backed source (real binding): a failed listing is not gone, an empty listing of an instance never listed is not gone,
     /// and an instance that is listed is terminated and confirmed; only then DONE.
     @Test
