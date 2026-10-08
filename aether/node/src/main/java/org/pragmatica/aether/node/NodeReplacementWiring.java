@@ -337,9 +337,20 @@ public final class NodeReplacementWiring {
         return phase == NodeReplacementPhase.FAILED_KEPT_BOTH || !NodeReplacementReconciler.isTerminal(phase);
     }
 
-    private static final class Service implements NodeReplacementService {
+    /// What the wired replacement service was given, readable for the boot test that pins the node's wiring.
+    public interface Wired {
+        /// The index of committed pairings the node's reconcilers and event announcer read.
+        NodeReplacementIndex pairings();
+    }
+
+    private static final class Service implements NodeReplacementService, Wired {
         private final Inputs in;
         private final Env environment;
+
+        @Override
+        public NodeReplacementIndex pairings() {
+            return in.index();
+        }
 
         Service(Inputs in, Env environment) {
             this.in = in;
