@@ -50,6 +50,20 @@ class NodeUserDataRendererTest {
             runtime = "bare-metal"
             """;
 
+    /// #2007 — `[backup]` shells out to git, so a JVM-mode host must have it. The install is guarded (`command -v git`) so a snapshot
+    /// that already carries git skips it, and it comes BEFORE the node jar is fetched and started. The `-jar` assertion is the
+    /// control: it proves the script examined is the full launcher, not a fragment.
+    @Test
+    void render_jvmHost_installsGit_beforeTheNodeJar() {
+        var script = renderJvm("");
+        var git = script.indexOf("apt-get install -y -qq --no-install-recommends git");
+        var guard = script.indexOf("if ! command -v git");
+        var jar = script.indexOf("-jar /opt/aether/aether-node.jar");
+
+        assertTrue(jar >= 0, () -> "control: the script carries the launcher line. Got:\n" + script);
+        assertTrue(guard >= 0 && git > guard && git < jar, () -> "#2007: git must be installed (guarded) before the node starts. Got:\n" + script);
+    }
+
     /// #966 — a node that exhausts its heap must die, not hang: without `-XX:+ExitOnOutOfMemoryError`
     /// the OOM is caught somewhere (a `catch (Throwable)`, a Netty loop), the SWIM thread keeps
     /// answering pings from the headroom the dead allocators left, the node is never marked FAULTY,

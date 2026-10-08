@@ -11,8 +11,7 @@ ARG VERSION=dev
 LABEL org.opencontainers.image.version="${VERSION}"
 LABEL org.opencontainers.image.source="https://github.com/pragmaticalabs/pragmatica"
 
-# Install iptables for network partition testing (E2E tests), and git: the `[backup]` repository (#1532/#1533) is a git
-# repository driven through the git CLI, so a node image without it cannot back up or restore (#1968).
+# Install iptables for network partition testing (E2E tests); git because [backup] shells out to it (#2007)
 RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends iptables wget git && rm -rf /var/lib/apt/lists/*
 
 # Copy Docker CLI binary for scaling operations (used with mounted Docker socket)
@@ -25,7 +24,9 @@ RUN usermod -l aether -d /home/aether -m ubuntu && \
     usermod -aG docker aether
 
 # Create directories for app, data, and config
-RUN mkdir -p /app /data /config && \
+# /data/backups exists and is aether's, so a named volume mounted there inherits that ownership: a root-owned mount point makes
+# [backup] unreadable (AccessDenied) and leaves the restore BLOCKED (#2007).
+RUN mkdir -p /app /data /config /data/backups && \
     chown -R aether:aether /app /data /config
 
 WORKDIR /app

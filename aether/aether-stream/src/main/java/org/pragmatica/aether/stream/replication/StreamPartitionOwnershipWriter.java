@@ -165,11 +165,11 @@ public interface StreamPartitionOwnershipWriter {
     /// One guarded mutation of the ownership record of `(stream, partition)`: applied only while the committed record is
     /// exactly `committed` and the committed leader is `leader` (#1730). The owner-side commits (the ISR, the start of an
     /// epoch) use it as the leader's writer does.
-    static KVCommand<AetherKey> guardedOwnershipWrite(LeaderValue leader,
-                                                      String stream,
-                                                      int partition,
-                                                      Option<StreamPartitionOwnershipValue> committed,
-                                                      StreamPartitionOwnershipValue next) {
+    static KVCommand.LeaderTransaction<AetherKey, AetherValue> guardedOwnershipWrite(LeaderValue leader,
+                                                                                     String stream,
+                                                                                     int partition,
+                                                                                     Option<StreamPartitionOwnershipValue> committed,
+                                                                                     StreamPartitionOwnershipValue next) {
         return IsrOwnershipWriter.guarded(leader, stream, partition, committed, next);
     }
 
@@ -440,11 +440,11 @@ record IsrOwnershipWriter(BooleanSupplier isLeaderSupplier,
 
     /// One guarded mutation: applied only while the committed record is exactly `committed` and the committed
     /// leader is `leader`, so a write decided on a stale record is refused rather than overwriting an ISR change.
-    static KVCommand<AetherKey> guarded(LeaderValue leader,
-                                        String stream,
-                                        int partition,
-                                        Option<StreamPartitionOwnershipValue> committed,
-                                        StreamPartitionOwnershipValue next) {
+    static KVCommand.LeaderTransaction<AetherKey, AetherValue> guarded(LeaderValue leader,
+                                                                       String stream,
+                                                                       int partition,
+                                                                       Option<StreamPartitionOwnershipValue> committed,
+                                                                       StreamPartitionOwnershipValue next) {
         var key = StreamPartitionOwnershipKey.streamPartitionOwnershipKey(stream, partition);
         var mutation = new KVCommand.Mutation<AetherKey, AetherValue>(key,
                                                                       committed.map(value -> value),

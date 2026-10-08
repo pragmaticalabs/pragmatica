@@ -59,6 +59,24 @@ class OwnerPromotionAlarmTest {
             .isEqualTo(org.pragmatica.lang.Option.some(OperatorWarningCode.STREAM_OWNER_PROMOTION_HOLDERS_UNREACHABLE));
     }
 
+    /// #1976: a refused lineage commit raises its CRITICAL code, and the end of the episode raises the paired INFO recovery on the
+    /// same subject, so the event layer publishes the recovery only after the raise (#752).
+    @Test
+    void lineageRefusedBlock_raisesItsCode_andItsEndRaisesTheRecovery_onTheSameSubject() {
+        var alarm = AetherNode.ownerPromotionAlarm(sink);
+        var block = new ActivationBlock.LineageRefused("orders", 3, 5);
+
+        alarm.raise(block);
+        alarm.resolved(block);
+
+        await().atMost(java.time.Duration.ofSeconds(5)).until(() -> published.size() == 2);
+        assertThat(published).extracting(OperatorWarning::code)
+                             .containsExactly(OperatorWarningCode.STREAM_OWNER_LINEAGE_REFUSED, OperatorWarningCode.STREAM_OWNER_LINEAGE_COMMITTED);
+        assertThat(published).extracting(OperatorWarning::subject).containsOnly("orders[3]");
+        assertThat(OperatorWarningCode.STREAM_OWNER_LINEAGE_COMMITTED.recoveryOf())
+            .isEqualTo(org.pragmatica.lang.Option.some(OperatorWarningCode.STREAM_OWNER_LINEAGE_REFUSED));
+    }
+
     /// The blocks that still have no code stay a log line: ending one raises no event, there is nothing to recover.
     @Test
     void otherBlock_endingRaisesNoEvent() throws InterruptedException {

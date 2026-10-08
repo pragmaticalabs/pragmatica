@@ -39,6 +39,8 @@ class OwnerActivationLineageTest {
     private final AtomicReference<Option<org.pragmatica.lang.Cause>> refusal = new AtomicReference<>(Option.none());
     private final List<String> commits = new ArrayList<>();
     private final java.util.concurrent.atomic.AtomicBoolean silentRefusal = new java.util.concurrent.atomic.AtomicBoolean();
+    private final List<OwnerActivation.ActivationBlock> raised = new ArrayList<>();
+    private final List<OwnerActivation.ActivationBlock> resolved = new ArrayList<>();
     private final OwnerActivation activation = activation();
 
     private OwnerActivation activation() {
@@ -52,7 +54,21 @@ class OwnerActivationLineageTest {
                                                (_, _, _, _) -> Promise.success(0L),
                                                () -> true,
                                                (_, _, _, _, _) -> Promise.success(List.of()),
-                                               _ -> Unit.unit(),
+                                               new OwnerActivation.BlockAlarm() {
+                                                   @Override
+                                                   public Unit raise(OwnerActivation.ActivationBlock block) {
+                                                       raised.add(block);
+
+                                                       return Unit.unit();
+                                                   }
+
+                                                   @Override
+                                                   public Unit resolved(OwnerActivation.ActivationBlock block) {
+                                                       resolved.add(block);
+
+                                                       return Unit.unit();
+                                                   }
+                                               },
                                                TimeSpan.timeSpan(1).hours(),
                                                (_, _) -> incarnation.get(),
                                                this::commit);
@@ -146,6 +162,127 @@ class OwnerActivationLineageTest {
         refusal.set(Option.none());
 
         assertThat(activate()).as("re-run against the record as it is now").isTrue();
+    }
+
+    /// #1976 owner rule: refusals that persist are told to the operator ONCE, at the Nth consecutive refusal, and the
+    /// recovery is told once when the commit finally lands; a refused restart never latches, so each re-run commits again.
+    @Test
+    void persistentRefusals_raiseOneBlockAtTheThreshold_andClearItOnRecovery() {
+        record.set(Option.some(committed(List.of(new EpochStart(EPOCH, 5L)))));
+        refusal.set(Option.some(OwnerActivation.ActivationError.LINEAGE_NOT_COMMITTED));
+
+        for (var attempt = 1; attempt < OwnerActivation.LINEAGE_REFUSAL_ALARM_AFTER; attempt++) {
+            assertThat(activate()).isFalse();
+        }
+
+        assertThat(raised).as("below the threshold nothing is raised").isEmpty();
+        assertThat(activate()).isFalse();
+        assertThat(raised).as("the Nth refusal raises once").hasSize(1);
+        assertThat(raised.getFirst()).isInstanceOf(OwnerActivation.ActivationBlock.LineageRefused.class);
+        assertThat(activation.blockOf(STREAM, PARTITION).isPresent()).isTrue();
+
+        assertThat(activate()).isFalse();
+        assertThat(activate()).isFalse();
+        assertThat(raised).as("flood-guarded: further refusals raise nothing").hasSize(1);
+        assertThat(commits).as("every refusal retried the restart commit").hasSize(OwnerActivation.LINEAGE_REFUSAL_ALARM_AFTER + 2);
+
+        refusal.set(Option.none());
+
+        assertThat(activate()).as("the restart finally lands").isTrue();
+        assertThat(resolved).as("the recovery is told once").hasSize(1);
+        assertThat(activation.blockOf(STREAM, PARTITION).isEmpty()).isTrue();
+    }
+
+    /// v-1979 R4: the count and the reported block belong to one tenure. Stuck, deposed (the record names another owner),
+    /// then owner again and stuck again: the second episode raises its own block, and the first was told as cleared. Red
+    /// with the count surviving NOT_OWNER: the second episode starts past the threshold and raises nothing.
+    @Test
+    void aSecondStuckTenure_afterOwnershipLeft_raisesAgain() {
+        var other = new NodeId("other");
+        var mine = committed(List.of(new EpochStart(EPOCH, 5L)));
+
+        record.set(Option.some(mine));
+        refusal.set(Option.some(OwnerActivation.ActivationError.LINEAGE_NOT_COMMITTED));
+        stickFor(OwnerActivation.LINEAGE_REFUSAL_ALARM_AFTER);
+        assertThat(raised).hasSize(1);
+
+        record.set(Option.some(new StreamPartitionOwnershipValue(other,
+                                                                 EPOCH,
+                                                                 4L,
+                                                                 HlcTimestamp.ZERO,
+                                                                 List.of(other),
+                                                                 1L,
+                                                                 false,
+                                                                 List.of(),
+                                                                 List.of(new EpochStart(EPOCH, 5L)))));
+        assertThat(activate()).as("ownership left this node").isFalse();
+        assertThat(resolved).as("the first episode is over").hasSize(1);
+
+        record.set(Option.some(mine));
+        stickFor(OwnerActivation.LINEAGE_REFUSAL_ALARM_AFTER);
+
+        assertThat(raised).as("the second stuck tenure raises its own block").hasSize(2);
+    }
+
+    /// Quorum loss ends the tenure the same way.
+    @Test
+    void aSecondStuckTenure_afterQuorumLoss_raisesAgain() {
+        record.set(Option.some(committed(List.of(new EpochStart(EPOCH, 5L)))));
+        refusal.set(Option.some(OwnerActivation.ActivationError.LINEAGE_NOT_COMMITTED));
+        stickFor(OwnerActivation.LINEAGE_REFUSAL_ALARM_AFTER);
+        assertThat(raised).hasSize(1);
+
+        activation.onQuorumStateChange(org.pragmatica.consensus.topology.ClusterStateNotification.passive());
+        assertThat(resolved).as("the first episode is over").hasSize(1);
+
+        stickFor(OwnerActivation.LINEAGE_REFUSAL_ALARM_AFTER);
+
+        assertThat(raised).as("the second stuck tenure raises its own block").hasSize(2);
+    }
+
+    /// Refusals below the threshold do not carry across a quorum loss: the count belongs to the tenure that ended.
+    @Test
+    void refusalsBelowTheThreshold_doNotCarryAcrossQuorumLoss() {
+        record.set(Option.some(committed(List.of(new EpochStart(EPOCH, 5L)))));
+        refusal.set(Option.some(OwnerActivation.ActivationError.LINEAGE_NOT_COMMITTED));
+        stickFor(OwnerActivation.LINEAGE_REFUSAL_ALARM_AFTER - 2);
+        activation.onQuorumStateChange(org.pragmatica.consensus.topology.ClusterStateNotification.passive());
+        stickFor(2);
+
+        assertThat(raised).as("2 refusals in the new tenure, not 2 + the old tenure's").isEmpty();
+    }
+
+    /// No committed leader is a quorum condition with its own event: it fails the activation (retried) but never counts toward
+    /// the per-partition refusal alarm, or every owned partition would raise one when quorum goes. Red when it counts.
+    @Test
+    void commitsWithoutACommittedLeader_failButNeverRaiseTheRefusalAlarm() {
+        record.set(Option.some(committed(List.of(new EpochStart(EPOCH, 5L)))));
+        refusal.set(Option.some(OwnerActivation.ActivationError.NO_COMMITTED_LEADER));
+
+        stickFor(OwnerActivation.LINEAGE_REFUSAL_ALARM_AFTER * 2);
+
+        assertThat(raised).isEmpty();
+        assertThat(commits).as("each attempt retried the commit").hasSize(OwnerActivation.LINEAGE_REFUSAL_ALARM_AFTER * 2);
+    }
+
+    /// One episode, one resolution: the block ends with quorum loss, and the later activation that lands must not resolve
+    /// it a second time (#1955's `ended` and the episode reset share the removal).
+    @Test
+    void anEpisodeEndedByQuorumLoss_isNotResolvedAgainWhenTheNextActivationLands() {
+        record.set(Option.some(committed(List.of(new EpochStart(EPOCH, 5L)))));
+        refusal.set(Option.some(OwnerActivation.ActivationError.LINEAGE_NOT_COMMITTED));
+        stickFor(OwnerActivation.LINEAGE_REFUSAL_ALARM_AFTER);
+        activation.onQuorumStateChange(org.pragmatica.consensus.topology.ClusterStateNotification.passive());
+        refusal.set(Option.none());
+
+        assertThat(activate()).isTrue();
+        assertThat(resolved).as("resolved once, by the quorum loss").hasSize(1);
+    }
+
+    private void stickFor(int attempts) {
+        for (var attempt = 0; attempt < attempts; attempt++) {
+            activate();
+        }
     }
 
     /// The applier answers a refused guarded write with a result, not a failed promise: the commit "succeeds" and the record is
