@@ -4946,6 +4946,10 @@ public interface AetherNode extends ManageableNode {
         // window lets all nodes reform; a genuine minority still self-fences once the window elapses.
         quorumLossDetector.setColdBootSupplier(swimIsBootingSupplier);
         metricsCollector.setDrainCommandHandler(() -> commandedDrain(drainProcedure, nodeReportedStateHolder));
+        // #2014: the leader is the only node that saw DrainRequested, so its FSM edge is the only place the
+        // announced-departure mark was set. The leader's broadcast ping carries the global drain set to every
+        // peer: mark each commanded node here so a follower's DEAD edge reads a planned departure as one.
+        metricsCollector.setDrainSetObserver(drainSetObserver(alertManager, config.self()));
         // Workers renew core contact from identified core ping OR pong responses. This is
         // reachability evidence only; all mutations still require committed core authority.
         var coreAbsenceDetector = CoreAbsenceDetector.coreAbsenceDetector(config.timeouts().cluster().coreAbsence(),
@@ -7698,6 +7702,14 @@ public interface AetherNode extends ManageableNode {
     /// (the minority measures `T` from its own local-quorum-loss observation). The read-path
     /// quiesce (`AppHttpServer::onQuorumStateChange`) stays IMMEDIATE on PASSIVE — read-path
     /// protection is cheap to undo on regain; only the process-exit drain gets the window.
+    /// #2014: the leader's broadcast drain set marks each commanded node (never self) as an announced
+    /// departure on this observer. Package-private so the composition is pinned without booting a node.
+    static Consumer<Set<NodeId>> drainSetObserver(AlertManager alertManager, NodeId self) {
+        return drained -> drained.stream()
+                                 .filter(id -> !id.equals(self))
+                                 .forEach(id -> alertManager.noteMembershipTransition(id, "DrainRequested"));
+    }
+
     /// #688: one DRAINING report feeds both halves of a drain — the membership FSM's acknowledgement
     /// (#1054) and the leader-side eviction loop. The CDM's `MembershipDecision.NodeDraining` arm is
     /// never emitted (membership-v2 finale), so this listener is the ONLY production entry to

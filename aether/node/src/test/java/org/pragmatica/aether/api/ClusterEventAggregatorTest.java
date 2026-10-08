@@ -674,6 +674,18 @@ class ClusterEventAggregatorTest {
         assertThat(events.getFirst().severity()).isEqualTo(ClusterEvent.Severity.CRITICAL);
     }
 
+    /// #2014 — a node removed from the electorate by a voter reconfiguration is demoted to an observer of a
+    /// live quorum. That is planned work, not quorum loss: no CRITICAL `QuorumLost`. Reverting the
+    /// `demoted()` branch in `onQuorumStateChange` turns this red.
+    @Test
+    void demotedByReconfiguration_emitsNoQuorumLost() {
+        var h = Harness.create(Harness.defaultRetention(), NOT_OWNER, () -> false, NOT_LEADER);
+        h.aggregator().onQuorumStateChange(ClusterStateNotification.demotion());
+
+        assertThat(h.events()).noneMatch(e -> e instanceof ClusterEvent.QuorumLost);
+        assertThat(h.events()).isEmpty();
+    }
+
     /// #926 — the recovery half. Quorum forms BEFORE a leader is elected, so the old gate dropped this
     /// notice at the one moment it was guaranteed false. Un-gating the loss while leaving the recovery
     /// gated would be worse than fixing neither: an operator would watch the cluster enter "quorum lost"

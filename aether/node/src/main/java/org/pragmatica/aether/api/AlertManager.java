@@ -1117,6 +1117,15 @@ public class AlertManager {
         announcedDeparture.put(nodeId.id(), System.currentTimeMillis());
     }
 
+    /// Whether this node holds an announced-departure mark for `nodeId` (#2014). A NON-consuming read:
+    /// [`#onNodeFailed`] consumes the mark, so the departure notifier asks first and routes the event
+    /// by the answer. The mark is fed by the local FSM's `DrainRequested` edge AND by the leader's
+    /// broadcast drain set, so a follower that never saw `DrainRequested` still holds it.
+    @Contract
+    public boolean hasAnnouncedDeparture(NodeId nodeId) {
+        return announcedDeparture.containsKey(nodeId.id());
+    }
+
     /// Raise a node-health alert for a confirmed member death (#926).
     ///
     /// Invoked from the ungated `MembershipFsm` DEAD edge on EVERY node that confirms the death, so it
