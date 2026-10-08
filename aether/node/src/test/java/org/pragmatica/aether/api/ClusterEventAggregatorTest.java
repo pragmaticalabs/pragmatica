@@ -2071,7 +2071,7 @@ class ClusterEventAggregatorTest {
     }
 
     /// The pairing touches exactly the declared pairs of codes (the two consumer pairs #752/#1935, the oversized-event refusal and the
-    /// members-unreachable wait of #1937, and the slice-floor refusal of #1720); every other code keeps the plain 60 s throttle.
+    /// members-unreachable wait of #1937, the slice-floor refusal of #1720 and the HTTP-listener TLS rotation refusal); every other code keeps the plain 60 s throttle.
     @Test
     void onOperatorWarning_onlyTheDeclaredPairsArePaired_otherCodesUnchanged() {
         assertThat(java.util.Arrays.stream(OperatorWarningCode.values()).filter(c -> c.recoveryOf().isPresent()).toList())
@@ -2082,7 +2082,9 @@ class ClusterEventAggregatorTest {
                              OperatorWarningCode.STREAM_EVENT_EXCEEDS_READ_CAP_RESOLVED,
                              OperatorWarningCode.STREAM_OWNER_PROMOTION_HOLDERS_ANSWERING,
                              OperatorWarningCode.STREAM_OWNER_LINEAGE_COMMITTED,
-                             OperatorWarningCode.STREAM_CATCHUP_SOURCE_ANSWERING_RESTORED);
+                             OperatorWarningCode.STREAM_CATCHUP_SOURCE_ANSWERING_RESTORED,
+                             OperatorWarningCode.HTTP_TLS_ROTATION_RESTORED,
+                             OperatorWarningCode.CLUSTER_TLS_RENEWAL_RESTORED);
         assertThat(java.util.Arrays.stream(OperatorWarningCode.values()).filter(OperatorWarningCode::hasRecovery).toList())
             .containsExactlyInAnyOrder(OperatorWarningCode.SLICE_FLOOR_DRAIN_REFUSED,
                              OperatorWarningCode.STREAM_CONSUMER_STATE_DIVERGED,
@@ -2091,7 +2093,9 @@ class ClusterEventAggregatorTest {
                              OperatorWarningCode.STREAM_EVENT_EXCEEDS_READ_CAP,
                              OperatorWarningCode.STREAM_OWNER_PROMOTION_HOLDERS_UNREACHABLE,
                              OperatorWarningCode.STREAM_OWNER_LINEAGE_REFUSED,
-                             OperatorWarningCode.STREAM_CATCHUP_SOURCE_NOT_ANSWERING);
+                             OperatorWarningCode.STREAM_CATCHUP_SOURCE_NOT_ANSWERING,
+                             OperatorWarningCode.HTTP_TLS_ROTATION_REFUSED,
+                             OperatorWarningCode.CLUSTER_TLS_RENEWAL_REFUSED);
         var recoveries = java.util.Arrays.stream(OperatorWarningCode.values()).filter(c -> c.recoveryOf().isPresent()).count();
         var t = new AtomicLong(1_000_000L);
         var h = clocked(t);

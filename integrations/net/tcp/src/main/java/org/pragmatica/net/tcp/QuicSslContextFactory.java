@@ -311,6 +311,10 @@ public final class QuicSslContextFactory {
     }
 
     private static Result<KeyMaterial> loadKeyMaterial(TlsConfig.Identity identity) {
+        return loadUncheckedKeyMaterial(identity).flatMap(keyMaterial -> KeyPairCheck.check(identity).map(_ -> keyMaterial));
+    }
+
+    private static Result<KeyMaterial> loadUncheckedKeyMaterial(TlsConfig.Identity identity) {
         return switch (identity) {
             case TlsConfig.Identity.SelfSigned() -> generateSelfSigned();
             case TlsConfig.Identity.FromFiles(var certPath, var keyPath, var password) -> loadFromFiles(certPath,

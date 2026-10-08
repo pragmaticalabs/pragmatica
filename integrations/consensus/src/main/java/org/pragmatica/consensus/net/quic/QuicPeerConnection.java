@@ -20,6 +20,8 @@ import java.util.Deque;
 import java.util.EnumMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
 
 import org.pragmatica.consensus.NodeId;
@@ -31,6 +33,7 @@ import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.messaging.StreamType;
 
 import io.netty.buffer.Unpooled;
+import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.WriteBufferWaterMark;
 import io.netty.handler.codec.quic.DefaultQuicStreamFrame;
 import io.netty.handler.codec.quic.QuicChannel;
@@ -346,7 +349,53 @@ public final class QuicPeerConnection {
                   retired.streamId(),
                   peerId,
                   kept.streamId());
-        var _ = retired.writeAndFlush(new DefaultQuicStreamFrame(Unpooled.EMPTY_BUFFER, true));
+        var _ = retired.writeAndFlush(laneEndFrame());
+    }
+
+    /// #1727 (M1) — the frame that ends a lane: a zero-length frame (the 4-byte length prefix, zero
+    /// payload) carrying the FIN. A bare FIN is not safe: quiche drops a FIN that first arrives on a
+    /// retransmission of data the receiver has already read, so the FIN is never surfaced and the
+    /// handover stalls. Here the FIN rides on bytes that are new to every copy of the stream, and the
+    /// receiver ends the lane on the frame itself ([QuicLaneDataHandler]) without depending on the FIN.
+    /// The prefix is written raw: a [DefaultQuicStreamFrame] bypasses the pipeline's length prepender.
+    /// No other writer produces a zero-length frame — every message encodes to at least its type tag.
+    static DefaultQuicStreamFrame laneEndFrame() {
+        return new DefaultQuicStreamFrame(Unpooled.wrappedBuffer(new byte[LENGTH_PREFIX_BYTES]), true);
+    }
+
+    /// #1727 (M1) — the error-path finish: end the lane with the marker, THEN close. A bare close() sends a
+    /// bare FIN, which the peer may never see (see [#laneEndFrame]), so it would not release its lane.
+    ///
+    /// An error path must never be able to hang. A stream that is dead or not writable (flow-control
+    /// blocked: the marker would queue behind the blocked writes and its future would wait for credit the
+    /// peer may never grant) is closed at once; otherwise the close is also scheduled as a bounded backstop,
+    /// so it happens whether or not the marker write completes.
+    @Contract
+    static void endLaneThenClose(ChannelHandlerContext ctx) {
+        endLaneThenClose(ctx, CLOSE_BACKSTOP_MS);
+    }
+
+    @Contract
+    static void endLaneThenClose(ChannelHandlerContext ctx, long backstopMs) {
+        var channel = ctx.channel();
+
+        if (!channel.isActive() || !channel.isWritable()) {
+            ctx.close();
+
+            return;
+        }
+
+        var closed = new AtomicBoolean();
+        Runnable closeOnce = () -> closeOnce(ctx, closed);
+
+        ctx.writeAndFlush(laneEndFrame()).addListener(_ -> closeOnce.run());
+        ctx.executor().schedule(closeOnce, backstopMs, TimeUnit.MILLISECONDS);
+    }
+
+    private static void closeOnce(ChannelHandlerContext ctx, AtomicBoolean closed) {
+        if (closed.compareAndSet(false, true)) {
+            ctx.close();
+        }
     }
 
     /// #1578 — `stream` ended from the other side: its FIN arrived (the other side retired it under
@@ -365,7 +414,7 @@ public final class QuicPeerConnection {
         }
 
         if (stream.isActive()) {
-            var _ = stream.writeAndFlush(new DefaultQuicStreamFrame(Unpooled.EMPTY_BUFFER, true));
+            var _ = stream.writeAndFlush(laneEndFrame());
         }
     }
 
@@ -387,6 +436,8 @@ public final class QuicPeerConnection {
         connection.close().sync();
     }
 
+    private static final int LENGTH_PREFIX_BYTES = 4;
+    static final long CLOSE_BACKSTOP_MS = 1_000;
     private static final Logger log = LoggerFactory.getLogger(QuicPeerConnection.class);
 
     private void closeLongLivedStreams() {
