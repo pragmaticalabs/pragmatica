@@ -62,6 +62,8 @@ class QuicActivityKickWiringTest {
     private static final TimeSpan AWAIT = TimeSpan.timeSpan(30).seconds();
     private static final long ONE_WAY_DELAY_MS = 300;
     private static final String PAD = "x".repeat(400);
+    /// Far below the 30 s transport keepalive, which would otherwise rescue the data and hide a missing kick.
+    private static final TimeSpan RECOVERY_BOUND = TimeSpan.timeSpan(4).seconds();
     private static final long LOSS_TIMER_MAX_NANOS = TimeUnit.MILLISECONDS.toNanos(150);
 
     private final List<QuicClusterNetwork> networks = new java.util.ArrayList<>();
@@ -112,11 +114,11 @@ class QuicActivityKickWiringTest {
 
         var reading = QuicheStall.induceLateTimer(connection.connection());
 
-        System.out.println("WIRING-READING " + reading);
-        assertThat(reading.quicheTimerBefore()).as("quiche's timer was due when connectionSend ran").isLessThanOrEqualTo(0);
+                assertThat(reading.quicheTimerBefore()).as("quiche's timer was due when connectionSend ran").isLessThanOrEqualTo(0);
 
         awaitTrue(() -> received.stream().anyMatch(probe -> probe.marker().equals("A" + PAD)),
-                  "the production kick recovered the stranded data A");
+                  RECOVERY_BOUND,
+                  "the production kick recovered the stranded data A within " + RECOVERY_BOUND.millis() + " ms");
     }
 
     /// With the real 1 s transport keepalive running, an idle link sends no kicks: the keepalive rides the
@@ -169,7 +171,11 @@ class QuicActivityKickWiringTest {
     }
 
     private static void awaitTrue(BooleanSupplier condition, String what) {
-        var deadline = System.nanoTime() + AWAIT.nanos();
+        awaitTrue(condition, AWAIT, what);
+    }
+
+    private static void awaitTrue(BooleanSupplier condition, TimeSpan bound, String what) {
+        var deadline = System.nanoTime() + bound.nanos();
 
         while (System.nanoTime() < deadline) {
             if (condition.getAsBoolean()) {
