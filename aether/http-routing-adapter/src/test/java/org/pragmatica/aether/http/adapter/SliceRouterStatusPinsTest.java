@@ -11,18 +11,17 @@ import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.http.handler.HttpRequestContext;
 import org.pragmatica.http.HttpError;
 import org.pragmatica.http.HttpStatus;
-import org.pragmatica.http.routing.PathParameter;
+import org.pragmatica.http.routing.ParameterError;
 import org.pragmatica.http.routing.Route;
 import org.pragmatica.json.JsonMapper;
 import org.pragmatica.lang.Cause;
-import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
-/// Pins the two statuses `SliceRouterCompositeErrorTest` does not reach: a path segment that fails a literal
-/// spacer answers 404 (not the slice mapper's 500), and a composite whose members are ALL transient answers 503.
+/// Pins the statuses `SliceRouterCompositeErrorTest` does not reach: a path-segment mismatch answers 404 and a
+/// missing parameter 400 (not the slice mapper's 500), and a composite whose members are ALL transient answers 503.
 /// The mapper is the generated-slice shape, whose `default` is a hard-coded 500.
 class SliceRouterStatusPinsTest {
     record Refused(String message) implements Cause.Transient {}
@@ -32,13 +31,20 @@ class SliceRouterStatusPinsTest {
         default -> HttpError.httpError(HttpStatus.INTERNAL_SERVER_ERROR, cause);
     };
 
+    /// Spacers are matched during route lookup, so a mismatch normally ends as the router's own 404 before any
+    /// handler runs; this pins the status when the mismatch reaches the error mapper as a handler failure.
     @Test
-    void handle_pathSegmentFailsLiteralSpacer_returns404() {
-        var route = Route.<String>get("/items/").withPath(PathParameter.spacer("edit"))
-                         .to(_ -> Promise.success("edit"))
-                         .asJson();
+    void handle_pathMismatchFromHandler_returns404() {
+        var route = failingRoute(new ParameterError.PathMismatch("edit", "other"));
 
-        assertThat(send(route, "/items/other")).isEqualTo(404);
+        assertThat(send(route, "/items")).isEqualTo(404);
+    }
+
+    @Test
+    void handle_missingParameterFromHandler_returns400() {
+        var route = failingRoute(new ParameterError.MissingParameter("limit"));
+
+        assertThat(send(route, "/items")).isEqualTo(400);
     }
 
     @Test
@@ -50,6 +56,10 @@ class SliceRouterStatusPinsTest {
                          .asJson();
 
         assertThat(send(route, "/items")).isEqualTo(503);
+    }
+
+    private static Route<String> failingRoute(Cause failure) {
+        return Route.<String>get("/items").withoutParameters().to(_ -> failure.<String> promise()).asJson();
     }
 
     private static int send(Route<?> route, String path) {
