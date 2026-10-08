@@ -206,6 +206,22 @@ class DrainCommandPlumbingTest {
             assertThat(seen.get()).isNotEmpty().doesNotContain(SELF);
         }
 
+        /// #2014: absence is how a cancelled drain is noticed, so an EMPTY authoritative set must reach the
+        /// observer too. Re-adding an `isEmpty()` guard turns this red.
+        @Test
+        void onClusterSyncPing_emptyDrainSet_reachesTheObserver() {
+            var network = new RecordingNetwork();
+            var collector = ClusterSyncCollector.clusterSyncCollector(SELF, network);
+            collector.setMetricsProducerEligibility(_ -> true);
+
+            collector.setPingAuthority(LEADER::equals, LEADER::equals);
+            var seen = new AtomicReference<Set<NodeId>>(null);
+
+            collector.setDrainSetObserver(seen::set);
+            collector.onClusterSyncPing(nonePing());
+            assertThat(seen.get()).isNotNull().isEmpty();
+        }
+
         @Test
         void onClusterSyncPing_nonAuthoritativeDrainSet_doesNotReachTheObserver() {
             var network = new RecordingNetwork();

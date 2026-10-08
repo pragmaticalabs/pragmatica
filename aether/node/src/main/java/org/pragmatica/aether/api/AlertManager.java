@@ -1117,6 +1117,58 @@ public class AlertManager {
         announcedDeparture.put(nodeId.id(), System.currentTimeMillis());
     }
 
+    /// How long a node must stay absent from the leader's broadcast drain set before a mark that set
+    /// created is dropped (#2014). Absence alone is not a cancel: after a leader change the new leader's
+    /// registry is empty and its pings omit a drainee that is still draining, so the mark has to outlive
+    /// that gap. A drain that outlasts the grace after a leader change goes CRITICAL on its DEAD edge —
+    /// the loud direction.
+    public static final long DRAIN_OMISSION_GRACE_MS = 30_000L;
+
+    /// id → last wall-clock millis the leader's broadcast drain set named the node. Only marks CREATED by
+    /// the broadcast are tracked here, so a mark from the local FSM edge is never expired by absence.
+    private final Map<String, Long> broadcastDrainSeen = new ConcurrentHashMap<>();
+
+    /// Feed from the leader's broadcast drain set, called on EVERY authoritative ping, empty set included
+    /// (#2014). Marks each commanded node (never `self`) as an announced departure, and drops a
+    /// broadcast-created mark whose node has been absent from the set for [`#DRAIN_OMISSION_GRACE_MS`]:
+    /// a drain that was cancelled or withdrawn while the node stayed must not silence its later crash,
+    /// and a mark left by a finished departure must not accumulate.
+    @Contract
+    public void observeDrainSet(java.util.Set<NodeId> drainSet, NodeId self, long nowMs) {
+        drainSet.stream().filter(id -> !id.equals(self)).forEach(id -> markFromBroadcast(id, nowMs));
+        broadcastDrainSeen.entrySet()
+                          .removeIf(entry -> expiredAbsent(entry.getKey(),
+                                                           entry.getValue(),
+                                                           drainSet,
+                                                           nowMs));
+    }
+
+    private void markFromBroadcast(NodeId id, long nowMs) {
+        noteMembershipTransition(id, "DrainRequested");
+        if (announcedDeparture.containsKey(id.id())) {
+            broadcastDrainSeen.put(id.id(), nowMs);
+        }
+    }
+
+    private boolean expiredAbsent(String id, long lastSeen, java.util.Set<NodeId> drainSet, long nowMs) {
+        if (drainSet.stream().anyMatch(named -> named.id()
+                                                     .equals(id)) || nowMs - lastSeen < DRAIN_OMISSION_GRACE_MS) {
+            return false;
+        }
+
+        announcedDeparture.remove(id);
+
+        return true;
+    }
+
+    /// The drain was withdrawn or refuted and the node stays (FSM DEPARTING to MEMBER): drop its mark so a
+    /// later real crash alerts (#2014).
+    @Contract
+    public void clearAnnouncedDeparture(NodeId nodeId) {
+        announcedDeparture.remove(nodeId.id());
+        broadcastDrainSeen.remove(nodeId.id());
+    }
+
     /// Whether this node holds an announced-departure mark for `nodeId` (#2014). A NON-consuming read:
     /// [`#onNodeFailed`] consumes the mark, so the departure notifier asks first and routes the event
     /// by the answer. The mark is fed by the local FSM's `DrainRequested` edge AND by the leader's
@@ -1196,6 +1248,7 @@ public class AlertManager {
     @Contract
     public void clearNodeHealthAlert(NodeId rejoined) {
         announcedDeparture.remove(rejoined.id());
+        broadcastDrainSeen.remove(rejoined.id());
         nodeHealthAlertOrder.remove(AlertEvent.NodeHealthAlert.alertId(rejoined));
         Option.option(activeNodeHealthAlerts.remove(AlertEvent.NodeHealthAlert.alertId(rejoined))).onPresent(cleared -> log.info("Node-health alert resolved for {} — node rejoined (was: {})",
                                                                                                                                  rejoined.id(),

@@ -49,4 +49,66 @@ class AetherNodeDrainSetObserverTest {
         assertThat(alerts.hasAnnouncedDeparture(SELF)).isFalse();
         assertThat(alerts.hasAnnouncedDeparture(DRAINED)).isTrue();
     }
+
+    private static void blackholeAfter(AlertManager alerts, long nowMs, Set<NodeId> set) {
+        alerts.observeDrainSet(set, SELF, nowMs);
+    }
+
+    /// The CTO's condition: drain started, then cancelled (the node stays, absent from the set), then the
+    /// node dies unannounced: CRITICAL. Deleting the omission expiry in `observeDrainSet` turns this red.
+    @Test
+    void drainCancelled_nodeAbsentFromTheSetBeyondTheGrace_markClears_laterCrashAlerts() {
+        var alerts = alerts();
+
+        blackholeAfter(alerts, 0L, Set.of(DRAINED));
+        assertThat(alerts.hasAnnouncedDeparture(DRAINED)).isTrue();
+        blackholeAfter(alerts, AlertManager.DRAIN_OMISSION_GRACE_MS + 1, Set.of());
+
+        assertThat(alerts.hasAnnouncedDeparture(DRAINED)).as("the cancelled drain's mark is gone").isFalse();
+        alerts.onNodeFailed(DRAINED, SELF);
+        assertThat(alerts.getActiveNodeHealthAlerts()).hasSize(1);
+    }
+
+    /// A leader change empties the drain set while the drainee is still draining: the mark must outlive
+    /// the gap. Shrinking the grace to zero turns this red.
+    @Test
+    void leaderChange_emptySetWithinTheGrace_markSurvives() {
+        var alerts = alerts();
+
+        blackholeAfter(alerts, 0L, Set.of(DRAINED));
+        blackholeAfter(alerts, AlertManager.DRAIN_OMISSION_GRACE_MS - 1, Set.of());
+
+        assertThat(alerts.hasAnnouncedDeparture(DRAINED)).isTrue();
+    }
+
+    /// A drain withdrawn by the FSM (DEPARTING back to MEMBER) clears the mark at once. Deleting the clear in
+    /// `noteTransitionForAlerts` turns this red.
+    @Test
+    void drainWithdrawnByTheFsm_departingToMember_clearsTheMark() {
+        var alerts = alerts();
+
+        AetherNode.noteTransitionForAlerts(alerts, record("Member", "Departing", "DrainRequested"));
+        assertThat(alerts.hasAnnouncedDeparture(DRAINED)).isTrue();
+        AetherNode.noteTransitionForAlerts(alerts, record("Departing", "Member", "DrainUnacknowledged"));
+
+        assertThat(alerts.hasAnnouncedDeparture(DRAINED)).isFalse();
+    }
+
+    /// The set cannot grow forever: a mark consumed by the DEAD edge and re-created by a lingering ping
+    /// expires once the node leaves the set. Reverting the bookkeeping leaves the mark behind.
+    @Test
+    void departedNode_lingeringInPings_thenGone_leavesNoMark() {
+        var alerts = alerts();
+
+        blackholeAfter(alerts, 0L, Set.of(DRAINED));
+        alerts.onNodeFailed(DRAINED, SELF);
+        blackholeAfter(alerts, 1_000L, Set.of(DRAINED));
+        blackholeAfter(alerts, 1_000L + AlertManager.DRAIN_OMISSION_GRACE_MS + 1, Set.of());
+
+        assertThat(alerts.hasAnnouncedDeparture(DRAINED)).isFalse();
+    }
+
+    private static org.pragmatica.aether.deployment.membership.fsm.MembershipTransitionRecord record(String from, String to, String cause) {
+        return new org.pragmatica.aether.deployment.membership.fsm.MembershipTransitionRecord(DRAINED, from, to, cause, 1L, "", 0L);
+    }
 }

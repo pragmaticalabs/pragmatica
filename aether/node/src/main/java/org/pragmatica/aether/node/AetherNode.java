@@ -4803,7 +4803,7 @@ public interface AetherNode extends ManageableNode {
             // through the same `Stopped` transition. Folded into the EXISTING listener because
             // `onTransition` is a single-listener setter — registering a second one would silently
             // replace the transition journal.
-            alertManager.noteMembershipTransition(record.nodeId(), record.cause());
+            noteTransitionForAlerts(alertManager, record);
             onFsmTransition(transitionJournal, quorumLossDetectorRef, record);
             reconcileReplicaSetOnCountedBoundary(clusterEventsControllerRef, record);
             // #1720: a floor-refused operator drain target that has now reached DEAD closes its refusal on this edge.
@@ -7702,12 +7702,20 @@ public interface AetherNode extends ManageableNode {
     /// (the minority measures `T` from its own local-quorum-loss observation). The read-path
     /// quiesce (`AppHttpServer::onQuorumStateChange`) stays IMMEDIATE on PASSIVE — read-path
     /// protection is cheap to undo on regain; only the process-exit drain gets the window.
+    /// Feeds one FSM transition to the alert manager (#926 round 2 mark, #2014 clear). A drain withdrawn
+    /// (#1054) or refuted by a newer incarnation leaves the node a MEMBER: its announced-departure mark
+    /// must not outlive the drain and silence a later real crash. Package-private so it is pinned.
+    static void noteTransitionForAlerts(AlertManager alertManager, MembershipTransitionRecord record) {
+        alertManager.noteMembershipTransition(record.nodeId(), record.cause());
+        if ("Departing".equals(record.fromState()) && "Member".equals(record.toState())) {
+            alertManager.clearAnnouncedDeparture(record.nodeId());
+        }
+    }
+
     /// #2014: the leader's broadcast drain set marks each commanded node (never self) as an announced
     /// departure on this observer. Package-private so the composition is pinned without booting a node.
     static Consumer<Set<NodeId>> drainSetObserver(AlertManager alertManager, NodeId self) {
-        return drained -> drained.stream()
-                                 .filter(id -> !id.equals(self))
-                                 .forEach(id -> alertManager.noteMembershipTransition(id, "DrainRequested"));
+        return drained -> alertManager.observeDrainSet(drained, self, System.currentTimeMillis());
     }
 
     /// #688: one DRAINING report feeds both halves of a drain — the membership FSM's acknowledgement

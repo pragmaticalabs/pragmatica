@@ -1244,6 +1244,7 @@ public final class ClusterEventAggregator {
                     // (`ClusterStateNotification#demoted`, #1790). Planned work: it is not quorum loss,
                     // so it neither pages nor needs a recovery event.
                     LOG.info("Node {} left the electorate by reconfiguration — observing a live quorum", selfNode.id());
+
                     return;
                 }
 
