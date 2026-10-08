@@ -224,19 +224,28 @@ public final class QuicPeerConnection {
     }
 
     /// #1727 — a write on `lane` was handed to its stream: it is unflushed until [#laneWriteCompleted], and
-    /// a data lane (not CONTROL) opens or extends the activity kick window.
+    /// opens or extends the activity kick window.
+    ///
+    /// CONTROL is not accounted: the transport's own 1 s KeepAlive rides it, so counting it would put one lane
+    /// "at risk" on every idle link (found by v-2023). CONTROL traffic is not part of the risk figure.
     @Contract
     void laneWriteStarted(StreamType lane) {
+        if (lane == StreamType.CONTROL) {
+            return;
+        }
+
         pendingLaneWrites.incrementAndGet(lane.streamIndex());
         lastLaneWriteNanos.set(lane.streamIndex(), System.nanoTime());
-        if (lane != StreamType.CONTROL) {
-            noteLaneWrite();
-        }
+        noteLaneWrite();
     }
 
     /// #1727 — the write on `lane` completed (accepted by quiche, or failed).
     @Contract
     void laneWriteCompleted(StreamType lane) {
+        if (lane == StreamType.CONTROL) {
+            return;
+        }
+
         pendingLaneWrites.decrementAndGet(lane.streamIndex());
     }
 

@@ -90,6 +90,20 @@ class QuicSupersedeObservationTest {
         assertThat(risk.lanesAtRisk()).as("one lane, counted once").isEqualTo(1);
     }
 
+    /// The transport's KeepAlive rides CONTROL every second: it must not make an idle link look at risk.
+    @Test
+    void controlLaneWrites_areNotAccounted() {
+        var connection = connection(new NodeId("a"));
+
+        connection.laneWriteStarted(StreamType.CONTROL);
+
+        assertThat(connection.laneWritesAtRisk(System.nanoTime()).lanesAtRisk()).isZero();
+
+        connection.laneWriteCompleted(StreamType.CONTROL);
+
+        assertThat(connection.laneWritesAtRisk(System.nanoTime()).lanesAtRisk()).isZero();
+    }
+
     @Test
     void shape_sameDialer_isASameDirectionRedial_differentDialer_isADualDialLoser() {
         var low = new NodeId("a");

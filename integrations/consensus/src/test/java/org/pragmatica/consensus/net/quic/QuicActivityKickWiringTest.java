@@ -140,6 +140,8 @@ class QuicActivityKickWiringTest {
         LockSupport.parkNanos(TimeUnit.SECONDS.toNanos(4));
 
         assertThat(connection.activityKicksSent() - before).as("kick frames over 4 s of idle link").isZero();
+        assertThat(connection.laneWritesAtRisk(System.nanoTime()).lanesAtRisk())
+            .as("lanes at risk on an idle link whose only traffic is the 1 s keepalive").isZero();
     }
 
     private static int boundPort(QuicClusterNetwork network) {
