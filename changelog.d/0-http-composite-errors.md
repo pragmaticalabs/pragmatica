@@ -1,2 +1,2 @@
 ### Fixed
-- Shared slice HTTP routing returns client-error statuses for malformed primitive parameters and consistently mapped composite domain validation failures, retaining HTTP 500 for mixed client/server failures.
+- Shared slice HTTP routing answers 400 for a malformed or missing path or query parameter (a parameter error, including a path-segment mismatch, as the management API does) instead of 500. A composite failure is resolved member by member: when every member maps to the same status it keeps that status (aggregated domain validation keeps its declared 400; all-transient members answer 503), and mixed members, such as a parameter error next to a server fault, stay 500 so a server fault is never concealed as a client error.
