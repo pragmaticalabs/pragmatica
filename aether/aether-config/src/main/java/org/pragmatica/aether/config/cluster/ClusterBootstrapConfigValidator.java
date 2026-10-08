@@ -399,8 +399,7 @@ public final class ClusterBootstrapConfigValidator {
     /// PF-28 (#2059): a cloud source must carry every credential key its provider's integration factory
     /// requires, so the operator learns the missing key at validate time, before any node is provisioned.
     private static void validateCloudCredentials(SourceProfile source, List<String> errors) {
-        CloudCredentialSchema.validate(source)
-                             .onFailure(cause -> errors.add("PF-28: " + cause.message()));
+        CloudCredentialSchema.validate(source).onFailure(cause -> errors.add("PF-28: " + cause.message()));
     }
 
     private static void validateElectedLbHasNonSpot(String name, SourceProfile source, List<String> errors) {

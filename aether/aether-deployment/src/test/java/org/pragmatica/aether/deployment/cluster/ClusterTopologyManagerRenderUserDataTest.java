@@ -83,6 +83,7 @@ class ClusterTopologyManagerRenderUserDataTest {
             [source.eu-1]
             type = "cloud"
             provider = "hetzner"
+            credentials = "hcloud-token"
             region = "eu-central"
 
             [source.eu-1.core]
@@ -107,6 +108,7 @@ class ClusterTopologyManagerRenderUserDataTest {
             [source.eu-1]
             type = "cloud"
             provider = "hetzner"
+            credentials = "hcloud-token"
             region = "eu-central"
 
             [source.eu-1.core]
@@ -134,6 +136,7 @@ class ClusterTopologyManagerRenderUserDataTest {
             [source.eu-1]
             type = "cloud"
             provider = "hetzner"
+            credentials = "hcloud-token"
             region = "eu-central"
 
             [source.eu-1.core]

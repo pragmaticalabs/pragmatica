@@ -260,13 +260,7 @@ public final class ProviderResolver {
 
         var discovery = clusterName.map(ProviderResolver::discoveryFor).or(Map.<String, String> of());
 
-        return new CloudConfig(providerName,
-                               credentials,
-                               Map.copyOf(compute),
-                               Map.of(),
-                               discovery,
-                               Map.of(),
-                               Map.of());
+        return new CloudConfig(providerName, credentials, Map.copyOf(compute), Map.of(), discovery, Map.of(), Map.of());
     }
 
     private static Map<String, String> discoveryFor(ClusterName clusterName) {

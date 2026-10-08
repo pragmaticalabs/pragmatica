@@ -29,8 +29,12 @@ sealed interface NodeConfigBuilder {
                                         NodeRole role,
                                         Option<String> dockerGid,
                                         Option<String> clusterSecret) {
-        return CloudCredentialSchema.validate(source)
-                                    .flatMap(validated -> composeValidated(ctx, validated, nodeIndex, role, dockerGid, clusterSecret));
+        return CloudCredentialSchema.validate(source).flatMap(validated -> composeValidated(ctx,
+                                                                                            validated,
+                                                                                            nodeIndex,
+                                                                                            role,
+                                                                                            dockerGid,
+                                                                                            clusterSecret));
     }
 
     private static Result<TomlDocument> composeValidated(BootstrapContext ctx,

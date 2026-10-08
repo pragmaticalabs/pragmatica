@@ -198,9 +198,11 @@ public interface BootstrapOverlayGenerator {
         }
 
         return source.provider()
-                     .map(provider -> CloudCredentialSchema.credentials(source, provider.value()))
+                     .map(provider -> CloudCredentialSchema.credentials(source,
+                                                                        provider.value()))
                      .filter(credentials -> !credentials.isEmpty())
-                     .map(credentials -> Section.section("cloud.credentials", Map.<String, Object> copyOf(credentials)));
+                     .map(credentials -> Section.section("cloud.credentials",
+                                                         Map.<String, Object> copyOf(credentials)));
     }
 
     private static Option<Section> cloudDiscoverySection(ClusterBootstrapConfig config, SourceProfile source) {

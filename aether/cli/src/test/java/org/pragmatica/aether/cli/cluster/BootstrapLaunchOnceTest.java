@@ -111,7 +111,7 @@ class BootstrapLaunchOnceTest {
         return SourceProfile.sourceProfile(sourceNameOrDefault("eu-1"),
                                            SourceType.CLOUD,
                                            Option.some(CloudProviderName.HETZNER),
-                                           Option.empty(),
+                                           Option.some("hcloud-token"),
                                            Option.empty(),
                                            Option.empty(),
                                            Option.some("aether"),

@@ -118,7 +118,7 @@ If `[cluster.core]` is absent entirely, `min`/`max` are unset (no bound) and `ma
 |---|---|---|---|---|
 | `type` | string | — | **yes** | `cloud` \| `ssh` \| `forge` \| `docker`. |
 | `provider` | string | — | no | `hetzner` \| `aws` \| `gcp` \| `azure`. **Rejected loudly if unrecognized** — `ClusterBootstrapConfigParser.parseProvider` (`ClusterBootstrapConfigParser.java:242-250`) returns a `ParseFailed` naming the bad value and the valid provider names; parsing aborts rather than silently dropping the field. |
-| `credentials` | string | — | no (required by cloud providers at deploy time) | Supports `${env:VAR}` interpolation. |
+| `credentials` | string | — | no (required by cloud providers at deploy time) | Supports `${env:VAR}` interpolation. Hetzner: the API token (`api_token`). aws, gcp and azure need several keys, which one string cannot carry: write them under `[source.<name>.node_config.cloud.credentials]` (aws `access_key_id`, `secret_access_key`; gcp `project_id`, `service_account_email`, `private_key_pem`; azure `tenant_id`, `client_id`, `client_secret`, `subscription_id`, `resource_group`). `region` (aws), `zone` (gcp) and `region` as azure `location` come from the source's own fields. A missing key is refused at validate time (`PF-28`), naming it. |
 | `region` | string | — | no | Provider-specific. |
 | `zone` | string | — | no | Single zone; mutually informative with `zones`. |
 | `zones` | string list | `[]` | no | Multi-zone spread, e.g. `["fsn1","nbg1","hel1"]`. |

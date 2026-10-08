@@ -97,6 +97,9 @@ public sealed interface ClusterConfigGenerator {
         }
 
         appendBlank(sb);
+        answers.cloud()
+               .filter(cloud -> answers.target() == SourceType.CLOUD)
+               .onPresent(cloud -> appendCloudCredentials(sb, cloud));
     }
 
     private static void appendCloudFields(StringBuilder sb, CloudAnswers cloud) {
@@ -104,7 +107,40 @@ public sealed interface ClusterConfigGenerator {
                  "provider",
                  cloud.provider().value());
         appendKv(sb, "region", cloud.region());
-        appendKv(sb, "credentials", "${env:" + cloud.credentialEnvVar() + "}");
+        if (cloud.provider() == CloudProviderName.HETZNER) {
+            appendKv(sb, "credentials", "${env:" + cloud.credentialEnvVar() + "}");
+        }
+
+        if (cloud.provider() == CloudProviderName.GCP) {
+            appendKv(sb, "zone", cloud.region() + "-a");
+        }
+    }
+
+    /// #2059: aws, gcp and azure need several credential keys, which one scalar `credentials` cannot carry. They
+    /// go under `node_config.cloud.credentials` as `${env:...}` references, named as the provider factories name them.
+    private static void appendCloudCredentials(StringBuilder sb, CloudAnswers cloud) {
+        var envVars = switch (cloud.provider()) {
+            case AWS -> List.of("access_key_id=AWS_ACCESS_KEY_ID", "secret_access_key=AWS_SECRET_ACCESS_KEY");
+            case GCP -> List.of("project_id=GCP_PROJECT_ID",
+                                "service_account_email=GCP_SERVICE_ACCOUNT_EMAIL",
+                                "private_key_pem=GCP_PRIVATE_KEY_PEM");
+            case AZURE -> List.of("tenant_id=AZURE_TENANT_ID",
+                                  "client_id=AZURE_CLIENT_ID",
+                                  "client_secret=AZURE_CLIENT_SECRET",
+                                  "subscription_id=AZURE_SUBSCRIPTION_ID",
+                                  "resource_group=AZURE_RESOURCE_GROUP");
+            case HETZNER -> List.<String> of();
+        };
+
+        if (envVars.isEmpty()) {
+            return;
+        }
+
+        appendSection(sb, "source." + SOURCE_NAME + ".node_config.cloud.credentials");
+        envVars.forEach(entry -> appendKv(sb,
+                                          entry.substring(0, entry.indexOf('=')),
+                                          "${env:" + entry.substring(entry.indexOf('=') + 1) + "}"));
+        appendBlank(sb);
     }
 
     private static void appendSshFields(StringBuilder sb, SshAnswers ssh) {

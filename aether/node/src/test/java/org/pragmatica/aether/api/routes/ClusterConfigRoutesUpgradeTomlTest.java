@@ -61,6 +61,7 @@ class ClusterConfigRoutesUpgradeTomlTest {
             [source.hetzner]
             type = "cloud"
             provider = "hetzner"
+            credentials = "hcloud-token"
             region = "eu-central"
 
             [source.hetzner.core]

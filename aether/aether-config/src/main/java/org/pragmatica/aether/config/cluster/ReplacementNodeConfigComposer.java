@@ -51,8 +51,11 @@ public sealed interface ReplacementNodeConfigComposer {
                                         NodeRole role,
                                         Option<String> clusterSecret,
                                         List<Long> sshKeyIds) {
-        return CloudCredentialSchema.validate(source)
-                                    .flatMap(validated -> composeValidated(config, validated, role, clusterSecret, sshKeyIds));
+        return CloudCredentialSchema.validate(source).flatMap(validated -> composeValidated(config,
+                                                                                            validated,
+                                                                                            role,
+                                                                                            clusterSecret,
+                                                                                            sshKeyIds));
     }
 
     private static Result<TomlDocument> composeValidated(ClusterBootstrapConfig config,

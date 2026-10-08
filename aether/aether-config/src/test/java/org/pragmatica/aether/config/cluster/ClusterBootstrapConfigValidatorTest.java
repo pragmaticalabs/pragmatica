@@ -63,6 +63,14 @@ class ClusterBootstrapConfigValidatorTest {
                                       infrastructureConfig(NetworkingType.MANUAL), defaultOperationsConfig(), java.util.Map.of());
     }
 
+    /// #2059: an aws source carries its credential keys under `node_config.cloud.credentials` — the scalar
+    /// `credentials` cannot be several keys. Other providers in these fixtures are expected to fail on other rules.
+    private static Option<TomlDocument> awsCredentials(CloudProviderName provider) {
+        return provider == CloudProviderName.AWS
+               ? some(new TomlDocument(Map.of("cloud.credentials", Map.of("access_key_id", "a", "secret_access_key", "s")), Map.of()))
+               : none();
+    }
+
     private static ClusterBootstrapConfig cloudConfigWithFirewall(CloudProviderName provider) {
         var runtime = runtimeProfile("prod", RuntimeType.CONTAINER, some("aether:latest"), none());
         var coreRole = roleSubTable(NodeRole.CORE, some(3), none(), some("cx41"), "prod");
@@ -70,7 +78,7 @@ class ClusterBootstrapConfigValidatorTest {
         var source = sourceProfile(sourceNameOrDefault("cloud-src"), SourceType.CLOUD, some(provider),
                                    some("key"), some("eu-central"), none(), none(), none(), none(),
                                    LoadBalancerMode.EXTERNAL, List.of("10.0.0.1"), none(), Map.of(),
-                                   Map.of(NodeRole.CORE, coreRole), rules);
+                                   Map.of(NodeRole.CORE, coreRole), rules, awsCredentials(provider));
 
         return clusterBootstrapConfig("1.0.0", clusterIdentity("production", "1.0.0").unwrap(),
                                       defaultCoreTopology(), Map.of("cloud-src", source),
@@ -110,7 +118,7 @@ class ClusterBootstrapConfigValidatorTest {
         var source = sourceProfile(sourceNameOrDefault("cloud-src"), SourceType.CLOUD, some(provider),
                                    some("key"), some("eu-central"), none(), none(), none(), none(),
                                    LoadBalancerMode.EXTERNAL, List.of("10.0.0.1"), none(), Map.of(),
-                                   Map.of(NodeRole.CORE, coreRole, NodeRole.SPOT, spotRole), List.of());
+                                   Map.of(NodeRole.CORE, coreRole, NodeRole.SPOT, spotRole), List.of(), awsCredentials(provider));
 
         return clusterBootstrapConfig("1.0.0", clusterIdentity("production", "1.0.0").unwrap(),
                                       defaultCoreTopology(), Map.of("cloud-src", source),

@@ -187,6 +187,18 @@ class ClusterConfigGeneratorTest {
         }
 
         @Test
+        void generate_cloudOnGcpAndAzure_roundTripAndValidate() {
+            for (var provider : List.of(CloudProviderName.GCP, CloudProviderName.AZURE)) {
+                var toml = ClusterConfigGenerator.generate(cloudAnswersFor(provider));
+
+                ClusterBootstrapConfigParser.parse(toml)
+                                            .onFailure(c -> fail("Parser rejected generated " + provider + " TOML: " + c.message()))
+                                            .flatMap(ClusterBootstrapConfigValidator::validate)
+                                            .onFailure(c -> fail("Validator rejected generated " + provider + " TOML: " + c.message()));
+            }
+        }
+
+        @Test
         void generate_cloud_roundTripsThroughParser() {
             var toml = ClusterConfigGenerator.generate(cloudAnswers());
             ClusterBootstrapConfigParser.parse(toml)

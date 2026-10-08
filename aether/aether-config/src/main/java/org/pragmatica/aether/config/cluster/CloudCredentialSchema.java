@@ -29,7 +29,12 @@ public interface CloudCredentialSchema {
             case "hetzner" -> List.of("api_token");
             case "aws" -> List.of("access_key_id", "secret_access_key", "region");
             case "gcp" -> List.of("project_id", "service_account_email", "private_key_pem", "zone");
-            case "azure" -> List.of("tenant_id", "client_id", "client_secret", "subscription_id", "resource_group", "location");
+            case "azure" -> List.of("tenant_id",
+                                    "client_id",
+                                    "client_secret",
+                                    "subscription_id",
+                                    "resource_group",
+                                    "location");
             default -> List.of();
         };
     }
@@ -56,7 +61,8 @@ public interface CloudCredentialSchema {
     static Result<SourceProfile> validate(SourceProfile source) {
         return source.type() == SourceType.CLOUD
                ? source.provider()
-                       .map(provider -> check(source, provider.value()))
+                       .map(provider -> check(source,
+                                              provider.value()))
                        .or(Result.success(source))
                : Result.success(source);
     }
@@ -64,20 +70,22 @@ public interface CloudCredentialSchema {
     private static Result<SourceProfile> check(SourceProfile source, String provider) {
         var credentials = credentials(source, provider);
         var missing = requiredKeys(provider).stream()
-                                            .filter(key -> credentials.getOrDefault(key, "").isBlank())
-                                            .toList();
+                                  .filter(key -> credentials.getOrDefault(key, "")
+                                                            .isBlank())
+                                  .toList();
 
         return missing.isEmpty()
                ? Result.success(source)
-               : new ClusterConfigError.CredentialsIncomplete(source.name().value(), provider, missing).result();
+               : new ClusterConfigError.CredentialsIncomplete(source.name().value(),
+                                                              provider,
+                                                              missing).result();
     }
 
     private static void applyLocation(Map<String, String> credentials, SourceProfile source, String provider) {
         switch (provider) {
             case "aws" -> source.region().onPresent(value -> credentials.put("region", value));
-            case "gcp" -> source.zone()
-                                .orElse(Option.from(source.effectiveZones().stream().findFirst()))
-                                .onPresent(value -> credentials.put("zone", value));
+            case "gcp" -> source.zone().orElse(Option.from(source.effectiveZones().stream().findFirst())).onPresent(value -> credentials.put("zone",
+                                                                                                                                             value));
             case "azure" -> source.region().onPresent(value -> credentials.put("location", value));
             default -> {}
         }
