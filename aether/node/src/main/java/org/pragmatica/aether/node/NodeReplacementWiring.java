@@ -426,7 +426,7 @@ public final class NodeReplacementWiring {
     /// What the wired replacement service was given, readable for the boot test that pins the node's wiring.
     public interface Wired {
         Set<NodeId> genesisVoters();
-        /// The index of committed pairings the node's reconcilers read.
+        /// The index of committed pairings the node's reconcilers and event announcer read.
         NodeReplacementIndex pairings();
     }
 
