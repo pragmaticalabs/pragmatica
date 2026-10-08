@@ -1012,6 +1012,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
     }
 
     /// Test seam for the supersede-time observation and close.
+    @Contract
     void closeSupersededConnectionForTests(QuicPeerConnection superseded, QuicPeerConnection replacement) {
         closeSupersededConnection(superseded, replacement);
     }
