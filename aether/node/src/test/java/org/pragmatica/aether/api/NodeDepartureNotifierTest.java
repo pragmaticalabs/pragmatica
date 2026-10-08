@@ -136,22 +136,50 @@ class NodeDepartureNotifierTest {
         assertThat(f.alerts().getActiveNodeHealthAlerts()).hasSize(1);
     }
 
-    /// An operator drain still belongs in the stream — a `NodeFailed` record of a drained departure is
-    /// legitimate history — but must NOT raise a CRITICAL alert. This pins that the two surfaces diverge
-    /// exactly where they should, so the drain-quieting fix cannot be mistaken for suppressing the event
-    /// as well.
+    /// #2014 — a planned departure announced to this observer (here by the broadcast drain set, not by
+    /// its own FSM) must not page: no CRITICAL `NodeFailed`, no CRITICAL alert. It stays in the stream as
+    /// an INFO `NodeLeft`. Reverting the announced branch in the notifier turns this red.
+    @Test
+    void announcedDeparture_raisesNoCriticalEvent_noAlert_staysInStreamAsInfoNodeLeft() {
+        var f = Fixture.create();
+        f.alerts().noteMembershipTransition(DEAD, "DrainRequested");
+        f.notifier().onConfirmedDeparture(DEAD);
+
+        assertThat(f.events()).noneMatch(e -> e instanceof ClusterEvent.NodeFailed);
+        assertThat(f.events()).noneMatch(e -> e.severity() == ClusterEvent.Severity.CRITICAL);
+        assertThat(f.events()).hasSize(1);
+        assertThat(f.events().getFirst()).isInstanceOf(ClusterEvent.NodeLeft.class);
+        assertThat(f.events().getFirst().severity()).isEqualTo(ClusterEvent.Severity.INFO);
+        assertThat(f.alerts().getActiveNodeHealthAlerts()).isEmpty();
+    }
+
+    /// The safety property: with NO announcement an unplanned death still raises CRITICAL on both
+    /// surfaces. (Pinned beside the announced case so a blanket suppression turns one of the two red.)
+    @Test
+    void unannouncedDeparture_stillRaisesCriticalNodeFailedAndAlert() {
+        var f = Fixture.create();
+        f.notifier().onConfirmedDeparture(DEAD);
+
+        assertThat(f.events().getFirst()).isInstanceOf(ClusterEvent.NodeFailed.class);
+        assertThat(f.events().getFirst().severity()).isEqualTo(ClusterEvent.Severity.CRITICAL);
+        assertThat(f.alerts().getActiveNodeHealthAlerts()).hasSize(1);
+    }
+
+    /// #2014 supersedes the earlier "drain keeps a NodeFailed record": that was the defect (a planned drain
+    /// recorded as CRITICAL `NodeFailed`). The record stays, as INFO `NodeLeft`; no alert. The earlier
+    /// test was wrong, not the fix: it asserted the CRITICAL event as intended behaviour.
     ///
     /// **This test previously fed `"SwimDeparted"`** and asserted no alert — encoding the round-2
     /// blocking defect as the specification. `SwimDeparted` is SWIM's death broadcast, not a graceful
     /// goodbye; `DrainRequested` is the only cause that genuinely means "announced".
     @Test
-    void drainedDeparture_reachesTheStreamButRaisesNoAlert() {
+    void drainedDeparture_reachesTheStreamAsInfoButRaisesNoAlert() {
         var f = Fixture.create();
         f.alerts().noteMembershipTransition(DEAD, "DrainRequested");
         f.notifier().onConfirmedDeparture(DEAD);
 
         assertThat(f.events()).hasSize(1);
-        assertThat(f.events().getFirst()).isInstanceOf(ClusterEvent.NodeFailed.class);
+        assertThat(f.events().getFirst()).isInstanceOf(ClusterEvent.NodeLeft.class);
         assertThat(f.alerts().getActiveNodeHealthAlerts()).isEmpty();
     }
 

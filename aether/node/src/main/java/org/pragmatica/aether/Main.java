@@ -384,14 +384,68 @@ public record Main(String[] args) {
                       .map(this::buildConfigProvider);
     }
 
+    /// Exit code of a refused cloud integration (#2058): the config HAS a `[cloud]` section and the integration it names cannot be
+    /// created (missing credentials, unknown provider, an invalid provider setting). `EX_UNAVAILABLE` (sysexits.h 69); 65 is the refused
+    /// config file (#2052), 78 the refused identity. A supervisor must not restart with the same configuration: it fails identically
+    /// (`aether/docs/reference/node-operations.md#exit-codes`).
+    static final int CLOUD_INTEGRATION_REFUSED_EXIT_CODE = 69;
+
+    /// The `[cloud.credentials]` keys each provider's factory requires (read from its `validateCredentials`), so the refusal can tell the
+    /// operator what to add. The CLI overlay renders only `api_token` (the aws, gcp and azure keys are not rendered: #2059).
+    static final Map<String, String> REQUIRED_CREDENTIAL_KEYS = Map.of("hetzner",
+                                                                       "api_token",
+                                                                       "aws",
+                                                                       "access_key_id, secret_access_key, region",
+                                                                       "gcp",
+                                                                       "project_id, service_account_email, private_key_pem, zone",
+                                                                       "azure",
+                                                                       "tenant_id, client_id, client_secret, subscription_id, resource_group, location");
+
+    /// The node's cloud integration (#2058). No `[cloud]` section: none, deliberately (docker compose, forge, bare runs). A `[cloud]`
+    /// section whose integration cannot be created REFUSES the boot: without it the leader cannot provision, replace or scale, and the
+    /// node used to log one line and run without it until the first incident. "Cannot be created" includes a factory THROWING on a
+    /// malformed provider setting (a non-numeric `ssh_key_ids`), lifted into the same refusal rather than an uncaught exception; and a
+    /// docker section can be refused too: its provider rejects a `[backup] path` outside `/data` (the named-volume rule, #1968).
     private Option<EnvironmentIntegration> resolveEnvironment(Option<AetherConfig> aetherConfig) {
-        return aetherConfig.flatMap(config -> config.cloud()
-                                                    .map(cloud -> withEffectiveBackup(cloud,
-                                                                                      config.backup())))
-                           .flatMap(cloudConfig -> EnvironmentIntegrationFactory.createFromConfig(cloudConfig)
-                                                                                .onFailure(cause -> log.error("Failed to create cloud environment: {}",
-                                                                                                              cause.message()))
-                                                                                .option());
+        return resolveCloudIntegration(aetherConfig.flatMap(config -> config.cloud()
+                                                                            .map(cloud -> withEffectiveBackup(cloud,
+                                                                                                              config.backup()))),
+                                       EnvironmentIntegrationFactory::createFromConfig).onFailure(this::refuseCloudIntegration)
+                                      .expect("unreachable: refuseCloudIntegration exits");
+    }
+
+    /// Package-private and pure with the factory injected, so the decision is testable per provider without a process.
+    static Result<Option<EnvironmentIntegration>> resolveCloudIntegration(Option<CloudConfig> cloudConfig,
+                                                                          Fn1<Result<EnvironmentIntegration>, CloudConfig> create) {
+        return cloudConfig.fold(() -> Result.success(Option.<EnvironmentIntegration> none()),
+                                cloud -> Result.lift(Causes::fromThrowable,
+                                                     () -> create.apply(cloud))
+                                               .flatMap(created -> created)
+                                               .map(Option::some)
+                                               .mapError(cause -> cloudIntegrationRefusal(cloud.provider(),
+                                                                                          cause)));
+    }
+
+    private static Cause cloudIntegrationRefusal(String provider, Cause cause) {
+        var keys = Option.option(REQUIRED_CREDENTIAL_KEYS.get(provider))
+                         .map(required -> " The provider's [cloud.credentials] TOML keys must provide: " + required
+                                         + " (the bootstrap overlay renders only api_token; add the rest under [source.<name>.node_config.cloud.credentials])")
+                         .or("");
+
+        return Causes.cause("the [cloud] section names provider '" + provider
+                           + "' but its integration could not be created: " + cause.message()
+                           + "." + keys);
+    }
+
+    /// The operator signal: FATAL in the log, on stderr, and a distinct exit code (a node that never booted cannot raise a cluster event).
+    @Contract
+    private void refuseCloudIntegration(Cause cause) {
+        var message = "FATAL: refusing to start: " + cause.message();
+
+        log.error(message);
+        System.err.println(message);
+        System.err.flush();
+        System.exit(CLOUD_INTEGRATION_REFUSED_EXIT_CODE);
     }
 
     /// #1968: the provider that mints replacements learns this node's EFFECTIVE `[backup]`, from its TOML or its environment alike,
