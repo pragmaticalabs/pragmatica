@@ -139,16 +139,27 @@ class EmberNodeReplacementTest {
     @Test
     @Timeout(600)
     void oldNodeKilledWhileTheReplacementIsJoining_stillCompletes_andTheCorpseIsNeverDrained() {
-        start(3, "rpk");
+        oldNodeCrashesWhileTheReplacementIsJoining("rpk", 0L);
+    }
+
+    /// The same crash on a cluster that has run long enough for SWIM to have seen every member healthy. (SWIM does not declare a
+    /// member dead that it never saw healthy until its cold-boot suppression ends, so the crash in the case above is detected late;
+    /// this case separates that from the replacement's own behaviour.)
+    @Test
+    @Timeout(600)
+    void oldNodeCrashedWhileJoining_onASettledCluster_stillCompletes_andTheCorpseIsNeverDrained() {
+        oldNodeCrashesWhileTheReplacementIsJoining("rpz", 30_000L);
+    }
+
+    private void oldNodeCrashesWhileTheReplacementIsJoining(String prefix, long settleMs) {
+        start(3, prefix);
         var leader = awaitLeader();
         var victim = followerOf(leader);
         var victimId = victim.self();
 
-        // SWIM declares a node dead only if it was once seen healthy: a node that goes silent during the cold boot is reported
-        // UNKNOWN for ever. Let the cluster settle first, so the crash is the kind a running node suffers.
-        sleep(30_000);
+        sleep(settleMs);
         leader.nodeReplacementService().begin(victimId, "").await(START_BOUND).onFailure(cause -> throwBecause(cause.message()));
-        awaitCondition("the replacement is JOINING (or later)", () -> phaseIndex(recordOf(victimId).phase()) >= phaseIndex(NodeReplacementPhase.JOINING));
+        awaitCondition("the replacement is JOINING", () -> recordOf(victimId).phase() == NodeReplacementPhase.JOINING);
         blackhole(victimId);
         awaitTerminal(victimId);
 
