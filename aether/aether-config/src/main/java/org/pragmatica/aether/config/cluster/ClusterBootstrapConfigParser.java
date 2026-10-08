@@ -271,7 +271,8 @@ public final class ClusterBootstrapConfigParser {
     private static Result<String> backupPathVerdict(String section, SourceType type, String path) {
         return BackupPathRule.refusal(path, type == SourceType.DOCKER)
                              .map(reason -> section + ".node_config.backup.path " + reason)
-                             .fold(() -> Result.success(path), reason -> parseFailed(reason).<String> result());
+                             .fold(() -> Result.success(path),
+                                   reason -> parseFailed(reason).<String> result());
     }
 
     /// #1049 — `replacement_ceiling` is optional (absent → the runtime's ten-minute default), but a

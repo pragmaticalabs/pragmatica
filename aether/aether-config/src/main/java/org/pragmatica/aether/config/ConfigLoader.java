@@ -448,22 +448,24 @@ public final class ConfigLoader {
                                                 Environment environment) {
         var backup = backupConfigFrom(doc, env);
 
-        backup.onPresent(value -> refuseUnwritableBackupPath(value, environment));
+        backup.onPresent(value -> checkBackupPath(value, environment).getOrThrow(IllegalArgumentException::new,
+                                                                                 "invalid [backup]"));
+
         return backup;
     }
 
     /// #1968: the same rule the bootstrap config applies to a source's `node_config` (`BackupPathRule`), applied to the EFFECTIVE path of a
     /// node in a container environment, wherever it came from (TOML, `AETHER_BACKUP_PATH` of a compose file or of a provisioner). Docker:
     /// absolute and under `/data` (named volume); Kubernetes: absolute; LOCAL runs on the host and keeps its relative default.
-    static void refuseUnwritableBackupPath(BackupConfig backup, Environment environment) {
+    static Result<Unit> checkBackupPath(BackupConfig backup, Environment environment) {
         if (backup.path().isBlank() || environment == Environment.LOCAL) {
-            return;
+            return Result.unitResult();
         }
 
-        org.pragmatica.aether.environment.BackupPathRule.refusal(backup.path(), environment == Environment.DOCKER)
-                                                        .onPresent(reason -> {
-                                                            throw new IllegalArgumentException("[backup] path " + reason);
-                                                        });
+        return org.pragmatica.aether.environment.BackupPathRule.refusal(backup.path(),
+                                                                        environment == Environment.DOCKER)
+                                                               .fold(Result::unitResult,
+                                                                     reason -> ConfigError.invalidConfig("[backup] path " + reason).result());
     }
 
     /// `[backup]` (#1532/#1533), each key overridable by its `AETHER_BACKUP_*` environment variable (#1968): a node minted

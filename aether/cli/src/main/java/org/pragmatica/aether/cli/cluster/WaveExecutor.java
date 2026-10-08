@@ -148,10 +148,10 @@ public final class WaveExecutor {
     }
 
     static Result<List<ProvisionedNode>> provisionBySourceType(SourceName sourceName,
-                                                                       SourceProfile source,
-                                                                       NodeRole role,
-                                                                       int count,
-                                                                       ClusterBootstrapConfig desired) {
+                                                               SourceProfile source,
+                                                               NodeRole role,
+                                                               int count,
+                                                               ClusterBootstrapConfig desired) {
         return switch (source.type()) {
             case CLOUD -> resolveCloudAndProvision(source, role, count, desired);
             case DOCKER -> resolveDockerAndProvision(sourceName,

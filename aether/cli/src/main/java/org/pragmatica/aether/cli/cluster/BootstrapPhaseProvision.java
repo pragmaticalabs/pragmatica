@@ -395,10 +395,10 @@ sealed interface BootstrapPhaseProvision {
 
     @SuppressWarnings("JBCT-PAT-01")
     static Result<List<ProvisionedNode>> provisionSource(BootstrapContext ctx,
-                                                                 SourceName sourceName,
-                                                                 SourceProfile source,
-                                                                 int managementPort,
-                                                                 ClusterName clusterName) {
+                                                         SourceName sourceName,
+                                                         SourceProfile source,
+                                                         int managementPort,
+                                                         ClusterName clusterName) {
         return switch (source.type()) {
             case CLOUD -> provisionCloudSource(ctx, sourceName, source, clusterName);
             case DOCKER -> provisionDockerSource(sourceName, source, clusterName);

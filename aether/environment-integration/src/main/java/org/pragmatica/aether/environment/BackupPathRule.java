@@ -18,11 +18,13 @@ public interface BackupPathRule {
         var value = path.strip();
 
         if (!value.startsWith("/")) {
-            return Option.some("'" + value + "' must be an absolute path: it is mounted into the node's container or created on its host");
+            return Option.some("'" + value
+                              + "' must be an absolute path: it is mounted into the node's container or created on its host");
         }
 
         if (namedVolume && !value.equals("/data") && !value.startsWith("/data/")) {
-            return Option.some("'" + value + "' must be under /data for a docker node: its repository lives on a named volume, "
+            return Option.some("'" + value
+                              + "' must be under /data for a docker node: its repository lives on a named volume, "
                               + "which Docker creates root-owned everywhere except under /data, so the node could not write it");
         }
 

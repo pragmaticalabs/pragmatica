@@ -34,13 +34,13 @@ public record DockerEnvironmentIntegrationFactory() implements EnvironmentIntegr
         var networkName = envNetwork != null && !envNetwork.isBlank()
                           ? envNetwork
                           : compute.getOrDefault("network_name", "aether-network");
-
         var refusal = Option.option(compute.get(org.pragmatica.aether.environment.ClusterIdentityEnv.BACKUP_PATH))
                             .filter(path -> !path.isBlank())
                             .flatMap(path -> org.pragmatica.aether.environment.BackupPathRule.refusal(path, true));
 
         if (refusal.isPresent()) {
-            return org.pragmatica.aether.environment.EnvironmentError.operationNotSupported("[backup] path " + refusal.unwrap()).result();
+            return org.pragmatica.aether.environment.EnvironmentError.operationNotSupported("[backup] path " + refusal.unwrap())
+                                                                     .result();
         }
 
         return dockerConfig(compute.getOrDefault("image_name", "aether-node:local"),
