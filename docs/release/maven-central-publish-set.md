@@ -143,6 +143,7 @@ The limits are cumulative per month, so a second release in the same month needs
 | `examples/pragmatica-lite` | `org.pragmatica-lite:examples-pragmatica-lite` | jar | skip | example slice or example parent; nothing published depends on it |
 | `examples/pricing-engine` | `org.pragmatica.aether.example:pricing-engine` | jar | skip | example slice or example parent; nothing published depends on it |
 | `examples/step-composition` | `org.pragmatica.aether.example:step-composition` | jar | skip | example slice or example parent; nothing published depends on it |
+| `generated-project-gate` | `org.pragmatica-lite:generated-project-gate` | jar | skip | build gate or build instrument; produces no consumer-facing artifact |
 | `integrations` | `org.pragmatica-lite:integrations` | pom | publish | parent pom of a published module; a consumer resolves it to read the child (parent of utility) |
 | `integrations/cloud` | `org.pragmatica-lite:cloud` | pom | skip | cloud SDK adapter for the runtime; internal |
 | `integrations/cloud/aws` | `org.pragmatica-lite:aws` | jar | skip | cloud SDK adapter for the runtime; internal |

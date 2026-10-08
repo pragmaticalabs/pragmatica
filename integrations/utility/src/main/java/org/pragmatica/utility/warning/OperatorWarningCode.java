@@ -165,7 +165,38 @@ public enum OperatorWarningCode {
     STREAM_OWNER_PROMOTION_HOLDERS_ANSWERING("stream-owner-promotion-holders-answering",
                                              "stream-replication",
                                              WarningLevel.INFO,
-                                             STREAM_OWNER_PROMOTION_HOLDERS_UNREACHABLE);
+                                             STREAM_OWNER_PROMOTION_HOLDERS_UNREACHABLE),
+    /// A partition's owner promotion keeps being refused at the guarded commit of its epoch start (#1976): the ownership record
+    /// keeps changing under it. CRITICAL: the partition stays un-activated, and the owner retries with backoff. Raised once
+    /// per episode, after repeated refusals; the message names the partition and the count.
+    STREAM_OWNER_LINEAGE_REFUSED("stream-owner-lineage-refused", "stream-replication", WarningLevel.CRITICAL),
+    /// The recovery of a [#STREAM_OWNER_LINEAGE_REFUSED] (#1976), same subject: the epoch start was committed, or this node
+    /// stopped being the partition's owner or lost quorum.
+    STREAM_OWNER_LINEAGE_COMMITTED("stream-owner-lineage-committed",
+                                   "stream-replication",
+                                   WarningLevel.INFO,
+                                   STREAM_OWNER_LINEAGE_REFUSED),
+    /// A node's HTTP listener refused a TLS certificate rotation because the new certificate bundle did not build into a TLS
+    /// context (a malformed or mismatched certificate or key). The listener keeps serving the PREVIOUS certificate, which
+    /// expires; nothing is replaced and nothing falls back to plain HTTP. Subject is the listener (`management`, `app-http`).
+    /// Raised on the transition into refusal, not on every repeated refusal.
+    HTTP_TLS_ROTATION_REFUSED("http-tls-rotation-refused", "http-listener", WarningLevel.WARNING),
+    /// The recovery of an [#HTTP_TLS_ROTATION_REFUSED], same subject: a later rotation built and the listener now serves the
+    /// rotated certificate.
+    HTTP_TLS_ROTATION_RESTORED("http-tls-rotation-restored",
+                               "http-listener",
+                               WarningLevel.INFO,
+                               HTTP_TLS_ROTATION_REFUSED),
+    /// A renewed node certificate did not build into the cluster transport's QUIC server and client contexts (or its private key
+    /// does not match it), so the renewal is refused and the transport keeps its current certificate, which expires. Nothing
+    /// downstream (the HTTP listeners' rotation) runs for a refused bundle. Subject is `cluster-quic`. Raised once on the
+    /// transition into refusal.
+    CLUSTER_TLS_RENEWAL_REFUSED("cluster-tls-renewal-refused", "cluster-transport", WarningLevel.WARNING),
+    /// The recovery of a [#CLUSTER_TLS_RENEWAL_REFUSED], same subject: a later renewal built and was applied.
+    CLUSTER_TLS_RENEWAL_RESTORED("cluster-tls-renewal-restored",
+                                 "cluster-transport",
+                                 WarningLevel.INFO,
+                                 CLUSTER_TLS_RENEWAL_REFUSED);
     private final String code;
     private final String subsystem;
     private final WarningLevel level;

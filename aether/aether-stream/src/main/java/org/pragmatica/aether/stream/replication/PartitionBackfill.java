@@ -1653,6 +1653,10 @@ public final class PartitionBackfill {
     /// before its first event, found another peer to catch up from, or this node is no longer the owner. Forgetting the report
     /// is what lets the same peer and offset raise again when it recurs, and the alarm is told so the operator sees it end.
     private void clearOversized(String streamName, int partition) {
+        if (!current.getAsBoolean()) {
+            return;
+        }
+
         Option.option(reportedOversized.remove(partitionKey(streamName, partition))).onPresent(blockAlarm::resolved);
     }
 
@@ -1679,6 +1683,12 @@ public final class PartitionBackfill {
     /// raised to the block alarm ONCE per transition (a redrive of the same condition is silent; the condition ending and
     /// coming back raises again), not a WARN on every redrive.
     private Promise<Long> oversizedPeer(String streamName, int partition, NodeId peer, Cause cause) {
+        if (!current.getAsBoolean()) {
+            // #1937 F6 / #1638: a flight that timed out answers late; the current flight has settled the partition and its view of
+            // the peer stands, so this run raises nothing.
+            return cause.promise();
+        }
+
         var offset = cause instanceof OwnerPeerReads.EventExceedsReadCap(var at)
                      ? at
                      : -1L;

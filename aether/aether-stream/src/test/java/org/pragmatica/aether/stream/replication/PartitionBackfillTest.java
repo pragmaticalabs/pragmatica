@@ -2118,6 +2118,277 @@ class PartitionBackfillTest {
             assertThat(raised).as("the same peer and offset recurring after a catch-up is a new transition").hasSize(2);
         }
 
+        private static final org.pragmatica.aether.stream.OwnerPeerReads.EventExceedsReadCap OVERSIZED_AT_7 = new org.pragmatica.aether.stream.OwnerPeerReads.EventExceedsReadCap(7L);
+
+        private org.pragmatica.aether.stream.OwnerActivation.BlockAlarm recordingAlarm(java.util.List<org.pragmatica.aether.stream.OwnerActivation.ActivationBlock> raised,
+                                                                                        java.util.List<org.pragmatica.aether.stream.OwnerActivation.ActivationBlock> resolved) {
+            return new org.pragmatica.aether.stream.OwnerActivation.BlockAlarm() {
+                @Override
+                public org.pragmatica.lang.Unit raise(org.pragmatica.aether.stream.OwnerActivation.ActivationBlock block) {
+                    raised.add(block);
+                    return org.pragmatica.lang.Unit.unit();
+                }
+
+                @Override
+                public org.pragmatica.lang.Unit resolved(org.pragmatica.aether.stream.OwnerActivation.ActivationBlock block) {
+                    resolved.add(block);
+                    return org.pragmatica.lang.Unit.unit();
+                }
+            };
+        }
+
+        /// The common arrangement of the end-path pins below: self owns a partition with one blind survivor that answers the probe
+        /// as `peerAnswer` says; the catch-up transport refuses, so only the decision under test matters.
+        private PartitionBackfill oversizedFixture(java.util.concurrent.atomic.AtomicReference<Promise<Long>> peerAnswer,
+                                                   java.util.function.Supplier<List<NodeId>> members,
+                                                   java.util.List<org.pragmatica.aether.stream.OwnerActivation.ActivationBlock> raised,
+                                                   java.util.List<org.pragmatica.aether.stream.OwnerActivation.ActivationBlock> resolved) {
+            var backfill = partitionBackfill(registry,
+                                             recovery,
+                                             (_, _) -> org.pragmatica.lang.utils.Causes.cause("catch-up refused").promise(),
+                                             (_, _, _) -> peerAnswer.get(),
+                                             localHeadWatermark(),
+                                             OWNER,
+                                             BOUND,
+                                             new AtomicLong(0)::get,
+                                             members);
+
+            backfill.blockAlarm(recordingAlarm(raised, resolved));
+
+            return backfill;
+        }
+
+        /// #1937 F4 end path: self stops being the partition's owner (the member view moved). The report ends, the alarm is told, and the
+        /// same peer and offset after self is the owner again raises anew. Red when the not-owner branch of `runBackfill` does not clear.
+        @Test
+        void backfill_freshOwner_oversizedEndedBySelfNoLongerOwner_reportsTheEnd_andRaisesAgainOnRecurrence() {
+            registry.registerReplica(STREAM, PARTITION, OWNER);
+            registry.registerReplica(STREAM, PARTITION, SURVIVOR);
+
+            var peerAnswer = new java.util.concurrent.atomic.AtomicReference<Promise<Long>>(OVERSIZED_AT_7.promise());
+            var members = new java.util.concurrent.atomic.AtomicReference<List<NodeId>>(MEMBERS);
+            var raised = new java.util.concurrent.CopyOnWriteArrayList<org.pragmatica.aether.stream.OwnerActivation.ActivationBlock>();
+            var resolved = new java.util.concurrent.CopyOnWriteArrayList<org.pragmatica.aether.stream.OwnerActivation.ActivationBlock>();
+            var backfill = oversizedFixture(peerAnswer, members::get, raised, resolved);
+
+            backfill.backfill(STREAM, PARTITION).await();
+            assertThat(raised).hasSize(1);
+            members.set(List.of(SURVIVOR));
+            backfill.backfill(STREAM, PARTITION).await();
+
+            assertThat(resolved).as("no longer the owner ends the report").hasSize(1);
+
+            members.set(MEMBERS);
+            backfill.backfill(STREAM, PARTITION).await();
+
+            assertThat(raised).as("owner again, oversized again: a new transition").hasSize(2);
+        }
+
+        /// #1937 F4 end path: a survivor now known to be AHEAD (the promoted owner catches up from it through `aheadSurvivor`, not the
+        /// probe). Red when the survivor branch of `promoteOwner` does not clear.
+        @Test
+        void backfill_freshOwner_oversizedEndedByAKnownAheadSurvivor_reportsTheEnd_andRaisesAgainOnRecurrence() {
+            registry.registerReplica(STREAM, PARTITION, OWNER);
+            registry.registerReplica(STREAM, PARTITION, SURVIVOR);
+
+            var peerAnswer = new java.util.concurrent.atomic.AtomicReference<Promise<Long>>(OVERSIZED_AT_7.promise());
+            var raised = new java.util.concurrent.CopyOnWriteArrayList<org.pragmatica.aether.stream.OwnerActivation.ActivationBlock>();
+            var resolved = new java.util.concurrent.CopyOnWriteArrayList<org.pragmatica.aether.stream.OwnerActivation.ActivationBlock>();
+            var backfill = oversizedFixture(peerAnswer, () -> MEMBERS, raised, resolved);
+
+            backfill.backfill(STREAM, PARTITION).await();
+            assertThat(raised).hasSize(1);
+            registry.updateWatermark(STREAM, PARTITION, SURVIVOR, 10L);
+            backfill.backfill(STREAM, PARTITION).await();
+
+            assertThat(resolved).as("a known ahead survivor ends the report").hasSize(1);
+
+            registry.updateWatermark(STREAM, PARTITION, SURVIVOR, -1L);
+            backfill.backfill(STREAM, PARTITION).await();
+
+            assertThat(raised).as("blind and oversized again: a new transition").hasSize(2);
+        }
+
+        /// #1937 F4 end path: the survivor's offset is now KNOWN and not ahead, so no blind peer is left to probe and the owner
+        /// self-promotes. Red when the blind-empty branch of `probeThenPromoteOwner` does not clear.
+        @Test
+        void backfill_freshOwner_oversizedEndedByNoBlindPeerLeft_reportsTheEnd_andRaisesAgainOnRecurrence() {
+            seedLocal(6);
+            registry.registerReplica(STREAM, PARTITION, OWNER);
+            registry.registerReplica(STREAM, PARTITION, SURVIVOR);
+
+            var peerAnswer = new java.util.concurrent.atomic.AtomicReference<Promise<Long>>(OVERSIZED_AT_7.promise());
+            var raised = new java.util.concurrent.CopyOnWriteArrayList<org.pragmatica.aether.stream.OwnerActivation.ActivationBlock>();
+            var resolved = new java.util.concurrent.CopyOnWriteArrayList<org.pragmatica.aether.stream.OwnerActivation.ActivationBlock>();
+            var backfill = oversizedFixture(peerAnswer, () -> MEMBERS, raised, resolved);
+
+            backfill.backfill(STREAM, PARTITION).await();
+            assertThat(raised).hasSize(1);
+            registry.updateWatermark(STREAM, PARTITION, SURVIVOR, 3L);
+            backfill.backfill(STREAM, PARTITION).await();
+
+            assertThat(resolved).as("no blind peer left ends the report").hasSize(1);
+
+            registry.updateWatermark(STREAM, PARTITION, SURVIVOR, -1L);
+            backfill.backfill(STREAM, PARTITION).await();
+
+            assertThat(raised).as("blind and oversized again: a new transition").hasSize(2);
+        }
+
+        /// #1937 F4 end path: the partition is quarantined (the verifier's probeQ1). Red when the quarantine branch of `runBackfill`
+        /// does not clear.
+        @Test
+        void backfill_freshOwner_oversizedThenQuarantined_resolvesOnce_andARecurrenceAfterReleaseRaisesAgain() {
+            registry.registerReplica(STREAM, PARTITION, OWNER);
+            registry.registerReplica(STREAM, PARTITION, SURVIVOR);
+
+            var quarantined = new java.util.concurrent.atomic.AtomicBoolean(false);
+            QuarantineView view = new QuarantineView() {
+                @Override
+                public org.pragmatica.lang.Option<Long> quarantinedAt(String stream, int partition) {
+                    return quarantined.get()
+                           ? org.pragmatica.lang.Option.some(5L)
+                           : org.pragmatica.lang.Option.none();
+                }
+
+                @Override
+                public <T> org.pragmatica.lang.Option<T> unlessQuarantined(String stream, int partition, java.util.function.Supplier<T> promotion) {
+                    return quarantined.get()
+                           ? org.pragmatica.lang.Option.none()
+                           : org.pragmatica.lang.Option.some(promotion.get());
+                }
+            };
+            var raised = new java.util.concurrent.CopyOnWriteArrayList<org.pragmatica.aether.stream.OwnerActivation.ActivationBlock>();
+            var resolved = new java.util.concurrent.CopyOnWriteArrayList<org.pragmatica.aether.stream.OwnerActivation.ActivationBlock>();
+            var backfill = PartitionBackfill.partitionBackfill(registry,
+                                                               recovery,
+                                                               failIfCatchup(),
+                                                               ReplicationTransport.NOOP,
+                                                               (_, _, _) -> OVERSIZED_AT_7.promise(),
+                                                               localHeadWatermark(),
+                                                               OWNER,
+                                                               BOUND,
+                                                               () -> MEMBERS,
+                                                               CommittedStreamOwnerSource.none(),
+                                                               ReplicationReceiveHandler.NO_DURABILITY_BARRIER,
+                                                               view,
+                                                               org.pragmatica.lang.Option.none());
+
+            backfill.blockAlarm(recordingAlarm(raised, resolved));
+            backfill.backfill(STREAM, PARTITION).await();
+            assertThat(raised).hasSize(1);
+            quarantined.set(true);
+            backfill.backfill(STREAM, PARTITION).await();
+            backfill.backfill(STREAM, PARTITION).await();
+
+            assertThat(resolved).as("entering quarantine ends the oversized report once").hasSize(1);
+
+            quarantined.set(false);
+            backfill.backfill(STREAM, PARTITION).await();
+
+            assertThat(raised).as("oversized again after the quarantine lifts: a new transition").hasSize(2);
+        }
+
+        /// A backfill that never reported an oversized peer tells the alarm nothing when it settles: a resolved with no prior raise
+        /// would publish a recovery for a condition nobody saw. Red when `clearOversized` resolves unconditionally.
+        @Test
+        void backfill_freshOwner_noOversizedEverReported_resolvesNothing() {
+            registry.registerReplica(STREAM, PARTITION, OWNER);
+            registry.registerReplica(STREAM, PARTITION, SURVIVOR);
+
+            var peerAnswer = new java.util.concurrent.atomic.AtomicReference<Promise<Long>>(Promise.success(-1L));
+            var raised = new java.util.concurrent.CopyOnWriteArrayList<org.pragmatica.aether.stream.OwnerActivation.ActivationBlock>();
+            var resolved = new java.util.concurrent.CopyOnWriteArrayList<org.pragmatica.aether.stream.OwnerActivation.ActivationBlock>();
+            var backfill = oversizedFixture(peerAnswer, () -> MEMBERS, raised, resolved);
+
+            backfill.backfill(STREAM, PARTITION).await();
+            backfill.backfill(STREAM, PARTITION).await();
+
+            assertThat(raised).isEmpty();
+            assertThat(resolved).isEmpty();
+        }
+
+        /// #1937 F6 / #1638: flight 1 times out with its probe pending; flight 2 finds no oversized peer and settles the partition; flight
+        /// 1's probe then answers oversized. A run whose flight is no longer current raises nothing (the verifier's probeS1). Red when
+        /// `oversizedPeer` ignores `current`.
+        @Test
+        void backfill_staleFlightLateOversizedAnswer_raisesNothingAfterTheCurrentFlightFoundNone() {
+            registry.registerReplica(STREAM, PARTITION, OWNER);
+            registry.registerReplica(STREAM, PARTITION, SURVIVOR);
+
+            var calls = new java.util.concurrent.atomic.AtomicInteger();
+            var first = Promise.<Long>promise();
+            ReplicaWatermarkProbe probe = (_, _, _) -> calls.getAndIncrement() == 0
+                                                       ? first
+                                                       : Promise.success(-1L);
+            var raised = new java.util.concurrent.CopyOnWriteArrayList<org.pragmatica.aether.stream.OwnerActivation.ActivationBlock>();
+            var resolved = new java.util.concurrent.CopyOnWriteArrayList<org.pragmatica.aether.stream.OwnerActivation.ActivationBlock>();
+            var backfill = PartitionBackfill.partitionBackfill(registry,
+                                                               recovery,
+                                                               failIfCatchup(),
+                                                               ReplicationTransport.NOOP,
+                                                               probe,
+                                                               localHeadWatermark(),
+                                                               OWNER,
+                                                               BOUND,
+                                                               () -> MEMBERS,
+                                                               CommittedStreamOwnerSource.none(),
+                                                               ReplicationReceiveHandler.NO_DURABILITY_BARRIER,
+                                                               QuarantineView.NONE,
+                                                               org.pragmatica.lang.Option.some(TimeSpan.timeSpan(300).millis()));
+
+            backfill.blockAlarm(recordingAlarm(raised, resolved));
+
+            assertThat(backfill.backfill(STREAM, PARTITION).await(TimeSpan.timeSpan(10).seconds()).isFailure()).as("flight 1 timed out").isTrue();
+            backfill.backfill(STREAM, PARTITION).await(TimeSpan.timeSpan(10).seconds());
+            first.resolve(OVERSIZED_AT_7.result());
+            Promise.<Long>promise(TimeSpan.timeSpan(300).millis(), () -> org.pragmatica.lang.Result.success(0L)).await();
+
+            assertThat(raised).as("a superseded run must not raise").isEmpty();
+            assertThat(resolved).isEmpty();
+        }
+
+        /// The same rule on the clearing side: the current flight reported an oversized peer; a timed-out flight's late NON-oversized
+        /// answer must not forget that report or tell the alarm it ended. Red when `clearOversized` ignores `current`.
+        @Test
+        void backfill_staleFlightLateCleanAnswer_doesNotEndTheCurrentFlightsReport() {
+            registry.registerReplica(STREAM, PARTITION, OWNER);
+            registry.registerReplica(STREAM, PARTITION, SURVIVOR);
+
+            var calls = new java.util.concurrent.atomic.AtomicInteger();
+            var first = Promise.<Long>promise();
+            ReplicaWatermarkProbe probe = (_, _, _) -> calls.getAndIncrement() == 0
+                                                       ? first
+                                                       : OVERSIZED_AT_7.promise();
+            var raised = new java.util.concurrent.CopyOnWriteArrayList<org.pragmatica.aether.stream.OwnerActivation.ActivationBlock>();
+            var resolved = new java.util.concurrent.CopyOnWriteArrayList<org.pragmatica.aether.stream.OwnerActivation.ActivationBlock>();
+            var backfill = PartitionBackfill.partitionBackfill(registry,
+                                                               recovery,
+                                                               (_, _) -> org.pragmatica.lang.utils.Causes.cause("catch-up refused").promise(),
+                                                               ReplicationTransport.NOOP,
+                                                               probe,
+                                                               localHeadWatermark(),
+                                                               OWNER,
+                                                               BOUND,
+                                                               () -> MEMBERS,
+                                                               CommittedStreamOwnerSource.none(),
+                                                               ReplicationReceiveHandler.NO_DURABILITY_BARRIER,
+                                                               QuarantineView.NONE,
+                                                               org.pragmatica.lang.Option.some(TimeSpan.timeSpan(300).millis()));
+
+            backfill.blockAlarm(recordingAlarm(raised, resolved));
+
+            assertThat(backfill.backfill(STREAM, PARTITION).await(TimeSpan.timeSpan(10).seconds()).isFailure()).as("flight 1 timed out").isTrue();
+            backfill.backfill(STREAM, PARTITION).await(TimeSpan.timeSpan(10).seconds());
+            assertThat(raised).as("control: the current flight reported the peer").hasSize(1);
+            first.resolve(org.pragmatica.lang.Result.success(-1L));
+            Promise.<Long>promise(TimeSpan.timeSpan(300).millis(), () -> org.pragmatica.lang.Result.success(0L)).await();
+
+            assertThat(resolved).as("a superseded run must not end the current flight's report").isEmpty();
+            backfill.backfill(STREAM, PARTITION).await(TimeSpan.timeSpan(10).seconds());
+            assertThat(raised).as("the report stood, so the redrive stays silent").hasSize(1);
+        }
+
         @Test
         void backfill_ownerWithKnownSurvivorOffset_noProbe_localRegistryHitPathUntouched() {
             // NEGATIVE: when the local registry DOES carry the survivor's offset (not blind), aheadSurvivor is
