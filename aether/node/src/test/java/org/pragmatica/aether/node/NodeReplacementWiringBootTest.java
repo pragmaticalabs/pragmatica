@@ -13,6 +13,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.api.io.TempDir;
+import org.pragmatica.aether.environment.AutoHealConfig;
 import org.pragmatica.aether.config.AppHttpConfig;
 import org.pragmatica.aether.config.HttpProtocol;
 import org.pragmatica.aether.config.SliceConfig;
@@ -106,9 +107,22 @@ class NodeReplacementWiringBootTest {
         }).unwrap();
     }
 
+    /// The EXTERNAL-admission fleet limit is the node's configured `maxNodes`, not a constant: passing 0 or `Integer.MAX_VALUE` for it
+    /// leaves every unit test green, because they hand the wiring their own limit.
+    @Test
+    @Timeout(value = 120, unit = SECONDS)
+    void theReplacementService_isWiredToTheConfiguredFleetLimit() {
+        self = NodeId.nodeId("replacement-wiring-limit-" + UUID.randomUUID()).unwrap();
+        node = AetherNode.aetherNode(minimalConfig(tempDir, self, 7), () -> {})
+                         .onFailure(cause -> fail("assembly must succeed: " + cause.message()))
+                         .unwrap();
+
+        assertThat(((NodeReplacementWiring.Wired) node.nodeReplacementService()).fleetLimit()).isEqualTo(7);
+    }
+
     private AetherNode bootedNode() {
         self = NodeId.nodeId("replacement-wiring-boot-" + UUID.randomUUID()).unwrap();
-        var booted = AetherNode.aetherNode(minimalConfig(tempDir, self), () -> {})
+        var booted = AetherNode.aetherNode(minimalConfig(tempDir, self, Integer.MAX_VALUE), () -> {})
                                .onFailure(cause -> fail("assembly must succeed: " + cause.message()))
                                .unwrap();
 
@@ -117,7 +131,7 @@ class NodeReplacementWiringBootTest {
         return booted;
     }
 
-    private static AetherNodeConfig minimalConfig(Path storageRoot, NodeId self) {
+    private static AetherNodeConfig minimalConfig(Path storageRoot, NodeId self, int maxNodes) {
         var address = nodeAddress("localhost", ClusterTestPorts.freeClusterPort()).unwrap();
         var selfInfo = NodeInfo.nodeInfo(self, address);
 
@@ -136,6 +150,7 @@ class NodeReplacementWiringBootTest {
                                .environment(Option.none())
                                .managementHttpProtocol(HttpProtocol.H1)
                                .storageConfig(HermeticStorage.nodeStorageIn(storageRoot, false))
-                               .build();
+                               .build()
+                               .withAutoHeal(AutoHealConfig.DEFAULT.withMaxNodes(maxNodes));
     }
 }

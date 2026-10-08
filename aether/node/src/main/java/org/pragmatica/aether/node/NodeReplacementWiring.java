@@ -509,6 +509,8 @@ public final class NodeReplacementWiring {
         boolean memberAlive(NodeId id);
         /// Whether a drain of `id` was ever accepted by this node's reconciler.
         boolean drainRequested(NodeId id);
+        /// The fleet node limit an EXTERNAL admission is checked against.
+        int fleetLimit();
     }
 
     private static final class Service implements NodeReplacementService, Wired {
@@ -530,6 +532,11 @@ public final class NodeReplacementWiring {
         @Override
         public boolean memberAlive(NodeId id) {
             return alive(Option.option(in.membership().get()).flatMap(fsm -> Option.option(fsm.memberStates().get(id))));
+        }
+
+        @Override
+        public int fleetLimit() {
+            return in.fleetLimit().getAsInt();
         }
 
         @Override
