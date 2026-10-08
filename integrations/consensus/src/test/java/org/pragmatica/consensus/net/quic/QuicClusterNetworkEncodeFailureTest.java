@@ -243,11 +243,31 @@ class QuicClusterNetworkEncodeFailureTest {
         var risk = connection.laneWritesAtRisk(System.nanoTime());
 
         assertThat(risk.lanesAtRisk()).as("a CONTROL message on the CONSENSUS fallback stream is a CONSENSUS write").isEqualTo(1);
+    }
+
+    /// #1727 — two NON-CONTROL message lanes that both fell back to the CONSENSUS stream are one lane. (With
+    /// CONTROL as one of them the count is 1 under either keying, so this uses two data lanes: keyed by the
+    /// message's lane it would count 2.)
+    @Test
+    void twoDataLanesFallingBackToTheConsensusStream_countAsOneLane() {
+        var network = network();
+        var peerId = new NodeId("fallback-peer");
+        var channel = mock(QuicChannel.class);
+        @SuppressWarnings("unchecked")
+        var attribute = (io.netty.util.Attribute<QuicPeerConnection>) mock(io.netty.util.Attribute.class);
+        var connection = QuicPeerConnection.quicPeerConnection(peerId, channel);
+        var consensusStream = writableStream();
+
+        lenient().when(attribute.get()).thenReturn(connection);
+        lenient().when(channel.attr(PeerOpenedLaneRouter.PEER_CONNECTION)).thenReturn(attribute);
+        lenient().when(consensusStream.parent()).thenReturn(channel);
+        lenient().when(consensusStream.config()).thenReturn(mock(io.netty.handler.codec.quic.QuicStreamChannelConfig.class));
+        connection.registerStream(StreamType.CONSENSUS, consensusStream);
 
         network.writeIfWritableForTest(consensusStream, new byte[] {1}, peerId, StreamType.FORWARD);
+        network.writeIfWritableForTest(consensusStream, new byte[] {1}, peerId, StreamType.DHT);
 
-        assertThat(connection.laneWritesAtRisk(System.nanoTime()).lanesAtRisk())
-            .as("two message lanes that both fell back to the CONSENSUS stream are one lane").isEqualTo(1);
+        assertThat(connection.laneWritesAtRisk(System.nanoTime()).lanesAtRisk()).isEqualTo(1);
     }
 
     // --- Helpers ---
