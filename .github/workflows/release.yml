@@ -234,6 +234,24 @@ jobs:
           mvn install -B -DskipTests -pl jbct/jbct-maven-plugin,jbct/slice-processor -am
           mvn package -B -DskipTests
 
+      # #2007: check the image BEFORE it is pushed, so a broken image is never published. `[backup]` shells out to git and writes
+      # /data/backups as the image's own user (`aether`, the Dockerfile's USER); either missing makes the restore BLOCKED.
+      - name: Build aether-node for the pre-push check
+        uses: docker/build-push-action@v7
+        with:
+          context: aether
+          file: aether/docker/aether-node/Dockerfile
+          platforms: linux/amd64
+          load: true
+          push: false
+          build-args: VERSION=${{ steps.version.outputs.VERSION }}
+          tags: aether-node:pre-push-check
+
+      - name: Check aether-node carries git and a writable backup directory
+        run: |
+          docker run --rm --entrypoint git aether-node:pre-push-check --version
+          docker run --rm --entrypoint sh aether-node:pre-push-check -c 'test -w /data/backups'
+
       - name: Build and push aether-node
         uses: docker/build-push-action@v7
         with:

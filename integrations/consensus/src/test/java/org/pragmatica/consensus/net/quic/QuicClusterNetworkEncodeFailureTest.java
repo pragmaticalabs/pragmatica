@@ -122,6 +122,37 @@ class QuicClusterNetworkEncodeFailureTest {
         verify(laneStream, times(1)).writeAndFlush(any());
     }
 
+    /// #1727 (M1) pin (c) — a zero-length frame ends the lane at the receiver, so the normal writer must
+    /// never produce one. Same seam and lane as the pair above; only the serializer differs (it encodes
+    /// to zero bytes). The registered-codec test above is the control that the path otherwise writes.
+    @Test
+    void writeToStream_messageEncodingToZeroBytes_reportsEncodeFailed_andWritesNothing() {
+        var codec = combinedCodec();
+        var emptying = new org.pragmatica.serialization.Serializer() {
+            @Override
+            public <T> byte[] encode(T object) {
+                return new byte[0];
+            }
+
+            @Override
+            public <T> void write(io.netty.buffer.ByteBuf byteBuf, T object) {
+                codec.write(byteBuf, object);
+            }
+        };
+        var network = network(emptying);
+        var peerId = new NodeId("empty-encode-peer");
+        var laneStream = writableStream();
+        var connection = connectionWithLane(peerId, laneStream);
+
+        network.seedPeerForTests(peerId, connectedPeerState(peerId, connection));
+
+        var outcome = network.writeToStreamForTests(peerId, new NetworkMessage.KeepAlive(peerId), connection);
+
+        assertThat(outcome).as("an empty frame would end the lane mid-stream — it must be refused, not written")
+                           .isInstanceOf(WriteOutcome.EncodeFailed.class);
+        verify(laneStream, never()).writeAndFlush(any());
+    }
+
     // --- Helpers ---
 
     /// A mock QUIC lane stream that is active + writable and returns a self-listening future.
@@ -164,12 +195,16 @@ class QuicClusterNetworkEncodeFailureTest {
     }
 
     private QuicClusterNetwork network() {
+        return network(combinedCodec());
+    }
+
+    private QuicClusterNetwork network(org.pragmatica.serialization.Serializer serializer) {
         var codec = combinedCodec();
         var nodeAddress = NodeAddress.nodeAddress("127.0.0.1", 19994)
                                      .fold(_ -> fail("Invalid address"), addr -> addr);
         var selfInfo = NodeInfo.nodeInfo(new NodeId("self-encode"), nodeAddress);
 
-        return new QuicClusterNetwork(stubTopology(selfInfo), codec, codec,
+        return new QuicClusterNetwork(stubTopology(selfInfo), serializer, codec,
                                       MessageRouter.mutable(), serverSsl(), clientSsl());
     }
 

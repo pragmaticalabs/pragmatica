@@ -47,3 +47,4 @@ PUBLISHING.md
 
 # Node runtime state must never be committed (including test residue).
 aether/node/data/
+__pycache__/
