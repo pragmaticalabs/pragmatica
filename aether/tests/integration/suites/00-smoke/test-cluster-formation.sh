@@ -84,3 +84,4 @@ run_test "All nodes visible" test_all_nodes_visible
 run_test "Status endpoint" test_status_endpoint
 run_test "Events available" test_events_available
 print_summary
+curl -s localhost 2>/dev/null || true # scratch #2029 violation
