@@ -502,7 +502,7 @@ Every node receives snapshots via ping and updates projections:
 ### 13.1 Code
 
 - `TopologyObserver`: `handleAddNodeMessage`, `handleRemoveNodeMessage`, `handleSetClusterSize`, `tombstonedNodes`, `evictLongSuspectedPeers`, `initReconcile` timer → DELETED. Becomes a thin projection of `ClusterGenerationSnapshot`.
-- `TopologyManagementMessage.AddNode / RemoveNode / SetClusterSize` records + their router wiring (`RabiaNode:197-199`, `PassiveNode:114-116`) → DELETED.
+- `TopologyManagementMessage.AddNode / RemoveNode / SetClusterSize` records + their router wiring (`RabiaNode:197-199`; `PassiveNode:114-116` too, a class removed in rc4 with no caller, #2033) → DELETED.
 - `QuicClusterNetwork`: `onPostEstablishGraceComplete` flush-nodeRemoved, `onQuorumLossConfirmed` flush, quorum-loss hysteresis buffers → DELETED or demoted to health hints.
 - `CoreSwimHealthDetector.onMemberFaulty`: no longer emits `RemoveNode` directly; emits `SwimHint` to HealthReconciler.
 - `ClusterTopologyManagerRecord`: `scheduleRecheck` timer, `attemptProvisionAfterHysteresis` timer, `deficitHysteresis` → REPLACED by snapshot-delta reactions.

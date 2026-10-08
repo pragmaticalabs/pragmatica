@@ -4,9 +4,6 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.node;
 
-import java.io.IOException;
-import java.io.UncheckedIOException;
-import java.net.ServerSocket;
 import java.nio.charset.StandardCharsets;
 import java.util.Base64;
 import java.util.List;
@@ -54,7 +51,7 @@ import static org.pragmatica.net.tcp.NodeAddress.nodeAddress;
 /// bound, per its own class doc), this failure fires inside `AetherNode.assembleNode`, reached only
 /// after `RabiaNode.rabiaNode(...)` has already constructed real QUIC contexts against a real bound
 /// port -- so this test follows `AetherNodeContentStorageWarnBootTest`'s real-boot config shape
-/// (self-inclusive `coreNodes`, `TlsConfig.selfSignedMutual()`, an ephemeral `freePort()`) even though
+/// (self-inclusive `coreNodes`, `TlsConfig.selfSignedMutual()`, an ephemeral `ClusterTestPorts.freeClusterPort()`) even though
 /// the outcome under test is failure, not a successful boot.
 class AetherNodeArtifactsPlaintextRefusalBootTest {
     private static final byte[] PLAINTEXT = "artifacts-legacy-plaintext-block-253".getBytes(StandardCharsets.UTF_8);
@@ -137,7 +134,7 @@ class AetherNodeArtifactsPlaintextRefusalBootTest {
                                                    Option<StorageEncryptionConfig> storageEncryption,
                                                    StorageConfig artifactsConfig) {
         var self = NodeId.nodeId("artifacts-plaintext-refusal-boot-test").unwrap();
-        var selfInfo = NodeInfo.nodeInfo(self, nodeAddress("localhost", freePort()).unwrap());
+        var selfInfo = NodeInfo.nodeInfo(self, nodeAddress("localhost", ClusterTestPorts.freeClusterPort()).unwrap());
 
         return AetherNodeConfig.builder()
                                 .self(self)
@@ -160,14 +157,6 @@ class AetherNodeArtifactsPlaintextRefusalBootTest {
 
     /// Ephemeral free port for the self node's cluster address. Small open/close race is acceptable
     /// for a single test process.
-    private static int freePort() {
-        try (var socket = new ServerSocket(0)) {
-            return socket.getLocalPort();
-        } catch (IOException e) {
-            throw new UncheckedIOException(e);
-        }
-    }
-
     private static Option<EnvironmentIntegration> environmentWith(Option<SecretsProvider> secrets) {
         return Option.some(EnvironmentIntegration.environmentIntegration(Option.none(), secrets, Option.none()));
     }

@@ -32,9 +32,6 @@ import org.pragmatica.dht.DHTConfig;
 import org.pragmatica.lang.Option;
 import org.pragmatica.net.tcp.TlsConfig;
 
-import java.io.IOException;
-import java.io.UncheckedIOException;
-import java.net.ServerSocket;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.UUID;
@@ -122,7 +119,7 @@ class AetherNodeAntiEntropyCycleBootTest {
 
     private static AetherNodeConfig minimalConfig(Path storageRoot) {
         var self = NodeId.nodeId("anti-entropy-cycle-" + UUID.randomUUID()).unwrap();
-        var selfInfo = NodeInfo.nodeInfo(self, nodeAddress("localhost", freePort()).unwrap());
+        var selfInfo = NodeInfo.nodeInfo(self, nodeAddress("localhost", ClusterTestPorts.freeClusterPort()).unwrap());
         var timeouts = TimeoutsConfig.timeoutsConfig()
                                      .withDht(new TimeoutsConfig.DhtTimeouts(timeSpan(30).seconds(), timeSpan(1).seconds()));
 
@@ -135,14 +132,6 @@ class AetherNodeAntiEntropyCycleBootTest {
                                .storageConfig(HermeticStorage.nodeStorageIn(storageRoot, false))
                                .build()
                                .withTimeouts(timeouts);
-    }
-
-    private static int freePort() {
-        try (var socket = new ServerSocket(0)) {
-            return socket.getLocalPort();
-        } catch (IOException e) {
-            throw new UncheckedIOException(e);
-        }
     }
 
     private static LoggerConfig getOrCreateLoggerConfig(Configuration configuration) {
