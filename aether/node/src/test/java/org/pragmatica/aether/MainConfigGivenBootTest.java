@@ -46,7 +46,7 @@ class MainConfigGivenBootTest {
     @Test
     void aGivenConfigThatDoesNotParse_refusesToStart_withExit65_andNamesFileAndCauseOnStderr(@TempDir Path dir) throws Exception {
         var file = write(dir, "malformed.toml", MALFORMED);
-        var run = boot("--config=" + file);
+        var run = boot(dir, "--config=" + file);
 
         assertRefused(run, file.toString());
         assertThat(run.err()).as("the cause is named").containsIgnoringCase("could not be loaded or validated");
@@ -56,31 +56,48 @@ class MainConfigGivenBootTest {
     void aGivenConfigThatFailsValidation_refusesToStart(@TempDir Path dir) throws Exception {
         var file = write(dir, "invalid.toml", FAILS_VALIDATION);
 
-        assertRefused(boot("--config=" + file), file.toString());
+        assertRefused(boot(dir, "--config=" + file), file.toString());
     }
 
     @Test
     void aGivenConfigThatDoesNotExist_refusesToStart_insteadOfBootingOnDefaults(@TempDir Path dir) throws Exception {
         var missing = dir.resolve("absent.toml");
 
-        assertRefused(boot("--config=" + missing), missing.toString());
+        assertRefused(boot(dir, "--config=" + missing), missing.toString());
+    }
+
+    /// The operator-facing MESSAGE is the point: each guard names its own cause, so these are pinned by text (the blank and the
+    /// regular-file checks are otherwise redundant with each other for the exit code).
+    @Test
+    void aGivenConfigThatIsADirectory_refusesWithTheNotARegularFileMessage(@TempDir Path dir) throws Exception {
+        var run = boot(dir, "--config=" + dir);
+
+        assertRefused(run, dir.toString());
+        assertThat(run.err()).contains("does not exist or is not a regular file");
     }
 
     @Test
-    void aGivenConfigThatIsADirectory_orEmpty_refusesToStart(@TempDir Path dir) throws Exception {
-        assertRefused(boot("--config=" + dir), dir.toString());
-        assertRefused(boot("--config="), "--config=");
+    void anEmptyConfigArgument_refusesWithTheEmptyPathMessage(@TempDir Path dir) throws Exception {
+        var run = boot(dir, "--config=");
+
+        assertRefused(run, "--config=");
+        assertThat(run.err()).contains("was given with an empty path");
+    }
+
+    @Test
+    void aMissingFile_refusesWithTheSameNotARegularFileMessage(@TempDir Path dir) throws Exception {
+        assertThat(boot(dir, "--config=" + dir.resolve("absent2.toml")).err()).contains("does not exist or is not a regular file");
     }
 
     /// The deliberate half: nothing given, defaults apply, the boot goes on to the next gate.
     @Test
-    void noConfigArgument_stillGetsPastTheConfigStage() throws Exception {
-        assertPastConfigStage(boot());
+    void noConfigArgument_stillGetsPastTheConfigStage(@TempDir Path dir) throws Exception {
+        assertPastConfigStage(boot(dir));
     }
 
     @Test
     void aValidGivenConfig_isNotRefused(@TempDir Path dir) throws Exception {
-        assertPastConfigStage(boot("--config=" + write(dir, "valid.toml", VALID)));
+        assertPastConfigStage(boot(dir, "--config=" + write(dir, "valid.toml", VALID)));
     }
 
     @Test
@@ -110,12 +127,12 @@ class MainConfigGivenBootTest {
         return Files.writeString(dir.resolve(name), content);
     }
 
-    private static Run boot(String... args) throws Exception {
+    private static Run boot(Path work, String... args) throws Exception {
         var java = Path.of(System.getProperty("java.home"), "bin", "java").toString();
         var command = new ArrayList<>(List.of(java, "-Xmx256m", "-cp", System.getProperty("java.class.path"), Main.class.getName()));
 
         command.addAll(List.of(args));
-        var dir = Files.createTempDirectory("main-config-boot");
+        var dir = Files.createTempDirectory(work, "main-config-boot");
         var out = dir.resolve("out.txt");
         var err = dir.resolve("err.txt");
         var builder = new ProcessBuilder(command).redirectOutput(out.toFile()).redirectError(err.toFile());
