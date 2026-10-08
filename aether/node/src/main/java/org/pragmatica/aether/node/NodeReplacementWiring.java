@@ -458,10 +458,7 @@ public final class NodeReplacementWiring {
                                                                    !boundedByRetiring))
                             : in.ctm()
                                 .drainNode(node, DrainReason.REPLACED)
-                                .flatMap(_ -> in.ctm()
-                                                .reapRetired(node,
-                                                             source,
-                                                             seen.contains(node)));
+                                .flatMap(_ -> Promise.<Unit> unitPromise());
 
             return confirmed.<EffectResult> map(_ -> confirmedGone(node))
                             .recover(cause -> notConfirmed(node, cause, boundedByRetiring));
