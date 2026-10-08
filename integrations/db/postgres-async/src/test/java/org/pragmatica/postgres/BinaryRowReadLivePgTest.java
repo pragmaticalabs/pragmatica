@@ -56,6 +56,24 @@ class BinaryRowReadLivePgTest {
 
     @Nested
     class Numbers {
+        @Test void int2() {
+            var row = secondExecution("SELECT $1::INT2 AS val", (short) 7);
+
+            assertThat(row.get("val", Short.class)).isEqualTo((short) 7);
+            assertThat(row.get("val", Integer.class)).isEqualTo(7);
+            assertThat(row.get("val")).isEqualTo((short) 7);
+        }
+
+        @Test void int4() {
+            var row = secondExecution("SELECT $1::INT4 AS val", 123_456);
+
+            assertThat(row.get("val", Integer.class)).isEqualTo(123_456);
+            assertThat(row.get("val", Long.class)).isEqualTo(123_456L);
+            assertThat(row.get("val", java.math.BigInteger.class)).isEqualTo(java.math.BigInteger.valueOf(123_456));
+            assertThat(row.get("val", BigDecimal.class)).isEqualTo(new BigDecimal("123456"));
+            assertThat(row.get("val")).isEqualTo(123_456);
+        }
+
         @Test void int8() {
             var row = secondExecution("SELECT $1::INT8 AS val", 9_000_000_000L);
 
@@ -147,6 +165,7 @@ class BinaryRowReadLivePgTest {
 
             assertThat(row.get("val", Integer[].class)).containsExactly(1, 2, 3);
             assertThat(row.getArray("val", Integer[].class)).containsExactly(1, 2, 3);
+            assertThat((Object[]) row.get("val")).containsExactly(1, 2, 3);
         }
     }
 
