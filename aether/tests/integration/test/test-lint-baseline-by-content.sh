@@ -13,6 +13,8 @@
 #   L8 a whitespace-only edit of a waived line (indent, inner runs) keeps its waiver;
 #   L9 the same flagged content in ANOTHER file is a new finding (the file is part of the key);
 #   L10 an R1 waiver names the log_warn too: the same log_pass under a different log_warn is a new finding;
+#   L11 fixing a waived finding while adding an identical line in ANOTHER function is a new finding (swap not hidden by the count);
+#   L12 the rule is part of the key: an R4 finding is not covered by an R2 entry with the same text;
 #   L7 the shipped baseline carries no line-number keys and is green against the real tree.
 #
 #   bash aether/tests/integration/test/test-lint-baseline-by-content.sh
@@ -119,6 +121,32 @@ rm -f "$OTHER"
 write_fixture
 sed -i.bak 's#log_warn "soft"#log_warn "a different soft gate"#' "$SUITE"; rm -f "${SUITE}.bak"
 if grep -q 'different soft gate' "$SUITE" && ! lint > /dev/null; then ok "L10 the same log_pass under a different log_warn is a new R1 finding"; else fail "L10 changing the log_warn kept the old R1 waiver (or did not apply)"; fi
+
+# L11 — swap across functions: remove the waived curl from test_two, add the identical line to a new function (count unchanged)
+write_fixture
+capture > "$BASE"
+sed -i.bak 's#curl -s localhost 2>/dev/null || true#true#' "$SUITE"; rm -f "${SUITE}.bak"
+cat >> "$SUITE" <<'F'
+test_five() {
+    curl -s localhost 2>/dev/null || true
+}
+run_test "five" test_five
+F
+if lint > /dev/null; then fail "L11 an identical flagged line in another function was absorbed by the waiver of the fixed one"; else ok "L11 same text in a different function is a new finding"; fi
+
+# L12 — rule is part of the key: one line flagged by R2 and R4; re-label the R4 entry as R2
+write_fixture
+cat >> "$SUITE" <<'F'
+test_six() {
+    [ "$s" -ge 200 ] && [ "$s" -lt 400 ] 2>/dev/null || true
+}
+run_test "six" test_six
+F
+capture > "$BASE"
+if [ "$(grep -c '^\[R4\]' "$BASE")" = 1 ] && lint > /dev/null; then
+    sed -i.bak 's#^\[R4\]#[R2]#' "$BASE"; rm -f "${BASE}.bak"
+    if lint > /dev/null; then fail "L12 an R2 entry covered an R4 finding with the same text"; else ok "L12 the rule is part of the key"; fi
+else fail "L12 setup: expected one R4 entry and a green baseline"; fi
 
 # L7 — shipped baseline
 if grep -qE '\.sh:[0-9]+ ' "${INTEG_DIR}/lint-baseline.txt"; then fail "L7 shipped baseline carries a line-number key"; else ok "L7 shipped baseline carries no line-number keys"; fi
