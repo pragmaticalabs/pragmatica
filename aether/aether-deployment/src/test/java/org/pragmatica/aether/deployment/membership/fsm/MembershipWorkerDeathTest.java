@@ -407,6 +407,54 @@ class MembershipWorkerDeathTest {
             .as("evidence older than the latest death signal; state=%s", state(membership, id)).isTrue();
     }
 
+    /// Round-2 addendum: the death instant and the evidence instant are measured on the core's MONOTONIC clock. A wall-clock
+    /// step back of more than the backstop window between the signal and a fresh report (NTP, VM resume) must not make the
+    /// fresh report look older than the signal. Here the injected wall clock jumps back 20 s right after the signal; the
+    /// report observed just now must still veto. (With the wall clock as the comparison base it is ignored: false DEAD.)
+    @Test
+    void wallClockStepBack_doesNotMakeFreshEvidenceLookOlderThanTheSignal() {
+        var wall = new java.util.concurrent.atomic.AtomicLong(1_000_000L);
+        var membership = MembershipFsm.membershipFsm(org.pragmatica.statemachine.FsmObserver.noop(),
+                                                     wall::get,
+                                                     Long.MAX_VALUE,
+                                                     timeSpan(BACKSTOP_MS).millis(),
+                                                     timeSpan(BACKSTOP_MS).millis(),
+                                                     timeSpan(BACKSTOP_MS).millis());
+        var id = new NodeId("w-wall-step");
+        var governor = new NodeId("governor");
+
+        membership.onGovernorHealthy(id, "community", governor, 1, 4, worker());
+        membership.onLivenessGone(id);
+        wall.addAndGet(-20_000L);
+        pause(5);
+        membership.onGovernorHealthy(id, "community", governor, 1, 4, worker(), 0L);
+
+        assertThat(awaitTrue(() -> "Dead".equals(state(membership, id)), 3 * BACKSTOP_MS))
+            .as("fresh evidence after a wall-clock step back is still newer than the signal; state=%s", state(membership, id))
+            .isFalse();
+        assertThat(state(membership, id)).isEqualTo("Member");
+    }
+
+    /// The monotonic source is injectable: evidence older than the signal on THAT clock is ignored, independent of any
+    /// wall clock.
+    @Test
+    void injectedMonotonicClock_decidesWhichEvidenceIsNewer() {
+        var mono = new java.util.concurrent.atomic.AtomicLong(-5_000_000_000L);
+        var membership = fsm();
+        var id = new NodeId("w-mono");
+        var governor = new NodeId("governor");
+
+        membership.setMonotonicClock(mono::get);
+        membership.onGovernorHealthy(id, "community", governor, 1, 4, worker());
+        membership.onLivenessGone(id);
+        mono.addAndGet(1_000_000L);
+        membership.onGovernorHealthy(id, "community", governor, 1, 4, worker(), 60_000L);
+
+        assertThat(awaitTrue(() -> "Dead".equals(state(membership, id)), 15_000))
+            .as("evidence observed 60 s before the signal on the monotonic clock is ignored, even with negative nanoTime; state=%s",
+                state(membership, id)).isTrue();
+    }
+
     private static MembershipFsm workerObserverFsm() {
         var membership = fsm();
 

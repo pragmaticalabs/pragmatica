@@ -646,7 +646,7 @@ public final class MembershipFsm {
         withMember(id,
                    tracking -> tracking.inTransition(() -> {
                        tracking.updateDescriptor(admittedDescriptor);
-                       if (tracking.deathSignalNotOlderThan(wallClockMs.getAsLong() - Math.max(0L, observedAgoMs))) {
+                       if (tracking.deathSignalNotOlderThan(monotonicNanos.getAsLong() - java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(Math.max(0L, observedAgoMs)))) {
                        return;
                    }
 
@@ -1199,7 +1199,7 @@ public final class MembershipFsm {
             tracking.stampDoubt(wallClockMs.getAsLong());
             tracking.dispatch(new SwimFaulty(incarnation));
             tracking.markSwimFaulty();
-            tracking.noteDeathSignal(wallClockMs.getAsLong());
+            tracking.noteDeathSignal(monotonicNanos.getAsLong());
             maybeConfirmDeparture(tracking);
         });
     }
@@ -1217,7 +1217,7 @@ public final class MembershipFsm {
             tracking.stampDoubt(wallClockMs.getAsLong());
             tracking.dispatch(new LivenessGone());
             tracking.markLivenessGone();
-            tracking.noteDeathSignal(wallClockMs.getAsLong());
+            tracking.noteDeathSignal(monotonicNanos.getAsLong());
             maybeConfirmDeparture(tracking);
         });
     }
@@ -1340,6 +1340,21 @@ public final class MembershipFsm {
     @Contract
     private void withMember(NodeId id, Consumer<MemberTracking> action) {
         eligibleTracking(id).onPresent(action);
+    }
+
+    /// Monotonic source for the death-signal instant and the evidence instant it is compared with (#1717). Both are
+    /// measured on THIS node, so a wall-clock step (NTP, VM resume) between the signal and a report cannot make fresh
+    /// evidence look older than the signal. Remaining skew is cross-node: the evidence age carries the worker's own
+    /// wall-clock term (governor clock minus worker `observedAtMs`, admitted up to `MAX_AGE_MS`), so a worker clock
+    /// behind by more than ~15 s can still make fresh evidence look old. [unverified: cross-node skew > 15 s, bounded
+    /// by MAX_AGE_MS]
+    private volatile LongSupplier monotonicNanos = System::nanoTime;
+
+    /// Test seam for the monotonic source; production keeps `System::nanoTime`.
+    public org.pragmatica.lang.Unit setMonotonicClock(LongSupplier clock) {
+        monotonicNanos = clock;
+
+        return org.pragmatica.lang.Unit.unit();
     }
 
     private volatile boolean onePlaneWorkerEviction = true;
@@ -1949,20 +1964,24 @@ public final class MembershipFsm {
             livenessGoneSeen = true;
         }
 
-        /// Wall-clock ms of the LATEST death signal of the current episode (-1 = none armed). Cleared with the flags.
+        /// Monotonic nanos of the LATEST death signal of the current episode (nanoTime has an arbitrary origin and may be
+        /// negative, so "armed" is a separate flag). Cleared with the flags.
         private final BooleanSupplier onePlaneEviction;
-        private long deathSignalAtMs = -1L;
+        private long deathSignalAtNanos;
+        private boolean deathSignalArmed;
 
         /// The LATEST death signal wins: evidence is compared against the most recent signal, so a report observed
         /// between an early link drop and a later SWIM-FAULTY (the worker died in between) cannot veto the death.
+        /// `nowNanos` is the node's MONOTONIC time (see [MembershipFsm#monotonicNanos]).
         @Contract
-        synchronized void noteDeathSignal(long nowMs) {
-            deathSignalAtMs = nowMs;
+        synchronized void noteDeathSignal(long nowNanos) {
+            deathSignalAtNanos = nowNanos;
+            deathSignalArmed = true;
         }
 
         /// True when a death signal is armed and the proposed evidence instant is not newer than it.
-        synchronized boolean deathSignalNotOlderThan(long evidenceAtMs) {
-            return deathSignalAtMs >= 0 && evidenceAtMs <= deathSignalAtMs;
+        synchronized boolean deathSignalNotOlderThan(long evidenceAtNanos) {
+            return deathSignalArmed && evidenceAtNanos - deathSignalAtNanos <= 0;
         }
 
         /// A re-established link vetoes the TRANSPORT plane of a death (the drain path's rule): the signal was a
@@ -1971,7 +1990,7 @@ public final class MembershipFsm {
         synchronized void clearTransportDeath() {
             livenessGoneSeen = false;
             if (!swimFaultySeen) {
-                deathSignalAtMs = -1L;
+                deathSignalArmed = false;
                 cancelEvictionBackstop();
             }
         }
@@ -2002,7 +2021,7 @@ public final class MembershipFsm {
         synchronized void clearConfirmedDeath() {
             swimFaultySeen = false;
             livenessGoneSeen = false;
-            deathSignalAtMs = -1L;
+            deathSignalArmed = false;
             cancelEvictionBackstop();
         }
 
