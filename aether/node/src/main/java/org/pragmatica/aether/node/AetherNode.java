@@ -4961,10 +4961,14 @@ public interface AetherNode extends ManageableNode {
         var nodeReadyAgain = nodeReadyAgain(metricsCollector::reportedStates);
 
         metricsCollector.setDrainSetObserver(drainSetObserver(alertManager, config.self(), nodeReadyAgain));
-        // The leader never processes its own ping, so it re-derives its mark from its own registry each interval.
-        var ownDrainRecord = drainSetObserver(alertManager, config.self(), nodeReadyAgain);
+        // The leader never processes its own ping, so it re-derives its mark from its own registry each interval. Only
+        // the LEADER: an operator drain never leaves the registry, so a node that was leader once and is not now would
+        // keep re-marking a node that restarted under the new leader, silencing that node's next real crash (v-2043 N1).
+        var ownDrainRecord = leaderOnlyDrainRecordTick(isLeaderSupplier,
+                                                       drainCommandRegistry::drainTargets,
+                                                       drainSetObserver(alertManager, config.self(), nodeReadyAgain));
 
-        periodicTasks.defer(() -> SharedScheduler.scheduleAtFixedRate(() -> ownDrainRecord.accept(drainCommandRegistry.drainTargets()),
+        periodicTasks.defer(() -> SharedScheduler.scheduleAtFixedRate(ownDrainRecord,
                                                                       config.timeouts().cluster().pingInterval()));
         // Workers renew core contact from identified core ping OR pong responses. This is
         // reachability evidence only; all mutations still require committed core authority.
@@ -7722,6 +7726,18 @@ public interface AetherNode extends ManageableNode {
     /// (the minority measures `T` from its own local-quorum-loss observation). The read-path
     /// quiesce (`AppHttpServer::onQuorumStateChange`) stays IMMEDIATE on PASSIVE — read-path
     /// protection is cheap to undo on regain; only the process-exit drain gets the window.
+    /// The leader's own-registry tick (#2014, v-2043 N1): feeds the registry's drain targets to `record` only while this
+    /// node is the leader. Package-private so the gate and the feed are pinned without booting a node.
+    static Runnable leaderOnlyDrainRecordTick(BooleanSupplier isLeader,
+                                              Supplier<Set<NodeId>> registryTargets,
+                                              Consumer<Set<NodeId>> record) {
+        return () -> {
+            if (isLeader.getAsBoolean()) {
+                record.accept(registryTargets.get());
+            }
+        };
+    }
+
     /// #2014: the drain record (the leader's broadcast set, or the leader's own registry) marks each commanded node
     /// (never self) as an announced departure on this observer. `nodeReadyAgain` is the only thing that ends a mark
     /// early. Package-private so the composition is pinned without booting a node.

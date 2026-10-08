@@ -151,4 +151,41 @@ class AetherNodeDrainSetObserverTest {
         assertThat(draining.test(DRAINED)).isFalse();
         assertThat(absent.test(DRAINED)).as("absence from the readiness view is not evidence the drain is over").isFalse();
     }
+
+    /// v-2043 N1: a node that is NOT the leader must not feed its own registry (an operator drain never leaves it, so a former
+    /// leader would keep re-marking a node that restarted under the new leader). Removing the leadership gate turns this red.
+    @Test
+    void ownRegistryTick_notLeader_feedsNothing() {
+        var fed = new java.util.concurrent.atomic.AtomicInteger();
+
+        AetherNode.leaderOnlyDrainRecordTick(() -> false, () -> Set.of(DRAINED), _ -> fed.incrementAndGet()).run();
+
+        assertThat(fed.get()).as("a non-leader's registry is not a drain record").isZero();
+    }
+
+    /// And the leader DOES feed the registry's actual targets (not an empty set, not a stale one). Feeding an empty set, or
+    /// dropping the feed, turns this red; with the gate pinned above, the two together pin the whole tick.
+    @Test
+    void ownRegistryTick_leader_feedsTheRegistryTargets() {
+        var seen = new java.util.concurrent.atomic.AtomicReference<Set<NodeId>>(null);
+
+        AetherNode.leaderOnlyDrainRecordTick(() -> true, () -> Set.of(DRAINED), seen::set).run();
+
+        assertThat(seen.get()).containsExactly(DRAINED);
+    }
+
+    /// Composition: a former leader's registry still names DRAINED; the gate keeps its alert manager unmarked, so the node's
+    /// real crash alerts on this observer (the N1 chain end to end at unit level).
+    @Test
+    void formerLeader_withStaleRegistry_staysUnmarked_soTheNextCrashAlerts() {
+        var alerts = alerts();
+        var tick = AetherNode.leaderOnlyDrainRecordTick(() -> false,
+                                                        () -> Set.of(DRAINED),
+                                                        AetherNode.drainSetObserver(alerts, SELF, NOT_READY));
+
+        tick.run();
+        alerts.onNodeFailed(DRAINED, SELF);
+
+        assertThat(alerts.getActiveNodeHealthAlerts()).hasSize(1);
+    }
 }
