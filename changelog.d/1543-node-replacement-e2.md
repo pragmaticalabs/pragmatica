@@ -22,6 +22,18 @@
   while the ledger counts (409 `SourceRequired`). When the record reaches `ROLLED_BACK` a counted reservation is released, and at `DONE`
   it becomes the observed reservation of the live node, so retiring the node later returns the slot and drops the id from admission.
   Also refused with 409: a core replacement whose chosen id was a genesis voter (`FormerVoterIdentity`).
+- **A replacement is DONE only after the old node's instance is confirmed terminated at the provider.** Found by the cold-boot safety test: after
+  retirement the CTM's reap of the departed node was refused ("Cannot terminate without a committed capacity source binding": a node CTM did not
+  provision has a reservation only once a listing has observed it), not retried, and the record still reached DONE: in a cloud a leaked, billing VM.
+  `ClusterTopologyManager.reapRetired(node, source)` lists the instance (which commits the missing observed reservation), terminates it if listed,
+  re-lists, and succeeds only on an empty or all-stopped listing; a failed listing, an instance still listed or a status the provider cannot state is a
+  failure carrying the instance and the cause, never "gone". It honours the retirement refusal (a voter is not reaped) and is idempotent, so a new
+  leader repeats it. `RETIRING_OLD -> DONE` requires it; at the phase deadline with the termination unconfirmed the record is `FAILED_KEPT_BOTH`
+  ("old node retired but its instance is not confirmed terminated at the provider (<cause>); terminate it, then settle keep-new"), and the
+  `node-replacement-failed-kept-both` event carries that reason. A rollback is `ROLLED_BACK` only once the replacement's instance is confirmed gone;
+  after the retiring budget it too keeps both, naming the cause. The general retirement paths (scale-down, departure) still use the log-and-drop reap: #2062.
+- **A node that arrived on an uncounted reservation keeps it** (no counting ledger): it is that node's only admission intent, needed again if a worker
+  loses its community assignment. A rollback, where the node never arrived, still drops it.
 - **Operator events** are derived from the committed record on every node and raised only by the cluster-events owner, so exactly one
   start / completion / failure event (and its recovery pair) is raised per transition; the wiring of that owner gate and of the ready
   view the worker path reads are pinned by boot tests.

@@ -138,10 +138,9 @@ class EmberNodeReplacementTest {
     }
 
     /// The cold-boot crash's phase budgets: the same as every other scenario except DRAINING_OLD, 30 s instead of 90 s. How long the
-    /// leader takes to read a blackholed old node as Dead after a cold-boot crash is bimodal (#2021): about 7 s when SWIM had already seen it
-    /// healthy, 67-80 s when the live-transport veto has to wait for the peer-side liveness sweep (pingInterval x 8, 80 s in Ember) or the
-    /// node's own quorum-loss self-drain. A 30 s DRAINING_OLD budget ends ~43 s after the crash, so BOTH outcomes are reachable and the test
-    /// below must hold on either.
+    /// leader takes to read a blackholed old node as Dead after a cold-boot crash is bimodal (#2021): about 5-8 s when SWIM had already seen it
+    /// healthy, otherwise later than even a 90 s DRAINING_OLD budget allows (4 of 4 default-budget runs never saw it Dead). The test below
+    /// must hold on either outcome; it is about half DONE and half FAILED_KEPT_BOTH in the class runs.
     private static final String COLD_BOOT_TIMINGS = "60000,60000,90000,60000,3000,30000,60000";
 
     /// The assertion that is meant to hold once the leader reads a crashed old node as Dead within seconds in every case (#2021): the
@@ -168,15 +167,6 @@ class EmberNodeReplacementTest {
         assertColdBootCrashEndsSafely(COLD_BOOT_TIMINGS);
     }
 
-    /// The same invariant with the default 90 s DRAINING_OLD budget, which outlasts either Dead-detection mode (about 7 s, or 67-80 s), so
-    /// the record normally ends DONE and the DONE branch (including the old instance being terminated) is exercised on purpose instead of
-    /// by the 7 s mode turning up. Safety is asserted on whichever outcome occurs; the outcome is printed.
-    @Test
-    @Timeout(600)
-    void coldBootCrashOfTheOldNode_withTheDefaultBudget_endsSafely_normallyDone() {
-        assertColdBootCrashEndsSafely("60000,60000,90000,60000,3000,90000,60000");
-    }
-
     private void assertColdBootCrashEndsSafely(String timings) {
         System.setProperty(TIMINGS_PROPERTY, timings);
         var probe = new SafetyProbe(this);
@@ -194,6 +184,8 @@ class EmberNodeReplacementTest {
         System.out.println("EMBER-REPLACEMENT cold-boot (timings " + timings + ") outcome=" + record.phase() + " leader read the old node as not alive: " + deadAfter + " after the kill");
         assertThat(record.phase()).as("a safe terminal outcome, reason: %s", record.reason())
                                   .isIn(NodeReplacementPhase.DONE, NodeReplacementPhase.FAILED_KEPT_BOTH);
+        assertThat(probe.leaderLooks()).as("the safety sampler read a leader's view of the old node (a sampler that never ran proves nothing)").isGreaterThan(100);
+        assertThat(result.voterSamples()).as("the electorate was sampled during the run").isGreaterThan(100);
         assertThat(probe.violations()).as("safety violations sampled during the run").isEmpty();
         assertThat(result.voterViolations()).as("installed voters == 3 on every sample").isEmpty();
 
@@ -214,6 +206,7 @@ class EmberNodeReplacementTest {
         private final List<String> violations = new CopyOnWriteArrayList<>();
         private volatile long killedAtNanos;
         private volatile long deadAtNanos = -1L;
+        private final AtomicInteger leaderLooks = new AtomicInteger();
         private volatile NodeId old;
         private Thread sampler;
 
@@ -239,6 +232,7 @@ class EmberNodeReplacementTest {
                 violations.add("the node's replacement service does not expose its wiring");
                 return;
             }
+            leaderLooks.incrementAndGet();
             var record = test.recordOf(old);
             var retiring = record != null && (record.phase() == NodeReplacementPhase.RETIRING_OLD || record.phase() == NodeReplacementPhase.DONE);
             var drained = wired.drainRequested(old);
@@ -265,6 +259,11 @@ class EmberNodeReplacementTest {
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
             }
+        }
+
+        /// How many times the sampler found a leader and read its view of the old node.
+        int leaderLooks() {
+            return leaderLooks.get();
         }
 
         long deadAfterMs() {

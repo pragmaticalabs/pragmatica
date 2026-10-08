@@ -539,7 +539,8 @@ public final class NodeReplacementWiring {
 
         @Override
         public int fleetLimit() {
-            return in.fleetLimit().getAsInt();
+            return in.fleetLimit()
+                     .getAsInt();
         }
 
         @Override
