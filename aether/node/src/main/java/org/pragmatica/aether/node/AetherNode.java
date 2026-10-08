@@ -7766,18 +7766,6 @@ public interface AetherNode extends ManageableNode {
         }
     }
 
-    /// E2 Phase 2b (2026-05-28): bridge the consensus-derived `ClusterStateNotification`
-    /// quorum-presence edge into the §8.2 process-exit drain. **Wave 9 Fix A
-    /// (cluster-topology-overhaul):** the PASSIVE edge no longer triggers an IMMEDIATE
-    /// `initiate(QUORUM_LOSS)` — that instant drain bypassed both the `QuorumLossDetector` window
-    /// and the split-timeout `T`, and was the post-partition-heal self-destruct (a transient
-    /// false-FAULTY storm dropped counted-members below quorum → PASSIVE → all nodes Exited(2)
-    /// before the storm cleared). Instead the edge is debounced through the detector's windowed
-    /// path (arm at `T` from THIS node's local PASSIVE observation, cancel on ACTIVE-regain,
-    /// drain once iff still lost after `T`) — completing the ratified Wave-9 item-2 design
-    /// (the minority measures `T` from its own local-quorum-loss observation). The read-path
-    /// quiesce (`AppHttpServer::onQuorumStateChange`) stays IMMEDIATE on PASSIVE — read-path
-    /// protection is cheap to undo on regain; only the process-exit drain gets the window.
     /// The leader's own-registry tick (#2014, v-2043 N1): feeds the registry's drain targets to `record` only while this
     /// node is the leader. Package-private so the gate and the feed are pinned without booting a node.
     static Runnable leaderOnlyDrainRecordTick(BooleanSupplier isLeader,
@@ -7807,6 +7795,18 @@ public interface AetherNode extends ManageableNode {
                                    .get(id) == NodeReportedState.READY;
     }
 
+    /// E2 Phase 2b (2026-05-28): bridge the consensus-derived `ClusterStateNotification`
+    /// quorum-presence edge into the §8.2 process-exit drain. **Wave 9 Fix A
+    /// (cluster-topology-overhaul):** the PASSIVE edge no longer triggers an IMMEDIATE
+    /// `initiate(QUORUM_LOSS)` — that instant drain bypassed both the `QuorumLossDetector` window
+    /// and the split-timeout `T`, and was the post-partition-heal self-destruct (a transient
+    /// false-FAULTY storm dropped counted-members below quorum → PASSIVE → all nodes Exited(2)
+    /// before the storm cleared). Instead the edge is debounced through the detector's windowed
+    /// path (arm at `T` from THIS node's local PASSIVE observation, cancel on ACTIVE-regain,
+    /// drain once iff still lost after `T`) — completing the ratified Wave-9 item-2 design
+    /// (the minority measures `T` from its own local-quorum-loss observation). The read-path
+    /// quiesce (`AppHttpServer::onQuorumStateChange`) stays IMMEDIATE on PASSIVE — read-path
+    /// protection is cheap to undo on regain; only the process-exit drain gets the window.
     /// #688: one DRAINING report feeds both halves of a drain — the membership FSM's acknowledgement
     /// (#1054) and the leader-side eviction loop. The CDM's `MembershipDecision.NodeDraining` arm is
     /// never emitted (membership-v2 finale), so this listener is the ONLY production entry to
