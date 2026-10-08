@@ -8,9 +8,8 @@ different maturity levels, but share one build and one contribution process.
 Pre-GA, we are not accepting external code contributions. Issues, bug reports and design
 discussion are welcome.
 
-For anything beyond a small fix, please open an issue first to discuss the approach before
-investing in a PR — this is a fast-moving pre-GA codebase and some things you'd expect to be
-stable (APIs under `aether/`, in particular) are still in flux.
+Open an issue to report a bug or to discuss a design. This is a fast-moving pre-GA codebase, and
+some things you would expect to be stable (APIs under `aether/`, in particular) are still in flux.
 
 **Found a security issue?** Do not open a public issue — see [SECURITY.md](SECURITY.md) for
 private reporting.

@@ -70,6 +70,7 @@ import org.pragmatica.aether.deployment.cluster.CoreVoterReconciler;
 import org.pragmatica.aether.deployment.cluster.NodeReplacementIndex;
 import org.pragmatica.aether.deployment.cluster.CommunityRetirementIndex;
 import org.pragmatica.aether.node.backup.BackupGenesis;
+import org.pragmatica.aether.node.backup.BackupPreflight;
 import org.pragmatica.aether.node.backup.BackupRestoreCoordinator;
 import org.pragmatica.aether.node.backup.BackupWarning;
 import org.pragmatica.aether.node.backup.GitBackupRepository;
@@ -591,6 +592,26 @@ public interface AetherNode extends ManageableNode {
                                          Runnable identityRefusedExit,
                                          Runnable gossipKeyDivergedExit,
                                          Fn1<Option<String>, String> environment) {
+        return aetherNode(config,
+                          delegateRouter,
+                          nodeCodec,
+                          jvmExit,
+                          identityRefusedExit,
+                          gossipKeyDivergedExit,
+                          environment,
+                          BackupPreflight::requireGit);
+    }
+
+    /// The same boot with the `[backup]` git probe supplied (#2007): production passes [BackupPreflight#requireGit]; a boot
+    /// test passes a stand-in for a git that is missing, hangs or is fine, and counts whether it was asked.
+    static Result<AetherNode> aetherNode(AetherNodeConfig config,
+                                         MessageRouter.DelegateRouter delegateRouter,
+                                         SliceCodec nodeCodec,
+                                         Runnable jvmExit,
+                                         Runnable identityRefusedExit,
+                                         Runnable gossipKeyDivergedExit,
+                                         Fn1<Option<String>, String> environment,
+                                         Supplier<Result<Unit>> gitProbe) {
         return config.validate()
                      .flatMap(_ -> createNode(config,
                                               delegateRouter,
@@ -598,7 +619,8 @@ public interface AetherNode extends ManageableNode {
                                               jvmExit,
                                               identityRefusedExit,
                                               gossipKeyDivergedExit,
-                                              environment));
+                                              environment,
+                                              gitProbe));
     }
 
     /// #1549: the `CLUSTER_EVENTS_MAX_*` overrides are checked before anything is built — an out-of-range
@@ -609,15 +631,24 @@ public interface AetherNode extends ManageableNode {
                                                  Runnable jvmExit,
                                                  Runnable identityRefusedExit,
                                                  Runnable gossipKeyDivergedExit,
-                                                 Fn1<Option<String>, String> environment) {
-        return ClusterEventsLimits.clusterEventsLimits(environment).flatMap(limits -> createNodeWithBootToken(config,
-                                                                                                              delegateRouter,
-                                                                                                              nodeCodec,
-                                                                                                              jvmExit,
-                                                                                                              identityRefusedExit,
-                                                                                                              gossipKeyDivergedExit,
-                                                                                                              BootToken.bootToken(),
-                                                                                                              limits));
+                                                 Fn1<Option<String>, String> environment,
+                                                 Supplier<Result<Unit>> gitProbe) {
+        return requireBackupGit(config, gitProbe).flatMap(_ -> ClusterEventsLimits.clusterEventsLimits(environment))
+                               .flatMap(limits -> createNodeWithBootToken(config,
+                                                                          delegateRouter,
+                                                                          nodeCodec,
+                                                                          jvmExit,
+                                                                          identityRefusedExit,
+                                                                          gossipKeyDivergedExit,
+                                                                          BootToken.bootToken(),
+                                                                          limits));
+    }
+
+    /// #2007: `[backup]` shells out to git, so a node that has it enabled and cannot run git refuses to boot here, naming `[backup]` and
+    /// git, instead of leaving the restore BLOCKED and cluster-state writes refused after the cluster is up.
+    private static Result<Unit> requireBackupGit(AetherNodeConfig config, Supplier<Result<Unit>> gitProbe) {
+        return enabledBackup(config).fold(() -> Result.success(Unit.unit()),
+                                          _ -> gitProbe.get());
     }
 
     private static Result<AetherNode> createNodeWithBootToken(AetherNodeConfig config,
@@ -1503,21 +1534,40 @@ public interface AetherNode extends ManageableNode {
     /// #1873 (KIP-320): how an owner commits where its epoch begins, before it is activated: a guarded write of the exact
     /// committed record, witnessed by the committed leader, that records the start at `start` and, when its ring was
     /// rebuilt, first takes the next ownership term. Refusal is not a failed promise (the applier answers it with a result),
-    /// so the activation re-reads the record and checks the start landed.
+    /// so #1976: the write's own [KVCommand.TransactionResult] decides — accepted or the commit FAILS. Never a re-read of
+    /// the record: on a restart the old record already names a start, so a refused commit would read as landed.
     static OwnerActivation.LineageCommit streamLineageCommit(Supplier<Option<LeaderValue>> committedLeader,
                                                              java.util.function.Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> applier,
                                                              HlcClock clock) {
         return (stream, partition, current, start, restarted) -> committedLeader.get()
-                                                                                .fold(() -> OwnerActivation.ActivationError.LINEAGE_NOT_COMMITTED.<Unit> promise(),
-                                                                                      leader -> applier.apply(List.of(StreamPartitionOwnershipWriter.guardedOwnershipWrite(leader,
-                                                                                                                                                                           stream,
-                                                                                                                                                                           partition,
-                                                                                                                                                                           Option.some(current),
-                                                                                                                                                                           restarted
-                                                                                                                                                                           ? current.restarted(start,
-                                                                                                                                                                                               clock.now())
-                                                                                                                                                                           : current.withEpochStart(start))))
-                                                                                                       .mapToUnit());
+                                                                                .fold(() -> OwnerActivation.ActivationError.NO_COMMITTED_LEADER.<Unit> promise(),
+                                                                                      leader -> lineageWrite(applier,
+                                                                                                             StreamPartitionOwnershipWriter.guardedOwnershipWrite(leader,
+                                                                                                                                                                  stream,
+                                                                                                                                                                  partition,
+                                                                                                                                                                  Option.some(current),
+                                                                                                                                                                  restarted
+                                                                                                                                                                  ? current.restarted(start,
+                                                                                                                                                                                      clock.now())
+                                                                                                                                                                  : current.withEpochStart(start))));
+    }
+
+    private static Promise<Unit> lineageWrite(java.util.function.Function<List<KVCommand<AetherKey>>, Promise<List<Object>>> applier,
+                                              KVCommand.LeaderTransaction<AetherKey, AetherValue> write) {
+        var transactionId = write.transactionId();
+
+        return applier.apply(List.of(write))
+                      .flatMap(results -> acceptedBy(results, transactionId)
+                                          ? Promise.success(Unit.unit())
+                                          : OwnerActivation.ActivationError.LINEAGE_NOT_COMMITTED.<Unit> promise());
+    }
+
+    static boolean acceptedBy(List<Object> results, String transactionId) {
+        return results.stream()
+                      .filter(KVCommand.TransactionResult.class::isInstance)
+                      .map(KVCommand.TransactionResult.class::cast)
+                      .anyMatch(result -> result.transactionId()
+                                                .equals(transactionId) && result.accepted());
     }
 
     /// #1730: the partitions this node owns AND serves (activated for the committed record), with their record and
@@ -2013,6 +2063,12 @@ public interface AetherNode extends ManageableNode {
                                                                                                           partitionSubject(unreachable),
                                                                                                           "{}",
                                                                                                           unreachable.message());
+            case OwnerActivation.ActivationBlock.LineageRefused refused -> OperatorWarnings.raise(LOG,
+                                                                                                  sink,
+                                                                                                  OperatorWarningCode.STREAM_OWNER_LINEAGE_REFUSED,
+                                                                                                  partitionSubject(refused),
+                                                                                                  "{}",
+                                                                                                  refused.message());
             default -> raiseOwnerPromotionBlock(block);
         };
     }
@@ -2031,6 +2087,12 @@ public interface AetherNode extends ManageableNode {
                                                                                                           partitionSubject(unreachable),
                                                                                                           "Owner promotion of {} no longer waits for unreachable members.",
                                                                                                           partitionSubject(unreachable));
+            case OwnerActivation.ActivationBlock.LineageRefused refused -> OperatorWarnings.raise(LOG,
+                                                                                                  sink,
+                                                                                                  OperatorWarningCode.STREAM_OWNER_LINEAGE_COMMITTED,
+                                                                                                  partitionSubject(refused),
+                                                                                                  "Owner promotion of {} is no longer refused at its epoch-start commit.",
+                                                                                                  partitionSubject(refused));
             default -> Unit.unit();
         };
     }

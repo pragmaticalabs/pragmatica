@@ -179,7 +179,17 @@ public enum OperatorWarningCode {
     STREAM_OWNER_PROMOTION_HOLDERS_ANSWERING("stream-owner-promotion-holders-answering",
                                              "stream-replication",
                                              WarningLevel.INFO,
-                                             STREAM_OWNER_PROMOTION_HOLDERS_UNREACHABLE);
+                                             STREAM_OWNER_PROMOTION_HOLDERS_UNREACHABLE),
+    /// A partition's owner promotion keeps being refused at the guarded commit of its epoch start (#1976): the ownership record
+    /// keeps changing under it. CRITICAL: the partition stays un-activated, and the owner retries with backoff. Raised once
+    /// per episode, after repeated refusals; the message names the partition and the count.
+    STREAM_OWNER_LINEAGE_REFUSED("stream-owner-lineage-refused", "stream-replication", WarningLevel.CRITICAL),
+    /// The recovery of a [#STREAM_OWNER_LINEAGE_REFUSED] (#1976), same subject: the epoch start was committed, or this node
+    /// stopped being the partition's owner or lost quorum.
+    STREAM_OWNER_LINEAGE_COMMITTED("stream-owner-lineage-committed",
+                                   "stream-replication",
+                                   WarningLevel.INFO,
+                                   STREAM_OWNER_LINEAGE_REFUSED);
     private final String code;
     private final String subsystem;
     private final WarningLevel level;

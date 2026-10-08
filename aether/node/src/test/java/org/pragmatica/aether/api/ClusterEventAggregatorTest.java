@@ -2069,6 +2069,7 @@ class ClusterEventAggregatorTest {
                              OperatorWarningCode.STREAM_CONSUMER_DRAIN_RESTORED,
                              OperatorWarningCode.STREAM_EVENT_EXCEEDS_READ_CAP_RESOLVED,
                              OperatorWarningCode.STREAM_OWNER_PROMOTION_HOLDERS_ANSWERING,
+                             OperatorWarningCode.STREAM_OWNER_LINEAGE_COMMITTED,
                              OperatorWarningCode.STREAM_CATCHUP_SOURCE_ANSWERING_RESTORED,
                              OperatorWarningCode.BACKUP_CONFIG_RESTORED,
                              OperatorWarningCode.BACKUP_RESTORE_UNBLOCKED);
@@ -2079,6 +2080,7 @@ class ClusterEventAggregatorTest {
                              OperatorWarningCode.STREAM_CONSUMER_DRAIN_FAILING,
                              OperatorWarningCode.STREAM_EVENT_EXCEEDS_READ_CAP,
                              OperatorWarningCode.STREAM_OWNER_PROMOTION_HOLDERS_UNREACHABLE,
+                             OperatorWarningCode.STREAM_OWNER_LINEAGE_REFUSED,
                              OperatorWarningCode.STREAM_CATCHUP_SOURCE_NOT_ANSWERING,
                              OperatorWarningCode.BACKUP_CONFIG_MISSING,
                              OperatorWarningCode.BACKUP_RESTORE_BLOCKED);
