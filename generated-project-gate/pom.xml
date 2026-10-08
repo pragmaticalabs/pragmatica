@@ -1,0 +1,155 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>org.pragmatica-lite</groupId>
+        <artifactId>pragmatica</artifactId>
+        <version>1.0.0-rc4</version>
+    </parent>
+
+    <artifactId>generated-project-gate</artifactId>
+    <packaging>jar</packaging>
+
+    <name>Generated Project Build Gate</name>
+    <description>
+        Test-only module. Runs the real `jbct init` (every variant) and every `jbct add-*`, then builds each generated
+        project with `mvn verify`, including its own format-check and lint (#1998).
+    </description>
+
+    <!--
+        WHY THIS EXISTS. The templates that `jbct init` and `jbct add-*` write are Java text blocks, so nothing compiled
+        them: `jbct add-persistence` generated a project that did not compile, its sample persistence interface failed the
+        shipped format-check, and `jbct add-slice` generated a slice the shipped lint rejects. All three reached rc4 because
+        the only checks were an in-process format/lint of the DEFAULT scaffold (GeneratedSliceComplianceTest) and a Heavy
+        forge test that builds the default scaffold. This gate builds every variant, as a first user would.
+
+        WHY A MODULE LISTED LAST. The generated project resolves `core`, `slice-api`, `slice-processor`, `jbct-maven-plugin`
+        and the rest from the local repository, so they must be INSTALLED before this module's integration test runs. The
+        test-scoped dependencies below make Maven's reactor build all of them (through `install`) first, in any build order,
+        the same ordering argument as cli-docs-gate. It runs as an integration test (`*IT`), so `mvn test` stays fast and
+        `mvn install` (what CI runs) executes it.
+
+        It publishes nothing: the root skips every module that does not opt in (#1988).
+    -->
+
+    <properties>
+        <gpg.skip>true</gpg.skip>
+    </properties>
+
+    <dependencies>
+        <!-- The subject: the real CLI classes (`init`, `add-slice`, `add-event`, `add-persistence`). -->
+        <dependency>
+            <groupId>org.pragmatica-lite</groupId>
+            <artifactId>jbct-cli</artifactId>
+            <version>${project.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>info.picocli</groupId>
+            <artifactId>picocli</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!--
+            === What a generated project resolves, declared only so the reactor installs it first ===
+            The list is what `jbct init` and `jbct add-persistence` write into a pom (docs/release/maven-central-publish-set.md).
+        -->
+        <dependency>
+            <groupId>org.pragmatica-lite</groupId>
+            <artifactId>core</artifactId>
+            <version>${project.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.pragmatica-lite</groupId>
+            <artifactId>slice-processor</artifactId>
+            <version>${project.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.pragmatica-lite</groupId>
+            <artifactId>jbct-maven-plugin</artifactId>
+            <version>${project.version}</version>
+            <type>maven-plugin</type>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.pragmatica-lite.aether</groupId>
+            <artifactId>slice-api</artifactId>
+            <version>${project.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.pragmatica-lite.aether</groupId>
+            <artifactId>slice-annotations</artifactId>
+            <version>${project.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.pragmatica-lite.aether</groupId>
+            <artifactId>resource-api</artifactId>
+            <version>${project.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.pragmatica-lite.aether</groupId>
+            <artifactId>http-routing-adapter</artifactId>
+            <version>${project.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.pragmatica-lite.aether</groupId>
+            <artifactId>pg-codegen</artifactId>
+            <version>${project.version}</version>
+            <scope>test</scope>
+        </dependency>
+
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter-api</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter-engine</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.assertj</groupId>
+            <artifactId>assertj-core</artifactId>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <!-- A gate publishes nothing. Only the Central plugin's skipPublishing excludes a module; maven.deploy.skip does not (#1988). -->
+            <plugin>
+                <groupId>org.sonatype.central</groupId>
+                <artifactId>central-publishing-maven-plugin</artifactId>
+                <configuration>
+                    <skipPublishing>true</skipPublishing>
+                </configuration>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <configuration>
+                    <!-- slice-processor and pg-codegen sit on the test classpath only to order the reactor; do not run them here. -->
+                    <proc>none</proc>
+                </configuration>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-failsafe-plugin</artifactId>
+                <configuration>
+                    <systemPropertyVariables>
+                        <gate.maven.home>${maven.home}</gate.maven.home>
+                        <gate.repo.local>${settings.localRepository}</gate.repo.local>
+                        <gate.version>${project.version}</gate.version>
+                    </systemPropertyVariables>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
+</project>

@@ -131,7 +131,9 @@ public final class OwnerActivation {
     /// Commits, as the owner, where the current epoch of `(stream, partition)` begins (#1730 phase 2, KIP-320): with
     /// `restarted` the owner first takes the next ownership term, because its ring was rebuilt and it may assign offsets
     /// it assigned before. A guarded write of exactly `current`; a refusal (the record moved on) fails the activation, which
-    /// re-runs against the new record.
+    /// re-runs against the new record. #1976: the refusal is a FAILED promise ([ActivationError#LINEAGE_NOT_COMMITTED]);
+    /// success means THIS write was accepted. A read-back cannot decide it: on a restart the record already names a start,
+    /// so a refused commit would read as landed.
     @FunctionalInterface
     public interface LineageCommit {
         Promise<Unit> commit(String stream,
@@ -164,6 +166,9 @@ public final class OwnerActivation {
         HOLDER_UNREACHABLE("A live placement member did not answer the watermark probe and may hold a higher watermark"),
         CATCH_UP_SHORT("The catch-up did not reach the highest live holder's watermark"),
         NO_RING("The partition's ring is not materialized here, so there is no offset an epoch could begin at"),
+        /// #1976: no committed leader authorises the write — a quorum condition with its own event, not a refusal of this
+        /// partition's commit, so it is retried but never counted toward the per-partition refusal alarm.
+        NO_COMMITTED_LEADER("No committed leader authorises the owner's lineage commit"),
         LINEAGE_NOT_COMMITTED("The owner's epoch start was not committed (the guarded write was refused or did not apply)"),
         IN_PROGRESS("An activation of this partition is already running");
         private final String message;
@@ -303,6 +308,20 @@ public final class OwnerActivation {
             }
         }
 
+        /// #1976: the owner's guarded lineage commit was refused `refusals` times in a row (the ownership record keeps moving
+        /// under it, or no committed leader authorises the write), so the partition stays un-activated. It keeps retrying
+        /// with backoff; this is the operator's signal that it has not succeeded. Reported once, cleared on activation.
+        record LineageRefused(String streamName, int partition, int refusals) implements ActivationBlock {
+            @Override
+            public String message() {
+                return ("Owner promotion of %s[%d] has been refused %d times in a row: the guarded commit of its epoch start "
+                       + "is not accepted (the ownership record keeps changing, or no leader authorises it); the owner "
+                       + "retries with backoff and the partition stays un-activated until it lands").formatted(streamName,
+                                                                                                               partition,
+                                                                                                               refusals);
+            }
+        }
+
         /// `unreachable` have not answered the promotion probe for longer than `blockedLongerThan` and may hold a
         /// higher watermark; `responders` answered.
         record HoldersUnreachable(String streamName,
@@ -324,6 +343,8 @@ public final class OwnerActivation {
     public static final int OVERLAP_WINDOW = 1024;
     static final TimeSpan REDRIVE_INITIAL_BACKOFF = TimeSpan.timeSpan(250).millis();
     static final TimeSpan REDRIVE_MAX_BACKOFF = TimeSpan.timeSpan(2).seconds();
+    /// Consecutive refused lineage commits of one partition before the operator is told (#1976).
+    static final int LINEAGE_REFUSAL_ALARM_AFTER = 5;
 
     private record PeerWatermark(NodeId node, long watermark) {}
 
@@ -344,6 +365,8 @@ public final class OwnerActivation {
     /// The ring each partition was last activated on, by [RingIncarnation]: an activation on the SAME ring kept its
     /// offsets, one on another ring (a restart, a re-created stream) may assign them again.
     private final Map<PartitionKey, Long> activatedIncarnation = new ConcurrentHashMap<>();
+    /// Consecutive refused lineage commits per partition; reset when one lands.
+    private final Map<PartitionKey, Integer> lineageRefusals = new ConcurrentHashMap<>();
 
     /// The committed record each partition was activated for; [Option#none] marks a first-owner activation.
     private final Map<PartitionKey, Option<StreamPartitionOwnershipValue>> activated = new ConcurrentHashMap<>();
@@ -400,6 +423,9 @@ public final class OwnerActivation {
     /// The "members did not answer" block, in its OWN slot (#1937): it is a condition independent of every other block, so a
     /// peer refused for an oversized event ([#blocks]) neither masks it nor is re-raised by it.
     private final Map<PartitionKey, ActivationBlock> unreachableBlocks = new ConcurrentHashMap<>();
+    /// The refused-lineage-commit block (#1976), in a slot of its own: it is an independent condition, so a block of another
+    /// kind reported for the partition neither replaces it nor ends it.
+    private final Map<PartitionKey, ActivationBlock> lineageBlocks = new ConcurrentHashMap<>();
     /// When the current run of probe failures started (`System.nanoTime`), per partition.
     private final Map<PartitionKey, Long> unreachableSince = new ConcurrentHashMap<>();
 
@@ -597,6 +623,8 @@ public final class OwnerActivation {
     public void onQuorumStateChange(ClusterStateNotification notification) {
         if (notification.state() == ClusterStateNotification.State.PASSIVE) {
             activated.clear();
+            lineageRefusals.clear();
+            lineageBlocks.keySet().forEach(key -> ended(lineageBlocks.remove(key)));
         }
     }
 
@@ -604,7 +632,9 @@ public final class OwnerActivation {
     public Option<ActivationBlock> blockOf(String stream, int partition) {
         var key = PartitionKey.partitionKey(stream, partition);
 
-        return Option.option(blocks.get(key)).orElse(() -> Option.option(unreachableBlocks.get(key)));
+        return Option.option(blocks.get(key))
+                     .orElse(() -> Option.option(unreachableBlocks.get(key)))
+                     .orElse(() -> Option.option(lineageBlocks.get(key)));
     }
 
     private Promise<Unit> runGate(String stream, int partition, PartitionKey key) {
@@ -656,7 +686,35 @@ public final class OwnerActivation {
                               restarted)
                       .flatMap(_ -> ownedRecord(stream, partition))
                       .flatMap(this::requireCommittedStart)
-                      .onSuccess(_ -> activatedIncarnation.put(key, incarnation));
+                      .onSuccess(_ -> landed(key, incarnation))
+                      .onFailure(cause -> refused(stream, partition, key, cause));
+    }
+
+    private Unit landed(PartitionKey key, long incarnation) {
+        activatedIncarnation.put(key, incarnation);
+        lineageRefusals.remove(key);
+
+        return Unit.unit();
+    }
+
+    /// #1976: a refused commit never latches [#activatedIncarnation], so the re-drive runs the commit again; only the
+    /// operator's view needs the count — the Nth refusal in a row is reported once, and [#recordActivation] clears it.
+    private Unit refused(String stream, int partition, PartitionKey key, Cause cause) {
+        if (cause != ActivationError.LINEAGE_NOT_COMMITTED) {
+            return Unit.unit();
+        }
+
+        var count = lineageRefusals.merge(key, 1, Integer::sum);
+
+        if (count != LINEAGE_REFUSAL_ALARM_AFTER) {
+            return Unit.unit();
+        }
+
+        var block = new ActivationBlock.LineageRefused(stream, partition, count);
+
+        lineageBlocks.put(key, block);
+
+        return alarm.raise(block);
     }
 
     /// A guarded write that was refused is not a failed promise (the applier answers it with a result): the record is
@@ -722,9 +780,14 @@ public final class OwnerActivation {
         return ActivationError.NOT_OWNER.promise();
     }
 
+    /// Also ends a refusal episode (#1976): the count restarts, and a reported [ActivationBlock.LineageRefused] is told as
+    /// resolved — the partition activated, or this node stopped claiming it, so the condition no longer holds here. A later
+    /// tenure that gets stuck again therefore raises again.
     private Unit clearBlock(PartitionKey key) {
+        lineageRefusals.remove(key);
         ended(blocks.remove(key));
         ended(unreachableBlocks.remove(key));
+        ended(lineageBlocks.remove(key));
         unreachableSince.remove(key);
 
         return Unit.unit();
@@ -759,15 +822,35 @@ public final class OwnerActivation {
         var answered = results.stream().flatMap(result -> result.option()
                                                                 .stream()).toList();
 
-        return oversizedAt(peers, results).fold(() -> answered.size() < peers.size()
-                                                      ? holdersUnreachable(stream, partition, peers, answered)
-                                                      : catchUpFromHighest(stream, partition, answered),
+        return oversizedAt(peers, results).fold(() -> noLongerOversized(stream, partition, peers, answered),
                                                 oversized -> refuseOversizedKeepingUnreachable(stream,
                                                                                                partition,
                                                                                                peers,
                                                                                                results,
                                                                                                answered,
                                                                                                oversized));
+    }
+
+    /// No peer is cut before its first event any more (#1937 F5): an oversized block still standing for this partition describes a
+    /// condition that ended, whether the peers now answer or one went silent, so it ends here and the alarm is told. The
+    /// unreachable wait and the catch-up proceed as before.
+    private Promise<Unit> noLongerOversized(String stream,
+                                            int partition,
+                                            List<NodeId> peers,
+                                            List<PeerWatermark> answered) {
+        var key = PartitionKey.partitionKey(stream, partition);
+
+        Option.option(blocks.get(key))
+              .filter(ActivationBlock.PeerEventExceedsReadCap.class::isInstance)
+              .onPresent(block -> {
+                  if (blocks.remove(key, block)) {
+                  ended(block);
+              }
+              });
+
+        return answered.size() < peers.size()
+               ? holdersUnreachable(stream, partition, peers, answered)
+               : catchUpFromHighest(stream, partition, answered);
     }
 
     private record OversizedPeer(NodeId peer, long offset) {}
