@@ -433,9 +433,7 @@ public final class NodeReplacementWiring {
 
             return in.ctm()
                      .drainNode(node, DrainReason.REPLACED)
-                     .flatMap(_ -> in.ctm()
-                                     .reapRetired(node,
-                                                  SourceName.sourceNameOrDefault(record.source())))
+                     .flatMap(_ -> Promise.<Unit> unitPromise())
                      .<EffectResult> map(_ -> confirmedGone(node))
                      .recover(cause -> notConfirmed(node, cause, boundedByRetiring));
         }
