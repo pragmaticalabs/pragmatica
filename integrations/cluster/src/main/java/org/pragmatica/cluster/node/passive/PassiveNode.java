@@ -72,7 +72,7 @@ public interface PassiveNode<K extends StructuredKey, V> {
                                                                               Serializer serializer,
                                                                               Deserializer deserializer,
                                                                               TlsConfig tlsConfig) {
-        return passiveNode(topologyConfig, serializer, deserializer, tlsConfig, SnapshotSyncPolicy.defaults());
+        return passiveNode(topologyConfig, serializer, deserializer, tlsConfig, SnapshotSyncPolicy.snapshotSyncPolicy());
     }
 
     /// As [#passiveNode(TopologyConfig, Serializer, Deserializer, TlsConfig)], with an explicit
@@ -196,7 +196,12 @@ public interface PassiveNode<K extends StructuredKey, V> {
             }
         }
 
-        return new passiveNode <>(delegateRouter, topologyManager, network, kvStore, List.copyOf(allEntries), snapshotSync);
+        return new passiveNode <>(delegateRouter,
+                                  topologyManager,
+                                  network,
+                                  kvStore,
+                                  List.copyOf(allEntries),
+                                  snapshotSync);
     }
 
     @SuppressWarnings({"unchecked", "JBCT-RET-01"})  // void required by Consumer<Decision> contract

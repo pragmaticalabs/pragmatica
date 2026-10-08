@@ -10,12 +10,19 @@ import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NetworkMessage.KVSyncRequest;
 import org.pragmatica.consensus.net.NetworkMessage.KVSyncResponse;
 import org.pragmatica.consensus.net.NetworkServiceMessage.Send;
+import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.messaging.MessageRouter.DelegateRouter;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import static org.pragmatica.lang.Option.none;
+import static org.pragmatica.lang.Option.option;
+import static org.pragmatica.lang.Unit.unit;
+
 
 /// Drives a passive node's initial KV snapshot until one is applied (#2033).
 ///
@@ -38,8 +45,8 @@ final class SnapshotSync {
     private final AtomicInteger attempts = new AtomicInteger();
     private final AtomicLong backoffMs = new AtomicLong();
     private final AtomicLong startedAt = new AtomicLong();
-    private final AtomicReference<NodeId> latestPeer = new AtomicReference<>();
-    private final AtomicReference<NodeId> lastAsked = new AtomicReference<>();
+    private final AtomicReference<Option<NodeId>> latestPeer = new AtomicReference<>(none());
+    private final AtomicReference<Option<NodeId>> lastAsked = new AtomicReference<>(none());
 
     SnapshotSync(NodeId selfId,
                  DelegateRouter router,
@@ -52,60 +59,66 @@ final class SnapshotSync {
     }
 
     /// Idempotent: arms the retry timer. Called on start and on the first connection, whichever is first.
-    void start() {
+    Unit start() {
         if (running.compareAndSet(false, true)) {
             startedAt.set(policy.clock().getAsLong());
             backoffMs.set(policy.initialBackoffMs());
             scheduleNext();
         }
+
+        return unit();
     }
 
-    void stop() {
+    Unit stop() {
         running.set(false);
+
+        return unit();
     }
 
-    void onConnected(NodeId peer) {
-        latestPeer.set(peer);
+    Unit onConnected(NodeId peer) {
+        latestPeer.set(option(peer));
         start();
-
-        if (!applied.get() && !peer.equals(lastAsked.get())) {
+        if (!applied.get() && !lastAsked.get().equals(option(peer))) {
             request(peer);
         }
+
+        return unit();
     }
 
-    void onResponse(KVSyncResponse response) {
+    Unit onResponse(KVSyncResponse response) {
         if (applied.get()) {
             log.debug("Ignoring KV snapshot from {}: one is already applied", response.target());
-            return;
+
+            return unit();
         }
+
         restorer.apply(response.snapshot())
                 .onSuccess(_ -> markApplied(response.target()))
-                .onFailure(cause -> onRestoreFailed(response.target(), cause));
-    }
+                .onFailure(cause -> onRestoreFailed(response.target(),
+                                                    cause));
 
-    boolean isApplied() {
-        return applied.get();
+        return unit();
     }
 
     private void markApplied(NodeId source) {
         if (!applied.compareAndSet(false, true)) {
             return;
         }
-        log.info("KV-Store snapshot restored from {}", source);
 
+        log.info("KV-Store snapshot restored from {}", source);
         if (stalledReported.get()) {
             policy.observer().recovered(selfId, attempts.get(), elapsedMs());
         }
     }
 
-    private void onRestoreFailed(NodeId source, org.pragmatica.lang.Cause cause) {
+    private void onRestoreFailed(NodeId source, Cause cause) {
         log.error("Failed to restore KV snapshot from {}: {}; will re-request", source, cause);
         // Forget who was asked so the next connection to the same node may ask again too.
-        lastAsked.set(null);
+        lastAsked.set(none());
     }
 
     private void request(NodeId peer) {
-        lastAsked.set(peer);
+        lastAsked.set(option(peer));
         attempts.incrementAndGet();
         log.info("Requesting KV-Store snapshot from {}", peer);
         router.route(new Send(peer, new KVSyncRequest(selfId)));
@@ -115,13 +128,9 @@ final class SnapshotSync {
         if (!running.get() || applied.get()) {
             return;
         }
+
         reportStallOnce();
-
-        var peer = latestPeer.get();
-
-        if (peer != null) {
-            request(peer);
-        }
+        latestPeer.get().onPresent(this::request);
         backoffMs.set(Math.min(backoffMs.get() * 2, policy.maxBackoffMs()));
         scheduleNext();
     }
@@ -137,6 +146,7 @@ final class SnapshotSync {
     }
 
     private long elapsedMs() {
-        return policy.clock().getAsLong() - startedAt.get();
+        return policy.clock()
+                     .getAsLong() - startedAt.get();
     }
 }

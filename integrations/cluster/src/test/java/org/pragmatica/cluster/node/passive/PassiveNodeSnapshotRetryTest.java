@@ -24,6 +24,7 @@ import org.pragmatica.consensus.net.NetworkServiceMessage.Send;
 import org.pragmatica.net.tcp.NodeAddress;
 import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.consensus.topology.TopologyConfig;
+import org.pragmatica.lang.Unit;
 import org.pragmatica.messaging.Message;
 import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.net.tcp.TlsConfig;
@@ -33,6 +34,7 @@ import org.pragmatica.serialization.Serializer;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.consensus.NodeId.nodeId;
+import static org.pragmatica.lang.Unit.unit;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 /// #2033: a passive node's KV snapshot request used to be one-shot. These tests drive the REAL
@@ -60,7 +62,7 @@ class PassiveNodeSnapshotRetryTest {
 
     @BeforeEach
     void setUp() {
-        var policy = new SnapshotSyncPolicy((task, delay) -> timers.add(new Scheduled(task, delay)),
+        var policy = new SnapshotSyncPolicy((task, delay) -> schedule(task, delay),
                                             now::get,
                                             INITIAL,
                                             MAX,
@@ -196,9 +198,15 @@ class PassiveNodeSnapshotRetryTest {
 
     private SnapshotSyncObserver observer() {
         return new SnapshotSyncObserver() {
-            @Override public void stalled(NodeId self, int attempts, long elapsedMs) { events.add("stalled"); }
-            @Override public void recovered(NodeId self, int attempts, long elapsedMs) { events.add("recovered"); }
+            @Override public Unit stalled(NodeId self, int attempts, long elapsedMs) { events.add("stalled"); return unit(); }
+            @Override public Unit recovered(NodeId self, int attempts, long elapsedMs) { events.add("recovered"); return unit(); }
         };
+    }
+
+    private Unit schedule(Runnable task, long delay) {
+        timers.add(new Scheduled(task, delay));
+
+        return unit();
     }
 
     private void connect(NodeId peer) {
