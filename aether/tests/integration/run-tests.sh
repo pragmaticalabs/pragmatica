@@ -786,11 +786,14 @@ deploy_docker() {
     if [ "$host" = "localhost" ]; then
         docker compose -f "$COMPOSE_B" down -v 2>/dev/null || true
         _local_cleanup_zombies "b"
+        # #1968: the backup remote is an external volume, created fresh for this cluster (a restart restores from it).
+        bash -c "$(backup_remote_init_script)" >/dev/null
         docker compose -f "$COMPOSE_B" up -d 2>&1 | tail -5
     else
         remote_scp "$COMPOSE_B" "~/docker-compose-b.yml"
         remote_exec "cd ~ && docker rm -f \$(docker ps -aq --filter name=aether-b-node-) 2>/dev/null; docker rm -f \$(docker ps -aq --filter name=aether-default-node-) 2>/dev/null || true; docker compose -f docker-compose-b.yml down -v 2>/dev/null || true"
         cleanup_cluster_zombies "b"
+        remote_exec "$(backup_remote_init_script)" >/dev/null
         remote_exec "cd ~ && docker compose -f docker-compose-b.yml up -d 2>&1 | tail -5"
         # Capture-before-heal: streamed log files survive the `docker rm` auto-heal performs
         # on a dying node — without this, the container's death destroys its own evidence.
@@ -917,6 +920,7 @@ teardown() {
                 docker rm -f $(docker ps -aq --filter "name=aether-a-node-" --filter "name=aether-b-node-") 2>/dev/null || true
                 docker compose -f "$COMPOSE_A" down -v 2>/dev/null || true
                 docker compose -f "$COMPOSE_B" down -v 2>/dev/null || true
+                docker volume rm -f "$BACKUP_REMOTE_VOLUME" 2>/dev/null || true
             else
                 # Stop the capture-before-heal streamers BEFORE removing their containers,
                 # so the daemon is not left re-attaching to a cluster being torn down.
@@ -924,7 +928,7 @@ teardown() {
                 # Same order on remote: sweep CTM containers before compose down
                 remote_exec "docker rm -f \$(docker ps -aq --filter name=aether-a-node-) 2>/dev/null; docker rm -f \$(docker ps -aq --filter name=aether-b-node-) 2>/dev/null; docker rm -f \$(docker ps -aq --filter name=aether-default-node-) 2>/dev/null || true"
                 remote_exec "docker compose -f ~/docker-compose-a.yml down -v 2>/dev/null || true"
-                remote_exec "docker compose -f ~/docker-compose-b.yml down -v 2>/dev/null || true"
+                remote_exec "docker compose -f ~/docker-compose-b.yml down -v 2>/dev/null || true; docker volume rm -f ${BACKUP_REMOTE_VOLUME} 2>/dev/null || true; rm -f ~/.aether-b-generation"
             fi
             ;;
         cloud)

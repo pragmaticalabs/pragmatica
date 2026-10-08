@@ -1493,10 +1493,58 @@ to_node_id() {
         aether-*) echo "$node_id"; return 0 ;;
     esac
     if [[ "$node_id" =~ ^node-([0-9]+)$ ]] && [ -n "${CLUSTER_ID:-}" ]; then
-        echo "aether-${CLUSTER_ID}-node-${BASH_REMATCH[1]}"
+        local ordinal="${BASH_REMATCH[1]}"
+        if [ "$CLUSTER_ID" = "b" ]; then
+            ordinal=$(b_seed_number "$(b_current_generation)" "$ordinal")
+        fi
+        echo "aether-${CLUSTER_ID}-node-${ordinal}"
         return 0
     fi
     echo "$node_id"
+}
+
+# ---------------------------------------------------------------------------
+# Cluster B core-node generations (#1968, #1543)
+# ---------------------------------------------------------------------------
+# A node id never returns: restart_all_nodes restarts the whole cluster onto FRESH core ids and restores the KV from the
+# backup. Core ids are `aether-b-node-<number>`. Generation 0 (the first start) is 1..5; generation G >= 1 is G*100+i, so
+# every id still ends in digits and the ordinal (i) is recoverable as (number-1)%100+1 wherever an id is mapped to a
+# host port or a position. The current generation is kept on the Docker host (one cluster B per host), read when needed.
+BACKUP_REMOTE_VOLUME="aether-b-backup-remote"
+BACKUP_GENERATION_FILE='~/.aether-b-generation'
+
+# The core number of seed ordinal <i> (1-based) at generation <G>.
+b_seed_number() {
+    local gen="$1" ordinal="$2"
+    if [ "${gen:-0}" -gt 0 ] 2>/dev/null; then
+        echo $((gen * 100 + ordinal))
+    else
+        echo "$ordinal"
+    fi
+}
+
+# The 0-based position of core number <N> (any generation) in the fixed per-seed port ranges.
+b_seed_offset() {
+    echo $((($1 - 1) % 100))
+}
+
+# The current generation of cluster B, 0 when none was ever started by restart_all_nodes. Cached per process in a NON-exported
+# variable that restart_all_nodes refreshes, so a suite subshell started after a restart reads the file once.
+b_current_generation() {
+    if [ -z "${_AETHER_B_GEN:-}" ]; then
+        _AETHER_B_GEN=$(remote_exec "cat ${BACKUP_GENERATION_FILE} 2>/dev/null || echo 0" 2>/dev/null | tail -n1 | tr -dc '0-9')
+        _AETHER_B_GEN="${_AETHER_B_GEN:-0}"
+    fi
+    echo "$_AETHER_B_GEN"
+}
+
+# Shell run on the Docker host to (re)create the backup remote of a cluster B start: a fresh external volume holding an
+# initialised bare repository owned by the in-container user (uid 1000), and generation 0. The remote is what a restart restores
+# from, so it must exist before the nodes boot and must not be removed by `compose down -v` (it is external).
+backup_remote_init_script() {
+    cat <<SCRIPT
+docker volume rm -f ${BACKUP_REMOTE_VOLUME} >/dev/null 2>&1; rm -f ${BACKUP_GENERATION_FILE}; docker volume create ${BACKUP_REMOTE_VOLUME} >/dev/null && docker run --rm --user root --entrypoint sh -v ${BACKUP_REMOTE_VOLUME}:/r aether-node:local -c 'git init -q --bare /r/kv.git && chown -R 1000:1000 /r'
+SCRIPT
 }
 
 # Map a node's runtime id (as reported by the management API, e.g. in
@@ -1510,7 +1558,7 @@ to_node_id() {
 _registered_by_to_offset() {
     local id="$1"
     if [[ "$id" =~ ^(aether-[ab]-)?node-([0-9]+)$ ]]; then
-        echo "$(( ${BASH_REMATCH[2]} - 1 ))"
+        b_seed_offset "${BASH_REMATCH[2]}"
         return 0
     fi
     if [[ "$id" =~ ^[A-Za-z0-9-]+-core-([0-9]+)$ ]]; then

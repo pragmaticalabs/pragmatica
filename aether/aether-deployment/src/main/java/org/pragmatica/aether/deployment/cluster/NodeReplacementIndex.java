@@ -7,6 +7,7 @@ package org.pragmatica.aether.deployment.cluster;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
 import java.util.function.Predicate;
 import java.util.stream.Collectors;
@@ -16,6 +17,7 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.NodeReplacementKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeReplacementPhase;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeReplacementValue;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Unit;
 
 
@@ -38,13 +40,39 @@ public final class NodeReplacementIndex {
         return new NodeReplacementIndex();
     }
 
-    public synchronized Unit put(NodeReplacementKey key, NodeReplacementValue value) {
+    /// Told of every committed record as it is applied, with the record it replaced: the one place a transition is seen
+    /// exactly as the cluster committed it, on every node.
+    @FunctionalInterface
+    public interface TransitionListener {
+        Unit onTransition(NodeId original, Option<NodeReplacementValue> before, NodeReplacementValue after);
+    }
+
+    private final AtomicReference<TransitionListener> listener = new AtomicReference<>((_, _, _) -> Unit.unit());
+
+    /// Replaces the transition listener. It runs outside the index's lock.
+    public Unit onTransition(TransitionListener transitionListener) {
+        listener.set(transitionListener);
+
+        return Unit.unit();
+    }
+
+    public Unit put(NodeReplacementKey key, NodeReplacementValue value) {
+        var before = swap(key, value);
+
+        return listener.get()
+                       .onTransition(key.original(),
+                                     before,
+                                     value);
+    }
+
+    private synchronized Option<NodeReplacementValue> swap(NodeReplacementKey key, NodeReplacementValue value) {
+        var before = Option.option(pairings.get(key.original()));
         var updated = new HashMap<>(pairings);
 
         updated.put(key.original(), value);
         pairings = Map.copyOf(updated);
 
-        return Unit.unit();
+        return before;
     }
 
     public synchronized Unit remove(NodeReplacementKey key) {
@@ -85,14 +113,30 @@ public final class NodeReplacementIndex {
                      .collect(Collectors.toUnmodifiableSet());
     }
 
-    /// original → replacement for every pairing whose phase authorizes the voter swap.
+    /// seat-leaver → seat-taker for every pairing whose phase authorizes a voter swap: original → replacement going
+    /// forward, and the REVERSE (replacement → original) for a pairing being `REVERTING` after a failed canary.
     public Map<NodeId, NodeId> voterSwaps() {
         var current = pairings;
+        var forward = originalsWhere(current, NodeReplacementIndex::authorizesSwap).stream()
+                                    .collect(Collectors.toMap(Function.identity(),
+                                                              original -> current.get(original)
+                                                                                 .replacement()));
 
-        return originalsWhere(current, NodeReplacementIndex::authorizesSwap).stream()
-                             .collect(Collectors.toUnmodifiableMap(Function.identity(),
-                                                                   original -> current.get(original)
-                                                                                      .replacement()));
+        originalsWhere(current, NodeReplacementPhase.REVERTING::equals).forEach(original -> forward.put(current.get(original)
+                                                                                                               .replacement(),
+                                                                                                        original));
+
+        return Map.copyOf(forward);
+    }
+
+    /// The committed record for `original`, if any.
+    public Option<NodeReplacementValue> recordFor(NodeId original) {
+        return Option.option(pairings.get(original));
+    }
+
+    /// Every committed pairing, original → record.
+    public Map<NodeId, NodeReplacementValue> all() {
+        return pairings;
     }
 
     /// Replacements that are surge capacity, not surplus: a live pairing's replacement before `RETIRING_OLD`.
@@ -126,7 +170,7 @@ public final class NodeReplacementIndex {
     private static boolean isLive(NodeReplacementPhase phase) {
         return switch (phase) {
             case DONE, ROLLED_BACK -> false;
-            case PROVISIONING, JOINING, SWAPPING, CANARY, DRAINING_OLD, RETIRING_OLD, FAILED_KEPT_BOTH, UNKNOWN -> true;
+            case PROVISIONING, JOINING, SWAPPING, CANARY, DRAINING_OLD, RETIRING_OLD, REVERTING, FAILED_KEPT_BOTH, UNKNOWN -> true;
         };
     }
 
@@ -138,7 +182,7 @@ public final class NodeReplacementIndex {
     private static boolean authorizesSwap(NodeReplacementPhase phase) {
         return switch (phase) {
             case SWAPPING, CANARY, DRAINING_OLD, RETIRING_OLD -> true;
-            case PROVISIONING, JOINING, DONE, ROLLED_BACK, FAILED_KEPT_BOTH, UNKNOWN -> false;
+            case PROVISIONING, JOINING, REVERTING, DONE, ROLLED_BACK, FAILED_KEPT_BOTH, UNKNOWN -> false;
         };
     }
 }

@@ -157,6 +157,11 @@ public interface ManagementServer {
     @SuppressWarnings("JBCT-RET-01")
     void onMemberDeparted(NodeId node);
 
+    /// #1543 E: drain `node` for a replacement through the operator admission (never forced).
+    Promise<Unit> admitReplacementDrain(NodeId node);
+    /// Whether a drain of `node` is already commanded or reported by the node itself (#1543).
+    boolean replacementDrainUnderWay(NodeId node);
+
     @SuppressWarnings("JBCT-RET-01")
     void onHttpForwardRequest(HttpForwardRequest request);
 
@@ -1497,6 +1502,16 @@ class ManagementServerImpl implements ManagementServer {
     @Override
     public void onHttpForwardResponse(HttpForwardResponse response) {
         ensureMgmtForwarder().onPresent(fwd -> fwd.onHttpForwardResponse(response));
+    }
+
+    @Override
+    public Promise<Unit> admitReplacementDrain(NodeId node) {
+        return nodeLifecycleRoutes.admitReplacementDrain(node);
+    }
+
+    @Override
+    public boolean replacementDrainUnderWay(NodeId node) {
+        return nodeLifecycleRoutes.drainUnderWay(node);
     }
 
     @Override

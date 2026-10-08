@@ -2097,11 +2097,16 @@ class ClusterEventAggregatorTest {
     }
 
     /// The pairing touches exactly the declared pairs of codes (the two consumer pairs #752/#1935, the oversized-event refusal and the
-    /// members-unreachable wait of #1937, the slice-floor refusal of #1720 and the HTTP-listener TLS rotation refusal); every other code keeps the plain 60 s throttle.
+    /// members-unreachable wait of #1937, the slice-floor refusal of #1720, the node-replacement conditions of #1543 and the HTTP-listener TLS rotation refusal); every other code keeps the plain 60 s throttle.
     @Test
     void onOperatorWarning_onlyTheDeclaredPairsArePaired_otherCodesUnchanged() {
         assertThat(java.util.Arrays.stream(OperatorWarningCode.values()).filter(c -> c.recoveryOf().isPresent()).toList())
-            .containsExactlyInAnyOrder(OperatorWarningCode.SLICE_FLOOR_DRAIN_ADMITTED,
+            .containsExactlyInAnyOrder(OperatorWarningCode.NODE_REPLACEMENT_COMPLETED,
+                             OperatorWarningCode.NODE_REPLACEMENT_ROLLED_BACK,
+                             OperatorWarningCode.NODE_REPLACEMENT_JOINED,
+                             OperatorWarningCode.NODE_REPLACEMENT_DRAIN_UNBLOCKED,
+                             OperatorWarningCode.NODE_REPLACEMENT_SETTLED,
+                             OperatorWarningCode.SLICE_FLOOR_DRAIN_ADMITTED,
                              OperatorWarningCode.STREAM_CONSUMER_STATE_REPAIRED,
                              OperatorWarningCode.STREAM_CONSUMER_REGISTERED_AGAIN,
                              OperatorWarningCode.STREAM_CONSUMER_DRAIN_RESTORED,
@@ -2114,7 +2119,11 @@ class ClusterEventAggregatorTest {
                              OperatorWarningCode.BACKUP_CONFIG_RESTORED,
                              OperatorWarningCode.BACKUP_RESTORE_UNBLOCKED);
         assertThat(java.util.Arrays.stream(OperatorWarningCode.values()).filter(OperatorWarningCode::hasRecovery).toList())
-            .containsExactlyInAnyOrder(OperatorWarningCode.SLICE_FLOOR_DRAIN_REFUSED,
+            .containsExactlyInAnyOrder(OperatorWarningCode.NODE_REPLACEMENT_STARTED,
+                             OperatorWarningCode.NODE_REPLACEMENT_JOIN_OVERDUE,
+                             OperatorWarningCode.NODE_REPLACEMENT_DRAIN_BLOCKED,
+                             OperatorWarningCode.NODE_REPLACEMENT_FAILED_KEPT_BOTH,
+                             OperatorWarningCode.SLICE_FLOOR_DRAIN_REFUSED,
                              OperatorWarningCode.STREAM_CONSUMER_STATE_DIVERGED,
                              OperatorWarningCode.STREAM_CONSUMER_NOT_REGISTERED,
                              OperatorWarningCode.STREAM_CONSUMER_DRAIN_FAILING,

@@ -384,14 +384,68 @@ public record Main(String[] args) {
                       .map(this::buildConfigProvider);
     }
 
+    /// Exit code of a refused cloud integration (#2058): the config HAS a `[cloud]` section and the integration it names cannot be
+    /// created (missing credentials, unknown provider, an invalid provider setting). `EX_UNAVAILABLE` (sysexits.h 69); 65 is the refused
+    /// config file (#2052), 78 the refused identity. A supervisor must not restart with the same configuration: it fails identically
+    /// (`aether/docs/reference/node-operations.md#exit-codes`).
+    static final int CLOUD_INTEGRATION_REFUSED_EXIT_CODE = 69;
+
+    /// The `[cloud.credentials]` keys each provider's factory requires (read from its `validateCredentials`), so the refusal can tell the
+    /// operator what to add. The CLI overlay renders only `api_token` (the aws, gcp and azure keys are not rendered: #2059).
+    static final Map<String, String> REQUIRED_CREDENTIAL_KEYS = Map.of("hetzner",
+                                                                       "api_token",
+                                                                       "aws",
+                                                                       "access_key_id, secret_access_key, region",
+                                                                       "gcp",
+                                                                       "project_id, service_account_email, private_key_pem, zone",
+                                                                       "azure",
+                                                                       "tenant_id, client_id, client_secret, subscription_id, resource_group, location");
+
+    /// The node's cloud integration (#2058). No `[cloud]` section: none, deliberately (docker compose, forge, bare runs). A `[cloud]`
+    /// section whose integration cannot be created REFUSES the boot: without it the leader cannot provision, replace or scale, and the
+    /// node used to log one line and run without it until the first incident. "Cannot be created" includes a factory THROWING on a
+    /// malformed provider setting (a non-numeric `ssh_key_ids`), lifted into the same refusal rather than an uncaught exception; and a
+    /// docker section can be refused too: its provider rejects a `[backup] path` outside `/data` (the named-volume rule, #1968).
     private Option<EnvironmentIntegration> resolveEnvironment(Option<AetherConfig> aetherConfig) {
-        return aetherConfig.flatMap(config -> config.cloud()
-                                                    .map(cloud -> withEffectiveBackup(cloud,
-                                                                                      config.backup())))
-                           .flatMap(cloudConfig -> EnvironmentIntegrationFactory.createFromConfig(cloudConfig)
-                                                                                .onFailure(cause -> log.error("Failed to create cloud environment: {}",
-                                                                                                              cause.message()))
-                                                                                .option());
+        return resolveCloudIntegration(aetherConfig.flatMap(config -> config.cloud()
+                                                                            .map(cloud -> withEffectiveBackup(cloud,
+                                                                                                              config.backup()))),
+                                       EnvironmentIntegrationFactory::createFromConfig).onFailure(this::refuseCloudIntegration)
+                                      .expect("unreachable: refuseCloudIntegration exits");
+    }
+
+    /// Package-private and pure with the factory injected, so the decision is testable per provider without a process.
+    static Result<Option<EnvironmentIntegration>> resolveCloudIntegration(Option<CloudConfig> cloudConfig,
+                                                                          Fn1<Result<EnvironmentIntegration>, CloudConfig> create) {
+        return cloudConfig.fold(() -> Result.success(Option.<EnvironmentIntegration> none()),
+                                cloud -> Result.lift(Causes::fromThrowable,
+                                                     () -> create.apply(cloud))
+                                               .flatMap(created -> created)
+                                               .map(Option::some)
+                                               .mapError(cause -> cloudIntegrationRefusal(cloud.provider(),
+                                                                                          cause)));
+    }
+
+    private static Cause cloudIntegrationRefusal(String provider, Cause cause) {
+        var keys = Option.option(REQUIRED_CREDENTIAL_KEYS.get(provider))
+                         .map(required -> " The provider's [cloud.credentials] TOML keys must provide: " + required
+                                         + " (the bootstrap overlay renders only api_token; add the rest under [source.<name>.node_config.cloud.credentials])")
+                         .or("");
+
+        return Causes.cause("the [cloud] section names provider '" + provider
+                           + "' but its integration could not be created: " + cause.message()
+                           + "." + keys);
+    }
+
+    /// The operator signal: FATAL in the log, on stderr, and a distinct exit code (a node that never booted cannot raise a cluster event).
+    @Contract
+    private void refuseCloudIntegration(Cause cause) {
+        var message = "FATAL: refusing to start: " + cause.message();
+
+        log.error(message);
+        System.err.println(message);
+        System.err.flush();
+        System.exit(CLOUD_INTEGRATION_REFUSED_EXIT_CODE);
     }
 
     /// #1968: the provider that mints replacements learns this node's EFFECTIVE `[backup]`, from its TOML or its environment alike,
@@ -567,11 +621,66 @@ public record Main(String[] args) {
                            .or(SliceConfig.sliceConfig());
     }
 
+    /// Exit code of a refused configuration (#2052): a config file was GIVEN (`--config=`) and is missing, unreadable, malformed or fails
+    /// validation. `EX_DATAERR` (sysexits.h 65): `78` is already scoped to the refused-identity halt, whose supervisor rule differs.
+    /// A supervisor must not restart with the same configuration: it fails identically (documented at
+    /// `aether/docs/reference/node-operations.md#exit-codes`).
+    static final int CONFIG_REFUSED_EXIT_CODE = 65;
+
+    /// The node's configuration (#2052). `--config=<path>` is the ONLY way a config file reaches this process: the image entrypoint, the
+    /// cloud-init unit and `build-and-push.sh` all pass it. NOT given: the node boots on defaults (deliberate: forge, tests and bare
+    /// `java -jar` runs). GIVEN: the file must load and validate, or the node REFUSES to start. It used to log one line and boot on
+    /// defaults, which silently drops the operator's TLS, port, peers and secret settings.
     private Option<AetherConfig> loadConfig() {
-        return findArg("--config=").map(Path::of)
-                      .filter(p -> p.toFile()
-                                    .exists())
-                      .flatMap(this::loadConfigFile);
+        return resolveConfig(findArg("--config=")).onFailure(this::refuseConfig)
+                            .expect("unreachable: refuseConfig exits");
+    }
+
+    /// Package-private and pure so the decision is testable without a process: no argument gives no configuration; an argument that is
+    /// blank, names no regular file, or names a file that does not load and validate gives a failure naming the argument and the cause.
+    static Result<Option<AetherConfig>> resolveConfig(Option<String> givenPath) {
+        return givenPath.fold(() -> Result.success(Option.<AetherConfig> none()), Main::loadGivenConfig);
+    }
+
+    private static Result<Option<AetherConfig>> loadGivenConfig(String raw) {
+        var given = raw.strip();
+
+        if (given.isEmpty()) {
+            return Causes.cause("--config= was given with an empty path; give the path of the node configuration file or omit the argument").result();
+        }
+
+        return Result.lift(Causes::fromThrowable,
+                           () -> Path.of(given))
+                     .mapError(cause -> Causes.cause("--config=" + printable(given)
+                                                    + " is not a valid path: " + cause.message()))
+                     .flatMap(path -> loadExisting(given, path));
+    }
+
+    private static Result<Option<AetherConfig>> loadExisting(String given, Path path) {
+        if (!Files.isRegularFile(path)) {
+            return Causes.cause("config file '" + given + "' (--config=) does not exist or is not a regular file").result();
+        }
+
+        return ConfigLoader.load(path)
+                           .map(Option::some)
+                           .mapError(cause -> Causes.cause("config file '" + given
+                                                          + "' (--config=) could not be loaded or validated: " + cause.message()));
+    }
+
+    private static String printable(String value) {
+        return value.replace("\0", "\\0");
+    }
+
+    /// The refusal reaches the operator beyond a log line: the log (FATAL), stderr (a supervisor or `docker logs` shows it whatever the
+    /// logging setup), and a distinct exit code. A node that never booted cannot raise a cluster event, so these are the whole signal.
+    @Contract
+    private void refuseConfig(Cause cause) {
+        var message = "FATAL: refusing to start: " + cause.message();
+
+        log.error(message);
+        System.err.println(message);
+        System.err.flush();
+        System.exit(CONFIG_REFUSED_EXIT_CODE);
     }
 
     /// #336 — publish the resolved `--config=` path as the `aether.config.path` system property so
@@ -589,13 +698,6 @@ public record Main(String[] args) {
                .map(Path::toAbsolutePath)
                .onPresent(p -> System.setProperty(AetherNode.CONFIG_PATH_PROPERTY,
                                                   p.toString()));
-    }
-
-    private Option<AetherConfig> loadConfigFile(Path path) {
-        return ConfigLoader.load(path)
-                           .onFailure(cause -> log.error("Failed to load config: {}",
-                                                         cause.message()))
-                           .option();
     }
 
     private void logStartupInfo(NodeId nodeId,

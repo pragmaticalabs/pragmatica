@@ -47,7 +47,6 @@ ALLOW=(
   'aether/aether-config/src/test/java/org/pragmatica/aether/config/cluster/ReplacementBackupRenderTest.java|systemctl start|asserts the backup directory is created BEFORE the guarded FIRST start of a replacement (#1968), not a relaunch'
   'aether/tests/cloud/deploy-cloud.sh|systemctl start docker|`systemctl start docker` on a fresh VM, not an aether node'
   'integrations/dht/src/test/java/org/pragmatica/dht/|cluster[.]restart[(]|in-process DHT unit cluster restart (no NodeId lifecycle, no aether runtime)'
-  'aether/tests/integration/lib/cluster.sh|down -v && docker compose|#1543 part A2 / #1968: restart_all_nodes compose down/up is a whole-cluster same-id cold start until it restarts onto fresh ids with KV restore'
   'aether/docker/scaling-test/k6/chaos-controller.sh|COMPOSE (stop|start)|#1968: the soak compose has no docker.sock/auto-heal wiring, so its stop/start chaos stays until that compose can heal under fresh ids'
   'aether/forge/forge-tests/src/test/java/org/pragmatica/aether/forge/StreamCrashDurabilityTest.java|stop[(][)] then .*start[(][)] in restartCluster|owner question: data durability across a whole-cluster restart onto fresh nodes (#1968)'
   'aether/forge/forge-tests/src/test/java/org/pragmatica/aether/forge/MultiPartitionCrashDurabilityTest.java|stop[(][)] then .*start[(][)] in restartCluster|owner question: data durability across a whole-cluster restart onto fresh nodes (#1968)'
@@ -176,12 +175,12 @@ git -C "$G" add -A >/dev/null 2>&1
 rm -rf "$G"; G="$WORK/g2"; mkdir -p "$G/aether/script" "$G/aether/tests/integration/lib" "$G/aether/docker/scaling-test/k6"
 git -C "$G" init -q
 printf '%s\n' 'start_node "$X"' 'docker start c' > "$G/aether/script/demo-cluster.sh"
-printf '%s\n' 'r=$(x; down -v && docker compose -f a.yml up -d)' 'start_node "$X"' > "$G/aether/tests/integration/lib/cluster.sh"
+printf '%s\n' 'start_node "$X"' > "$G/aether/tests/integration/lib/cluster.sh"
 printf '%s\n' '$COMPOSE start n' 'docker start c' > "$G/aether/docker/scaling-test/k6/chaos-controller.sh"
 git -C "$G" add -A >/dev/null 2>&1
 vl=$(violations "$G")
 if [ "$(printf '%s\n' "$vl" | grep -c .)" = 3 ] && printf '%s' "$vl" | grep -q 'demo-cluster.sh:2:docker start' \
-   && printf '%s' "$vl" | grep -q 'cluster.sh:2:start_node' && printf '%s' "$vl" | grep -q 'chaos-controller.sh:2:docker start'; then
+   && printf '%s' "$vl" | grep -q 'cluster.sh:1:start_node' && printf '%s' "$vl" | grep -q 'chaos-controller.sh:2:docker start'; then
     ok "C3d allow-list entries are text-scoped: the excused line is quiet, a new relaunch in the same file is a violation"
 else fail "C3d allow-list too broad or detector blind: ${vl}"; fi
 

@@ -2985,10 +2985,51 @@ public sealed interface AetherValue {
 
     /// #1543: `replacement` is the fresh-id node taking over from the key's original. Leader-committed;
     /// `phaseDeadlineMs` bounds the current phase so every replacement ends in a terminal phase.
-    record NodeReplacementValue(NodeId replacement, String role, NodeReplacementPhase phase, long phaseDeadlineMs) implements AetherValue, org.pragmatica.cluster.state.kvstore.LeaderAuthorized {}
+    ///
+    /// Part E drives it: `source` is the original's provisioning source (`""` when the original had none),
+    /// `targetVersion` the version the replacement must run before the swap is kept (`""` = no version gate),
+    /// `mode` is `CTM` (the leader provisions the replacement) or `EXTERNAL` (the operator starts the chosen id),
+    /// `attempt` counts re-entries of the current phase, `reason` carries why a phase ended badly (`""` otherwise) and
+    /// `epoch` is bumped on every committed transition so a stale writer's compare-and-set cannot land.
+    record NodeReplacementValue(NodeId replacement,
+                                String role,
+                                NodeReplacementPhase phase,
+                                long phaseDeadlineMs,
+                                String source,
+                                String targetVersion,
+                                String mode,
+                                int attempt,
+                                String reason,
+                                long epoch) implements AetherValue, org.pragmatica.cluster.state.kvstore.LeaderAuthorized {
+        public static final String MODE_CTM = "CTM";
+        public static final String MODE_EXTERNAL = "EXTERNAL";
+
+        /// The record as part D pins it: no source, no version gate, CTM mode, first attempt, no reason, epoch 0.
+        public NodeReplacementValue(NodeId replacement, String role, NodeReplacementPhase phase, long phaseDeadlineMs) {
+            this(replacement, role, phase, phaseDeadlineMs, "", "", MODE_CTM, 0, "", 0L);
+        }
+
+        /// The same record in `next` phase with its own deadline, the epoch advanced and `reason` set. `attempt` counts how often
+        /// the SAME phase was committed again (a marker such as join-overdue or drain-blocked); a new phase starts at 0.
+        public NodeReplacementValue advanced(NodeReplacementPhase next, long deadlineMs, String why) {
+            return new NodeReplacementValue(replacement,
+                                            role,
+                                            next,
+                                            deadlineMs,
+                                            source,
+                                            targetVersion,
+                                            mode,
+                                            next == phase
+                                            ? attempt + 1
+                                            : 0,
+                                            why,
+                                            epoch + 1);
+        }
+    }
 
     /// #1543 replacement steps. `DONE` and `ROLLED_BACK` are terminal and inert; `FAILED_KEPT_BOTH` is terminal
-    /// and keeps both nodes until an operator settles it.
+    /// and keeps both nodes until an operator settles it. `REVERTING` swaps the original back into the electorate
+    /// after a failed canary, before the replacement is terminated.
     @Codec
     enum NodeReplacementPhase {
         PROVISIONING,
@@ -3000,6 +3041,7 @@ public sealed interface AetherValue {
         DONE,
         ROLLED_BACK,
         FAILED_KEPT_BOTH,
+        REVERTING,
         UNKNOWN
     }
 
