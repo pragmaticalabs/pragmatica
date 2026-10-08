@@ -66,7 +66,9 @@ public final class NodeReplacementPlanner {
                               String drainBlockedBy,
                               boolean oldDecommissioned,
                               boolean handoffSettled,
-                              String drainRefusal) {}
+                              String drainRefusal,
+                              boolean oldInstanceGone,
+                              String reapFailure) {}
 
     /// Phase budgets. Every phase is bounded, so every replacement ends in a terminal phase.
     public record Timings(long provisioningMs,
@@ -273,7 +275,7 @@ public final class NodeReplacementPlanner {
         if (o.oldIsVoter() && !o.replacementIsVoter() && o.rosterSettled()) {
             return Plan.act(Effect.TERMINATE_REPLACEMENT,
                             r.advanced(NodeReplacementPhase.ROLLED_BACK, o.now(), r.reason()),
-                            r.advanced(NodeReplacementPhase.ROLLED_BACK, o.now(), r.reason()));
+                            replacementNotTerminated(r, o));
         }
 
         if (o.now() > r.phaseDeadlineMs()) {
@@ -350,7 +352,7 @@ public final class NodeReplacementPlanner {
     }
 
     private static Plan retiringOld(NodeReplacementValue r, Observation o, Timings t) {
-        if (o.oldDecommissioned() && o.handoffSettled()) {
+        if (o.oldDecommissioned() && o.handoffSettled() && o.oldInstanceGone()) {
             return Plan.commit(r.advanced(NodeReplacementPhase.DONE, o.now(), ""));
         }
 
@@ -363,12 +365,26 @@ public final class NodeReplacementPlanner {
         }
 
         if (o.now() > r.phaseDeadlineMs()) {
-            return Plan.commit(r.advanced(NodeReplacementPhase.DONE,
-                                          o.now(),
-                                          "retirement overdue: the cluster is already correct"));
+            // The cluster may already be correct, but a replacement is not DONE while the old instance may still be running at the
+            // provider (and billing): without a confirmed termination the operator is told, never a silent DONE.
+            return o.oldInstanceGone()
+                   ? Plan.commit(r.advanced(NodeReplacementPhase.DONE,
+                                            o.now(),
+                                            "retirement overdue: the cluster is already correct"))
+                   : Plan.commit(r.advanced(NodeReplacementPhase.FAILED_KEPT_BOTH,
+                                            o.now(),
+                                            "old node retired but its instance is not confirmed terminated at the provider (" + unconfirmed(o)
+                                           + "); terminate it, then settle keep-new"));
         }
 
         return Plan.act(Effect.RETIRE_OLD);
+    }
+
+    private static String unconfirmed(Observation o) {
+        return o.reapFailure()
+                .isEmpty()
+               ? "no termination attempt completed"
+               : o.reapFailure();
     }
 
     /// A swap that was already requested can still install, so the replacement is terminated only once the engine reports the
@@ -389,7 +405,16 @@ public final class NodeReplacementPlanner {
     private static Plan rollBack(NodeReplacementValue r, Observation o, String why) {
         var done = r.advanced(NodeReplacementPhase.ROLLED_BACK, o.now(), why);
 
-        return Plan.act(Effect.TERMINATE_REPLACEMENT, done, done);
+        return Plan.act(Effect.TERMINATE_REPLACEMENT, done, replacementNotTerminated(r, o));
+    }
+
+    /// A rollback is ROLLED_BACK only once the replacement's instance is confirmed gone; when the termination keeps failing
+    /// the pair is kept for the operator, with the last cause, instead of reporting a rollback that left a node running.
+    private static NodeReplacementValue replacementNotTerminated(NodeReplacementValue r, Observation o) {
+        return r.advanced(NodeReplacementPhase.FAILED_KEPT_BOTH,
+                          o.now(),
+                          "replacement could not be rolled back: its instance is not confirmed terminated at the provider (" + unconfirmed(o)
+                         + "); terminate it, then settle roll-back");
     }
 
     private static boolean isExternal(NodeReplacementValue r) {

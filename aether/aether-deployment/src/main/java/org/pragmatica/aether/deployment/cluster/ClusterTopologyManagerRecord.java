@@ -1721,6 +1721,46 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         return Promise.success(unit());
     }
 
+    @Override
+    public Promise<Unit> reapRetired(NodeId node, SourceName source) {
+        if (!active.get()) {
+            return Causes.cause("reap of " + node.id() + " needs the active topology manager").promise();
+        }
+
+        var refusal = retirementRefusal.get().apply(node);
+
+        if (refusal.isPresent()) {
+            return Causes.cause("reap of " + node.id() + " refused: " + refusal.unwrap()).promise();
+        }
+
+        return lifecycleManager.instancesForNode(node, source)
+                               .flatMap(listed -> goneAtProvider(listed)
+                                                  ? Promise.unitPromise()
+                                                  : lifecycleManager.terminateNode(node, source)
+                                                                    .flatMap(_ -> lifecycleManager.instancesForNode(node,
+                                                                                                                    source))
+                                                                    .flatMap(after -> goneAtProvider(after)
+                                                                                      ? Promise.unitPromise()
+                                                                                      : stillListed(node, after)))
+                               .mapError(cause -> Causes.cause("instance of " + node.id() + ": " + cause.message()));
+    }
+
+    /// Nothing listed, or every listed instance stopping or terminated. Any instance provisioning, running or in a status the
+    /// provider could not state is NOT gone.
+    private static boolean goneAtProvider(List<InstanceInfo> instances) {
+        var state = classifyReplacementInstances(instances);
+
+        return state == ReplacementInstanceState.ABSENT || state == ReplacementInstanceState.FAILED;
+    }
+
+    private static Promise<Unit> stillListed(NodeId node, List<InstanceInfo> instances) {
+        return Causes.cause("still listed at the provider after terminate: " + instances.stream()
+                                                                                        .map(instance -> instance.id()
+                                                                                                                 .value()
+                                                                                                        + " " + instance.status())
+                                                                                        .toList()).promise();
+    }
+
     /// Backstop reaper: after the grace period, decide the reap (for a surplus trim, through
     /// [#graceReapVerdict]) and clear the DRAIN command. Idempotent — `terminateNode` treats an instance
     /// that is already gone as done, and `drainCommandClear` no-ops on an absent target.

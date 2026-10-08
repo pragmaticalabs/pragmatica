@@ -55,6 +55,10 @@ class NodeReplacementReconcilerTest {
         String drainRefusal = "";
         boolean decommissioned;
         boolean handoffSettled = true;
+        boolean oldInstanceGone;
+        String reapFailure = "";
+        EffectResult retireResult = new EffectResult.Done();
+        EffectResult terminateResult = new EffectResult.Done();
         EffectResult provisionResult = new EffectResult.Done();
         Promise<EffectResult> provisionPending;
         boolean commitNeverAnswers;
@@ -97,7 +101,9 @@ class NodeReplacementReconcilerTest {
                                    drainBlocked,
                                    decommissioned,
                                    handoffSettled,
-                                   drainRefusal);
+                                   drainRefusal,
+                                   oldInstanceGone,
+                                   reapFailure);
         }
 
         @Override
@@ -129,10 +135,15 @@ class NodeReplacementReconcilerTest {
                 case RETIRE_OLD -> {
                     oldAlive = false;
                     decommissioned = true;
+                    oldInstanceGone = retireResult instanceof EffectResult.Done;
+
+                    return Promise.success(retireResult);
                 }
                 case TERMINATE_REPLACEMENT -> {
                     newAlive = false;
                     newKnown = false;
+
+                    return Promise.success(terminateResult);
                 }
                 case NONE -> {}
             }
@@ -428,6 +439,66 @@ class NodeReplacementReconcilerTest {
 
         assertThat(model.records.get(OLD).phase()).isEqualTo(NodeReplacementPhase.DONE);
         assertThat(model.records.get(OLD).reason()).contains("retirement overdue");
+    }
+
+    /// #1543: DONE means the old node's provider instance is confirmed gone. A retirement whose termination is never confirmed ends
+    /// in FAILED_KEPT_BOTH at the deadline, with the cause named, never DONE.
+    @Test
+    void retirement_isNeverDone_whileTheInstanceIsNotConfirmedGone() {
+        var model = new Model();
+
+        model.begin(NodeReplacementPhase.RETIRING_OLD);
+        model.retireResult = new EffectResult.Deferred("termination not confirmed: still listed");
+        model.reapFailure = "instance of core-OLD: still listed at the provider after terminate";
+        for (int tick = 0; tick < 400 && !NodeReplacementReconciler.isTerminal(model.records.get(OLD).phase()); tick++) {
+            driver(model).reconcile().await();
+            model.clock.addAndGet(100);
+        }
+
+        assertThat(model.records.get(OLD).phase()).isEqualTo(NodeReplacementPhase.FAILED_KEPT_BOTH);
+        assertThat(model.records.get(OLD).reason()).contains("not confirmed terminated").contains("still listed at the provider after terminate");
+        assertThat(model.phases).doesNotContain(NodeReplacementPhase.DONE);
+        assertThat(model.announcements.getLast()).startsWith("FAILED_KEPT_BOTH");
+    }
+
+    @Test
+    void retirement_retries_andIsDoneOnceTheTerminationIsConfirmed() {
+        var model = new Model();
+
+        model.begin(NodeReplacementPhase.RETIRING_OLD);
+        model.retireResult = new EffectResult.Deferred("termination not confirmed: refused");
+        for (int tick = 0; tick < 3; tick++) {
+            driver(model).reconcile().await();
+            model.clock.addAndGet(100);
+        }
+
+        assertThat(model.records.get(OLD).phase()).as("still retiring: the instance is not confirmed gone").isEqualTo(NodeReplacementPhase.RETIRING_OLD);
+        model.retireResult = new EffectResult.Done();
+        for (int tick = 0; tick < 10 && !NodeReplacementReconciler.isTerminal(model.records.get(OLD).phase()); tick++) {
+            driver(model).reconcile().await();
+            model.clock.addAndGet(100);
+        }
+
+        assertThat(model.records.get(OLD).phase()).isEqualTo(NodeReplacementPhase.DONE);
+        assertThat(model.effects.stream().filter("RETIRE_OLD"::equals).count()).isGreaterThanOrEqualTo(2);
+    }
+
+    @Test
+    void rollback_isKeptBoth_notRolledBack_whenTheReplacementCannotBeTerminated() {
+        var model = new Model();
+
+        model.begin(NodeReplacementPhase.PROVISIONING);
+        model.provisionedSoNewJoins = false;
+        model.terminateResult = new EffectResult.Failed("still listed");
+        model.reapFailure = "instance of core-NEW: still listed at the provider after terminate";
+        for (int tick = 0; tick < 400 && !NodeReplacementReconciler.isTerminal(model.records.get(OLD).phase()); tick++) {
+            driver(model).reconcile().await();
+            model.clock.addAndGet(100);
+        }
+
+        assertThat(model.records.get(OLD).phase()).isEqualTo(NodeReplacementPhase.FAILED_KEPT_BOTH);
+        assertThat(model.records.get(OLD).reason()).contains("could not be rolled back").contains("still listed at the provider after terminate");
+        assertThat(model.phases).doesNotContain(NodeReplacementPhase.ROLLED_BACK);
     }
 
     @Test

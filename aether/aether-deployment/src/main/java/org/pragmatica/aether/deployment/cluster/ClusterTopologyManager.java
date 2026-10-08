@@ -186,6 +186,18 @@ public interface ClusterTopologyManager extends TopologyManager {
     Promise<Unit> provisionPlacementNode(org.pragmatica.aether.slice.kvstore.AetherValue.CommunityPlacementOperationValue operation);
 
     Promise<Unit> drainNode(NodeId targetNodeId, DrainReason reason);
+
+    /// #1543: terminate the provider instance of a retired node and CONFIRM it is gone. Succeeds only when a provider
+    /// listing, taken after the terminate, shows no instance of `node` that is provisioning, running or in a state the provider
+    /// cannot state; every other outcome is a failure carrying why (the refusal, the provider error, the instance still
+    /// listed). A failed listing is a failure, never "gone". Idempotent: a node whose listing is already empty succeeds without
+    /// a terminate, so a new leader can repeat it. Honours the retirement refusal of [#drainNode] (a voter is not reaped).
+    default Promise<Unit> reapRetired(NodeId node, org.pragmatica.aether.environment.SourceName source) {
+        return org.pragmatica.lang.utils.Causes.cause("reap of " + node.id()
+                                                     + ": this topology manager cannot confirm termination")
+                                               .promise();
+    }
+
     /// #1049 — what the compute provider reports about the instance behind the auto-heal replacement
     /// minted as `nodeId`: [ReplacementInstanceState#PRESENT] while it provisions or runs,
     /// [ReplacementInstanceState#FAILED] once every listed instance is stopping or terminated,
