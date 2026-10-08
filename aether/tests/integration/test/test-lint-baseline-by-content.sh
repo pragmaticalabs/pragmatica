@@ -10,6 +10,9 @@
 #   L4 a NEW violation turns lint red and names file:line;
 #   L5 editing the waived line voids its waiver (waivers are not blanket per file);
 #   L6 two identical flagged lines need two entries (multiset, not set);
+#   L8 a whitespace-only edit of a waived line (indent, inner runs) keeps its waiver;
+#   L9 the same flagged content in ANOTHER file is a new finding (the file is part of the key);
+#   L10 an R1 waiver names the log_warn too: the same log_pass under a different log_warn is a new finding;
 #   L7 the shipped baseline carries no line-number keys and is green against the real tree.
 #
 #   bash aether/tests/integration/test/test-lint-baseline-by-content.sh
@@ -91,6 +94,30 @@ test_four() {
 run_test "four" test_four
 F
 if lint > /dev/null; then fail "L6 a second identical flagged line was absorbed by one entry"; else ok "L6 a second identical flagged line needs its own entry"; fi
+
+# L8 — whitespace-only edits
+write_fixture
+capture > "$BASE"
+sed -i.bak 's#^    curl -s localhost 2>/dev/null || true#        curl   -s   localhost   2>/dev/null   ||   true#' "$SUITE"; rm -f "${SUITE}.bak"
+if grep -q 'curl   -s   localhost' "$SUITE" && lint > /dev/null; then ok "L8 indent and inner-whitespace edits of the waived R2 line keep its waiver"; else fail "L8 a whitespace-only edit voided the waiver (or did not apply)"; fi
+
+# L9 — same content, other file
+write_fixture
+OTHER="${IT}/suites/99-fixture/test-other.sh"
+cat > "$OTHER" <<'F'
+#!/bin/bash
+test_x() {
+    curl -s localhost 2>/dev/null || true
+}
+run_test "x" test_x
+F
+if lint > /dev/null; then fail "L9 the same flagged line in another file was absorbed by the first file's waiver"; else ok "L9 the same flagged content in another file is a new finding"; fi
+rm -f "$OTHER"
+
+# L10 — R1 key names the warn
+write_fixture
+sed -i.bak 's#log_warn "soft"#log_warn "a different soft gate"#' "$SUITE"; rm -f "${SUITE}.bak"
+if grep -q 'different soft gate' "$SUITE" && ! lint > /dev/null; then ok "L10 the same log_pass under a different log_warn is a new R1 finding"; else fail "L10 changing the log_warn kept the old R1 waiver (or did not apply)"; fi
 
 # L7 — shipped baseline
 if grep -qE '\.sh:[0-9]+ ' "${INTEG_DIR}/lint-baseline.txt"; then fail "L7 shipped baseline carries a line-number key"; else ok "L7 shipped baseline carries no line-number keys"; fi
