@@ -2473,6 +2473,8 @@ public interface AetherNode extends ManageableNode {
                           // #932: the stream replica-set controller and backfill executor own one
                           // thread each per node; neither had a close on the stop path.
                           Runnable streamReplicationShutdown,
+                          // #1968: ends a backup-less leader's open backup-config-missing alert before the event layer stops.
+                          Runnable backupCoordinatorStop,
                           // #903: the provider whose shared (unattributed) scope only node shutdown
                           // can close.
                           Option<SpiResourceProvider> spiResourceProvider,
@@ -2611,6 +2613,8 @@ public interface AetherNode extends ManageableNode {
                 // still-unarmed thunks and refuses a late arm() (#644): a cluster-formation promise
                 // resolving after this line must not schedule work for a torn-down node.
                 periodicTasks.cancel();
+                // #1968: first, while the cluster-event layer can still carry the recovery of a backup-config-missing alert.
+                backupCoordinatorStop.run();
                 kvBackupService.onPresent(KvBackupService::stop);
                 router.route(ClusterStateNotification.passive());
                 router.quiesce();
@@ -4917,12 +4921,7 @@ public interface AetherNode extends ManageableNode {
         // raised only by the owner of the cluster-events partition. The leader that raises "started" is not the leader that
         // commits "completed" when the leader is the node being replaced; the owner is the same node for both, which is what
         // lets the aggregator pair the recovery with the event it closes.
-        nodeReplacements.onTransition((original, before, after) -> clusterEventsOwnerCheck.getAsBoolean()
-                                                                   ? NodeReplacementWiring.announce(operatorWarningSink,
-                                                                                                    original,
-                                                                                                    before,
-                                                                                                    after)
-                                                                   : Unit.unit());
+        nodeReplacements.onTransition(NodeReplacementWiring.announcer(clusterEventsOwnerCheck, operatorWarningSink));
         // #1543 E: the replacement reconciler (leader-driven, resumes from the committed records) and its service.
         var replacementWiring = NodeReplacementWiring.wire(new NodeReplacementWiring.Inputs(config.self(),
                                                                                             isLeaderSupplier,
@@ -4944,12 +4943,8 @@ public interface AetherNode extends ManageableNode {
                                                                                                              .or(""),
                                                                                             clusterTopologyManager,
                                                                                             id -> managementServerRef.get()
-                                                                                                                     .fold(() -> Promise.success(NodeReplacementWiring.DrainOutcome.pending()),
-                                                                                                                           server -> server.admitReplacementDrain(id)
-                                                                                                                                           .<NodeReplacementWiring.DrainOutcome> map(_ -> NodeReplacementWiring.DrainOutcome.admitted())
-                                                                                                                                           .recover(cause -> NodeLifecycleRoutes.isSliceFloorRefusal(cause)
-                                                                                                                                                             ? NodeReplacementWiring.DrainOutcome.blocked(cause.message())
-                                                                                                                                                             : NodeReplacementWiring.DrainOutcome.pending())),
+                                                                                                                     .fold(() -> Promise.success(NodeReplacementWiring.DrainOutcome.pending("management server not ready")),
+                                                                                                                           server -> NodeReplacementWiring.drainOutcomeOf(server.admitReplacementDrain(id))),
                                                                                             id -> managementServerRef.get()
                                                                                                                      .map(server -> server.replacementDrainUnderWay(id))
                                                                                                                      .or(false),
@@ -6575,6 +6570,7 @@ public interface AetherNode extends ManageableNode {
                                   kvBackupService,
                                   leaderTerm,
                                   streamReplicationShutdown,
+                                  backupRestoreCoordinator::onNodeStopping,
                                   resourceProviderSetup.spiProvider(),
                                   replacementWiring.service());
 
@@ -6803,6 +6799,7 @@ public interface AetherNode extends ManageableNode {
                                                                         kvBackupService,
                                                                         leaderTerm,
                                                                         streamReplicationShutdown,
+                                                                        backupRestoreCoordinator::onNodeStopping,
                                                                         resourceProviderSetup.spiProvider(),
                                                                         replacementWiring.service());
                                               }

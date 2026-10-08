@@ -122,6 +122,154 @@ class QuicClusterNetworkEncodeFailureTest {
         verify(laneStream, times(1)).writeAndFlush(any());
     }
 
+    /// #1727 (M2) idle pin, found by v-2023: the transport's own KeepAlive rides the CONTROL lane through the
+    /// same write path, so noting CONTROL writes re-opened the kick window every second and the kick never
+    /// went idle (9.8 kicks/s on an idle link). The KeepAlive goes through the real send path here; the
+    /// DATA-lane write below is the control showing the same fixture does kick.
+    @Test
+    void keepAliveOnTheControlLane_doesNotOpenTheKickWindow_butADataLaneWriteDoes() throws Exception {
+        var loop = new io.netty.channel.DefaultEventLoop();
+
+        try {
+            var network = network();
+            var peerId = new NodeId("idle-kick-peer");
+            var laneStream = writableStream();
+            var channel = mock(QuicChannel.class);
+            @SuppressWarnings("unchecked")
+            var attribute = (io.netty.util.Attribute<QuicPeerConnection>) mock(io.netty.util.Attribute.class);
+
+            lenient().when(channel.isActive()).thenReturn(true);
+            lenient().when(channel.eventLoop()).thenReturn(loop);
+            var connection = QuicPeerConnection.quicPeerConnection(peerId, channel);
+
+            lenient().when(attribute.get()).thenReturn(connection);
+            lenient().when(channel.attr(PeerOpenedLaneRouter.PEER_CONNECTION)).thenReturn(attribute);
+            lenient().when(laneStream.parent()).thenReturn(channel);
+            connection.laneOpener(QuicPeerConnection.LaneOpener.noop());
+            connection.registerStream(StreamType.CONTROL, laneStream);
+            connection.activityKick(new byte[] {1}, () -> false, 20, 300);
+            network.seedPeerForTests(peerId, connectedPeerState(peerId, connection));
+
+            var outcome = network.writeToStreamForTests(peerId, new NetworkMessage.KeepAlive(peerId), connection);
+            Thread.sleep(200);
+
+            assertThat(outcome).isInstanceOf(WriteOutcome.Sent.class);
+            assertThat(connection.activityKicksSent()).as("a KeepAlive must not open the kick window").isZero();
+
+            var dataStream = writableStream();
+
+            lenient().when(dataStream.parent()).thenReturn(channel);
+            connection.registerStream(StreamType.FORWARD, dataStream);
+            network.writeIfWritableForTest(dataStream, new byte[] {1, 2, 3}, peerId, StreamType.FORWARD);
+            Thread.sleep(200);
+
+            assertThat(connection.activityKicksSent()).as("control: a data-lane write opens it").isPositive();
+        } finally {
+            loop.shutdownGracefully(0, 1, java.util.concurrent.TimeUnit.SECONDS);
+        }
+    }
+
+    /// #1727 — the immediate close of a superseded connection records itself and the lanes it put at risk
+    /// (unflushed or written in the last 2 s) in the transport metrics. The accounting is pinned in
+    /// [QuicSupersedeObservationTest].
+    @Test
+    void closingASupersededConnection_recordsTheCloseAndTheLanesAtRisk() {
+        var network = network();
+        var channel = mock(QuicChannel.class);
+
+        lenient().when(channel.isActive()).thenReturn(true);
+        var superseded = QuicPeerConnection.quicPeerConnection(new NodeId("sup-peer"), new NodeId("a"), channel);
+
+        superseded.laneWriteStarted(StreamType.FORWARD);
+        superseded.laneWriteStarted(StreamType.CONSENSUS);
+        superseded.laneWriteCompleted(StreamType.CONSENSUS);
+
+        network.closeSupersededConnectionForTests(superseded, QuicPeerConnection.quicPeerConnection(new NodeId("sup-peer"), new NodeId("a"), channel));
+
+        assertThat(network.quicMetrics().supersededCloseCount()).isEqualTo(1);
+        assertThat(network.quicMetrics().supersededLaneStreamsAtRiskCount()).as("FORWARD unflushed + CONSENSUS recent").isEqualTo(2);
+        assertThat(network.quicMetrics().snapshot()).containsKeys("quic_superseded_closes_total", "quic_superseded_lane_streams_at_risk_total");
+    }
+
+    /// #1727 — the production write path accounts the write on the stream's owning connection: a lane write
+    /// whose future has not completed is an unflushed lane at supersede time.
+    @Test
+    void aLaneWriteThroughTheProductionPath_isAccountedOnTheOwningConnection() {
+        var network = network();
+        var peerId = new NodeId("accounting-peer");
+        var laneStream = writableStream();
+        var channel = mock(QuicChannel.class);
+        @SuppressWarnings("unchecked")
+        var attribute = (io.netty.util.Attribute<QuicPeerConnection>) mock(io.netty.util.Attribute.class);
+        var connection = QuicPeerConnection.quicPeerConnection(peerId, channel);
+
+        lenient().when(attribute.get()).thenReturn(connection);
+        lenient().when(channel.attr(PeerOpenedLaneRouter.PEER_CONNECTION)).thenReturn(attribute);
+        lenient().when(laneStream.parent()).thenReturn(channel);
+
+        network.writeIfWritableForTest(laneStream, new byte[] {1, 2, 3}, peerId, StreamType.FORWARD);
+
+        assertThat(connection.laneWritesAtRisk(System.nanoTime()).unflushedLanes()).isEqualTo(1);
+    }
+
+    /// #1727 — accounting is keyed by the stream actually written. A CONTROL message that fell back to the
+    /// CONSENSUS stream is a CONSENSUS write; a data-lane message written on the CONTROL stream is not counted.
+    @Test
+    void accountingFollowsTheStreamActuallyWritten_notTheMessagesLane() {
+        var network = network();
+        var peerId = new NodeId("keyed-peer");
+        var channel = mock(QuicChannel.class);
+        @SuppressWarnings("unchecked")
+        var attribute = (io.netty.util.Attribute<QuicPeerConnection>) mock(io.netty.util.Attribute.class);
+        var connection = QuicPeerConnection.quicPeerConnection(peerId, channel);
+        var consensusStream = writableStream();
+        var controlStream = writableStream();
+
+        lenient().when(attribute.get()).thenReturn(connection);
+        lenient().when(channel.attr(PeerOpenedLaneRouter.PEER_CONNECTION)).thenReturn(attribute);
+        lenient().when(consensusStream.parent()).thenReturn(channel);
+        lenient().when(controlStream.parent()).thenReturn(channel);
+        lenient().when(consensusStream.config()).thenReturn(mock(io.netty.handler.codec.quic.QuicStreamChannelConfig.class));
+        connection.registerStream(StreamType.CONSENSUS, consensusStream);
+        connection.registerStream(StreamType.CONTROL, controlStream);
+
+        network.writeIfWritableForTest(controlStream, new byte[] {1}, peerId, StreamType.FORWARD);
+
+        assertThat(connection.laneWritesAtRisk(System.nanoTime()).lanesAtRisk())
+            .as("a FORWARD message written on the CONTROL stream is a CONTROL write: not counted").isZero();
+
+        network.writeIfWritableForTest(consensusStream, new byte[] {1}, peerId, StreamType.CONTROL);
+
+        var risk = connection.laneWritesAtRisk(System.nanoTime());
+
+        assertThat(risk.lanesAtRisk()).as("a CONTROL message on the CONSENSUS fallback stream is a CONSENSUS write").isEqualTo(1);
+    }
+
+    /// #1727 — two NON-CONTROL message lanes that both fell back to the CONSENSUS stream are one lane. (With
+    /// CONTROL as one of them the count is 1 under either keying, so this uses two data lanes: keyed by the
+    /// message's lane it would count 2.)
+    @Test
+    void twoDataLanesFallingBackToTheConsensusStream_countAsOneLane() {
+        var network = network();
+        var peerId = new NodeId("fallback-peer");
+        var channel = mock(QuicChannel.class);
+        @SuppressWarnings("unchecked")
+        var attribute = (io.netty.util.Attribute<QuicPeerConnection>) mock(io.netty.util.Attribute.class);
+        var connection = QuicPeerConnection.quicPeerConnection(peerId, channel);
+        var consensusStream = writableStream();
+
+        lenient().when(attribute.get()).thenReturn(connection);
+        lenient().when(channel.attr(PeerOpenedLaneRouter.PEER_CONNECTION)).thenReturn(attribute);
+        lenient().when(consensusStream.parent()).thenReturn(channel);
+        lenient().when(consensusStream.config()).thenReturn(mock(io.netty.handler.codec.quic.QuicStreamChannelConfig.class));
+        connection.registerStream(StreamType.CONSENSUS, consensusStream);
+
+        network.writeIfWritableForTest(consensusStream, new byte[] {1}, peerId, StreamType.FORWARD);
+        network.writeIfWritableForTest(consensusStream, new byte[] {1}, peerId, StreamType.DHT);
+
+        assertThat(connection.laneWritesAtRisk(System.nanoTime()).lanesAtRisk()).isEqualTo(1);
+    }
+
     /// #1727 (M1) pin (c) — a zero-length frame ends the lane at the receiver, so the normal writer must
     /// never produce one. Same seam and lane as the pair above; only the serializer differs (it encodes
     /// to zero bytes). The registered-codec test above is the control that the path otherwise writes.

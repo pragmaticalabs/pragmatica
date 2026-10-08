@@ -362,6 +362,7 @@ sealed interface BootstrapPhaseDeploy {
         var clusterSecret = ctx.clusterSecret();
         var clusterName = ctx.config().cluster().name();
         var isJvm = isJvmRuntime(ctx, source);
+        var backupPath = source.nodeConfig().flatMap(NodeUserDataRenderer::backupPath);
         var runtimeLabel = isJvm
                            ? "JVMs"
                            : "containers";
@@ -399,7 +400,8 @@ sealed interface BootstrapPhaseDeploy {
                                                  peers,
                                                  clusterSecret,
                                                  clusterName,
-                                                 envLookup)
+                                                 envLookup,
+                                                 backupPath)
                           : buildStartCommand(resolveContainerImage(ctx, source),
                                               clusterName,
                                               node.nodeId(),
@@ -410,7 +412,8 @@ sealed interface BootstrapPhaseDeploy {
                                               managementPort,
                                               peers,
                                               clusterSecret,
-                                              envLookup);
+                                              envLookup,
+                                              backupPath);
             var result = sshExec.apply(node.publicIp(), command, sshConfig);
 
             if (result.isFailure()) {
@@ -624,14 +627,46 @@ sealed interface BootstrapPhaseDeploy {
                                     String peers,
                                     String clusterSecret,
                                     Fn1<String, String> envLookup) {
+        return buildStartCommand(image,
+                                 clusterName,
+                                 nodeId,
+                                 role,
+                                 source,
+                                 zone,
+                                 clusterPort,
+                                 managementPort,
+                                 peers,
+                                 clusterSecret,
+                                 envLookup,
+                                 Option.none());
+    }
+
+    /// The same start with the node's `[backup] path` (#1968): the first start is the container that actually runs, so it must carry
+    /// the backup volume the install-only cloud-init cannot give it. The host directory `/opt/aether/backups` is created (0750, uid
+    /// 1000, the in-container `aether` user) and bind-mounted at the path, so the repository outlives the container.
+    static String buildStartCommand(String image,
+                                    ClusterName clusterName,
+                                    String nodeId,
+                                    NodeRole role,
+                                    SourceName source,
+                                    Option<String> zone,
+                                    int clusterPort,
+                                    int managementPort,
+                                    String peers,
+                                    String clusterSecret,
+                                    Fn1<String, String> envLookup,
+                                    Option<String> backupPath) {
         return "if docker ps -a --format '{{.Names}}' | grep -qx aether-node; then echo " + ALREADY_PRESENT_MARKER
              + " >&2; exit " + ALREADY_PRESENT_EXIT
-             + "; fi"
+             + "; fi" + backupPath.map(_ -> " && install -d -m 0750 -o 1000 -g 1000 " + NodeUserDataRenderer.BACKUP_HOST_DIRECTORY)
+                                  .or("")
              + " && docker run -d --name aether-node --restart no --network host"
              + " -l aether-cluster=" + clusterName.value()
              + " -l aether-node-id=" + nodeId
              + " -l aether-role=" + role.value()
-             + " -v /opt/aether/config/aether.toml:/app/aether.toml:ro"
+             + " -v /opt/aether/config/aether.toml:/app/aether.toml:ro" + backupPath.map(path -> " -v " + NodeUserDataRenderer.BACKUP_HOST_DIRECTORY
+                                                                                                + ":" + path)
+                                                                                    .or("")
              + " -e NODE_ID=\"" + nodeId
              + "\""
              + " -e CLUSTER_PORT=\"" + clusterPort
@@ -731,6 +766,32 @@ sealed interface BootstrapPhaseDeploy {
                                        String clusterSecret,
                                        ClusterName clusterName,
                                        Fn1<String, String> envLookup) {
+        return buildJvmStartCommand(nodeId,
+                                    role,
+                                    source,
+                                    zone,
+                                    clusterPort,
+                                    managementPort,
+                                    peers,
+                                    clusterSecret,
+                                    clusterName,
+                                    envLookup,
+                                    Option.none());
+    }
+
+    /// The same start with the node's `[backup] path` (#1968): a JVM node writes the host path directly, so the directory is created
+    /// (idempotently) before the unit starts.
+    static String buildJvmStartCommand(String nodeId,
+                                       NodeRole role,
+                                       SourceName source,
+                                       Option<String> zone,
+                                       int clusterPort,
+                                       int managementPort,
+                                       String peers,
+                                       String clusterSecret,
+                                       ClusterName clusterName,
+                                       Fn1<String, String> envLookup,
+                                       Option<String> backupPath) {
         return "if systemctl is-active --quiet " + NodeUserDataRenderer.JVM_UNIT_NAME
              + " || systemctl is-failed --quiet " + NodeUserDataRenderer.JVM_UNIT_NAME
              + " || [ -n \"$(systemctl show -p ActiveEnterTimestamp --value " + NodeUserDataRenderer.JVM_UNIT_NAME
@@ -739,7 +800,8 @@ sealed interface BootstrapPhaseDeploy {
              + " ]"
              + "; then echo " + ALREADY_PRESENT_MARKER
              + " >&2; exit " + ALREADY_PRESENT_EXIT
-             + "; fi"
+             + "; fi" + backupPath.map(path -> " && install -d -m 0750 " + path)
+                                  .or("")
              + " && install -d -m 0755 " + NodeUserDataRenderer.JVM_ENV_DIR
              + " && touch " + NodeUserDataRenderer.JVM_ENV_FILE_PATH
              + " && chmod 600 " + NodeUserDataRenderer.JVM_ENV_FILE_PATH
@@ -987,7 +1049,8 @@ sealed interface BootstrapPhaseDeploy {
                                                                                                                                                                                        managementPort,
                                                                                                                                                                                        peersValue,
                                                                                                                                                                                        clusterSecret,
-                                                                                                                                                                                       envLookup),
+                                                                                                                                                                                       envLookup,
+                                                                                                                                                                                       NodeUserDataRenderer.backupPath(doc)),
                                                                                                                                                                   sshExec,
                                                                                                                                                                   scpExec))));
 
@@ -1050,7 +1113,8 @@ sealed interface BootstrapPhaseDeploy {
                                        int managementPort,
                                        String peers,
                                        String clusterSecret,
-                                       Fn1<String, String> envLookup) {
+                                       Fn1<String, String> envLookup,
+                                       Option<String> backupPath) {
         return "mkdir -p /opt/aether/config && docker pull " + image
              + " && " + buildStartCommand(image,
                                           clusterName,
@@ -1062,7 +1126,8 @@ sealed interface BootstrapPhaseDeploy {
                                           managementPort,
                                           peers,
                                           clusterSecret,
-                                          envLookup);
+                                          envLookup,
+                                          backupPath);
     }
 
     @SuppressWarnings("JBCT-EX-01")

@@ -16,6 +16,7 @@ import java.util.function.LongSupplier;
 import java.util.function.Predicate;
 import java.util.function.Supplier;
 
+import org.pragmatica.aether.api.routes.NodeLifecycleRoutes;
 import org.pragmatica.aether.deployment.cluster.ClusterTopologyManager;
 import org.pragmatica.aether.deployment.cluster.DrainReason;
 import org.pragmatica.aether.deployment.cluster.NodeReplacementAnnouncements;
@@ -63,19 +64,39 @@ public final class NodeReplacementWiring {
     private NodeReplacementWiring() {}
 
     /// What the operator drain admission answered for the old node.
-    public record DrainOutcome(boolean accepted, String blockedBy) {
+    public record DrainOutcome(boolean accepted, String blockedBy, String refusedFor) {
         public static DrainOutcome admitted() {
-            return new DrainOutcome(true, "");
+            return new DrainOutcome(true, "", "");
         }
 
+        /// Held back by the slice floor: an operator-visible block.
         public static DrainOutcome blocked(String why) {
-            return new DrainOutcome(false, why);
+            return new DrainOutcome(false, why, "");
         }
 
-        /// Not admitted now, and not by the slice floor: nothing to report as blocked, ask again next tick.
-        public static DrainOutcome pending() {
-            return new DrainOutcome(false, "");
+        /// Not admitted now, and not by the slice floor: nothing to report as blocked, ask again next tick. `why` is what the
+        /// admission said, kept so that a replacement that ends kept-both can say what stopped the drain.
+        public static DrainOutcome pending(String why) {
+            return new DrainOutcome(false, "", why);
         }
+    }
+
+    /// The drain admission's answer as the replacement reads it: admitted; blocked ONLY by the slice floor; anything else is a
+    /// refusal that is retried silently and remembered.
+    public static Promise<DrainOutcome> drainOutcomeOf(Promise<Unit> admission) {
+        return admission.<DrainOutcome> map(_ -> DrainOutcome.admitted())
+                        .recover(cause -> NodeLifecycleRoutes.isSliceFloorRefusal(cause)
+                                          ? DrainOutcome.blocked(cause.message())
+                                          : DrainOutcome.pending(cause.message()));
+    }
+
+    /// The listener that turns each committed transition into its operator events, on the node that owns the cluster-events
+    /// partition ONLY: every node applies every record, and the events of one transition must be raised exactly once.
+    public static NodeReplacementIndex.TransitionListener announcer(BooleanSupplier ownsClusterEvents,
+                                                                    OperatorWarningSink warnings) {
+        return (original, before, after) -> ownsClusterEvents.getAsBoolean()
+                                            ? announce(warnings, original, before, after)
+                                            : Unit.unit();
     }
 
     public record Inputs(NodeId self,
@@ -244,6 +265,7 @@ public final class NodeReplacementWiring {
         private final Inputs in;
         private final Set<NodeId> drainRequested = ConcurrentHashMap.newKeySet();
         private final Map<NodeId, String> drainBlocked = new ConcurrentHashMap<>();
+        private final Map<NodeId, String> drainRefused = new ConcurrentHashMap<>();
 
         Env(Inputs in) {
             this.in = in;
@@ -300,7 +322,8 @@ public final class NodeReplacementWiring {
                                    drainState(original, oldAlive),
                                    drainBlocked.getOrDefault(original, ""),
                                    oldState.filter(name -> !"Dead".equals(name)).isEmpty(),
-                                   !in.dhtHolds().test(original));
+                                   !in.dhtHolds().test(original),
+                                   drainRefused.getOrDefault(original, ""));
         }
 
         private DrainState drainState(NodeId original, boolean oldAlive) {
@@ -373,19 +396,22 @@ public final class NodeReplacementWiring {
         private EffectResult drained(NodeId original, DrainOutcome outcome) {
             if (outcome.accepted()) {
                 drainBlocked.remove(original);
+                drainRefused.remove(original);
                 drainRequested.add(original);
 
                 return new EffectResult.Done();
             }
 
             if (outcome.blockedBy().isEmpty()) {
-                // Refused for a reason that is not the slice floor: nothing an operator can act on. Ask again.
+                // Refused for a reason that is not the slice floor: nothing an operator can act on. Ask again, and remember why.
                 drainBlocked.remove(original);
+                drainRefused.put(original, outcome.refusedFor());
 
                 return new EffectResult.Deferred("drain not admitted yet");
             }
 
             drainBlocked.put(original, outcome.blockedBy());
+            drainRefused.remove(original);
 
             return new EffectResult.Deferred("drain blocked");
         }
@@ -397,9 +423,27 @@ public final class NodeReplacementWiring {
         return phase == NodeReplacementPhase.FAILED_KEPT_BOTH || !NodeReplacementReconciler.isTerminal(phase);
     }
 
-    private static final class Service implements NodeReplacementService {
+    /// What the wired replacement service was given, readable for the boot test that pins the node's wiring.
+    public interface Wired {
+        Set<NodeId> genesisVoters();
+        /// The index of committed pairings the node's reconcilers read.
+        NodeReplacementIndex pairings();
+    }
+
+    private static final class Service implements NodeReplacementService, Wired {
         private final Inputs in;
         private final Env environment;
+
+        @Override
+        public Set<NodeId> genesisVoters() {
+            return in.genesisVoters()
+                     .get();
+        }
+
+        @Override
+        public NodeReplacementIndex pairings() {
+            return in.index();
+        }
 
         Service(Inputs in, Env environment) {
             this.in = in;

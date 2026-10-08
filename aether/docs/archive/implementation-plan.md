@@ -316,7 +316,7 @@ functional AI-driven distributed runtime.
 
 **Goal**: Collect metrics and distribute events for controller consumption
 
-**See [metrics-and-control.md](metrics-and-control.md) for complete specification.**
+**See [metrics-and-control.md](../contributors/metrics-control.md) for complete specification.**
 
 #### 3.1 - MetricsCollector
 
@@ -426,7 +426,7 @@ functional AI-driven distributed runtime.
 
 **Goal**: Implement pluggable controller for topology decisions
 
-**See [metrics-and-control.md](metrics-and-control.md) for complete specification.**
+**See [metrics-and-control.md](../contributors/metrics-control.md) for complete specification.**
 
 #### 4.1 - ClusterController Interface
 

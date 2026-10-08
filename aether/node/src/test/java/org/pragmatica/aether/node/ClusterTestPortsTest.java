@@ -25,6 +25,13 @@ import static org.assertj.core.api.Assertions.assertThat;
 class ClusterTestPortsTest {
     private static final int SWIM = CoreSwimHealthDetector.SWIM_PORT_OFFSET;
     /// TCP-only: the port is for an HTTP/1 management server and nothing UDP ever binds it.
+    /// Reservation forms caught: `ServerSocket(0`, `ServerSocket(0, backlog, addr)`, any `ServerSocketChannel`, and an
+    /// explicit `bind(new InetSocketAddress(..., 0))`. A bare `new InetSocketAddress(.., 0)` is NOT matched: it is also
+    /// how a live `HttpServer.create(...)` binds (GitBackupRepositoryTest), which would be a false positive.
+    /// KNOWN GAP (#2016): a port held in a variable (`new ServerSocket(port)`, `bind(addrOf(p))`) is not caught. Such a
+    /// call is also how tests deliberately HOLD a taken port, so no text pattern separates the two without false
+    /// positives; telling them apart needs data flow (the port came from a closed socket), which this scan cannot see.
+    private static final java.util.regex.Pattern RESERVES = java.util.regex.Pattern.compile("ServerSocket\\(\\s*0|ServerSocketChannel|\\.bind\\(\\s*new (?:java\\.net\\.)?InetSocketAddress\\([^()]*(?:\\([^()]*\\))?[^()]*\\b0\\s*\\)\\s*\\)");
     private static final String TCP_ONLY_MANAGEMENT_TEST = "ManagementServerDhtCatchUpGaugeTest.java";
 
     @Test
@@ -42,6 +49,40 @@ class ClusterTestPortsTest {
 
         for (int i = 0; i < 50; i++) {
             assertThat(seen.add(ClusterTestPorts.freeClusterPort())).as("port issued twice").isTrue();
+        }
+    }
+
+    /// Pins the uniqueness claim: a candidate source that keeps offering an already-issued port is refused until a new one appears.
+    @Test
+    void issuedPort_isNotIssuedAgainEvenWhenTheSourceOffersItAgain() {
+        var first = ClusterTestPorts.freeClusterPort();
+        var second = ClusterTestPorts.freeClusterPort();
+        var offers = new java.util.ArrayDeque<>(java.util.List.of(first, first, first, second, second));
+        var third = ClusterTestPorts.freeClusterPort(() -> offers.isEmpty() ? freshUdpPort() : offers.poll());
+
+        assertThat(third).as("only a never-issued port may come back").isNotIn(first, second);
+    }
+
+    /// The both-protocol helper must skip a candidate whose TCP side is taken, and one whose UDP side is taken.
+    @Test
+    void freeTcpAndUdpPort_skipsACandidateWithTcpTaken() throws IOException {
+        try (var held = new ServerSocket(0, 1, InetAddress.getLoopbackAddress())) {
+            var taken = held.getLocalPort();
+            var offers = new java.util.ArrayDeque<>(java.util.List.of(taken));
+            var got = ClusterTestPorts.freeTcpAndUdpPort(() -> offers.isEmpty() ? freshUdpPort() : offers.poll());
+
+            assertThat(got).as("a port with TCP held must not be issued").isNotEqualTo(taken);
+        }
+    }
+
+    @Test
+    void freeTcpAndUdpPort_skipsACandidateWithUdpTaken() throws IOException {
+        try (var held = new DatagramSocket(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0))) {
+            var taken = held.getLocalPort();
+            var offers = new java.util.ArrayDeque<>(java.util.List.of(taken));
+            var got = ClusterTestPorts.freeTcpAndUdpPort(() -> offers.isEmpty() ? freshUdpPort() : offers.poll());
+
+            assertThat(got).as("a port with UDP held must not be issued").isNotEqualTo(taken);
         }
     }
 
@@ -90,9 +131,17 @@ class ClusterTestPortsTest {
         }
     }
 
+    private static int freshUdpPort() {
+        try (var socket = new DatagramSocket(0)) {
+            return socket.getLocalPort();
+        } catch (IOException e) {
+            throw new java.io.UncheckedIOException(e);
+        }
+    }
+
     private static boolean reservesWithTcpServerSocket(Path file) {
         try {
-            return Files.readString(file).contains("ServerSocket(0)");
+            return RESERVES.matcher(Files.readString(file)).find();
         } catch (IOException e) {
             throw new java.io.UncheckedIOException(e);
         }

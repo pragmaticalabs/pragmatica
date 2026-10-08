@@ -30,6 +30,15 @@ public record CloudConfig(String provider,
                                        Map.of()));
     }
 
+    /// The `compute` map with `entries` added (an entry replaces a TOML key of the same name).
+    public CloudConfig withCompute(Map<String, String> entries) {
+        var merged = new java.util.HashMap<>(compute);
+
+        merged.putAll(entries);
+
+        return new CloudConfig(provider, credentials, Map.copyOf(merged), loadBalancer, discovery, secrets, security);
+    }
+
     public CloudConfig withLoadBalancer(Map<String, String> loadBalancer) {
         return new CloudConfig(provider, credentials, compute, Map.copyOf(loadBalancer), discovery, secrets, security);
     }

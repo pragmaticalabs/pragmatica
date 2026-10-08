@@ -183,19 +183,25 @@ class QuicLaneEndMarkerFinLossTest {
         io.netty.channel.ChannelFuture last = null;
         var blockedAfter = -1;
 
-        // Write until netty itself reports the stream not writable (flow control exhausted, the write queue
-        // above the water mark), bounded by a write count so a regression cannot spin forever.
+        // Write until the stream is not writable BECAUSE OF FLOW CONTROL, bounded by a write count so a
+        // regression cannot spin forever. On a loaded box the event loop lags and the write queue is
+        // "not writable" merely because it has not run yet; it drains and the stream turns writable again. So
+        // a candidate is only accepted after the event loop has caught up (a barrier task) and the stream
+        // is still not writable with its last write still pending.
         for (var n = 0; n < MAX_BLOCKING_WRITES && blockedAfter < 0; n++) {
             last = stream.writeAndFlush(Unpooled.wrappedBuffer(new byte[64 * 1024]));
             if (n % 16 == 15) {
+                eventLoopBarrier(stream);
                 LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(20));
-                if (!stream.isWritable()) {
+                eventLoopBarrier(stream);
+                if (stillBlocked(stream, last)) {
                     blockedAfter = n + 1;
                 }
             }
         }
         assertThat(blockedAfter).as("precondition: the stream became not writable within " + MAX_BLOCKING_WRITES + " writes of 64 KB").isPositive();
         LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(200));
+        eventLoopBarrier(stream);
         assertThat(stream.isWritable()).as("precondition: the stream is still not writable").isFalse();
         assertThat(last.isDone()).as("precondition: the last write is stuck behind flow control").isFalse();
 
@@ -206,6 +212,26 @@ class QuicLaneEndMarkerFinLossTest {
             LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(20));
         }
         assertThat(stream.isActive()).as("the errored stream closed within 5 s").isFalse();
+    }
+
+    /// Blocked means not writable AND the last write pending, sustained over 500 ms with the event loop caught
+    /// up each time. A stream that is merely slow (loaded box) turns writable again within that time, and the
+    /// caller then keeps writing until flow control really holds it.
+    private static boolean stillBlocked(QuicStreamChannel stream, io.netty.channel.ChannelFuture last) {
+        for (var check = 0; check < 5; check++) {
+            eventLoopBarrier(stream);
+            if (stream.isWritable() || last.isDone()) {
+                return false;
+            }
+            LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(100));
+        }
+
+        return true;
+    }
+
+    /// Returns once everything queued on the stream's event loop so far has run.
+    private static void eventLoopBarrier(QuicStreamChannel stream) {
+        stream.eventLoop().submit(() -> {}).awaitUninterruptibly(AWAIT.millis());
     }
 
     /// After the marker both halves are finished and the stream closes at BOTH ends, returning its credit.

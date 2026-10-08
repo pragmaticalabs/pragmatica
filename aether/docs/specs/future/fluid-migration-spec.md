@@ -1277,9 +1277,9 @@ aether cluster migrate --config reverse-migration.toml
 
 ### Internal References
 
-- [Cloud Integration SPI Spec](cloud-integration-spi-spec.md) -- SPI architecture for ComputeProvider, LoadBalancerProvider, DiscoveryProvider, SecretsProvider
-- [Cluster Management Spec](cluster-management-spec.md) -- Declarative cluster management, TOML config format, CLI commands
-- [Canary & Blue-Green Spec](canary-blue-green-spec.md) -- Deployment strategies (rolling, canary, blue-green)
+- [Cloud Integration SPI Spec](../cloud-integration-spi-spec.md) -- SPI architecture for ComputeProvider, LoadBalancerProvider, DiscoveryProvider, SecretsProvider
+- [Cluster Management Spec](../cluster-management-spec.md) -- Declarative cluster management, TOML config format, CLI commands
+- [Canary & Blue-Green Spec](../../archive/canary-blue-green-spec.md) -- Deployment strategies (rolling, canary, blue-green)
 - `aether/environment-integration/src/main/java/org/pragmatica/aether/environment/EnvironmentIntegration.java` -- Faceted SPI entry point
 - `aether/environment-integration/src/main/java/org/pragmatica/aether/environment/ComputeProvider.java` -- Compute provisioning SPI
 - `aether/environment-integration/src/main/java/org/pragmatica/aether/environment/LoadBalancerProvider.java` -- Load balancer SPI

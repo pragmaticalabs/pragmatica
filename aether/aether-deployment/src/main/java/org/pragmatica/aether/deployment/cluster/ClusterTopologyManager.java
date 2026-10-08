@@ -173,6 +173,11 @@ public interface ClusterTopologyManager extends TopologyManager {
     boolean usesExplicitCommunities();
     void installCommunityPlacement(CommunityPlacementReconciler reconciler);
 
+    /// The community placement reconciler installed on this manager, if any. Read-only, for the boot test that pins the node's wiring.
+    default org.pragmatica.lang.Option<CommunityPlacementReconciler> installedCommunityPlacement() {
+        return org.pragmatica.lang.Option.none();
+    }
+
     default org.pragmatica.lang.Unit setHierarchyStateWriter(HierarchyStateWriter writer) {
         return org.pragmatica.lang.Unit.unit();
     }

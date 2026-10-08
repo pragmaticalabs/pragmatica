@@ -1157,6 +1157,11 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     }
 
     @Override
+    public Option<CommunityPlacementReconciler> installedCommunityPlacement() {
+        return communityPlacement.get();
+    }
+
+    @Override
     @Contract
     public synchronized void installCommunityPlacement(CommunityPlacementReconciler reconciler) {
         communityPlacement.set(Option.some(reconciler));

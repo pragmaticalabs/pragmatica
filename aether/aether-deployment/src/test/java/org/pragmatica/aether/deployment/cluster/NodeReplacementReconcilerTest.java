@@ -52,11 +52,13 @@ class NodeReplacementReconcilerTest {
         String newVersion = "2.0.0";
         DrainState drain = DrainState.NOT_REQUESTED;
         String drainBlocked = "";
+        String drainRefusal = "";
         boolean decommissioned;
         boolean handoffSettled = true;
         EffectResult provisionResult = new EffectResult.Done();
         Promise<EffectResult> provisionPending;
         boolean commitNeverAnswers;
+        Promise<EffectResult> drainPending;
         boolean provisionedSoNewJoins = true;
 
         @Override public boolean isLeader() {return leader;}
@@ -94,7 +96,8 @@ class NodeReplacementReconcilerTest {
                                    drain,
                                    drainBlocked,
                                    decommissioned,
-                                   handoffSettled);
+                                   handoffSettled,
+                                   drainRefusal);
         }
 
         @Override
@@ -115,6 +118,10 @@ class NodeReplacementReconcilerTest {
                     return Promise.success(provisionResult);
                 }
                 case DRAIN_OLD -> {
+                    if (drainPending != null) {
+                        return drainPending;
+                    }
+
                     if (drainBlocked.isEmpty()) {
                         drain = DrainState.COMPLETE;
                     }
@@ -722,5 +729,61 @@ class NodeReplacementReconcilerTest {
 
         assertThat(model.records.get(OLD).phase()).isEqualTo(NodeReplacementPhase.FAILED_KEPT_BOTH);
         assertThat(model.effects).doesNotContain("TERMINATE_REPLACEMENT");
+    }
+
+    /// v-2008 U2 (B4): an effect is bounded. A provider or admission call that never answers must not stall every later tick (the
+    /// driver does not re-open a tick while one is pending), so after the bound the next tick plans again and re-issues the effect.
+    @Test
+    void effectThatNeverAnswers_isBounded_soALaterTickIssuesItAgain() {
+        var model = new Model();
+        var driver = NodeReplacementReconciler.nodeReplacementReconciler(model,
+                                                                         TIMINGS,
+                                                                         org.pragmatica.lang.io.TimeSpan.timeSpan(30).seconds(),
+                                                                         effect -> org.pragmatica.lang.io.TimeSpan.timeSpan(200).millis());
+
+        model.begin(NodeReplacementPhase.DRAINING_OLD);
+        model.newKnown = true;
+        model.newAlive = true;
+        model.newVoter = true;
+        model.oldVoter = false;
+        model.drainPending = Promise.promise();
+        driver.reconcile().await(org.pragmatica.lang.io.TimeSpan.timeSpan(5).seconds());
+        for (int attempt = 0; attempt < 40 && model.effects.stream().filter("DRAIN_OLD"::equals).count() < 2; attempt++) {
+            driver.reconcile().await(org.pragmatica.lang.io.TimeSpan.timeSpan(5).seconds());
+            sleepBriefly();
+        }
+
+        assertThat(model.effects.stream().filter("DRAIN_OLD"::equals).count()).as("the drain was issued again after the first one outlived its bound").isGreaterThanOrEqualTo(2);
+    }
+
+    /// v-2008 S1: a drain the admission refused for a reason other than the floor is remembered, and the kept-both reason says why.
+    @Test
+    void keptBoth_afterAnUnadmittedDrain_namesTheRefusal() {
+        var refused = new Model();
+
+        refused.begin(NodeReplacementPhase.DRAINING_OLD);
+        refused.newKnown = true;
+        refused.newAlive = true;
+        refused.newVoter = true;
+        refused.oldVoter = false;
+        refused.drain = DrainState.NOT_REQUESTED;
+        refused.drainRefusal = "Cannot drain node core-OLD from SYNCING (must be READY)";
+        refused.clock.addAndGet(20_000);
+        driver(refused).reconcile().await();
+
+        assertThat(refused.records.get(OLD).phase()).isEqualTo(NodeReplacementPhase.FAILED_KEPT_BOTH);
+        assertThat(refused.records.get(OLD).reason()).contains("drain refused: Cannot drain node core-OLD from SYNCING (must be READY)");
+
+        var silent = new Model();
+
+        silent.begin(NodeReplacementPhase.DRAINING_OLD);
+        silent.newKnown = true;
+        silent.newAlive = true;
+        silent.newVoter = true;
+        silent.oldVoter = false;
+        silent.clock.addAndGet(20_000);
+        driver(silent).reconcile().await();
+
+        assertThat(silent.records.get(OLD).reason()).as("control: no refusal, no refusal text").doesNotContain("drain refused");
     }
 }

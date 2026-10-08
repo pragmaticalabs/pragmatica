@@ -56,6 +56,16 @@ public interface CommunityPlacementReconciler {
         return Unit.unit();
     }
 
+    /// The nodes a reduction must not remove now. Read-only, for the boot test that pins the node's wiring.
+    default java.util.Set<NodeId> protectedView() {
+        return java.util.Set.of();
+    }
+
+    /// The pairings' replacements not counted as an excess now. Read-only, for the boot test that pins the node's wiring.
+    default java.util.Set<NodeId> surgeView() {
+        return java.util.Set.of();
+    }
+
     interface Actuator {
         org.pragmatica.lang.Result<String> sourceBinding(org.pragmatica.aether.environment.SourceName source);
 
@@ -110,6 +120,18 @@ record PlacementReconciler(NodeId self,
                            AtomicBoolean running,
                            java.util.concurrent.atomic.AtomicReference<Supplier<java.util.Set<NodeId>>> protectedNodes,
                            java.util.concurrent.atomic.AtomicReference<Supplier<java.util.Set<NodeId>>> surgeNodes) implements CommunityPlacementReconciler {
+    @Override
+    public java.util.Set<NodeId> protectedView() {
+        return protectedNodes.get()
+                             .get();
+    }
+
+    @Override
+    public java.util.Set<NodeId> surgeView() {
+        return surgeNodes.get()
+                         .get();
+    }
+
     @Override
     public Unit protectReplacements(Supplier<java.util.Set<NodeId>> protectedSupplier,
                                     Supplier<java.util.Set<NodeId>> surgeSupplier) {
