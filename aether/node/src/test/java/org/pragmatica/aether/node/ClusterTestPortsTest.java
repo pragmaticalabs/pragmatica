@@ -25,6 +25,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 class ClusterTestPortsTest {
     private static final int SWIM = CoreSwimHealthDetector.SWIM_PORT_OFFSET;
     /// TCP-only: the port is for an HTTP/1 management server and nothing UDP ever binds it.
+    /// Any TCP reservation form: `ServerSocket(0`, `ServerSocket(0, backlog, addr)`, or a `ServerSocketChannel`.
+    private static final java.util.regex.Pattern RESERVES = java.util.regex.Pattern.compile("ServerSocket\\(\\s*0|ServerSocketChannel");
     private static final String TCP_ONLY_MANAGEMENT_TEST = "ManagementServerDhtCatchUpGaugeTest.java";
 
     @Test
@@ -43,6 +45,17 @@ class ClusterTestPortsTest {
         for (int i = 0; i < 50; i++) {
             assertThat(seen.add(ClusterTestPorts.freeClusterPort())).as("port issued twice").isTrue();
         }
+    }
+
+    /// Pins the uniqueness claim: a candidate source that keeps offering an already-issued port is refused until a new one appears.
+    @Test
+    void issuedPort_isNotIssuedAgainEvenWhenTheSourceOffersItAgain() {
+        var first = ClusterTestPorts.freeClusterPort();
+        var second = ClusterTestPorts.freeClusterPort();
+        var offers = new java.util.ArrayDeque<>(java.util.List.of(first, first, first, second, second));
+        var third = ClusterTestPorts.freeClusterPort(() -> offers.isEmpty() ? freshUdpPort() : offers.poll());
+
+        assertThat(third).as("only a never-issued port may come back").isNotIn(first, second);
     }
 
     /// Positive controls: each probe must read a port this test holds as taken, or "free" is vacuous.
@@ -90,9 +103,17 @@ class ClusterTestPortsTest {
         }
     }
 
+    private static int freshUdpPort() {
+        try (var socket = new DatagramSocket(0)) {
+            return socket.getLocalPort();
+        } catch (IOException e) {
+            throw new java.io.UncheckedIOException(e);
+        }
+    }
+
     private static boolean reservesWithTcpServerSocket(Path file) {
         try {
-            return Files.readString(file).contains("ServerSocket(0)");
+            return RESERVES.matcher(Files.readString(file)).find();
         } catch (IOException e) {
             throw new java.io.UncheckedIOException(e);
         }

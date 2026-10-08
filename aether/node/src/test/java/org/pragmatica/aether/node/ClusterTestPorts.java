@@ -14,6 +14,7 @@ import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.IntSupplier;
 
 /// #2016: cluster ports for node tests that boot a real [AetherNode].
 ///
@@ -40,8 +41,13 @@ public final class ClusterTestPorts {
 
     /// A cluster port whose cluster UDP, cluster TCP and SWIM UDP ports were all free at the moment of the call.
     public static int freeClusterPort() {
+        return freeClusterPort(ClusterTestPorts::udpCandidate);
+    }
+
+    /// Candidate source injected so a test can offer an already-issued port and watch it be refused.
+    static int freeClusterPort(IntSupplier candidates) {
         for (int attempt = 0; attempt < ATTEMPTS; attempt++) {
-            var candidate = udpCandidate();
+            var candidate = candidates.getAsInt();
 
             if (candidate + SWIM_OFFSET <= MAX_PORT && isFreeClusterPort(candidate) && ISSUED.add(candidate)) {
                 return candidate;
