@@ -27,10 +27,11 @@ import org.pragmatica.lang.Unit;
 ///
 /// `ConfigValidator` keeps the same structural floor, but NOT for the same reason, and the round-1
 /// review of #1019 found this paragraph asserting that it did (S1). `ConfigValidator` also runs on
-/// every boot, and its failure is DISCARDED: `Main#loadConfigFile` is
-/// `ConfigLoader.load(path).onFailure(log::error).option()`. Raising ITS floor would not refuse a
-/// boot — it would drop the config and let the node start without it. See that class for the rest of
-/// the chain. Two gates, two floors of 3, two different mechanisms; only this one refuses.
+/// every boot of a node that was GIVEN a config file (`--config=`), and since #2052 its failure
+/// refuses the boot too: `Main#resolveConfig` fails and `Main#refuseConfig` exits 65 (before #2052 the
+/// failure was discarded and the node booted on defaults). Raising ITS floor would therefore stop a
+/// running 3-node cluster from restarting, exactly as raising this gate's would. Two gates, two floors
+/// of 3, two mechanisms, both now refusing: this one on the CONFIGURED topology, that one on the file.
 ///
 /// Kept as its own top-level gate — not folded into [ConfigValidator], which a sibling change is
 /// editing elsewhere — so it can run on the CONFIGURED expected cluster size (`Main`'s
@@ -38,9 +39,9 @@ import org.pragmatica.lang.Unit;
 /// arm's `cluster().nodes()`), never on however many peers a boot attempt happened to RESOLVE — a
 /// cloud-discovery majority-at-timeout boot can legitimately resolve fewer peers than configured,
 /// and this gate must not abort that healthy boot. That is a different question from
-/// `ConfigValidator`'s declarative `[cluster] nodes` TOML check, which only fires when a TOML loads
-/// and never aborts boot on its own (`Main#loadConfigFile` discards any validation failure into
-/// `Option.none()`); this gate is the one that actually stops a sub-3-node start.
+/// `ConfigValidator`'s declarative `[cluster] nodes` TOML check, which only fires when a config file
+/// is given and loads (its failure refuses that boot since #2052, with exit 65); this gate is the one
+/// that stops a sub-3-node start with NO config file, from `--peers=`/`CLUSTER_PEERS`.
 public final class ClusterSizeGate {
     private static final int MINIMUM_SUPPORTED_CLUSTER_SIZE = 3;
 
