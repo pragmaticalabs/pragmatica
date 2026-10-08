@@ -580,8 +580,21 @@ class NodeReplacementReconcilerTest {
         model.commitNeverAnswers = true;
         driver.reconcile().await(org.pragmatica.lang.io.TimeSpan.timeSpan(5).seconds());
         model.commitNeverAnswers = false;
-        driver.reconcile().await(org.pragmatica.lang.io.TimeSpan.timeSpan(5).seconds());
+        // The tick that gave up releases the driver just after its promise resolves, so a later tick may need a moment: tick
+        // again (as the scheduler does) until the record moves or two seconds pass.
+        for (int attempt = 0; attempt < 40 && model.records.get(OLD).phase() == NodeReplacementPhase.PROVISIONING; attempt++) {
+            driver.reconcile().await(org.pragmatica.lang.io.TimeSpan.timeSpan(5).seconds());
+            sleepBriefly();
+        }
 
         assertThat(model.records.get(OLD).phase()).as("the second tick ran and committed").isEqualTo(NodeReplacementPhase.JOINING);
+    }
+
+    private static void sleepBriefly() {
+        try {
+            Thread.sleep(50);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
     }
 }
