@@ -347,6 +347,109 @@ class MembershipWorkerDeathTest {
         assertThat(awaitTrue(() -> "Dead".equals(state(membership, id)), 3 * BACKSTOP_MS)).isFalse();
     }
 
+    /// (v-2006 H1) The SWIM-FAULTY plane also stamps the death instant: a stale governor tail older than the
+    /// FAULTY edge must not veto a SWIM-only death.
+    @Test
+    void swimOnlyDeath_staleTailOlderThanFaulty_reachesDead() {
+        var membership = fsm();
+        var id = new NodeId("w-swim-stale");
+        var governor = new NodeId("governor");
+
+        membership.onGovernorHealthy(id, "community", governor, 1, 4, worker());
+        membership.onSwimFaulty(id, 1);
+        pause(5);
+        membership.onGovernorHealthy(id, "community", governor, 1, 4, worker(), 60_000L);
+
+        assertThat(awaitTrue(() -> "Dead".equals(state(membership, id)), 15_000))
+            .as("stale evidence must not veto a SWIM-FAULTY death; state=%s", state(membership, id)).isTrue();
+    }
+
+    /// (v-2006 H6) A vetoed episode must not leave its death instant behind. With the stale instant kept, a LATER,
+    /// unrelated doubt (SWIM-SUSPECT, not a death signal) would make older-but-valid governor evidence be ignored and
+    /// the member would stay SUSPECT. Reset: the evidence is accepted and the member recovers.
+    @Test
+    void vetoedEpisode_leavesNoStaleInstantThatBlocksLaterEvidence() {
+        var membership = fsm();
+        var id = new NodeId("w-stale-instant");
+        var governor = new NodeId("governor");
+
+        membership.onGovernorHealthy(id, "community", governor, 1, 4, worker());
+        membership.onLivenessGone(id);
+        pause(5);
+        membership.onGovernorHealthy(id, "community", governor, 1, 4, worker(), 0L);
+        assertThat(state(membership, id)).as("episode 1 vetoed by fresh evidence").isEqualTo("Member");
+        pause(50);
+        membership.onSwimSuspect(id, 1);
+        assertThat(state(membership, id)).as("precondition: a plain doubt, no death signal").isEqualTo("Suspect");
+        membership.onGovernorHealthy(id, "community", governor, 1, 4, worker(), 60_000L);
+
+        assertThat(state(membership, id)).as("no death signal is armed, so the evidence is accepted").isEqualTo("Member");
+    }
+
+    /// (v-2006 probe 3) The link drops while the worker is still alive (T1); it dies later and SWIM marks it FAULTY
+    /// (T2). A governor report observed between T1 and T2 is older than the LATEST signal and must not cancel the death.
+    @Test
+    void dropThenLaterFaulty_reportObservedBetween_doesNotVeto() {
+        var membership = fsm();
+        var id = new NodeId("w-drop-then-faulty");
+        var governor = new NodeId("governor");
+
+        membership.onGovernorHealthy(id, "community", governor, 1, 4, worker());
+        membership.onLivenessGone(id);
+        pause(100);
+        long between = System.currentTimeMillis();
+        pause(100);
+        membership.onSwimFaulty(id, 1);
+        pause(5);
+        membership.onGovernorHealthy(id, "community", governor, 1, 4, worker(), System.currentTimeMillis() - between);
+
+        assertThat(awaitTrue(() -> "Dead".equals(state(membership, id)), 15_000))
+            .as("evidence older than the latest death signal; state=%s", state(membership, id)).isTrue();
+    }
+
+    private static MembershipFsm workerObserverFsm() {
+        var membership = fsm();
+
+        membership.setOnePlaneWorkerEviction(false);
+
+        return membership;
+    }
+
+    /// Ruling (#2006 round 2): a worker NODE has no evidence source for its peer workers (governor reports are consumed
+    /// on cores only), so a one-sided partition longer than the window would declare a live peer DEAD and raise a false
+    /// CRITICAL. It keeps requiring both planes.
+    @Test
+    void workerObserver_oneSidedPartition_doesNotDeclareDead() {
+        var transportOnly = workerObserverFsm();
+        var swimOnly = workerObserverFsm();
+        var a = new NodeId("peer-a");
+        var b = new NodeId("peer-b");
+
+        transportOnly.onWorkerAdmissionHealthy(a, 1, worker());
+        transportOnly.onPeerDisconnected(a);
+        transportOnly.onLivenessGone(a);
+        swimOnly.onWorkerAdmissionHealthy(b, 1, worker());
+        swimOnly.onSwimFaulty(b, 1);
+
+        assertThat(awaitTrue(() -> "Dead".equals(state(transportOnly, a)) || "Dead".equals(state(swimOnly, b)), 4 * BACKSTOP_MS))
+            .as("a one-sided partition seen by a worker must not evict; %s / %s", state(transportOnly, a), state(swimOnly, b))
+            .isFalse();
+    }
+
+    /// The same worker observer still evicts when BOTH planes agree (a real kill: ~3.4 s on workers).
+    @Test
+    void workerObserver_bothPlanes_reachDead() {
+        var membership = workerObserverFsm();
+        var id = new NodeId("peer-dead");
+
+        membership.onWorkerAdmissionHealthy(id, 1, worker());
+        membership.onSwimFaulty(id, 1);
+        membership.onLivenessGone(id);
+
+        assertThat(awaitTrue(() -> "Dead".equals(state(membership, id)), 15_000))
+            .as("both planes still evict on a worker observer; state=%s", state(membership, id)).isTrue();
+    }
+
     /// The waiver is for workers and spots only. A core is dialed, so its liveness plane exists and must
     /// still be required: SWIM-FAULTY alone must never kill a core.
     @Test

@@ -15,6 +15,7 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.function.LongSupplier;
@@ -1341,6 +1342,21 @@ public final class MembershipFsm {
         eligibleTracking(id).onPresent(action);
     }
 
+    private volatile boolean onePlaneWorkerEviction = true;
+
+    /// #1717 — whether THIS node may evict a worker or spot on a single death plane. A core holds evidence
+    /// sources for a member (governor reports, worker admission) that veto a wrong signal inside the backstop
+    /// window, so one plane is enough there. A worker node holds none of them for its peer workers (governor
+    /// reports are consumed on cores only, and a SWIM-healthy edge does not re-fire), so a one-sided partition
+    /// between two live workers lasting longer than the window would declare a live peer DEAD and raise a false
+    /// CRITICAL. A worker node therefore keeps requiring BOTH planes. Default true (core behaviour); the node
+    /// wiring switches it off on a worker.
+    public org.pragmatica.lang.Unit setOnePlaneWorkerEviction(boolean enabled) {
+        onePlaneWorkerEviction = enabled;
+
+        return org.pragmatica.lang.Unit.unit();
+    }
+
     /// Indirectly observed assigned workers cannot be declared dead from missing direct probes.
     public org.pragmatica.lang.Unit setJoinGraceReapEligibility(Predicate<NodeId> eligibility) {
         joinGraceReapEligibility = eligibility;
@@ -1399,7 +1415,8 @@ public final class MembershipFsm {
                                           wallClockMs.getAsLong(),
                                           departureTimeout,
                                           joinGrace,
-                                          node -> joinGraceReapEligibility.test(node));
+                                          node -> joinGraceReapEligibility.test(node),
+                                          () -> onePlaneWorkerEviction);
         // M10 (Wave 7): the join-grace reaper — armed on first observation; cancelled on promotion
         // to MEMBER / on death; re-armed on a fenced rejoin (all inside the dispatch chokepoint).
         tracking.armJoinGrace();
@@ -1605,7 +1622,9 @@ public final class MembershipFsm {
                                long firstTrackedAtMs,
                                TimeSpan departureTimeout,
                                TimeSpan joinGrace,
-                               Predicate<NodeId> joinGraceReapEligibility) {
+                               Predicate<NodeId> joinGraceReapEligibility,
+                               BooleanSupplier onePlaneEviction) {
+            this.onePlaneEviction = onePlaneEviction;
             this.id = id;
             this.fsm = fsm;
             this.onEnteredDead = onEnteredDead;
@@ -1930,14 +1949,15 @@ public final class MembershipFsm {
             livenessGoneSeen = true;
         }
 
-        /// Wall-clock ms of the FIRST death signal of the current episode (-1 = none armed). Cleared with the flags.
+        /// Wall-clock ms of the LATEST death signal of the current episode (-1 = none armed). Cleared with the flags.
+        private final BooleanSupplier onePlaneEviction;
         private long deathSignalAtMs = -1L;
 
+        /// The LATEST death signal wins: evidence is compared against the most recent signal, so a report observed
+        /// between an early link drop and a later SWIM-FAULTY (the worker died in between) cannot veto the death.
         @Contract
         synchronized void noteDeathSignal(long nowMs) {
-            if (deathSignalAtMs < 0) {
-                deathSignalAtMs = nowMs;
-            }
+            deathSignalAtMs = nowMs;
         }
 
         /// True when a death signal is armed and the proposed evidence instant is not newer than it.
@@ -1956,21 +1976,20 @@ public final class MembershipFsm {
             }
         }
 
-        /// Death is co-confirmed by two planes: SWIM-FAULTY and liveness-gone (the QUIC disconnect tap). A core
-        /// is dialed and probed by every other core, so for it BOTH planes exist and both are required.
+        /// Death is co-confirmed by two planes: SWIM-FAULTY and liveness-gone (the QUIC disconnect tap). For a core
+        /// BOTH exist (every other core dials and probes it) and both are required.
         ///
-        /// A worker or spot has only ONE reliable plane on any given core (#1717). In the hierarchy a core holds
-        /// no transport link to a worker (it dials core members only, [`#coreDialTarget`]), so only SWIM can
-        /// speak — and a worker killed before SWIM ever probed it never produces FAULTY, yet its direct link
-        /// (when it has one) drops. Requiring both planes left a killed worker SUSPECT forever: no DEAD edge,
-        /// so no REMOVED delta, no worker leave, and its directive, roster entry and #731 footprint persisted.
-        /// For an EXPLICIT non-core role either plane arms the same eviction backstop. The backstop window is
-        /// the veto: governor / admission / SWIM-healthy evidence arriving inside it runs
-        /// [`#clearConfirmedDeath`] and cancels the eviction, so a worker that is partitioned from one plane
-        /// but still reported healthy by its governor is never evicted. An unknown or blank role is NOT
-        /// relaxed: it still needs both planes.
+        /// A worker or spot is observed differently per node (#1717): a core holds the worker's QUIC link and probes
+        /// it through SWIM, but a worker killed young shows only one plane (SWIM never probed it, or the link
+        /// dropped first), and requiring both left a killed worker SUSPECT forever: no DEAD edge, so no REMOVED
+        /// delta, no worker leave, and its directive, roster entry and #731 footprint persisted. On a node that
+        /// [`#onePlaneWorkerEviction`] allows (a core), EITHER plane for an EXPLICIT non-core role arms the eviction
+        /// backstop; the window is the veto: governor / admission / SWIM-healthy evidence NEWER than the latest
+        /// death signal, or a re-established link, cancels it. A worker observer does not have those evidence
+        /// sources for its peer workers, so there both planes stay required. An unknown or blank role is never
+        /// relaxed.
         synchronized boolean coConfirmedDead() {
-            return isNonCoreMember()
+            return isNonCoreMember() && onePlaneEviction.getAsBoolean()
                    ? swimFaultySeen || livenessGoneSeen
                    : swimFaultySeen && livenessGoneSeen;
         }

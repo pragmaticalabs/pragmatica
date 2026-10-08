@@ -46,8 +46,8 @@ import static org.awaitility.Awaitility.await;
 /// ACTIVE) at exactly three live members, and killing one non-governor worker drops the leader's live
 /// count below the floor (ACTIVE → DEGRADED) once the community-absence window (20s default) passes.
 ///
-/// A force-killed worker reaches DEAD on the core (#1717: a core holds no transport link to a worker, so
-/// SWIM-FAULTY alone arms the eviction backstop for an explicit non-core role), which raises the worker
+/// A force-killed worker reaches DEAD on the core (#1717: the core holds the worker's QUIC link, its drop arms
+/// the eviction backstop, and the governor's stale "alive" report, older than the drop, no longer vetoes it), which raises the worker
 /// leave: its directive and roster entry are removed, `MEMBER_LEFT` is emitted, and a replacement worker
 /// brings the community back to ACTIVE with the matching recovery edge and `MEMBER_JOINED`. The roster
 /// diff that emits MEMBER_LEFT is pinned in `CommunityLifecycleEventsTest$Roster`.
