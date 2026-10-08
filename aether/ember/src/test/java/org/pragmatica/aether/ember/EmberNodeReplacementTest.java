@@ -217,7 +217,7 @@ class EmberNodeReplacementTest {
         void begin(NodeId victim) {
             old = victim;
             killedAtNanos = System.nanoTime();
-            sampler = Thread.ofPlatform().daemon().start(this::sample);
+            sampler = Thread.ofPlatform().daemon().unstarted(this::sample);
         }
 
         private void sample() {
