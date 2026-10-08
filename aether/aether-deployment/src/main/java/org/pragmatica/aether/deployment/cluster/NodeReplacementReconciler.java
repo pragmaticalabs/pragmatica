@@ -55,7 +55,17 @@ public interface NodeReplacementReconciler {
     }
 
     static NodeReplacementReconciler nodeReplacementReconciler(Environment environment, Timings timings) {
-        record reconciler(Environment environment, Timings timings, AtomicBoolean running) implements NodeReplacementReconciler {
+        return nodeReplacementReconciler(environment,
+                                         timings,
+                                         TimeSpan.timeSpan(30).seconds());
+    }
+
+    /// `commitBound`: how long a compare-and-set may stay unanswered before the tick gives up on it. The next tick re-reads the
+    /// committed records, so a commit that lands late is simply seen; a commit that never answers must not stop the ticks.
+    static NodeReplacementReconciler nodeReplacementReconciler(Environment environment,
+                                                               Timings timings,
+                                                               TimeSpan commitBound) {
+        record reconciler(Environment environment, Timings timings, AtomicBoolean running, TimeSpan commitBound) implements NodeReplacementReconciler {
             @Override
             public Promise<Unit> reconcile() {
                 if (!environment.isLeader() || !running.compareAndSet(false, true)) {
@@ -127,11 +137,13 @@ public interface NodeReplacementReconciler {
 
             private Promise<Unit> commit(NodeId original, NodeReplacementValue before, NodeReplacementValue next) {
                 return environment.commit(original, before, next)
+                                  .timeout(commitBound)
+                                  .recover(_ -> false)
                                   .mapToUnit();
             }
         }
 
-        return new reconciler(environment, timings, new AtomicBoolean());
+        return new reconciler(environment, timings, new AtomicBoolean(), commitBound);
     }
 
     static boolean isTerminal(NodeReplacementPhase phase) {

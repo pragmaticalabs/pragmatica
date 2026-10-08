@@ -56,6 +56,7 @@ class NodeReplacementReconcilerTest {
         boolean handoffSettled = true;
         EffectResult provisionResult = new EffectResult.Done();
         Promise<EffectResult> provisionPending;
+        boolean commitNeverAnswers;
         boolean provisionedSoNewJoins = true;
 
         @Override public boolean isLeader() {return leader;}
@@ -63,6 +64,10 @@ class NodeReplacementReconcilerTest {
 
         @Override
         public Promise<Boolean> commit(NodeId original, NodeReplacementValue expected, NodeReplacementValue next) {
+            if (commitNeverAnswers) {
+                return Promise.promise();
+            }
+
             if (!expected.equals(records.get(original))) {
                 return Promise.success(false);
             }
@@ -648,5 +653,21 @@ class NodeReplacementReconcilerTest {
 
         assertThat(model.records.get(OLD).phase()).isEqualTo(NodeReplacementPhase.ROLLED_BACK);
         assertThat(model.effects).contains("TERMINATE_REPLACEMENT");
+    }
+
+    /// B4 follow-up: an effect is bounded, and so is the commit. A compare-and-set that never answers must not stop the ticks for
+    /// good (the driver does not re-open a tick while one is pending), so the next tick plans again from the committed records.
+    @Test
+    void commitThatNeverAnswers_doesNotStopLaterTicks() {
+        var model = new Model();
+        var driver = NodeReplacementReconciler.nodeReplacementReconciler(model, TIMINGS, org.pragmatica.lang.io.TimeSpan.timeSpan(200).millis());
+
+        model.begin(NodeReplacementPhase.PROVISIONING);
+        model.commitNeverAnswers = true;
+        driver.reconcile().await(org.pragmatica.lang.io.TimeSpan.timeSpan(5).seconds());
+        model.commitNeverAnswers = false;
+        driver.reconcile().await(org.pragmatica.lang.io.TimeSpan.timeSpan(5).seconds());
+
+        assertThat(model.records.get(OLD).phase()).as("the second tick ran and committed").isEqualTo(NodeReplacementPhase.JOINING);
     }
 }
