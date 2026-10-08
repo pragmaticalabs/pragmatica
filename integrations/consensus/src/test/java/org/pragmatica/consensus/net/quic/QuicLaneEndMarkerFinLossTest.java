@@ -42,6 +42,7 @@ import org.pragmatica.serialization.SliceCodec;
 
 import io.netty.buffer.Unpooled;
 import io.netty.channel.ChannelInboundHandlerAdapter;
+import io.netty.handler.codec.quic.DefaultQuicStreamFrame;
 import io.netty.handler.codec.quic.QuicStreamChannel;
 import io.netty.handler.codec.quic.QuicStreamType;
 
@@ -101,6 +102,7 @@ class QuicLaneEndMarkerFinLossTest {
         relay.blockAcceptorToDialer = false;
         awaitTrue(() -> acceptorSide.get().stream(LANE).map(current -> current != atAcceptor).or(true),
                   "the acceptor released the retired lane although the finish was first lost");
+        awaitStreamClosedAtBothEnds(atAcceptor, stream);
     }
 
     @Test
@@ -118,6 +120,55 @@ class QuicLaneEndMarkerFinLossTest {
         relay.blockAcceptorToDialer = false;
         awaitTrue(() -> acceptorSide.get().stream(LANE).map(current -> current != atAcceptor).or(true),
                   "control: the acceptor released the retired lane");
+        awaitStreamClosedAtBothEnds(atAcceptor, stream);
+    }
+
+    /// The receiver branch alone, end to end: the marker arrives as ordinary bytes with NO FIN (the case a
+    /// lost FIN produces), and the acceptor still releases the lane. Hand-feeding the handler cannot show
+    /// that the real pipeline (length decoder included) delivers the empty frame.
+    @Test
+    void markerWithoutAnyFin_releasesTheLaneAtTheAcceptor() {
+        connect();
+        var stream = dialerSide.stream(LANE).unwrap();
+        var atAcceptor = acceptorSide.get().stream(LANE).unwrap();
+
+        stream.writeAndFlush(new DefaultQuicStreamFrame(Unpooled.wrappedBuffer(new byte[4]), false));
+
+        awaitTrue(() -> acceptorSide.get().stream(LANE).map(current -> current != atAcceptor).or(true),
+                  "the acceptor released the lane on the marker alone, with no FIN sent");
+    }
+
+    /// 4.2.18 behaviour the answering path relies on: a lane-end write after the FIN has gone out fails its
+    /// future, and neither throws into the caller nor reaches the pipeline's exceptionCaught.
+    @Test
+    void markerWrittenAfterFin_failsQuietly() {
+        connect();
+        var stream = dialerSide.stream(LANE).unwrap();
+        var caught = new AtomicInteger();
+
+        stream.pipeline().addLast(new io.netty.channel.ChannelInboundHandlerAdapter() {
+            @Override
+            public void exceptionCaught(io.netty.channel.ChannelHandlerContext ctx, Throwable cause) {
+                caught.incrementAndGet();
+            }
+        });
+        var first = stream.writeAndFlush(QuicPeerConnection.laneEndFrame());
+
+        first.awaitUninterruptibly(AWAIT.millis());
+        assertThat(first.isSuccess()).as("control: the first marker+FIN is written").isTrue();
+
+        var second = stream.writeAndFlush(QuicPeerConnection.laneEndFrame());
+
+        second.awaitUninterruptibly(AWAIT.millis());
+        assertThat(second.isDone()).isTrue();
+        assertThat(second.isSuccess()).as("a write after the FIN is refused").isFalse();
+        LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(300));
+        assertThat(caught.get()).as("and does not surface as an exception in the pipeline").isZero();
+    }
+
+    /// After the marker both halves are finished and the stream closes at BOTH ends, returning its credit.
+    private void awaitStreamClosedAtBothEnds(QuicStreamChannel atAcceptor, QuicStreamChannel atDialer) {
+        awaitTrue(() -> !atAcceptor.isActive() && !atDialer.isActive(), "the retired stream closed at both ends");
     }
 
     /// Retires `old` through the product path: a newer dialer-opened stream outranks it, so

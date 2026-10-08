@@ -167,6 +167,6 @@ final class QuicLaneDataHandler extends SimpleChannelInboundHandler<ByteBuf> {
     @Contract
     public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
         log.error("Error processing message from peer {} on lane {}", peerId, lane, cause);
-        ctx.close();
+        QuicPeerConnection.endLaneThenClose(ctx);
     }
 }

@@ -108,4 +108,73 @@ class QuicLaneEndMarkerTest {
         assertThat(frame.content().readableBytes()).isEqualTo(4);
         assertThat(frame.content().readInt()).isZero();
     }
+
+    /// Item 3 — the error path ends the lane with the marker before closing, so the peer releases its lane
+    /// even if a bare FIN would be lost.
+    @Test
+    void exceptionCaught_endsTheLaneWithTheMarker_thenCloses() {
+        var harness = harness();
+        var written = mock(io.netty.channel.ChannelFuture.class);
+        var listener = new java.util.concurrent.atomic.AtomicReference<io.netty.util.concurrent.GenericFutureListener>();
+
+        when(harness.stream().isActive()).thenReturn(true);
+        when(harness.ctx().writeAndFlush(any())).thenReturn(written);
+        when(written.addListener(any())).thenAnswer(invocation -> {
+            listener.set(invocation.getArgument(0));
+            return written;
+        });
+
+        harness.handler().exceptionCaught(harness.ctx(), new IllegalStateException("boom"));
+
+        verify(harness.ctx(), never()).close();
+        verify(harness.ctx()).writeAndFlush(org.mockito.ArgumentMatchers.argThat(QuicLaneEndMarkerTest::isLaneEnd));
+        try {
+            listener.get().operationComplete(written);
+        } catch (Exception e) {
+            throw new AssertionError(e);
+        }
+        verify(harness.ctx()).close();
+    }
+
+    /// A dead stream has nothing to write to: it is only closed.
+    @Test
+    void exceptionCaught_onADeadStream_justCloses() {
+        var harness = harness();
+
+        when(harness.stream().isActive()).thenReturn(false);
+
+        harness.handler().exceptionCaught(harness.ctx(), new IllegalStateException("boom"));
+
+        verify(harness.ctx()).close();
+        verify(harness.ctx(), never()).writeAndFlush(any());
+    }
+
+    /// Item 3 — a lane refused for want of a verified connection is ended with the marker too.
+    @Test
+    void refusedUnverifiedLane_endsWithTheMarker_beforeClosing() {
+        var harness = harness();
+        var written = mock(io.netty.channel.ChannelFuture.class);
+        var parent = mock(QuicChannel.class);
+        @SuppressWarnings("unchecked")
+        var noConnection = (Attribute<QuicPeerConnection>) mock(Attribute.class);
+
+        when(harness.stream().isActive()).thenReturn(true);
+        when(harness.stream().parent()).thenReturn(parent);
+        when(parent.attr(PeerOpenedLaneRouter.PEER_CONNECTION)).thenReturn(noConnection);
+        when(harness.ctx().writeAndFlush(any())).thenReturn(written);
+        when(written.addListener(any())).thenReturn(written);
+
+        new PeerOpenedLaneRouter(LaneProbe.codec(), QuicTransportMetrics.quicTransportMetrics(), (_, message) -> {}, LoggerFactory.getLogger(QuicLaneEndMarkerTest.class))
+            .attach(harness.ctx(), mock(io.netty.channel.ChannelHandler.class), LANE);
+
+        verify(harness.ctx()).writeAndFlush(org.mockito.ArgumentMatchers.argThat(QuicLaneEndMarkerTest::isLaneEnd));
+        verify(harness.ctx(), never()).close();
+    }
+
+    private static boolean isLaneEnd(Object message) {
+        return message instanceof io.netty.handler.codec.quic.QuicStreamFrame frame
+               && frame.hasFin()
+               && frame.content().readableBytes() == 4
+               && frame.content().getInt(frame.content().readerIndex()) == 0;
+    }
 }

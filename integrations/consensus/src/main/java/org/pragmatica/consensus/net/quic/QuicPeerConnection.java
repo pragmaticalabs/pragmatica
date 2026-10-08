@@ -31,6 +31,7 @@ import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.messaging.StreamType;
 
 import io.netty.buffer.Unpooled;
+import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.WriteBufferWaterMark;
 import io.netty.handler.codec.quic.DefaultQuicStreamFrame;
 import io.netty.handler.codec.quic.QuicChannel;
@@ -358,6 +359,20 @@ public final class QuicPeerConnection {
     /// No other writer produces a zero-length frame — every message encodes to at least its type tag.
     static DefaultQuicStreamFrame laneEndFrame() {
         return new DefaultQuicStreamFrame(Unpooled.wrappedBuffer(new byte[LENGTH_PREFIX_BYTES]), true);
+    }
+
+    /// #1727 (M1) — the error-path finish: end the lane with the marker frame, THEN close. A bare close()
+    /// sends a bare FIN, which the peer may never see (see [#laneEndFrame]), so it would not release its
+    /// lane. A stream that is already dead is just closed: there is nothing to write to.
+    @Contract
+    static void endLaneThenClose(ChannelHandlerContext ctx) {
+        if (!ctx.channel().isActive()) {
+            ctx.close();
+
+            return;
+        }
+
+        ctx.writeAndFlush(laneEndFrame()).addListener(_ -> ctx.close());
     }
 
     /// #1578 — `stream` ended from the other side: its FIN arrived (the other side retired it under
