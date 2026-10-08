@@ -76,7 +76,13 @@ class AetherNodeBrokenTlsBootTest {
     void start_refuses_whenManagementTlsCannotBeBuiltOverH3Only() throws Exception {
         var brokenTls = Option.some(TlsConfig.server(Path.of("/missing/node-cert.pem"), Path.of("/missing/node-key.pem")));
 
-        assertRefused(AppHttpConfig.insecureAppHttpConfig(freePort()), freePort(), brokenTls, HttpProtocol.H3, 0);
+        // The app listener shares the node's `[tls]`, so it is switched off here: only the management HTTP/3 listener may refuse.
+        var base = AppHttpConfig.insecureAppHttpConfig(freePort());
+        var appOff = new AppHttpConfig(false, base.port(), base.apiKeys(), base.maxRequestSize(), base.securityMode(),
+                                       base.jwtConfig(), base.httpProtocol(), base.apiVersioningDetection(),
+                                       base.apiVersionHeaderName(), Option.none());
+
+        assertRefused(appOff, freePort(), brokenTls, HttpProtocol.H3, 0);
     }
 
     @Test
