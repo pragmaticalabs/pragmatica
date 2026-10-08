@@ -20,10 +20,9 @@ import org.pragmatica.postgres.net.Converter;
 import org.pragmatica.postgres.net.PgValue;
 import org.pragmatica.postgres.net.PgWriter;
 import org.pragmatica.lang.Functions.Fn3;
-
-import static org.pragmatica.postgres.conversion.TemporalConversions.*;
 import org.pragmatica.postgres.util.HexConverter;
 
+import static org.pragmatica.postgres.conversion.TemporalConversions.*;
 import static org.pragmatica.postgres.util.HexConverter.parseHexBinary;
 
 

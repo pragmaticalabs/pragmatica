@@ -19,20 +19,25 @@ final class PgTemporal {
 
     private PgTemporal() {}
 
+    @SuppressWarnings("JBCT-EX-01")
     static LocalDate date(int days) {
         if (days == Integer.MAX_VALUE || days == Integer.MIN_VALUE) {
-            throw new SqlException("PostgreSQL date '" + infinityName(days == Integer.MAX_VALUE) + "' has no LocalDate representation");
+            throw new SqlException("PostgreSQL date '" + infinityName(days == Integer.MAX_VALUE)
+                                  + "' has no LocalDate representation");
         }
 
         return PG_EPOCH.plusDays(days);
     }
 
+    @SuppressWarnings("JBCT-EX-01")
     static Instant timestamp(long pgMicros) {
         if (pgMicros == Long.MAX_VALUE || pgMicros == Long.MIN_VALUE) {
-            throw new SqlException("PostgreSQL timestamp '" + infinityName(pgMicros == Long.MAX_VALUE) + "' has no Instant representation");
+            throw new SqlException("PostgreSQL timestamp '" + infinityName(pgMicros == Long.MAX_VALUE)
+                                  + "' has no Instant representation");
         }
 
-        return Instant.ofEpochSecond(Math.floorDiv(pgMicros, 1_000_000L) + PG_EPOCH_SECONDS, Math.floorMod(pgMicros, 1_000_000L) * 1000L);
+        return Instant.ofEpochSecond(Math.floorDiv(pgMicros, 1_000_000L) + PG_EPOCH_SECONDS,
+                                     Math.floorMod(pgMicros, 1_000_000L) * 1000L);
     }
 
     private static String infinityName(boolean positive) {
