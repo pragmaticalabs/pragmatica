@@ -1789,7 +1789,7 @@ Layers 1-3 can be delivered independently. Layer 4 depends on 1-3. Layers 5-7 de
 - [SecretsProvider SPI](/aether/environment-integration/src/main/java/org/pragmatica/aether/environment/SecretsProvider.java) -- Secret resolution for `${secrets:xxx}`
 - [ClusterTopologyManager](/aether/aether-deployment/src/main/java/org/pragmatica/aether/deployment/cluster/ClusterTopologyManager.java) -- Node count reconciliation state machine
 - [NodeLifecycleManager](/aether/aether-deployment/src/main/java/org/pragmatica/aether/deployment/cluster/NodeLifecycleManager.java) -- Cloud instance lifecycle operations
-- [RollingUpdateManager](/aether/aether-invoke/src/main/java/org/pragmatica/aether/update/RollingUpdateManager.java) -- Two-stage rolling update orchestration
+- RollingUpdateManager -- Two-stage rolling update orchestration
 - [AetherKey](/aether/slice/src/main/java/org/pragmatica/aether/slice/kvstore/AetherKey.java) -- KV-Store key types
 - [AetherValue](/aether/slice/src/main/java/org/pragmatica/aether/slice/kvstore/AetherValue.java) -- KV-Store value types
 - [AetherConfig](/aether/aether-config/src/main/java/org/pragmatica/aether/config/AetherConfig.java) -- Existing runtime configuration

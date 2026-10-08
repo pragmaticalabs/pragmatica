@@ -22,6 +22,9 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicIntegerArray;
+import java.util.concurrent.atomic.AtomicLongArray;
+import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 
 import org.pragmatica.consensus.NodeId;
@@ -117,6 +120,11 @@ public final class QuicPeerConnection {
     private final int consensusWatermarkLowBytes;
     private final int consensusWatermarkHighBytes;
     private volatile LaneOpener laneOpener = LaneOpener.noop();
+    private volatile QuicActivityKick activityKick;
+    /// #1727 — per lane: writes handed to the stream and not yet accepted by quiche, and when the lane was
+    /// last written. Read at supersede time to count what the immediate close would discard.
+    private final AtomicIntegerArray pendingLaneWrites = new AtomicIntegerArray(StreamType.values().length);
+    private final AtomicLongArray lastLaneWriteNanos = new AtomicLongArray(StreamType.values().length);
     /// #718 — lanes with a lazy open IN FLIGHT, each mapped to the messages waiting on it. A present
     /// key IS the in-flight marker; [#completeLaneOpen] removing it IS the release. Guarded by this
     /// instance's monitor.
@@ -194,6 +202,110 @@ public final class QuicPeerConnection {
                           : opener;
     }
 
+    /// #1727 (M2) — install the activity kick: after a lane data write ([#noteLaneWrite]) a CONTROL-lane
+    /// frame is written every 100 ms until 5 s pass with no data write. `frame` is the already-encoded
+    /// KeepAlive; `suppressed` silences it (fault-injection blackhole). A connection whose channel has no
+    /// event loop (unit fixtures) gets no kick.
+    @Contract
+    public void activityKick(byte[] frame, BooleanSupplier suppressed) {
+        activityKick(frame, suppressed, QuicActivityKick.DEFAULT_INTERVAL_MS, QuicActivityKick.DEFAULT_WINDOW_MS);
+    }
+
+    @Contract
+    void activityKick(byte[] frame, BooleanSupplier suppressed, long intervalMs, long windowMs) {
+        if (activityKick != null) {
+            return;
+        }
+
+        Option.option(connection.eventLoop()).onPresent(loop -> activityKick = new QuicActivityKick(() -> stream(StreamType.CONTROL),
+                                                                                                    loop,
+                                                                                                    connection::isActive,
+                                                                                                    suppressed,
+                                                                                                    frame,
+                                                                                                    intervalMs,
+                                                                                                    windowMs));
+    }
+
+    /// #1727 — a write on `lane` was handed to its stream: it is unflushed until [#laneWriteCompleted], and
+    /// opens or extends the activity kick window.
+    ///
+    /// CONTROL is not accounted: the transport's own 1 s KeepAlive rides it, so counting it would put one lane
+    /// "at risk" on every idle link (found by v-2023). CONTROL traffic is not part of the risk figure.
+    @Contract
+    void laneWriteStarted(StreamType lane) {
+        if (lane == StreamType.CONTROL) {
+            return;
+        }
+
+        pendingLaneWrites.incrementAndGet(lane.streamIndex());
+        lastLaneWriteNanos.set(lane.streamIndex(), System.nanoTime());
+        noteLaneWrite();
+    }
+
+    /// #1727 — the write on `lane` completed (accepted by quiche, or failed).
+    @Contract
+    void laneWriteCompleted(StreamType lane) {
+        if (lane == StreamType.CONTROL) {
+            return;
+        }
+
+        pendingLaneWrites.decrementAndGet(lane.streamIndex());
+    }
+
+    /// #1727 — lanes whose writes an immediate close of this connection would discard, as far as it is
+    /// observable: lanes with unflushed writes, and lanes written within [#SUPERSEDE_RISK_WINDOW_NANOS].
+    LaneWriteRisk laneWritesAtRisk(long nowNanos) {
+        var unflushed = 0;
+        var recent = 0;
+        var atRisk = 0;
+
+        for (var lane : StreamType.values()) {
+            var index = lane.streamIndex();
+            var isUnflushed = pendingLaneWrites.get(index) > 0;
+            var written = lastLaneWriteNanos.get(index);
+            var isRecent = written != 0 && nowNanos - written <= SUPERSEDE_RISK_WINDOW_NANOS;
+
+            unflushed += isUnflushed
+                         ? 1
+                         : 0;
+            recent += isRecent
+                      ? 1
+                      : 0;
+            atRisk += isUnflushed || isRecent
+                      ? 1
+                      : 0;
+        }
+
+        return new LaneWriteRisk(unflushed, recent, atRisk);
+    }
+
+    /// Lanes at risk at close time: `lanesAtRisk` counts a lane once even if it is both unflushed and recent.
+    record LaneWriteRisk(int unflushedLanes, int recentLanes, int lanesAtRisk) {}
+
+    /// A guess, not a derived figure: long enough to cover a LAN round trip plus a PTO or two for a write that
+    /// is still unacked, short enough that a lane idle for a while does not count. Tune from the campaign data.
+    static final long SUPERSEDE_RISK_WINDOW_NANOS = java.util.concurrent.TimeUnit.SECONDS.toNanos(2);
+
+    /// #1727 (M2) — a lane data write was accepted on one of this connection's streams.
+    @Contract
+    public void noteLaneWrite() {
+        Option.option(activityKick).onPresent(QuicActivityKick::noteDataWrite);
+    }
+
+    /// Visible for tests: the kick was stopped (the connection closed).
+    boolean activityKickStopped() {
+        return Option.option(activityKick)
+                     .map(QuicActivityKick::isStopped)
+                     .or(false);
+    }
+
+    /// Visible for tests: kick frames sent so far.
+    long activityKicksSent() {
+        return Option.option(activityKick)
+                     .map(QuicActivityKick::kicksSent)
+                     .or(0L);
+    }
+
     /// Lazily (re)open a missing long-lived `lane` stream on this live connection, invoking
     /// `onResult` with the registered stream (some) or empty on failure. Delegates to the installed
     /// [LaneOpener]; the default no-op opener reports empty (no live channel to open against).
@@ -255,6 +367,19 @@ public final class QuicPeerConnection {
         queue.offerLast(bytes);
 
         return queue;
+    }
+
+    /// The lane `stream` is registered under on this connection, if any. Accounting is keyed by the stream
+    /// actually written, not by the message's lane: a message falls back to the CONSENSUS stream when its own
+    /// lane has none.
+    Option<StreamType> laneOf(QuicStreamChannel stream) {
+        for (var lane : StreamType.values()) {
+            if (longLivedStreams[lane.streamIndex()] == stream) {
+                return Option.some(lane);
+            }
+        }
+
+        return Option.none();
     }
 
     /// Get a long-lived stream, if already opened.
@@ -432,6 +557,7 @@ public final class QuicPeerConnection {
     @Contract
     @SuppressWarnings("JBCT-UTIL-01")
     private void closeSync() throws Exception {
+        Option.option(activityKick).onPresent(QuicActivityKick::stop);
         closeLongLivedStreams();
         connection.close().sync();
     }

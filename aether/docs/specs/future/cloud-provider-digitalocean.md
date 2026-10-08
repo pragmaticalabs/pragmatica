@@ -137,5 +137,5 @@ Hetzner module: direct JDK HttpClient calls against the DigitalOcean REST API v2
 - [DigitalOcean API Slugs](https://slugs.do-api.dev/) -- Auto-updated list of droplet sizes, images, and region slugs
 
 ### Internal References
-- [Cloud Integration SPI Spec](cloud-integration-spi-spec.md) -- SPI architecture, template (section 7), Hetzner reference (section 8)
-- [Hetzner Module](../../environment/hetzner/) -- Reference implementation; DigitalOcean module mirrors this structure
+- [Cloud Integration SPI Spec](../cloud-integration-spi-spec.md) -- SPI architecture, template (section 7), Hetzner reference (section 8)
+- [Hetzner Module](../../../environment/hetzner) -- Reference implementation; DigitalOcean module mirrors this structure

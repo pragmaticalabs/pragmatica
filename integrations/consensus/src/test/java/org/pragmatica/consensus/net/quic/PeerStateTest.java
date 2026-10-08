@@ -398,6 +398,24 @@ class PeerStateTest {
         }
     }
 
+    /// #2011: a NewBatch left in the offline buffer would be re-delivered on reattach with no time limit, long after its
+    /// slot decided and beyond the committed-batch window, re-queuing a committed batch. It must never be buffered.
+    @Test
+    void offerOutbound_rabiaNewBatch_isNeverBuffered_whileOtherConsensusFramesStillAre() {
+        var evicted = state();
+
+        evicted.attach(liveConnection(), T0 + 1);
+        evicted.evict(T0 + 2);
+        var newBatch = new org.pragmatica.consensus.rabia.RabiaProtocolMessage.Asynchronous.NewBatch<org.pragmatica.consensus.Command>(
+            NodeId.nodeId("sender").unwrap(), org.pragmatica.consensus.StateMachine.Batch.emptyBatch());
+        var propose = new org.pragmatica.consensus.rabia.RabiaProtocolMessage.Synchronous.Propose<org.pragmatica.consensus.Command>(
+            NodeId.nodeId("sender").unwrap(), org.pragmatica.consensus.rabia.Phase.ZERO, org.pragmatica.consensus.StateMachine.Batch.emptyBatch());
+
+        assertThat(evicted.offerOutbound(newBatch)).isInstanceOf(OfferOutcome.NotBuffered.class);
+        assertThat(evicted.offlineBufferSize()).isZero();
+        assertThat(evicted.offerOutbound(propose)).as("control: a Propose is still buffered").isInstanceOf(OfferOutcome.Queued.class);
+    }
+
     @Test
     void offerOutbound_INIT_queues() {
         var s = state();

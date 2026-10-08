@@ -16,7 +16,7 @@
 #                  (default: aether/tests/integration/lint-baseline.txt)
 #
 # Baseline keys (#2029): a finding is identified by rule + file + the NORMALISED CONTENT of the flagged line
-# (`[R1] path :: content — detail`), never by its line number. Keyed by number, any edit above a waived line made
+# (`[R1] path @ function :: content — detail`), never by its line number. Keyed by number, any edit above a waived line made
 # the waiver stale and the same finding "new", which aborted every run-tests.sh (it runs this under
 # `set -euo pipefail`). Whitespace at the ends and runs of whitespace inside the line are normalised; any other
 # change to the waived line deliberately voids its waiver. Line numbers are still printed for NEW findings, from
@@ -84,11 +84,15 @@ emit_finding() {
     local rule="$1" file="$2" line="$3" detail="$4"
     # Normalize: strip $REPO_ROOT prefix to make findings portable across checkouts.
     local rel="${file#$REPO_ROOT/}"
-    local content key
+    local content key fn
     content=$(sed -n "${line}p" "$file" | normalise_content)
-    # Detail text may cite other line numbers ("preceding log_warn at line 14"); they are location, not identity.
-    detail=$(printf '%s' "$detail" | sed -E 's/ (from |at )?line [0-9]+//g')
-    key=$(printf "[%s] %s :: %s — %s" "$rule" "$rel" "$content" "$detail")
+    # Detail text may cite other line numbers (R3 "from line 14"); they are location, not identity. The R1 detail carries the
+    # text of the preceding log_warn instead, so the key names the pair, not just the log_pass line.
+    detail=$(printf '%s' "$detail" | sed -E 's/ (from |at )?line [0-9]+//g' | normalise_content)
+    # The enclosing shell function, so fixing one waived finding while adding an identical one in ANOTHER function is a
+    # new finding, not a swap the count cannot see. (Same text in the same function is the same finding.)
+    fn=$(awk -v target="$line" 'NR <= target && /^[[:space:]]*[A-Za-z_][A-Za-z0-9_]*\(\)[[:space:]]*\{/ { f = $1; sub(/\(\).*/, "", f) } END { print f }' "$file")
+    key=$(printf "[%s] %s @ %s :: %s — %s" "$rule" "$rel" "${fn:--}" "$content" "$detail")
     printf '%s\n' "$key" >> "$FINDINGS_FILE"
     printf '%s\t%s:%s\n' "$key" "$rel" "$line" >> "$LOCATIONS_FILE"
 }
@@ -110,6 +114,9 @@ lint_r1_warn_then_pass() {
         !in_test { next }
         /log_warn/ {
             warn_line = NR
+            warn_text = $0
+            gsub(/^[ \t]+|[ \t]+$/, "", warn_text)
+            gsub(/[ \t]+/, " ", warn_text)
             warn_seen = 1
             opt_out = 0
             next
@@ -120,7 +127,7 @@ lint_r1_warn_then_pass() {
         }
         warn_seen && /log_pass/ {
             if (!opt_out && (NR - warn_line) <= 5) {
-                print FILENAME ":" NR ":warn-then-pass-demotion (preceding log_warn at line " warn_line ")"
+                print FILENAME ":" NR ":warn-then-pass-demotion (preceding " warn_text ")"
             }
             warn_seen = 0
         }

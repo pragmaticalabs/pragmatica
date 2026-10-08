@@ -1406,6 +1406,10 @@ that belongs to a different (dead or retired) process:
   evidence and QUIC Hello together);
 - `quic_boot_token_drops_total` — inbound messages dropped because their connection peer or protocol
   sender is a retired NodeId;
+- `quic_superseded_closes_total` and `quic_superseded_lane_streams_at_risk_total` — connections closed at once
+  because a fresh handshake superseded them, and the lane streams (writes not yet accepted by quiche, or
+  written within the last 2 s) that close put at risk of discarding writes; unacked writes themselves are not
+  observable. An INFO line names the peer and the shape (same-direction re-dial or dual-dial loser);
 - `membership_process_evidence_refusals_total` — governor/worker-admission evidence the membership
   FSM refused (different token, or a DEAD/DEPARTING identity).
 
