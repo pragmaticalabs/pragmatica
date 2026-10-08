@@ -333,7 +333,7 @@ public final class NodeReplacementPlanner {
     private static String blocked(NodeReplacementValue r, Observation o) {
         return o.drainBlockedBy()
                 .isEmpty()
-               ? "drain did not complete (leader's view: oldAlive=" + o.oldAlive()
+               ? "PROBE drain did not complete (leader's view: oldAlive=" + o.oldAlive()
                 + ", drain=" + o.oldDrain()
                 + ", replacementKnown=" + o.replacementKnown()
                 + ", replacementAlive=" + o.replacementAlive() + refusal(o)
