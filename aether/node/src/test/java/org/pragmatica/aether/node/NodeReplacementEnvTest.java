@@ -18,6 +18,7 @@ import org.pragmatica.aether.deployment.membership.fsm.MemberDescriptor;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsm;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.CapacityLedgerValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.CapacityReservationPhase;
 import org.pragmatica.aether.slice.kvstore.AetherValue.CapacityReservationValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeReplacementPhase;
@@ -284,6 +285,7 @@ class NodeReplacementEnvTest {
     /// the reap is asked with seenBefore=true. A node never listed is asked with seenBefore=false, which the CTM refuses to call gone.
     @Test
     void anOldNodeListedBeforeTheDrain_isReapedAsSeen_andANeverListedOneIsNot() {
+        stored.put(AetherKey.CapacityLedgerKey.INSTANCE, new CapacityLedgerValue(3, 1, true));
         record(NodeReplacementPhase.DRAINING_OLD, 999_999L);
         wiring.reconciler().reconcile().await();
 
@@ -309,6 +311,7 @@ class NodeReplacementEnvTest {
     /// is confirmed by an empty listing instead of waiting for an instance that already vanished: the reap is asked with seenBefore=true.
     @Test
     void aReplacementObservedWhileUp_isReapedAsSeen_whenItIsLaterRolledBack() {
+        stored.put(AetherKey.CapacityLedgerKey.INSTANCE, new CapacityLedgerValue(3, 1, true));
         states.put(NEW, "Member");
         record(NodeReplacementPhase.CANARY, 999_999L);
         wiring.reconciler().reconcile().await();
@@ -322,6 +325,22 @@ class NodeReplacementEnvTest {
         wiring.reconciler().reconcile().await();
 
         verify(ctm).reapRetired(eq(NEW), any(), eq(true));
+    }
+
+    /// Before the fleet inventory is complete a provider listing would seed a partial ledger and make the next provisioning refuse: no
+    /// observation is made then (bigboy, class run: 8 tests rolled back with "provisioning refused").
+    @Test
+    void noInstanceIsListedForObservation_beforeTheInventoryIsComplete() {
+        states.put(NEW, "Member");
+        record(NodeReplacementPhase.CANARY, 999_999L);
+        wiring.reconciler().reconcile().await();
+
+        verify(ctm, never()).instanceListed(any(), any());
+
+        stored.put(AetherKey.CapacityLedgerKey.INSTANCE, new CapacityLedgerValue(3, 1, false));
+        wiring.reconciler().reconcile().await();
+
+        verify(ctm, never()).instanceListed(any(), any());
     }
 
     // ---- B3: the owner gate -------------------------------------------------------------------------------------------
