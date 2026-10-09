@@ -108,6 +108,16 @@ public enum OperatorWarningCode {
     /// earlier refused by the slice floor has now been admitted (the floor cleared, or the operator forced it). INFO,
     /// published only after a published refusal for that target, and it clears the refusal's throttle window (#752).
     SLICE_FLOOR_DRAIN_ADMITTED("slice-floor-drain-admitted", "deployment", WarningLevel.INFO, SLICE_FLOOR_DRAIN_REFUSED),
+    /// The cluster retired a node (scale-down, departure, drain, replacement) and could NOT confirm that its instance is terminated at the
+    /// compute provider after every bounded retry (#2062): the instance may still be running, and billing. The subject is the node; the
+    /// message names the node, the last cause and what to do. Its recovery is [#INSTANCE_TERMINATION_CONFIRMED].
+    INSTANCE_TERMINATION_UNCONFIRMED("instance-termination-unconfirmed", "deployment", WarningLevel.WARNING),
+    /// The recovery of [#INSTANCE_TERMINATION_UNCONFIRMED], same subject (#2062): a later reap of the node was confirmed by a provider
+    /// listing (or the operator removed the instance and a repeat reap found none it had listed).
+    INSTANCE_TERMINATION_CONFIRMED("instance-termination-confirmed",
+                                   "deployment",
+                                   WarningLevel.INFO,
+                                   INSTANCE_TERMINATION_UNCONFIRMED),
     /// A node replacement (#1543) was committed: a fresh-id node is taking over from the subject (the ORIGINAL node). Raised once,
     /// when the record is first committed. Closed by [#NODE_REPLACEMENT_COMPLETED] or [#NODE_REPLACEMENT_ROLLED_BACK].
     NODE_REPLACEMENT_STARTED("node-replacement-started", "replacement", WarningLevel.INFO),
@@ -141,14 +151,6 @@ public enum OperatorWarningCode {
                              "replacement",
                              WarningLevel.INFO,
                              NODE_REPLACEMENT_FAILED_KEPT_BOTH),
-    /// The leader abandoned an auto-heal replacement (#1111: its ceiling passed, the provider stopped listing it or reported it failed,
-    /// or its provision call failed) and could not CONFIRM the instance terminated within the retry bound: it may still be running
-    /// and billed. Subject is the replacement's node id; the message names the source and the provider instance ids. The leader keeps
-    /// retrying at a slower cadence; closed by [#REPLACEMENT_REAP_CONFIRMED]. Operator action: terminate the named instance at the
-    /// provider.
-    REPLACEMENT_REAP_FAILED("replacement-reap-failed", "replacement", WarningLevel.WARNING),
-    /// The recovery of [#REPLACEMENT_REAP_FAILED], same subject: the abandoned replacement's instance is confirmed gone.
-    REPLACEMENT_REAP_CONFIRMED("replacement-reap-confirmed", "replacement", WarningLevel.INFO, REPLACEMENT_REAP_FAILED),
     /// A replica of a `confirmation_factor` 1 stream cut its divergent tail back to the last offset it shares with its
     /// owner (#1730 phase 2). With that factor the acknowledgement was the old owner's alone, so the discarded offsets
     /// may have been acknowledged and are lost; the message names them. A stream that confirms with replicas

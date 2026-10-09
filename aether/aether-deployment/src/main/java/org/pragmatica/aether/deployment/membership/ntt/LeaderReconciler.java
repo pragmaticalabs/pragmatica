@@ -1786,8 +1786,9 @@ public final class LeaderReconciler {
     }
 
     /// The provision call failed. That includes a readiness timeout, which fails the call AFTER the instance was created, so the
-    /// instance may exist with nothing tracking it (#1111). The entry leaves the map either way; whether an instance has to be
-    /// reaped is decided by the provider's listing (see [`#confirmReap`]).
+    /// instance may exist with nothing tracking it (#1111). The call's failure cannot say whether anything was created, and an empty
+    /// listing is not proof either (listings lag a create and omit what they cannot attribute), so the reap is asked as for an unseen
+    /// instance: confirmed by a listed-and-terminated instance, otherwise retried and then announced as unconfirmed.
     @Contract
     private void dropFailedProvision(NodeId placeholder, Cause cause) {
         if (inFlightProvisioning.remove(placeholder) != null) {
@@ -1839,15 +1840,15 @@ public final class LeaderReconciler {
     /// as well as on the sweep tick.
     @Contract
     private void evictInFlightPastCeiling(long nowNanos) {
-        inFlightProvisioning.entrySet()
-                            .removeIf(entry -> isPastCeilingLogged(nowNanos,
-                                                                   entry.getKey(),
-                                                                   entry.getValue()));
+        inFlightProvisioning.forEach((id, entry) -> evictIfPastCeiling(nowNanos, id, entry));
     }
 
-    private boolean isPastCeilingLogged(long nowNanos, NodeId id, InFlightEntry entry) {
-        if (!entry.isPastCeiling(nowNanos)) {
-            return false;
+    /// The entry is removed FIRST and the instance reaped only when this call removed it (#1111): a poll answer that replaced the
+    /// entry between the test and the removal keeps it tracked, to be judged on the next tick, so no second reap chain starts.
+    @Contract
+    private void evictIfPastCeiling(long nowNanos, NodeId id, InFlightEntry entry) {
+        if (!entry.isPastCeiling(nowNanos) || !inFlightProvisioning.remove(id, entry)) {
+            return;
         }
 
         log.info("LeaderReconciler dropping in-flight replacement {}: still unjoined after its {} ms replacement ceiling (state={}) — the deficit re-opens",
@@ -1855,8 +1856,6 @@ public final class LeaderReconciler {
                  entry.ceiling().millis(),
                  entry.state());
         reapAbandoned(AbandonReason.CEILING, id, entry.state() == InFlightState.CONFIRMED);
-
-        return true;
     }
 
     /// Arm a single self-rescheduling one-shot sweep over the in-flight provisioning entries. The
@@ -1992,8 +1991,16 @@ public final class LeaderReconciler {
                       ? AbandonReason.FAILED
                       : AbandonReason.ABSENT,
                       id,
-                      true);
+                      seenAtProvider(polled, state));
         triggerReconcile(ReconcileTrigger.NTT_FIRE);
+    }
+
+    /// Whether the provider has listed the instance, which is what lets a later empty listing count as "gone". A FAILED answer is a
+    /// listing of the instance; an ABSENT one is the instance's deletion only when it was CONFIRMED (listed) before. An entry
+    /// dropped on twelve absent listings was NEVER listed, and is reaped as unseen: its reap is confirmed only by a listing that
+    /// shows the instance and a terminate that the provider accepted.
+    private static boolean seenAtProvider(InFlightEntry polled, ReplacementInstanceState state) {
+        return state == ReplacementInstanceState.FAILED || polled.state() == InFlightState.CONFIRMED;
     }
 
     /// Why the leader stopped tracking a replacement it dispatched (#1111) — each reason leaves the instance, if any, running.
@@ -2015,8 +2022,8 @@ public final class LeaderReconciler {
 
     /// #1111 — an abandoned replacement's instance must not be left running. The entry was dropped for `reason`; this reaps the
     /// instance through the confirmed [`ClusterTopologyManager#reapRetired`] and keeps trying until the provider's own listing
-    /// shows it gone. `seenBefore` says whether the provider has listed the instance (an empty listing is then a deletion): true
-    /// for a CONFIRMED entry, and for an ABSENT or FAILED drop, whose evidence is the listings themselves.
+    /// shows it gone. `seenBefore` says whether the provider has listed the instance (an empty listing is then a deletion, see
+    /// [`#seenAtProvider`]); an instance never listed is confirmed gone only through a terminate the provider accepted.
     /// A node that has joined membership is never reaped: this is the control that keeps a late joiner alive (the ceiling
     /// eviction runs before the pass that clears a joined entry). Checked before every attempt, so a retry stops at a join.
     /// A leader change stops the retries (the next leader's activation replay, #1057, reaps what is still labelled and unowned).
@@ -2048,23 +2055,9 @@ public final class LeaderReconciler {
                      source);
         }
 
-        confirmReap(reason, id, source, seenBefore).onSuccess(_ -> reapConfirmed(id, source, instances, attempt))
-                   .onFailure(cause -> reapUnconfirmed(reason, id, source, seenBefore, instances, attempt, cause));
-    }
-
-    /// A failed provision call is the one drop that may have created nothing, so the provider is asked first and an instance-free
-    /// answer ends it; a listing that fails is a failure to retry, never "nothing to reap". Every other reason created an instance.
-    private Promise<Unit> confirmReap(AbandonReason reason, NodeId id, SourceName source, boolean seenBefore) {
-        return reason == AbandonReason.PROVISION_FAILED
-               ? ctm.instanceListed(id, source)
-                    .flatMap(listed -> reapIfListed(id, source, listed))
-               : ctm.reapRetired(id, source, seenBefore);
-    }
-
-    private Promise<Unit> reapIfListed(NodeId id, SourceName source, boolean listed) {
-        return listed
-               ? ctm.reapRetired(id, source, true)
-               : Promise.unitPromise();
+        ctm.reapRetired(id, source, seenBefore)
+           .onSuccess(_ -> reapConfirmed(id, source, instances, attempt))
+           .onFailure(cause -> reapUnconfirmed(reason, id, source, seenBefore, instances, attempt, cause));
     }
 
     @Contract
@@ -2077,7 +2070,7 @@ public final class LeaderReconciler {
         if (attempt > REAP_ATTEMPT_BOUND) {
             OperatorWarnings.raise(log,
                                    operatorWarnings.get(),
-                                   OperatorWarningCode.REPLACEMENT_REAP_CONFIRMED,
+                                   OperatorWarningCode.INSTANCE_TERMINATION_CONFIRMED,
                                    id.id(),
                                    "Abandoned replacement {} (source '{}') is confirmed terminated at the provider",
                                    id.id(),
@@ -2102,7 +2095,7 @@ public final class LeaderReconciler {
         if (attempt == REAP_ATTEMPT_BOUND) {
             OperatorWarnings.raise(log,
                                    operatorWarnings.get(),
-                                   OperatorWarningCode.REPLACEMENT_REAP_FAILED,
+                                   OperatorWarningCode.INSTANCE_TERMINATION_UNCONFIRMED,
                                    id.id(),
                                    "Abandoned replacement {} (source '{}', instance(s) {}) could not be confirmed terminated after {} attempts: {}. It may still be running and billed; terminate the instance at the provider if this persists",
                                    id.id(),

@@ -3716,7 +3716,8 @@ public interface AetherNode extends ManageableNode {
         // Ember node's). It hands each warning off to a bounded queue, so a raise from SWIM, replication or the
         // core-absence fence never waits on the event log. Idle throttle keys are evicted once per minute.
         var operatorWarningSink = OperatorWarningSink.handingOffTo(eventAggregator::onOperatorWarning);
-
+        // #2062: an instance whose termination the CTM cannot confirm after its bounded retries is an operator event.
+        clusterTopologyManager.setOperatorWarningSink(operatorWarningSink);
         periodicTasks.defer(() -> SharedScheduler.scheduleAtFixedRate(eventAggregator::evictIdleThrottleWindows,
                                                                       OPERATOR_WARNING_EVICTION_INTERVAL,
                                                                       OPERATOR_WARNING_EVICTION_INTERVAL));

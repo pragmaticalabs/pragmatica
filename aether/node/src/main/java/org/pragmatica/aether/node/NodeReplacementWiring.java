@@ -448,53 +448,16 @@ public final class NodeReplacementWiring {
 
             reapSince.putIfAbsent(node,
                                   in.clock().getAsLong());
-            var reservation = reservationOf(node);
             var source = SourceName.sourceNameOrDefault(record.source());
-            var confirmed = isExternalKind(reservation)
-                            ? in.ctm()
-                                .drainNode(node, DrainReason.REPLACED)
-                                .flatMap(_ -> departedThenReleased(node,
-                                                                   reservation.unwrap(),
-                                                                   !boundedByRetiring))
-                            : in.ctm()
-                                .drainNode(node, DrainReason.REPLACED)
-                                .flatMap(_ -> in.ctm()
-                                                .reapRetired(node,
-                                                             source,
-                                                             seen.contains(node)));
 
-            return confirmed.<EffectResult> map(_ -> confirmedGone(node))
-                            .recover(cause -> notConfirmed(node, cause, boundedByRetiring));
-        }
-
-        /// External node: confirmed by leaving the membership (no provider call), then, when the reservation is not settled by the record's
-        /// own commit (a retiring old node, not a rolled-back replacement), the reservation is released: a counted one is marked RELEASED
-        /// (the lifecycle returns the slot once), an uncounted one is dropped.
-        private Promise<Unit> departedThenReleased(NodeId node,
-                                                   AetherValue.CapacityReservationValue reservation,
-                                                   boolean releaseHere) {
-            if (!departed(node)) {
-                return Causes.cause("external node " + node.id() + " has not left the membership yet").promise();
-            }
-
-            if (!releaseHere) {
-                return Promise.unitPromise();
-            }
-
-            var key = new AetherKey.CapacityReservationKey(node);
-            var released = UNCOUNTED.equals(reservation.sourceBinding())
-                           ? Option.<AetherValue> none()
-                           : Option.<AetherValue> some(new AetherValue.CapacityReservationValue(reservation.sourceName(),
-                                                                                                reservation.sourceBinding(),
-                                                                                                reservation.intendedRole(),
-                                                                                                AetherValue.CapacityReservationPhase.RELEASED));
-
-            return submit(in,
-                          key,
-                          List.of(new KVCommand.Mutation<>(key, Option.<AetherValue> some(reservation), released))).flatMap(accepted -> accepted
-                                                                                                                                        ? Promise.<Unit> unitPromise()
-                                                                                                                                        : Causes.<Unit> cause("the release of the reservation of " + node.id()
-                                                                                                                                                             + " was not accepted").promise());
+            return in.ctm()
+                     .drainNode(node, DrainReason.REPLACED)
+                     .flatMap(_ -> in.ctm()
+                                     .reapRetired(node,
+                                                  source,
+                                                  seen.contains(node)))
+                     .<EffectResult> map(_ -> confirmedGone(node))
+                     .recover(cause -> notConfirmed(node, cause, boundedByRetiring));
         }
 
         private EffectResult confirmedGone(NodeId node) {
@@ -534,7 +497,6 @@ public final class NodeReplacementWiring {
 
             return Stream.of(original,
                              record.replacement())
-                         .filter(node -> !isExternalKind(reservationOf(node)))
                          .map(node -> in.ctm()
                                         .instanceListed(node, source)
                                         .onSuccess(listed -> {
@@ -554,7 +516,7 @@ public final class NodeReplacementWiring {
         /// lifecycle also records what it sees and, racing the provisioning's own fleet-inventory initialisation, made it refuse ("provisioning refused",
         /// 8 Ember tests on bigboy). A failed or empty listing observes nothing.
         private void noteLiveInstance(NodeId node, NodeReplacementValue record, boolean up) {
-            if (!up || record.phase() == NodeReplacementPhase.PROVISIONING || seen.contains(node) || isExternalKind(reservationOf(node)) || !observing.add(node)) {
+            if (!up || record.phase() == NodeReplacementPhase.PROVISIONING || seen.contains(node) || !observing.add(node)) {
                 return;
             }
 
@@ -567,28 +529,6 @@ public final class NodeReplacementWiring {
               }
               })
               .onResultRun(() -> observing.remove(node));
-        }
-
-        private Option<AetherValue.CapacityReservationValue> reservationOf(NodeId node) {
-            return in.kvStore()
-                     .getTyped(new AetherKey.CapacityReservationKey(node),
-                               AetherValue.CapacityReservationValue.class);
-        }
-
-        /// A reservation written by an EXTERNAL admission carries no provider binding (`""`, or the uncounted marker); the provider
-        /// registry cannot resolve either, so such a node has no provider listing or terminate to ask: it is confirmed gone by leaving the
-        /// membership. A reservation with a real binding, or none, goes through the provider.
-        private static boolean isExternalKind(Option<AetherValue.CapacityReservationValue> reservation) {
-            return reservation.filter(value -> value.sourceBinding()
-                                                    .isEmpty() || UNCOUNTED.equals(value.sourceBinding()))
-                              .isPresent();
-        }
-
-        private boolean departed(NodeId node) {
-            return Option.option(in.membership().get())
-                         .flatMap(fsm -> Option.option(fsm.memberStates().get(node)))
-                         .filter(state -> !"Dead".equals(state))
-                         .isEmpty();
         }
 
         private EffectResult drained(NodeId original, DrainOutcome outcome) {

@@ -123,6 +123,11 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                     AtomicReference<NodeReplacementIndex> nodeReplacements,
                                     AtomicReference<HierarchyStateWriter> hierarchyWriter,
                                     ConcurrentHashMap<NodeId, Long> pendingDrains,
+                                    AtomicReference<org.pragmatica.utility.warning.OperatorWarningSink> warningSink,
+                                    Set<NodeId> unconfirmedReaps,
+                                    Set<NodeId> seenInstances,
+                                    Set<NodeId> confirmedReaps,
+                                    ConcurrentHashMap<NodeId, Long> failedReaps,
                                     org.pragmatica.lang.concurrent.CancellableTask workerTopologyPolling) implements ClusterTopologyManager {
     private static final Logger log = LoggerFactory.getLogger(ClusterTopologyManager.class);
     private static final int MINIMUM_CLUSTER_SIZE = 3;
@@ -132,6 +137,9 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     /// longer than the slowest voter handoff observed (14 min) with margin, bounded so a node that never becomes
     /// retirable ends in an operator-visible WARN rather than a forever-timer.
     static final int REFUSED_REAP_RETRIES = 60;
+    /// #2062: a reap that failed or could not be confirmed is retried this many times, one sixth of a provisioning window apart (ten seconds
+    /// at the default window, about two minutes in all), before an operator event names the node.
+    static final int FAILED_REAP_RETRIES = 12;
     private static final String AETHER_CLUSTER_SECRET_ENV = "AETHER_CLUSTER_SECRET";
 
     static ClusterTopologyManagerRecord clusterTopologyManagerRecord(TopologyObserver observer,
@@ -253,7 +261,24 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                                 new AtomicReference<>(NodeReplacementIndex.nodeReplacementIndex()),
                                                 new AtomicReference<>(HierarchyStateWriter.unavailable()),
                                                 new ConcurrentHashMap<>(),
+                                                new AtomicReference<>(org.pragmatica.utility.warning.OperatorWarningSink.logOnly()),
+                                                ConcurrentHashMap.newKeySet(),
+                                                ConcurrentHashMap.newKeySet(),
+                                                ConcurrentHashMap.newKeySet(),
+                                                new ConcurrentHashMap<>(),
                                                 org.pragmatica.lang.concurrent.CancellableTask.cancellableTask());
+    }
+
+    @Override
+    public org.pragmatica.utility.warning.OperatorWarningSink operatorWarningSink() {
+        return warningSink.get();
+    }
+
+    @Override
+    public Unit setOperatorWarningSink(org.pragmatica.utility.warning.OperatorWarningSink sink) {
+        warningSink.set(sink);
+
+        return unit();
     }
 
     @Override
@@ -1744,6 +1769,10 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
 
     @Override
     public Promise<Boolean> instanceListed(NodeId node, SourceName source) {
+        if (lifecycleManager.externalNode(node)) {
+            return Promise.success(false);
+        }
+
         return lifecycleManager.instancesForNode(node, source)
                                .map(listed -> !listed.isEmpty())
                                .mapError(cause -> Causes.cause("instance of " + node.id() + ": " + cause.message()));
@@ -1761,32 +1790,62 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
             return Causes.cause("reap of " + node.id() + " refused: " + refusal.unwrap()).promise();
         }
 
+        if (confirmedReaps.contains(node)) {
+            // Idempotent per node: NodeRemoved and the drain-grace backstop both reap, and a reap confirmed once is not re-asked (and so
+            // cannot be reported as unconfirmed by a listing that, correctly, no longer shows the instance).
+            return Promise.unitPromise();
+        }
+
+        if (lifecycleManager.externalNode(node)) {
+            // An operator started this node: there is no provider instance of ours to list or terminate, on ANY path. It is confirmed by its
+            // departure from the membership, and its capacity is then returned.
+            return liveness.demonstrablyLive(node)
+                   ? Causes.cause("external node " + node.id() + " has not left the membership yet").promise()
+                   : lifecycleManager.releaseExternal(node)
+                                     .onSuccess(_ -> confirmedReaps.add(node));
+        }
+
+        var seen = seenBefore || seenInstances.contains(node);
+
         return lifecycleManager.instancesForNode(node, source)
-                               .flatMap(listed -> goneAtProvider(listed)
-                                                  ? confirmedAbsent(node, listed, seenBefore)
-                                                  : lifecycleManager.terminateNode(node, source)
-                                                                    .flatMap(_ -> lifecycleManager.instancesForNode(node,
-                                                                                                                    source))
-                                                                    .flatMap(after -> goneAtProvider(after)
-                                                                                      ? Promise.unitPromise()
-                                                                                      : stillListed(after)))
+                               .flatMap(listed -> {
+                                            if (!listed.isEmpty()) {
+                                            seenInstances.add(node);
+                                        }
+
+                                            return allTerminated(listed)
+                                                   ? confirmedAbsent(node, listed, seen)
+                                                   : terminateThenConfirm(node, source);
+                                        })
+                               .onSuccess(_ -> confirmedReaps.add(node))
                                .mapError(cause -> Causes.cause("instance of " + node.id() + ": " + cause.message()));
     }
 
-    /// An empty listing is absence only for an instance seen before; listed-and-stopped instances were seen by this very listing.
-    private static Promise<Unit> confirmedAbsent(NodeId node, List<InstanceInfo> listed, boolean seenBefore) {
-        return listed.isEmpty() && !seenBefore
+    /// A listed instance that is not already TERMINATED (running, booting, or merely STOPPED: a stopped VM still bills and holds its slot)
+    /// is terminated and the listing taken again. The terminate having been accepted, an empty or terminated listing is now gone; an
+    /// instance still listed (a provider whose listing lags its delete) is a failure the caller retries, and the memory kept in
+    /// [#seenInstances] lets the retry call an empty listing gone.
+    private Promise<Unit> terminateThenConfirm(NodeId node, SourceName source) {
+        return lifecycleManager.terminateNode(node, source)
+                               .flatMap(_ -> lifecycleManager.instancesForNode(node, source))
+                               .flatMap(after -> allTerminated(after)
+                                                 ? Promise.unitPromise()
+                                                 : stillListed(after));
+    }
+
+    /// An empty listing is absence only for an instance seen before; a listing that shows only TERMINATED instances saw it just now.
+    private static Promise<Unit> confirmedAbsent(NodeId node, List<InstanceInfo> listed, boolean seen) {
+        return listed.isEmpty() && !seen
                ? Causes.cause("the provider lists no instance of " + node.id()
                              + " and has never listed one (an unlabelled or unattributable VM, or a lagging listing): not confirmed gone").promise()
                : Promise.unitPromise();
     }
 
-    /// Nothing listed, or every listed instance stopping or terminated. Any instance provisioning, running or in a status the
-    /// provider could not state is NOT gone.
-    private static boolean goneAtProvider(List<InstanceInfo> instances) {
-        var state = classifyReplacementInstances(instances);
-
-        return state == ReplacementInstanceState.ABSENT || state == ReplacementInstanceState.FAILED;
+    /// Nothing listed, or every listed instance TERMINATED. Anything else is NOT gone: provisioning, running, a status the provider could
+    /// not state, and STOPPED/STOPPING (the providers map an off or exited machine to it, and it still bills).
+    private static boolean allTerminated(List<InstanceInfo> instances) {
+        return instances.stream()
+                        .allMatch(instance -> instance.status() instanceof InstanceStatus.Terminated);
     }
 
     private static Promise<Unit> stillListed(List<InstanceInfo> instances) {
@@ -1845,10 +1904,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     @Contract
     private void terminateDrained(NodeId targetNodeId) {
         log.info("CTM v2: drain grace expired for {} — reaping container + clearing DRAIN command", targetNodeId);
-        lifecycleManager.terminateNode(targetNodeId)
-                        .onFailure(cause -> log.warn("CTM v2: grace-terminate of {} failed: {}",
-                                                     targetNodeId,
-                                                     cause.message()));
+        confirmedReap(targetNodeId, activationEpoch.get(), FAILED_REAP_RETRIES);
     }
 
     /// R1′ — a surplus trim at grace expiry keys on the TARGET first. The membership inputs are read ONCE, so
@@ -2045,10 +2101,81 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     private void terminateRetired(NodeId nodeId) {
         abandonedReaps.remove(nodeId);
         refusedReaps.remove(nodeId);
-        lifecycleManager.terminateNode(nodeId)
-                        .onFailure(cause -> log.warn("CTM: reap of departed node {} FAILED at the provider: {}",
-                                                     nodeId,
-                                                     cause.message()));
+        failedReaps.remove(nodeId);
+        confirmedReap(nodeId, activationEpoch.get(), FAILED_REAP_RETRIES);
+    }
+
+    /// #2062: every retirement reap is a CONFIRMED reap ([#reapRetired]): list (which commits a bootstrap node's missing reservation),
+    /// terminate, re-list (a lifecycle that cannot name the node's source keeps the plain terminate by node id). A failed or refused attempt is retried, bounded, and when the bound is spent an operator event names the node
+    /// and the cause: an instance that may still be running is never dropped silently.
+    @Contract
+    private void confirmedReap(NodeId nodeId, long epoch, int retriesLeft) {
+        if (!active.get() || activationEpoch.get() != epoch) {
+            log.debug("CTM: confirmed reap of {} dropped — deactivated or re-activated since; the current activation's replay owns the instance",
+                      nodeId);
+
+            return;
+        }
+
+        lifecycleManager.sourceOf(nodeId)
+                        .fold(() -> lifecycleManager.terminateNode(nodeId),
+                              source -> reapRetired(nodeId, source, false))
+                        .onSuccess(_ -> reapConfirmed(nodeId))
+                        .onFailure(cause -> reapUnconfirmed(nodeId, epoch, retriesLeft, cause));
+    }
+
+    /// The bound is spent and the instance is still not confirmed terminated: an operator event naming the node and the last cause, once.
+    private void raiseUnconfirmed(NodeId nodeId, int attempts, String cause) {
+        if (unconfirmedReaps.add(nodeId)) {
+            org.pragmatica.utility.warning.OperatorWarnings.raise(log,
+                                                                  warningSink.get(),
+                                                                  org.pragmatica.utility.warning.OperatorWarningCode.INSTANCE_TERMINATION_UNCONFIRMED,
+                                                                  nodeId.id(),
+                                                                  "The termination of the instance of retired node {} is not confirmed after {} attempts ({}); it may still be running at the provider and billing: terminate it, then the cluster confirms it by listing",
+                                                                  nodeId.id(),
+                                                                  attempts,
+                                                                  cause);
+        }
+    }
+
+    private void reapConfirmed(NodeId nodeId) {
+        failedReaps.remove(nodeId);
+        if (unconfirmedReaps.remove(nodeId)) {
+            org.pragmatica.utility.warning.OperatorWarnings.raise(log,
+                                                                  warningSink.get(),
+                                                                  org.pragmatica.utility.warning.OperatorWarningCode.INSTANCE_TERMINATION_CONFIRMED,
+                                                                  nodeId.id(),
+                                                                  "Termination of the instance of retired node {} is now confirmed",
+                                                                  nodeId.id());
+        }
+    }
+
+    private void reapUnconfirmed(NodeId nodeId, long epoch, int retriesLeft, org.pragmatica.lang.Cause cause) {
+        if (retriesLeft <= 0) {
+            raiseUnconfirmed(nodeId, FAILED_REAP_RETRIES, cause.message());
+
+            return;
+        }
+
+        log.warn("CTM: reap of retired node {} not confirmed — {}; {} retries left",
+                 nodeId,
+                 cause.message(),
+                 retriesLeft);
+        failedReaps.put(nodeId, epoch);
+        SharedScheduler.schedule(() -> retryConfirmedReap(nodeId, epoch, retriesLeft - 1), failedReapInterval());
+    }
+
+    private void retryConfirmedReap(NodeId nodeId, long epoch, int retriesLeft) {
+        if (!failedReaps.remove(nodeId, epoch)) {
+            return;
+        }
+
+        confirmedReap(nodeId, epoch, retriesLeft);
+    }
+
+    private TimeSpan failedReapInterval() {
+        return TimeSpan.timeSpan(Math.max(1L,
+                                          autoHealConfig.provisioningTimeout().millis() / 6)).millis();
     }
 
     /// #1804 — WARN the refusal with its reason and, unless a chain of this activation is already pending for
@@ -2102,10 +2229,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     @Contract
     private void continueRefusedReap(NodeId nodeId, long epoch, int retriesLeft, String reason) {
         if (retriesLeft <= 0) {
-            log.warn("CTM: reap of {} still REFUSED after {} retries ({}); giving up — its instance may still be running at the provider and needs an operator",
-                     nodeId,
-                     REFUSED_REAP_RETRIES,
-                     reason);
+            raiseUnconfirmed(nodeId, REFUSED_REAP_RETRIES, "refused: " + reason);
 
             return;
         }

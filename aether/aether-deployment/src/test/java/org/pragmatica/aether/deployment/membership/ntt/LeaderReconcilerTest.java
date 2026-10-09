@@ -2705,7 +2705,7 @@ class LeaderReconcilerTest {
         }
 
         @Test
-        void twelveAbsentListings_reapTheInstance_neverBefore() {
+        void twelveAbsentListings_reapTheInstance_asNeverListed_neverBefore() {
             var minted = dispatchOne();
 
             ctm.reportInstanceState(minted, ReplacementInstanceState.ABSENT);
@@ -2718,26 +2718,113 @@ class LeaderReconcilerTest {
             advanceAndTick(EXPECTED_POLL_INTERVAL.millis());
 
             assertThat(reconciler.inFlightProvisioningKeys()).isEmpty();
+            assertThat(ctm.reapCalls())
+                .as("an instance the provider NEVER listed is reaped as unseen: an empty listing alone must not confirm it gone")
+                .containsExactly(new RecordingCtm.ReapCall(minted, RecordingCtm.REPLACEMENT_SOURCE, false));
+        }
+
+        /// The other arm of the same drop: an instance the provider listed (CONFIRMED) and then stopped listing is gone.
+        @Test
+        void listedThenAbsent_reapsTheInstance_asSeen() {
+            var minted = dispatchOne();
+
+            ctm.reportInstanceState(minted, ReplacementInstanceState.PRESENT);
+            advancePollIntervals(1);
+            ctm.reportInstanceState(minted, ReplacementInstanceState.ABSENT);
+            advancePollIntervals(1);
+
+            assertThat(reconciler.inFlightProvisioningKeys()).doesNotContain(minted);
             assertThat(ctm.reapCalls()).containsExactly(new RecordingCtm.ReapCall(minted, RecordingCtm.REPLACEMENT_SOURCE, true));
         }
 
         @Test
-        void failedProvisionCall_withAnInstanceAtTheProvider_reapsIt() {
+        void failedProvisionCall_withAnInstanceAtTheProvider_reapsItAsUnseen() {
             ctm.failNextProvision(Causes.cause("readiness timed out"));
             var minted = dispatchOne();
 
             assertThat(reconciler.inFlightProvisioningKeys()).isEmpty();
-            assertThat(ctm.reapCalls()).containsExactly(new RecordingCtm.ReapCall(minted, RecordingCtm.REPLACEMENT_SOURCE, true));
+            assertThat(ctm.reapCalls())
+                .as("a failed call proves nothing was listed: the reap is asked as unseen, and the listing that shows the instance confirms it")
+                .containsExactly(new RecordingCtm.ReapCall(minted, RecordingCtm.REPLACEMENT_SOURCE, false));
         }
 
-        /// A create that failed before any instance existed has nothing to reap, and must not be reported as an unconfirmed one.
+        /// A readiness timeout fails the call AFTER the create, and the provider's listing may lag or omit the instance, so an empty
+        /// listing is not "nothing was created": the reap stays unconfirmed (bounded retry, then the unconfirmed event) and is never
+        /// reported confirmed.
         @Test
-        void failedProvisionCall_withNoInstanceAtTheProvider_reapsNothing() {
-            ctm.providerListsNoInstances();
-            ctm.failNextProvision(Causes.cause("create refused"));
-            dispatchOne();
+        void failedProvisionCall_withAnEmptyListing_staysUnconfirmed_thenAnnounced_neverConfirmed() {
+            var events = new CopyOnWriteArrayList<org.pragmatica.utility.warning.OperatorWarning>();
 
-            assertThat(ctm.reapCalls()).as("a create that left no instance has nothing to reap").isEmpty();
+            reconciler.setOperatorWarnings(org.pragmatica.utility.warning.OperatorWarningSink.handingOffTo(events::add));
+            ctm.providerListsNoInstances();
+            ctm.failNextProvision(Causes.cause("readiness timed out"));
+            var minted = dispatchOne();
+
+            for (var attempt = 2; attempt <= 5; attempt++) {
+                runPendingReapRetry(EXPECTED_POLL_INTERVAL);
+            }
+
+            assertThat(ctm.reapCalls()).as("five attempts, every one asked as unseen").hasSize(5)
+                                       .allSatisfy(call -> assertThat(call).isEqualTo(new RecordingCtm.ReapCall(minted,
+                                                                                                                   RecordingCtm.REPLACEMENT_SOURCE,
+                                                                                                                   false)));
+            await().atMost(2, TimeUnit.SECONDS).until(() -> events.size() == 1);
+            assertThat(events.getFirst().code()).isEqualTo(org.pragmatica.utility.warning.OperatorWarningCode.INSTANCE_TERMINATION_UNCONFIRMED);
+            assertThat(events.getFirst().subject()).isEqualTo(minted.id());
+
+            ctm.providerListsInstances();
+            runPendingReapRetry(timeSpan(EXPECTED_POLL_INTERVAL.millis() * 4).millis());
+
+            await().atMost(2, TimeUnit.SECONDS).until(() -> events.size() == 2);
+            assertThat(events.getLast().code()).as("confirmed only once the provider lists the instance and the terminate is accepted")
+                                               .isEqualTo(org.pragmatica.utility.warning.OperatorWarningCode.INSTANCE_TERMINATION_CONFIRMED);
+        }
+
+        /// The event fires once, not on every slow retry after the bound.
+        @Test
+        void unconfirmedEvent_firesOnce_notOnEverySlowRetry() {
+            var events = new CopyOnWriteArrayList<org.pragmatica.utility.warning.OperatorWarning>();
+            var slow = timeSpan(EXPECTED_POLL_INTERVAL.millis() * 4).millis();
+
+            reconciler.setOperatorWarnings(org.pragmatica.utility.warning.OperatorWarningSink.handingOffTo(events::add));
+            ctm.failReaps(Causes.cause("still listed at the provider after terminate"));
+            ctm.failNextProvision(Causes.cause("readiness timed out"));
+            dispatchOne();
+            for (var attempt = 2; attempt <= 5; attempt++) {
+                runPendingReapRetry(EXPECTED_POLL_INTERVAL);
+            }
+            await().atMost(2, TimeUnit.SECONDS).until(() -> events.size() == 1);
+
+            for (var slowRetry = 0; slowRetry < 3; slowRetry++) {
+                runPendingReapRetry(slow);
+            }
+
+            assertThat(ctm.reapCalls()).as("five fast attempts and three slow ones").hasSize(8);
+            await().during(300, TimeUnit.MILLISECONDS).atMost(2, TimeUnit.SECONDS).until(() -> events.size() == 1);
+        }
+
+        /// The reap is requested only after the entry left the in-flight map, for every reason, so a racing poll answer cannot leave
+        /// an entry tracked while its instance is being terminated (and a second chain started from it).
+        @Test
+        void reap_isRequestedOnlyAfterTheEntryLeftTheMap_forEveryReason() {
+            ctm.trackedBy(reconciler::inFlightProvisioningKeys);
+            ctm.setReplacementCeiling(timeSpan(2).minutes());
+            var ceilinged = dispatchOne();
+
+            advancePollIntervals(10);
+            assertThat(ctm.reapCalls()).extracting(RecordingCtm.ReapCall::node).containsExactly(ceilinged);
+            assertThat(ctm.trackedWhenReaped()).as("ceiling").containsExactly(false);
+        }
+
+        @Test
+        void reap_isRequestedOnlyAfterTheEntryLeftTheMap_whenTheProviderReportsFailed() {
+            ctm.trackedBy(reconciler::inFlightProvisioningKeys);
+            var minted = dispatchOne();
+
+            ctm.reportInstanceState(minted, ReplacementInstanceState.FAILED);
+            advancePollIntervals(1);
+
+            assertThat(ctm.trackedWhenReaped()).as("provider FAILED").containsExactly(false);
         }
 
         /// Control: a replacement that joined is never terminated, though the sweep that evicts it for its ceiling runs before
@@ -2809,7 +2896,7 @@ class LeaderReconcilerTest {
             runPendingReapRetry(EXPECTED_POLL_INTERVAL);
             assertThat(ctm.reapCalls()).as("fifth and last fast attempt").hasSize(5);
             await().atMost(2, TimeUnit.SECONDS).until(() -> events.size() == 1);
-            assertThat(events.getFirst().code()).isEqualTo(org.pragmatica.utility.warning.OperatorWarningCode.REPLACEMENT_REAP_FAILED);
+            assertThat(events.getFirst().code()).isEqualTo(org.pragmatica.utility.warning.OperatorWarningCode.INSTANCE_TERMINATION_UNCONFIRMED);
             assertThat(events.getFirst().subject()).isEqualTo(minted.id());
             assertThat(events.getFirst().message()).contains(RecordingCtm.instanceIdOf(minted)).contains("still listed at the provider");
 
@@ -2818,7 +2905,7 @@ class LeaderReconcilerTest {
 
             assertThat(ctm.reapCalls()).as("the slow retry after the bound").hasSize(6);
             await().atMost(2, TimeUnit.SECONDS).until(() -> events.size() == 2);
-            assertThat(events.getLast().code()).isEqualTo(org.pragmatica.utility.warning.OperatorWarningCode.REPLACEMENT_REAP_CONFIRMED);
+            assertThat(events.getLast().code()).isEqualTo(org.pragmatica.utility.warning.OperatorWarningCode.INSTANCE_TERMINATION_CONFIRMED);
             assertThat(events.getLast().subject()).isEqualTo(minted.id());
             assertThat(scheduler.tasksByDelay(timeSpan(EXPECTED_POLL_INTERVAL.millis() * 4).millis()).stream().filter(ManualTask::pending))
                 .as("a confirmed reap schedules no further retry")
@@ -4088,6 +4175,22 @@ class LeaderReconcilerTest {
         private final List<ReapCall> reapCalls = new CopyOnWriteArrayList<>();
         private final AtomicReference<Option<Cause>> reapFailure = new AtomicReference<>(Option.none());
         private final AtomicBoolean providerListsInstances = new AtomicBoolean(true);
+        private final List<Boolean> trackedWhenReaped = new CopyOnWriteArrayList<>();
+        private volatile java.util.function.Supplier<Set<NodeId>> tracked = Set::of;
+
+        @Contract
+        void trackedBy(java.util.function.Supplier<Set<NodeId>> tracked) {
+            this.tracked = tracked;
+        }
+
+        List<Boolean> trackedWhenReaped() {
+            return List.copyOf(trackedWhenReaped);
+        }
+
+        @Contract
+        void providerListsInstances() {
+            providerListsInstances.set(true);
+        }
 
         List<ReapCall> reapCalls() {
             return List.copyOf(reapCalls);
@@ -4115,10 +4218,17 @@ class LeaderReconcilerTest {
         @Override
         public Promise<Unit> reapRetired(NodeId node, SourceName source, boolean seenBefore) {
             reapCalls.add(new ReapCall(node, source, seenBefore));
+            trackedWhenReaped.add(tracked.get().contains(node));
+
+            // The empty-listing rule of the real manager: an instance the provider does not list is gone only if it was listed before.
+            var unlisted = !providerListsInstances.get() && !seenBefore;
 
             return reapFailure.get()
                               .map(Cause::<Unit> promise)
-                              .or(() -> Promise.success(unit()));
+                              .or(() -> unlisted
+                                        ? Causes.cause("the provider lists no instance of " + node.id()
+                                                       + " and has never listed one: not confirmed gone").<Unit> promise()
+                                        : Promise.success(unit()));
         }
 
         @Override
