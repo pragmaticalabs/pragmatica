@@ -876,6 +876,22 @@ class NodeReplacementRealRegistryReapTest {
         assertThat(lists.get() - before).as("and no longer re-checked").isZero();
     }
 
+    /// The absence a listing showed belongs to the incarnation it listed: a node that joins again and then meets only failing listings is not the
+    /// permanent operator warning its predecessor was.
+    @Test
+    void aRejoinedNode_doesNotInheritTheAbsenceItsPredecessorWasListedWith() throws Exception {
+        put(AetherKey.CapacityLedgerKey.INSTANCE, new CapacityLedgerValue(3, 1, true));
+        assertThat(ctmUnderTest.reapRetired(OLD, WEST, false).await().isFailure()).as("a listing succeeded and showed nothing").isTrue();
+        joins(OLD);
+        states.put(OLD, "Dead");
+        listing.set(EnvironmentError.operationNotSupported("provider API down").promise());
+
+        retire(OLD);
+
+        within(20, () -> assertThat(persistedMark(OLD).isPresent()).isTrue());
+        assertThat(persistedMark(OLD).map(AetherValue.UnconfirmedTerminationValue::absent).or(true)).as("only failures in this incarnation: not absent").isFalse();
+    }
+
     @Test
     void aMarkOfAnInstanceThatWasListed_promisesTheClusterWillConfirmIt_andAsksForNoHand() throws Exception {
         markAfterSeeingTheInstance("the listing still showed the instance");
