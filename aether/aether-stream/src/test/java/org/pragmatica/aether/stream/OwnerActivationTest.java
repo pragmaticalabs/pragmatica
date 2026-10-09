@@ -523,7 +523,26 @@ class OwnerActivationTest {
 
     /// A gate whose alarm records the escapes as well as the blocks, with `bound` as the unreachable bound.
     private OwnerActivation gateReportingEscapes(TimeSpan bound) {
-        var alarm = new OwnerActivation.BlockAlarm() {
+        var alarm = recordingAlarm();
+
+        return OwnerActivation.ownerActivation(SELF,
+                                               (_, _) -> record.get(),
+                                               (_, _) -> placementOwner.get(),
+                                               Option.some(this::round),
+                                               members::get,
+                                               this::probe,
+                                               (_, _) -> localWatermark.get(),
+                                               this::catchUp,
+                                               consensusActive::get,
+                                               this::range,
+                                               alarm,
+                                               bound);
+    }
+
+    private final List<OwnerActivation.ActivationBlock> resolvedBlocks = new CopyOnWriteArrayList<>();
+
+    private OwnerActivation.BlockAlarm recordingAlarm() {
+        return new OwnerActivation.BlockAlarm() {
             @Override
             public Unit raise(OwnerActivation.ActivationBlock block) {
                 return OwnerActivationTest.this.raise(block);
@@ -539,40 +558,6 @@ class OwnerActivationTest {
             @Override
             public Unit resolved(OwnerActivation.ActivationBlock block) {
                 resolvedBlocks.add(block);
-
-                return Unit.unit();
-            }
-        };
-
-        return OwnerActivation.ownerActivation(SELF,
-                                               (_, _) -> record.get(),
-                                               (_, _) -> placementOwner.get(),
-                                               Option.some(this::round),
-                                               members::get,
-                                               this::probe,
-                                               (_, _) -> localWatermark.get(),
-                                               this::catchUp,
-                                               consensusActive::get,
-                                               this::range,
-                                               alarm,
-                                               bound,
-                                               OwnerActivation.RingIncarnation.NONE,
-                                               lineage);
-    }
-
-    private final List<OwnerActivation.ActivationBlock> resolvedBlocks = new CopyOnWriteArrayList<>();
-    private volatile OwnerActivation.LineageCommit lineage = OwnerActivation.LineageCommit.NONE;
-
-    private OwnerActivation.BlockAlarm escapeRecordingAlarm() {
-        return new OwnerActivation.BlockAlarm() {
-            @Override
-            public Unit raise(OwnerActivation.ActivationBlock block) {
-                return OwnerActivationTest.this.raise(block);
-            }
-
-            @Override
-            public Unit escaped(OwnerActivation.PromotionEscape escape) {
-                escapes.add(escape);
 
                 return Unit.unit();
             }
@@ -627,10 +612,10 @@ class OwnerActivationTest {
         assertThat(gate.blockOf(STREAM, PARTITION)).isEqualTo(Option.none());
     }
 
-    /// #2080 (T1a): the escape is reported when the gate went ahead, not when it merely stopped waiting. While the catch-up from the
-    /// responder fails nothing proceeded and nothing is reported; the attempt that lands reports ONE escape.
+    /// #2080 (T1a): the escape is reported when the activation COMPLETES, not when the gate merely stopped waiting. While the catch-up
+    /// from the responder fails nothing proceeded and nothing is reported; the attempt that lands reports ONE escape.
     @Test
-    void activate_isrCandidate_escapeReportedOnlyOnceTheGateWentAhead() {
+    void activate_isrCandidate_escapeReportedWhenTheActivationCompletes() {
         var gate = gateReportingEscapes(TimeSpan.timeSpan(0).millis());
 
         record.set(Option.some(ownedWithIsr(SELF, List.of(SELF, PEER_A, PEER_B), 5L)));
@@ -652,26 +637,42 @@ class OwnerActivationTest {
         assertThat(escapes).as("one escape").hasSize(1);
     }
 
-    /// #2080: the escape is reported once per ESCAPE, not once per run of the gate. Here the responder catch-up passes every time, so
-    /// the gate goes ahead each run, and the activation keeps failing at the guarded epoch-start commit; four re-runs, one event.
-    /// Mutation: dropping the equality filter of the report turns this red (four events).
+    /// The epoch-start commit of the fixtures below: refused until `lineageAccepts`, then recorded the way the production writer does.
+    private final java.util.concurrent.atomic.AtomicBoolean lineageAccepts = new java.util.concurrent.atomic.AtomicBoolean(false);
+
+    private Promise<Unit> lineageCommit(String stream, int partition, StreamPartitionOwnershipValue current, long start, boolean restarted) {
+        if (!lineageAccepts.get()) {
+            return OwnerActivation.ActivationError.LINEAGE_NOT_COMMITTED.promise();
+        }
+
+        record.set(Option.some(current.withEpochStart(start)));
+
+        return Promise.success(Unit.unit());
+    }
+
+    private OwnerActivation lineageGate(TimeSpan bound) {
+        return OwnerActivation.ownerActivation(SELF,
+                                               (_, _) -> record.get(),
+                                               (_, _) -> placementOwner.get(),
+                                               Option.some(this::round),
+                                               members::get,
+                                               this::probe,
+                                               (_, _) -> localWatermark.get(),
+                                               this::catchUp,
+                                               consensusActive::get,
+                                               this::range,
+                                               recordingAlarm(),
+                                               bound,
+                                               (_, _) -> 1L,
+                                               this::lineageCommit);
+    }
+
+    /// #2080: the gate going ahead is not the activation. The responders were caught up from and the silent member skipped, but the
+    /// epoch-start commit is refused four times: the partition is not activated, so NO escape is reported. When the commit is accepted
+    /// the activation completes and exactly one is. Mutation: reporting when the gate passes turns this red (four events).
     @Test
-    void activate_isrCandidate_gateWentAheadRepeatedly_reportsTheSameEscapeOnce() {
-        lineage = (_, _, _, _, _) -> OwnerActivation.ActivationError.LINEAGE_NOT_COMMITTED.promise();
-        var gate = OwnerActivation.ownerActivation(SELF,
-                                                   (_, _) -> record.get(),
-                                                   (_, _) -> placementOwner.get(),
-                                                   Option.some(this::round),
-                                                   members::get,
-                                                   this::probe,
-                                                   (_, _) -> localWatermark.get(),
-                                                   this::catchUp,
-                                                   consensusActive::get,
-                                                   this::range,
-                                                   escapeRecordingAlarm(),
-                                                   TimeSpan.timeSpan(0).millis(),
-                                                   (_, _) -> 1L,
-                                                   lineage);
+    void activate_isrCandidate_gateWentAheadButTheEpochStartIsRefused_reportsNoEscapeUntilTheActivationCompletes() {
+        var gate = lineageGate(TimeSpan.timeSpan(0).millis());
 
         record.set(Option.some(ownedWithIsr(SELF, List.of(SELF, PEER_A, PEER_B), 5L)));
         members.set(List.of(SELF, PEER_A, PEER_B));
@@ -682,28 +683,20 @@ class OwnerActivationTest {
             assertThat(gate.activate(STREAM, PARTITION).await().isSuccess()).isFalse();
         }
 
-        assertThat(escapes).as("the same escape, four runs").hasSize(1);
+        assertThat(escapes).as("four runs past the gate, none activated").isEmpty();
+
+        lineageAccepts.set(true);
+
+        assertThat(gate.activate(STREAM, PARTITION).await().isSuccess()).isTrue();
+        assertThat(escapes).as("the activation completed").hasSize(1);
     }
 
-    /// #2080: an escape ends when the silent member answers again; if it goes silent again a NEW escape is reported. The activation keeps
-    /// failing at the epoch-start commit throughout, so only the answer of the member can have ended the first episode.
+    /// #2080: an escape the member's return made moot is not reported. The gate went ahead once (the epoch-start commit refused), then
+    /// the silent member answered and the activation completed WITH it: nothing was skipped, so nothing is reported. Mutation: not
+    /// dropping the pending escape when the member answers turns this red.
     @Test
-    void activate_isrCandidate_memberAnswersThenGoesSilentAgain_reportsTheSecondEscape() {
-        lineage = (_, _, _, _, _) -> OwnerActivation.ActivationError.LINEAGE_NOT_COMMITTED.promise();
-        var gate = OwnerActivation.ownerActivation(SELF,
-                                                   (_, _) -> record.get(),
-                                                   (_, _) -> placementOwner.get(),
-                                                   Option.some(this::round),
-                                                   members::get,
-                                                   this::probe,
-                                                   (_, _) -> localWatermark.get(),
-                                                   this::catchUp,
-                                                   consensusActive::get,
-                                                   this::range,
-                                                   escapeRecordingAlarm(),
-                                                   TimeSpan.timeSpan(0).millis(),
-                                                   (_, _) -> 1L,
-                                                   lineage);
+    void activate_isrCandidate_memberAnswersBeforeTheActivationCompletes_reportsNoEscape() {
+        var gate = lineageGate(TimeSpan.timeSpan(0).millis());
 
         record.set(Option.some(ownedWithIsr(SELF, List.of(SELF, PEER_A, PEER_B), 5L)));
         members.set(List.of(SELF, PEER_A, PEER_B));
@@ -711,19 +704,50 @@ class OwnerActivationTest {
         LockSupport.parkNanos(2_000_000L);
         gate.activate(STREAM, PARTITION).await();
         LockSupport.parkNanos(2_000_000L);
-        gate.activate(STREAM, PARTITION).await();
-        assertThat(escapes).as("first episode").hasSize(1);
+        assertThat(gate.activate(STREAM, PARTITION).await().isSuccess()).as("went ahead, epoch start refused").isFalse();
 
         unreachable.remove(PEER_A);
-        gate.activate(STREAM, PARTITION).await();
-        assertThat(escapes).as("the member answered: nothing new").hasSize(1);
+        lineageAccepts.set(true);
 
+        assertThat(gate.activate(STREAM, PARTITION).await().isSuccess()).as("activated with every member answering").isTrue();
+        assertThat(escapes).isEmpty();
+    }
+
+    /// #2080: a block that was standing is told as resolved the moment the gate stops waiting, even when the activation then fails
+    /// at the epoch-start commit: the partition no longer waits for the members the block names.
+    @Test
+    void activate_blockedThenEscapes_theBlockIsResolvedAtOnce_evenIfTheEpochStartIsStillRefused() {
+        var gate = lineageGate(TimeSpan.timeSpan(0).millis());
+
+        record.set(Option.some(ownedWithIsr(SELF, List.of(PEER_A, PEER_B), 5L)));
+        members.set(List.of(SELF, PEER_A, PEER_B));
         unreachable.add(PEER_A);
+        activateAfterBound(gate);
+        assertThat(alarms).singleElement().isInstanceOf(OwnerActivation.ActivationBlock.HoldersUnreachable.class);
+
+        record.set(Option.some(ownedWithIsr(SELF, List.of(SELF, PEER_A, PEER_B), 6L)));
         LockSupport.parkNanos(2_000_000L);
-        gate.activate(STREAM, PARTITION).await();
-        LockSupport.parkNanos(2_000_000L);
-        gate.activate(STREAM, PARTITION).await();
-        assertThat(escapes).as("silent again: a second episode").hasSize(2);
+
+        assertThat(gate.activate(STREAM, PARTITION).await().isSuccess()).as("epoch start refused").isFalse();
+        assertThat(resolvedBlocks).containsExactly(alarms.getFirst());
+        assertThat(escapes).isEmpty();
+    }
+
+    /// #2080: the bound is CONTINUOUS unreachability. With a bound of 150 ms the first run (silence just started) waits, and a run after
+    /// the bound has passed goes ahead. Mutation: restarting the clock on every run means the bound never elapses.
+    @Test
+    void activate_isrCandidate_boundElapsesAcrossRuns_notWithinOne() throws Exception {
+        var gate = gateReportingEscapes(TimeSpan.timeSpan(150).millis());
+
+        record.set(Option.some(ownedWithIsr(SELF, List.of(SELF, PEER_A, PEER_B), 5L)));
+        members.set(List.of(SELF, PEER_A, PEER_B));
+        unreachable.add(PEER_A);
+
+        assertThat(gate.activate(STREAM, PARTITION).await().isSuccess()).as("silence just started").isFalse();
+        Thread.sleep(250);
+
+        assertThat(gate.activate(STREAM, PARTITION).await().isSuccess()).as("silent for longer than the bound").isTrue();
+        assertThat(escapes).hasSize(1);
     }
 
     /// #2080: an activation ends the escape's episode, so a later tenure that has to go ahead again reports again.

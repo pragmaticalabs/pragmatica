@@ -104,4 +104,34 @@ class RecoverySegmentTest {
         assertThat(RecoverySegment.read(dir.resolve("truncated.seg")).isFailure()).isTrue();
         assertThat(RecoverySegment.read(dir.resolve("foreign.seg")).isFailure()).isTrue();
     }
+
+    /// The checksum covers the PAYLOAD: one flipped payload byte of the last record (the bytes just before its 4-byte checksum and the
+    /// 16-byte trailer) is detected. Mutation: a checksum over offset and timestamp only turns this red.
+    @Test
+    void read_detectsAFlippedPayloadByte() throws Exception {
+        var file = RecoverySegment.write(dir.resolve("s-5.wal"), "orders", 0, List.of(), pagesOf(0L, 2L), 0L, 2L, 3L).unwrap().file();
+        var bytes = Files.readAllBytes(file);
+
+        bytes[bytes.length - 16 - 4 - 1] ^= 0x01;
+        Files.write(dir.resolve("payload-flipped.seg"), bytes);
+
+        assertThat(RecoverySegment.read(dir.resolve("payload-flipped.seg")).isFailure()).isTrue();
+    }
+
+    /// The trailer is checked on its own: a segment missing exactly its closing magic, and one whose closing magic is wrong, are both
+    /// refused (a copy that stopped after the last record is not a complete record of the loss).
+    @Test
+    void read_requiresTheClosingMagic() throws Exception {
+        var file = RecoverySegment.write(dir.resolve("s-6.wal"), "orders", 0, List.of(), pagesOf(0L, 2L), 0L, 2L, 3L).unwrap().file();
+        var bytes = Files.readAllBytes(file);
+        var wrongMagic = bytes.clone();
+
+        wrongMagic[wrongMagic.length - 1] ^= 0x01;
+        Files.write(dir.resolve("no-magic.seg"), java.util.Arrays.copyOf(bytes, bytes.length - 8));
+        Files.write(dir.resolve("wrong-magic.seg"), wrongMagic);
+
+        assertThat(RecoverySegment.read(file).isSuccess()).as("control").isTrue();
+        assertThat(RecoverySegment.read(dir.resolve("no-magic.seg")).isFailure()).isTrue();
+        assertThat(RecoverySegment.read(dir.resolve("wrong-magic.seg")).isFailure()).isTrue();
+    }
 }

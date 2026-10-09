@@ -66,8 +66,9 @@ import org.slf4j.LoggerFactory;
 ///
 /// **The bounded escape (#2080).** After `unreachableAlarmAfter` of continuous probe failure a candidate named in the
 /// partition's COMMITTED in-sync set (`isrVersion > 0` and the set contains this node) stops waiting for the silent members:
-/// the responders are caught up from and reconciled exactly as before, and one `stream-promotion-past-unreachable-peers`
-/// operator event (through [BlockAlarm#escaped]) names the partition, the candidate and the members it went ahead without.
+/// the responders are caught up from and reconciled exactly as before, and when the activation completes one
+/// `stream-promotion-past-unreachable-peers` operator event (through [BlockAlarm#escaped]) names the partition, the candidate and
+/// the members it went ahead without.
 /// The guarantee, per operation:
 ///   - an acknowledged write at `confirmation_factor` >= 2 is on EVERY member of the in-sync set in force (the acknowledgement
 ///     waited for all of them), so an in-sync candidate holds every such record whether or not the silent members answer
@@ -486,9 +487,9 @@ public final class OwnerActivation {
     private final Map<PartitionKey, ActivationBlock> lineageBlocks = new ConcurrentHashMap<>();
     /// When the current run of probe failures started (`System.nanoTime`), per partition.
     private final Map<PartitionKey, Long> unreachableSince = new ConcurrentHashMap<>();
-    /// The escape last reported for each partition (#2080): a re-run of the same gate for the same silent members reports nothing
-    /// more; it ends with the activation, so a later tenure that has to escape again reports again.
-    private final Map<PartitionKey, PromotionEscape> escapes = new ConcurrentHashMap<>();
+    /// The escape the gate went ahead on, held until the activation COMPLETES (#2080): only then is it reported, so an event never
+    /// describes a promotion that did not happen. A member answering again, or ownership leaving this node, drops it unreported.
+    private final Map<PartitionKey, PromotionEscape> pendingEscapes = new ConcurrentHashMap<>();
 
     private OwnerActivation(NodeId self,
                             OwnershipRecordSource records,
@@ -796,6 +797,7 @@ public final class OwnerActivation {
                                   PartitionKey key,
                                   Option<StreamPartitionOwnershipValue> record) {
         activated.put(key, record);
+        Option.option(pendingEscapes.get(key)).onPresent(alarm::escaped);
         clearBlock(key);
         log.info("Owner activation of {}[{}] complete at watermark {} for ownership record {}",
                  stream,
@@ -850,7 +852,7 @@ public final class OwnerActivation {
         ended(unreachableBlocks.remove(key));
         ended(lineageBlocks.remove(key));
         unreachableSince.remove(key);
-        escapes.remove(key);
+        pendingEscapes.remove(key);
 
         return Unit.unit();
     }
@@ -1002,10 +1004,10 @@ public final class OwnerActivation {
 
     /// #2080, the bounded escape. `silent` have not answered for longer than the bound and this node is the candidate named in the
     /// committed in-sync set (`isrVersion > 0`), so it holds every acknowledged record the set was acknowledging: the responders
-    /// are caught up from and reconciled as always, and the silent members are no longer waited for. Reported when that step has
-    /// passed (a divergent responder that refuses the activation means nothing went ahead), once per distinct escape, INSTEAD of the
-    /// unreachable-members block. A candidate outside the set, or a record with no set, never gets here: it keeps waiting and
-    /// reports the block.
+    /// are caught up from and reconciled as always, and the silent members are no longer waited for. The escape is held as pending
+    /// when that step passes and reported when the activation completes ([#recordActivation]): a divergent responder that refuses the
+    /// activation, or a failed epoch-start commit, means nothing went ahead, and the unreachable-members block is ended instead of
+    /// raised. A candidate outside the set, or a record with no set, never gets here: it keeps waiting and reports the block.
     private Promise<Unit> proceedWithout(String stream,
                                          int partition,
                                          PartitionKey key,
@@ -1020,14 +1022,7 @@ public final class OwnerActivation {
 
         ended(unreachableBlocks.remove(key));
 
-        return catchUpFromResponders(stream, partition, answered).onSuccessRun(() -> reportEscape(key, escape));
-    }
-
-    private void reportEscape(PartitionKey key, PromotionEscape escape) {
-        Option.option(escapes.put(key, escape))
-              .filter(escape::equals)
-              .fold(() -> alarm.escaped(escape),
-                    _ -> Unit.unit());
+        return catchUpFromResponders(stream, partition, answered).onSuccessRun(() -> pendingEscapes.put(key, escape));
     }
 
     /// The unreachable condition's timer and block, kept apart from every other block (#1937): once the members in `silent`
@@ -1193,7 +1188,7 @@ public final class OwnerActivation {
     /// Every member answered: the unreachable run is over, and a report of it no longer describes the partition.
     private Unit clearUnreachable(PartitionKey key) {
         unreachableSince.remove(key);
-        escapes.remove(key);
+        pendingEscapes.remove(key);
         ended(unreachableBlocks.remove(key));
 
         return Unit.unit();

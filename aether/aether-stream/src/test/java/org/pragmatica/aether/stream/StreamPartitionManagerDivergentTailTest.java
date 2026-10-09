@@ -462,6 +462,16 @@ class StreamPartitionManagerDivergentTailTest {
         assertThat(one.quarantinedAt("single", PARTITION).isPresent()).as("the copy stays quarantined").isTrue();
         assertThat(segmentsUnder(path)).as("no segment under its final name").isEmpty();
         assertThat(filesUnder(path, ".pending-cut")).as("the witness of a cut that did not happen is restored away").isEmpty();
+        one.close();
+        var reopened = streamPartitionManager(Long.MAX_VALUE, Option.some(path));
+
+        reopened.createStream(StreamConfig.streamConfig("single")).onFailure(cause -> fail(cause.message()));
+        assertThat(reopened.readAppended("single", PARTITION, 0, 20).unwrap()).as("the WAL on disk still holds all eight records").hasSize(8);
+        reopened.close();
+        one = streamPartitionManager(Long.MAX_VALUE, Option.some(path));
+        one.createStream(StreamConfig.streamConfig("single")).onFailure(cause -> fail(cause.message()));
+        one.operatorWarnings(lossWarningsOnly());
+        one.appendRecovered("single", PARTITION, 3, "different".getBytes(UTF_8), 1003L, org.pragmatica.aether.slice.generation.Epoch.epoch(1L, 2L, 3L));
         quietPeriod();
         assertThat(preserved).as("no event claims a preserved loss").isEmpty();
         assertThat(warnings).isEmpty();

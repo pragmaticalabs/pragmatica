@@ -2057,7 +2057,8 @@ public interface AetherNode extends ManageableNode {
     }
 
     /// #2080: a promotion that went ahead without unreachable members is a CRITICAL operator event, one per escape, from both gates.
-    /// The subject carries the gate and the skipped members, so two escapes of one partition are two events for the throttle.
+    /// The subject carries the gate, the skipped members and the instant, so two escapes of one partition are two events for the event
+    /// layer's per-subject throttle (60 s): none is merged into an earlier one.
     private static Unit raisePromotionEscape(OperatorWarningSink sink, OwnerActivation.PromotionEscape escape) {
         return OperatorWarnings.raise(LOG,
                                       sink,
@@ -2069,7 +2070,8 @@ public interface AetherNode extends ManageableNode {
                                                            .stream()
                                                            .map(NodeId::id)
                                                            .sorted()
-                                                           .toList(),
+                                                           .toList()
+                                     + "@" + System.currentTimeMillis(),
                                       "{}",
                                       escape.message());
     }

@@ -4,8 +4,8 @@
   that keeps its transport handshaking while answering nothing never reaches DEAD (a wedged JVM). After the existing bound
   (`unreachableAlarmAfter`, two SWIM suspect windows, 20 s at the default, for the owner gate; `sourceWaitBound`, 20 s at the default, for
   the contest; no new setting) a candidate named in the partition's COMMITTED in-sync set (`isrVersion > 0`) goes ahead without the silent
-  members and raises one CRITICAL operator event, `stream-promotion-past-unreachable-peers`, naming the partition, the candidate and the
-  members it skipped. A candidate outside the set, a record with no committed set and a first owner with no record stay blocked as before.
+  members and, once the activation completes (the contest: once the replica is promoted), raises one CRITICAL operator event,
+  `stream-promotion-past-unreachable-peers`, naming the partition, the candidate and the members it skipped. A candidate outside the set, a record with no committed set and a first owner with no record stay blocked as before.
   `[verified: aether/aether-stream/src/test/java/org/pragmatica/aether/stream/OwnerActivationTest.java, aether/aether-stream/src/test/java/org/pragmatica/aether/stream/replication/PartitionBackfillEscapeTest.java, aether/node/src/test/java/org/pragmatica/aether/node/PromotionEscapeWiringTest.java]`
 - **Honest guarantee.** Acknowledged writes (`confirmation_factor` >= 2) are on every member of the in-sync set, so an in-sync candidate holds
   all of them `[mechanism: the acknowledgement waits for every in-sync member]`. After a full-cluster cold restart a node whose disk is ahead and
