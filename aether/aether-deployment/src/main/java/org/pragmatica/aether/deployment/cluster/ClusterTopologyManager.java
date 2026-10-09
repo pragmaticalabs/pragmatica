@@ -194,6 +194,11 @@ public interface ClusterTopologyManager extends TopologyManager {
     }
 
     /// #1543: the committed replacement pairings, read by worker surplus selection.
+    /// #2062: where the unconfirmed-termination operator events go (default: nowhere, the log line stands).
+    default org.pragmatica.lang.Unit setOperatorWarningSink(org.pragmatica.utility.warning.OperatorWarningSink sink) {
+        return org.pragmatica.lang.Unit.unit();
+    }
+
     default org.pragmatica.lang.Unit setNodeReplacements(NodeReplacementIndex index) {
         return org.pragmatica.lang.Unit.unit();
     }

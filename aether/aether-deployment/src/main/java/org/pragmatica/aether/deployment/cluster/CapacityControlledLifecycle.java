@@ -505,11 +505,68 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
         return binding.isEmpty() || UNCOUNTED_BINDING.equals(binding);
     }
 
-    private boolean externalNode(NodeId node) {
+    @Override
+    public boolean externalNode(NodeId node) {
         return store.getTyped(new AetherKey.CapacityReservationKey(node),
                               CapacityReservationValue.class)
                     .filter(value -> isExternalBinding(value.sourceBinding()))
                     .isPresent();
+    }
+
+    @Override
+    public Option<SourceName> sourceOf(NodeId node) {
+        return source(node).orElse(() -> delegate.sourceOf(node));
+    }
+
+    @Override
+    public Promise<Unit> releaseExternal(NodeId node) {
+        var key = new AetherKey.CapacityReservationKey(node);
+
+        return store.getTyped(key, CapacityReservationValue.class)
+                    .filter(value -> isExternalBinding(value.sourceBinding()))
+                    .fold(Promise::unitPromise,
+                          reservation -> releaseExternal(key, reservation));
+    }
+
+    /// A counted reservation returns its slot with the delete; an uncounted one (no ledger could count it) is dropped without touching the
+    /// counter, ledger or not.
+    private Promise<Unit> releaseExternal(AetherKey.CapacityReservationKey key, CapacityReservationValue reservation) {
+        var drop = new KVCommand.Mutation<AetherKey, AetherValue>(key, Option.some(reservation), Option.none());
+        var counted = !UNCOUNTED_BINDING.equals(reservation.sourceBinding());
+        var accepted = counted
+                       ? ledger().fold(() -> transact(List.of(drop)),
+                                       current -> mutate(Option.some(current),
+                                                         new CapacityLedgerValue(Math.max(0, current.allocated() - 1),
+                                                                                 current.version() + 1,
+                                                                                 current.inventoryComplete()),
+                                                         List.of(drop)))
+                       : transact(List.of(drop));
+
+        return accepted.flatMap(done -> done
+                                        ? Promise.unitPromise()
+                                        : Causes.cause("The release of the reservation of " + key.nodeId()
+                                                                                                 .id()
+                                                      + " conflicted; retry").promise());
+    }
+
+    private Promise<Boolean> transact(List<KVCommand.Mutation<AetherKey, AetherValue>> changes) {
+        return leader().fold(() -> Promise.success(false),
+                             currentLeader -> {
+                                 var id = UUID.randomUUID().toString();
+                                 var command = new KVCommand.LeaderTransaction<AetherKey, AetherValue>(changes.getFirst()
+                                                                                                              .key(),
+                                                                                                       id,
+                                                                                                       currentLeader,
+                                                                                                       List.of(),
+                                                                                                       changes);
+
+                                 return apply.apply(List.of(command))
+                                             .map(results -> results.stream()
+                                                                    .filter(KVCommand.TransactionResult.class::isInstance)
+                                                                    .map(KVCommand.TransactionResult.class::cast)
+                                                                    .anyMatch(result -> result.transactionId()
+                                                                                              .equals(id) && result.accepted()));
+                             });
     }
 
     @Override

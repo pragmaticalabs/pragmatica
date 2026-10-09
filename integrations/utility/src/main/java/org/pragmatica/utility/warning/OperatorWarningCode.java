@@ -108,6 +108,16 @@ public enum OperatorWarningCode {
     /// earlier refused by the slice floor has now been admitted (the floor cleared, or the operator forced it). INFO,
     /// published only after a published refusal for that target, and it clears the refusal's throttle window (#752).
     SLICE_FLOOR_DRAIN_ADMITTED("slice-floor-drain-admitted", "deployment", WarningLevel.INFO, SLICE_FLOOR_DRAIN_REFUSED),
+    /// The cluster retired a node (scale-down, departure, drain, replacement) and could NOT confirm that its instance is terminated at the
+    /// compute provider after every bounded retry (#2062): the instance may still be running, and billing. The subject is the node; the
+    /// message names the node, the last cause and what to do. Its recovery is [#INSTANCE_TERMINATION_CONFIRMED].
+    INSTANCE_TERMINATION_UNCONFIRMED("instance-termination-unconfirmed", "deployment", WarningLevel.WARNING),
+    /// The recovery of [#INSTANCE_TERMINATION_UNCONFIRMED], same subject (#2062): a later reap of the node was confirmed by a provider
+    /// listing (or the operator removed the instance and a repeat reap found none it had listed).
+    INSTANCE_TERMINATION_CONFIRMED("instance-termination-confirmed",
+                                   "deployment",
+                                   WarningLevel.INFO,
+                                   INSTANCE_TERMINATION_UNCONFIRMED),
     /// A node replacement (#1543) was committed: a fresh-id node is taking over from the subject (the ORIGINAL node). Raised once,
     /// when the record is first committed. Closed by [#NODE_REPLACEMENT_COMPLETED] or [#NODE_REPLACEMENT_ROLLED_BACK].
     NODE_REPLACEMENT_STARTED("node-replacement-started", "replacement", WarningLevel.INFO),

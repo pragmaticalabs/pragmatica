@@ -6,6 +6,7 @@ package org.pragmatica.aether.node;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -98,12 +99,14 @@ class NodeReplacementRealRegistryReapTest {
     }, new Deserializer() {
         @Override public <T> T read(ByteBuf buffer) { return null; }
     });
+    private final java.util.List<String> warnings = new java.util.concurrent.CopyOnWriteArrayList<>();
     private final AtomicInteger lists = new AtomicInteger();
     private final AtomicInteger terminates = new AtomicInteger();
     private final AtomicReference<Promise<List<InstanceInfo>>> listing = new AtomicReference<>(Promise.success(List.of()));
     private final Map<NodeId, String> states = new java.util.concurrent.ConcurrentHashMap<>();
     private final NodeReplacementIndex index = NodeReplacementIndex.nodeReplacementIndex();
     private NodeLifecycleManager lifecycle;
+    private ClusterTopologyManager ctmUnderTest;
     private NodeReplacementWiring.Wiring wiring;
     private String realBinding;
 
@@ -120,6 +123,8 @@ class NodeReplacementRealRegistryReapTest {
 
         lifecycle = CapacityControlledLifecycle.capacityControlledLifecycle(delegate, CORE, store, this::process, () -> true, () -> 10);
         var ctm = ctmOver(lifecycle);
+
+        ctmUnderTest = ctm;
         var fsm = mock(MembershipFsm.class);
 
         when(fsm.memberStates()).thenAnswer(call -> Map.copyOf(states));
@@ -170,7 +175,7 @@ class NodeReplacementRealRegistryReapTest {
         var observer = TopologyObserver.topologyObserver(config, MessageRouter.mutable(), snapshotSource).unwrap();
         var ctm = ClusterTopologyManager.clusterTopologyManager(observer,
                                                                 lifecycleManager,
-                                                                AutoHealConfig.DEFAULT,
+                                                                AutoHealConfig.DEFAULT.withProvisioningTimeout(timeSpan(60).millis()),
                                                                 DeploymentMap.deploymentMap(),
                                                                 snapshotSource,
                                                                 () -> Option.<ClusterConfigValue> none(),
@@ -179,8 +184,15 @@ class NodeReplacementRealRegistryReapTest {
                                                                 _ -> {},
                                                                 _ -> {},
                                                                 Option::none,
-                                                                MembershipLiveness.UNWIRED);
+                                                                MembershipLiveness.membershipLiveness(Set::of,
+                                                                                                      Set::of,
+                                                                                                      node -> Option.option(states.get(node)).filter(state -> !"Dead".equals(state)).isPresent(),
+                                                                                                      _ -> false,
+                                                                                                      Set::of,
+                                                                                                      () -> 3,
+                                                                                                      _ -> Option.none()));
 
+        ctm.setOperatorWarningSink(OperatorWarningSink.handingOffTo(warning -> warnings.add(warning.code().code() + ":" + warning.subject() + ":" + warning.message())));
         ctm.setRetirementRefusal(_ -> Option.none());
         ctm.activate();
 
@@ -215,7 +227,8 @@ class NodeReplacementRealRegistryReapTest {
         wiring.reconciler().reconcile().await();
 
         assertThat(committed().unwrap().phase()).as("the rollback is committed").isEqualTo(NodeReplacementPhase.ROLLED_BACK);
-        assertThat(reservation(FRESH).unwrap().phase()).as("and the reservation is released in the same transaction").isEqualTo(CapacityReservationPhase.RELEASED);
+        assertThat(reservation(FRESH).isEmpty()).as("and the reservation is returned with the reap, before the commit").isTrue();
+        assertThat(store.getTyped(AetherKey.CapacityLedgerKey.INSTANCE, CapacityLedgerValue.class).unwrap().allocated()).isEqualTo(4);
         assertThat(lists.get() + terminates.get()).as("no provider list or terminate call for an EXTERNAL node").isZero();
 
         lifecycle.reconcileRefusals().await().unwrap();
@@ -253,7 +266,8 @@ class NodeReplacementRealRegistryReapTest {
         wiring.reconciler().reconcile().await();
 
         assertThat(committed().unwrap().phase()).isEqualTo(NodeReplacementPhase.DONE);
-        assertThat(reservation(OLD).unwrap().phase()).isEqualTo(CapacityReservationPhase.RELEASED);
+        assertThat(reservation(OLD).isEmpty()).as("returned with the reap").isTrue();
+        assertThat(store.getTyped(AetherKey.CapacityLedgerKey.INSTANCE, CapacityLedgerValue.class).unwrap().allocated()).isEqualTo(4);
         assertThat(lists.get() + terminates.get()).as("no provider call").isZero();
 
         lifecycle.reconcileRefusals().await().unwrap();
@@ -364,6 +378,77 @@ class NodeReplacementRealRegistryReapTest {
 
         assertThat(terminates.get()).as("a listed instance is terminated").isEqualTo(1);
         assertThat(committed().unwrap().phase()).isEqualTo(NodeReplacementPhase.DONE);
+    }
+
+    // ---- #2062: every retirement reap is a confirmed reap -----------------------------------------------------------------
+
+    private void retire(NodeId node) {
+        ctmUnderTest.drainNode(node, org.pragmatica.aether.deployment.cluster.DrainReason.OPERATOR_COMMAND).await();
+    }
+
+    /// Scale-down / operator drain of a bootstrap node that was never listed and has no reservation: the reap lists it (committing the
+    /// observed reservation), terminates it at the provider and confirms by a second listing. Before the fix this was "Cannot terminate
+    /// without a committed capacity source binding", logged and dropped.
+    @Test
+    void aBootstrapNodeWithNoReservation_isTerminatedAndConfirmed_whenItIsRetired() {
+        put(AetherKey.CapacityLedgerKey.INSTANCE, new CapacityLedgerValue(3, 1, true));
+        listing.set(Promise.success(List.of(instance(OLD, "i-1", InstanceStatus.RUNNING))));
+
+        retire(OLD);
+
+        org.awaitility.Awaitility.await().atMost(java.time.Duration.ofSeconds(10)).untilAsserted(() -> assertThat(terminates.get()).as("terminated at the provider").isEqualTo(1));
+        org.awaitility.Awaitility.await().atMost(java.time.Duration.ofSeconds(10)).untilAsserted(() -> assertThat(reservation(OLD).isEmpty()).as("the listing committed the reservation, the confirmed termination released it").isTrue());
+        assertThat(store.getTyped(AetherKey.CapacityLedgerKey.INSTANCE, CapacityLedgerValue.class).unwrap().allocated()).as("observed (+1) then released (-1)").isEqualTo(3);
+        assertThat(lists.get()).as("listed before and after the terminate").isGreaterThanOrEqualTo(2);
+        assertThat(warnings).as("confirmed: no operator event").isEmpty();
+    }
+
+    /// A listing error is retried, never read as "gone": the node is terminated once the provider answers.
+    @Test
+    void aListingErrorOnRetirement_isRetried_notReadAsGone() {
+        put(AetherKey.CapacityLedgerKey.INSTANCE, new CapacityLedgerValue(3, 1, true));
+        listing.set(EnvironmentError.operationNotSupported("provider API down").promise());
+
+        retire(OLD);
+        org.awaitility.Awaitility.await().atMost(java.time.Duration.ofSeconds(10)).until(() -> lists.get() >= 2);
+
+        assertThat(terminates.get()).as("nothing terminated while the listing fails").isZero();
+
+        listing.set(Promise.success(List.of(instance(OLD, "i-1", InstanceStatus.RUNNING))));
+
+        org.awaitility.Awaitility.await().atMost(java.time.Duration.ofSeconds(10)).untilAsserted(() -> assertThat(terminates.get()).as("retried and terminated").isEqualTo(1));
+    }
+
+    /// After the bounded retries an operator event names the node and the cause, and its recovery follows a later confirmation.
+    @Test
+    void aReapThatCannotBeConfirmed_endsInAnOperatorEventNamingTheNode_andRecovers() {
+        put(AetherKey.CapacityLedgerKey.INSTANCE, new CapacityLedgerValue(3, 1, true));
+        listing.set(EnvironmentError.operationNotSupported("provider API down").promise());
+
+        retire(OLD);
+
+        org.awaitility.Awaitility.await().atMost(java.time.Duration.ofSeconds(20))
+                .untilAsserted(() -> assertThat(warnings).anyMatch(w -> w.startsWith("instance-termination-unconfirmed:" + OLD.id()) && w.contains("provider API down")));
+        assertThat(terminates.get()).isZero();
+
+        listing.set(Promise.success(List.of(instance(OLD, "i-1", InstanceStatus.RUNNING))));
+        retire(OLD);
+
+        org.awaitility.Awaitility.await().atMost(java.time.Duration.ofSeconds(10))
+                .untilAsserted(() -> assertThat(warnings).anyMatch(w -> w.startsWith("instance-termination-confirmed:" + OLD.id())));
+    }
+
+    /// An EXTERNAL node (operator-started) retired through the same path makes no provider call; its reservation is returned.
+    @Test
+    void anExternalNodeRetiredThroughTheSharedReap_makesNoProviderCall_andReturnsItsCapacity() {
+        put(AetherKey.CapacityLedgerKey.INSTANCE, new CapacityLedgerValue(5, 1, true));
+        put(new AetherKey.CapacityReservationKey(OLD), new CapacityReservationValue("west", "", "core", CapacityReservationPhase.OBSERVED));
+
+        retire(OLD);
+
+        org.awaitility.Awaitility.await().atMost(java.time.Duration.ofSeconds(10)).untilAsserted(() -> assertThat(reservation(OLD).isEmpty()).isTrue());
+        assertThat(store.getTyped(AetherKey.CapacityLedgerKey.INSTANCE, CapacityLedgerValue.class).unwrap().allocated()).isEqualTo(4);
+        assertThat(lists.get() + terminates.get()).as("no provider call").isZero();
     }
 
     private final class CountingProvider implements ComputeProvider {

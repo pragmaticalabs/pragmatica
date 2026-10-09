@@ -71,6 +71,24 @@ public interface NodeLifecycleManager {
         return EnvironmentError.operationNotSupported("Bound source inventory unavailable").promise();
     }
 
+    /// The compute source that owns `nodeId`'s instance, when it is known without a committed reservation (a bootstrap node is placed
+    /// by its membership descriptor). Used by retirement reaps that start from a node id alone (#2062).
+    default Option<SourceName> sourceOf(NodeId nodeId) {
+        return Option.none();
+    }
+
+    /// True when `nodeId` was admitted by an EXTERNAL admission (#1543): an operator started it, so there is no provider instance of ours
+    /// to list or terminate and its capacity reservation carries no provider binding.
+    default boolean externalNode(NodeId nodeId) {
+        return false;
+    }
+
+    /// Returns the capacity an EXTERNAL node held (slot and reservation) once it has left the cluster. Idempotent; a node with no
+    /// reservation succeeds. Never a provider call.
+    default Promise<Unit> releaseExternal(NodeId nodeId) {
+        return Promise.unitPromise();
+    }
+
     default Result<String> sourceBinding(SourceName source) {
         return EnvironmentError.operationNotSupported("Source identity binding unavailable").result();
     }
@@ -320,6 +338,12 @@ record SourceNodeLifecycleManager(SourceComputeRegistry registry,
     @Override
     public Result<String> sourceBinding(SourceName source) {
         return registry.binding(source);
+    }
+
+    @Override
+    public Option<SourceName> sourceOf(NodeId nodeId) {
+        return sourceForNode.apply(nodeId)
+                            .option();
     }
 
     @Override
