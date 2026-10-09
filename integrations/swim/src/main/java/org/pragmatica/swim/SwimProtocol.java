@@ -2724,6 +2724,8 @@ public final class SwimProtocol implements SwimMessageHandler {
         }
 
         everSeenHealthy.add(peer);
+        // A healthy peer has no deferred FAULTY edge left to replay (#2077).
+        transportVetoedFaulty.remove(peer);
         // SWIM's own healthy evidence supersedes any stale transport unreachable-bias.
         transportHints.remove(peer);
         clearIsolationOnReconnect(peer);
@@ -3046,6 +3048,11 @@ public final class SwimProtocol implements SwimMessageHandler {
         consumer.accept(observation);
 
         return Unit.unit();
+    }
+
+    /// Test seam (#2077): whether a transport-vetoed FAULTY edge for `peer` is waiting to be replayed.
+    boolean transportVetoedForTest(NodeId peer) {
+        return transportVetoedFaulty.containsKey(peer);
     }
 
     /// Test-only accessor for the per-peer ever-seen-healthy flag. Use to

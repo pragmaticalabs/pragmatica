@@ -23,6 +23,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 import org.junit.jupiter.api.Test;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.swim.SwimMember.MemberState;
 import org.pragmatica.swim.SwimMessage.MembershipUpdate;
 import org.pragmatica.swim.SwimMessage.Ping;
@@ -252,6 +253,51 @@ class SwimProtocolColdBootReplayTest {
             await().atMost(WITHIN_RESIDENCY)
                    .until(() -> !departures(observations, PHANTOM).isEmpty());
             assertThat(faulties(observations, PHANTOM)).as("the deferred edge fires the FAULTY pair once").hasSize(1);
+            assertThat(protocol.transportVetoedForTest(PHANTOM)).as("the replay is one-shot: the deferral is spent, not re-run every tick").isFalse();
+        } finally {
+            protocol.stop();
+        }
+    }
+
+    /// A vetoed peer that then proves HEALTHY has no deferred edge left, and when its link later drops it is never departed: the
+    /// replay stands behind both the HEALTHY edge's clear and its own never-HEALTHY filter, so a false DEAD for an established peer
+    /// would need both to fail. The window is shorter than any detection path, so a departure can only come from the replay.
+    @Test
+    void vetoedThenRecoveredHealthy_linkDrops_isNeverDeparted() throws InterruptedException {
+        var linkUp = new AtomicBoolean(true);
+        var observations = new RecordingObservationSink();
+        var protocol = SwimProtocol.swimProtocol(tightConfig(),
+                                                 new RecordingTransport(),
+                                                 new RecordingListener(),
+                                                 SELF_ID,
+                                                 SELF_ADDR,
+                                                 () -> false,
+                                                 peer -> peer.equals(GENUINE) && linkUp.get())
+                                   .unwrap();
+
+        protocol.addObservationListener(observations);
+        protocol.onMessage(GOSSIPER_ADDR,
+                           new Ping(GOSSIPER, 1L, List.of(MembershipUpdate.membershipUpdate(GENUINE, MemberState.FAULTY, 0, GENUINE_ADDR))));
+        protocol.start();
+        try {
+            await().atMost(Duration.ofSeconds(3))
+                   .until(() -> hasUnknown(observations, GENUINE));
+            assertThat(protocol.transportVetoedForTest(GENUINE)).as("the live link deferred the edge").isTrue();
+
+            protocol.onMessage(GENUINE_ADDR,
+                               new Ping(GENUINE, 1L, List.of(MembershipUpdate.membershipUpdate(GENUINE, MemberState.ALIVE, 5, GENUINE_ADDR))));
+            await().atMost(Duration.ofSeconds(1))
+                   .until(() -> protocol.everSeenHealthyForTest(GENUINE));
+            assertThat(protocol.transportVetoedForTest(GENUINE)).as("the HEALTHY edge clears the deferral").isFalse();
+
+            linkUp.set(false);
+            protocol.recordTransportHint(GENUINE,
+                                         new TransportObservation.PeerUnreachable(GENUINE,
+                                                                                  Causes.cause("link closed"),
+                                                                                  TransportObservation.HintOrigin.LINK_LOST));
+            Thread.sleep(60);
+
+            assertThat(departures(observations, GENUINE)).as("an established peer is not departed by a replay").isEmpty();
         } finally {
             protocol.stop();
         }

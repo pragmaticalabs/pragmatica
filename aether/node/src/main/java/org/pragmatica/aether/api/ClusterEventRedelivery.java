@@ -18,6 +18,7 @@ import java.util.function.LongSupplier;
 
 import org.pragmatica.aether.slice.PublishOutcomeUnknown;
 import org.pragmatica.aether.stream.StreamError;
+import org.pragmatica.aether.stream.forward.StreamForwardError;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
@@ -40,8 +41,9 @@ import static org.pragmatica.lang.Unit.unit;
 /// had no durable record.
 ///
 /// **What.** A failed publish is buffered and retried with backoff until it lands or its age passes
-/// [#RETRY_HORIZON_MS]. A transient refusal (`Cause.Transient`, for example a partition owner not yet promoted)
-/// restarts that age, so the horizon bounds a stream that refuses for good, not a promotion that is merely slow (#2077).
+/// [#RETRY_HORIZON_MS]. A promotion refusal ([#isPromotionRefusal]: the owner not yet promoted, the stream config not
+/// yet visible, each also as a forwarder reports it) restarts that age, so the horizon bounds a stream that refuses for
+/// good, not a promotion that is merely slow (#2077). Every other failure, transient or not, ages as before.
 /// A retry re-sends the SAME event object, stamped once with `details.eventId` when the
 /// aggregator accepted it ([ClusterEventIdentity]). An event that landed despite an unknown outcome and is then
 /// sent again is therefore a duplicate with the same `eventId`, and `ClusterEventAggregator.events()` and the event
@@ -84,6 +86,7 @@ final class ClusterEventRedelivery {
     /// `onGivenUp` runs if redelivery finally drops it, `onDelivered` if a retry lands.
     private record Pending(ClusterEvent event,
                            long firstFailedAt,
+                           long horizonStartedAt,
                            int attempts,
                            long nextAttemptAt,
                            Consumer<GiveUpOutcome> onGivenUp,
@@ -94,12 +97,13 @@ final class ClusterEventRedelivery {
                                Consumer<GiveUpOutcome> onGivenUp,
                                Runnable onDelivered,
                                boolean maybeLanded) {
-            return new Pending(event, now, 1, now + INITIAL_BACKOFF_MS, onGivenUp, onDelivered, maybeLanded);
+            return new Pending(event, now, now, 1, now + INITIAL_BACKOFF_MS, onGivenUp, onDelivered, maybeLanded);
         }
 
         Pending failedAgain(long now) {
             return new Pending(event,
                                firstFailedAt,
+                               horizonStartedAt,
                                attempts + 1,
                                now + backoff(attempts + 1),
                                onGivenUp,
@@ -111,6 +115,7 @@ final class ClusterEventRedelivery {
         Pending afterFailure(Cause cause) {
             return new Pending(event,
                                firstFailedAt,
+                               horizonStartedAt,
                                attempts,
                                nextAttemptAt,
                                onGivenUp,
@@ -118,9 +123,15 @@ final class ClusterEventRedelivery {
                                maybeLanded || cause instanceof PublishOutcomeUnknown);
         }
 
-        /// This event with its horizon restarted at `now`: the stream refused with a transient cause (#2077).
+        /// This event with its horizon restarted at `now`: the stream refused with a promotion refusal (#2077).
+        /// `firstFailedAt` stays, so the age of the event itself is still known.
         Pending rebasedAt(long now) {
-            return new Pending(event, now, attempts, nextAttemptAt, onGivenUp, onDelivered, maybeLanded);
+            return new Pending(event, firstFailedAt, now, attempts, nextAttemptAt, onGivenUp, onDelivered, maybeLanded);
+        }
+
+        /// Whether the event has been held longer than the horizon in all, however often the horizon was restarted.
+        boolean heldPastHorizonAt(long now) {
+            return now - firstFailedAt >= RETRY_HORIZON_MS;
         }
 
         GiveUpOutcome outcome() {
@@ -130,7 +141,7 @@ final class ClusterEventRedelivery {
         }
 
         boolean expiredAt(long now) {
-            return now - firstFailedAt >= RETRY_HORIZON_MS;
+            return now - horizonStartedAt >= RETRY_HORIZON_MS;
         }
 
         boolean dueAt(long now) {
@@ -305,10 +316,14 @@ final class ClusterEventRedelivery {
                 var oldest = Option.option(waiting.pollFirst());
 
                 if (oldest.isEmpty()) {
+                    LOG.warn("ClusterEventRedelivery: the buffer is full ({} events held, all in flight); dropping the new {}",
+                             CAPACITY,
+                             pending.event().type());
+
                     return drop(DropReason.OVERFLOW, pending);
                 }
 
-                oldest.onPresent(entry -> dropHeld(DropReason.OVERFLOW, entry));
+                oldest.onPresent(entry -> overflowed(entry));
             }
 
             held.incrementAndGet();
@@ -316,6 +331,16 @@ final class ClusterEventRedelivery {
         }
 
         return unit();
+    }
+
+    /// Drops the oldest held event to make room, and says so now: the next successful publish, where the aggregate WARN
+    /// lives, may be arbitrarily far off when the stream is refusing.
+    private Unit overflowed(Pending entry) {
+        LOG.warn("ClusterEventRedelivery: the buffer is full ({} events held); dropping the oldest, a {}, to make room",
+                 CAPACITY,
+                 entry.event().type());
+
+        return dropHeld(DropReason.OVERFLOW, entry);
     }
 
     private void retry(Pending pending) {
@@ -343,14 +368,47 @@ final class ClusterEventRedelivery {
                : enqueue(pending.failedAgain(now));
     }
 
-    /// The horizon bounds how long a stream that refuses for good is waited on. A transient refusal (a partition owner not
-    /// yet promoted, a retryable forward response) is the stream saying "not yet": the event is held for as long as the stream
-    /// keeps saying it, and the horizon runs from the last such answer (#2077). A promotion held up by failure detection can
-    /// last past the horizon; the buffer's own bound ([#CAPACITY], oldest first) still caps what a long refusal can hold.
-    private static Pending pauseHorizonWhileRefusing(Pending pending, Cause cause, long now) {
-        return cause instanceof Cause.Transient
-               ? pending.rebasedAt(now)
-               : pending;
+    /// The horizon bounds how long a stream that refuses for good is waited on. A promotion refusal is the stream saying
+    /// "not yet": the event is held for as long as the stream keeps saying it, and the horizon runs from the last such answer
+    /// (#2077). A promotion held up by failure detection can last past the horizon. The buffer's own bound ([#CAPACITY],
+    /// oldest first) still caps what a long refusal can hold, and an event held past the horizon is reported once per node at
+    /// ERROR ([#reportHeldPastHorizon]) without being dropped, so a partition that waits for an operator stays loud.
+    private Pending pauseHorizonWhileRefusing(Pending pending, Cause cause, long now) {
+        if (!isPromotionRefusal(cause)) {
+            return pending;
+        }
+
+        if (pending.heldPastHorizonAt(now)) {
+            reportHeldPastHorizon(pending);
+        }
+
+        return pending.rebasedAt(now);
+    }
+
+    /// The refusals that mean "this partition's owner is not promoted yet", by exact type: [StreamError.OwnerNotActivated],
+    /// [StreamError.StreamConfigNotYetVisible], and either of them as a forwarder sees it, a
+    /// [StreamForwardError.RemotePublishRetryable] whose detail is that refusal's own text (the wire carries a string only).
+    /// Every other cause, `Cause.Transient` timeouts, open breakers and replication timeouts included, ages as on rc4, and so
+    /// does `PublishOutcomeUnknown`: the event may have landed, and re-publishing past the horizon risks duplicates.
+    static boolean isPromotionRefusal(Cause cause) {
+        return switch (cause) {
+            case StreamError.OwnerNotActivated _, StreamError.StreamConfigNotYetVisible _ -> true;
+            case StreamForwardError.RemotePublishRetryable retryable -> StreamError.OwnerNotActivated.describes(retryable.detail()) || StreamError.StreamConfigNotYetVisible.describes(retryable.detail());
+            default -> false;
+        };
+    }
+
+    private Unit reportHeldPastHorizon(Pending pending) {
+        if (expiryReported.compareAndSet(false, true)) {
+            LOG.error("ClusterEventRedelivery: a {} has been held for over {} s ({} attempts) because the cluster-events stream "
+                     + "keeps refusing publishes as not yet promoted. It is kept, not dropped; if the partition's owner waits "
+                     + "for an operator, that is the action needed. Reported once per node.",
+                      pending.event().type(),
+                      RETRY_HORIZON_MS / 1_000,
+                      pending.attempts());
+        }
+
+        return unit();
     }
 
     /// A cause no retry can fix: the event itself is refused (too large for the stream), whoever owns it.
