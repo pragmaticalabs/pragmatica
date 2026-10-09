@@ -989,13 +989,6 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     }
 
     @Override
-    public Unit announceUnconfirmedTermination(NodeId node, int attempts, String detail) {
-        raiseUnconfirmed(node, attempts, detail);
-
-        return unit();
-    }
-
-    @Override
     public Promise<List<String>> replacementInstanceIds(NodeId node) {
         return lifecycleManager.instancesForNode(node)
                                .map(listed -> listed.stream()

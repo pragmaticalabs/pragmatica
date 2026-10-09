@@ -2922,7 +2922,6 @@ class LeaderReconcilerTest {
             assertThat(ctm.announcements()).hasSize(1);
             var announced = ctm.announcements().getFirst();
             assertThat(announced.node()).isEqualTo(minted);
-            assertThat(announced.attempts()).isEqualTo(5);
             assertThat(announced.detail()).contains(RecordingCtm.instanceIdOf(minted)).contains("still listed at the provider");
         }
 
@@ -4210,7 +4209,7 @@ class LeaderReconcilerTest {
             providerListsInstances.set(true);
         }
 
-        record Announcement(NodeId node, int attempts, String detail) {}
+        record Announcement(NodeId node, String detail) {}
 
         private final List<Announcement> announcements = new CopyOnWriteArrayList<>();
 
@@ -4219,8 +4218,8 @@ class LeaderReconcilerTest {
         }
 
         @Override
-        public Unit announceUnconfirmedTermination(NodeId node, int attempts, String detail) {
-            announcements.add(new Announcement(node, attempts, detail));
+        public Unit markUnconfirmed(NodeId node, String detail) {
+            announcements.add(new Announcement(node, detail));
 
             return unit();
         }

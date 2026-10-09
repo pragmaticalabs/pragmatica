@@ -125,7 +125,7 @@ class ClusterTopologyManagerReapRetiredTest {
         assertThat(terminates.get()).isZero();
     }
 
-    /// #1111: a caller that gave up on confirming an orphan's termination hands it to the manager, the single raiser of the pair. The
+    /// #1111: a caller that gave up on confirming an orphan's termination marks it unconfirmed on the manager (`markUnconfirmed`), the single raiser of the pair. The
     /// unconfirmed event fires once however often it is handed over, and a LATER confirmed reap of the node (here the departure reap, as
     /// the grace backstop and the activation replay take) raises the matching confirmed event for the same subject.
     @Test
@@ -133,8 +133,8 @@ class ClusterTopologyManagerReapRetiredTest {
         var events = new java.util.concurrent.CopyOnWriteArrayList<org.pragmatica.utility.warning.OperatorWarning>();
 
         ctm.setOperatorWarningSink(org.pragmatica.utility.warning.OperatorWarningSink.handingOffTo(events::add));
-        ctm.announceUnconfirmedTermination(OLD, 5, "still listed at the provider; provider instance(s) [i-1]");
-        ctm.announceUnconfirmedTermination(OLD, 5, "again");
+        ctm.markUnconfirmed(OLD, "still listed at the provider; provider instance(s) [i-1]");
+        ctm.markUnconfirmed(OLD, "again");
 
         org.awaitility.Awaitility.await().atMost(2, java.util.concurrent.TimeUnit.SECONDS).until(() -> events.size() == 1);
         assertThat(events.getFirst().code()).isEqualTo(org.pragmatica.utility.warning.OperatorWarningCode.INSTANCE_TERMINATION_UNCONFIRMED);

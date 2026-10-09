@@ -2083,12 +2083,8 @@ public final class LeaderReconciler {
                  attempt,
                  cause.message());
         if (attempt >= REAP_ATTEMPT_BOUND) {
-            ctm.announceUnconfirmedTermination(id,
-                                               attempt,
-                                               cause.message()
-                                              + "; provider instance(s) " + instances
-                                              + " in source '" + source
-                                              + "'");
+            ctm.markUnconfirmed(id,
+                                cause.message() + "; provider instance(s) " + instances + " in source '" + source + "'");
 
             return;
         }

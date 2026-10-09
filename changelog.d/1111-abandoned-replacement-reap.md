@@ -11,7 +11,7 @@
 - **The record names the instance.** The WARN `abandoned in-flight replacement` carries the source, the node id and the provider instance id.
   [verified: LeaderReconcilerTest$AbandonedReplacementReap.abandonment_warnsWithSourceNodeIdAndInstanceId]
 - **A reap that cannot be confirmed is retried, then announced, then left.** Five attempts at the poll interval; the fifth failure hands the
-  orphan to the topology manager (`announceUnconfirmedTermination`), the single raiser, which raises the operator event
+  orphan to the topology manager (`markUnconfirmed`), the single raiser, which raises the operator event
   `instance-termination-unconfirmed` once (subject: the replacement's node id; the message names the instance and the cause). The active
   retries then STOP: no provider call is made for that replacement afterwards. Because the manager remembers the node, a later confirmed
   reap of it (the grace backstop, or the next leader activation's replay) raises `instance-termination-confirmed` for the same subject.

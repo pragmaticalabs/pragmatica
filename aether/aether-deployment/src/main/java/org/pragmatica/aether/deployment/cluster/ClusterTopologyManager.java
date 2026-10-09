@@ -243,14 +243,6 @@ public interface ClusterTopologyManager extends TopologyManager {
         return SourceName.DEFAULT;
     }
 
-    /// #1111: a caller that gave up on confirming a retired node's instance terminated hands the node to the manager, which raises the
-    /// unconfirmed-termination operator event for it ONCE and remembers it, so that any later confirmed reap of the node (the grace
-    /// backstop, the activation replay) raises the matching confirmed event. The manager is the single raiser of that pair.
-    /// `detail` names what the caller knows (the last cause, the provider instance ids).
-    default org.pragmatica.lang.Unit announceUnconfirmedTermination(NodeId node, int attempts, String detail) {
-        return org.pragmatica.lang.Unit.unit();
-    }
-
     /// #1111: the provider ids of the instances behind `node`, in any status, for the operator-facing record of an abandoned
     /// replacement. Best effort: a listing that fails or lists nothing is an empty list, never a failure.
     default Promise<List<String>> replacementInstanceIds(NodeId node) {
