@@ -2325,7 +2325,6 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
 
     private void reapConfirmed(NodeId nodeId) {
         failedReaps.remove(nodeId);
-        drainGraceChains.remove(nodeId);
         var marked = unconfirmedReaps.remove(nodeId);
         var persisted = persistedMarks.get().get().containsKey(nodeId);
 
@@ -2345,7 +2344,6 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
 
     private void reapUnconfirmed(NodeId nodeId, long epoch, int retriesLeft, org.pragmatica.lang.Cause cause) {
         if (retriesLeft <= 0) {
-            drainGraceChains.remove(nodeId);
             markUnconfirmed(nodeId, "after " + FAILED_REAP_RETRIES + " attempts: " + cause.message());
 
             return;
@@ -2373,6 +2371,8 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         confirmedReap(nodeId, epoch, retriesLeft);
     }
 
+    /// (The drain-grace mark is cleared only where a chain STARTS ([#terminateRetired]): every gated chain starts there, and a retry consults the mark
+    /// only for the chain it belongs to.)
     /// A gated retry found life: a live node is not terminated by a retry, but it is not dropped in silence either. It is parked for the next SWIM
     /// FAULTY and marked unconfirmed, so the operator is told; a later confirmation, or the node's rejoin, closes the warning. The drain-grace chain
     /// is never here: its node is a drained node that did not exit, alive by definition, and its retries are not gated.
