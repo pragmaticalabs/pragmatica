@@ -818,6 +818,13 @@ public final class LeaderReconciler {
 
     /// Inject the surge set: members the surplus path must not count as surplus because a committed replacement pairing
     /// brought them in on purpose (#1543). `null` resets to "no surge".
+    /// What the surge supplier reports now: the replacement pairings' nodes this reconciler counts as capacity. Read-only, for the
+    /// boot test that pins the node's wiring.
+    public Set<NodeId> surgeReplacementsView() {
+        return surgeReplacements.get()
+                                .get();
+    }
+
     @Contract
     public void setSurgeReplacements(Supplier<Set<NodeId>> supplier) {
         surgeReplacements.set(supplier == null

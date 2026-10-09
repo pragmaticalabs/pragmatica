@@ -133,4 +133,16 @@ class NodeReplacementIndexTest {
 
         assertThat(seen).containsExactly("old:->PROVISIONING", "old:PROVISIONING>JOINING");
     }
+
+    /// The leader reconciler sizes the CORE electorate: a worker pairing's replacement must not count as core capacity.
+    @Test
+    void coreSurge_leavesOutAWorkersReplacement() {
+        var index = NodeReplacementIndex.nodeReplacementIndex();
+
+        index.put(new NodeReplacementKey(OLD), new NodeReplacementValue(NEW, "worker", NodeReplacementPhase.JOINING, 0L));
+
+        assertThat(index.surgeReplacements()).containsExactly(NEW);
+        assertThat(index.coreSurgeReplacements()).isEmpty();
+        assertThat(pairedIn(NodeReplacementPhase.JOINING).coreSurgeReplacements()).as("control: a core's replacement counts").containsExactly(NEW);
+    }
 }

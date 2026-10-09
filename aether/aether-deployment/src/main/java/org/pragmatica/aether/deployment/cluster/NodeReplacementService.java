@@ -22,6 +22,10 @@ public interface NodeReplacementService {
     /// Start replacing `original` with a freshly minted node the leader provisions (CTM mode). `targetVersion` is the version
     /// the replacement must run before the swap is kept (`""` = none). Refused with a [Refusal] when it cannot start.
     Promise<NodeReplacementValue> begin(NodeId original, String targetVersion);
+    /// Start replacing `original` with the node the operator chose and starts itself (`replacement`, a fresh id). For a core
+    /// the admission intent is committed in the same transaction as the record. Refused when the id is already a member, paired
+    /// or reserved.
+    Promise<NodeReplacementValue> beginExternal(NodeId original, NodeId replacement, String targetVersion);
     /// The committed record for `original`.
     Option<NodeReplacementValue> status(NodeId original);
     /// Every committed record.
@@ -29,6 +33,38 @@ public interface NodeReplacementService {
     /// Settle a replacement that ended `FAILED_KEPT_BOTH`: keep the new node and finish retiring the old, or give the new
     /// one up.
     Promise<Unit> settle(NodeId original, Settlement settlement);
+
+    /// The service of a node that cannot replace anything: every call is refused, none throws.
+    static NodeReplacementService unavailable() {
+        return new NodeReplacementService() {
+            @Override
+            public Promise<NodeReplacementValue> begin(NodeId original, String targetVersion) {
+                return new Refusal.Unavailable().promise();
+            }
+
+            @Override
+            public Promise<NodeReplacementValue> beginExternal(NodeId original,
+                                                               NodeId replacement,
+                                                               String targetVersion) {
+                return new Refusal.Unavailable().promise();
+            }
+
+            @Override
+            public Option<NodeReplacementValue> status(NodeId original) {
+                return Option.none();
+            }
+
+            @Override
+            public Map<NodeId, NodeReplacementValue> all() {
+                return Map.of();
+            }
+
+            @Override
+            public Promise<Unit> settle(NodeId original, Settlement settlement) {
+                return new Refusal.Unavailable().promise();
+            }
+        };
+    }
 
     enum Settlement {
         KEEP_NEW,
@@ -53,7 +89,46 @@ public interface NodeReplacementService {
         record RoleNotSupported(NodeId node, String role) implements Refusal {
             @Override
             public String message() {
-                return "Replacing a " + role + " node (" + node.id() + ") is not supported yet; cores only";
+                return "Replacing a " + role + " node (" + node.id() + ") is not supported; cores and workers only";
+            }
+        }
+
+        record ReplacementIdInUse(NodeId node) implements Refusal {
+            @Override
+            public String message() {
+                return "Node id " + node.id() + " is already a member, paired or reserved; choose a fresh id";
+            }
+        }
+
+        record FormerVoterIdentity(NodeId node) implements Refusal {
+            @Override
+            public String message() {
+                return "Core replacement requires a fresh voter identity: " + node.id()
+                     + " was a voter at genesis; restore the original WAL for a same-identity restart";
+            }
+        }
+
+        record SourceRequired(NodeId node) implements Refusal {
+            @Override
+            public String message() {
+                return "Node " + node.id()
+                     + " has no provisioning source, so the capacity slot of an externally started replacement could never be returned; "
+                     + "start the replacement through the leader (omit the replacement id) or give the node a source";
+            }
+        }
+
+        record FleetFull(int allocated) implements Refusal {
+            @Override
+            public String message() {
+                return "The fleet is at its node limit (" + allocated
+                     + " allocated); an externally started replacement would exceed it";
+            }
+        }
+
+        record Unavailable() implements Refusal {
+            @Override
+            public String message() {
+                return "Node replacement is not available on this node";
             }
         }
 

@@ -4917,7 +4917,10 @@ public interface AetherNode extends ManageableNode {
         // membership-layer reconciler keeps no hard dependency on the deployment FSM.
         leaderReconciler.setOwnsActiveSlices(SliceOwnershipQuery.ownsActiveSlices(kvStore));
         leaderReconciler.setSliceDrainGuard(SliceOwnershipQuery.minAvailableDrainGuard(kvStore));
-        leaderReconciler.setSurgeReplacements(nodeReplacements::surgeReplacements);
+        // #1543: the pairings are capacity on purpose for the two reconcilers that would otherwise read them as excess or deficit.
+        NodeReplacementWiring.connectReconcilers(nodeReplacements,
+                                                 leaderReconciler::setSurgeReplacements,
+                                                 placementReconciler::protectReplacements);
         // #1543 E (design section 4): a replacement's operator events are derived from the COMMITTED transition on every node and
         // raised only by the owner of the cluster-events partition. The leader that raises "started" is not the leader that
         // commits "completed" when the leader is the node being replaced; the owner is the same node for both, which is what
@@ -4936,6 +4939,7 @@ public interface AetherNode extends ManageableNode {
                                                                                                                       membershipFsmRef::get).stream()
                                                                                                                      .filter(coreAdmission::isAllowed)
                                                                                                                      .collect(Collectors.toUnmodifiableSet()),
+                                                                                            stableCdmReadyNodesSupplier,
                                                                                             id -> clusterNode.topologyManager()
                                                                                                              .get(id)
                                                                                                              .flatMap(info -> Option.option(info.labels()
@@ -4952,6 +4956,12 @@ public interface AetherNode extends ManageableNode {
                                                                                             id -> dhtNode.ring()
                                                                                                          .nodes()
                                                                                                          .contains(id),
+                                                                                            () -> clusterNode.genesisVoters()
+                                                                                                             .map(voters -> Set.copyOf(voters.members()))
+                                                                                                             .or(Set.of()),
+                                                                                            () -> config.autoHeal()
+                                                                                                        .maxNodes()
+                                                                                                        .or(Integer.MAX_VALUE),
                                                                                             operatorWarningSink,
                                                                                             System::currentTimeMillis,
                                                                                             NodeReplacementPlanner.Timings.defaults()));

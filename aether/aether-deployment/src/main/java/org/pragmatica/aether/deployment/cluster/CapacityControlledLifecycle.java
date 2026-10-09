@@ -496,14 +496,38 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
                     .map(value -> SourceName.sourceNameOrDefault(value.sourceName()));
     }
 
+    /// The binding an EXTERNAL admission's reservation carries when the fleet ledger could not count it.
+    public static final String UNCOUNTED_BINDING = "external-uncounted";
+
+    /// A reservation written by an EXTERNAL admission has no provider binding (`""`, or [#UNCOUNTED_BINDING]): its node was started by
+    /// an operator, so there is no provider instance of ours to terminate, and the registry would refuse either binding anyway.
+    public static boolean isExternalBinding(String binding) {
+        return binding.isEmpty() || UNCOUNTED_BINDING.equals(binding);
+    }
+
+    private boolean externalNode(NodeId node) {
+        return store.getTyped(new AetherKey.CapacityReservationKey(node),
+                              CapacityReservationValue.class)
+                    .filter(value -> isExternalBinding(value.sourceBinding()))
+                    .isPresent();
+    }
+
     @Override
     public Promise<Unit> terminateNode(NodeId node) {
+        if (externalNode(node)) {
+            return Promise.unitPromise();
+        }
+
         return source(node).fold(() -> Causes.cause("Cannot terminate without a committed capacity source binding").promise(),
                                  value -> terminateNode(node, value));
     }
 
     @Override
     public Promise<Unit> terminateNode(NodeId node, SourceName source) {
+        if (externalNode(node)) {
+            return Promise.unitPromise();
+        }
+
         return ensureInventory().flatMap(_ -> store.getTyped(new AetherKey.CapacityReservationKey(node),
                                                              CapacityReservationValue.class)
                                                    .toResult(Causes.cause("Cannot terminate without a committed capacity source binding"))

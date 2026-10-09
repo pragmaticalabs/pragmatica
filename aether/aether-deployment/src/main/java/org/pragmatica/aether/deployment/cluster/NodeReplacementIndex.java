@@ -144,6 +144,16 @@ public final class NodeReplacementIndex {
         return replacementsWhere(pairings, NodeReplacementIndex::protectsOriginal);
     }
 
+    /// The CORE replacements among [#surgeReplacements]: the ones that count toward the core capacity the leader reconciler
+    /// sizes the electorate by. A worker's replacement is capacity of another kind.
+    public Set<NodeId> coreSurgeReplacements() {
+        return pairings.values()
+                       .stream()
+                       .filter(value -> protectsOriginal(value.phase()) && "core".equalsIgnoreCase(value.role()))
+                       .map(NodeReplacementValue::replacement)
+                       .collect(Collectors.toUnmodifiableSet());
+    }
+
     /// Originals whose replacement has taken over and that are now due for retirement.
     public Set<NodeId> retiringOriginals() {
         return originalsWhere(pairings, NodeReplacementPhase.RETIRING_OLD::equals);

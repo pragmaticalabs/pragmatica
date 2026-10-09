@@ -55,6 +55,10 @@ class NodeReplacementReconcilerTest {
         String drainRefusal = "";
         boolean decommissioned;
         boolean handoffSettled = true;
+        boolean oldInstanceGone;
+        String reapFailure = "";
+        EffectResult retireResult = new EffectResult.Done();
+        EffectResult terminateResult = new EffectResult.Done();
         EffectResult provisionResult = new EffectResult.Done();
         Promise<EffectResult> provisionPending;
         boolean commitNeverAnswers;
@@ -97,7 +101,9 @@ class NodeReplacementReconcilerTest {
                                    drainBlocked,
                                    decommissioned,
                                    handoffSettled,
-                                   drainRefusal);
+                                   drainRefusal,
+                                   oldInstanceGone,
+                                   reapFailure);
         }
 
         @Override
@@ -129,10 +135,15 @@ class NodeReplacementReconcilerTest {
                 case RETIRE_OLD -> {
                     oldAlive = false;
                     decommissioned = true;
+                    oldInstanceGone = retireResult instanceof EffectResult.Done;
+
+                    return Promise.success(retireResult);
                 }
                 case TERMINATE_REPLACEMENT -> {
                     newAlive = false;
                     newKnown = false;
+
+                    return Promise.success(terminateResult);
                 }
                 case NONE -> {}
             }
@@ -430,11 +441,146 @@ class NodeReplacementReconcilerTest {
         assertThat(model.records.get(OLD).reason()).contains("retirement overdue");
     }
 
+    /// #1543: DONE means the old node's provider instance is confirmed gone. A retirement whose termination is never confirmed ends
+    /// in FAILED_KEPT_BOTH at the deadline, with the cause named, never DONE.
+    @Test
+    void retirement_isNeverDone_whileTheInstanceIsNotConfirmedGone() {
+        var model = new Model();
+
+        model.begin(NodeReplacementPhase.RETIRING_OLD);
+        model.retireResult = new EffectResult.Deferred("termination not confirmed: still listed");
+        model.reapFailure = "instance of core-OLD: still listed at the provider after terminate";
+        for (int tick = 0; tick < 400 && !NodeReplacementReconciler.isTerminal(model.records.get(OLD).phase()); tick++) {
+            driver(model).reconcile().await();
+            model.clock.addAndGet(100);
+        }
+
+        assertThat(model.records.get(OLD).phase()).isEqualTo(NodeReplacementPhase.FAILED_KEPT_BOTH);
+        assertThat(model.records.get(OLD).reason()).contains("not confirmed terminated").contains("still listed at the provider after terminate");
+        assertThat(model.phases).doesNotContain(NodeReplacementPhase.DONE);
+        assertThat(model.announcements.getLast()).startsWith("FAILED_KEPT_BOTH");
+    }
+
+    @Test
+    void retirement_retries_andIsDoneOnceTheTerminationIsConfirmed() {
+        var model = new Model();
+
+        model.begin(NodeReplacementPhase.RETIRING_OLD);
+        model.retireResult = new EffectResult.Deferred("termination not confirmed: refused");
+        for (int tick = 0; tick < 3; tick++) {
+            driver(model).reconcile().await();
+            model.clock.addAndGet(100);
+        }
+
+        assertThat(model.records.get(OLD).phase()).as("still retiring: the instance is not confirmed gone").isEqualTo(NodeReplacementPhase.RETIRING_OLD);
+        model.retireResult = new EffectResult.Done();
+        for (int tick = 0; tick < 10 && !NodeReplacementReconciler.isTerminal(model.records.get(OLD).phase()); tick++) {
+            driver(model).reconcile().await();
+            model.clock.addAndGet(100);
+        }
+
+        assertThat(model.records.get(OLD).phase()).isEqualTo(NodeReplacementPhase.DONE);
+        assertThat(model.effects.stream().filter("RETIRE_OLD"::equals).count()).isGreaterThanOrEqualTo(2);
+    }
+
+    @Test
+    void rollback_isKeptBoth_notRolledBack_whenTheReplacementCannotBeTerminated() {
+        var model = new Model();
+
+        model.begin(NodeReplacementPhase.PROVISIONING);
+        model.provisionedSoNewJoins = false;
+        model.terminateResult = new EffectResult.Failed("still listed");
+        model.reapFailure = "instance of core-NEW: still listed at the provider after terminate";
+        for (int tick = 0; tick < 400 && !NodeReplacementReconciler.isTerminal(model.records.get(OLD).phase()); tick++) {
+            driver(model).reconcile().await();
+            model.clock.addAndGet(100);
+        }
+
+        assertThat(model.records.get(OLD).phase()).isEqualTo(NodeReplacementPhase.FAILED_KEPT_BOTH);
+        assertThat(model.records.get(OLD).reason()).contains("could not be rolled back").contains("still listed at the provider after terminate");
+        assertThat(model.phases).doesNotContain(NodeReplacementPhase.ROLLED_BACK);
+    }
+
+    /// The REVERTING path terminates the replacement too: when that cannot be confirmed the pair is kept, never reported rolled back.
+    @Test
+    void reverting_isKeptBoth_notRolledBack_whenTheReplacementCannotBeTerminated() {
+        var model = new Model();
+
+        model.begin(NodeReplacementPhase.REVERTING);
+        model.newKnown = true;
+        model.newAlive = true;
+        model.oldVoter = true;
+        model.newVoter = false;
+        model.terminateResult = new EffectResult.Failed("still listed");
+        driver(model).reconcile().await();
+
+        assertThat(model.records.get(OLD).phase()).isEqualTo(NodeReplacementPhase.FAILED_KEPT_BOTH);
+        assertThat(model.records.get(OLD).reason()).contains("could not be rolled back");
+        assertThat(model.phases).doesNotContain(NodeReplacementPhase.ROLLED_BACK);
+    }
+
     @Test
     void timingsOverride_parsesSevenValues_andIgnoresAnythingElse() {
         assertThat(Timings.parse("1,2,3,4,5,6,7")).isEqualTo(new Timings(1, 2, 3, 4, 5, 6, 7));
         assertThat(Timings.parse("1,2,3")).as("too short: defaults").isEqualTo(Timings.parse(""));
         assertThat(Timings.parse("a,b,c,d,e,f,g")).as("unparsable: defaults").isEqualTo(Timings.parse(""));
+    }
+
+    private Model workerModel() {
+        var model = new Model();
+
+        model.records.put(OLD, new NodeReplacementValue(NEW, "worker", NodeReplacementPhase.PROVISIONING, model.clock.get() + 10_000));
+        model.oldVoter = false;
+
+        return model;
+    }
+
+    /// E2: a worker holds no consensus seat, so its replacement never enters SWAPPING and never touches a voter.
+    @Test
+    void workerReplacement_skipsTheSwap_andWalksJoiningCanaryDrainRetireDone() {
+        var model = workerModel();
+
+        runToTerminal(model, driver(model));
+
+        assertThat(distinct(model.phases)).containsExactly(NodeReplacementPhase.JOINING,
+                                                           NodeReplacementPhase.CANARY,
+                                                           NodeReplacementPhase.DRAINING_OLD,
+                                                           NodeReplacementPhase.RETIRING_OLD,
+                                                           NodeReplacementPhase.DONE);
+        assertThat(model.effects).contains("PROVISION", "DRAIN_OLD", "RETIRE_OLD");
+    }
+
+    /// A failed worker canary has no seat to swap back: the replacement is given up while the original still serves.
+    @Test
+    void workerCanaryFailure_rollsBackWithoutReverting_andTerminatesTheReplacement() {
+        var model = workerModel();
+
+        model.records.put(OLD, new NodeReplacementValue(NEW, "worker", NodeReplacementPhase.CANARY, model.clock.get() + 300, "", "3.0.0", "CTM", 0, "", 0L));
+        model.newKnown = true;
+        model.newAlive = true;
+        model.newVersion = "2.0.0";
+        runToTerminal(model, driver(model));
+
+        assertThat(distinct(model.phases)).containsExactly(NodeReplacementPhase.ROLLED_BACK);
+        assertThat(model.effects).contains("TERMINATE_REPLACEMENT");
+        assertThat(model.oldAlive).isTrue();
+    }
+
+    @Test
+    void deadOldWorker_atEveryPhase_isNeverDrained() {
+        for (var start : EnumSet.of(NodeReplacementPhase.JOINING, NodeReplacementPhase.CANARY, NodeReplacementPhase.DRAINING_OLD, NodeReplacementPhase.RETIRING_OLD)) {
+            var model = workerModel();
+
+            model.records.put(OLD, new NodeReplacementValue(NEW, "worker", start, model.clock.get() + 10_000));
+            model.oldAlive = false;
+            model.newKnown = true;
+            model.newAlive = true;
+            model.newCaughtUp = true;
+            runToTerminal(model, driver(model));
+
+            assertThat(model.records.get(OLD).phase()).as("start %s", start).isEqualTo(NodeReplacementPhase.DONE);
+            assertThat(model.effects).as("start %s", start).doesNotContain("DRAIN_OLD");
+        }
     }
 
     // ---- v-2008 round: B4 / B5 / N3 / N4 ------------------------------------------------------------------------------
@@ -576,6 +722,35 @@ class NodeReplacementReconcilerTest {
         assertThat(model.records.get(OLD).attempt()).as("the same phase, committed again with a marker").isEqualTo(1);
     }
 
+    /// A worker holds no seat: a replacement lost before the old worker is drained is given up (nothing to swap back).
+    @Test
+    void workerReplacementLostBeforeTheDrain_isRolledBack_notReverted() {
+        var model = new Model();
+
+        model.records.put(OLD, new NodeReplacementValue(NEW, "worker", NodeReplacementPhase.DRAINING_OLD, model.clock.get() + 10_000));
+        model.newKnown = true;
+        model.newAlive = false;
+        driver(model).reconcile().await();
+
+        assertThat(model.records.get(OLD).phase()).isEqualTo(NodeReplacementPhase.ROLLED_BACK);
+        assertThat(model.effects).contains("TERMINATE_REPLACEMENT").doesNotContain("DRAIN_OLD");
+    }
+
+    /// Settling a kept-both worker pair as "roll back" commits REVERTING; for a worker that only gives the replacement up.
+    @Test
+    void workerRevertingFromASettle_givesTheReplacementUp_withoutWaitingForASeat() {
+        var model = new Model();
+
+        model.records.put(OLD, new NodeReplacementValue(NEW, "worker", NodeReplacementPhase.REVERTING, model.clock.get() + 10_000));
+        model.newKnown = true;
+        model.newAlive = true;
+        model.oldVoter = false;
+        driver(model).reconcile().await();
+
+        assertThat(model.records.get(OLD).phase()).isEqualTo(NodeReplacementPhase.ROLLED_BACK);
+        assertThat(model.effects).contains("TERMINATE_REPLACEMENT");
+    }
+
     /// B4 follow-up: an effect is bounded, and so is the commit. A compare-and-set that never answers must not stop the ticks for
     /// good (the driver does not re-open a tick while one is pending), so the next tick plans again from the committed records.
     @Test
@@ -603,6 +778,46 @@ class NodeReplacementReconcilerTest {
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         }
+    }
+
+    /// v-2042 H8b: a worker's failed canary gives the replacement up while the original still serves, but with the original gone the
+    /// replacement is the last node of the pair and is kept (never terminated).
+    @Test
+    void workerCanaryFailure_withTheOriginalGone_keepsTheReplacement_withTheOriginalAlive_givesItUp() {
+        var gone = new Model();
+
+        gone.records.put(OLD, new NodeReplacementValue(NEW, "worker", NodeReplacementPhase.CANARY, gone.clock.get() + 10_000));
+        gone.newKnown = true;
+        gone.newAlive = false;
+        gone.oldAlive = false;
+        driver(gone).reconcile().await();
+
+        assertThat(gone.records.get(OLD).phase()).isEqualTo(NodeReplacementPhase.FAILED_KEPT_BOTH);
+        assertThat(gone.effects).doesNotContain("TERMINATE_REPLACEMENT");
+
+        var serving = new Model();
+
+        serving.records.put(OLD, new NodeReplacementValue(NEW, "worker", NodeReplacementPhase.CANARY, serving.clock.get() + 10_000));
+        serving.newKnown = true;
+        serving.newAlive = false;
+        driver(serving).reconcile().await();
+
+        assertThat(serving.records.get(OLD).phase()).as("control: with the original alive the replacement is given up").isEqualTo(NodeReplacementPhase.ROLLED_BACK);
+    }
+
+    /// v-2042 nit: settling a kept-both worker pair as "roll back" must not terminate the last node when the original is gone.
+    @Test
+    void workerRevertingFromASettle_withTheOriginalGone_keepsTheReplacement() {
+        var model = new Model();
+
+        model.records.put(OLD, new NodeReplacementValue(NEW, "worker", NodeReplacementPhase.REVERTING, model.clock.get() + 10_000));
+        model.newKnown = true;
+        model.newAlive = true;
+        model.oldAlive = false;
+        driver(model).reconcile().await();
+
+        assertThat(model.records.get(OLD).phase()).isEqualTo(NodeReplacementPhase.FAILED_KEPT_BOTH);
+        assertThat(model.effects).doesNotContain("TERMINATE_REPLACEMENT");
     }
 
     /// v-2008 U2 (B4): an effect is bounded. A provider or admission call that never answers must not stall every later tick (the
