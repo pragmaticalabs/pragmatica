@@ -889,6 +889,69 @@ class NodeReplacementRealRegistryReapTest {
         manager.deactivate();
     }
 
+    /// The drain-grace chain's "ungated" mark must not outlive the chain: whichever way the chain ended (confirmed, out of attempts, cancelled by a
+    /// rejoin), a LATER departure's retries are gated again. `ended` leaves the chain as the test needs it; the departure then fails its first
+    /// attempt, the node shows life, and its retry must stop and tell the operator instead of terminating.
+    private void assertALaterDepartureIsGated(ClusterTopologyManager manager, long baselineTerminates) throws Exception {
+        manager.onMembershipDecision(MembershipDecision.nodeJoined(OLD, List.of(CORE, OLD)));
+        states.remove(OLD);
+        listing.set(EnvironmentError.operationNotSupported("provider API down").promise());
+        var before = lists.get();
+        manager.onMembershipDecision(MembershipDecision.nodeRemoved(OLD, List.of(CORE)));
+        within(10, () -> assertThat(lists.get()).as("the departure's first attempt").isGreaterThan(before));
+        states.put(OLD, "Member");
+        listing.set(Promise.success(List.of(instance(OLD, "i-9", InstanceStatus.RUNNING))));
+
+        within(10, () -> assertThat(warnings).as("gated: the operator is told it shows life").anyMatch(w -> w.contains("shows life")));
+        Thread.sleep(500);
+
+        assertThat(terminates.get()).as("and nothing was terminated by the retry").isEqualTo(baselineTerminates);
+        manager.deactivate();
+    }
+
+    @Test
+    void aLaterDeparture_isGatedAgain_afterAZombieChainConfirmed() throws Exception {
+        ctmUnderTest.deactivate();
+        var manager = newManager(lifecycle, false, 1_200L, warnings);
+
+        put(AetherKey.CapacityLedgerKey.INSTANCE, new CapacityLedgerValue(3, 1, true));
+        states.put(OLD, "Member");
+        listing.set(Promise.success(List.of(instance(OLD, "i-1", InstanceStatus.RUNNING))));
+        manager.drainNode(OLD, DRAIN).await();
+        within(10, () -> assertThat(reservation(OLD).isEmpty()).as("the zombie chain confirmed").isTrue());
+
+        assertALaterDepartureIsGated(manager, terminates.get());
+    }
+
+    @Test
+    void aLaterDeparture_isGatedAgain_afterAZombieChainRanOutOfAttempts() throws Exception {
+        ctmUnderTest.deactivate();
+        var manager = newManager(lifecycle, false, 1_200L, warnings);
+
+        put(AetherKey.CapacityLedgerKey.INSTANCE, new CapacityLedgerValue(3, 1, true));
+        states.put(OLD, "Member");
+        listing.set(EnvironmentError.operationNotSupported("provider API down").promise());
+        manager.drainNode(OLD, DRAIN).await();
+        within(30, () -> assertThat(raised("instance-termination-unconfirmed")).as("the chain ended").isTrue());
+
+        assertALaterDepartureIsGated(manager, terminates.get());
+    }
+
+    @Test
+    void aLaterDeparture_isGatedAgain_afterAZombieChainWasCancelledByARejoin() throws Exception {
+        ctmUnderTest.deactivate();
+        var manager = newManager(lifecycle, false, 1_200L, warnings);
+
+        put(AetherKey.CapacityLedgerKey.INSTANCE, new CapacityLedgerValue(3, 1, true));
+        states.put(OLD, "Member");
+        listing.set(EnvironmentError.operationNotSupported("provider API down").promise());
+        manager.drainNode(OLD, DRAIN).await();
+        within(10, () -> assertThat(lists.get()).isGreaterThanOrEqualTo(1));
+        manager.onMembershipDecision(MembershipDecision.nodeJoined(OLD, List.of(CORE, OLD)));
+
+        assertALaterDepartureIsGated(manager, terminates.get());
+    }
+
     /// F3: a rejoin (a new incarnation) cancels the zombie's chain: no further attempt, no event.
     @Test
     void aRejoinMidChain_cancelsTheDrainedZombiesRetries() throws Exception {
