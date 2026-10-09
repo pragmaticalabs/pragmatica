@@ -3846,6 +3846,7 @@ public interface AetherNode extends ManageableNode {
         // injected items on cross-node reads. AlertManager emits AlertInjected; InvocationTraceStore
         // emits TraceInjected through a thin sink that keeps the aether-invoke module free of any
         // ClusterEvent dependency.
+        eventAggregator.bindSelfCommandedDrain(drainProcedure::isCommandedDrain);
         alertManager.bindEventSink(eventAggregator::emit, clusterEventsHlcClock);
         alertManager.bindClusterEventsSource(eventAggregator::events);
         // #957: AlertForwarder was never constructed anywhere in src/main, so no alert left this
@@ -5014,6 +5015,21 @@ public interface AetherNode extends ManageableNode {
         // window lets all nodes reform; a genuine minority still self-fences once the window elapses.
         quorumLossDetector.setColdBootSupplier(swimIsBootingSupplier);
         metricsCollector.setDrainCommandHandler(() -> commandedDrain(drainProcedure, nodeReportedStateHolder));
+        // #2014: the leader is the only node that saw DrainRequested, so its FSM edge is the only place the
+        // announced-departure mark was set. The leader's broadcast ping carries the global drain set to every
+        // peer: mark each commanded node here so a follower's DEAD edge reads a planned departure as one.
+        var nodeReadyAgain = nodeReadyAgain(metricsCollector::reportedStates);
+
+        metricsCollector.setDrainSetObserver(drainSetObserver(alertManager, config.self(), nodeReadyAgain));
+        // The leader never processes its own ping, so it re-derives its mark from its own registry each interval. Only
+        // the LEADER: an operator drain never leaves the registry, so a node that was leader once and is not now would
+        // keep re-marking a node that restarted under the new leader, silencing that node's next real crash (v-2043 N1).
+        var ownDrainRecord = leaderOnlyDrainRecordTick(isLeaderSupplier,
+                                                       drainCommandRegistry::drainTargets,
+                                                       drainSetObserver(alertManager, config.self(), nodeReadyAgain));
+
+        periodicTasks.defer(() -> SharedScheduler.scheduleAtFixedRate(ownDrainRecord,
+                                                                      config.timeouts().cluster().pingInterval()));
         // Workers renew core contact from identified core ping OR pong responses. This is
         // reachability evidence only; all mutations still require committed core authority.
         var coreAbsenceDetector = CoreAbsenceDetector.coreAbsenceDetector(config.timeouts().cluster().coreAbsence(),
@@ -7758,6 +7774,35 @@ public interface AetherNode extends ManageableNode {
         } catch (Throwable t) {
             LOG.warn("Scheduled-task drain hook failed: {} — drain proceeds", t.getMessage());
         }
+    }
+
+    /// The leader's own-registry tick (#2014, v-2043 N1): feeds the registry's drain targets to `record` only while this
+    /// node is the leader. Package-private so the gate and the feed are pinned without booting a node.
+    static Runnable leaderOnlyDrainRecordTick(BooleanSupplier isLeader,
+                                              Supplier<Set<NodeId>> registryTargets,
+                                              Consumer<Set<NodeId>> record) {
+        return () -> {
+            if (isLeader.getAsBoolean()) {
+                record.accept(registryTargets.get());
+            }
+        };
+    }
+
+    /// #2014: the drain record (the leader's broadcast set, or the leader's own registry) marks each commanded node
+    /// (never self) as an announced departure on this observer. `nodeReadyAgain` is the only thing that ends a mark
+    /// early. Package-private so the composition is pinned without booting a node.
+    static Consumer<Set<NodeId>> drainSetObserver(AlertManager alertManager,
+                                                  NodeId self,
+                                                  java.util.function.Predicate<NodeId> nodeReadyAgain) {
+        return drained -> alertManager.observeDrainSet(drained, self, System.currentTimeMillis(), nodeReadyAgain);
+    }
+
+    /// The node reports itself READY in the readiness view this observer holds (the leader's pong fan, or a
+    /// follower's cache of it): alive, responsive and not draining. The only evidence that ends a planned-departure
+    /// mark short of the DEAD edge (#2014). Absence from the view is NOT evidence. Package-private for the pin.
+    static java.util.function.Predicate<NodeId> nodeReadyAgain(java.util.function.Supplier<Map<NodeId, NodeReportedState>> reportedStates) {
+        return id -> reportedStates.get()
+                                   .get(id) == NodeReportedState.READY;
     }
 
     /// E2 Phase 2b (2026-05-28): bridge the consensus-derived `ClusterStateNotification`

@@ -89,6 +89,7 @@ class ClusterTopologyManagerWorkerReconcileTest {
             [source.eu-1]
             type = "cloud"
             provider = "hetzner"
+            credentials = "hcloud-token"
             region = "eu-central"
 
             [source.eu-1.core]
@@ -111,6 +112,7 @@ class ClusterTopologyManagerWorkerReconcileTest {
             [source.eu-1]
             type = "cloud"
             provider = "hetzner"
+            credentials = "hcloud-token"
             region = "eu-central"
             zone = "nbg1"
 
@@ -123,6 +125,7 @@ class ClusterTopologyManagerWorkerReconcileTest {
             [source.eu-2]
             type = "cloud"
             provider = "hetzner"
+            credentials = "hcloud-token"
             region = "eu-central"
             zone = "fsn1"
 
@@ -502,6 +505,7 @@ class ClusterTopologyManagerWorkerReconcileTest {
             [source.eu-1]
             type = "cloud"
             provider = "hetzner"
+            credentials = "hcloud-token"
             region = "eu-central"
             zone = "nbg1"
 
@@ -511,6 +515,7 @@ class ClusterTopologyManagerWorkerReconcileTest {
             [source.us-1]
             type = "cloud"
             provider = "hetzner"
+            credentials = "hcloud-token"
             region = "us-east"
 
             [source.us-1.worker]

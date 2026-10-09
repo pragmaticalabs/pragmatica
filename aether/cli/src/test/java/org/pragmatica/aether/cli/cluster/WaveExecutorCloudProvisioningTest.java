@@ -43,6 +43,7 @@ class WaveExecutorCloudProvisioningTest {
             type = "cloud"
             provider = "hetzner"
             region = "eu-central"
+            credentials = "hcloud-token"
             zone = "fsn1"
 
             [source.eu-1.core]
@@ -62,6 +63,7 @@ class WaveExecutorCloudProvisioningTest {
             type = "cloud"
             provider = "hetzner"
             region = "eu-central"
+            credentials = "hcloud-token"
 
             [source.eu-1.core]
             count = 3

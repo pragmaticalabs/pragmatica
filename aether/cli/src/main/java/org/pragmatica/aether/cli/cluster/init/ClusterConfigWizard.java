@@ -9,7 +9,9 @@ import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Deque;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.function.Function;
 import java.util.function.Predicate;
 import java.util.function.Supplier;
@@ -247,16 +249,47 @@ public class ClusterConfigWizard {
                              regionRaw -> validatedContinue(regionRaw,
                                                             raw -> requireRegion(provider, raw),
                                                             _ -> cloudRegionPrompt(state, provider, existing, prompt),
-                                                            region -> cloudInstancePrompt(state,
-                                                                                          provider,
-                                                                                          region,
-                                                                                          existing,
-                                                                                          prompt)));
+                                                            region -> cloudZonePrompt(state,
+                                                                                      provider,
+                                                                                      region,
+                                                                                      existing,
+                                                                                      prompt)));
+    }
+
+    /// gcp only: its integration requires a zone and there is NO default (see [ClusterInitError.ZoneRequired]). Every other
+    /// provider continues with an empty zone.
+    private static StepResult cloudZonePrompt(ClusterConfigAnswers state,
+                                              CloudProviderName provider,
+                                              String region,
+                                              Option<CloudAnswers> existing,
+                                              Prompt prompt) {
+        if (provider != CloudProviderName.GCP) {
+            return cloudInstancePrompt(state, provider, region, "", existing, prompt);
+        }
+
+        var defaultZone = existing.filter(cloud -> cloud.provider() == provider).map(CloudAnswers::zone).or("");
+
+        return guardedPrompt(prompt,
+                             "Zone (required — a gcp zone inside the region; no default)",
+                             defaultZone,
+                             zoneRaw -> validatedContinue(zoneRaw,
+                                                          raw -> Verify.ensure(raw,
+                                                                               Verify.Is::present,
+                                                                               new ClusterInitError.ZoneRequired(provider.value()))
+                                                                       .map(String::trim),
+                                                          _ -> cloudZonePrompt(state, provider, region, existing, prompt),
+                                                          zone -> cloudInstancePrompt(state,
+                                                                                      provider,
+                                                                                      region,
+                                                                                      zone,
+                                                                                      existing,
+                                                                                      prompt)));
     }
 
     private static StepResult cloudInstancePrompt(ClusterConfigAnswers state,
                                                   CloudProviderName provider,
                                                   String region,
+                                                  String zone,
                                                   Option<CloudAnswers> existing,
                                                   Prompt prompt) {
         var defaultInstance = existing.filter(cloud -> cloud.provider() == provider)
@@ -271,13 +304,16 @@ public class ClusterConfigWizard {
                                                               _ -> cloudInstancePrompt(state,
                                                                                        provider,
                                                                                        region,
+                                                                                       zone,
                                                                                        existing,
                                                                                        prompt),
                                                               instance -> cloudCredentialPrompt(state,
                                                                                                 provider,
                                                                                                 region,
+                                                                                                zone,
                                                                                                 instance,
                                                                                                 existing,
+                                                                                                new LinkedHashMap<>(),
                                                                                                 prompt)));
     }
 
@@ -316,34 +352,59 @@ public class ClusterConfigWizard {
                      .map(String::trim);
     }
 
+    /// One env-var question per credential key the provider needs (#2059: aws, gcp and azure need several; hetzner one). Each
+    /// answer is kept under its key, so what the operator types reaches the generated `${env:...}` reference.
     private static StepResult cloudCredentialPrompt(ClusterConfigAnswers state,
                                                     CloudProviderName provider,
                                                     String region,
+                                                    String zone,
                                                     String instance,
                                                     Option<CloudAnswers> existing,
+                                                    Map<String, String> collected,
                                                     Prompt prompt) {
+        var remaining = CloudAnswers.credentialKeys(provider)
+                                    .stream()
+                                    .filter(key -> !collected.containsKey(key))
+                                    .toList();
+
+        if (remaining.isEmpty()) {
+            return cloudSshKeyPrompt(state, provider, region, zone, instance, collected, existing, prompt);
+        }
+
+        var key = remaining.getFirst();
         var defaultEnvVar = existing.filter(cloud -> cloud.provider() == provider)
-                                    .map(CloudAnswers::credentialEnvVar)
-                                    .or(defaultCredentialEnvVarFor(provider));
+                                    .flatMap(cloud -> Option.option(cloud.credentialEnvVars().get(key)))
+                                    .or(CloudAnswers.defaultEnvVar(provider, key));
 
         return guardedPrompt(prompt,
-                             "Credential env var name",
+                             provider == CloudProviderName.HETZNER
+                             ? "Credential env var name"
+                             : "Env var holding " + provider.value() + " " + key,
                              defaultEnvVar,
                              envRaw -> validatedContinue(envRaw,
                                                          InputValidators::validateEnvVarName,
                                                          _ -> cloudCredentialPrompt(state,
                                                                                     provider,
                                                                                     region,
+                                                                                    zone,
                                                                                     instance,
                                                                                     existing,
+                                                                                    collected,
                                                                                     prompt),
-                                                         envVar -> cloudSshKeyPrompt(state,
-                                                                                     provider,
-                                                                                     region,
-                                                                                     instance,
-                                                                                     envVar,
-                                                                                     existing,
-                                                                                     prompt)));
+                                                         envVar -> {
+                                                             var next = new LinkedHashMap<>(collected);
+
+                                                             next.put(key, envVar);
+
+                                                             return cloudCredentialPrompt(state,
+                                                                                          provider,
+                                                                                          region,
+                                                                                          zone,
+                                                                                          instance,
+                                                                                          existing,
+                                                                                          next,
+                                                                                          prompt);
+                                                         }));
     }
 
     /// The last cloud answer, and the one whose absence used to make the generated config
@@ -352,8 +413,9 @@ public class ClusterConfigWizard {
     private static StepResult cloudSshKeyPrompt(ClusterConfigAnswers state,
                                                 CloudProviderName provider,
                                                 String region,
+                                                String zone,
                                                 String instance,
-                                                String envVar,
+                                                Map<String, String> envVars,
                                                 Option<CloudAnswers> existing,
                                                 Prompt prompt) {
         var defaultKey = existing.map(CloudAnswers::sshPublicKeyPath).or("");
@@ -366,15 +428,17 @@ public class ClusterConfigWizard {
                                                          _ -> cloudSshKeyPrompt(state,
                                                                                 provider,
                                                                                 region,
+                                                                                zone,
                                                                                 instance,
-                                                                                envVar,
+                                                                                envVars,
                                                                                 existing,
                                                                                 prompt),
                                                          keyPath -> new StepResult.Continue(stateWithCloud(state,
                                                                                                            new CloudAnswers(provider,
                                                                                                                             region,
+                                                                                                                            zone,
                                                                                                                             instance,
-                                                                                                                            envVar,
+                                                                                                                            envVars,
                                                                                                                             keyPath)))));
     }
 
@@ -401,24 +465,10 @@ public class ClusterConfigWizard {
                                         state.secret());
     }
 
-    /// The credential env var keeps its default while region and instance type lost theirs, and the
-    /// distinction is the FAILURE MODE, not the stability of the value.
-    ///
-    /// These are provider-defined conventional names, not catalogue entries, and the default names
-    /// only WHERE A SECRET IS READ FROM — it decides nothing about the deployed system. A wrong or
-    /// unset var fails loud: the placeholder is left unresolved with a WARN
-    /// (`PlaceholderConfigResolver.warnUnresolved`) and the provider then rejects the credential.
-    /// Region is the opposite — it succeeds and puts the data in the wrong jurisdiction — which is
-    /// why it was removed and this was kept.
-    private static String defaultCredentialEnvVarFor(CloudProviderName provider) {
-        return switch (provider) {
-            case HETZNER -> "HCLOUD_TOKEN";
-            case AWS -> "AWS_ACCESS_KEY_ID";
-            case GCP -> "GOOGLE_APPLICATION_CREDENTIALS";
-            case AZURE -> "AZURE_CLIENT_ID";
-        };
-    }
-
+    /// The credential env vars keep their conventional defaults while region, zone and instance type lost theirs, and the
+    /// distinction is the FAILURE MODE, not the stability of the value: a default env var names only WHERE A SECRET IS READ
+    /// FROM, and a wrong or unset one fails loud (the placeholder is left unresolved with a WARN, then the provider or the
+    /// compose-time check refuses). A region or zone default SUCCEEDS while being wrong.
     private static StepResult stepSsh(ClusterConfigAnswers state, Prompt prompt) {
         var existing = state.ssh();
         var defaultHosts = existing.map(ssh -> String.join(",", ssh.hosts())).or("");
@@ -1126,8 +1176,13 @@ public class ClusterConfigWizard {
     private static void printCloudSummary(CloudAnswers cloud) {
         System.out.println("  Provider:   " + cloud.provider().value());
         System.out.println("  Region:     " + cloud.region());
+        if (!cloud.zone().isEmpty()) {
+            System.out.println("  Zone:       " + cloud.zone());
+        }
+
         System.out.println("  Instance:   " + cloud.instanceType());
-        System.out.println("  Credential: ${env:" + cloud.credentialEnvVar() + "}");
+        cloud.credentialEnvVars()
+             .forEach((key, envVar) -> System.out.println("  Credential: " + key + " = ${env:" + envVar + "}"));
     }
 
     private static void printSshSummary(SshAnswers ssh) {

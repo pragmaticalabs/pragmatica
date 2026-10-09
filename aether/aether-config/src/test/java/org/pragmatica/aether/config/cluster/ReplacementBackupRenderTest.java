@@ -41,6 +41,7 @@ class ReplacementBackupRenderTest {
             type = "cloud"
             provider = "hetzner"
             region = "eu-central"
+            credentials = "hcloud-token"
 
             [source.eu-1.core]
             count = 3
