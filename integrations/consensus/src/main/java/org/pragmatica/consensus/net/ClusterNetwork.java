@@ -172,20 +172,15 @@ public interface ClusterNetwork {
     /// Identical to [#send(NodeId, ProtocolMessage)] while the peer is connected. While it is not, the frame may sit
     /// in the offline buffer, and the buffer drops it at the flush once `offlineTtl` (capped by
     /// [#setOfflineBufferCap]) has passed instead of delivering work whose caller has given up. Use it for every
-    /// request that has a caller deadline; plain `send` is for state-convergence traffic that tolerates a late frame.
+    /// request that has a caller deadline. Plain `send` and `broadcast` carry no caller deadline and are bounded by the
+    /// cap alone: nothing the transport buffers is held for ever.
     ///
     /// Default falls back to plain `send`, for transports with no offline buffer.
     default <M extends ProtocolMessage> Unit send(NodeId nodeId, M message, TimeSpan offlineTtl) {
         return send(nodeId, message);
     }
 
-    /// As [#send(NodeId, ProtocolMessage, TimeSpan)] for a request that has NO caller deadline (fire-and-forget): the
-    /// frame is held for at most the cluster-wide cap rather than for ever.
-    default <M extends ProtocolMessage> Unit sendCapped(NodeId nodeId, M message) {
-        return send(nodeId, message);
-    }
-
-    /// Longest an offline-buffered request frame may be held. Default no-op for transports with no offline buffer.
+    /// Longest any offline-buffered frame may be held. Default no-op for transports with no offline buffer.
     @Contract
     default Unit setOfflineBufferCap(TimeSpan cap) {
         return Unit.unit();

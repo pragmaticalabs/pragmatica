@@ -145,11 +145,11 @@ public record TimeoutsConfig(InvocationTimeouts invocation,
     /// legitimate ping gap, and a value below worst-case election time dissolves healthy communities
     /// during a routine election.
     ///
-    /// `offlineBufferCap` (#1996) is the longest a request frame (an invocation, a forward, a stream or replication
-    /// request, a command forward) may be held in a peer's offline buffer while the peer is unreachable. A frame
-    /// is dropped at the flush once its caller's own deadline has passed, and never held longer than this; the cap
-    /// alone governs only a request with no caller deadline (a fire-and-forget invocation). A policy default
-    /// matching the longest caller wait the cluster ships with, not a measured value.
+    /// `offlineBufferCap` (#1996) is the longest ANY frame may be held in a peer's offline buffer while the peer is
+    /// unreachable; nothing is held for ever. A request with a caller deadline (an invocation, a forward, a stream or
+    /// replication request, a command forward) is dropped at the flush once that deadline has passed, and never held longer
+    /// than this; every other frame (consensus, DHT, responses, a fire-and-forget invocation) is bounded by the cap alone.
+    /// A policy default matching the longest caller wait the cluster ships with, not a measured value.
     public record ClusterTimeouts(TimeSpan hello,
                                   TimeSpan reconciliationInterval,
                                   TimeSpan pingInterval,

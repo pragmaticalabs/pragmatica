@@ -146,27 +146,10 @@ class QuicClusterNetworkOfflineTtlTest {
         assertThat(routed).hasSize(1);
     }
 
-    /// A request with no caller deadline (fire-and-forget) is bounded by the cap alone, not held for ever.
+    /// A frame with NO caller deadline (state-convergence traffic, a response, a fire-and-forget call) goes through plain `send`,
+    /// and nothing the transport buffers is held for ever: it is bounded by the cap alone.
     @Test
-    void sendCapped_isBoundedByTheCap() {
-        var routed = new CopyOnWriteArrayList<NetworkServiceMessage.OfflineFramesExpired>();
-        var network = network(routed);
-        var peerId = new NodeId("peer-fire-and-forget");
-        var state = connectingPeer(network, peerId);
-        var stream = writableStream();
-
-        network.setOfflineBufferCap(SHORT_WAIT);
-        network.sendCapped(peerId, request(peerId));
-        parkPast(PAST_SHORT_WAIT_NANOS);
-        network.drainOfflineBufferForTests(state, connectionWith(peerId, stream));
-
-        verify(stream, never()).writeAndFlush(any());
-        assertThat(routed).hasSize(1);
-    }
-
-    /// Plain `send` is state-convergence traffic: unchanged, never expired, however long it was held.
-    @Test
-    void plainSend_isNeverExpired() {
+    void plainSend_isBoundedByTheCap_notHeldForEver() {
         var routed = new CopyOnWriteArrayList<NetworkServiceMessage.OfflineFramesExpired>();
         var network = network(routed);
         var peerId = new NodeId("peer-plain");
@@ -176,6 +159,40 @@ class QuicClusterNetworkOfflineTtlTest {
         network.setOfflineBufferCap(SHORT_WAIT);
         network.send(peerId, request(peerId));
         parkPast(PAST_SHORT_WAIT_NANOS);
+        network.drainOfflineBufferForTests(state, connectionWith(peerId, stream));
+
+        verify(stream, never()).writeAndFlush(any());
+        assertThat(routed).hasSize(1);
+    }
+
+    /// The outcome-tracking variant (the DHT quorum path) buffers through the same dispatch, so it is bounded the same way.
+    @Test
+    void sendOutcome_isBoundedByTheCap() {
+        var routed = new CopyOnWriteArrayList<NetworkServiceMessage.OfflineFramesExpired>();
+        var network = network(routed);
+        var peerId = new NodeId("peer-outcome");
+        var state = connectingPeer(network, peerId);
+        var stream = writableStream();
+
+        network.setOfflineBufferCap(SHORT_WAIT);
+        network.sendOutcome(peerId, request(peerId));
+        parkPast(PAST_SHORT_WAIT_NANOS);
+        network.drainOfflineBufferForTests(state, connectionWith(peerId, stream));
+
+        verify(stream, never()).writeAndFlush(any());
+        assertThat(routed).hasSize(1);
+    }
+
+    /// The control for the two above: a plain frame flushed inside the cap is still delivered.
+    @Test
+    void plainSend_flushedInsideTheCap_isDelivered() {
+        var routed = new CopyOnWriteArrayList<NetworkServiceMessage.OfflineFramesExpired>();
+        var network = network(routed);
+        var peerId = new NodeId("peer-plain-in-time");
+        var state = connectingPeer(network, peerId);
+        var stream = writableStream();
+
+        network.send(peerId, request(peerId));
         network.drainOfflineBufferForTests(state, connectionWith(peerId, stream));
 
         verify(stream, times(1)).writeAndFlush(any());

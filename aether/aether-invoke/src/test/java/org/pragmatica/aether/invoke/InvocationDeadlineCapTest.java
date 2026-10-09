@@ -239,44 +239,17 @@ class InvocationDeadlineCapTest {
         }
     }
 
-    /// A fire-and-forget call has no caller deadline at all, so the cluster-wide cap is the only bound on its frame.
-    @Test
-    void fireAndForget_hasNoCallerDeadline_soItIsSentCapped_notPlain() {
-        var network = new TtlRecordingNetwork();
-        var invoker = remoteInvoker(network);
-
-        try {
-            invoker.invoke(ARTIFACT, METHOD, Unit.unit()).await(TimeSpan.timeSpan(2).seconds());
-
-            assertThat(network.cappedRequests()).hasSize(1);
-            assertThat(network.plainRequests()).as("never plain, which would hold the frame for ever").isEmpty();
-            assertThat(network.boundedRequests()).isEmpty();
-        } finally {
-            invoker.stop().await();
-        }
-    }
-
-    /// Records HOW each invocation request was handed to the transport: with a lifetime, capped, or plain.
+    /// Records HOW each invocation request was handed to the transport: with a lifetime, or plain.
     private static final class TtlRecordingNetwork extends StubClusterNetwork {
         record Bounded(ProtocolMessage message, TimeSpan lifetime) {}
 
         private final List<Bounded> bounded = new java.util.concurrent.CopyOnWriteArrayList<>();
-        private final List<ProtocolMessage> capped = new java.util.concurrent.CopyOnWriteArrayList<>();
         private final List<ProtocolMessage> plain = new java.util.concurrent.CopyOnWriteArrayList<>();
 
         @Override
         public <M extends ProtocolMessage> Unit send(NodeId nodeId, M message, TimeSpan offlineTtl) {
             if (message instanceof InvokeRequest) {
                 bounded.add(new Bounded(message, offlineTtl));
-            }
-
-            return unit();
-        }
-
-        @Override
-        public <M extends ProtocolMessage> Unit sendCapped(NodeId nodeId, M message) {
-            if (message instanceof InvokeRequest) {
-                capped.add(message);
             }
 
             return unit();
@@ -293,10 +266,6 @@ class InvocationDeadlineCapTest {
 
         List<Bounded> boundedRequests() {
             return bounded;
-        }
-
-        List<ProtocolMessage> cappedRequests() {
-            return capped;
         }
 
         List<ProtocolMessage> plainRequests() {

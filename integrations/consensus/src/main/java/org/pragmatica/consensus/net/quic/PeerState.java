@@ -91,7 +91,8 @@ import static org.pragmatica.lang.Option.option;
 /// Distinct from Netty writability backpressure (which owns a separate per-stream queue on
 /// the `QuicStreamChannel`). Holds serialized broadcast/send payloads while the peer is
 /// CONNECTING or EVICTED. Bounded by [OFFLINE_BUFFER_MAX]; overflow drops the oldest entry
-/// (consensus messages are idempotent — the stall detector re-broadcasts stuck rounds).
+/// (consensus messages are idempotent — the stall detector re-broadcasts stuck rounds). Also bounded in TIME: every
+/// entry carries an [Expiry] (the caller's deadline, or the cluster-wide cap) and a drain drops what has passed it (#1996).
 ///
 /// Drained by [drainOfflineBuffer] right after `attach` completes. Cleared by `authoritativeRemove`.
 public final class PeerState {

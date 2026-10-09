@@ -1044,15 +1044,16 @@ public class QuicClusterNetwork implements ClusterNetwork {
     }
 
     @Override
-    public <M extends ProtocolMessage> Unit sendCapped(NodeId peerId, M message) {
-        return send(peerId, message, offlineBufferCap);
-    }
-
-    @Override
     public Unit setOfflineBufferCap(TimeSpan cap) {
         offlineBufferCap = cap;
 
         return unit();
+    }
+
+    /// The instant a frame with NO caller deadline (state-convergence traffic, responses, fire-and-forget calls) buffered now
+    /// must be dropped by: the cluster-wide cap. Nothing this transport buffers is held unbounded (#1996).
+    private PeerState.Expiry capExpiry() {
+        return PeerState.Expiry.after(offlineBufferCap, System.nanoTime());
     }
 
     /// The instant a frame buffered now must be dropped by, for a caller that waits `ttl`: never later than the
@@ -1907,7 +1908,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
     /// The lane is resolved once here (from the message's `streamType()`); the message object is
     /// never threaded past this point.
     private void dispatchPayload(NodeId peerId, Message.Wired message) {
-        dispatchPayload(peerId, message, PeerState.Expiry.NEVER);
+        dispatchPayload(peerId, message, capExpiry());
     }
 
     /// As [#dispatchPayload(NodeId, Message.Wired)], for a request frame whose caller stops waiting at `expiry`: held in
@@ -1957,7 +1958,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
     /// metric, unchanged. Only the previously-dropping branch pays this — the connected-peer hot path is
     /// untouched.
     private WriteOutcome dispatchToAbsentPeer(NodeId peerId, Message.Wired message) {
-        return dispatchToAbsentPeer(peerId, message, PeerState.Expiry.NEVER);
+        return dispatchToAbsentPeer(peerId, message, capExpiry());
     }
 
     private WriteOutcome dispatchToAbsentPeer(NodeId peerId, Message.Wired message, PeerState.Expiry expiry) {
@@ -2054,7 +2055,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
     }
 
     private WriteOutcome dispatchToPeer(PeerState state, Message.Wired message) {
-        return dispatchToPeer(state, message, PeerState.Expiry.NEVER);
+        return dispatchToPeer(state, message, capExpiry());
     }
 
     @SuppressWarnings("JBCT-PAT-01")  // Outcome dispatch with metrics + write
@@ -2118,7 +2119,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
     }
 
     private WriteOutcome writeToStream(NodeId peerId, Message.Wired message, QuicPeerConnection connection) {
-        return writeToStream(peerId, message, connection, PeerState.Expiry.NEVER);
+        return writeToStream(peerId, message, connection, capExpiry());
     }
 
     /// `expiry` follows the frame through the dead-connection re-dispatch: a frame that loses its connection mid-write

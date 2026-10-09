@@ -564,9 +564,9 @@ class SliceInvokerImpl implements SliceInvoker {
                                                         InvocationContext.currentDepth() + 1,
                                                         1,
                                                         InvocationContext.isSampled());
-        // Nobody waits for a fire-and-forget call, so no caller deadline exists: the cluster-wide cap is the only bound
-        // on how long the frame may sit in an offline buffer (#1996).
-        network.sendCapped(endpoint.nodeId(), invokeRequest);
+        // Nobody waits for a fire-and-forget call, so there is no caller deadline to hand over: plain send, which the
+        // transport bounds by the cluster-wide offline-buffer cap (#1996).
+        network.send(endpoint.nodeId(), invokeRequest);
         if (log.isDebugEnabled()) {
             log.debug("[requestId={}] Sent fire-and-forget invocation to {}: {}.{}",
                       requestId,
