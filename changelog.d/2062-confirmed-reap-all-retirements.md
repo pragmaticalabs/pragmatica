@@ -12,7 +12,7 @@
   drain-grace backstop both reap the same one; a node that joins again is a new incarnation, and what was remembered of the previous one is dropped), and a provider whose listing lags its delete is confirmed by the retry.
 - **EXTERNAL nodes make no provider call on any path.** A node whose reservation carries no provider binding (an operator started it) is confirmed by
   leaving the membership; its capacity is returned and terminating it through the lifecycle is a no-op.
-- [verified: real `SourceComputeRegistry` + real `CapacityControlledLifecycle` + real topology manager, `NodeReplacementRealRegistryReapTest` (42
+- [verified: real `SourceComputeRegistry` + real `CapacityControlledLifecycle` + real topology manager, `NodeReplacementRealRegistryReapTest` (45
   tests): scale-down of an unlisted bootstrap node, listing error retried, event and its recovery only on a real confirmation, stopped instance
   terminated, lagging listing, second reap of a confirmed and of an external node, refused chain ends in the event; `ClusterTopologyManagerReapRetiredTest`;
   the operator-warning sink wiring is pinned by a boot test.] [verified: Ember class x2, 0 refusals per run.] [unverified: a real cloud run.]
@@ -24,9 +24,12 @@
   (`UnconfirmedTerminationKey`/`Value`, wire tags 2132/2133, runtime state): written by `markUnconfirmed`, removed on the recovery. A manager that has just
   become leader inherits every persisted mark without announcing it again, re-checks it at once, and closes it when the instance is gone; the recovery
   is published by whichever node confirms it, so it closes the warning the previous leader raised (`OperatorWarningCode#closesAcrossNodes`).
-- **A mark whose instance was never listed is an operator warning, not a pending check.** The provider has never listed the instance (an unlabelled VM, or
-  a provider that only ever failed), so no listing can confirm it: it is not re-checked, and its event says the cluster cannot confirm it and the operator
-  must verify at the provider and terminate it by hand. An operator clear path is a follow-up. A mark whose instance WAS listed keeps being re-checked.
+- **A mark no listing can confirm is an operator warning, not a pending check.** When a listing SUCCEEDED and has never shown an instance of the node
+  (an unlabelled VM), no listing can confirm the mark: it is not re-checked, and its event says the cluster cannot confirm it and the operator must verify at
+  the provider and terminate it by hand. A listing that FAILED proves nothing: a mark that only ever met failing listings keeps being re-checked at the normal
+  cadence, says that listing is failing, and becomes the permanent warning only if a later listing succeeds and shows nothing. An operator clear path is a
+  follow-up. A mark whose instance WAS listed keeps being re-checked.
 - **A node that joins again is a new incarnation.** What the manager remembered of the previous one (its reap was confirmed, its instance was seen, its
   termination was unconfirmed) is dropped on its join, so a reused id is reaped, not "confirmed gone" while it is a member. The release of a counted EXTERNAL
-  reservation against an empty ledger is refused as inconsistent, as the release of a provider reservation is, instead of clamping at zero.
+  reservation against an empty ledger is refused as inconsistent, as the release of a provider reservation is, instead of clamping at zero. A rejoin that drops
+  an open mark closes its warning cluster-wide with `instance-termination-rejoined`, never with a confirmation: nothing was terminated.

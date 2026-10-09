@@ -2226,7 +2226,8 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         var nodes = new java.util.HashSet<>(unconfirmedReaps);
 
         nodes.addAll(persisted.keySet());
-        nodes.forEach(nodeId -> recheckMarked(nodeId, Option.option(persisted.get(nodeId))));
+        nodes.forEach(nodeId -> recheckMarked(nodeId,
+                                              Option.option(persisted.get(nodeId))));
     }
 
     private void recheckMarked(NodeId nodeId, Option<AetherValue.UnconfirmedTerminationValue> persisted) {
@@ -2258,10 +2259,12 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
             return;
         }
 
-        var cause = persisted.map(AetherValue.UnconfirmedTerminationValue::cause).or("a listing succeeded and showed no instance");
+        var cause = persisted.map(AetherValue.UnconfirmedTerminationValue::cause)
+                             .or("a listing succeeded and showed no instance");
 
         raiseUnconfirmedEvent(nodeId, cause, false, true);
-        writeMark(nodeId, Option.some(new AetherValue.UnconfirmedTerminationValue(cause, false, true)));
+        writeMark(nodeId,
+                  Option.some(new AetherValue.UnconfirmedTerminationValue(cause, false, true)));
     }
 
     /// A manager that has just become leader inherits the replicated marks: each is adopted without announcing it again (the warning the previous
