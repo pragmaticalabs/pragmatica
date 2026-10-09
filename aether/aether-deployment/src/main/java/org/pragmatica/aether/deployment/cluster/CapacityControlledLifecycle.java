@@ -534,13 +534,13 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
         var drop = new KVCommand.Mutation<AetherKey, AetherValue>(key, Option.some(reservation), Option.none());
         var counted = !UNCOUNTED_BINDING.equals(reservation.sourceBinding());
         var accepted = counted
-                       ? ledger().fold(() -> transact(List.of(drop)),
+                       ? ledger().fold(() -> transact(key, List.of(drop)),
                                        current -> mutate(Option.some(current),
                                                          new CapacityLedgerValue(Math.max(0, current.allocated() - 1),
                                                                                  current.version() + 1,
                                                                                  current.inventoryComplete()),
                                                          List.of(drop)))
-                       : transact(List.of(drop));
+                       : transact(key, List.of(drop));
 
         return accepted.flatMap(done -> done
                                         ? Promise.unitPromise()
@@ -549,12 +549,11 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
                                                       + " conflicted; retry").promise());
     }
 
-    private Promise<Boolean> transact(List<KVCommand.Mutation<AetherKey, AetherValue>> changes) {
+    private Promise<Boolean> transact(AetherKey key, List<KVCommand.Mutation<AetherKey, AetherValue>> changes) {
         return leader().fold(() -> Promise.success(false),
                              currentLeader -> {
                                  var id = UUID.randomUUID().toString();
-                                 var command = new KVCommand.LeaderTransaction<AetherKey, AetherValue>(changes.getFirst()
-                                                                                                              .key(),
+                                 var command = new KVCommand.LeaderTransaction<AetherKey, AetherValue>(key,
                                                                                                        id,
                                                                                                        currentLeader,
                                                                                                        List.of(),
