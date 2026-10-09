@@ -365,7 +365,6 @@ public final class NodeReplacementWiring {
             noteLiveInstance(original, record, oldAlive);
             noteLiveInstance(record.replacement(), record, alive(newState));
             forgetReapOfLiveNode(original, oldAlive);
-            forgetReapOfLiveNode(record.replacement(), alive(newState));
 
             return new Observation(in.clock().getAsLong(),
                                    oldAlive,
