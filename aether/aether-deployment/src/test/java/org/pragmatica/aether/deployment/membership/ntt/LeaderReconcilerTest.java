@@ -2772,35 +2772,32 @@ class LeaderReconcilerTest {
             assertThat(events.getFirst().code()).isEqualTo(org.pragmatica.utility.warning.OperatorWarningCode.INSTANCE_TERMINATION_UNCONFIRMED);
             assertThat(events.getFirst().subject()).isEqualTo(minted.id());
 
-            ctm.providerListsInstances();
-            runPendingReapRetry(timeSpan(EXPECTED_POLL_INTERVAL.millis() * 4).millis());
-
-            await().atMost(2, TimeUnit.SECONDS).until(() -> events.size() == 2);
-            assertThat(events.getLast().code()).as("confirmed only once the provider lists the instance and the terminate is accepted")
-                                               .isEqualTo(org.pragmatica.utility.warning.OperatorWarningCode.INSTANCE_TERMINATION_CONFIRMED);
+            assertThat(events).as("no confirmed event: nothing was ever listed or terminated").hasSize(1);
         }
 
-        /// The event fires once, not on every slow retry after the bound.
+        /// At the bound the event is raised once and the active retries STOP: no provider call is made after it, however long the
+        /// clock runs; a later observation (the next activation replay) owns the instance.
         @Test
-        void unconfirmedEvent_firesOnce_notOnEverySlowRetry() {
+        void afterTheBound_theEventFiresOnce_andNoProviderCallIsMade() {
             var events = new CopyOnWriteArrayList<org.pragmatica.utility.warning.OperatorWarning>();
-            var slow = timeSpan(EXPECTED_POLL_INTERVAL.millis() * 4).millis();
 
             reconciler.setOperatorWarnings(org.pragmatica.utility.warning.OperatorWarningSink.handingOffTo(events::add));
             ctm.failReaps(Causes.cause("still listed at the provider after terminate"));
             ctm.failNextProvision(Causes.cause("readiness timed out"));
-            dispatchOne();
+            var abandoned = dispatchOne();
             for (var attempt = 2; attempt <= 5; attempt++) {
                 runPendingReapRetry(EXPECTED_POLL_INTERVAL);
             }
             await().atMost(2, TimeUnit.SECONDS).until(() -> events.size() == 1);
+            assertThat(reapCallsFor(abandoned)).hasSize(5);
 
-            for (var slowRetry = 0; slowRetry < 3; slowRetry++) {
-                runPendingReapRetry(slow);
+            for (var tick = 0; tick < 20; tick++) {
+                advanceOnePollInterval();
+                scheduler.tasksByDelay(timeSpan(EXPECTED_POLL_INTERVAL.millis() * 4).millis()).forEach(ManualTask::runIfLive);
             }
 
-            assertThat(ctm.reapCalls()).as("five fast attempts and three slow ones").hasSize(8);
-            await().during(300, TimeUnit.MILLISECONDS).atMost(2, TimeUnit.SECONDS).until(() -> events.size() == 1);
+            assertThat(reapCallsFor(abandoned)).as("no provider call for it after the bound (the deficit re-dispatches other ids, which are other orphans)").hasSize(5);
+            assertThat(events.stream().filter(event -> event.subject().equals(abandoned.id()))).as("one event for it").hasSize(1);
         }
 
         /// The reap is requested only after the entry left the in-flight map, for every reason, so a racing poll answer cannot leave
@@ -2876,7 +2873,7 @@ class LeaderReconcilerTest {
         /// A refused or failed reap is retried; when the bound is spent the operator is told, naming the instance, and the leader
         /// keeps trying, so a later success closes the condition with its recovery event.
         @Test
-        void unconfirmedReap_isRetriedWithinABound_thenAnnouncedNamingTheInstance_andClosedOnSuccess() {
+        void unconfirmedReap_isRetriedWithinABound_thenAnnouncedNamingTheInstance() {
             var events = new CopyOnWriteArrayList<org.pragmatica.utility.warning.OperatorWarning>();
 
             reconciler.setOperatorWarnings(org.pragmatica.utility.warning.OperatorWarningSink.handingOffTo(events::add));
@@ -2899,17 +2896,10 @@ class LeaderReconcilerTest {
             assertThat(events.getFirst().code()).isEqualTo(org.pragmatica.utility.warning.OperatorWarningCode.INSTANCE_TERMINATION_UNCONFIRMED);
             assertThat(events.getFirst().subject()).isEqualTo(minted.id());
             assertThat(events.getFirst().message()).contains(RecordingCtm.instanceIdOf(minted)).contains("still listed at the provider");
+        }
 
-            ctm.succeedReaps();
-            runPendingReapRetry(timeSpan(EXPECTED_POLL_INTERVAL.millis() * 4).millis());
-
-            assertThat(ctm.reapCalls()).as("the slow retry after the bound").hasSize(6);
-            await().atMost(2, TimeUnit.SECONDS).until(() -> events.size() == 2);
-            assertThat(events.getLast().code()).isEqualTo(org.pragmatica.utility.warning.OperatorWarningCode.INSTANCE_TERMINATION_CONFIRMED);
-            assertThat(events.getLast().subject()).isEqualTo(minted.id());
-            assertThat(scheduler.tasksByDelay(timeSpan(EXPECTED_POLL_INTERVAL.millis() * 4).millis()).stream().filter(ManualTask::pending))
-                .as("a confirmed reap schedules no further retry")
-                .isEmpty();
+        private List<RecordingCtm.ReapCall> reapCallsFor(NodeId node) {
+            return ctm.reapCalls().stream().filter(call -> call.node().equals(node)).toList();
         }
 
         private void runPendingReapRetry(TimeSpan delay) {

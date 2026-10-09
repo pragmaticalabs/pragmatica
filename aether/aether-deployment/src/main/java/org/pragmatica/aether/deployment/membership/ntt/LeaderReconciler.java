@@ -40,8 +40,6 @@ import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
-import org.pragmatica.lang.Promise;
-import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.lang.utils.TimeSource;
@@ -2015,10 +2013,9 @@ public final class LeaderReconciler {
         }
     }
 
-    /// Fast attempts before the unconfirmed reap is announced to the operator.
+    /// Attempts at the poll interval before the unconfirmed reap is announced to the operator and the retries STOP: the instance is
+    /// left to a later observation (the next activation replay, #1057, or a listing that finds it) rather than polled forever.
     private static final int REAP_ATTEMPT_BOUND = 5;
-    /// After the bound the leader keeps trying, this many times less often.
-    private static final int SLOW_REAP_FACTOR = 4;
 
     /// #1111 — an abandoned replacement's instance must not be left running. The entry was dropped for `reason`; this reaps the
     /// instance through the confirmed [`ClusterTopologyManager#reapRetired`] and keeps trying until the provider's own listing
@@ -2067,15 +2064,6 @@ public final class LeaderReconciler {
                  source,
                  instances,
                  attempt);
-        if (attempt > REAP_ATTEMPT_BOUND) {
-            OperatorWarnings.raise(log,
-                                   operatorWarnings.get(),
-                                   OperatorWarningCode.INSTANCE_TERMINATION_CONFIRMED,
-                                   id.id(),
-                                   "Abandoned replacement {} (source '{}') is confirmed terminated at the provider",
-                                   id.id(),
-                                   source);
-        }
     }
 
     @Contract
@@ -2092,7 +2080,7 @@ public final class LeaderReconciler {
                  instances,
                  attempt,
                  cause.message());
-        if (attempt == REAP_ATTEMPT_BOUND) {
+        if (attempt >= REAP_ATTEMPT_BOUND) {
             OperatorWarnings.raise(log,
                                    operatorWarnings.get(),
                                    OperatorWarningCode.INSTANCE_TERMINATION_UNCONFIRMED,
@@ -2103,13 +2091,12 @@ public final class LeaderReconciler {
                                    instances,
                                    attempt,
                                    cause.message());
+
+            return;
         }
 
-        var delay = attempt < REAP_ATTEMPT_BOUND
-                    ? inFlightPollInterval
-                    : timeSpan(inFlightPollInterval.millis() * SLOW_REAP_FACTOR).millis();
-
-        scheduler.schedule(() -> attemptReap(reason, id, source, seenBefore, instances, attempt + 1), delay);
+        scheduler.schedule(() -> attemptReap(reason, id, source, seenBefore, instances, attempt + 1),
+                           inFlightPollInterval);
     }
 
     /// Arm the deficit-convergence follow-up (H1 / #257 completion) when this pass ended with
