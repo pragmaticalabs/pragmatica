@@ -63,8 +63,8 @@ class CliDocsDriftTest {
     /// is read.
     private static final int WAIVED_FINDINGS = 85;
     private static final String WAIVED_FINDINGS_DIGEST = "2cab336319095ced";
-    private static final int BASELINED_COMMANDS = 11;
-    private static final String BASELINED_COMMANDS_DIGEST = "19561c9ce5583edd";
+    private static final int BASELINED_COMMANDS = 10;
+    private static final String BASELINED_COMMANDS_DIGEST = "0931e843956dd240";
 
     private static final Path MODULE = DocCorpus.repositoryRoot().resolve("cli-docs-gate");
     private static final Path BASELINE = MODULE.resolve("src/test/resources/undocumented-commands.txt");

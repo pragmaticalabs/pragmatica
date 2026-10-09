@@ -19,10 +19,10 @@ import org.pragmatica.lang.Result;
 /// Their two boot-time mechanisms differ, and the round-1 review of #1019 found this comment eliding
 /// that (S1). `ClusterSizeGate` genuinely refuses: `Main#enforceMinimumClusterSize` pipes its failure
 /// into `Main#abortBoot`, so raising its floor would stop a running 3-node cluster from restarting.
-/// `ConfigValidator` does NOT refuse: `Main#loadConfigFile` discards its failure into `Option.none()`,
-/// so raising its floor would silently drop the node's config and boot it without one. Neither
-/// outcome is acceptable, which is why the policy lives here — but "it would refuse to boot" is only
-/// true of one of them.
+/// `ConfigValidator` refuses too, since #2052: a config file given with `--config=` that fails
+/// validation makes `Main#resolveConfig` fail and `Main#refuseConfig` exit 65 (before #2052 the failure
+/// was discarded and the node booted without its config). Either way raising a floor would stop a running
+/// cluster from restarting, which is why the policy lives here, where configs are created.
 ///
 /// The MAXIMUM is a different question and is NOT CLI-only: see [#MAXIMUM_CORE_NODES].
 ///

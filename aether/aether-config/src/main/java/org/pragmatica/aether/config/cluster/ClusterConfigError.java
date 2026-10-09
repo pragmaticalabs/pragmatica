@@ -129,6 +129,20 @@ public sealed interface ClusterConfigError extends Cause, HttpStatusAware {
         }
     }
 
+    /// #2059: a cloud source lacks `[cloud.credentials]` keys its provider's integration factory requires.
+    /// Caught at compose time so the CLI names the key, instead of the node refusing to boot (#2058).
+    record CredentialsIncomplete(String sourceName, String provider, List<String> missing) implements ClusterConfigError {
+        @Override
+        public String message() {
+            return "Source '" + sourceName
+                 + "' (provider " + provider
+                 + ") is missing required cloud credential(s): " + String.join(", ", missing)
+                 + ". Set them under [source." + sourceName
+                 + ".node_config.cloud.credentials] (region/zone/location come from the source's own"
+                 + " region/zone).";
+        }
+    }
+
     record ValidationFailed(List<ClusterConfigError> errors) implements ClusterConfigError {
         @Override
         public String message() {

@@ -40,7 +40,7 @@ This specification defines an end-to-end integration test that validates Aether'
                      +------------------+-----------------------+
                                         |
                          Decision stream | ActivationDirective
-                         (via PassiveNode)| WorkerSliceDirective
+                         (WorkerMetadata*)  | WorkerSliceDirective
                                         |
                      +------------------v-----------------------+
                      |      Worker Layer (SWIM Gossip)           |

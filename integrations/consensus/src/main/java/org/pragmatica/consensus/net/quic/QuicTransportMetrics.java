@@ -87,6 +87,11 @@ public final class QuicTransportMetrics {
     /// Inbound messages dropped because their connection peer or claimed sender is a NodeId retired by
     /// a boot-token conflict (terminal removal) — non-zero means a refused process is still sending.
     private final LongAdder bootTokenDrops = new LongAdder();
+    /// #1727: connections closed at once because a fresh handshake superseded them, and the lane streams
+    /// (unflushed or recently written) that close put at risk of discarding writes. Decides whether a
+    /// drain-before-close is worth building.
+    private final LongAdder supersededCloses = new LongAdder();
+    private final LongAdder supersededLaneStreamsAtRisk = new LongAdder();
 
     private QuicTransportMetrics() {}
 
@@ -224,6 +229,22 @@ public final class QuicTransportMetrics {
         bytesReceived.add(byteCount);
     }
 
+    /// #1727: a superseded connection was closed at once with `lanesAtRisk` lane streams holding unflushed or
+    /// recent writes.
+    @Contract
+    public void onSupersededClose(int lanesAtRisk) {
+        supersededCloses.increment();
+        supersededLaneStreamsAtRisk.add(lanesAtRisk);
+    }
+
+    public long supersededCloseCount() {
+        return supersededCloses.sum();
+    }
+
+    public long supersededLaneStreamsAtRiskCount() {
+        return supersededLaneStreamsAtRisk.sum();
+    }
+
     /// #964: records an inbound message dropped because its type tag names no codec here.
     @Contract
     public void onUnknownTypeTagDrop() {
@@ -269,6 +290,9 @@ public final class QuicTransportMetrics {
         // #964: messages dropped for an unknown type tag — non-zero means mixed codec versions.
         metrics.put("quic_unknown_type_tag_drops_total", unknownTypeTagDrops.sum());
         metrics.put("quic_boot_token_drops_total", bootTokenDrops.sum());
+        // #1727: superseded closes and the lane streams they put at risk (unflushed or written in the last 2 s).
+        metrics.put("quic_superseded_closes_total", supersededCloses.sum());
+        metrics.put("quic_superseded_lane_streams_at_risk_total", supersededLaneStreamsAtRisk.sum());
 
         return Map.copyOf(metrics);
     }

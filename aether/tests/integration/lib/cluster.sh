@@ -440,7 +440,7 @@ _app_endpoint_for_node() {
         [ -n "$ip" ] && printf 'http://%s:%s' "$ip" "${APP_PORT:-8070}"
     elif [[ "$id" =~ node-([0-9]+)$ ]]; then
         n="${BASH_REMATCH[1]}"
-        printf 'http://%s:%s' "${TARGET_HOST}" "$(( ${APP_PORT:-8070} + n - 1 ))"
+        printf 'http://%s:%s' "${TARGET_HOST}" "$(( ${APP_PORT:-8070} + $(b_seed_offset "$n") ))"
     fi
     return 0
 }
@@ -1521,8 +1521,10 @@ first_seed_host_app_port() {
     [ "${CLOUD_MODE:-false}" = "true" ] && return 1
     local prefix="${CLUSTER_NAME:-aether-${CLUSTER_ID:-b}-node-}"
     local n hp
+    local gen
+    gen=$(b_current_generation)
     for n in $(seq 1 "${NODE_COUNT:-5}"); do
-        hp=$(host_port_for_container "${prefix}${n}" "$inport")
+        hp=$(host_port_for_container "${prefix}$(b_seed_number "$gen" "$n")" "$inport")
         if [ -n "$hp" ]; then
             printf '%s' "$hp"
             return 0
@@ -3486,6 +3488,103 @@ _cloud_full_drain_recover() {
     return 0
 }
 
+# The backup remote's head (the commit of branch `kv-backup` in the shared bare repository), or empty when the remote has none yet.
+# Read through the node image's own git, as the in-container user that owns the repository.
+_backup_remote_head() {
+    remote_exec "docker run --rm --entrypoint git -v ${BACKUP_REMOTE_VOLUME}:/r:ro aether-node:local --git-dir=/r/kv.git rev-parse --verify -q refs/heads/kv-backup" 2>/dev/null | tail -n1 | tr -dc '0-9a-f'
+}
+
+# Wait until the leader's last change has been pushed: the head is non-empty and unchanged across two reads a flush window
+# apart (the backup flushes 500 ms after the last change and at most 5 s after the first). Prints the settled head, or nothing
+# when the remote never got one within <timeout> seconds.
+_await_backup_head_settled() {
+    local timeout="${1:-60}" waited=0 head previous=""
+    while [ "$waited" -le "$timeout" ]; do
+        head=$(_backup_remote_head)
+        if [ -n "$head" ] && [ "$head" = "$previous" ]; then
+            printf '%s' "$head"
+            return 0
+        fi
+        previous="$head"
+        sleep "${BACKUP_SETTLE_POLL_S:-6}"
+        waited=$((waited + ${BACKUP_SETTLE_POLL_S:-6}))
+    done
+    return 1
+}
+
+# The restore decision (`Backup restore decision: RESTORED|FRESH|SKIPPED_EXISTING_STATE|DISABLED`) logged by the fresh cluster's
+# leader, read from the logs of the given containers; prints the first found.
+_backup_restore_decision() {
+    local names="$1"
+    remote_exec "for c in ${names}; do docker logs \$c 2>&1 | grep -o 'Backup restore decision: [A-Z_]*' | head -1; done | head -1 | sed 's/.*: //'" 2>/dev/null | tail -n1 | tr -dc 'A-Z_'
+}
+
+# Restart cluster B's five core seeds onto FRESH ids (generation + 1) and let the new leader restore the KV from the backup.
+# See restart_all_nodes for why. Returns non-zero (after a [FAIL]) when the nodes could not be started, or when a backup head
+# existed but the fresh cluster did not restore it.
+_compose_b_restart_onto_fresh_ids() {
+    local head old_gen new_gen n1 n2 n3 n4 n5 peers nodes_out decision
+    head=$(_await_backup_head_settled "${BACKUP_SETTLE_TIMEOUT_S:-60}") || head=""
+    if [ -z "$head" ]; then
+        log_warn "restart_all_nodes: the backup remote has no head to restore (nothing was ever pushed): the fresh cluster starts empty"
+    else
+        log_info "restart_all_nodes: backup head settled at ${head:0:12}; restarting onto fresh core ids"
+    fi
+    old_gen=$(b_current_generation)
+    new_gen=$((old_gen + 1))
+    n1=$(b_seed_number "$new_gen" 1); n2=$(b_seed_number "$new_gen" 2); n3=$(b_seed_number "$new_gen" 3)
+    n4=$(b_seed_number "$new_gen" 4); n5=$(b_seed_number "$new_gen" 5)
+    peers=""
+    for n in "$n1" "$n2" "$n3" "$n4" "$n5"; do
+        peers="${peers}${peers:+,}aether-b-node-${n}:aether-b-node-${n}:6000"
+    done
+    # The generation is recorded BEFORE the containers start: whatever the start leaves behind must be findable under it.
+    local start_out start_rc
+    start_out=$(remote_exec "echo ${new_gen} > ${BACKUP_GENERATION_FILE}; docker rm -f \$(docker ps -aq --filter name='aether-b-node-') 2>/dev/null || true; cd ~ && AETHER_B_N1=${n1} AETHER_B_N2=${n2} AETHER_B_N3=${n3} AETHER_B_N4=${n4} AETHER_B_N5=${n5} AETHER_B_PEERS='${peers}' docker compose -f docker-compose-b.yml up -d" 2>&1)
+    start_rc=$?
+    if [ "$start_rc" -ne 0 ]; then
+        log_fail "restart_all_nodes: starting the fresh generation ${new_gen} returned rc=${start_rc}. Output: ${start_out}"
+        return 1
+    fi
+    _AETHER_B_GEN="$new_gen"
+    log_info "restart_all_nodes: core ids ${old_gen}->${new_gen}: aether-b-node-{$(b_seed_number "$old_gen" 1)..$(b_seed_number "$old_gen" 5)} -> aether-b-node-{${n1},${n2},${n3},${n4},${n5}}"
+    # Container-count guard. `docker compose up -d` can return 0 yet leave fewer than NODE_COUNT containers running when a
+    # transient name/alias conflict blocks a subset on the first attempt (S20: rc=0, 2/5 up); count them directly through docker
+    # (independent of the management API, unreachable while sub-quorum), force-recreate once, then fail loud.
+    local want="${NODE_COUNT:-5}" running
+    running=$(remote_exec "docker ps --filter name='aether-b-node-' --filter status=running -q | wc -l" 2>/dev/null | tail -n1 | tr -dc '0-9')
+    if [ "${running:-0}" -lt "$want" ]; then
+        log_warn "restart_all_nodes: only ${running:-0}/${want} aether-b-node containers running after up -d — force-recreating"
+        remote_exec "cd ~ && AETHER_B_N1=${n1} AETHER_B_N2=${n2} AETHER_B_N3=${n3} AETHER_B_N4=${n4} AETHER_B_N5=${n5} AETHER_B_PEERS='${peers}' docker compose -f docker-compose-b.yml up -d --force-recreate" >/dev/null 2>&1
+        running=$(remote_exec "docker ps --filter name='aether-b-node-' --filter status=running -q | wc -l" 2>/dev/null | tail -n1 | tr -dc '0-9')
+    fi
+    if [ "${running:-0}" -lt "$want" ]; then
+        local diag
+        diag=$(remote_exec "docker ps -a --filter name='aether-b-node-' --format '{{.Names}} {{.Status}}'; for c in \$(docker ps -aq --filter name='aether-b-node-' --filter status=exited); do echo \"--- \$c ---\"; docker logs --tail 15 \$c 2>&1; done" 2>&1)
+        log_fail "restart_all_nodes: only ${running:-0}/${want} aether-b-node containers running after force-recreate. Diagnostics: ${diag}"
+        return 1
+    fi
+    RESTART_FRESH_IDS="aether-b-node-${n1} aether-b-node-${n2} aether-b-node-${n3} aether-b-node-${n4} aether-b-node-${n5}"
+    export RESTART_FRESH_IDS
+    RESTART_BACKUP_HEAD="$head"
+    return 0
+}
+
+# After the readiness barriers: a backup head that existed before the restart must have been RESTORED by the fresh cluster's
+# leader. Anything else (a FRESH decision over a non-empty head, a blocked restore that never decided) means the data did not
+# come back, and a later "recovered" verdict would be a lie.
+_assert_restored_from_backup() {
+    [ -n "${RESTART_BACKUP_HEAD:-}" ] || return 0
+    local decision
+    decision=$(_backup_restore_decision "${RESTART_FRESH_IDS}")
+    if [ "$decision" != "RESTORED" ]; then
+        log_fail "restart_all_nodes: a backup head (${RESTART_BACKUP_HEAD:0:12}) existed before the restart, but the fresh cluster's restore decision is '${decision:-<none logged>}', not RESTORED: the cluster's declared state did not come back"
+        return 1
+    fi
+    log_info "restart_all_nodes: the fresh cluster restored the backup (decision RESTORED, head ${RESTART_BACKUP_HEAD:0:12})"
+    return 0
+}
+
 restart_all_nodes() {
     log_info "Restoring cluster to baseline (CLUSTER_NAME=${CLUSTER_NAME:-aether-b-node-})..."
     # The recreate below destroys the outgoing containers' logs; keep them if this suite has already failed.
@@ -3672,71 +3771,20 @@ restart_all_nodes() {
         _cloud_recovery_barriers "restart_all_nodes" "${floor}" || return 1
         return 0
     fi
-    # Why: `docker start` on exited containers re-uses identical NodeIds / addresses,
-    # which triggers a 5-way simultaneous QUIC handshake storm on boot. The storm
-    # causes peerLinks to flap, consensus messages to drop (QuicClusterNetwork.broadcast
-    # only sends to peers in peerLinks at that instant), and Rabia proposals to starve.
-    # `docker-compose down -v && up -d` performs an orchestrated tear-down that clears
-    # peerLinks before restart — avoids the double-initiate race and gives clean boot.
+    # #1968 / #1543 Q1: a whole-cluster restart is a REGULAR START ON FRESH CORE NODES (new ids), then the KV restore from the
+    # backup. A node id never returns, so this function no longer relaunches the old containers or cycles the compose project
+    # under the same ids (the old `down -v && up -d`, a same-id cold start with every volume wiped). Instead it waits for the
+    # leader's last backup push to settle, removes every `aether-b-node-` container (compose seeds and CTM replacements alike),
+    # starts the five seeds again under generation-encoded ids (lib/common.sh b_seed_number) with the same backup remote, and
+    # lets the new leader restore (`[backup] restore = auto`). The compose project is never `down`ed: the remote volume is
+    # external, and `--remove-orphans` stays off (clusters A and B share one default compose project).
     local prefix="${CLUSTER_NAME:-aether-b-node-}"
-    local compose="${COMPOSE_FILE:-${SCRIPT_DIR:-/tmp}/docker-compose-b.yml}"
-    # Surface stderr from the remote compose tear-down/up. Prior form swallowed it via
-    # `2>/dev/null`, hiding a real bug where compose would fail (network in use, CTM
-    # container port collision, etc) and leave containers running from the previous
-    # broken state — yet the test harness believed it had reset the cluster and
-    # interpreted subsequent "no leader elected" as a Rabia convergence failure rather
-    # than the real cause: the compose cycle never ran.
-    # Pre-clean cluster B by NAME PREFIX `aether-b-node-`, not by the CTM label alone.
-    # Mid-suite, B's ON_DUTY members are a mix of compose-fixed nodes (aether-b-node-1..5) and
-    # CTM auto-heal replacements named `aether-b-node-<ULID>`. A replacement provisioned before
-    # bootstrap can carry `aether.cluster=default` (DockerComputeProvider.clusterOrDefault
-    # fallback — see docker-compose-b.yml AETHER_CLUSTER_NAME note), so the old
-    # `--filter label=aether.cluster=b` sweep MISSED it: it outlived `down -v` (not a compose
-    # service), kept holding a node's name/network-alias, and the following `up -d` then failed
-    # to (re)create that compose node — the cluster returned as a sub-quorum MINORITY (observed
-    # 2026-06-30 S20: only 2/5, nodes 3+5). The name prefix `aether-b-node-` matches BOTH compose
-    # nodes AND every CTM replicant, and CANNOT match cluster A (`aether-a-node-*`), so it is a
-    # safe, comprehensive reset.
-    # DO NOT add `--remove-orphans`: clusters A and B share one default compose project (both are
-    # `up`'d from ~ with no -p), so B's `up -d` lists A's containers as orphans — `--remove-orphans`
-    # would DELETE cluster A + forge-postgres. Project isolation (-p per cluster) is the proper
-    # structural fix, tracked separately.
-    local restart_out restart_rc
-    if [ -f "$compose" ] && [ "${prefix}" = "aether-b-node-" ]; then
-        restart_out=$(remote_exec "docker rm -f \$(docker ps -aq --filter name='aether-b-node-') 2>/dev/null || true; cd ~ && docker compose -f docker-compose-b.yml down -v && docker compose -f docker-compose-b.yml up -d" 2>&1)
-        restart_rc=$?
-    else
-        # Non-standard cluster names have no compose project to cycle, and starting the exited
-        # containers again would relaunch the same NodeIds (#1543) — refuse instead of reviving.
-        restart_out="restart_all_nodes: no compose project for cluster name '${prefix}' (only aether-b-node- is cycled); relaunching exited containers under their old NodeIds is not supported"
-        restart_rc=1
-    fi
-    if [ "$restart_rc" -ne 0 ]; then
-        log_fail "restart_all_nodes: compose cycle returned rc=${restart_rc}. Output: ${restart_out}"
+    # The compose file is on the DOCKER HOST (`~/docker-compose-b.yml`), which is not this machine under --env remote: no local test.
+    if [ "${prefix}" != "aether-b-node-" ]; then
+        log_fail "restart_all_nodes: no compose project for cluster name '${prefix}' (only aether-b-node- is restarted onto fresh ids); relaunching exited containers under their old NodeIds is not supported"
         return 1
     fi
-    # Container-count guard (compose-b path). `docker compose up -d` can return 0 yet leave fewer
-    # than NODE_COUNT containers running when a transient name/alias conflict blocks a subset on
-    # the first attempt — the exact S20 symptom (rc=0, but 2/5 up). Verify the RUNNING container
-    # count directly via docker (authoritative — independent of the management API, which is
-    # unreachable while the cluster is sub-quorum); on a shortfall, force-recreate once, then
-    # capture per-container status + tail logs and fail loud before the management-API waits below
-    # (which would otherwise misreport a missing-container problem as a Rabia convergence failure).
-    if [ "${prefix}" = "aether-b-node-" ]; then
-        local want="${NODE_COUNT:-5}" running
-        running=$(remote_exec "docker ps --filter name='aether-b-node-' --filter status=running -q | wc -l" 2>/dev/null | tail -n1 | tr -dc '0-9')
-        if [ "${running:-0}" -lt "$want" ]; then
-            log_warn "restart_all_nodes: only ${running:-0}/${want} aether-b-node containers running after up -d — force-recreating"
-            remote_exec "docker rm -f \$(docker ps -aq --filter name='aether-b-node-') 2>/dev/null || true; cd ~ && docker compose -f docker-compose-b.yml up -d --force-recreate" >/dev/null 2>&1
-            running=$(remote_exec "docker ps --filter name='aether-b-node-' --filter status=running -q | wc -l" 2>/dev/null | tail -n1 | tr -dc '0-9')
-        fi
-        if [ "${running:-0}" -lt "$want" ]; then
-            local diag
-            diag=$(remote_exec "docker ps -a --filter name='aether-b-node-' --format '{{.Names}} {{.Status}}'; for c in \$(docker ps -aq --filter name='aether-b-node-' --filter status=exited); do echo \"--- \$c ---\"; docker logs --tail 15 \$c 2>&1; done" 2>&1)
-            log_fail "restart_all_nodes: only ${running:-0}/${want} aether-b-node containers running after force-recreate. Diagnostics: ${diag}"
-            return 1
-        fi
-    fi
+    _compose_b_restart_onto_fresh_ids || return 1
     # Rotate entry point — the previous pinned node may have been killed during the suite.
     rotate_mgmt_entry_point 2>/dev/null || true
     # Strict recovery assertions — no more log_warn pass-through.
@@ -3784,23 +3832,18 @@ restart_all_nodes() {
         # transition that didn't happen).
         reset_provisioning_circuit || true
     fi
-    # Re-establish the blueprint baseline wiped by `docker compose down -v` above —
-    # that command performs a full VOLUME wipe (see the "Why" comment near the top
-    # of this function), so the artifact repository and every deployed slice are
-    # gone and the cluster returns at a fresh generation with zero slices. Without
-    # this, ANY test that runs after a destructive restart_all_nodes() — directly
-    # (e.g. S20 in test-self-drain-quorum-loss.sh) or indirectly via
-    # restore_cluster_baseline's step-0 leader-unreachable escalation — inherits an
-    # empty artifact repository, and load/echo traffic silently 404s instead of
-    # measuring the scenario under test (#426 item 5: this exact gap left no ACTIVE
-    # echo owner for kill-under-load's retarget to resolve on 2026-07-08, correctly
-    # triggering the loud-abort added in 71a4aa599 rather than a silent 100%-error
-    # false read). restore_cluster_baseline itself deliberately does NOT restore
-    # blueprint state (see its step-8 design comment — that exclusion is
-    # intentional and scoped to non-destructive baseline checks); this is the
-    # destructive-recovery counterpart, scoped to the one function that actually
-    # wipes the volumes. See _reestablish_echo_baseline above for the (now
-    # runtime-agnostic) redeploy logic shared with the cloud branch.
+    # The restore decision is committed once the leader is up; check it before anything else rebuilds state on top.
+    if ! _assert_restored_from_backup; then
+        return 1
+    fi
+    # Re-establish the echo baseline. The restore brings back DECLARED state (blueprints, slice targets, stream configs), but the
+    # artifact repository and the deployed slices belong to the old cluster's runtime and are NOT in the backup, so the fresh
+    # cluster comes up with the declarations and none of the artifacts. Without this redeploy, ANY test that runs after a
+    # destructive restart_all_nodes() — directly (S20 in test-self-drain-quorum-loss.sh) or through restore_cluster_baseline's
+    # step-0 leader-unreachable escalation — inherits an empty artifact repository, and load/echo traffic silently 404s instead of
+    # measuring the scenario under test (#426 item 5). restore_cluster_baseline deliberately does NOT restore blueprint state
+    # (its step-8 design comment); this is the destructive-recovery counterpart. See _reestablish_echo_baseline for the
+    # runtime-agnostic redeploy logic shared with the cloud branch.
     if ! _reestablish_echo_baseline; then
         return 1
     fi
@@ -5028,7 +5071,8 @@ stream_publish_status() {
     coord=$(stream_coordinate "$name") || { printf '000'; return 0; }
     local budget="${STREAM_PUBLISH_RETRY_BUDGET_S:-10}"
     local delay="${STREAM_PUBLISH_RETRY_DELAY_S:-0.25}" max_delay="${STREAM_PUBLISH_RETRY_MAX_DELAY_S:-1}"
-    local deadline=$(( SECONDS + budget ))
+    local deadline
+    deadline=$(deadline_in "$budget")
     local out status resp_body ep attempt=0 off part
     while :; do
         attempt=$((attempt + 1))

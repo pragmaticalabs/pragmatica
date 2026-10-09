@@ -80,6 +80,7 @@ class NodeLifecycleRoutesSliceFloorTest {
     private final List<OperatorWarning> warnings = new CopyOnWriteArrayList<>();
 
     private final Set<NodeId> pendingDrains = new LinkedHashSet<>();
+    private final Set<NodeId> reportedDraining = new LinkedHashSet<>();
     private final List<String> routedEvents = new CopyOnWriteArrayList<>();
 
     private KVStore<AetherKey, AetherValue> kvStore;
@@ -183,7 +184,7 @@ class NodeLifecycleRoutesSliceFloorTest {
     /// succeeds — proving the budget guard did NOT reject (rather than being masked by a later guard).
     private ClusterSyncCollector metricsCollector() {
         var states = allPresent.stream()
-                               .collect(Collectors.toMap(peer -> peer, _ -> NodeReportedState.READY));
+                               .collect(Collectors.toMap(peer -> peer, peer -> reportedDraining.contains(peer) ? NodeReportedState.DRAINING : NodeReportedState.READY));
         return (ClusterSyncCollector) Proxy.newProxyInstance(
             ClusterSyncCollector.class.getClassLoader(),
             new Class[]{ClusterSyncCollector.class},
@@ -245,6 +246,37 @@ class NodeLifecycleRoutesSliceFloorTest {
         return NodeInfo.nodeInfo(id, NodeAddress.nodeAddress("host-x", 6000).unwrap(), labels);
     }
 
+
+    /// v-2008 N1: the reconciler repeats the old node's drain admission every tick, and a new leader repeats it without knowing the
+    /// old one's request. A drain already under way (commanded, or reported by the node itself) is NOT admitted again: a second
+    /// admission of it would be refused, which is not a block of any kind.
+    @Test
+    void replacementDrain_ofANodeWhoseDrainIsAlreadyCommanded_isNotAdmittedAgain() {
+        var a = slice("a", 3, 2);
+        host(a, node(1), node(2), node(3));
+        pendingDrains.add(node(1));
+
+        assertThat(breach(routes().admitReplacementDrain(node(2)).await()).message()).as("control: not yet under way, the floor refuses it").contains(SLICE_A);
+
+        pendingDrains.add(node(2));
+        assertThat(routes().admitReplacementDrain(node(2)).await().isSuccess()).as("commanded: not asked for again").isTrue();
+    }
+
+    @Test
+    void replacementDrain_ofANodeThatReportsItselfDraining_isNotAdmittedAgain() {
+        var a = slice("a", 3, 2);
+        host(a, node(1), node(2), node(3));
+        pendingDrains.add(node(1));
+        reportedDraining.add(node(2));
+
+        assertThat(routes().admitReplacementDrain(node(2)).await().isSuccess()).as("reported DRAINING: not asked for again").isTrue();
+    }
+
+    @Test
+    void onlyTheSliceFloorIsRecognisedAsTheBlockOfAReplacementDrain() {
+        assertThat(NodeLifecycleRoutes.isSliceFloorRefusal(new NodeLifecycleRoutes.SliceFloorBreached("node-2", "drain", List.of()))).isTrue();
+        assertThat(NodeLifecycleRoutes.isSliceFloorRefusal(org.pragmatica.lang.utils.Causes.cause("Cannot drain node node-2 from SYNCING (must be READY)"))).isFalse();
+    }
 
     /// Slice A, floor 2, on node-1..3. Draining node-1 leaves A on node-2 and node-3 (2, at the floor): admitted.
     /// With node-1 already pending, draining node-2 leaves A on node-3 only (1 < 2): refused.

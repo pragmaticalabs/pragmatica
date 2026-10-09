@@ -19,6 +19,7 @@ import org.pragmatica.consensus.net.quic.PeerState.Phase;
 import org.pragmatica.messaging.Message;
 import org.pragmatica.messaging.StreamType;
 
+import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeUnit;
 
@@ -366,6 +367,53 @@ class PeerStateTest {
         assertThat(removed.or((QuicPeerConnection) null)).isSameAs(conn);
         assertThat(s.phase()).isEqualTo(Phase.REMOVED);
         assertThat(s.offlineBufferSize()).isZero();
+    }
+
+    private record UnbufferedMsg(byte tag) implements Message.Wired, org.pragmatica.consensus.net.NoOfflineBuffering {
+        @Override
+        public StreamType streamType() {
+            return StreamType.FORWARD;
+        }
+    }
+
+    /// #1973: a NoOfflineBuffering message offered while the peer has no live connection is NOT buffered (it would be delivered on
+    /// reattach, after its caller was told it was not sent); an ordinary message is still queued in the same phases.
+    @Test
+    void offerOutbound_noOfflineBufferingMessage_isNeverBuffered_inEveryNonConnectedPhase() {
+        var init = state();
+        var connecting = state();
+        var evicted = state();
+
+        connecting.beginConnecting(T0 + 1);
+        evicted.attach(liveConnection(), T0 + 1);
+        evicted.evict(T0 + 2);
+
+        for (var s : List.of(init, connecting, evicted)) {
+            var phase = s.phase();
+
+            assertThat(s.offerOutbound(new UnbufferedMsg((byte) 1))).as(phase.toString()).isNotInstanceOf(OfferOutcome.Queued.class);
+            assertThat(s.offlineBufferSize()).as(phase + ": nothing buffered").isZero();
+            assertThat(s.offerOutbound(out((byte) 2))).as(phase + ": control, an ordinary message").isInstanceOf(OfferOutcome.Queued.class);
+            assertThat(s.offlineBufferSize()).as(phase + ": the ordinary one is buffered").isEqualTo(1);
+        }
+    }
+
+    /// #2011: a NewBatch left in the offline buffer would be re-delivered on reattach with no time limit, long after its
+    /// slot decided and beyond the committed-batch window, re-queuing a committed batch. It must never be buffered.
+    @Test
+    void offerOutbound_rabiaNewBatch_isNeverBuffered_whileOtherConsensusFramesStillAre() {
+        var evicted = state();
+
+        evicted.attach(liveConnection(), T0 + 1);
+        evicted.evict(T0 + 2);
+        var newBatch = new org.pragmatica.consensus.rabia.RabiaProtocolMessage.Asynchronous.NewBatch<org.pragmatica.consensus.Command>(
+            NodeId.nodeId("sender").unwrap(), org.pragmatica.consensus.StateMachine.Batch.emptyBatch());
+        var propose = new org.pragmatica.consensus.rabia.RabiaProtocolMessage.Synchronous.Propose<org.pragmatica.consensus.Command>(
+            NodeId.nodeId("sender").unwrap(), org.pragmatica.consensus.rabia.Phase.ZERO, org.pragmatica.consensus.StateMachine.Batch.emptyBatch());
+
+        assertThat(evicted.offerOutbound(newBatch)).isInstanceOf(OfferOutcome.NotBuffered.class);
+        assertThat(evicted.offlineBufferSize()).isZero();
+        assertThat(evicted.offerOutbound(propose)).as("control: a Propose is still buffered").isInstanceOf(OfferOutcome.Queued.class);
     }
 
     @Test

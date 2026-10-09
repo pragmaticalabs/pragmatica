@@ -51,6 +51,7 @@ API_KEY=k; CLOUD_MODE=false; NODE_COUNT=3; TARGET_HOST=stub; MGMT_PORT=5151
 STREAM_NAME=consumer-test
 STUB
 extract "${INTEG_DIR}/lib/common.sh" _api_call
+extract "${INTEG_DIR}/lib/common.sh" deadline_in
 cat "${INTEG_DIR}/lib/json.sh"
 for f in stream_publish_status stream_publish stream_status stream_replicas stream_identity _stream_live_endpoints stream_shortfall_report; do extract "$LIB" "$f"; done
 extract "$CONSUMER" test_publish_and_verify_count

@@ -47,6 +47,16 @@ class OperatorWarningWiringTest {
         assertThat(assemblyCode()).contains("nodeDeploymentManager.setOperatorWarningSink(operatorWarningSink);");
     }
 
+    /// A certificate rotation the HTTP listeners refuse is an operator event; un-binding the sink here would leave the
+    /// listener tests (which hand in their own sink) green while the node reported nothing.
+    @Test
+    void assembly_givesTheSinkToTheHttpListenersForCertificateRotationRefusals() {
+        var code = assemblyCode();
+
+        assertThat(code).contains("appHttpServer.setOperatorWarningSink(operatorWarningSink);");
+        assertThat(code).contains("managementServer.setOperatorWarningSink(operatorWarningSink);");
+    }
+
     /// #1564 (R10): the replication warnings raised at resource activation, the deploy warnings and the refused
     /// cluster-events registration all reach this node's sink. Un-binding any of them leaves every unit test green.
     @Test

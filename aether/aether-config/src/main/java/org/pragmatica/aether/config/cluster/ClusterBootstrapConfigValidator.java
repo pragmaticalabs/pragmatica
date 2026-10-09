@@ -296,6 +296,7 @@ public final class ClusterBootstrapConfigValidator {
         validateSpotRestriction(name, source, errors);
         validateElectedLbRestriction(name, source, errors);
         validateElectedLbHasNonSpot(name, source, errors);
+        validateCloudCredentials(source, errors);
         validateFirewallRules(name, source, managementPort, errors);
         validateRuntimeTypeCompatibility(name, source, runtimes, errors);
         validatePortConflictsOnSameHost(name, source, errors);
@@ -393,6 +394,12 @@ public final class ClusterBootstrapConfigValidator {
         if (source.loadBalancer() == LoadBalancerMode.ELECTED && source.type() == SourceType.SSH) {
             errors.add("PF-17: Elected load balancer not supported on SSH source '" + name + "'");
         }
+    }
+
+    /// PF-28 (#2059): a cloud source must carry every credential key its provider's integration factory
+    /// requires, so the operator learns the missing key at validate time, before any node is provisioned.
+    private static void validateCloudCredentials(SourceProfile source, List<String> errors) {
+        CloudCredentialSchema.validate(source).onFailure(cause -> errors.add("PF-28: " + cause.message()));
     }
 
     private static void validateElectedLbHasNonSpot(String name, SourceProfile source, List<String> errors) {

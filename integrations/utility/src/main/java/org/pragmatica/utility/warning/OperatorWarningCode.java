@@ -75,9 +75,23 @@ public enum OperatorWarningCode {
     /// A cold start cannot read the KV backup (unreachable, undecodable); cluster-state writes stay refused
     /// until it can, or until a restart with `[backup] restore = "fresh"` (#1533).
     BACKUP_RESTORE_BLOCKED("backup-restore-blocked", "kv-backup", WarningLevel.CRITICAL),
+    /// The end of a [#BACKUP_RESTORE_BLOCKED] on this node (#1968): the restore could read the backup and decided, or this node stopped
+    /// leading or is stopping, so its blocked restore no longer holds the cluster. INFO, paired with the warning: the event layer
+    /// publishes it only after that warning for the same subject. A leader that still cannot read the backup raises the warning again.
+    BACKUP_RESTORE_UNBLOCKED("backup-restore-unblocked", "kv-backup", WarningLevel.INFO, BACKUP_RESTORE_BLOCKED),
     /// Another cluster holds the backup head at this cluster's own lineage and incarnation (a different
     /// incarnation id); this cluster backs up nothing until an operator resolves the fork (#1533).
     BACKUP_FORKED("backup-forked", "kv-backup", WarningLevel.CRITICAL),
+    /// This node became the leader without a `[backup]` while the cluster's committed state says the backup is in use (a
+    /// committed restore decision other than DISABLED, or a committed cluster configuration that enables it): nothing is
+    /// backed up while it leads (#1968). Typically a replacement provisioned without the cluster's `[backup]`. The committed
+    /// setting is kept, never downgraded to DISABLED; the operator restarts this node with the cluster's `[backup]`, or
+    /// moves leadership to a node that has it.
+    BACKUP_CONFIG_MISSING("backup-config-missing", "kv-backup", WarningLevel.CRITICAL),
+    /// This node, which led without a `[backup]`, no longer leads (#1968). INFO, paired with [#BACKUP_CONFIG_MISSING]: the
+    /// event layer publishes it only after that warning for the same subject. It ends this node's part of the condition; a
+    /// leader that also lacks `[backup]` raises the warning again.
+    BACKUP_CONFIG_RESTORED("backup-config-restored", "kv-backup", WarningLevel.INFO, BACKUP_CONFIG_MISSING),
     /// A configured core member died on this node's membership view without this node ever observing it
     /// reachable (#1835): no QUIC handshake, SWIM ALIVE or health evidence. It never joined, so it did not
     /// fail; NODE_FAILED and the CRITICAL node-health alert are reserved for members that had.
@@ -94,6 +108,39 @@ public enum OperatorWarningCode {
     /// earlier refused by the slice floor has now been admitted (the floor cleared, or the operator forced it). INFO,
     /// published only after a published refusal for that target, and it clears the refusal's throttle window (#752).
     SLICE_FLOOR_DRAIN_ADMITTED("slice-floor-drain-admitted", "deployment", WarningLevel.INFO, SLICE_FLOOR_DRAIN_REFUSED),
+    /// A node replacement (#1543) was committed: a fresh-id node is taking over from the subject (the ORIGINAL node). Raised once,
+    /// when the record is first committed. Closed by [#NODE_REPLACEMENT_COMPLETED] or [#NODE_REPLACEMENT_ROLLED_BACK].
+    NODE_REPLACEMENT_STARTED("node-replacement-started", "replacement", WarningLevel.INFO),
+    /// The recovery of [#NODE_REPLACEMENT_STARTED], same subject: the replacement took over and the original is retired.
+    NODE_REPLACEMENT_COMPLETED("node-replacement-completed", "replacement", WarningLevel.INFO, NODE_REPLACEMENT_STARTED),
+    /// The recovery of [#NODE_REPLACEMENT_STARTED], same subject, for a replacement that did not happen: the replacement was given
+    /// up (it never joined, died, failed its canary or the swap) and the original is untouched.
+    NODE_REPLACEMENT_ROLLED_BACK("node-replacement-rolled-back",
+                                 "replacement",
+                                 WarningLevel.WARNING,
+                                 NODE_REPLACEMENT_STARTED),
+    /// The replacement has not joined by the middle of its join budget; the replacement is rolled back at the end of it. Closed by
+    /// [#NODE_REPLACEMENT_JOINED].
+    NODE_REPLACEMENT_JOIN_OVERDUE("node-replacement-join-overdue", "replacement", WarningLevel.WARNING),
+    /// The recovery of [#NODE_REPLACEMENT_JOIN_OVERDUE], same subject: the replacement joined after all.
+    NODE_REPLACEMENT_JOINED("node-replacement-joined", "replacement", WarningLevel.INFO, NODE_REPLACEMENT_JOIN_OVERDUE),
+    /// Draining the original is held back by the slice `minAvailable` floor (never forced). Raised once on the transition into
+    /// the block; closed by [#NODE_REPLACEMENT_DRAIN_UNBLOCKED]. A drain that merely is not admitted yet is not reported.
+    NODE_REPLACEMENT_DRAIN_BLOCKED("node-replacement-drain-blocked", "replacement", WarningLevel.WARNING),
+    /// The recovery of [#NODE_REPLACEMENT_DRAIN_BLOCKED], same subject: the floor cleared and the drain was admitted.
+    NODE_REPLACEMENT_DRAIN_UNBLOCKED("node-replacement-drain-unblocked",
+                                     "replacement",
+                                     WarningLevel.INFO,
+                                     NODE_REPLACEMENT_DRAIN_BLOCKED),
+    /// The replacement ended with BOTH nodes kept (a drain that never completed, a swap that applied but did not settle, a
+    /// replacement lost after the original began to retire): the cluster runs one node over its size until an operator settles
+    /// it. Closed by [#NODE_REPLACEMENT_SETTLED].
+    NODE_REPLACEMENT_FAILED_KEPT_BOTH("node-replacement-failed-kept-both", "replacement", WarningLevel.WARNING),
+    /// The recovery of [#NODE_REPLACEMENT_FAILED_KEPT_BOTH], same subject: an operator kept the new node or gave it up.
+    NODE_REPLACEMENT_SETTLED("node-replacement-settled",
+                             "replacement",
+                             WarningLevel.INFO,
+                             NODE_REPLACEMENT_FAILED_KEPT_BOTH),
     /// A replica of a `confirmation_factor` 1 stream cut its divergent tail back to the last offset it shares with its
     /// owner (#1730 phase 2). With that factor the acknowledgement was the old owner's alone, so the discarded offsets
     /// may have been acknowledged and are lost; the message names them. A stream that confirms with replicas
@@ -165,7 +212,38 @@ public enum OperatorWarningCode {
     STREAM_OWNER_PROMOTION_HOLDERS_ANSWERING("stream-owner-promotion-holders-answering",
                                              "stream-replication",
                                              WarningLevel.INFO,
-                                             STREAM_OWNER_PROMOTION_HOLDERS_UNREACHABLE);
+                                             STREAM_OWNER_PROMOTION_HOLDERS_UNREACHABLE),
+    /// A partition's owner promotion keeps being refused at the guarded commit of its epoch start (#1976): the ownership record
+    /// keeps changing under it. CRITICAL: the partition stays un-activated, and the owner retries with backoff. Raised once
+    /// per episode, after repeated refusals; the message names the partition and the count.
+    STREAM_OWNER_LINEAGE_REFUSED("stream-owner-lineage-refused", "stream-replication", WarningLevel.CRITICAL),
+    /// The recovery of a [#STREAM_OWNER_LINEAGE_REFUSED] (#1976), same subject: the epoch start was committed, or this node
+    /// stopped being the partition's owner or lost quorum.
+    STREAM_OWNER_LINEAGE_COMMITTED("stream-owner-lineage-committed",
+                                   "stream-replication",
+                                   WarningLevel.INFO,
+                                   STREAM_OWNER_LINEAGE_REFUSED),
+    /// A node's HTTP listener refused a TLS certificate rotation because the new certificate bundle did not build into a TLS
+    /// context (a malformed or mismatched certificate or key). The listener keeps serving the PREVIOUS certificate, which
+    /// expires; nothing is replaced and nothing falls back to plain HTTP. Subject is the listener (`management`, `app-http`).
+    /// Raised on the transition into refusal, not on every repeated refusal.
+    HTTP_TLS_ROTATION_REFUSED("http-tls-rotation-refused", "http-listener", WarningLevel.WARNING),
+    /// The recovery of an [#HTTP_TLS_ROTATION_REFUSED], same subject: a later rotation built and the listener now serves the
+    /// rotated certificate.
+    HTTP_TLS_ROTATION_RESTORED("http-tls-rotation-restored",
+                               "http-listener",
+                               WarningLevel.INFO,
+                               HTTP_TLS_ROTATION_REFUSED),
+    /// A renewed node certificate did not build into the cluster transport's QUIC server and client contexts (or its private key
+    /// does not match it), so the renewal is refused and the transport keeps its current certificate, which expires. Nothing
+    /// downstream (the HTTP listeners' rotation) runs for a refused bundle. Subject is `cluster-quic`. Raised once on the
+    /// transition into refusal.
+    CLUSTER_TLS_RENEWAL_REFUSED("cluster-tls-renewal-refused", "cluster-transport", WarningLevel.WARNING),
+    /// The recovery of a [#CLUSTER_TLS_RENEWAL_REFUSED], same subject: a later renewal built and was applied.
+    CLUSTER_TLS_RENEWAL_RESTORED("cluster-tls-renewal-restored",
+                                 "cluster-transport",
+                                 WarningLevel.INFO,
+                                 CLUSTER_TLS_RENEWAL_REFUSED);
     private final String code;
     private final String subsystem;
     private final WarningLevel level;

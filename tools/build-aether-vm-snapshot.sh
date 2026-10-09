@@ -506,7 +506,7 @@ package_update: true
 package_upgrade: false
 runcmd:
   - apt-get update -qq
-  - apt-get install -y -qq wget gnupg ca-certificates apt-transport-https curl
+  - apt-get install -y -qq wget gnupg ca-certificates apt-transport-https curl git
   - mkdir -p /etc/apt/keyrings
   - wget -qO /etc/apt/keyrings/adoptium.asc https://packages.adoptium.net/artifactory/api/gpg/key/public
   - bash -c 'CODENAME=\$(. /etc/os-release && echo "\${VERSION_CODENAME}"); echo "deb [signed-by=/etc/apt/keyrings/adoptium.asc] https://packages.adoptium.net/artifactory/deb \${CODENAME} main" > /etc/apt/sources.list.d/adoptium.list'

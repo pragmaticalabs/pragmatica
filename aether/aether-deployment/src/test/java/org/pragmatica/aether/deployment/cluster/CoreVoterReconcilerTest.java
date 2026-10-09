@@ -111,10 +111,20 @@ class CoreVoterReconcilerTest {
             .isEqualTo(CoreVoterReconciler.selectVoters(A, CURRENT, Set.of(A, C, D, E), 3));
     }
 
-    /// The leader's own seat is never swapped; the leader is replaced last, by drain (owner ruling Q3).
+    /// #1543 E: the leader's own seat IS swapped when its pairing authorizes it, one out and one in, so the electorate
+    /// stays three. (At minimum topology the budget refuses draining a voter, so this is how the old leader leaves.)
     @Test
-    void selectVoters_pairingOnTheLeader_doesNotSwapItsSeat() {
-        assertThat(CoreVoterReconciler.selectVoters(A, CURRENT, Set.of(A, B, C, D), 3, Map.of(A, D))).containsExactly(A, B, C);
+    void selectVoters_pairingOnTheLeader_swapsItsSeat_electorateSizeUnchanged() {
+        var target = CoreVoterReconciler.selectVoters(A, CURRENT, Set.of(A, B, C, D), 3, Map.of(A, D));
+
+        assertThat(target).containsExactly(D, B, C);
+        assertThat(target).hasSize(CURRENT.members().size());
+    }
+
+    /// Control: WITHOUT a pairing the leader is never displaced, so a heal can never remove the leader's seat.
+    @Test
+    void selectVoters_withoutAPairing_theLeaderKeepsItsSeat() {
+        assertThat(CoreVoterReconciler.selectVoters(A, CURRENT, Set.of(A, B, C, D), 3, Map.of())).containsExactly(A, B, C);
     }
 
     @Test

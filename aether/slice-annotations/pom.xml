@@ -23,4 +23,16 @@
     </licenses>
 
     <!-- No dependencies - this module must be minimal -->
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.sonatype.central</groupId>
+                <artifactId>central-publishing-maven-plugin</artifactId>
+                <configuration>
+                    <skipPublishing>false</skipPublishing>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
 </project>

@@ -118,7 +118,7 @@ If `[cluster.core]` is absent entirely, `min`/`max` are unset (no bound) and `ma
 |---|---|---|---|---|
 | `type` | string | — | **yes** | `cloud` \| `ssh` \| `forge` \| `docker`. |
 | `provider` | string | — | no | `hetzner` \| `aws` \| `gcp` \| `azure`. **Rejected loudly if unrecognized** — `ClusterBootstrapConfigParser.parseProvider` (`ClusterBootstrapConfigParser.java:242-250`) returns a `ParseFailed` naming the bad value and the valid provider names; parsing aborts rather than silently dropping the field. |
-| `credentials` | string | — | no (required by cloud providers at deploy time) | Supports `${env:VAR}` interpolation. |
+| `credentials` | string | — | no (required by cloud providers at deploy time) | Supports `${env:VAR}` interpolation. Hetzner: the API token (`api_token`). aws, gcp and azure need several keys, which one string cannot carry: write them under `[source.<name>.node_config.cloud.credentials]` (aws `access_key_id`, `secret_access_key`; gcp `project_id`, `service_account_email`, `private_key_pem`; azure `tenant_id`, `client_id`, `client_secret`, `subscription_id`, `resource_group`). `region` (aws), `zone` (gcp) and `region` as azure `location` come from the source's own fields. A missing key is refused at validate time (`PF-28`), naming it. |
 | `region` | string | — | no | Provider-specific. |
 | `zone` | string | — | no | Single zone; mutually informative with `zones`. |
 | `zones` | string list | `[]` | no | Multi-zone spread, e.g. `["fsn1","nbg1","hel1"]`. |
@@ -131,6 +131,12 @@ If `[cluster.core]` is absent entirely, `min`/`max` are unset (no bound) and `ma
 | `replacement_ceiling` | duration string | `"10m"` | no | Cloud sources only (rejected on any other type — PF-26). The longest an auto-heal replacement from this source may stay in flight while the provider still reports it provisioning or running, reports a status it cannot state, or cannot report at all; past it, the leader re-dispatches. A replacement is re-dispatched sooner, after the deficit debounce, when the provider reports it stopped, terminated or failed; when an instance the provider has listed is no longer listed; when an instance the provider has never listed is omitted by twelve consecutive successful listings spanning at least three minutes since its create call resolved; or when the provider's readiness check fails the provision (on a cloud, after 5 minutes still provisioning). A replacement the leader gives up on is not terminated: find it by the `auto-heal PROVISIONED a billable instance` WARN line's `instanceId`, or through the `aether-cluster` label sweep at teardown. Must exceed `5m` (the three-minute first-listing floor plus a two-minute join allowance); a shorter value is refused at load. Read at runtime by the leader from the persisted cluster config (#1049). |
 | `databases.<name> = "url"` (inline) or `[source.<name>.databases]` (subtable) | string map | `{}` | no | Maps to composed **`[database.<name>]`** (nested), never flat `[database]` — see Trap (c). |
 | `[source.<name>.node_config.<section>]` | raw TOML overlay | — | no | Merged verbatim as `[<section>]` into the composed per-node `aether.toml`, prefix-stripped. Escape hatch for any node-level setting not otherwise modeled (used above for `[app-http]`). |
+
+**`[source.<name>.node_config.backup] path` is validated at load (#1968).** It must be an absolute path: it is bind-mounted into the node's container
+or created on its host, and a relative one renders a mount Docker refuses. For a **`docker` source** it must also be `/data` or under `/data/`: the node's
+repository lives on a per-node named volume, Docker creates that volume root-owned for every mount point except under `/data` (where the image's `aether`
+user owns it), and a root-owned repository path cannot be written. A cloud or SSH source accepts any absolute path (its host directory is created and
+owned by uid 1000 by the renderer). A disabled `[backup]` is not validated. The load fails with a message that names the field and the rule.
 | `[source.<name>.firewall] allow_ingress` | table array | `[]` | no | Each entry: `port` (int, required), `protocol` (default `"tcp"`, may be `"tcp+udp"`), `source_cidr` (default `"0.0.0.0/0"`), `description` (optional). **Hetzner only** — see below. |
 
 #### Ingress firewall (`[source.<name>.firewall]`)
