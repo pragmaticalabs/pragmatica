@@ -78,13 +78,32 @@ class RecoverySegmentTest {
     }
 
     @Test
-    void write_whenTheNameIsTaken_isRefused_andTheEarlierSegmentIsUntouched() throws Exception {
+    void write_whenTheNameIsTakenByOtherContent_isRefused_andTheEarlierSegmentIsUntouched() throws Exception {
         var wal = dir.resolve("s-3.wal");
         var first = RecoverySegment.write(wal, "orders", 0, List.of(), pagesOf(0L, 2L), 0L, 2L, 9L).unwrap();
         var before = Files.readAllBytes(first.file());
+        RecoverySegment.Pages other = (start, max) -> Result.success(LongStream.rangeClosed(start, Math.min(2L, start + max - 1))
+                                                                              .mapToObj(offset -> OffHeapRingBuffer.RawEvent.rawEvent(offset, ("other-" + offset).getBytes(StandardCharsets.UTF_8), 1L))
+                                                                              .toList());
 
-        assertThat(RecoverySegment.write(wal, "orders", 0, List.of(), pagesOf(0L, 2L), 0L, 2L, 9L).isFailure()).isTrue();
+        assertThat(RecoverySegment.write(wal, "orders", 0, List.of(), other, 0L, 2L, 9L).isFailure()).isTrue();
         assertThat(Files.readAllBytes(first.file())).isEqualTo(before);
+    }
+
+    /// An interrupted cut that is run again finds the same records and reuses its segment: same file, no second copy, no leftover
+    /// temporary. Records of the same range with other content are another loss and keep their own file (previous test, and a later
+    /// clock gives a second name).
+    @Test
+    void write_sameRecordsAgain_reusesTheExistingSegment_andLeavesNoSecondCopy() throws Exception {
+        var wal = dir.resolve("s-7.wal");
+        var first = RecoverySegment.write(wal, "orders", 0, history(), pagesOf(0L, 4L), 0L, 4L, 10L).unwrap();
+        var again = RecoverySegment.write(wal, "orders", 0, history(), pagesOf(0L, 4L), 0L, 4L, 99L).unwrap();
+
+        assertThat(again.file()).isEqualTo(first.file());
+        assertThat(again.records()).isEqualTo(5L);
+        try (var files = Files.list(dir)) {
+            assertThat(files.map(file -> file.getFileName().toString()).toList()).containsExactly(first.file().getFileName().toString());
+        }
     }
 
     @Test

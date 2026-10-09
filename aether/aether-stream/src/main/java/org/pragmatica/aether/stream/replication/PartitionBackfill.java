@@ -80,7 +80,7 @@ import static org.pragmatica.aether.stream.replication.ReplicationMessage.Replic
 ///          might be caught-up with newer state, so promoting past it could serve stale events — the
 ///          node stays SYNCING instead ({@link BackfillError.General#UNREACHABLE_REPLICA_BLOCKS_PROMOTION}).
 ///          The one exception is the bounded escape (#2080): a replica that stayed unreachable for
-///          {@link #sourceWaitBound} (continuously) is not waited for when self is named in the partition's
+///          {@link #promotionEscapeAfter} (continuously; `[streaming] promotion_escape_after`, 120 s by default, never below the source wait) is not waited for when self is named in the partition's
 ///          COMMITTED in-sync set, because every acknowledged record is on every member of that set; the escape is
 ///          reported as an operator event and the contest runs over the replicas that answered.
 ///        - self's own watermark must be `>= max(seen peer watermarks)`; on an exact tie the
@@ -154,6 +154,9 @@ public final class PartitionBackfill {
     private volatile OwnerActivation.BlockAlarm blockAlarm = _ -> Unit.unit();
     /// Whether a node is named in a partition's COMMITTED in-sync set (#2080); default: never, so no escape (see [#committedIsr]).
     private volatile CommittedIsr committedIsr = (_, _, _) -> false;
+    /// How long a co-replica must stay unreachable before an ISR-named candidate goes ahead without it (#2080, `[streaming]
+    /// promotion_escape_after`); never until wired.
+    private volatile TimeSpan promotionEscapeAfter = TimeSpan.timeSpan(Long.MAX_VALUE).nanos();
     /// First instant (ms) of the CONTINUOUS run of contest rounds in which some co-replica did not answer, per partition (#2080). A
     /// round in which every co-replica answers ends the run, as does any promotion of the partition ([#forgetNoSource]).
     private final ConcurrentHashMap<PartitionKey, Long> unreachableSinceMs;
@@ -252,6 +255,7 @@ public final class PartitionBackfill {
         this.firstNoSourceMs = shared.firstNoSourceMs;
         this.unreachableSinceMs = shared.unreachableSinceMs;
         this.committedIsr = shared.committedIsr;
+        this.promotionEscapeAfter = shared.promotionEscapeAfter;
         this.reverifiedAtOffset = shared.reverifiedAtOffset;
         this.lastReverifyMs = shared.lastReverifyMs;
         this.inFlight = shared.inFlight;
@@ -1436,8 +1440,14 @@ public final class PartitionBackfill {
         boolean names(String streamName, int partition, NodeId node);
     }
 
+    /// Late-bind the escape bound (#2080); the configuration validates that it is at least the alarm bounds. Set once at wiring.
+    @Contract
+    public void promotionEscapeAfter(TimeSpan bound) {
+        this.promotionEscapeAfter = bound;
+    }
+
     /// Late-bind where the committed in-sync set is read (#2080): the cold-start contest may proceed past co-replicas that stayed
-    /// unreachable for `sourceWaitBound` only for a node this names. Until wired nothing is named, so the contest never proceeds
+    /// unreachable for `promotionEscapeAfter` only for a node this names. Until wired nothing is named, so the contest never proceeds
     /// past an unreachable co-replica. Set once at wiring.
     @Contract
     public void committedIsr(CommittedIsr isr) {
@@ -1994,7 +2004,9 @@ public final class PartitionBackfill {
             return decideAmongAnswering(streamName, partition, peers, selfWm, results, tieBreak);
         }
 
-        if (!mayProceedWithout(streamName, partition, key)) {
+        var escapeAfter = mayProceedWithout(streamName, partition, key);
+
+        if (escapeAfter.isEmpty()) {
             log.warn("Backfill {}[{}]: cold-start self-promotion BLOCKED — a co-replica is unreachable "
                     + "(self watermark {}, peers {}) — staying SYNCING to avoid serving stale state",
                      streamName,
@@ -2007,9 +2019,10 @@ public final class PartitionBackfill {
 
         var answering = answeringPeers(peers, results);
 
-        return decideAmongAnswering(streamName, partition, answering.nodes(), selfWm, answering.results(), tieBreak).onSuccessRun(() -> reportEscape(streamName,
-                                                                                                                                                     partition,
-                                                                                                                                                     silent));
+        return decideAmongAnswering(streamName, partition, answering.nodes(), selfWm, answering.results(), tieBreak).onSuccessRun(() -> escapeAfter.onPresent(elapsed -> reportEscape(streamName,
+                                                                                                                                                                                      partition,
+                                                                                                                                                                                      silent,
+                                                                                                                                                                                      elapsed)));
     }
 
     private record Answering(List<NodeId> nodes, List<Result<Long>> results) {}
@@ -2035,21 +2048,25 @@ public final class PartitionBackfill {
                              indexes.stream().map(results::get).toList());
     }
 
-    /// Arms the run of unreachability on its first round and answers whether it has lasted [#sourceWaitBound] AND self is named in
-    /// the committed in-sync set.
-    private boolean mayProceedWithout(String streamName, int partition, PartitionKey key) {
+    /// Arms the run of unreachability on its first round and answers how long it has lasted when that passed [#promotionEscapeAfter]
+    /// AND self is named in the COMMITTED in-sync set (the raw record, not the routing view); none otherwise.
+    private Option<TimeSpan> mayProceedWithout(String streamName, int partition, PartitionKey key) {
         var since = unreachableSinceMs.computeIfAbsent(key, _ -> clock.getAsLong());
+        var elapsed = clock.getAsLong() - since;
 
-        return clock.getAsLong() - since >= sourceWaitBound.millis() && committedIsr.names(streamName, partition, self);
+        return elapsed >= promotionEscapeAfter.millis() && committedIsr.names(streamName, partition, self)
+               ? Option.some(TimeSpan.timeSpan(elapsed).millis())
+               : Option.none();
     }
 
-    private void reportEscape(String streamName, int partition, List<NodeId> silent) {
+    private void reportEscape(String streamName, int partition, List<NodeId> silent, TimeSpan elapsed) {
         blockAlarm.escaped(new OwnerActivation.PromotionEscape(streamName,
                                                                partition,
                                                                OwnerActivation.EscapeGate.REPLICA_CONTEST,
                                                                self,
                                                                silent,
-                                                               sourceWaitBound));
+                                                               promotionEscapeAfter,
+                                                               elapsed));
     }
 
     /// The contest proper, over the peers that answered.

@@ -64,7 +64,7 @@ import org.slf4j.LoggerFactory;
 /// production form would be a wedged JVM whose network stack still completes handshakes), so detection alone does not bound
 /// the wait; the bounded escape below does, for the candidates it covers.
 ///
-/// **The bounded escape (#2080).** After `unreachableAlarmAfter` of continuous probe failure a candidate named in the
+/// **The bounded escape (#2080).** After `promotionEscapeAfter` (`[streaming] promotion_escape_after`, 120 s by default, never below the alarm bound) of continuous probe failure a candidate named in the
 /// partition's COMMITTED in-sync set (`isrVersion > 0` and the set contains this node) stops waiting for the silent members:
 /// the responders are caught up from and reconciled exactly as before, and when the activation completes one
 /// `stream-promotion-past-unreachable-peers` operator event (through [BlockAlarm#escaped]) names the partition, the candidate and
@@ -117,10 +117,12 @@ import org.slf4j.LoggerFactory;
 /// closed ([ActivationBlock.OverlapUnverifiable]); as a lower peer it is accepted, since nothing is pulled from it.
 ///
 /// **An unreachable member that stays unreachable is reported, and bypassed only by the bounded escape (#1555 item 8, #2080).**
-/// After `unreachableAlarmAfter` of continuous probe failure a candidate the bounded escape does not cover stays blocked and
-/// the block is reported once through the [BlockAlarm] and on [#blockOf], naming the unreachable members and the responders;
-/// the operator path is #1569's surface. A candidate it covers goes ahead and reports the escape instead. #1579's plan for an
-/// automatic bound ("it needs the ack-time replica set to be durable") is superseded: the committed in-sync set is that durable
+/// After `unreachableAlarmAfter` of continuous probe failure the block is reported once through the [BlockAlarm] and on
+/// [#blockOf], naming the unreachable members and the responders, whoever the candidate is; the operator path is #1569's surface.
+/// A candidate the bounded escape does not cover stays blocked from there on. One it covers goes ahead at `promotionEscapeAfter`
+/// (later than the alarm on purpose: see the guarantee above) and reports the escape; the block it had reported is told as resolved.
+/// #1579's plan for an automatic bound ("it needs the ack-time replica set to be durable") is superseded: the committed in-sync set
+/// is that durable
 /// record, and the cold-restart residual it leaves is retained and reported by the divergent-tail cut.
 ///
 /// **Quorum loss clears every activation** ([#onQuorumStateChange]) and a node without an active consensus engine is
@@ -235,7 +237,7 @@ public final class OwnerActivation {
     }
 
     /// The bounded escape (#2080): `candidate`, named in the partition's committed in-sync set, proceeded past `skipped` after
-    /// they stayed unreachable for `unreachableFor`. An acknowledged write (confirmation factor >= 2) is on every in-sync member,
+    /// they stayed unreachable for `elapsed`, which passed the configured `bound` (`[streaming] promotion_escape_after`). An acknowledged write (confirmation factor >= 2) is on every in-sync member,
     /// so the candidate holds all of them; the one case that does not hold is a full-cluster cold restart where a skipped node's disk
     /// is ahead, whose records the new lineage lacks. A returning member is re-gated and cut back (the cut preserves what it removes).
     public record PromotionEscape(String streamName,
@@ -243,10 +245,11 @@ public final class OwnerActivation {
                                   EscapeGate gate,
                                   NodeId candidate,
                                   List<NodeId> skipped,
-                                  TimeSpan unreachableFor) {
+                                  TimeSpan bound,
+                                  TimeSpan elapsed) {
         public String message() {
-            return ("Promotion of %s[%d] on %s proceeded WITHOUT %s (%s): they did not answer for longer than %s and %s is named in the "
-                   + "partition's committed in-sync set, so it holds every acknowledged record unless a full-cluster cold restart left "
+            return ("Promotion of %s[%d] on %s proceeded WITHOUT %s (%s): they did not answer for %s, longer than the configured bound %s "
+                   + "(promotion_escape_after), and %s is named in the partition's committed in-sync set, so it holds every acknowledged record unless a full-cluster cold restart left "
                    + "a skipped node's disk ahead; such records would leave the live stream and are retained in a recovery segment "
                    + "when the node returns and is cut back").formatted(streamName,
                                                                         partition,
@@ -255,7 +258,8 @@ public final class OwnerActivation {
                                                                         gate == EscapeGate.OWNER_ACTIVATION
                                                                         ? "owner activation"
                                                                         : "replica promotion contest",
-                                                                        unreachableFor,
+                                                                        elapsed,
+                                                                        bound,
                                                                         candidate);
         }
     }
@@ -487,6 +491,16 @@ public final class OwnerActivation {
     private final Map<PartitionKey, ActivationBlock> lineageBlocks = new ConcurrentHashMap<>();
     /// When the current run of probe failures started (`System.nanoTime`), per partition.
     private final Map<PartitionKey, Long> unreachableSince = new ConcurrentHashMap<>();
+    /// How long members must stay unreachable before an ISR-named candidate goes ahead without them (#2080, `[streaming]
+    /// promotion_escape_after`). Never until wired: a gate that is not told its bound does not escape.
+    private volatile TimeSpan promotionEscapeAfter = TimeSpan.timeSpan(Long.MAX_VALUE).nanos();
+
+    /// Late-bind the escape bound (#2080); the configuration validates that it is at least the alarm bound. Set once at wiring.
+    @Contract
+    public void promotionEscapeAfter(TimeSpan bound) {
+        this.promotionEscapeAfter = bound;
+    }
+
     /// The escape the gate went ahead on, held until the activation COMPLETES (#2080): only then is it reported, so an event never
     /// describes a promotion that did not happen. A member answering again, or ownership leaving this node, drops it unreported.
     private final Map<PartitionKey, PromotionEscape> pendingEscapes = new ConcurrentHashMap<>();
@@ -990,7 +1004,7 @@ public final class OwnerActivation {
         var since = unreachableSince.computeIfAbsent(key, _ -> System.nanoTime());
 
         if (pastBound(since) && isrElected(stream, partition)) {
-            return proceedWithout(stream, partition, key, silent, answered);
+            return proceedWithout(stream, partition, key, silent, answered, since);
         }
 
         trackUnreachable(key, stream, partition, silent, answered);
@@ -999,7 +1013,7 @@ public final class OwnerActivation {
     }
 
     private boolean pastBound(long sinceNanos) {
-        return System.nanoTime() - sinceNanos > unreachableAlarmAfter.nanos();
+        return System.nanoTime() - sinceNanos > promotionEscapeAfter.nanos();
     }
 
     /// #2080, the bounded escape. `silent` have not answered for longer than the bound and this node is the candidate named in the
@@ -1012,13 +1026,15 @@ public final class OwnerActivation {
                                          int partition,
                                          PartitionKey key,
                                          List<NodeId> silent,
-                                         List<PeerWatermark> answered) {
+                                         List<PeerWatermark> answered,
+                                         long sinceNanos) {
         var escape = new PromotionEscape(stream,
                                          partition,
                                          EscapeGate.OWNER_ACTIVATION,
                                          self,
                                          silent,
-                                         unreachableAlarmAfter);
+                                         promotionEscapeAfter,
+                                         TimeSpan.timeSpan(System.nanoTime() - sinceNanos).nanos());
 
         ended(unreachableBlocks.remove(key));
 

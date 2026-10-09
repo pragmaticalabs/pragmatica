@@ -523,9 +523,14 @@ class OwnerActivationTest {
 
     /// A gate whose alarm records the escapes as well as the blocks, with `bound` as the unreachable bound.
     private OwnerActivation gateReportingEscapes(TimeSpan bound) {
+        return gateReportingEscapes(bound, bound);
+    }
+
+    /// `alarmAfter`: when the unreachable-members block is reported; `escapeAfter`: when an ISR-named candidate goes ahead (#2080).
+    private OwnerActivation gateReportingEscapes(TimeSpan alarmAfter, TimeSpan escapeAfter) {
         var alarm = recordingAlarm();
 
-        return OwnerActivation.ownerActivation(SELF,
+        var gate = OwnerActivation.ownerActivation(SELF,
                                                (_, _) -> record.get(),
                                                (_, _) -> placementOwner.get(),
                                                Option.some(this::round),
@@ -536,7 +541,11 @@ class OwnerActivationTest {
                                                consensusActive::get,
                                                this::range,
                                                alarm,
-                                               bound);
+                                               alarmAfter);
+
+        gate.promotionEscapeAfter(escapeAfter);
+
+        return gate;
     }
 
     private final List<OwnerActivation.ActivationBlock> resolvedBlocks = new CopyOnWriteArrayList<>();
@@ -651,7 +660,7 @@ class OwnerActivationTest {
     }
 
     private OwnerActivation lineageGate(TimeSpan bound) {
-        return OwnerActivation.ownerActivation(SELF,
+        var gate = OwnerActivation.ownerActivation(SELF,
                                                (_, _) -> record.get(),
                                                (_, _) -> placementOwner.get(),
                                                Option.some(this::round),
@@ -665,6 +674,10 @@ class OwnerActivationTest {
                                                bound,
                                                (_, _) -> 1L,
                                                this::lineageCommit);
+
+        gate.promotionEscapeAfter(bound);
+
+        return gate;
     }
 
     /// #2080: the gate going ahead is not the activation. The responders were caught up from and the silent member skipped, but the
@@ -757,6 +770,34 @@ class OwnerActivationTest {
         assertThat(gate.activate(STREAM, PARTITION).await().isSuccess()).as("epoch start refused").isFalse();
         assertThat(resolvedBlocks).containsExactly(alarms.getFirst());
         assertThat(escapes).isEmpty();
+    }
+
+    /// #2080: the alarm and the escape are different bounds. Between them an ISR-named candidate reports the unreachable-members block
+    /// and still waits (a slow boot is not escaped past); at the escape bound it goes ahead, the block is told as resolved, and the
+    /// escape names the configured bound and the time elapsed. Mutation: escaping at the alarm bound turns the first assertion red.
+    @Test
+    void activate_isrCandidate_betweenTheAlarmAndTheEscapeBound_reportsTheBlockAndWaits_thenEscapes() throws Exception {
+        var gate = gateReportingEscapes(TimeSpan.timeSpan(0).millis(), TimeSpan.timeSpan(300).millis());
+
+        record.set(Option.some(ownedWithIsr(SELF, List.of(SELF, PEER_A, PEER_B), 5L)));
+        members.set(List.of(SELF, PEER_A, PEER_B));
+        unreachable.add(PEER_A);
+        LockSupport.parkNanos(2_000_000L);
+        gate.activate(STREAM, PARTITION).await();
+        LockSupport.parkNanos(2_000_000L);
+
+        assertThat(gate.activate(STREAM, PARTITION).await().isSuccess()).as("past the alarm, before the escape bound: waits").isFalse();
+        assertThat(alarms).singleElement().isInstanceOf(OwnerActivation.ActivationBlock.HoldersUnreachable.class);
+        assertThat(escapes).isEmpty();
+        Thread.sleep(400);
+
+        assertThat(gate.activate(STREAM, PARTITION).await().isSuccess()).as("past the escape bound").isTrue();
+        assertThat(resolvedBlocks).containsExactly(alarms.getFirst());
+        assertThat(escapes).singleElement().satisfies(escape -> {
+            assertThat(escape.bound()).isEqualTo(TimeSpan.timeSpan(300).millis());
+            assertThat(escape.elapsed().millis()).isGreaterThanOrEqualTo(300L);
+            assertThat(escape.message()).contains("promotion_escape_after").contains(escape.bound().toString());
+        });
     }
 
     /// #2080: the bound is CONTINUOUS unreachability. With a bound of 150 ms the first run (silence just started) waits, and a run after

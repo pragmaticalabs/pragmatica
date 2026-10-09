@@ -290,6 +290,7 @@ import org.pragmatica.aether.config.ReadLinearizationMode;
 import org.pragmatica.aether.config.ReplicationDefaultsConfig;
 import org.pragmatica.aether.config.RollbackConfig;
 import org.pragmatica.aether.config.StorageConfig;
+import org.pragmatica.aether.config.StreamingConfig;
 import org.pragmatica.aether.config.StorageEncryptionConfig;
 import org.pragmatica.aether.config.cluster.RollbackPolicyParser;
 import org.pragmatica.cluster.metrics.DeploymentMetricsMessage;
@@ -2026,7 +2027,7 @@ public interface AetherNode extends ManageableNode {
     /// #1555 item 8: how long a promotion may stay blocked on unreachable members before it is reported — two
     /// SWIM suspect windows, so a member that is merely slow to be declared FAULTY does not raise it.
     private static TimeSpan ownerPromotionAlarmWindow(TimeSpan suspectTimeout) {
-        return suspectTimeout.plus(suspectTimeout);
+        return StreamingConfig.ownerPromotionAlarmWindow(suspectTimeout);
     }
 
     /// #1555: a partition whose owner promotion waits for an operator (a divergent peer, or members unreachable
@@ -2081,8 +2082,10 @@ public interface AetherNode extends ManageableNode {
     /// wiring is the code the wiring test drives.
     static Unit bindPromotionAlarm(PartitionBackfill backfill,
                                    OperatorWarningSink sink,
-                                   OwnerActivation.OwnershipRecordSource records) {
+                                   OwnerActivation.OwnershipRecordSource records,
+                                   TimeSpan promotionEscapeAfter) {
         backfill.blockAlarm(ownerPromotionAlarm(sink));
+        backfill.promotionEscapeAfter(promotionEscapeAfter);
         backfill.committedIsr((stream, partition, node) -> records.committed(stream, partition)
                                                                   .filter(record -> record.committedIsrNames(node))
                                                                   .isPresent());
@@ -6017,6 +6020,7 @@ public interface AetherNode extends ManageableNode {
         streamPartitionManager.ownershipRecords((stream, partition) -> kvStore.getTyped(StreamPartitionOwnershipKey.streamPartitionOwnershipKey(stream,
                                                                                                                                                 partition),
                                                                                         StreamPartitionOwnershipValue.class));
+        ownerActivation.promotionEscapeAfter(streamingConfig.promotionEscapeAfter());
         // #1937: the promoted owner's backfill refuses for a peer's oversized event too, and reports it the way the gate does.
         // #2080: its cold-start contest proceeds past unreachable co-replicas only for a node the COMMITTED in-sync set names, and
         // reports that escape the way the gate does.
@@ -6024,7 +6028,8 @@ public interface AetherNode extends ManageableNode {
                            operatorWarningSink,
                            (stream, partition) -> kvStore.getTyped(StreamPartitionOwnershipKey.streamPartitionOwnershipKey(stream,
                                                                                                                            partition),
-                                                                   StreamPartitionOwnershipValue.class));
+                                                                   StreamPartitionOwnershipValue.class),
+                           streamingConfig.promotionEscapeAfter());
         streamPartitionManager.ownerServeGate(ownerActivation::admit);
         // #1730 phase 2: the gate's relaxation for a divergent peer respects the candidate's durable sealed floor, and a peer it
         // leaves out loses the row this registry kept for it from an earlier tenure.

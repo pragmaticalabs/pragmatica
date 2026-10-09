@@ -36,8 +36,7 @@ import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 /// stream is then created, and its owner has to activate against five live members, one of which never answers.
 ///
 /// On rc4 the owner's gate waits for the mute member for as long as it stays in the live set, so the stream never becomes writable. At
-/// the fix the owner (named in the committed in-sync set, `isrVersion > 0`) proceeds after the owner-gate bound
-/// (`unreachableAlarmAfter`, two SWIM suspect windows) and reports one `stream-promotion-past-unreachable-peers` event; the mute member
+/// the fix the owner (named in the committed in-sync set, `isrVersion > 0`) proceeds after `promotion_escape_after` (120 s) and reports one `stream-promotion-past-unreachable-peers` event; the mute member
 /// still replicates, so acknowledged publishes then succeed. The test asserts, with a poll line each [#POLL_EVERY_MS]:
 ///   - the mute member really dropped probes (the count is printed and asserted > 0), so the pass cannot come from a probe that was never
 ///     sent;
@@ -63,9 +62,9 @@ class EmberMutePeerPromotionEscapeTest {
     private static final TimeSpan START_BOUND = TimeSpan.timeSpan(180).seconds();
     private static final TimeSpan STOP_BOUND = TimeSpan.timeSpan(60).seconds();
     private static final long LEADER_BUDGET_MS = 90_000L;
-    /// The stated bound: the owner-gate bound (two SWIM suspect windows, 20 s at the default) plus the re-drive backoff (at most 2 s), the
-    /// no-op consensus round, the epoch-start commit and a publish round, with slack.
-    static final long WRITABLE_BOUND_MS = 75_000L;
+    /// The stated bound: the escape bound (`[streaming] promotion_escape_after`, 120 s at the default) plus the re-drive backoff (at most
+    /// 2 s), the no-op consensus round, the epoch-start commit and a publish round, with slack.
+    static final long WRITABLE_BOUND_MS = 150_000L;
     private static final long POLL_EVERY_MS = 3_000L;
     private static final String STREAM_NAMESPACE = "ember";
     private static final int MAX_STREAM_TRIES = 8;

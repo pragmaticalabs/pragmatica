@@ -86,14 +86,14 @@ class OwnerPromotionAlarmTest {
         var other = NodeId.randomNodeId();
         var candidate = NodeId.randomNodeId();
 
-        alarm.escaped(new OwnerActivation.PromotionEscape("orders", 3, OwnerActivation.EscapeGate.OWNER_ACTIVATION, candidate, List.of(PEER), TimeSpan.timeSpan(20).seconds()));
-        alarm.escaped(new OwnerActivation.PromotionEscape("orders", 3, OwnerActivation.EscapeGate.OWNER_ACTIVATION, candidate, List.of(other), TimeSpan.timeSpan(20).seconds()));
+        alarm.escaped(new OwnerActivation.PromotionEscape("orders", 3, OwnerActivation.EscapeGate.OWNER_ACTIVATION, candidate, List.of(PEER), TimeSpan.timeSpan(120).seconds(), TimeSpan.timeSpan(121).seconds()));
+        alarm.escaped(new OwnerActivation.PromotionEscape("orders", 3, OwnerActivation.EscapeGate.OWNER_ACTIVATION, candidate, List.of(other), TimeSpan.timeSpan(120).seconds(), TimeSpan.timeSpan(122).seconds()));
 
         await().atMost(java.time.Duration.ofSeconds(5)).until(() -> published.size() == 2);
         assertThat(published).extracting(OperatorWarning::code).containsOnly(OperatorWarningCode.STREAM_PROMOTION_PAST_UNREACHABLE_PEERS);
         assertThat(OperatorWarningCode.STREAM_PROMOTION_PAST_UNREACHABLE_PEERS.level()).isEqualTo(org.pragmatica.utility.warning.WarningLevel.CRITICAL);
         assertThat(OperatorWarningCode.STREAM_PROMOTION_PAST_UNREACHABLE_PEERS.recoveryOf()).isEqualTo(org.pragmatica.lang.Option.none());
-        assertThat(published.get(0).message()).contains("orders[3]").contains(candidate.toString()).contains(PEER.toString());
+        assertThat(published.get(0).message()).contains("orders[3]").contains(candidate.toString()).contains(PEER.toString()).contains("promotion_escape_after");
         assertThat(published).extracting(OperatorWarning::subject).doesNotHaveDuplicates().allMatch(subject -> subject.startsWith("orders[3]/OWNER_ACTIVATION"));
     }
 

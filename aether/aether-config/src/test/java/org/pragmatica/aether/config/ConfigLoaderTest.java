@@ -784,6 +784,32 @@ class ConfigLoaderTest {
             .onSuccess(config -> assertThat(config.streaming().isrLagMax()).isEqualTo(StreamingConfig.DEFAULT_ISR_LAG_MAX));
     }
 
+    /// #2080: the promotion escape bound is configurable, defaults to 120 s (a guess, see the default's doc) and may not be below the
+    /// alarm bounds (two SWIM suspect windows, 20 s; the replica contest's 20 s source wait).
+    @Test
+    void loadFromString_promotionEscapeAfter_parsed_defaultsTo120Seconds_andIsNotAllowedBelowTheAlarm() {
+        var header = """
+            [cluster]
+            environment = "docker"
+            nodes = 3
+
+            [streaming]
+            """;
+
+        ConfigLoader.loadFromString(header + "promotion_escape_after = \"45s\"\n")
+            .onFailure(cause -> Assertions.fail(cause.message()))
+            .onSuccess(config -> assertThat(config.streaming().promotionEscapeAfter().millis()).isEqualTo(45_000L));
+        ConfigLoader.loadFromString(header + "reshuffle_concurrency = 2\n")
+            .onFailure(cause -> Assertions.fail(cause.message()))
+            .onSuccess(config -> assertThat(config.streaming().promotionEscapeAfter()).isEqualTo(StreamingConfig.DEFAULT_PROMOTION_ESCAPE_AFTER));
+        assertThat(StreamingConfig.DEFAULT_PROMOTION_ESCAPE_AFTER.millis()).isEqualTo(120_000L);
+        ConfigLoader.loadFromString(header + "promotion_escape_after = \"19s\"\n")
+            .onSuccess(config -> Assertions.fail("19 s is below the 20 s alarm bound and must be refused"))
+            .onFailure(cause -> assertThat(cause.message()).contains("promotion_escape_after"));
+        ConfigLoader.loadFromString(header + "promotion_escape_after = \"20s\"\n")
+            .onFailure(cause -> Assertions.fail("exactly the alarm bound is allowed: " + cause.message()));
+    }
+
     // SPEC: §8.3 absence of [streaming] section → defaults
     @Test
     void loadFromString_streamingSectionAbsent_defaultsApplied() {

@@ -71,6 +71,7 @@ class PartitionBackfillEscapeTest {
         var backfill = partitionBackfill(registry, recovery, CatchupTransport.NOOP, probe, (_, _) -> selfWatermark, self, BOUND, clock::get);
 
         backfill.committedIsr(isr);
+        backfill.promotionEscapeAfter(BOUND);
         backfill.blockAlarm(new OwnerActivation.BlockAlarm() {
             @Override
             public Unit raise(OwnerActivation.ActivationBlock block) {
@@ -126,6 +127,8 @@ class PartitionBackfillEscapeTest {
             assertThat(escape.gate()).isEqualTo(OwnerActivation.EscapeGate.REPLICA_CONTEST);
             assertThat(escape.candidate()).isEqualTo(NODE_AA);
             assertThat(escape.skipped()).containsExactly(NODE_CC);
+            assertThat(escape.bound()).isEqualTo(BOUND);
+            assertThat(escape.elapsed().millis()).isGreaterThanOrEqualTo(BOUND.millis());
         });
     }
 

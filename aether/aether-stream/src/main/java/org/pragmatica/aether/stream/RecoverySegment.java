@@ -113,7 +113,68 @@ public final class RecoverySegment {
                                                 last,
                                                 createdMillis))
                      .flatMap(result -> result)
-                     .flatMap(count -> publish(temporary, target).map(_ -> new Preserved(target, first, last, count)));
+                     .flatMap(count -> identicalExisting(wal, temporary, first, last).flatMap(existing -> existing.fold(() -> publish(temporary,
+                                                                                                                                      target).map(_ -> new Preserved(target,
+                                                                                                                                                                     first,
+                                                                                                                                                                     last,
+                                                                                                                                                                     count)),
+                                                                                                                        same -> discard(temporary).map(_ -> new Preserved(same,
+                                                                                                                                                                          first,
+                                                                                                                                                                          last,
+                                                                                                                                                                          count)))));
+    }
+
+    /// A cut that was interrupted after its segment was durable and is run again (a crash between the fsync and the cut, a refused
+    /// witness retried) finds the same records: it reuses the segment it already has instead of writing a second copy. Identical means
+    /// every offset, timestamp, owner-epoch key and payload equal; a segment of the same range with other content is a different loss and
+    /// keeps its own file.
+    private static Result<Option<Path>> identicalExisting(Path wal, Path temporary, long first, long last) {
+        return Result.lift(RecoverySegment::writeFailed, () -> findIdentical(wal, temporary, first, last));
+    }
+
+    @SuppressWarnings("JBCT-EX-01")
+    private static Option<Path> findIdentical(Path wal, Path temporary, long first, long last) throws IOException {
+        var prefix = wal.getFileName() + ".recovery-" + first + "-" + last + "-";
+        var fresh = readFile(temporary);
+
+        try (var names = Files.list(wal.getParent())) {
+            return Option.from(names.filter(name -> name.getFileName()
+                                                        .toString()
+                                                        .startsWith(prefix))
+                                    .filter(name -> name.getFileName()
+                                                        .toString()
+                                                        .endsWith(".seg"))
+                                    .filter(name -> read(name).map(held -> sameRecords(fresh, held))
+                                                        .or(false))
+                                    .findFirst());
+        }
+    }
+
+    private static boolean sameRecords(Contents a, Contents b) {
+        return a.streamName()
+                .equals(b.streamName())
+               && a.partition() == b.partition()
+               && a.entries()
+                   .size() == b.entries()
+                               .size()
+               && java.util.stream.IntStream.range(0,
+                                                   a.entries().size())
+                                            .allMatch(index -> sameEntry(a.entries().get(index),
+                                                                         b.entries().get(index)));
+    }
+
+    private static boolean sameEntry(Entry a, Entry b) {
+        return a.offset() == b.offset()
+               && a.timestampMillis() == b.timestampMillis()
+               && a.epoch()
+                   .equals(b.epoch())
+               && java.util.Arrays.equals(a.payload(), b.payload());
+    }
+
+    private static Result<Unit> discard(Path temporary) {
+        return Result.lift(RecoverySegment::writeFailed,
+                           () -> Files.deleteIfExists(temporary))
+                     .map(_ -> Unit.unit());
     }
 
     private static Cause writeFailed(Throwable cause) {

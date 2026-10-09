@@ -436,6 +436,85 @@ class StreamPartitionManagerDivergentTailTest {
         one.close();
     }
 
+    /// #2080, crash safety: the segment is durable and the process dies before the cut. The state left behind is consistent -- the
+    /// segment exists, the WAL and ring are untouched -- and running the repair again cuts, reuses that segment and writes no second
+    /// copy. (The state is built by writing the segment through the same writer the cut uses, from the same records, before the repair.)
+    @Test
+    void repairDivergence_afterACrashBetweenTheSegmentAndTheCut_reusesTheSegment_andCutsOnce() throws Exception {
+        var path = walDir.resolve("preserve-crash");
+        var one = streamPartitionManager(Long.MAX_VALUE, Option.some(path));
+
+        one.operatorWarnings(lossWarningsOnly());
+        var epoch = org.pragmatica.aether.slice.generation.Epoch.epoch(1L, 2L, 3L);
+
+        one.createStream(StreamConfig.streamConfig("single")).onFailure(cause -> fail(cause.message()));
+        for (var i = 0; i < 8; i++) {
+            one.appendRecovered("single", PARTITION, i, ("r" + i).getBytes(UTF_8), 4000L + i, epoch).unwrap();
+        }
+        one.syncReplicated("single", PARTITION).await();
+        one.appendRecovered("single", PARTITION, 3, "different".getBytes(UTF_8), 4003L, epoch);
+        var wal = filesUnder(path, ".wal").stream().filter(file -> file.getFileName().toString().equals(PARTITION + ".wal")).findFirst().orElseThrow();
+        var history = org.pragmatica.storage.AppendLog.readEpochHistory(wal).unwrap();
+        var written = RecoverySegment.write(wal, "single", PARTITION, history, (from, max) -> one.readAppended("single", PARTITION, from, max), 3L, 7L, 1L).unwrap();
+
+        assertThat(one.readAppended("single", PARTITION, 0, 20).unwrap()).as("the crash left the ring untouched").hasSize(8);
+        assertThat(one.quarantinedAt("single", PARTITION).isPresent()).isTrue();
+        assertThat(segmentsUnder(path)).containsExactly(written.file());
+
+        one.repairDivergence("single", PARTITION, _ -> true).unwrap();
+
+        assertThat(segmentsUnder(path)).as("the re-run reused the segment: still exactly one").containsExactly(written.file());
+        assertThat(one.readAppended("single", PARTITION, 0, 20).unwrap()).hasSize(3);
+        awaitPreserved(1);
+        assertThat(preserved).singleElement().satisfies(event -> assertThat(event.message()).contains(written.file().getFileName().toString()));
+        one.close();
+    }
+
+    /// #2080, segment safety: nothing the WAL does reads or deletes a recovery segment. The segment survives a restart (WAL replay
+    /// recovers only the kept prefix, never the segment's records), a destroyed stream (the WAL and its sidecars go, the segment stays)
+    /// and the WAL's own truncation.
+    @Test
+    void recoverySegment_isNeverReadOrDeletedByTheWal() throws Exception {
+        var path = walDir.resolve("preserve-safety");
+        var one = streamPartitionManager(Long.MAX_VALUE, Option.some(path));
+        var epoch = org.pragmatica.aether.slice.generation.Epoch.epoch(1L, 2L, 3L);
+
+        one.createStream(StreamConfig.streamConfig("single")).onFailure(cause -> fail(cause.message()));
+        for (var i = 0; i < 8; i++) {
+            one.appendRecovered("single", PARTITION, i, ("r" + i).getBytes(UTF_8), 5000L + i, epoch).unwrap();
+        }
+        one.syncReplicated("single", PARTITION).await();
+        one.appendRecovered("single", PARTITION, 3, "different".getBytes(UTF_8), 5003L, epoch);
+        one.repairDivergence("single", PARTITION, _ -> true).unwrap();
+        var segment = segmentsUnder(path).getFirst();
+        var bytes = java.nio.file.Files.readAllBytes(segment);
+
+        one.close();
+        var restarted = streamPartitionManager(Long.MAX_VALUE, Option.some(path));
+
+        restarted.createStream(StreamConfig.streamConfig("single")).onFailure(cause -> fail(cause.message()));
+        assertThat(restarted.readAppended("single", PARTITION, 0, 20).unwrap()).as("replay recovers the kept prefix only").hasSize(3);
+        assertThat(segment).exists();
+
+        var wal = filesUnder(path, ".wal").stream().filter(file -> file.getFileName().toString().equals(PARTITION + ".wal")).findFirst().orElseThrow();
+
+        restarted.close();
+        try (var log = org.pragmatica.storage.AppendLog.open(wal).unwrap()) {
+            log.truncate(1L);
+            assertThat(log.deleteFiles().isSuccess()).isTrue();
+        }
+        assertThat(wal).as("the WAL itself is gone").doesNotExist();
+        assertThat(java.nio.file.Files.readAllBytes(segment)).as("the segment is byte-identical").isEqualTo(bytes);
+
+        var again = streamPartitionManager(Long.MAX_VALUE, Option.some(path));
+
+        again.createStream(StreamConfig.streamConfig("single")).onFailure(cause -> fail(cause.message()));
+        again.destroyStream("single");
+        assertThat(segment).as("destroying the stream keeps the segment").exists();
+        assertThat(java.nio.file.Files.readAllBytes(segment)).isEqualTo(bytes);
+        again.close();
+    }
+
     /// #2080: a segment that cannot be made durable REFUSES the cut. Nothing is removed, the copy stays quarantined, no event claims a
     /// preserved loss, and no half-written segment or witness is left; with the obstacle gone the same cut then proceeds.
     @Test

@@ -74,7 +74,7 @@ class PromotionEscapeWiringTest {
                                                            List::of,
                                                            CommittedStreamOwnerSource.none());
 
-        AetherNode.bindPromotionAlarm(backfill, sink, (_, _) -> record);
+        AetherNode.bindPromotionAlarm(backfill, sink, (_, _) -> record, BOUND);
         backfill.backfill(STREAM, PARTITION).await();      // arms the source wait
         pause();
         backfill.backfill(STREAM, PARTITION).await();      // the contest starts and sees the silent peer
