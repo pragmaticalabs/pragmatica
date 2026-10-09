@@ -249,4 +249,20 @@ class RoutePermissionRegistryTest {
             assertThat(RoutePermissionRegistry.resolve("PUT", "/api/v1/some-resource/123")).isEqualTo(ADMIN_ONLY);
         }
     }
+
+    /// #1543 E2 (v-2042): the path-prefix table must agree with the per-route table. `/nodes/replace` is a prefix of both the
+    /// replace route and `/nodes/replacements/settle/...`; without the entry a mutation falls through to ADMIN_ONLY.
+    @Nested
+    class NodeReplacement {
+        @Test
+        void replaceAndSettle_areOperatorMutations() {
+            assertThat(RoutePermissionRegistry.resolve("POST", "/api/v1/nodes/replace/node-1")).isEqualTo(OPERATOR_AND_ABOVE);
+            assertThat(RoutePermissionRegistry.resolve("POST", "/api/v1/nodes/replacements/settle/node-1")).isEqualTo(OPERATOR_AND_ABOVE);
+        }
+
+        @Test
+        void listingReplacements_isARead() {
+            assertThat(RoutePermissionRegistry.resolve("GET", "/api/v1/nodes/replacements")).isEqualTo(ALL_AUTHENTICATED);
+        }
+    }
 }
