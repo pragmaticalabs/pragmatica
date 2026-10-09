@@ -1770,7 +1770,7 @@ public final class LeaderReconciler {
     }
 
     /// The provision call failed. That includes a readiness timeout, which fails the call AFTER the instance was created, so the
-    /// instance may exist with nothing tracking it (#1111). Unless the failure is a typed create refusal ([`#isCreateRefusal`]), it
+    /// instance may exist with nothing tracking it (#1111). Unless the failure is raised before the create ([`#isCreateRefusal`]), it
     /// cannot say whether anything was created, and an empty listing is not proof either (listings lag a create and omit what they
     /// cannot attribute), so the reap is asked as for an unseen instance: confirmed by a listed-and-terminated instance, otherwise
     /// retried and then announced as unconfirmed.
@@ -1788,13 +1788,22 @@ public final class LeaderReconciler {
         }
     }
 
-    /// A typed refusal raised before or by the provider's create call is evidence that NOTHING was created: no instance id exists, and
-    /// the failure already has its own surface (the manager records it as a provisioning failure and its breaker counts it). It is
-    /// neither reaped nor announced as an unconfirmed termination. Anything else, a readiness timeout above all, may have left an
-    /// instance behind.
+    /// A cause that is raised BEFORE the provider's create call is evidence that NOTHING was created: no instance exists, and the
+    /// failure already has its own surface (the manager records it as a provisioning failure and its breaker counts it). It is
+    /// neither reaped nor announced as an unconfirmed termination. Each type, with where it is produced:
+    ///   - `CapacityUnavailable`: the create call itself was rejected for capacity (`HetznerComputeProvider#toProvisionError`, 412
+    ///     `resource_unavailable`; `AwsComputeProvider#toProvisionError`, `InsufficientInstanceCapacity` on RunInstances) or every
+    ///     configured zone was (`ClusterTopologyManagerRecord#zonesExhausted`);
+    ///   - `NodeCapExceeded`: the cap check ahead of any provider call (`NodeLifecycleManager#provisionNode`);
+    ///   - `CredentialsMissing`: raised building the provider (`*EnvironmentIntegrationFactory`, `CloudCredentials`), before any call;
+    ///   - `OperationNotSupported`: no provider, unprovisionable source or unavailable binding (`NodeLifecycleManager#provisionNode`,
+    ///     `SourceComputeRegistry`), before any call.
+    /// `ProvisionFailed` is NOT in this list: every cloud provider wraps a failure AFTER the create (a server that went `off`, an
+    /// instance that never reached RUNNING) into it, and none rolls the server back, so it may have left a billed instance. It, a
+    /// readiness timeout and any other cause are reaped as maybe-created.
     private static boolean isCreateRefusal(Cause cause) {
         return switch (cause) {
-            case EnvironmentError.ProvisionFailed _, EnvironmentError.CapacityUnavailable _, EnvironmentError.CredentialsMissing _, EnvironmentError.NodeCapExceeded _, EnvironmentError.OperationNotSupported _ -> true;
+            case EnvironmentError.CapacityUnavailable _, EnvironmentError.NodeCapExceeded _, EnvironmentError.CredentialsMissing _, EnvironmentError.OperationNotSupported _ -> true;
             default -> false;
         };
     }

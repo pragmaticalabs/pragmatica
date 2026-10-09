@@ -28,6 +28,7 @@ import org.pragmatica.aether.deployment.cluster.ProvisionDisposition;
 import org.pragmatica.aether.deployment.cluster.ReplacementInstanceState;
 import org.pragmatica.aether.deployment.cluster.SliceOwnershipQuery;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsm;
+import org.pragmatica.aether.environment.ClusterName;
 import org.pragmatica.aether.environment.EnvironmentError;
 import org.pragmatica.aether.environment.InstanceId;
 import org.pragmatica.aether.environment.InstanceStatus;
@@ -2755,37 +2756,65 @@ class LeaderReconcilerTest {
         /// announced as an unconfirmed termination; the manager records it as a provisioning failure.
         @Test
         void capacityRefusal_isNeitherReapedNorAnnounced() {
-            assertNothingWasCreated(EnvironmentError.capacityUnavailable("fsn1", new RuntimeException("no capacity")));
+            assertNothingWasCreated(EnvironmentError.capacityUnavailable("fsn1", new RuntimeException("error during placement (resource_unavailable)")));
         }
 
         @Test
-        void provisionFailedRefusal_isNeitherReapedNorAnnounced() {
-            assertNothingWasCreated(EnvironmentError.provisionFailed(new RuntimeException("quota exceeded")));
+        void nodeCapRefusal_isNeitherReapedNorAnnounced() {
+            assertNothingWasCreated(EnvironmentError.nodeCapExceeded(ClusterName.clusterName("test-cluster").unwrap(), 12, 12));
         }
 
         @Test
-        void unsupportedOperationRefusal_isNeitherReapedNorAnnounced() {
-            assertNothingWasCreated(EnvironmentError.operationNotSupported("spot"));
+        void noProviderRefusal_isNeitherReapedNorAnnounced() {
+            assertNothingWasCreated(EnvironmentError.operationNotSupported("provisionNode: no ComputeProvider"));
+        }
+
+        @Test
+        void missingCredentialsRefusal_isNeitherReapedNorAnnounced() {
+            assertNothingWasCreated(EnvironmentError.CredentialsMissing.credentialsMissing("hetzner", List.of("HCLOUD_TOKEN")).unwrap());
+        }
+
+        /// What Hetzner delivers for a server that was CREATED and then went `off` during readiness (`createAndConfirm(...).mapError(
+        /// toProvisionError)`, default arm): `ProvisionFailed`, not a readiness timeout. The server exists and bills; it is reaped.
+        @Test
+        void hetznerCreatedThenOff_isProvisionFailed_andIsReaped() {
+            assertMaybeCreatedIsReaped(EnvironmentError.provisionFailed("cx22",
+                                                                       "fsn1",
+                                                                       new RuntimeException(readinessMessage("42", InstanceStatus.STOPPING))));
+        }
+
+        /// What AWS delivers for an instance that never reached RUNNING after RunInstances (`confirmRunning(...).mapError(toProvisionError)`).
+        @Test
+        void awsNeverRunning_isProvisionFailed_andIsReaped() {
+            assertMaybeCreatedIsReaped(EnvironmentError.provisionFailed("t3.medium",
+                                                                       "eu-central-1a",
+                                                                       new RuntimeException(readinessMessage("i-0abc", InstanceStatus.PROVISIONING))));
+        }
+
+        @Test
+        void anUntypedFailure_isReaped_asMaybeCreated() {
+            assertMaybeCreatedIsReaped(Causes.cause("connection reset while waiting for the create"));
+        }
+
+        private static String readinessMessage(String instanceId, InstanceStatus lastStatus) {
+            return EnvironmentError.provisionReadinessTimeout(InstanceId.instanceId(instanceId).unwrap(), lastStatus, 300_000L).message();
+        }
+
+        private void assertMaybeCreatedIsReaped(Cause failure) {
+            ctm.failNextProvision(failure);
+            var minted = dispatchOne();
+
+            assertThat(ctm.reapCalls()).as("a cause raised after the create may have left a billed instance")
+                                       .containsExactly(new RecordingCtm.ReapCall(minted, RecordingCtm.REPLACEMENT_SOURCE, false));
         }
 
         private void assertNothingWasCreated(Cause refusal) {
             ctm.failNextProvision(refusal);
             dispatchOne();
 
-            assertThat(ctm.reapCalls()).as("nothing was created, so nothing is reaped").isEmpty();
+            assertThat(ctm.reapCalls()).as("refused before the create: nothing exists, so nothing is reaped").isEmpty();
             assertThat(ctm.announcements()).isEmpty();
             assertThat(reconciler.inFlightProvisioningKeys()).as("the placeholder is dropped all the same").isEmpty();
-        }
-
-        /// Control for the refusal rule: a readiness timeout is typed too, but it carries an instance id and the create DID happen.
-        @Test
-        void aReadinessTimeout_isNotARefusal_itIsReaped() {
-            ctm.failNextProvision(EnvironmentError.provisionReadinessTimeout(InstanceId.instanceId("i-1").unwrap(),
-                                                                             InstanceStatus.PROVISIONING,
-                                                                             300_000L));
-            var minted = dispatchOne();
-
-            assertThat(ctm.reapCalls()).extracting(RecordingCtm.ReapCall::node).containsExactly(minted);
         }
 
         /// A readiness timeout fails the call AFTER the create, and the provider's listing may lag or omit the instance, so an empty

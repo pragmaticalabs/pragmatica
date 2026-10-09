@@ -18,11 +18,14 @@
   Operator recovery: terminate the named instance at the provider. Retries also stop when the replacement joins membership or leadership
   changes.
   [verified: LeaderReconcilerTest$AbandonedReplacementReap.unconfirmedReap_isRetriedWithinABound_thenAnnouncedNamingTheInstance, afterTheBound_theEventFiresOnce_andNoProviderCallIsMade; ClusterTopologyManagerReapRetiredTest.announcedUnconfirmedTermination_firesOnce_andIsClearedByALaterConfirmedReap]
-- **An explicit create refusal is not an orphan.** A typed refusal (`ProvisionFailed`, `CapacityUnavailable`, `CredentialsMissing`,
-  `NodeCapExceeded`, `OperationNotSupported`; an all-zones-full rotation now returns `CapacityUnavailable`) means nothing was created: it is
-  neither reaped nor announced, and stays a provisioning failure (the manager's breaker and log). A readiness timeout, which carries an instance
-  id, is reaped.
-  [verified: LeaderReconcilerTest$AbandonedReplacementReap.capacityRefusal_isNeitherReapedNorAnnounced, provisionFailedRefusal_..., unsupportedOperationRefusal_..., aReadinessTimeout_isNotARefusal_itIsReaped; ClusterTopologyManagerZoneRotationTest$Exhaustion]
+- **A refusal before the create is not an orphan; everything after it is.** `CapacityUnavailable` (Hetzner 412 `resource_unavailable`, AWS
+  `InsufficientInstanceCapacity`, all-zones-full), `NodeCapExceeded`, `CredentialsMissing` and `OperationNotSupported` are raised before any
+  instance exists: not reaped, not announced, still a provisioning failure (the manager's breaker and log). `ProvisionFailed` is NOT in that
+  list: Hetzner, AWS, GCP and Azure wrap a failure after the create (a server that went `off`, an instance that never reached RUNNING) into it
+  and none rolls the server back, so it is reaped as maybe-created, like a readiness timeout and any untyped cause. Consequence: a provider
+  rejection that is a plain `ProvisionFailed` before the create (a quota or an invalid size) is also reaped as unseen and ends in
+  `instance-termination-unconfirmed` after the bound, one per dispatch: fail loud rather than drop a billed server.
+  [verified: LeaderReconcilerTest$AbandonedReplacementReap.capacityRefusal_..., nodeCapRefusal_..., noProviderRefusal_..., missingCredentialsRefusal_..., hetznerCreatedThenOff_isProvisionFailed_andIsReaped, awsNeverRunning_isProvisionFailed_andIsReaped, anUntypedFailure_isReaped_asMaybeCreated; ClusterTopologyManagerZoneRotationTest$Exhaustion]
 - **A replacement that joined is never reaped**, including one whose ceiling evicts it before the reconcile pass that would clear it.
   [verified: LeaderReconcilerTest$AbandonedReplacementReap.joinedReplacement_isNeverReaped_whenItsCeilingPasses, retriedReap_stopsWhenTheReplacementJoins]
 - [design intent — unverified: no run against a live provider; a leader that loses leadership mid-retry leaves the instance to the next activation replay]
