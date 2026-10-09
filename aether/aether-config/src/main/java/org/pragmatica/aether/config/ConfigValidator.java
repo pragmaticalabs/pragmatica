@@ -32,6 +32,7 @@ public final class ConfigValidator {
     /// That makes raising this floor as consequential as raising [ClusterSizeGate]'s: a 3-node cluster whose config stopped validating
     /// could no longer restart. With NO config file given nothing here runs, and [ClusterSizeGate] is the only floor on that boot.
     private static final int MINIMUM_CLUSTER_SIZE = 3;
+    private static final TimeSpan OFFLINE_BUFFER_CAP_FLOOR = timeSpan(5).seconds();
     /// Upper bound on the CONSENSUS tier, not on the fleet. `[cluster] nodes` is the quorum basis
     /// (`TopologyConfig#clusterSize`) and every consensus round is broadcast across it. Fleet size is
     /// bounded separately by `ClusterConfig#maxNodes`, which #298 deliberately leaves UNBOUNDED, so
@@ -65,6 +66,8 @@ public final class ConfigValidator {
         nodeErrors(config.node(), errors);
         absenceWindowErrors(config.timeouts().cluster(),
                             errors);
+        offlineBufferCapErrors(config.timeouts().cluster(),
+                               errors);
         storageMaintenanceErrors(config.timeouts().storageMaintenance(),
                                  errors);
         streamingErrors(config.streaming(), errors);
@@ -83,6 +86,17 @@ public final class ConfigValidator {
     /// Reported rather than clamped: substituting a working pair would hide that the operator asked
     /// for something whose failure mode is two live writers. Reported here rather than thrown from a
     /// factory so it joins every other config problem in one collected report.
+    /// #1996: the cap bounds how long ANY frame may wait in an offline buffer, including a request whose caller waits
+    /// longer. A cap below the shortest caller wait the cluster ships with (the 5s replication ack) silently shortens
+    /// that wait to the cap, and a zero or negative one expires every buffered frame. The 5s floor is a guess matching
+    /// that wait, not a measured value.
+    private static void offlineBufferCapErrors(TimeoutsConfig.ClusterTimeouts cluster, List<String> errors) {
+        if (cluster.offlineBufferCap().nanos() < OFFLINE_BUFFER_CAP_FLOOR.nanos()) {
+            errors.add("timeouts.cluster.offline_buffer_cap (%s) must be at least %s: a smaller cap cuts the wait of every buffered request".formatted(cluster.offlineBufferCap(),
+                                                                                                                                                       OFFLINE_BUFFER_CAP_FLOOR));
+        }
+    }
+
     private static void absenceWindowErrors(TimeoutsConfig.ClusterTimeouts cluster, List<String> errors) {
         if (!cluster.absenceWindowsOrdered()) {
             errors.add(("timeouts.cluster.core_absence (%s) must be strictly less than "

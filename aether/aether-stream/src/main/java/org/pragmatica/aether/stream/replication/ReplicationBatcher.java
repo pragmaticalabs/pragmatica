@@ -321,7 +321,7 @@ public final class ReplicationBatcher implements AutoCloseable {
                                       snapshot.timestamps(),
                                       snapshot.ownerEpoch());
 
-        replicas.forEach(replica -> transport.send(replica, message));
+        replicas.forEach(replica -> transport.send(replica, message, DefaultReplicationManager.DEFAULT_ACK_TIMEOUT));
     }
 
     enum AddOutcome {

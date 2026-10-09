@@ -243,7 +243,12 @@ public enum OperatorWarningCode {
     CLUSTER_TLS_RENEWAL_RESTORED("cluster-tls-renewal-restored",
                                  "cluster-transport",
                                  WarningLevel.INFO,
-                                 CLUSTER_TLS_RENEWAL_REFUSED);
+                                 CLUSTER_TLS_RENEWAL_REFUSED),
+    /// Request frames (invocations, forwards, stream or replication requests, command forwards) were held in a peer's offline
+    /// buffer until their callers gave up, and were DROPPED at the flush instead of being delivered to the peer once it
+    /// reattached (#1996). A point event: the frames are already gone, so there is no recovery. Subject is the peer; the message
+    /// carries how many frames and of which message types. The exact total is the `quic_offline_expired_total` metric.
+    OFFLINE_FRAMES_EXPIRED("offline-frames-expired", "cluster-transport", WarningLevel.WARNING);
     private final String code;
     private final String subsystem;
     private final WarningLevel level;

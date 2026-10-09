@@ -178,6 +178,101 @@ class InvocationDeadlineCapTest {
                                            new byte[0], true);
     }
 
+    // --- #1996: a request frame must not outlive the wait its caller just started, in a peer's offline buffer ---
+
+    /// The transport drops a buffered frame once the wait it was handed has passed, so what matters here is the wait
+    /// the invoker hands over: the SAME one that arms the caller's timeout. Handing over the plain `send` instead (no
+    /// wait) is what let a frame be delivered minutes later.
+    @Test
+    void invoke_underBoundedDeadline_handsTheTransportTheRemainingBudgetAsTheFrameLifetime() {
+        var network = new TtlRecordingNetwork();
+        var invoker = remoteInvoker(network);
+
+        try {
+            Deadline.runWith(Deadline.fromWireMillis(BUDGET_MILLIS),
+                             () -> invoker.invoke(ARTIFACT, METHOD, "request", new TypeToken<String>() {}))
+                    .await(TimeSpan.timeSpan(2).seconds());
+
+            assertThat(network.plainRequests()).as("a request with a caller deadline is never sent without one").isEmpty();
+            assertThat(network.boundedRequests()).hasSize(1);
+            assertThat(network.boundedRequests().getFirst().lifetime().millis())
+                .as("the frame lives no longer than the budget that remained, not the configured 60s timeout")
+                .isPositive()
+                .isLessThanOrEqualTo(BUDGET_MILLIS);
+        } finally {
+            invoker.stop().await();
+        }
+    }
+
+    /// The control arm: with no ambient budget the caller waits the configured timeout, and so may the frame.
+    @Test
+    void invoke_withNoAmbientDeadline_handsTheTransportTheConfiguredTimeout() {
+        var network = new TtlRecordingNetwork();
+        var invoker = remoteInvoker(network);
+
+        try {
+            invoker.invoke(ARTIFACT, METHOD, "request", new TypeToken<String>() {}).await(TimeSpan.timeSpan(200).millis());
+
+            assertThat(network.boundedRequests()).hasSize(1);
+            assertThat(network.boundedRequests().getFirst().lifetime().millis()).isEqualTo(CONFIGURED_TIMEOUT_MS);
+        } finally {
+            invoker.stop().await();
+        }
+    }
+
+    /// The failover arm (`invokeWithRetry`) sends through its own site; it too must carry the caller's wait.
+    @Test
+    void invokeWithRetry_underBoundedDeadline_handsTheTransportTheRemainingBudget() {
+        var network = new TtlRecordingNetwork();
+        var invoker = remoteInvoker(network);
+
+        try {
+            Deadline.runWith(Deadline.fromWireMillis(BUDGET_MILLIS),
+                             () -> invoker.invokeWithRetry(ARTIFACT, METHOD, "request", new TypeToken<String>() {}, 1))
+                    .await(TimeSpan.timeSpan(2).seconds());
+
+            assertThat(network.plainRequests()).isEmpty();
+            assertThat(network.boundedRequests()).isNotEmpty();
+            assertThat(network.boundedRequests().getFirst().lifetime().millis()).isPositive().isLessThanOrEqualTo(BUDGET_MILLIS);
+        } finally {
+            invoker.stop().await();
+        }
+    }
+
+    /// Records HOW each invocation request was handed to the transport: with a lifetime, or plain.
+    private static final class TtlRecordingNetwork extends StubClusterNetwork {
+        record Bounded(ProtocolMessage message, TimeSpan lifetime) {}
+
+        private final List<Bounded> bounded = new java.util.concurrent.CopyOnWriteArrayList<>();
+        private final List<ProtocolMessage> plain = new java.util.concurrent.CopyOnWriteArrayList<>();
+
+        @Override
+        public <M extends ProtocolMessage> Unit send(NodeId nodeId, M message, TimeSpan offlineTtl) {
+            if (message instanceof InvokeRequest) {
+                bounded.add(new Bounded(message, offlineTtl));
+            }
+
+            return unit();
+        }
+
+        @Override
+        public <M extends ProtocolMessage> Unit send(NodeId nodeId, M message) {
+            if (message instanceof InvokeRequest) {
+                plain.add(message);
+            }
+
+            return unit();
+        }
+
+        List<Bounded> boundedRequests() {
+            return bounded;
+        }
+
+        List<ProtocolMessage> plainRequests() {
+            return plain;
+        }
+    }
+
     /// Captures the `InvokeResponse` the handler sends back, with a latch so a test can wait for the
     /// asynchronous timeout rather than sleeping a fixed amount and hoping.
     private static final class CapturingNetwork extends StubClusterNetwork {
@@ -213,7 +308,10 @@ class InvocationDeadlineCapTest {
     /// remote request/response path (the one carrying the deadline cap) rather than the local one. The
     /// stub network accepts the send and nothing ever answers it.
     private static SliceInvoker remoteInvoker() {
-        var network = new StubClusterNetwork();
+        return remoteInvoker(new StubClusterNetwork());
+    }
+
+    private static SliceInvoker remoteInvoker(StubClusterNetwork network) {
         var registry = EndpointRegistry.endpointRegistry();
         var handler = InvocationHandler.invocationHandler(SELF, network);
 

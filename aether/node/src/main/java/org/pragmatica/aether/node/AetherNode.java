@@ -4368,6 +4368,7 @@ public interface AetherNode extends ManageableNode {
         // #1574: SWIM's operator warnings reach THIS node's event log, never another Ember node's.
         swimHealthDetector.setOperatorWarningSink(operatorWarningSink);
         clusterNode.network().setBootTokens(bootTokens);
+        clusterNode.network().setOfflineBufferCap(config.timeouts().cluster().offlineBufferCap());
         bootTokens.onSelfRefused(reason -> exitRefusedIdentity(config.self(), reason, identityRefusedExit));
         // Process evidence carries the per-process random boot token (equality only); SWIM keeps its
         // independent refutation counter, seeded from wall-clock time, and also carries the token.
@@ -5449,7 +5450,22 @@ public interface AetherNode extends ManageableNode {
         // registered replica set; the receive/apply side (streamReplicationReceiveHandler, wired below)
         // lands replicated events offset-preserving WITHOUT re-replicating (appendRecovered).
         var streamReplicaRegistry = ReplicaRegistry.replicaRegistry(config.streaming().caughtUpMaxLagOffsets());
-        org.pragmatica.aether.stream.replication.ReplicationTransport streamReplicationTransport = clusterNode.network()::send;
+        var replicationNetwork = clusterNode.network();
+        org.pragmatica.aether.stream.replication.ReplicationTransport streamReplicationTransport = new org.pragmatica.aether.stream.replication.ReplicationTransport() {
+            @Contract
+            @Override
+            public void send(NodeId target, org.pragmatica.aether.stream.replication.ReplicationMessage message) {
+                replicationNetwork.send(target, message);
+            }
+
+            @Contract
+            @Override
+            public void send(NodeId target,
+                             org.pragmatica.aether.stream.replication.ReplicationMessage message,
+                             TimeSpan callerWait) {
+                replicationNetwork.send(target, message, callerWait);
+            }
+        };
         // #261: the live-ack path promotes a replica to CAUGHT_UP only when its confirmed offset
         // reaches back to the owner's earliest retained offset. The partition manager is constructed
         // just below (it needs this manager), so the earliest-retained seam reads through a holder set
@@ -9555,6 +9571,8 @@ public interface AetherNode extends ManageableNode {
                                               eventAggregator::onConnectionEstablished));
         entries.add(MessageRouter.Entry.route(NetworkServiceMessage.ConnectionFailed.class,
                                               eventAggregator::onConnectionFailed));
+        entries.add(MessageRouter.Entry.route(NetworkServiceMessage.OfflineFramesExpired.class,
+                                              eventAggregator::onOfflineFramesExpired));
         entries.add(MessageRouter.Entry.route(OperationalEvent.AccessDenied.class, eventAggregator::onAccessDenied));
         entries.add(MessageRouter.Entry.route(OperationalEvent.NodeLifecycleChanged.class,
                                               eventAggregator::onNodeLifecycleChanged));
@@ -9897,7 +9915,19 @@ public interface AetherNode extends ManageableNode {
     }
 
     private static StreamForwardTransport createStreamForwardTransport(ClusterNetwork network) {
-        return network::send;
+        return new StreamForwardTransport() {
+            @Contract
+            @Override
+            public void send(NodeId target, StreamForwardMessage message) {
+                network.send(target, message);
+            }
+
+            @Contract
+            @Override
+            public void send(NodeId target, StreamForwardMessage message, TimeSpan callerWait) {
+                network.send(target, message, callerWait);
+            }
+        };
     }
 
     private static void registerStreamForwardExtensions(ResourceProviderSetup resourceProviderSetup,
