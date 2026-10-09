@@ -151,6 +151,16 @@ public interface ClusterTopologyManager extends TopologyManager {
                                                        Set<NodeId> clusterMembers,
                                                        NodeRole intendedRole);
 
+    /// The source-explicit form: the replacement is stamped with `sourceName`, the source the node it replaces came from
+    /// (#1543 worker replacement). Implementations that do not distinguish sources ignore it.
+    default Promise<ProvisionDisposition> provisionReplacement(NodeId newNodeId,
+                                                               Option<NodeId> failedPeer,
+                                                               Set<NodeId> clusterMembers,
+                                                               NodeRole intendedRole,
+                                                               org.pragmatica.aether.environment.SourceName sourceName) {
+        return provisionReplacement(newNodeId, failedPeer, clusterMembers, intendedRole);
+    }
+
     /// Membership v2 / E2 — drain a specific node. Targets either the operator/scale-down
     /// flow or the overprovision-drain path. `reason` is observability-only at this layer except for
     /// [`DrainReason#isSurplusTrim`], which makes the grace-terminate backstop re-check before reaping
@@ -162,6 +172,11 @@ public interface ClusterTopologyManager extends TopologyManager {
     /// leader-cached — there is no KV drain record and no node-state KV write on this path.
     boolean usesExplicitCommunities();
     void installCommunityPlacement(CommunityPlacementReconciler reconciler);
+
+    /// The community placement reconciler installed on this manager, if any. Read-only, for the boot test that pins the node's wiring.
+    default org.pragmatica.lang.Option<CommunityPlacementReconciler> installedCommunityPlacement() {
+        return org.pragmatica.lang.Option.none();
+    }
 
     default org.pragmatica.lang.Unit setHierarchyStateWriter(HierarchyStateWriter writer) {
         return org.pragmatica.lang.Unit.unit();
@@ -186,6 +201,32 @@ public interface ClusterTopologyManager extends TopologyManager {
     Promise<Unit> provisionPlacementNode(org.pragmatica.aether.slice.kvstore.AetherValue.CommunityPlacementOperationValue operation);
 
     Promise<Unit> drainNode(NodeId targetNodeId, DrainReason reason);
+
+    /// #1543: terminate the provider instance of a retired node and CONFIRM it is gone. Succeeds only when a provider listing shows no
+    /// instance of `node` that is provisioning, running or in a state the provider cannot state; every other outcome is a failure
+    /// carrying why (the refusal, the provider error, the instance still listed). A failed listing is a failure, never "gone".
+    ///
+    /// An EMPTY listing proves absence only for an instance the provider has listed before (`seenBefore`, see [#instanceListed]) or
+    /// one this call listed and terminated: providers' listings lag creation and omit what they cannot attribute (an unlabelled
+    /// VM), so an instance never listed stays unconfirmed, with a failure that names the node. Idempotent: a repeat finds the
+    /// listing empty after the terminate it already did only if it saw the instance, so a new leader that never saw it re-asks.
+    /// Honours the retirement refusal of [#drainNode] (a voter is not reaped). Reusable by any retirement path.
+    default Promise<Unit> reapRetired(NodeId node,
+                                      org.pragmatica.aether.environment.SourceName source,
+                                      boolean seenBefore) {
+        return org.pragmatica.lang.utils.Causes.cause("reap of " + node.id()
+                                                     + ": this topology manager cannot confirm termination")
+                                               .promise();
+    }
+
+    /// #1543: whether the provider lists at least one instance (in any status) of `node`: the observation that lets a later empty
+    /// listing count as "gone". A failed listing is a failure.
+    default Promise<Boolean> instanceListed(NodeId node, org.pragmatica.aether.environment.SourceName source) {
+        return org.pragmatica.lang.utils.Causes.cause("listing of " + node.id()
+                                                     + ": this topology manager cannot list instances")
+                                               .promise();
+    }
+
     /// #1049 — what the compute provider reports about the instance behind the auto-heal replacement
     /// minted as `nodeId`: [ReplacementInstanceState#PRESENT] while it provisions or runs,
     /// [ReplacementInstanceState#FAILED] once every listed instance is stopping or terminated,

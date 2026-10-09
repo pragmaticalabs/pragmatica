@@ -66,7 +66,9 @@ public final class NodeReplacementPlanner {
                               String drainBlockedBy,
                               boolean oldDecommissioned,
                               boolean handoffSettled,
-                              String drainRefusal) {}
+                              String drainRefusal,
+                              boolean oldInstanceGone,
+                              String reapFailure) {}
 
     /// Phase budgets. Every phase is bounded, so every replacement ends in a terminal phase.
     public record Timings(long provisioningMs,
@@ -180,9 +182,14 @@ public final class NodeReplacementPlanner {
         }
 
         if (o.replacementCaughtUp()) {
-            return Plan.commit(r.advanced(NodeReplacementPhase.SWAPPING,
-                                          o.now() + t.swappingMs(),
-                                          ""));
+            // A worker holds no consensus seat, so there is no swap to authorize: it goes straight to the canary.
+            return isCore(r)
+                   ? Plan.commit(r.advanced(NodeReplacementPhase.SWAPPING,
+                                            o.now() + t.swappingMs(),
+                                            ""))
+                   : Plan.commit(r.advanced(NodeReplacementPhase.CANARY,
+                                            o.now() + t.canaryMs(),
+                                            ""));
         }
 
         var overdueAt = r.phaseDeadlineMs() - t.joiningMs() / 2;
@@ -262,6 +269,15 @@ public final class NodeReplacementPlanner {
     /// A failed canary swaps the original back when the original is still alive: the pairing keeps it protected until it
     /// holds its seat again. When it is gone there is nothing to go back to, and the replacement is kept.
     private static Plan revertOrKeep(NodeReplacementValue r, Observation o, Timings t, String why) {
+        if (!isCore(r)) {
+            // Nothing was swapped, so there is no seat to give back: give the replacement up while the original still serves.
+            return o.oldAlive()
+                   ? rollBack(r, o, why)
+                   : Plan.commit(r.advanced(NodeReplacementPhase.FAILED_KEPT_BOTH,
+                                            o.now(),
+                                            why + "; the original is gone"));
+        }
+
         return o.oldAlive()
                ? Plan.commit(r.advanced(NodeReplacementPhase.REVERTING,
                                         o.now() + t.swappingMs(),
@@ -270,10 +286,19 @@ public final class NodeReplacementPlanner {
     }
 
     private static Plan reverting(NodeReplacementValue r, Observation o, Timings t) {
-        if (o.oldIsVoter() && !o.replacementIsVoter() && o.rosterSettled()) {
+        // A worker holds no seat, so a settled "roll back" of a kept-both worker pair has nothing to swap back: it only gives the
+        // replacement up, and only while the original is there to carry on: with the original gone the replacement is the last
+        // node of the pair and is kept.
+        if (!isCore(r) && !o.oldAlive()) {
+            return Plan.commit(r.advanced(NodeReplacementPhase.FAILED_KEPT_BOTH,
+                                          o.now(),
+                                          "the original is gone; the replacement is kept"));
+        }
+
+        if (!isCore(r) || (o.oldIsVoter() && !o.replacementIsVoter() && o.rosterSettled())) {
             return Plan.act(Effect.TERMINATE_REPLACEMENT,
                             r.advanced(NodeReplacementPhase.ROLLED_BACK, o.now(), r.reason()),
-                            r.advanced(NodeReplacementPhase.ROLLED_BACK, o.now(), r.reason()));
+                            replacementNotTerminated(r, o));
         }
 
         if (o.now() > r.phaseDeadlineMs()) {
@@ -298,9 +323,7 @@ public final class NodeReplacementPlanner {
 
         if (replacementLost(o)) {
             return o.oldDrain() == DrainState.NOT_REQUESTED
-                   ? Plan.commit(r.advanced(NodeReplacementPhase.REVERTING,
-                                            o.now() + t.swappingMs(),
-                                            "replacement died before the old node was drained"))
+                   ? revertOrKeep(r, o, t, "replacement died before the old node was drained")
                    : Plan.commit(r.advanced(NodeReplacementPhase.FAILED_KEPT_BOTH,
                                             o.now(),
                                             "replacement died while the old node drains"));
@@ -350,7 +373,7 @@ public final class NodeReplacementPlanner {
     }
 
     private static Plan retiringOld(NodeReplacementValue r, Observation o, Timings t) {
-        if (o.oldDecommissioned() && o.handoffSettled()) {
+        if (o.oldDecommissioned() && o.handoffSettled() && o.oldInstanceGone()) {
             return Plan.commit(r.advanced(NodeReplacementPhase.DONE, o.now(), ""));
         }
 
@@ -363,12 +386,26 @@ public final class NodeReplacementPlanner {
         }
 
         if (o.now() > r.phaseDeadlineMs()) {
-            return Plan.commit(r.advanced(NodeReplacementPhase.DONE,
-                                          o.now(),
-                                          "retirement overdue: the cluster is already correct"));
+            // The cluster may already be correct, but a replacement is not DONE while the old instance may still be running at the
+            // provider (and billing): without a confirmed termination the operator is told, never a silent DONE.
+            return o.oldInstanceGone()
+                   ? Plan.commit(r.advanced(NodeReplacementPhase.DONE,
+                                            o.now(),
+                                            "retirement overdue: the cluster is already correct"))
+                   : Plan.commit(r.advanced(NodeReplacementPhase.FAILED_KEPT_BOTH,
+                                            o.now(),
+                                            "old node retired but its instance is not confirmed terminated at the provider (" + unconfirmed(o)
+                                           + "); terminate it, then settle keep-new"));
         }
 
         return Plan.act(Effect.RETIRE_OLD);
+    }
+
+    private static String unconfirmed(Observation o) {
+        return o.reapFailure()
+                .isEmpty()
+               ? "no termination attempt completed"
+               : o.reapFailure();
     }
 
     /// A swap that was already requested can still install, so the replacement is terminated only once the engine reports the
@@ -389,7 +426,20 @@ public final class NodeReplacementPlanner {
     private static Plan rollBack(NodeReplacementValue r, Observation o, String why) {
         var done = r.advanced(NodeReplacementPhase.ROLLED_BACK, o.now(), why);
 
-        return Plan.act(Effect.TERMINATE_REPLACEMENT, done, done);
+        return Plan.act(Effect.TERMINATE_REPLACEMENT, done, replacementNotTerminated(r, o));
+    }
+
+    /// A rollback is ROLLED_BACK only once the replacement's instance is confirmed gone; when the termination keeps failing
+    /// the pair is kept for the operator, with the last cause, instead of reporting a rollback that left a node running.
+    private static NodeReplacementValue replacementNotTerminated(NodeReplacementValue r, Observation o) {
+        return r.advanced(NodeReplacementPhase.FAILED_KEPT_BOTH,
+                          o.now(),
+                          "replacement could not be rolled back: its instance is not confirmed terminated at the provider (" + unconfirmed(o)
+                         + "); terminate it, then settle roll-back");
+    }
+
+    private static boolean isCore(NodeReplacementValue r) {
+        return "core".equalsIgnoreCase(r.role());
     }
 
     private static boolean isExternal(NodeReplacementValue r) {

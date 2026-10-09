@@ -61,6 +61,9 @@ class EmberNodeReplacementTest {
     private static final TimeSpan START_BOUND = TimeSpan.timeSpan(120).seconds();
     private static final TimeSpan STOP_BOUND = TimeSpan.timeSpan(60).seconds();
     private static final long DONE_BOUND_MS = 240_000L;
+    /// The compute provider the cluster's lifecycle uses, captured by `start`: what a DONE replacement must be absent from.
+    private volatile org.pragmatica.aether.environment.ComputeProvider providerInUse;
+
     private static final String TIMINGS_PROPERTY = NodeReplacementPlanner.Timings.OVERRIDE_PROPERTY;
 
     private EmberCluster cluster;
@@ -137,19 +140,148 @@ class EmberNodeReplacementTest {
         }
     }
 
-    /// The assertion that is meant to hold once the leader reads a crashed old node as Dead within seconds in every case (#2021): an old
-    /// core that crashes abruptly during JOINING right after cluster start ends DONE. It cannot hold yet: how long the leader takes to read
-    /// such a node as Dead is bimodal (about 7 s when SWIM had already seen it healthy, 43+ s, typically 67-80 s, when it had not), so the
-    /// outcome is DONE or FAILED_KEPT_BOTH depending on timing. Disabled until #2021 lands. The enabled safety invariant for the same
-    /// crash (either outcome is safe, an unsafe one fails) arrives with #2042, which this PR is the base of.
+    /// The cold-boot crash's phase budgets: the same as every other scenario except DRAINING_OLD, 30 s instead of 90 s. How long the
+    /// leader takes to read a blackholed old node as Dead after a cold-boot crash is bimodal (#2021): about 5-8 s when SWIM had already seen it
+    /// healthy, otherwise later than even a 90 s DRAINING_OLD budget allows (4 of 4 default-budget runs never saw it Dead). The test below
+    /// must hold on either outcome; it is about half DONE and half FAILED_KEPT_BOTH in the class runs.
+    private static final String COLD_BOOT_TIMINGS = "60000,60000,90000,60000,3000,30000,60000";
+
+    /// The assertion that is meant to hold once the leader reads a crashed old node as Dead within seconds in every case (#2021): the
+    /// same crash always ends DONE. It cannot hold yet. Disabled until #2021 lands;
+    /// `coldBootCrashOfTheOldNode_endsSafely_whicheverWayDeadnessIsDetected` states what must hold meanwhile.
     @Test
-    @Disabled("enable when #2021 lands")
+    @Disabled("enable when #2021 lands; coldBootCrashOfTheOldNode_endsSafely_whicheverWayDeadnessIsDetected holds the safety invariant meanwhile")
     @Timeout(600)
     void oldNodeKilledWhileTheReplacementIsJoining_stillCompletes_andTheCorpseIsNeverDrained() {
         var victimId = crashOldNodeWhileTheReplacementIsJoining("rpk", 0L);
 
         assertThat(recordOf(victimId).phase()).as("reason: %s", recordOf(victimId).reason()).isEqualTo(NodeReplacementPhase.DONE);
         assertOldGone_newVotes(victimId);
+    }
+
+    /// The safety invariant of the cold-boot crash, which holds on BOTH outcomes the timing of Dead detection allows (#2021): the record
+    /// ends DONE or FAILED_KEPT_BOTH and nothing else; a kept-both record says the drain was never requested of the still-alive-looking
+    /// corpse; a DONE record was reached only after the leader read the old node as not alive, and the replacement votes in its seat.
+    /// Throughout: the leader never read the old node as alive while the record retired it, never accepted a drain for it while it read
+    /// alive, and no sampled electorate ever had a lost seat or a double voter. The outcome and the kill-to-Dead latency are printed.
+    @Test
+    @Timeout(600)
+    void coldBootCrashOfTheOldNode_endsSafely_whicheverWayDeadnessIsDetected() {
+        assertColdBootCrashEndsSafely(COLD_BOOT_TIMINGS);
+    }
+
+    private void assertColdBootCrashEndsSafely(String timings) {
+        System.setProperty(TIMINGS_PROPERTY, timings);
+        var probe = new SafetyProbe(this);
+        var watch = new Watch[1];
+        var victimId = crashOldNodeWhileTheReplacementIsJoining("rpk",
+                                                               0L,
+                                                               victim -> watch[0] = Watch.begin(this, 3).watching(victim),
+                                                               probe::begin);
+        var result = watch[0].finish();
+
+        probe.finish();
+        var record = recordOf(victimId);
+        var deadAfter = probe.deadAfterMs() < 0 ? "never seen" : probe.deadAfterMs() + " ms";
+
+        System.out.println("EMBER-REPLACEMENT cold-boot (timings " + timings + ") outcome=" + record.phase() + " leader read the old node as not alive: " + deadAfter + " after the kill");
+        assertThat(record.phase()).as("a safe terminal outcome, reason: %s", record.reason())
+                                  .isIn(NodeReplacementPhase.DONE, NodeReplacementPhase.FAILED_KEPT_BOTH);
+        assertThat(probe.leaderLooks()).as("the safety sampler read a leader's view of the old node (a sampler that never ran proves nothing)").isGreaterThan(100);
+        assertThat(result.voterSamples()).as("the electorate was sampled during the run").isGreaterThan(100);
+        assertThat(probe.violations()).as("safety violations sampled during the run").isEmpty();
+        assertThat(result.voterViolations()).as("installed voters == 3 on every sample").isEmpty();
+
+        if (record.phase() == NodeReplacementPhase.FAILED_KEPT_BOTH) {
+            // Two safe ways to keep both, each asserted as itself: the leader never saw the old node as dead and never asked it to drain, or
+            // it retired the node but could not confirm the provider terminated it (named by node, never silently DONE).
+            if (record.reason().startsWith("drain did not complete")) {
+                assertThat(record.reason()).contains("oldAlive=true").contains("drain=NOT_REQUESTED");
+            } else {
+                assertThat(record.reason()).startsWith("old node retired but its instance is not confirmed terminated at the provider").contains(victimId.id());
+            }
+        } else {
+            assertThat(probe.deadAfterMs()).as("DONE only after the leader read the old node as not alive").isGreaterThanOrEqualTo(0L);
+            assertOldGone_newVotes(victimId);
+        }
+    }
+
+    /// Samples the leader's own view of the crashed old node every 20 ms from the kill: when it first read it as not alive, and any
+    /// moment the leader was seen retiring it, or holding an accepted drain for it, while it still read it alive. The record phase
+    /// and the drain flag are read BEFORE the liveness (Dead is terminal), so a stale read can only hide a violation, never invent one.
+    private static final class SafetyProbe {
+        private final EmberNodeReplacementTest test;
+        private final AtomicBoolean running = new AtomicBoolean(true);
+        private final List<String> violations = new CopyOnWriteArrayList<>();
+        private volatile long killedAtNanos;
+        private volatile long deadAtNanos = -1L;
+        private final AtomicInteger leaderLooks = new AtomicInteger();
+        private volatile NodeId old;
+        private Thread sampler;
+
+        SafetyProbe(EmberNodeReplacementTest test) {
+            this.test = test;
+        }
+
+        void begin(NodeId victim) {
+            old = victim;
+            killedAtNanos = System.nanoTime();
+            sampler = Thread.ofPlatform().daemon().start(this::sample);
+        }
+
+        private void sample() {
+            while (running.get()) {
+                test.live().stream().filter(AetherNode::isLeader).findFirst().ifPresent(this::look);
+                sleep(20);
+            }
+        }
+
+        private void look(AetherNode leader) {
+            if (!(leader.nodeReplacementService() instanceof org.pragmatica.aether.node.NodeReplacementWiring.Wired wired)) {
+                violations.add("the node's replacement service does not expose its wiring");
+                return;
+            }
+            leaderLooks.incrementAndGet();
+            var record = test.recordOf(old);
+            var retiring = record != null && (record.phase() == NodeReplacementPhase.RETIRING_OLD || record.phase() == NodeReplacementPhase.DONE);
+            var drained = wired.drainRequested(old);
+            var alive = wired.memberAlive(old);
+
+            if (!alive && deadAtNanos < 0) {
+                deadAtNanos = System.nanoTime();
+            }
+
+            if (alive && retiring) {
+                violations.add("the record was " + record.phase() + " while the leader read " + old.id() + " as alive");
+            }
+
+            if (alive && drained) {
+                violations.add("the leader accepted a drain of " + old.id() + " while it read it as alive");
+            }
+        }
+
+        void finish() {
+            running.set(false);
+
+            try {
+                sampler.join(2_000L);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        }
+
+        /// How many times the sampler found a leader and read its view of the old node.
+        int leaderLooks() {
+            return leaderLooks.get();
+        }
+
+        long deadAfterMs() {
+            return deadAtNanos < 0 ? -1L : (deadAtNanos - killedAtNanos) / 1_000_000L;
+        }
+
+        List<String> violations() {
+            return List.copyOf(violations);
+        }
     }
 
     /// The same crash on a cluster that has run long enough for SWIM to have seen every member healthy. (SWIM does not declare a
@@ -164,15 +296,41 @@ class EmberNodeReplacementTest {
         assertOldGone_newVotes(victimId);
     }
 
+    /// The leak the confirmed reap closes, made deterministic: an original node the lifecycle has never observed (no capacity
+    /// reservation, as for a node bootstrapped outside the CTM until a listing sees it) crashes on a settled cluster. The CTM's own reap
+    /// of the departed node is refused for want of a reservation and is not retried, so only the replacement's confirmed reap can
+    /// remove the corpse: DONE must leave the old instance absent from the PROVIDER's listing.
+    @Test
+    @Timeout(600)
+    void oldNodeCrashedWithoutAnObservedReservation_isStillReaped_andLeavesTheProviderListing() {
+        var victimId = crashOldNodeWhileTheReplacementIsJoining("rpz", 30_000L, victim -> forgetReservation(victim), _ -> {});
+
+        assertThat(recordOf(victimId).phase()).as("reason: %s", recordOf(victimId).reason()).isEqualTo(NodeReplacementPhase.DONE);
+        assertOldGone_newVotes(victimId);
+    }
+
+    private void forgetReservation(NodeId node) {
+        awaitLeader().<Object> apply(List.of(new KVCommand.Remove<AetherKey>(new AetherKey.CapacityReservationKey(node)))).await(START_BOUND);
+    }
+
     /// Starts a replacement of a follower, crashes (blackholes) that follower while the record is in JOINING, waits for a terminal
     /// phase and returns the follower's id.
     private NodeId crashOldNodeWhileTheReplacementIsJoining(String prefix, long settleMs) {
+        return crashOldNodeWhileTheReplacementIsJoining(prefix, settleMs, _ -> {}, _ -> {});
+    }
+
+    /// As above, with a hook run on the victim before the replacement begins and another run just before the crash.
+    private NodeId crashOldNodeWhileTheReplacementIsJoining(String prefix,
+                                                            long settleMs,
+                                                            java.util.function.Consumer<NodeId> beforeBegin,
+                                                            java.util.function.Consumer<NodeId> beforeKill) {
         start(3, prefix);
         var leader = awaitLeader();
         var victim = followerOf(leader);
         var victimId = victim.self();
 
         sleep(settleMs);
+        beforeBegin.accept(victimId);
         leader.nodeReplacementService().begin(victimId, "").await(START_BOUND).onFailure(cause -> throwBecause(cause.message()));
         awaitCondition("the replacement is JOINING", () -> recordOf(victimId).phase() == NodeReplacementPhase.JOINING);
         // The crash must land while the record is in JOINING: sample the phase at the moment of the crash, print it, and fail
@@ -181,6 +339,7 @@ class EmberNodeReplacementTest {
 
         System.out.println("EMBER-REPLACEMENT kill of " + victimId.id() + " at record phase " + phaseAtKill + " (settle " + settleMs + " ms)");
         assertThat(phaseAtKill).as("the kill window (JOINING) was missed").isEqualTo(NodeReplacementPhase.JOINING);
+        beforeKill.accept(victimId);
         blackhole(victimId);
         System.out.println("EMBER-REPLACEMENT kill landed; record phase now " + recordOf(victimId).phase());
         awaitTerminal(victimId);
@@ -229,6 +388,67 @@ class EmberNodeReplacementTest {
         assertThat(recordOf(victim.self()).phase()).isEqualTo(NodeReplacementPhase.ROLLED_BACK);
         assertThat(installedVoters(leader)).as("the old node still votes").contains(victim.self()).hasSize(3);
         assertThat(cluster.getNode(victim.self().id()).isPresent()).as("the old node is still running").isTrue();
+    }
+
+    /// #1543 E2: a WORKER is replaced with no voter swap at all. The electorate is sampled on every node and must stay the
+    /// same three cores throughout, the phases never include SWAPPING, the old worker is retired and the replacement is a
+    /// worker.
+    @Test
+    @Timeout(600)
+    void replaceAWorker_swapsNoVoter_retiresTheOldWorker_andTheReplacementIsAWorker() {
+        start(3, "rpw");
+        var leader = awaitLeader();
+        var worker = cluster.addWorkerNode().await(START_BOUND).unwrap();
+
+        awaitCondition("the worker is ready", () -> cluster.getNode(worker.id()).filter(AetherNode::isReady).isPresent());
+        var cores = installedVoters(leader);
+        var watch = Watch.begin(this, 3).watching(worker);
+
+        leader.nodeReplacementService().begin(worker, "").await(START_BOUND).onFailure(cause -> throwBecause(cause.message()));
+        awaitTerminal(worker);
+        var result = watch.finish();
+        var record = recordOf(worker);
+
+        assertThat(record.phase()).as("reason: %s", record.reason()).isEqualTo(NodeReplacementPhase.DONE);
+        assertThat(record.role()).isEqualTo("worker");
+        assertThat(result.phases()).as("a worker never swaps a seat").doesNotContain(NodeReplacementPhase.SWAPPING);
+        assertThat(result.phases()).contains(NodeReplacementPhase.CANARY, NodeReplacementPhase.DONE);
+        assertThat(result.voterViolations()).as("the electorate is untouched on every sample").isEmpty();
+        assertThat(installedVoters(awaitLeader())).as("the same cores vote").isEqualTo(cores);
+        awaitCondition("the old worker is gone", () -> cluster.getNode(worker.id()).isEmpty());
+        assertThat(cluster.getNode(record.replacement().id()).isPresent()).as("the replacement runs").isTrue();
+        assertThat(installedVoters(awaitLeader())).as("the replacement is a worker, not a voter").doesNotContain(record.replacement());
+        assertThat(awaitLeader().membershipFsm().memberDescriptor(record.replacement()).map(descriptor -> descriptor.role()).or("none"))
+            .as("the replacement advertises the worker role").isEqualTo("worker");
+    }
+
+    /// #1543 E2, EXTERNAL mode: the operator names a fresh id and starts that core itself. The leader provisions nothing;
+    /// the same phase machine swaps its seat in. An id that is already a member is refused.
+    @Test
+    @Timeout(600)
+    void externalReplacement_operatorStartsTheChosenCore_andThePhasesCompleteWithoutTheLeaderProvisioning() {
+        start(3, "rpx");
+        var leader = awaitLeader();
+        var victim = followerOf(leader).self();
+        var chosen = NodeId.nodeId("rpx-ext-9").unwrap();
+        var refusal = leader.nodeReplacementService().beginExternal(victim, leader.self(), "").await(START_BOUND);
+
+        assertThat(refusal.isFailure()).as("a member id is not a fresh id").isTrue();
+        var watch = Watch.begin(this, 3).watching(victim);
+        var begun = leader.nodeReplacementService().beginExternal(victim, chosen, "").await(START_BOUND);
+
+        begun.onFailure(cause -> throwBecause(cause.message()));
+        assertThat(begun.unwrap().mode()).isEqualTo(NodeReplacementValue.MODE_EXTERNAL);
+        sleep(2_000);
+        assertThat(cluster.getNode(chosen.id()).isEmpty()).as("the leader did not start the node itself").isTrue();
+        cluster.addCoreNode(chosen.id()).await(START_BOUND).onFailure(cause -> throwBecause(cause.message()));
+        awaitTerminal(victim);
+        var result = watch.finish();
+
+        assertThat(recordOf(victim).phase()).as("reason: %s", recordOf(victim).reason()).isEqualTo(NodeReplacementPhase.DONE);
+        assertThat(recordOf(victim).replacement()).isEqualTo(chosen);
+        assertThat(result.voterViolations()).as("installed voters == 3 on every sample").isEmpty();
+        assertOldGone_newVotes(victim, 3);
     }
 
     // ---- v-2008 round: events, canary death, slow provider ------------------------------------------------------------
@@ -359,9 +579,13 @@ class EmberNodeReplacementTest {
                                                 basePort -> {
                                                     var built = emberCluster(size, basePort, basePort + MGMT_OFFSET, basePort + APP_HTTP_OFFSET, prefix);
 
-                                                    if (decorator != null) {
-                                                        built.withComputeProviderDecorator(decorator::apply);
-                                                    }
+                                                    built.withComputeProviderDecorator(provider -> {
+                                                        var used = decorator == null ? provider : decorator.apply(provider);
+
+                                                        providerInUse = used;
+
+                                                        return used;
+                                                    });
 
                                                     return built;
                                                 },
@@ -435,6 +659,12 @@ class EmberNodeReplacementTest {
         awaitCondition("the replacement votes and the old node does not", () -> installedVoters(survivor).contains(replacement) && !installedVoters(survivor).contains(old));
         assertThat(installedVoters(survivor)).hasSize(size);
         awaitCondition("the old node is gone from the cluster", () -> cluster.getNode(old.id()).isEmpty());
+        assertThat(providerInUse).as("the compute provider was captured by start()").isNotNull();
+        awaitCondition("the old instance is absent from the PROVIDER's listing (terminated, not merely out of the membership)",
+                       () -> providerInUse.listInstances()
+                                          .await()
+                                          .map(listed -> listed.stream().noneMatch(instance -> instance.nodeId().filter(old.id()::equals).isPresent()))
+                                          .or(false));
     }
 
     static Set<NodeId> installedVoters(AetherNode node) {
