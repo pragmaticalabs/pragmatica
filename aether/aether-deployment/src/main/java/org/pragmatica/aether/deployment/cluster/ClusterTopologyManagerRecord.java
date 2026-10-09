@@ -127,7 +127,6 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                     Set<NodeId> unconfirmedReaps,
                                     Set<NodeId> seenInstances,
                                     Set<NodeId> confirmedReaps,
-                                    Set<NodeId> reapedExternals,
                                     ConcurrentHashMap<NodeId, Long> failedReaps,
                                     org.pragmatica.lang.concurrent.CancellableTask workerTopologyPolling) implements ClusterTopologyManager {
     private static final Logger log = LoggerFactory.getLogger(ClusterTopologyManager.class);
@@ -263,7 +262,6 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                                 new AtomicReference<>(HierarchyStateWriter.unavailable()),
                                                 new ConcurrentHashMap<>(),
                                                 new AtomicReference<>(org.pragmatica.utility.warning.OperatorWarningSink.logOnly()),
-                                                ConcurrentHashMap.newKeySet(),
                                                 ConcurrentHashMap.newKeySet(),
                                                 ConcurrentHashMap.newKeySet(),
                                                 ConcurrentHashMap.newKeySet(),
@@ -1783,22 +1781,13 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
             return Promise.unitPromise();
         }
 
-        if (reapedExternals.contains(node)) {
-            confirmedReaps.add(node);
-
-            return Promise.unitPromise();
-        }
-
         if (lifecycleManager.externalNode(node)) {
             // An operator started this node: there is no provider instance of ours to list or terminate, on ANY path. It is confirmed by its
             // departure from the membership, and its capacity is then returned.
             return liveness.demonstrablyLive(node)
                    ? Causes.cause("external node " + node.id() + " has not left the membership yet").promise()
                    : lifecycleManager.releaseExternal(node)
-                                     .onSuccess(_ -> {
-                                         reapedExternals.add(node);
-                                         confirmedReaps.add(node);
-                                     });
+                                     .onSuccess(_ -> confirmedReaps.add(node));
         }
 
         var seen = seenBefore || seenInstances.contains(node);
@@ -2106,12 +2095,6 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     /// and the cause: an instance that may still be running is never dropped silently.
     @Contract
     private void confirmedReap(NodeId nodeId, long epoch, int retriesLeft) {
-        if (confirmedReaps.contains(nodeId)) {
-            log.debug("CTM: reap of {} already confirmed — nothing to do", nodeId);
-
-            return;
-        }
-
         if (!active.get() || activationEpoch.get() != epoch) {
             log.debug("CTM: confirmed reap of {} dropped — deactivated or re-activated since; the current activation's replay owns the instance",
                       nodeId);
