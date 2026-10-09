@@ -6,6 +6,7 @@ package org.pragmatica.aether.stream.replication;
 
 import java.util.Comparator;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
@@ -15,6 +16,7 @@ import java.util.function.Supplier;
 
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.aether.slice.generation.Epoch;
+import org.pragmatica.aether.stream.CommittedStreamIsrSource;
 import org.pragmatica.aether.stream.CommittedStreamOwnerSource;
 import org.pragmatica.aether.stream.OwnerActivation;
 import org.pragmatica.aether.stream.OwnerPeerReads;
@@ -125,6 +127,9 @@ public final class PartitionBackfill {
     /// factory, where an empty member view makes the owner check always false — so that orchestrator is
     /// byte-identical to the original (no owner-immediate promotion).
     private final Supplier<List<NodeId>> membersSupplier;
+
+    /// The RAW committed ISR (#2077): the evidence a non-live peer may be ignored on. See [#withCommittedIsr].
+    private volatile CommittedStreamIsrSource committedIsrSource = CommittedStreamIsrSource.none();
 
     /// #491 F4: the COMMITTED `StreamPartitionOwnershipValue.owner` source. Gates HRW self-election
     /// ({@link #isSelfOwner}) so a node with a diverged/empty ring that HRW-ranks ITSELF owner does NOT
@@ -248,6 +253,7 @@ public final class PartitionBackfill {
         this.sourceWaitBound = shared.sourceWaitBound;
         this.clock = shared.clock;
         this.membersSupplier = shared.membersSupplier;
+        this.committedIsrSource = shared.committedIsrSource;
         this.committedOwnerSource = shared.committedOwnerSource;
         this.durability = shared.durability;
         this.quarantine = shared.quarantine;
@@ -1625,9 +1631,11 @@ public final class PartitionBackfill {
 
         return Promise.allOf(blind.stream().map(peer -> probe.probe(peer, streamName, partition)).toList()).flatMap(results -> decideOwnerCatchup(streamName,
                                                                                                                                                   partition,
-                                                                                                                                                  blind,
-                                                                                                                                                  localWatermark,
-                                                                                                                                                  results));
+                                                                                                                                                  settle(streamName,
+                                                                                                                                                         partition,
+                                                                                                                                                         blind,
+                                                                                                                                                         results),
+                                                                                                                                                  localWatermark));
     }
 
     /// The non-self survivors whose LOCAL watermark is unknown (registration default `-1`, i.e. blind under
@@ -1651,11 +1659,9 @@ public final class PartitionBackfill {
     ///     ahead, so route to the bounded-wait {@link #escapeOwnerCatchup} (never self-promote empty past a
     ///     possibly-ahead peer; never wedge — self stays SYNCING so the redrive retries, then degrades),
     ///   - every peer reachable and none ahead → genuinely nothing ahead → {@link #ownerSelfPromote}.
-    private Promise<Long> decideOwnerCatchup(String streamName,
-                                             int partition,
-                                             List<NodeId> peers,
-                                             long localWatermark,
-                                             List<Result<Long>> results) {
+    private Promise<Long> decideOwnerCatchup(String streamName, int partition, Probed probed, long localWatermark) {
+        var peers = probed.peers();
+        var results = probed.results();
         var bestTail = results.stream().mapToLong(result -> result.or(-1L)).max().orElse(-1L);
 
         if (bestTail > localWatermark) {
@@ -1942,12 +1948,14 @@ public final class PartitionBackfill {
         var peers = peerNodeIds(replicas);
         var selfLocal = selfWatermark.localWatermark(streamName, partition);
 
-        return Promise.allOf(peers.stream().map(peer -> probe.probe(peer, streamName, partition)).toList()).flatMap(results -> decidePromotion(streamName,
-                                                                                                                                               partition,
-                                                                                                                                               peers,
-                                                                                                                                               selfLocal,
-                                                                                                                                               results,
-                                                                                                                                               tieBreak));
+        return Promise.allOf(peers.stream().map(peer -> probe.probe(peer, streamName, partition)).toList()).flatMap(results -> decideSettled(streamName,
+                                                                                                                                             partition,
+                                                                                                                                             settle(streamName,
+                                                                                                                                                    partition,
+                                                                                                                                                    peers,
+                                                                                                                                                    results),
+                                                                                                                                             selfLocal,
+                                                                                                                                             tieBreak));
     }
 
     /// Whether the cold-start contest must ELECT a single winner. The lowest-NodeId tie-break exists to pick
@@ -2221,6 +2229,76 @@ public final class PartitionBackfill {
                        .filter(nodeId -> !nodeId.equals(self))
                        .sorted()
                        .toList();
+    }
+
+    private Promise<Long> decideSettled(String streamName,
+                                        int partition,
+                                        Probed probed,
+                                        long selfWm,
+                                        TieBreak tieBreak) {
+        return decidePromotion(streamName, partition, probed.peers(), selfWm, probed.results(), tieBreak);
+    }
+
+    /// The peers a promotion decision is made over, each with its probe outcome.
+    private record Probed(List<NodeId> peers, List<Result<Long>> results) {}
+
+    /// Drops from a decision the peers that are both unreachable AND absent from this node's live placement members, when the RAW
+    /// committed ISR vouches for the candidate (#2077). The registry keeps a committed-ISR member until the leader commits a shrink,
+    /// so a peer this node's membership view has already dropped can sit in the replica set for tens of seconds; the activation gate
+    /// already stops waiting for exactly such a peer.
+    ///
+    /// Local membership is not consensus, so the view alone never licenses ignoring a peer that might hold acked records. Acks at
+    /// confirmation factor 2 or more reached every member of the ISR in force, so the evidence is: this node, or a REACHABLE probed
+    /// peer, is named in the raw committed ISR (`committedIsrSource`, not the routing view, which hides a dead owner). Without that
+    /// evidence, or with an empty member view (which means "cannot judge", never "nobody is alive"), the decision is the one made
+    /// before the refinement: an unreachable peer blocks.
+    private Probed settle(String streamName, int partition, List<NodeId> peers, List<Result<Long>> results) {
+        var live = liveMembers();
+
+        if (live.isEmpty() || !isrVouches(committedIsrSource.committedIsr(streamName, partition), peers, results)) {
+            return new Probed(peers, results);
+        }
+
+        var keptPeers = new java.util.ArrayList<NodeId>();
+        var keptResults = new java.util.ArrayList<Result<Long>>();
+
+        for (var i = 0; i < peers.size(); i++) {
+            if (results.get(i).isSuccess() || live.contains(peers.get(i))) {
+                keptPeers.add(peers.get(i));
+                keptResults.add(results.get(i));
+            }
+        }
+
+        return new Probed(List.copyOf(keptPeers), List.copyOf(keptResults));
+    }
+
+    private boolean isrVouches(List<NodeId> isr, List<NodeId> peers, List<Result<Long>> results) {
+        if (isr.contains(self)) {
+            return true;
+        }
+
+        for (var i = 0; i < peers.size(); i++) {
+            if (results.get(i).isSuccess() && isr.contains(peers.get(i))) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// Binds the RAW committed ISR source (#2077). Without it no ISR evidence exists, and a peer that is unreachable blocks
+    /// promotion whether or not this node's membership view still lists it, as before the live-member refinement.
+    public PartitionBackfill withCommittedIsr(CommittedStreamIsrSource source) {
+        this.committedIsrSource = source;
+
+        return this;
+    }
+
+    /// The live placement members, read once per decision (#2077): the same member view the owner-activation gate reads. An EMPTY
+    /// view means "cannot judge liveness", never "nobody is alive" (self is always a member of a wired view); [#settle] then
+    /// ignores no peer.
+    private Set<NodeId> liveMembers() {
+        return Set.copyOf(membersSupplier.get());
     }
 
     private long selfConfirmedOffset(List<ReplicaDescriptor> replicas) {
