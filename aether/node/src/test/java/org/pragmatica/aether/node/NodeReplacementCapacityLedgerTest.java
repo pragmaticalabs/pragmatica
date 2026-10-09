@@ -142,6 +142,16 @@ class NodeReplacementCapacityLedgerTest {
 
         lifecycle.terminateNode(FRESH, org.pragmatica.aether.environment.SourceName.sourceName("pool").unwrap()).await().unwrap();
 
+        assertThat(ledger().allocated()).as("an external node has no provider instance: terminating it is a no-op and returns nothing").isEqualTo(5);
+
+        // The release path (NodeReplacementWiring.Env, pinned in NodeReplacementRealRegistryReapTest): the reservation is marked RELEASED and
+        // the lifecycle returns the slot once.
+        var observed = store.getTyped(key, CapacityReservationValue.class).unwrap();
+
+        transaction(List.of(new KVCommand.Mutation<>(key, Option.<AetherValue> some(observed),
+                                                     Option.<AetherValue> some(new CapacityReservationValue(observed.sourceName(), observed.sourceBinding(), observed.intendedRole(), CapacityReservationPhase.RELEASED)))));
+        lifecycle.reconcileRefusals().await().unwrap();
+
         assertThat(ledger().allocated()).as("retiring it returns the slot, once").isEqualTo(4);
         assertThat(store.get(key).isEmpty()).as("and its id is no longer admissible").isTrue();
     }

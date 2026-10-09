@@ -285,7 +285,6 @@ class NodeReplacementEnvTest {
     /// the reap is asked with seenBefore=true. A node never listed is asked with seenBefore=false, which the CTM refuses to call gone.
     @Test
     void anOldNodeListedBeforeTheDrain_isReapedAsSeen_andANeverListedOneIsNot() {
-        stored.put(AetherKey.CapacityLedgerKey.INSTANCE, new CapacityLedgerValue(3, 1, true));
         record(NodeReplacementPhase.DRAINING_OLD, 999_999L);
         wiring.reconciler().reconcile().await();
 
@@ -311,7 +310,6 @@ class NodeReplacementEnvTest {
     /// is confirmed by an empty listing instead of waiting for an instance that already vanished: the reap is asked with seenBefore=true.
     @Test
     void aReplacementObservedWhileUp_isReapedAsSeen_whenItIsLaterRolledBack() {
-        stored.put(AetherKey.CapacityLedgerKey.INSTANCE, new CapacityLedgerValue(3, 1, true));
         states.put(NEW, "Member");
         record(NodeReplacementPhase.CANARY, 999_999L);
         wiring.reconciler().reconcile().await();
@@ -327,20 +325,22 @@ class NodeReplacementEnvTest {
         verify(ctm).reapRetired(eq(NEW), any(), eq(true));
     }
 
-    /// Before the fleet inventory is complete a provider listing would seed a partial ledger and make the next provisioning refuse: no
-    /// observation is made then (bigboy, class run: 8 tests rolled back with "provisioning refused").
+    /// A provider listing through the capacity lifecycle also records what it sees; while the replacement is still being provisioned that
+    /// raced the provisioning's own fleet-inventory initialisation and made it refuse (bigboy class run: 8 tests rolled back with
+    /// "provisioning refused"). Nothing is listed for observation in PROVISIONING; it starts the tick after.
     @Test
-    void noInstanceIsListedForObservation_beforeTheInventoryIsComplete() {
-        states.put(NEW, "Member");
-        record(NodeReplacementPhase.CANARY, 999_999L);
+    void noInstanceIsListedForObservation_whileTheReplacementIsStillBeingProvisioned() {
+        states.put(OLD, "Member");
+        record(NodeReplacementPhase.PROVISIONING, 999_999L);
         wiring.reconciler().reconcile().await();
 
         verify(ctm, never()).instanceListed(any(), any());
 
-        stored.put(AetherKey.CapacityLedgerKey.INSTANCE, new CapacityLedgerValue(3, 1, false));
+        index.remove(new AetherKey.NodeReplacementKey(OLD));
+        record(NodeReplacementPhase.JOINING, 999_999L);
         wiring.reconciler().reconcile().await();
 
-        verify(ctm, never()).instanceListed(any(), any());
+        verify(ctm, atLeastOnce()).instanceListed(eq(OLD), any());
     }
 
     // ---- B3: the owner gate -------------------------------------------------------------------------------------------

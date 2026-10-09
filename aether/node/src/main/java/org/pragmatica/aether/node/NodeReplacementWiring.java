@@ -532,10 +532,6 @@ public final class NodeReplacementWiring {
         private Promise<Unit> observeInstances(NodeId original, NodeReplacementValue record) {
             var source = SourceName.sourceNameOrDefault(record.source());
 
-            if (!inventoryComplete()) {
-                return Promise.unitPromise();
-            }
-
             return Stream.of(original,
                              record.replacement())
                          .filter(node -> !isExternalKind(reservationOf(node)))
@@ -554,9 +550,11 @@ public final class NodeReplacementWiring {
 
         /// A node the membership reads as up is asked about at the provider once, in the background: an instance listed while the node was
         /// up is one a later empty listing can call gone. This is the observation point for a replacement that crashes before any drain
-        /// (a canary death) and for an old node on a leader that took over after the drain. A failed or empty listing observes nothing.
+        /// (a canary death) and for an old node on a leader that took over after the drain. Never while PROVISIONING: a listing through the capacity
+        /// lifecycle also records what it sees and, racing the provisioning's own fleet-inventory initialisation, made it refuse ("provisioning refused",
+        /// 8 Ember tests on bigboy). A failed or empty listing observes nothing.
         private void noteLiveInstance(NodeId node, NodeReplacementValue record, boolean up) {
-            if (!up || seen.contains(node) || !inventoryComplete() || isExternalKind(reservationOf(node)) || !observing.add(node)) {
+            if (!up || record.phase() == NodeReplacementPhase.PROVISIONING || seen.contains(node) || isExternalKind(reservationOf(node)) || !observing.add(node)) {
                 return;
             }
 
@@ -569,16 +567,6 @@ public final class NodeReplacementWiring {
               }
               })
               .onResultRun(() -> observing.remove(node));
-        }
-
-        /// A provider listing through the capacity lifecycle also records what it sees; before the fleet inventory is complete that would
-        /// seed a partial ledger and make the next provisioning refuse ("provisioning refused", seen on bigboy), so nothing is observed
-        /// until the inventory is. An unobserved node simply stays "never listed" (not confirmed gone) with the cause named.
-        private boolean inventoryComplete() {
-            return in.kvStore()
-                     .getTyped(AetherKey.CapacityLedgerKey.INSTANCE, AetherValue.CapacityLedgerValue.class)
-                     .filter(AetherValue.CapacityLedgerValue::inventoryComplete)
-                     .isPresent();
         }
 
         private Option<AetherValue.CapacityReservationValue> reservationOf(NodeId node) {
