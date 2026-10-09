@@ -47,6 +47,29 @@ class OperatorWarningWiringTest {
         assertThat(assemblyCode()).contains("nodeDeploymentManager.setOperatorWarningSink(operatorWarningSink);");
     }
 
+    /// #1996: request frames the transport drops at an offline-buffer flush reach the event stream only if the assembly routes
+    /// the transport's notification to this node's aggregator, and the transport honours the operator's cap only if the assembly
+    /// hands it over. The aggregator and transport tests call their halves directly, so un-binding either left them green.
+    @Test
+    void assembly_routesDroppedOfflineFramesToTheEventAggregator() {
+        assertThat(assemblyCode()).contains("MessageRouter.Entry.route(NetworkServiceMessage.OfflineFramesExpired.class,eventAggregator::onOfflineFramesExpired)");
+    }
+
+    @Test
+    void assembly_givesTheTransportTheClusterOfflineBufferCap() {
+        assertThat(assemblyCode()).contains("clusterNode.network().setOfflineBufferCap(config.timeouts().cluster().offlineBufferCap());");
+    }
+
+    /// The stream-forward and replication transports are adapters assembled here; each must pass the caller's wait on to the
+    /// network, or the per-path tests (which hand the client a recording transport) stay green while the frame goes plain.
+    @Test
+    void assembly_streamForwardAndReplicationAdaptersPassTheCallersWaitToTheNetwork() {
+        var code = assemblyCode();
+
+        assertThat(code).contains("network.send(target,message,callerWait);");
+        assertThat(code).contains("replicationNetwork.send(target,message,callerWait);");
+    }
+
     /// A certificate rotation the HTTP listeners refuse is an operator event; un-binding the sink here would leave the
     /// listener tests (which hand in their own sink) green while the node reported nothing.
     @Test
