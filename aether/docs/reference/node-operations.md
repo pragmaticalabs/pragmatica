@@ -29,9 +29,7 @@ A supervisor should treat these codes as follows:
 - `69`: do not restart with the same configuration. It fails identically; add the credentials named in the `FATAL` line to the
   source's `node_config` (`[source.<name>.node_config.cloud.credentials]`) and re-provision. Required `[cloud.credentials]` keys per provider:
   `hetzner` `api_token`; `aws` `access_key_id`, `secret_access_key`, `region`; `gcp` `project_id`, `service_account_email`, `private_key_pem`,
-  `zone`; `azure` `tenant_id`, `client_id`, `client_secret`, `subscription_id`, `resource_group`, `location`. **The bootstrap overlay renders only `api_token`** from a source's
-  `credentials`, so an aws, gcp or azure cloud source (and a hetzner source with no `credentials`) already had NO working integration (no
-  provisioning, replacement or scaling) and now refuses to start instead; until the overlay renders those keys (tracked in #2059), put them in `node_config`.
+  `zone`; `azure` `tenant_id`, `client_id`, `client_secret`, `subscription_id`, `resource_group`, `location`. The bootstrap overlay renders the source's `node_config` `[cloud.credentials]`, its region/zone/location and, for hetzner, its `credentials` (#2059), and the bootstrap validate phase refuses a source missing any of them, naming the key. A node that still refuses to start with 69 therefore has credentials the operator never supplied (hand-written `node_config`, or a source stored before #2059): add them under `[source.<name>.node_config.cloud.credentials]` and re-provision.
   Exclude 69 from automatic restart-on-failure policies (for example systemd `RestartPreventExitStatus=69`).
 - `2`: a normal drain-completed exit. The node has left the cluster. Bring capacity back as a **new node
   under a fresh NodeId**, never by restarting under the drained NodeId: identity removal is terminal.
