@@ -158,7 +158,7 @@ class EmberMutePeerPromotionEscapeTest {
         assertThat(dropped.get()).as("the mute member dropped the owner's probes (the scenario is not vacuous)").isPositive();
         assertThat(String.valueOf(owner.membershipFsm().memberStates().get(victimId)))
             .as("the mute member is still a MEMBER in the owner's view: nothing declared it dead")
-            .contains("MEMBER");
+            .containsIgnoringCase("member");
         assertThat(writableAtMs).as("the stream accepts a publish within " + WRITABLE_BOUND_MS + " ms of its creation (-1 = never)")
                                 .isBetween(0L, WRITABLE_BOUND_MS);
         assertThat(owner.eventAggregator().events().await().or(List.of()))

@@ -129,7 +129,11 @@ class OperatorWarningWiringTest {
     /// without the wiring: the backfill's alarm stays the no-op default and the refusal is only a log line.
     @Test
     void assembly_givesTheSinkToTheBackfillBlockAlarm() {
-        assertThat(assemblyCode()).contains("streamPartitionBackfill.blockAlarm(ownerPromotionAlarm(operatorWarningSink));");
+        // #2080: both bindings (the alarm and the escape's reader and bound) live in one helper the wiring test drives; the assembly
+        // must call it with this node's sink.
+        assertThat(assemblyCode()).contains("backfill.blockAlarm(ownerPromotionAlarm(sink));")
+                                  .contains("bindPromotionAlarm(streamPartitionBackfill,operatorWarningSink,")
+                                  .contains("streamingConfig.promotionEscapeAfter());");
     }
 
     /// `AetherNode.java` with line comments removed and all whitespace stripped. An unreadable file fails loudly,

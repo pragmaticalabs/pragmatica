@@ -109,7 +109,8 @@ class LivePlacementMembersWiringTest {
         // window is still the argument after it — `OwnerActivation`'s `unreachableAlarmAfter`. #1873: the gate's constructor then
         // takes the ring incarnation and the lineage commit (see EpochFetchWiringTest).
         assertThat(code).contains("ownerPromotionAlarm(operatorWarningSink),ownerPromotionAlarmWindow(config.timeouts().swim().suspectTimeout()),(stream,partition)->");
-        assertThat(code).contains("returnsuspectTimeout.plus(suspectTimeout);");
+        assertThat(code).contains("returnStreamingConfig.ownerPromotionAlarmWindow(suspectTimeout);");
+        assertThat(code).as("#2080: the owner gate is told its escape bound").contains("ownerActivation.promotionEscapeAfter(streamingConfig.promotionEscapeAfter());");
         assertThat(code).as("v1555 F1: the overlap read is the production OwnerPeerReads.ownerRange the gate tests exercise")
                         .contains("OwnerPeerReads.ownerRange(config.self(),streamPartitionManager,streamTieredReader,streamForwardClient::readRemoteCatchup,STREAM_CATCHUP_BATCH_SIZE),ownerPromotionAlarm(operatorWarningSink)");
     }
