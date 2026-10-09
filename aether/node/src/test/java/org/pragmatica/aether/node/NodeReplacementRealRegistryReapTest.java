@@ -167,6 +167,12 @@ class NodeReplacementRealRegistryReapTest {
     }
 
     private ClusterTopologyManager ctmOver(NodeLifecycleManager lifecycleManager) {
+        return newManager(lifecycleManager, false);
+    }
+
+    /// A real topology manager over the real lifecycle. `replayCapable` gives it a committed cluster name and a quorum-safe view, as a node that has
+    /// just become leader has, so that its activation replay reads the provider.
+    private ClusterTopologyManager newManager(NodeLifecycleManager lifecycleManager, boolean replayCapable) {
         var snapshotSource = new GenerationSnapshotSource() {
             @Override public Option<MembershipView> currentMembershipView() { return Option.none(); }
             @Override public long observedRabiaTerm() { return 0L; }
@@ -179,13 +185,15 @@ class NodeReplacementRealRegistryReapTest {
                                                                 AutoHealConfig.DEFAULT.withProvisioningTimeout(timeSpan(60).millis()),
                                                                 DeploymentMap.deploymentMap(),
                                                                 snapshotSource,
-                                                                () -> Option.<ClusterConfigValue> none(),
+                                                                () -> replayCapable
+                                                                      ? Option.some(new ClusterConfigValue(Option.some(CONFIG), "test", "1.0.0", List.of(), 3, 9, "test", 1L, 1L))
+                                                                      : Option.<ClusterConfigValue> none(),
                                                                 commands -> Promise.success(List.<Object> of()),
                                                                 () -> AetherValue.ClusterPhase.NORMAL,
                                                                 _ -> {},
                                                                 _ -> {},
                                                                 Option::none,
-                                                                MembershipLiveness.membershipLiveness(Set::of,
+                                                                MembershipLiveness.membershipLiveness(() -> replayCapable ? Set.of(CORE, new NodeId("c-2"), new NodeId("c-3")) : Set.of(),
                                                                                                       Set::of,
                                                                                                       node -> Option.option(states.get(node)).filter(state -> !"Dead".equals(state)).isPresent(),
                                                                                                       _ -> false,
@@ -561,6 +569,72 @@ class NodeReplacementRealRegistryReapTest {
         retire(OLD);
 
         within(15, () -> assertThat(raised("instance-termination-confirmed")).as("confirmed by a real listing + terminate").isTrue());
+    }
+
+    // ---- #2062: the manager owns the unconfirmed-termination lifecycle ---------------------------------------------------
+
+    private static InstanceInfo labelled(NodeId node, String id) {
+        return new InstanceInfo(InstanceId.instanceId(id).unwrap(),
+                                InstanceStatus.RUNNING,
+                                List.of(),
+                                InstanceType.ON_DEMAND,
+                                Map.of("aether.node-id", node.id(), "aether-cluster", "test", "aether-role", "core", "aether-source", "west"),
+                                Option.some(node.id()),
+                                Option.none());
+    }
+
+    /// (a) Every raiser goes through the manager: marking raises the event once, naming the node and the cause.
+    @Test
+    void markUnconfirmed_raisesTheEventOnce_namingTheNodeAndTheCause() {
+        ctmUnderTest.markUnconfirmed(OLD, "reaper says: provider unreachable");
+        ctmUnderTest.markUnconfirmed(OLD, "a second raiser");
+
+        within(5, () -> assertThat(warnings.stream().filter(w -> w.startsWith("instance-termination-unconfirmed:" + OLD.id())).toList())
+                            .hasSize(1)
+                            .allMatch(w -> w.contains("provider unreachable")));
+        assertThat(warnings.stream().filter(w -> w.contains("a second raiser"))).isEmpty();
+    }
+
+    /// (b) A node marked from outside is re-checked by the active leader and the recovery fires on a real confirmation.
+    @Test
+    void aMarkedNode_isRecheckedByTheLeader_andConfirmedWhenItsInstanceIsTerminated() {
+        put(AetherKey.CapacityLedgerKey.INSTANCE, new CapacityLedgerValue(3, 1, true));
+        listing.set(Promise.success(List.of(instance(OLD, "i-1", InstanceStatus.RUNNING))));
+
+        ctmUnderTest.markUnconfirmed(OLD, "marked by another raiser");
+
+        within(15, () -> assertThat(raised("instance-termination-confirmed")).as("recovery on the leader's own re-check").isTrue());
+        assertThat(terminates.get()).isEqualTo(1);
+    }
+
+    /// (b) The re-check is low-rate and bounded: one attempt per marked node per interval (five provisioning windows = 300 ms here).
+    @Test
+    void theRecheck_isLowRate_andNeverClearsOnAFailingListing() throws Exception {
+        listing.set(EnvironmentError.operationNotSupported("provider API down").promise());
+        ctmUnderTest.markUnconfirmed(OLD, "marked by another raiser");
+        var before = lists.get();
+
+        Thread.sleep(1700);
+
+        var attempts = lists.get() - before;
+
+        assertThat(attempts).as("about one listing per 300 ms, not a hot loop").isBetween(2, 12);
+        assertThat(raised("instance-termination-confirmed")).isFalse();
+    }
+
+    /// (c) A manager that has just become leader owns no marks: it re-derives them from what its activation replay finds still listed at the
+    /// provider, raises the event itself and closes it itself when the reap is confirmed.
+    @Test
+    void aNewLeader_rederivesTheMarkFromTheReplay_andClosesIt() {
+        put(AetherKey.CapacityLedgerKey.INSTANCE, new CapacityLedgerValue(3, 1, true));
+        listing.set(Promise.success(List.of(labelled(OLD, "i-1"))));
+
+        var successor = newManager(lifecycle, true);
+
+        within(20, () -> assertThat(raised("instance-termination-confirmed")).as("the successor closed the mark it re-derived").isTrue());
+        assertThat(raised("instance-termination-unconfirmed")).isTrue();
+        assertThat(terminates.get()).isEqualTo(1);
+        assertThat(successor).isNotSameAs(ctmUnderTest);
     }
 
     private final class CountingProvider implements ComputeProvider {
