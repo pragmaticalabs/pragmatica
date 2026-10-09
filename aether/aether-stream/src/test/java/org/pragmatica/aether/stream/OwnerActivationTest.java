@@ -535,6 +535,13 @@ class OwnerActivationTest {
 
                 return Unit.unit();
             }
+
+            @Override
+            public Unit resolved(OwnerActivation.ActivationBlock block) {
+                resolvedBlocks.add(block);
+
+                return Unit.unit();
+            }
         };
 
         return OwnerActivation.ownerActivation(SELF,
@@ -548,7 +555,28 @@ class OwnerActivationTest {
                                                consensusActive::get,
                                                this::range,
                                                alarm,
-                                               bound);
+                                               bound,
+                                               OwnerActivation.RingIncarnation.NONE,
+                                               lineage);
+    }
+
+    private final List<OwnerActivation.ActivationBlock> resolvedBlocks = new CopyOnWriteArrayList<>();
+    private volatile OwnerActivation.LineageCommit lineage = OwnerActivation.LineageCommit.NONE;
+
+    private OwnerActivation.BlockAlarm escapeRecordingAlarm() {
+        return new OwnerActivation.BlockAlarm() {
+            @Override
+            public Unit raise(OwnerActivation.ActivationBlock block) {
+                return OwnerActivationTest.this.raise(block);
+            }
+
+            @Override
+            public Unit escaped(OwnerActivation.PromotionEscape escape) {
+                escapes.add(escape);
+
+                return Unit.unit();
+            }
+        };
     }
 
     private static StreamPartitionOwnershipValue ownedWithIsr(NodeId owner, List<NodeId> isr, long isrVersion) {
@@ -622,6 +650,76 @@ class OwnerActivationTest {
 
         assertThat(gate.activate(STREAM, PARTITION).await().isSuccess()).isTrue();
         assertThat(escapes).as("one escape").hasSize(1);
+    }
+
+    /// #2080: the escape is reported once per ESCAPE, not once per run of the gate. Here the responder catch-up passes every time, so
+    /// the gate goes ahead each run, and the activation keeps failing at the guarded epoch-start commit; four re-runs, one event.
+    /// Mutation: dropping the equality filter of the report turns this red (four events).
+    @Test
+    void activate_isrCandidate_gateWentAheadRepeatedly_reportsTheSameEscapeOnce() {
+        lineage = (_, _, _, _, _) -> OwnerActivation.ActivationError.LINEAGE_NOT_COMMITTED.promise();
+        var gate = OwnerActivation.ownerActivation(SELF,
+                                                   (_, _) -> record.get(),
+                                                   (_, _) -> placementOwner.get(),
+                                                   Option.some(this::round),
+                                                   members::get,
+                                                   this::probe,
+                                                   (_, _) -> localWatermark.get(),
+                                                   this::catchUp,
+                                                   consensusActive::get,
+                                                   this::range,
+                                                   escapeRecordingAlarm(),
+                                                   TimeSpan.timeSpan(0).millis(),
+                                                   (_, _) -> 1L,
+                                                   lineage);
+
+        record.set(Option.some(ownedWithIsr(SELF, List.of(SELF, PEER_A, PEER_B), 5L)));
+        members.set(List.of(SELF, PEER_A, PEER_B));
+        unreachable.add(PEER_A);
+
+        for (var attempt = 0; attempt < 4; attempt++) {
+            LockSupport.parkNanos(2_000_000L);
+            assertThat(gate.activate(STREAM, PARTITION).await().isSuccess()).isFalse();
+        }
+
+        assertThat(escapes).as("the same escape, four runs").hasSize(1);
+    }
+
+    /// #2080: an activation ends the escape's episode, so a later tenure that has to go ahead again reports again.
+    @Test
+    void activate_isrCandidate_secondTenureEscapesAgain_reportsAgain() {
+        var gate = gateReportingEscapes(TimeSpan.timeSpan(0).millis());
+
+        record.set(Option.some(ownedWithIsr(SELF, List.of(SELF, PEER_A, PEER_B), 5L)));
+        members.set(List.of(SELF, PEER_A, PEER_B));
+        unreachable.add(PEER_A);
+
+        assertThat(activateAfterBound(gate)).isTrue();
+        assertThat(escapes).hasSize(1);
+
+        record.set(Option.some(ownedWithIsr(SELF, List.of(SELF, PEER_A, PEER_B), 6L)));
+
+        assertThat(activateAfterBound(gate)).isTrue();
+        assertThat(escapes).as("a new tenure, a new escape").hasSize(2);
+    }
+
+    /// #2080: a candidate that was first blocked (not yet named in the committed set) and reported the block gets that block RESOLVED
+    /// when the set comes to name it and it goes ahead: the partition no longer waits for the members the block names.
+    @Test
+    void activate_blockedThenNamedInTheIsr_theBlockIsResolved_andTheEscapeReported() {
+        var gate = gateReportingEscapes(TimeSpan.timeSpan(0).millis());
+
+        record.set(Option.some(ownedWithIsr(SELF, List.of(PEER_A, PEER_B), 5L)));
+        members.set(List.of(SELF, PEER_A, PEER_B));
+        unreachable.add(PEER_A);
+        assertThat(activateAfterBound(gate)).isFalse();
+        assertThat(alarms).singleElement().isInstanceOf(OwnerActivation.ActivationBlock.HoldersUnreachable.class);
+
+        record.set(Option.some(ownedWithIsr(SELF, List.of(SELF, PEER_A, PEER_B), 6L)));
+
+        assertThat(activateAfterBound(gate)).isTrue();
+        assertThat(resolvedBlocks).as("the unreachable-members block is told as resolved").containsExactly(alarms.getFirst());
+        assertThat(escapes).hasSize(1);
     }
 
     /// #2080 (T1b): the escape needs the ISR conjunct. A candidate NOT named in a committed ISR, a record whose ISR was never committed

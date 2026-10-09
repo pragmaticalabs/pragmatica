@@ -57,12 +57,18 @@ class PartitionBackfillEscapeTest {
     }
 
     private PartitionBackfill backfill(PartitionBackfill.CommittedIsr isr) {
-        ReplicaWatermarkProbe probe = (target, _, _) -> target.equals(NODE_BB)
+        return backfillAs(NODE_AA, 8L, isr);
+    }
+
+    /// `self` holds `selfWatermark`; NODE_BB answers `peerWatermark` (or NODE_CC when self is NODE_BB); the third node never answers.
+    private PartitionBackfill backfillAs(NodeId self, long selfWatermark, PartitionBackfill.CommittedIsr isr) {
+        var answering = self.equals(NODE_BB) ? NODE_CC : NODE_BB;
+        ReplicaWatermarkProbe probe = (target, _, _) -> target.equals(answering)
                                                         ? Promise.success(peerWatermark.get())
                                                         : silentPeerAnswers.get()
                                                           ? Promise.success(1L)
                                                           : ReplicationError.General.REPLICATION_TIMEOUT.promise();
-        var backfill = partitionBackfill(registry, recovery, CatchupTransport.NOOP, probe, (_, _) -> 8L, NODE_AA, BOUND, clock::get);
+        var backfill = partitionBackfill(registry, recovery, CatchupTransport.NOOP, probe, (_, _) -> selfWatermark, self, BOUND, clock::get);
 
         backfill.committedIsr(isr);
         backfill.blockAlarm(new OwnerActivation.BlockAlarm() {
@@ -94,9 +100,13 @@ class PartitionBackfillEscapeTest {
     }
 
     private ReplicationState selfState() {
+        return selfState(NODE_AA);
+    }
+
+    private ReplicationState selfState(NodeId self) {
         return registry.replicasFor(STREAM, PARTITION)
                        .stream()
-                       .filter(descriptor -> descriptor.nodeId().equals(NODE_AA))
+                       .filter(descriptor -> descriptor.nodeId().equals(self))
                        .findFirst()
                        .orElseThrow()
                        .state();
@@ -150,6 +160,19 @@ class PartitionBackfillEscapeTest {
         assertThat(contestAfter(backfill, BOUND.millis())).isFalse();
         assertThat(selfState()).isEqualTo(ReplicationState.SYNCING);
         assertThat(escapes).isEmpty();
+    }
+
+    /// The silent peer takes no part in the contest at all. Self (NODE_BB) is empty and so is the one peer that answered (NODE_CC, a
+    /// HIGHER id): self wins that tie. NODE_AA is silent and LOWER; counted at -1 it would tie with self and beat it. Mutation: handing
+    /// the unfiltered peers and results to the contest turns this red.
+    @Test
+    void backfill_isrCandidate_silentLowerPeerDoesNotWinTheTieBreak() {
+        peerWatermark.set(-1L);
+        var backfill = backfillAs(NODE_BB, -1L, (_, _, node) -> node.equals(NODE_BB));
+
+        assertThat(contestAfter(backfill, BOUND.millis())).isTrue();
+        assertThat(selfState(NODE_BB)).isEqualTo(ReplicationState.CAUGHT_UP);
+        assertThat(escapes).singleElement().satisfies(escape -> assertThat(escape.skipped()).containsExactly(NODE_AA));
     }
 
     /// The run of unreachability must be CONTINUOUS: a round in which every peer answers restarts it. The answering round here

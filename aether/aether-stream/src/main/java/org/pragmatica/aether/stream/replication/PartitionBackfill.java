@@ -157,8 +157,6 @@ public final class PartitionBackfill {
     /// First instant (ms) of the CONTINUOUS run of contest rounds in which some co-replica did not answer, per partition (#2080). A
     /// round in which every co-replica answers ends the run, as does any promotion of the partition ([#forgetNoSource]).
     private final ConcurrentHashMap<PartitionKey, Long> unreachableSinceMs;
-    /// The escape last reported per partition, so a re-run of the contest for the same silent peers reports nothing more.
-    private final ConcurrentHashMap<PartitionKey, OwnerActivation.PromotionEscape> reportedEscapes;
 
     /// The oversized-peer block last reported per partition, so a redrive of the same condition is silent (#1937).
     private final ConcurrentHashMap<PartitionKey, OwnerActivation.ActivationBlock> reportedOversized;
@@ -227,7 +225,6 @@ public final class PartitionBackfill {
         this.flightBound = flightBound;
         this.firstNoSourceMs = new ConcurrentHashMap<>();
         this.unreachableSinceMs = new ConcurrentHashMap<>();
-        this.reportedEscapes = new ConcurrentHashMap<>();
         this.reverifiedAtOffset = new ConcurrentHashMap<>();
         this.lastReverifyMs = new ConcurrentHashMap<>();
         this.inFlight = new ConcurrentHashMap<>();
@@ -254,7 +251,6 @@ public final class PartitionBackfill {
         this.flightBound = shared.flightBound;
         this.firstNoSourceMs = shared.firstNoSourceMs;
         this.unreachableSinceMs = shared.unreachableSinceMs;
-        this.reportedEscapes = shared.reportedEscapes;
         this.committedIsr = shared.committedIsr;
         this.reverifiedAtOffset = shared.reverifiedAtOffset;
         this.lastReverifyMs = shared.lastReverifyMs;
@@ -1994,7 +1990,6 @@ public final class PartitionBackfill {
 
         if (silent.isEmpty()) {
             unreachableSinceMs.remove(key);
-            reportedEscapes.remove(key);
 
             return decideAmongAnswering(streamName, partition, peers, selfWm, results, tieBreak);
         }
@@ -2014,7 +2009,6 @@ public final class PartitionBackfill {
 
         return decideAmongAnswering(streamName, partition, answering.nodes(), selfWm, answering.results(), tieBreak).onSuccessRun(() -> reportEscape(streamName,
                                                                                                                                                      partition,
-                                                                                                                                                     key,
                                                                                                                                                      silent));
     }
 
@@ -2049,18 +2043,13 @@ public final class PartitionBackfill {
         return clock.getAsLong() - since >= sourceWaitBound.millis() && committedIsr.names(streamName, partition, self);
     }
 
-    private void reportEscape(String streamName, int partition, PartitionKey key, List<NodeId> silent) {
-        var escape = new OwnerActivation.PromotionEscape(streamName,
-                                                         partition,
-                                                         OwnerActivation.EscapeGate.REPLICA_CONTEST,
-                                                         self,
-                                                         silent,
-                                                         sourceWaitBound);
-
-        Option.option(reportedEscapes.put(key, escape))
-              .filter(escape::equals)
-              .fold(() -> blockAlarm.escaped(escape),
-                    _ -> Unit.unit());
+    private void reportEscape(String streamName, int partition, List<NodeId> silent) {
+        blockAlarm.escaped(new OwnerActivation.PromotionEscape(streamName,
+                                                               partition,
+                                                               OwnerActivation.EscapeGate.REPLICA_CONTEST,
+                                                               self,
+                                                               silent,
+                                                               sourceWaitBound));
     }
 
     /// The contest proper, over the peers that answered.
@@ -2104,7 +2093,6 @@ public final class PartitionBackfill {
     private void forgetNoSource(PartitionKey key) {
         firstNoSourceMs.remove(key);
         unreachableSinceMs.remove(key);
-        reportedEscapes.remove(key);
     }
 
     /// #559 — "the owner is empty" vs "I am at the owner's tail". Both produce an EMPTY
