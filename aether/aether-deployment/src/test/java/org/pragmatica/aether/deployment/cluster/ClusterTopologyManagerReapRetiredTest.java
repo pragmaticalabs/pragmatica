@@ -238,6 +238,18 @@ class ClusterTopologyManagerReapRetiredTest {
         assertThat(terminates.get()).as("and its instance is terminated").isEqualTo(calls + 1);
     }
 
+    /// What the manager saw of the previous incarnation does not make an empty listing "gone" for the new one: a replacement that has not appeared in
+    /// the provider's listing yet is not confirmed absent.
+    @Test
+    void aRejoinedId_isNotConfirmedGoneByAnEmptyListing_becauseItsPredecessorWasSeen() {
+        providerLists(oldInstance("i-1", InstanceStatus.RUNNING));
+        assertThat(reap(false).isSuccess()).isTrue();
+
+        ctm.onMembershipDecision(MembershipDecision.nodeJoined(OLD, List.of(SELF, OLD)));
+
+        assertThat(reap(false).isFailure()).as("never listed in this incarnation: not confirmed gone").isTrue();
+    }
+
     /// B3: a provider whose listing lags its delete. The first reap saw the instance and had its terminate accepted but the relisting still
     /// showed it (failure); the retry, whose listing is now empty, is gone because this node REMEMBERS having seen it.
     @Test

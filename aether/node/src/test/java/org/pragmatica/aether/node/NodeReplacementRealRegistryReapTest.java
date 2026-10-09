@@ -1011,6 +1011,20 @@ class NodeReplacementRealRegistryReapTest {
         assertThat(terminates.get()).isZero();
     }
 
+    /// The dropped mark belongs to the previous incarnation: when the new one is retired and cannot be reaped, the operator is told again.
+    @Test
+    void aRejoinedNodeThatIsRetiredAgainAndCannotBeReaped_raisesTheEventAgain() throws Exception {
+        markAfterSeeingTheInstance("the listing still showed the instance");
+        within(10, () -> assertThat(persistedMark(OLD).isPresent()).isTrue());
+
+        joins(OLD);
+        within(5, () -> assertThat(persistedMark(OLD).isEmpty()).isTrue());
+        retire(OLD);
+
+        within(20, () -> assertThat(warnings.stream().filter(w -> w.startsWith("instance-termination-unconfirmed:" + OLD.id())).count())
+                             .as("once for each incarnation").isEqualTo(2));
+    }
+
     @Test
     void aWorkerThatJoinsAgain_dropsTheMarkOfItsPreviousIncarnation() {
         ctmUnderTest.markUnconfirmed(OLD, "never listed");
