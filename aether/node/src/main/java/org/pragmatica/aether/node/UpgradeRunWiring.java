@@ -165,7 +165,7 @@ public final class UpgradeRunWiring {
                            });
     }
 
-    private static final class Env implements UpgradeRunReconciler.Environment {
+    static final class Env implements UpgradeRunReconciler.Environment {
         private final Inputs in;
 
         Env(Inputs in) {
