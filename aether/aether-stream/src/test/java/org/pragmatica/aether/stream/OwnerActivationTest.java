@@ -685,6 +685,47 @@ class OwnerActivationTest {
         assertThat(escapes).as("the same escape, four runs").hasSize(1);
     }
 
+    /// #2080: an escape ends when the silent member answers again; if it goes silent again a NEW escape is reported. The activation keeps
+    /// failing at the epoch-start commit throughout, so only the answer of the member can have ended the first episode.
+    @Test
+    void activate_isrCandidate_memberAnswersThenGoesSilentAgain_reportsTheSecondEscape() {
+        lineage = (_, _, _, _, _) -> OwnerActivation.ActivationError.LINEAGE_NOT_COMMITTED.promise();
+        var gate = OwnerActivation.ownerActivation(SELF,
+                                                   (_, _) -> record.get(),
+                                                   (_, _) -> placementOwner.get(),
+                                                   Option.some(this::round),
+                                                   members::get,
+                                                   this::probe,
+                                                   (_, _) -> localWatermark.get(),
+                                                   this::catchUp,
+                                                   consensusActive::get,
+                                                   this::range,
+                                                   escapeRecordingAlarm(),
+                                                   TimeSpan.timeSpan(0).millis(),
+                                                   (_, _) -> 1L,
+                                                   lineage);
+
+        record.set(Option.some(ownedWithIsr(SELF, List.of(SELF, PEER_A, PEER_B), 5L)));
+        members.set(List.of(SELF, PEER_A, PEER_B));
+        unreachable.add(PEER_A);
+        LockSupport.parkNanos(2_000_000L);
+        gate.activate(STREAM, PARTITION).await();
+        LockSupport.parkNanos(2_000_000L);
+        gate.activate(STREAM, PARTITION).await();
+        assertThat(escapes).as("first episode").hasSize(1);
+
+        unreachable.remove(PEER_A);
+        gate.activate(STREAM, PARTITION).await();
+        assertThat(escapes).as("the member answered: nothing new").hasSize(1);
+
+        unreachable.add(PEER_A);
+        LockSupport.parkNanos(2_000_000L);
+        gate.activate(STREAM, PARTITION).await();
+        LockSupport.parkNanos(2_000_000L);
+        gate.activate(STREAM, PARTITION).await();
+        assertThat(escapes).as("silent again: a second episode").hasSize(2);
+    }
+
     /// #2080: an activation ends the escape's episode, so a later tenure that has to go ahead again reports again.
     @Test
     void activate_isrCandidate_secondTenureEscapesAgain_reportsAgain() {

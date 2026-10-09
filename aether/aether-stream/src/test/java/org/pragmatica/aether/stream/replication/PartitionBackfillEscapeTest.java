@@ -175,6 +175,23 @@ class PartitionBackfillEscapeTest {
         assertThat(escapes).singleElement().satisfies(escape -> assertThat(escape.skipped()).containsExactly(NODE_AA));
     }
 
+    /// A promoted partition starts over: the run of unreachability that justified the escape does not carry into the next time the
+    /// partition is in the contest. Mutation: not forgetting the run on promotion lets the second contest escape at once.
+    @Test
+    void backfill_isrCandidate_afterTheEscapePromoted_theNextContestNeedsANewBound() {
+        var backfill = backfill((_, _, node) -> node.equals(NODE_AA));
+
+        assertThat(contestAfter(backfill, BOUND.millis())).isTrue();
+        assertThat(escapes).hasSize(1);
+        registry.registerReplica(STREAM, PARTITION, NODE_AA);                   // back to SYNCING: a new episode
+        clock.addAndGet(1L);
+        backfill.backfill(STREAM, PARTITION).await();                          // arms the source wait again
+        clock.addAndGet(BOUND.millis() + 1);
+
+        assertThat(backfill.backfill(STREAM, PARTITION).await().isSuccess()).as("silent for 0 ms in this episode").isFalse();
+        assertThat(escapes).hasSize(1);
+    }
+
     /// The run of unreachability must be CONTINUOUS: a round in which every peer answers restarts it. The answering round here
     /// DECLINES (a peer is ahead), so nothing else forgets the partition's wait, and the only thing that can make the last round
     /// fail is the restarted run. Mutation: not ending the run on an all-answer round turns the last assertion red.

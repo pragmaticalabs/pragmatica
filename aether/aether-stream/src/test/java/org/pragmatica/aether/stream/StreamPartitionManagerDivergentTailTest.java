@@ -410,6 +410,32 @@ class StreamPartitionManagerDivergentTailTest {
         one.close();
     }
 
+    /// #2080: the tail that is removed includes records appended but not yet durable or visible (the owner's confirmation had not
+    /// arrived): they leave the live stream too, so the segment holds them.
+    @Test
+    void repairDivergence_preservesTheUnsyncedTailToo() throws Exception {
+        var path = walDir.resolve("preserve-unsynced");
+        var one = streamPartitionManager(Long.MAX_VALUE, Option.some(path));
+        var epoch = org.pragmatica.aether.slice.generation.Epoch.epoch(1L, 2L, 3L);
+
+        one.createStream(StreamConfig.streamConfig("single")).onFailure(cause -> fail(cause.message()));
+        for (var i = 0; i < 4; i++) {
+            one.appendRecovered("single", PARTITION, i, ("r" + i).getBytes(UTF_8), 3000L + i, epoch).unwrap();
+        }
+        one.syncReplicated("single", PARTITION).await();
+        for (var i = 4; i < 8; i++) {
+            one.appendRecovered("single", PARTITION, i, ("u" + i).getBytes(UTF_8), 3000L + i, epoch).unwrap();
+        }
+        one.appendRecovered("single", PARTITION, 2, "different".getBytes(UTF_8), 3002L, epoch);
+        assertThat(one.quarantinedAt("single", PARTITION).or(-1L)).isEqualTo(2L);
+
+        one.repairDivergence("single", PARTITION, _ -> true).unwrap();
+        var contents = RecoverySegment.read(segmentsUnder(path).getFirst()).unwrap();
+
+        assertThat(contents.entries()).extracting(entry -> new String(entry.payload(), UTF_8)).containsExactly("r2", "r3", "u4", "u5", "u6", "u7");
+        one.close();
+    }
+
     /// #2080: a segment that cannot be made durable REFUSES the cut. Nothing is removed, the copy stays quarantined, no event claims a
     /// preserved loss, and no half-written segment or witness is left; with the obstacle gone the same cut then proceeds.
     @Test
