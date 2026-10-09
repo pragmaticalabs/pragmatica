@@ -2240,7 +2240,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         var seen = persisted.map(AetherValue.UnconfirmedTerminationValue::seen).or(false) || seenInstances.contains(nodeId);
         var absent = persisted.map(AetherValue.UnconfirmedTerminationValue::absent).or(false) || listedAbsent.contains(nodeId);
 
-        if (!seen && absent && !lifecycleManager.externalNode(nodeId)) {
+        if (!seen && absent) {
             return;
         }
 
