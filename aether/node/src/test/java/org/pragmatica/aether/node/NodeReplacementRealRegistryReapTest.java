@@ -820,29 +820,137 @@ class NodeReplacementRealRegistryReapTest {
         assertThat(terminates.get()).as("control: and terminates it").isEqualTo(1);
     }
 
-    /// Ruling e9959fa6d(1) for the retry chain: a failed attempt is retried a sixth of a provisioning window later (1 s here); a node that shows
-    /// life in between is not terminated by the retry.
+    private static final org.pragmatica.aether.deployment.cluster.DrainReason DRAIN = org.pragmatica.aether.deployment.cluster.DrainReason.OPERATOR_COMMAND;
+
+    /// Ruling e9959fa6d(1) for the retry chain of every path but the drain-grace backstop (here a departure, NodeRemoved): a failed attempt is retried a
+    /// sixth of a provisioning window later (1 s here); a node that shows life in between is not terminated by the retry, and it is not dropped in
+    /// silence either (round 4): the operator is told once that it shows life after a failed reap, and the reap is parked for the next SWIM FAULTY.
     @Test
-    void aConfirmedReapRetry_neverTerminatesANodeThatShowsLifeMeanwhile() throws Exception {
+    void aGatedRetry_neverTerminatesANodeThatShowsLifeMeanwhile_andTellsTheOperator() throws Exception {
         ctmUnderTest.deactivate();
         var manager = newManager(lifecycle, false, 6_000L, warnings);
 
         put(AetherKey.CapacityLedgerKey.INSTANCE, new CapacityLedgerValue(3, 1, true));
         listing.set(EnvironmentError.operationNotSupported("provider API down").promise());
-        manager.drainNode(OLD, org.pragmatica.aether.deployment.cluster.DrainReason.OPERATOR_COMMAND).await();
+        manager.onMembershipDecision(MembershipDecision.nodeRemoved(OLD, List.of(CORE)));
         within(10, () -> assertThat(lists.get()).as("the first attempt failed").isGreaterThanOrEqualTo(1));
         states.put(OLD, "Member");
         listing.set(Promise.success(List.of(instance(OLD, "i-1", InstanceStatus.RUNNING))));
 
-        Thread.sleep(2500);
+        within(10, () -> assertThat(warnings).as("the operator is told").anyMatch(w -> w.startsWith("instance-termination-unconfirmed:" + OLD.id()) && w.contains("shows life")));
+        Thread.sleep(1500);
 
         assertThat(terminates.get()).as("the retry found life and stopped: nothing terminated").isZero();
+        assertThat(warnings.stream().filter(w -> w.startsWith("instance-termination-unconfirmed:" + OLD.id())).count()).as("once").isEqualTo(1);
 
         states.remove(OLD);
         manager.onSwimFaulty(OLD);
 
         within(10, () -> assertThat(terminates.get()).as("parked, not forgotten: SWIM FAULTY re-arms the reap once the node is gone").isEqualTo(1));
         manager.deactivate();
+    }
+
+    /// Round 4, F3 (v-2068 N6): the drain-grace backstop reaps a drained node that did not exit - alive by definition. Its first attempt fails
+    /// transiently; its retries are NOT liveness-gated, so the instance is terminated and confirmed.
+    @Test
+    void aDrainedZombieWhoseFirstReapFails_isRetriedAndConfirmed() throws Exception {
+        ctmUnderTest.deactivate();
+        var manager = newManager(lifecycle, false, 3_000L, warnings);
+
+        put(AetherKey.CapacityLedgerKey.INSTANCE, new CapacityLedgerValue(3, 1, true));
+        states.put(OLD, "Member");
+        listing.set(EnvironmentError.operationNotSupported("provider API down").promise());
+        manager.drainNode(OLD, DRAIN).await();
+        within(10, () -> assertThat(lists.get()).as("the first attempt failed").isGreaterThanOrEqualTo(1));
+        listing.set(Promise.success(List.of(instance(OLD, "i-1", InstanceStatus.RUNNING))));
+
+        within(10, () -> assertThat(terminates.get()).as("the retry is not gated by the zombie's life").isGreaterThanOrEqualTo(1));
+        within(10, () -> assertThat(reservation(OLD).isEmpty()).as("and the reap is confirmed").isTrue());
+        assertThat(warnings).as("nothing to tell the operator").noneMatch(w -> w.contains(OLD.id()));
+        manager.deactivate();
+    }
+
+    /// F3: a zombie whose reap never succeeds ends the bounded chain with the operator event, once - never silence.
+    @Test
+    void aDrainedZombieWhoseReapNeverSucceeds_endsInTheOperatorEvent_once() throws Exception {
+        ctmUnderTest.deactivate();
+        var manager = newManager(lifecycle, false, 1_200L, warnings);
+
+        put(AetherKey.CapacityLedgerKey.INSTANCE, new CapacityLedgerValue(3, 1, true));
+        states.put(OLD, "Member");
+        listing.set(EnvironmentError.operationNotSupported("provider API down").promise());
+        manager.drainNode(OLD, DRAIN).await();
+
+        within(30, () -> assertThat(warnings).anyMatch(w -> w.startsWith("instance-termination-unconfirmed:" + OLD.id()) && w.contains("after 12 attempts") && w.contains("provider API down")));
+        assertThat(lists.get()).as("the whole bounded chain ran, ungated").isGreaterThanOrEqualTo(13);
+        Thread.sleep(800);
+
+        assertThat(warnings.stream().filter(w -> w.startsWith("instance-termination-unconfirmed:" + OLD.id())).count()).isEqualTo(1);
+        manager.deactivate();
+    }
+
+    /// F3: a rejoin (a new incarnation) cancels the zombie's chain: no further attempt, no event.
+    @Test
+    void aRejoinMidChain_cancelsTheDrainedZombiesRetries() throws Exception {
+        ctmUnderTest.deactivate();
+        var manager = newManager(lifecycle, false, 3_000L, warnings);
+
+        put(AetherKey.CapacityLedgerKey.INSTANCE, new CapacityLedgerValue(3, 1, true));
+        states.put(OLD, "Member");
+        listing.set(EnvironmentError.operationNotSupported("provider API down").promise());
+        manager.drainNode(OLD, DRAIN).await();
+        within(10, () -> assertThat(lists.get()).isGreaterThanOrEqualTo(1));
+
+        manager.onMembershipDecision(MembershipDecision.nodeJoined(OLD, List.of(CORE, OLD)));
+        listing.set(Promise.success(List.of(instance(OLD, "i-2", InstanceStatus.RUNNING))));
+        var before = lists.get();
+
+        Thread.sleep(2000);
+
+        assertThat(lists.get() - before).as("no further attempt after the rejoin").isZero();
+        assertThat(terminates.get()).isZero();
+        assertThat(warnings).noneMatch(w -> w.startsWith("instance-termination-unconfirmed:"));
+        manager.deactivate();
+    }
+
+    /// Round 4, edge: an empty listing, then a listing that SHOWS the instance (so it is seen), and the attempts still fail. The mark is not the
+    /// permanent "terminate it by hand" one: the provider did list the instance.
+    @Test
+    void aMark_afterAnEmptyListingAndThenAListedInstance_isASeenMark_notAnAbsentOne() throws Exception {
+        put(AetherKey.CapacityLedgerKey.INSTANCE, new CapacityLedgerValue(3, 1, true));
+        states.put(OLD, "Member");
+        assertThat(ctmUnderTest.reapRetired(OLD, WEST, false).await().isFailure()).as("empty and unseen").isTrue();
+        stuck.set(true);
+        listing.set(Promise.success(List.of(instance(OLD, "i-1", InstanceStatus.RUNNING))));
+        assertThat(ctmUnderTest.reapRetired(OLD, WEST, false).await().isFailure()).as("listed, terminate accepted, still listed").isTrue();
+
+        ctmUnderTest.markUnconfirmed(OLD, "still listed");
+
+        within(10, () -> assertThat(persistedMark(OLD).map(m -> m.seen() && !m.absent()).or(false)).as("seen, and not absent").isTrue());
+        assertThat(warnings).anyMatch(w -> w.startsWith("instance-termination-unconfirmed:" + OLD.id()) && w.contains("confirms it by listing"));
+        assertThat(warnings).noneMatch(w -> w.contains("by hand"));
+    }
+
+    /// Round 4, edge: a failing-listing mark that later has an empty listing AND a listed instance is not rewritten as the permanent warning when its
+    /// re-check fails: the instance was seen.
+    @Test
+    void aFailingListingMark_thatWasSeenMeanwhile_isNotUpgradedToTheHandWarning() throws Exception {
+        put(AetherKey.CapacityLedgerKey.INSTANCE, new CapacityLedgerValue(3, 1, true));
+        listing.set(EnvironmentError.operationNotSupported("provider API down").promise());
+        states.put(OLD, "Member");
+        ctmUnderTest.markUnconfirmed(OLD, "provider unreachable");
+        within(10, () -> assertThat(persistedMark(OLD).isPresent()).isTrue());
+        listing.set(Promise.success(List.of()));
+        assertThat(ctmUnderTest.reapRetired(OLD, WEST, false).await().isFailure()).as("empty and unseen: absent in memory").isTrue();
+        stuck.set(true);
+        listing.set(Promise.success(List.of(instance(OLD, "i-1", InstanceStatus.RUNNING))));
+        assertThat(ctmUnderTest.reapRetired(OLD, WEST, false).await().isFailure()).as("then seen").isTrue();
+
+        states.remove(OLD);
+        Thread.sleep(1500);
+
+        assertThat(persistedMark(OLD).map(AetherValue.UnconfirmedTerminationValue::absent).or(true)).as("the re-check failed but the instance was seen: not upgraded").isFalse();
+        assertThat(warnings).noneMatch(w -> w.contains("by hand"));
     }
 
     /// Ruling e9959fa6d(3): a mark whose instance the provider never listed is not re-checked by listing - ever. It stays an operator warning,
@@ -884,7 +992,7 @@ class NodeReplacementRealRegistryReapTest {
         retire(OLD);
         within(20, () -> assertThat(warnings).anyMatch(w -> w.startsWith("instance-termination-unconfirmed:" + OLD.id())));
 
-        assertThat(warnings).anyMatch(w -> w.startsWith("instance-termination-unconfirmed:" + OLD.id()) && w.contains("listing is failing") && !w.contains("by hand"));
+        assertThat(warnings).anyMatch(w -> w.startsWith("instance-termination-unconfirmed:" + OLD.id()) && w.contains("a failing listing proves nothing") && !w.contains("by hand"));
         assertThat(persistedMark(OLD).map(m -> !m.seen() && !m.absent()).or(false)).as("not seen, and nothing proves it absent").isTrue();
         var before = lists.get();
 

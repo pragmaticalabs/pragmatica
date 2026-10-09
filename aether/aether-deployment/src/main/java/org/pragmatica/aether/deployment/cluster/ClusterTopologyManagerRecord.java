@@ -128,6 +128,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                     Set<NodeId> seenInstances,
                                     Set<NodeId> confirmedReaps,
                                     Set<NodeId> listedAbsent,
+                                    Set<NodeId> drainGraceChains,
                                     ConcurrentHashMap<NodeId, Long> failedReaps,
                                     org.pragmatica.lang.concurrent.CancellableTask unconfirmedRecheck,
                                     AtomicReference<Supplier<Map<NodeId, AetherValue.UnconfirmedTerminationValue>>> persistedMarks,
@@ -265,6 +266,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                                 new AtomicReference<>(HierarchyStateWriter.unavailable()),
                                                 new ConcurrentHashMap<>(),
                                                 new AtomicReference<>(org.pragmatica.utility.warning.OperatorWarningSink.logOnly()),
+                                                ConcurrentHashMap.newKeySet(),
                                                 ConcurrentHashMap.newKeySet(),
                                                 ConcurrentHashMap.newKeySet(),
                                                 ConcurrentHashMap.newKeySet(),
@@ -1930,6 +1932,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     @Contract
     private void terminateDrained(NodeId targetNodeId) {
         log.info("CTM v2: drain grace expired for {} — reaping container + clearing DRAIN command", targetNodeId);
+        drainGraceChains.add(targetNodeId);
         confirmedReap(targetNodeId, activationEpoch.get(), FAILED_REAP_RETRIES);
     }
 
@@ -2126,6 +2129,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         abandonedReaps.remove(nodeId);
         refusedReaps.remove(nodeId);
         failedReaps.remove(nodeId);
+        drainGraceChains.remove(nodeId);
         confirmedReap(nodeId, activationEpoch.get(), FAILED_REAP_RETRIES);
     }
 
@@ -2179,7 +2183,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                        ? "The cluster cannot confirm the termination of the instance of retired node {} ({}): a listing succeeded and has never shown an instance of it, and the cluster will not re-check; it may still be running at the provider and billing: verify at the provider and terminate it by hand"
                        : seen
                          ? "The termination of the instance of retired node {} is not confirmed ({}); it may still be running at the provider and billing: terminate it, then the cluster confirms it by listing"
-                         : "The termination of the instance of retired node {} is not confirmed ({}): the provider's listing is failing, so it is not known whether the instance exists; it may still be running at the provider and billing; the cluster keeps re-checking and confirms it once a listing shows it gone";
+                         : "The termination of the instance of retired node {} is not confirmed ({}): no successful listing has shown the instance, so it is not known whether it exists (a failing listing proves nothing); it may still be running at the provider and billing; the cluster keeps re-checking and confirms it once a listing shows the instance and it is terminated, and cannot confirm an instance you terminate yourself";
 
         org.pragmatica.utility.warning.OperatorWarnings.raise(log,
                                                               warningSink.get(),
@@ -2296,6 +2300,8 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         confirmedReaps.remove(nodeId);
         seenInstances.remove(nodeId);
         listedAbsent.remove(nodeId);
+        failedReaps.remove(nodeId);
+        drainGraceChains.remove(nodeId);
         var marked = unconfirmedReaps.remove(nodeId);
         var persisted = persistedMarks.get().get().containsKey(nodeId);
 
@@ -2320,6 +2326,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
 
     private void reapConfirmed(NodeId nodeId) {
         failedReaps.remove(nodeId);
+        drainGraceChains.remove(nodeId);
         var marked = unconfirmedReaps.remove(nodeId);
         var persisted = persistedMarks.get().get().containsKey(nodeId);
 
@@ -2339,6 +2346,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
 
     private void reapUnconfirmed(NodeId nodeId, long epoch, int retriesLeft, org.pragmatica.lang.Cause cause) {
         if (retriesLeft <= 0) {
+            drainGraceChains.remove(nodeId);
             markUnconfirmed(nodeId, "after " + FAILED_REAP_RETRIES + " attempts: " + cause.message());
 
             return;
@@ -2357,16 +2365,26 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
             return;
         }
 
-        if (liveness.demonstrablyLive(nodeId)) {
-            abandonedReaps.add(nodeId);
-            log.warn("CTM: retry of the confirmed reap of {} stopped — it shows life ({}); a live node is never terminated by a retry; re-armed by the next SWIM FAULTY for it",
-                     nodeId,
-                     liveness.evidence(nodeId));
+        if (!drainGraceChains.contains(nodeId) && liveness.demonstrablyLive(nodeId)) {
+            parkAndMarkLive(nodeId);
 
             return;
         }
 
         confirmedReap(nodeId, epoch, retriesLeft);
+    }
+
+    /// A gated retry found life: a live node is not terminated by a retry, but it is not dropped in silence either. It is parked for the next SWIM
+    /// FAULTY and marked unconfirmed, so the operator is told; a later confirmation, or the node's rejoin, closes the warning. The drain-grace chain
+    /// is never here: its node is a drained node that did not exit, alive by definition, and its retries are not gated.
+    private void parkAndMarkLive(NodeId nodeId) {
+        abandonedReaps.add(nodeId);
+        log.warn("CTM: retry of the confirmed reap of {} stopped — it shows life ({}); a live node is never terminated by a retry; re-armed by the next SWIM FAULTY for it",
+                 nodeId,
+                 liveness.evidence(nodeId));
+        markUnconfirmed(nodeId,
+                        "the node shows life (" + liveness.evidence(nodeId)
+                       + ") after a failed reap; a live node is not terminated by a retry");
     }
 
     private TimeSpan failedReapInterval() {
