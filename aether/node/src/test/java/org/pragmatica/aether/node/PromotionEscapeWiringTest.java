@@ -7,10 +7,19 @@ package org.pragmatica.aether.node;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 
+import io.netty.buffer.ByteBuf;
 import org.pragmatica.aether.slice.StreamConfig;
+import org.pragmatica.aether.slice.kvstore.AetherKey;
+import org.pragmatica.aether.slice.kvstore.AetherValue;
+import org.pragmatica.cluster.state.kvstore.KVCommand;
+import org.pragmatica.cluster.state.kvstore.KVStore;
+import org.pragmatica.messaging.MessageRouter;
+import org.pragmatica.serialization.Deserializer;
+import org.pragmatica.serialization.Serializer;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.kvstore.AetherValue.StreamPartitionOwnershipValue;
 import org.pragmatica.aether.stream.CommittedStreamOwnerSource;
+import org.pragmatica.aether.stream.KvCommittedStreamOwnerSource;
 import org.pragmatica.aether.stream.StreamPartitionManager;
 import org.pragmatica.aether.stream.replication.CatchupTransport;
 import org.pragmatica.aether.stream.replication.PartitionBackfill;
@@ -74,7 +83,7 @@ class PromotionEscapeWiringTest {
                                                            List::of,
                                                            CommittedStreamOwnerSource.none());
 
-        AetherNode.bindPromotionAlarm(backfill, sink, (_, _) -> record, BOUND);
+        AetherNode.bindPromotionAlarm(backfill, sink, KvCommittedStreamOwnerSource.kvCommittedStreamOwnerSource(kvStoreHolding(record)), BOUND);
         backfill.backfill(STREAM, PARTITION).await();      // arms the source wait
         pause();
         backfill.backfill(STREAM, PARTITION).await();      // the contest starts and sees the silent peer
@@ -87,6 +96,24 @@ class PromotionEscapeWiringTest {
                        .findFirst()
                        .orElseThrow()
                        .state();
+    }
+
+    /// The production committed-ISR reader over a real store: the `isrVersion > 0` filter is the one production uses.
+    private static KVStore<AetherKey, AetherValue> kvStoreHolding(Option<StreamPartitionOwnershipValue> record) {
+        var store = new KVStore<AetherKey, AetherValue>(MessageRouter.mutable(), new Serializer() {
+            @Override
+            public <T> void write(ByteBuf byteBuf, T object) {}
+        }, new Deserializer() {
+            @Override
+            public <T> T read(ByteBuf byteBuf) {
+                return null;
+            }
+        });
+
+        record.onPresent(value -> store.process(store.createBatch(List.<KVCommand<AetherKey>>of(new KVCommand.Put<>(AetherKey.StreamPartitionOwnershipKey.streamPartitionOwnershipKey(STREAM, PARTITION),
+                                                                                                                      value)))));
+
+        return store;
     }
 
     private static void pause() {

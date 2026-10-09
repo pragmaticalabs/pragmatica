@@ -187,6 +187,7 @@ import org.pragmatica.aether.slice.blueprint.OwningBlueprintResolver;
 import org.pragmatica.aether.slice.stream.BlueprintStreamAddresses;
 import org.pragmatica.aether.slice.stream.StreamNamespacesService;
 import org.pragmatica.aether.stream.KvStreamOwnerEpochSource;
+import org.pragmatica.aether.stream.CommittedStreamIsrSource;
 import org.pragmatica.aether.stream.KvCommittedStreamOwnerSource;
 import org.pragmatica.aether.stream.CommittedStreamOwnerSource;
 import org.pragmatica.aether.stream.LinearizableBarrier;
@@ -2082,13 +2083,12 @@ public interface AetherNode extends ManageableNode {
     /// wiring is the code the wiring test drives.
     static Unit bindPromotionAlarm(PartitionBackfill backfill,
                                    OperatorWarningSink sink,
-                                   OwnerActivation.OwnershipRecordSource records,
+                                   CommittedStreamIsrSource committedIsr,
                                    TimeSpan promotionEscapeAfter) {
         backfill.blockAlarm(ownerPromotionAlarm(sink));
         backfill.promotionEscapeAfter(promotionEscapeAfter);
-        backfill.committedIsr((stream, partition, node) -> records.committed(stream, partition)
-                                                                  .filter(record -> record.committedIsrNames(node))
-                                                                  .isPresent());
+        backfill.committedIsr((stream, partition, node) -> committedIsr.committedIsr(stream, partition)
+                                                                       .contains(node));
 
         return Unit.unit();
     }
@@ -6028,9 +6028,7 @@ public interface AetherNode extends ManageableNode {
         // reports that escape the way the gate does.
         bindPromotionAlarm(streamPartitionBackfill,
                            operatorWarningSink,
-                           (stream, partition) -> kvStore.getTyped(StreamPartitionOwnershipKey.streamPartitionOwnershipKey(stream,
-                                                                                                                           partition),
-                                                                   StreamPartitionOwnershipValue.class),
+                           KvCommittedStreamOwnerSource.kvCommittedStreamOwnerSource(kvStore),
                            streamingConfig.promotionEscapeAfter());
         streamPartitionManager.ownerServeGate(ownerActivation::admit);
         // #1730 phase 2: the gate's relaxation for a divergent peer respects the candidate's durable sealed floor, and a peer it
