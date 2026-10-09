@@ -1815,6 +1815,50 @@ public final class ClusterEventAggregator {
         };
     }
 
+    /// #1206: two artifacts serve one route. Derived from the committed route table on every node; `emit` publishes it on the
+    /// cluster-events owner only, once. The event id is a function of the route and the claimants, so two copies read as one.
+    @Contract
+    public void onRoutePrefixCollision(OperationalEvent.RoutePrefixCollision event) {
+        emit(new ClusterEvent.RoutePrefixCollision(hlcClock.now(),
+                                                   Severity.WARNING,
+                                                   "Route " + event.method()
+                                                  + " " + event.prefix()
+                                                  + " is claimed by " + String.join(" and ", event.artifacts())
+                                                  + ": one of them serves nothing (the lexically smaller coordinate wins)",
+                                                   routeCollisionDetails(event.method(),
+                                                                         event.prefix(),
+                                                                         event.artifacts(),
+                                                                         event.eventId())));
+    }
+
+    /// #1206: the route has one claimant again.
+    @Contract
+    public void onRoutePrefixCollisionCleared(OperationalEvent.RoutePrefixCollisionCleared event) {
+        emit(new ClusterEvent.RoutePrefixCollisionCleared(hlcClock.now(),
+                                                          Severity.INFO,
+                                                          "Route " + event.method()
+                                                         + " " + event.prefix()
+                                                         + " is no longer claimed by more than one artifact",
+                                                          routeCollisionDetails(event.method(),
+                                                                                event.prefix(),
+                                                                                event.artifacts(),
+                                                                                event.eventId())));
+    }
+
+    private static Map<String, String> routeCollisionDetails(String method,
+                                                             String prefix,
+                                                             List<String> artifacts,
+                                                             String eventId) {
+        return Map.of(ClusterEventIdentity.EVENT_ID,
+                      eventId,
+                      "method",
+                      method,
+                      "prefix",
+                      prefix,
+                      "artifacts",
+                      String.join(",", artifacts));
+    }
+
     /// #1930: a scheduled fire is still in flight when its next tick arrives. Raised by the node whose scheduler holds the
     /// fire, ONCE per fire; throttled per task and node to one event per [#EVENT_THROTTLE_MS]. Published through
     /// [#emitLocal]: the fact is that node's own, so the events-owner gate (which would drop it on every node but one) does

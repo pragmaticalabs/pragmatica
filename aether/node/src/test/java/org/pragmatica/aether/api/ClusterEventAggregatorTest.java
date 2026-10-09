@@ -1716,6 +1716,48 @@ class ClusterEventAggregatorTest {
         assertThat(h.events().getLast().details()).containsEntry("outcome", "unknown");
     }
 
+    /// #1206: the collision and its recovery reach the stream as typed events with the route and the claiming artifacts, on the
+    /// cluster-events owner only.
+    @Test
+    void routePrefixCollision_andItsRecovery_reachTheStream_withTheirDetails() {
+        var h = Harness.create();
+
+        h.aggregator().onRoutePrefixCollision(OperationalEvent.RoutePrefixCollision.routePrefixCollision("GET",
+                                                                                                         "/api/x/",
+                                                                                                         java.util.List.of("org.a:one", "org.b:two"),
+                                                                                                         "collision-id"));
+        h.aggregator().onRoutePrefixCollisionCleared(OperationalEvent.RoutePrefixCollisionCleared.routePrefixCollisionCleared("GET",
+                                                                                                                              "/api/x/",
+                                                                                                                              java.util.List.of("org.a:one", "org.b:two"),
+                                                                                                                              "cleared-id"));
+
+        var events = h.events();
+
+        assertThat(events).hasSize(2);
+        assertThat(events.get(0)).isInstanceOf(ClusterEvent.RoutePrefixCollision.class);
+        assertThat(events.get(0).type()).isEqualTo("ROUTE_PREFIX_COLLISION");
+        assertThat(events.get(0).severity()).isEqualTo(ClusterEvent.Severity.WARNING);
+        assertThat(events.get(0).details()).containsEntry("method", "GET")
+                                           .containsEntry("prefix", "/api/x/")
+                                           .containsEntry("artifacts", "org.a:one,org.b:two")
+                                           .containsEntry("eventId", "collision-id");
+        assertThat(events.get(1)).isInstanceOf(ClusterEvent.RoutePrefixCollisionCleared.class);
+        assertThat(events.get(1).type()).isEqualTo("ROUTE_PREFIX_COLLISION_CLEARED");
+        assertThat(events.get(1).severity()).isEqualTo(ClusterEvent.Severity.INFO);
+    }
+
+    @Test
+    void routePrefixCollision_isPublishedByTheEventsOwnerOnly() {
+        var h = Harness.create(Harness.defaultRetention(), () -> false);
+
+        h.aggregator().onRoutePrefixCollision(OperationalEvent.RoutePrefixCollision.routePrefixCollision("GET",
+                                                                                                         "/api/x/",
+                                                                                                         java.util.List.of("org.a:one", "org.b:two"),
+                                                                                                         "collision-id"));
+
+        assertThat(h.events()).as("every node derives it; only the owner publishes").isEmpty();
+    }
+
     /// #1723: a RESTORED nobody was told the UNKNOWN for is not an all-clear.
     @Test
     void scheduledTaskOutcome_restoredWithNoUnknown_isNotAnnounced() {

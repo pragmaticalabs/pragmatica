@@ -1812,9 +1812,35 @@ public sealed interface AetherValue {
                                  String security,
                                  String declaredSecurity,
                                  int pathArity,
-                                 List<String> spacers) {
+                                 List<String> spacers,
+                                 List<Integer> spacerSlots) {
             public RouteEntry {
                 spacers = List.copyOf(spacers);
+                spacerSlots = List.copyOf(spacerSlots);
+            }
+
+            /// An entry that does not carry where its literals sit (every shape before #1206 knew only that they exist).
+            public RouteEntry(String httpMethod,
+                              String pathPrefix,
+                              String sliceMethod,
+                              String state,
+                              int weight,
+                              long registeredAt,
+                              String security,
+                              String declaredSecurity,
+                              int pathArity,
+                              List<String> spacers) {
+                this(httpMethod,
+                     pathPrefix,
+                     sliceMethod,
+                     state,
+                     weight,
+                     registeredAt,
+                     security,
+                     declaredSecurity,
+                     pathArity,
+                     spacers,
+                     List.of());
             }
 
             public static RouteEntry activeRoute(String httpMethod,
@@ -1842,6 +1868,26 @@ public sealed interface AetherValue {
                                                  String declaredSecurity,
                                                  int pathArity,
                                                  List<String> spacers) {
+                return activeRoute(httpMethod,
+                                   pathPrefix,
+                                   sliceMethod,
+                                   security,
+                                   declaredSecurity,
+                                   pathArity,
+                                   spacers,
+                                   List.of());
+            }
+
+            /// #1206: `spacerSlots` says WHERE each literal sits among the trailing segments, so two routes that differ only in
+            /// the position of a literal are told apart by whoever reads the committed table (the collision announcer).
+            public static RouteEntry activeRoute(String httpMethod,
+                                                 String pathPrefix,
+                                                 String sliceMethod,
+                                                 String security,
+                                                 String declaredSecurity,
+                                                 int pathArity,
+                                                 List<String> spacers,
+                                                 List<Integer> spacerSlots) {
                 return new RouteEntry(httpMethod,
                                       pathPrefix,
                                       sliceMethod,
@@ -1851,7 +1897,8 @@ public sealed interface AetherValue {
                                       security,
                                       declaredSecurity,
                                       pathArity,
-                                      spacers);
+                                      spacers,
+                                      spacerSlots);
             }
 
             public static RouteEntry activeRoute(String httpMethod, String pathPrefix, String sliceMethod) {
