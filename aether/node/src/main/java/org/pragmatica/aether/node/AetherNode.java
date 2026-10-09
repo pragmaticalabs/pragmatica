@@ -4916,6 +4916,8 @@ public interface AetherNode extends ManageableNode {
         // membership-layer reconciler keeps no hard dependency on the deployment FSM.
         leaderReconciler.setOwnsActiveSlices(SliceOwnershipQuery.ownsActiveSlices(kvStore));
         leaderReconciler.setSliceDrainGuard(SliceOwnershipQuery.minAvailableDrainGuard(kvStore));
+        // #1111: an abandoned replacement whose instance cannot be confirmed terminated reaches the operator as an event, not only a log line.
+        leaderReconciler.setOperatorWarnings(operatorWarningSink);
         // #1543: the pairings are capacity on purpose for the two reconcilers that would otherwise read them as excess or deficit.
         NodeReplacementWiring.connectReconcilers(nodeReplacements,
                                                  leaderReconciler::setSurgeReplacements,

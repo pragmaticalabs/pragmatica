@@ -219,6 +219,18 @@ public interface ClusterTopologyManager extends TopologyManager {
                                                .promise();
     }
 
+    /// #1111: the provider source an auto-heal replacement of `intendedRole` is created in, i.e. the source to hand [#reapRetired]
+    /// when the leader abandons that replacement. [SourceName#DEFAULT] when no cloud source backs the role.
+    default SourceName replacementSource(NodeRole intendedRole) {
+        return SourceName.DEFAULT;
+    }
+
+    /// #1111: the provider ids of the instances behind `node`, in any status, for the operator-facing record of an abandoned
+    /// replacement. Best effort: a listing that fails or lists nothing is an empty list, never a failure.
+    default Promise<List<String>> replacementInstanceIds(NodeId node) {
+        return Promise.success(List.of());
+    }
+
     /// #1543: whether the provider lists at least one instance (in any status) of `node`: the observation that lets a later empty
     /// listing count as "gone". A failed listing is a failure.
     default Promise<Boolean> instanceListed(NodeId node, org.pragmatica.aether.environment.SourceName source) {

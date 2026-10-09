@@ -2097,7 +2097,7 @@ class ClusterEventAggregatorTest {
     }
 
     /// The pairing touches exactly the declared pairs of codes (the two consumer pairs #752/#1935, the oversized-event refusal and the
-    /// members-unreachable wait of #1937, the slice-floor refusal of #1720, the node-replacement conditions of #1543 and the HTTP-listener TLS rotation refusal); every other code keeps the plain 60 s throttle.
+    /// members-unreachable wait of #1937, the slice-floor refusal of #1720, the node-replacement conditions of #1543, the abandoned-replacement reap of #1111 and the HTTP-listener TLS rotation refusal); every other code keeps the plain 60 s throttle.
     @Test
     void onOperatorWarning_onlyTheDeclaredPairsArePaired_otherCodesUnchanged() {
         assertThat(java.util.Arrays.stream(OperatorWarningCode.values()).filter(c -> c.recoveryOf().isPresent()).toList())
@@ -2106,6 +2106,7 @@ class ClusterEventAggregatorTest {
                              OperatorWarningCode.NODE_REPLACEMENT_JOINED,
                              OperatorWarningCode.NODE_REPLACEMENT_DRAIN_UNBLOCKED,
                              OperatorWarningCode.NODE_REPLACEMENT_SETTLED,
+                             OperatorWarningCode.REPLACEMENT_REAP_CONFIRMED,
                              OperatorWarningCode.SLICE_FLOOR_DRAIN_ADMITTED,
                              OperatorWarningCode.STREAM_CONSUMER_STATE_REPAIRED,
                              OperatorWarningCode.STREAM_CONSUMER_REGISTERED_AGAIN,
@@ -2123,6 +2124,7 @@ class ClusterEventAggregatorTest {
                              OperatorWarningCode.NODE_REPLACEMENT_JOIN_OVERDUE,
                              OperatorWarningCode.NODE_REPLACEMENT_DRAIN_BLOCKED,
                              OperatorWarningCode.NODE_REPLACEMENT_FAILED_KEPT_BOTH,
+                             OperatorWarningCode.REPLACEMENT_REAP_FAILED,
                              OperatorWarningCode.SLICE_FLOOR_DRAIN_REFUSED,
                              OperatorWarningCode.STREAM_CONSUMER_STATE_DIVERGED,
                              OperatorWarningCode.STREAM_CONSUMER_NOT_REGISTERED,

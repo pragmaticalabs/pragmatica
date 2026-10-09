@@ -141,6 +141,14 @@ public enum OperatorWarningCode {
                              "replacement",
                              WarningLevel.INFO,
                              NODE_REPLACEMENT_FAILED_KEPT_BOTH),
+    /// The leader abandoned an auto-heal replacement (#1111: its ceiling passed, the provider stopped listing it or reported it failed,
+    /// or its provision call failed) and could not CONFIRM the instance terminated within the retry bound: it may still be running
+    /// and billed. Subject is the replacement's node id; the message names the source and the provider instance ids. The leader keeps
+    /// retrying at a slower cadence; closed by [#REPLACEMENT_REAP_CONFIRMED]. Operator action: terminate the named instance at the
+    /// provider.
+    REPLACEMENT_REAP_FAILED("replacement-reap-failed", "replacement", WarningLevel.WARNING),
+    /// The recovery of [#REPLACEMENT_REAP_FAILED], same subject: the abandoned replacement's instance is confirmed gone.
+    REPLACEMENT_REAP_CONFIRMED("replacement-reap-confirmed", "replacement", WarningLevel.INFO, REPLACEMENT_REAP_FAILED),
     /// A replica of a `confirmation_factor` 1 stream cut its divergent tail back to the last offset it shares with its
     /// owner (#1730 phase 2). With that factor the acknowledgement was the old owner's alone, so the discarded offsets
     /// may have been acknowledged and are lost; the message names them. A stream that confirms with replicas

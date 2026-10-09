@@ -956,6 +956,21 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                    .or(SourceProfile.DEFAULT_REPLACEMENT_CEILING);
     }
 
+    @Override
+    public SourceName replacementSource(NodeRole intendedRole) {
+        return replacementSourceName(intendedRole);
+    }
+
+    @Override
+    public Promise<List<String>> replacementInstanceIds(NodeId node) {
+        return lifecycleManager.instancesForNode(node)
+                               .map(listed -> listed.stream()
+                                                    .map(instance -> instance.id()
+                                                                             .value())
+                                                    .toList())
+                               .recover(_ -> List.of());
+    }
+
     /// The cloud [SourceProfile] backing `intendedRole` in the persisted cluster TOML, or empty when there
     /// is no committed TOML (the bootstrap seed) or it is unparseable or no cloud source declares the role.
     private Option<SourceProfile> persistedCloudSource(NodeRole intendedRole) {

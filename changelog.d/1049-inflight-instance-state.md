@@ -57,7 +57,7 @@
   restart by node id reach:** on those clouds they now find and act on the VM, where before they failed to
   find an instance.
   [design intent — unverified: each provider's filter builder is pinned by a unit test in its `*ComputeProviderTest`; no call against a live cloud API]
-- **Known limitation — a replacement the leader gives up on is not terminated.** When the provider reports it
+- **Known limitation (closed by #1111) — a replacement the leader gives up on is not terminated.** When the provider reports it
   failed, when its ceiling passes, or when its readiness check fails, the in-flight entry is dropped and a new
   replacement is minted, but the old instance keeps running and billing. Recovery: every auto-heal create logs
   a WARN `CTM: auto-heal PROVISIONED a billable instance … instanceId=<id>, nodeId=<id>`; delete an instance
