@@ -184,6 +184,46 @@ class ClusterEventRedeliveryTest {
         assertThat(landed).isEmpty();
     }
 
+    /// #2077: the horizon bounds how long a stream that REFUSES for good is waited on. A stream that answers "not yet promoted"
+    /// is not refusing for good: the refusal is its own transient classification, and a promotion held up by detection can last
+    /// past the horizon (bigboy repro-1: the leader declared the dead node at +217 s). The event must land when the owner
+    /// activates, however long that took.
+    @Test
+    void redeliver_streamRefusesPromotionPastTheHorizon_eventStillLandsWhenOwnerActivates() {
+        var refusal = new StreamError.OwnerNotActivated("system:cluster-events", 0);
+        var sixMinutes = 2 * ClusterEventRedelivery.RETRY_HORIZON_MS - ClusterEventRedelivery.RETRY_HORIZON_MS / 5;
+
+        fail(10_000, refusal);
+        redelivery.deliver(event("node-failed"));
+        for (long elapsed = 0; elapsed < sixMinutes; elapsed += ClusterEventRedelivery.MAX_BACKOFF_MS) {
+            advanceAndRedeliver(ClusterEventRedelivery.MAX_BACKOFF_MS);
+        }
+        scriptedFailures.clear();
+        advanceAndRedeliver(ClusterEventRedelivery.MAX_BACKOFF_MS);
+
+        assertThat(landed).extracting(ClusterEvent::summary).containsExactly("node-failed");
+        assertThat(redelivery.dropped(EXPIRED)).isZero();
+        assertThat(redelivery.held()).isZero();
+    }
+
+    /// The control: the pause is for the transient promotion refusal only. A stream that fails any other way still expires the
+    /// event a horizon after its last transient refusal.
+    @Test
+    void redeliver_refusalTurnsNonTransient_expiresAHorizonAfterTheLastTransientRefusal() {
+        var refusal = new StreamError.OwnerNotActivated("system:cluster-events", 0);
+
+        fail(10, refusal);
+        fail(10_000, UNKNOWN);
+        redelivery.deliver(event("node-failed"));
+        for (long elapsed = 0; elapsed < 2 * ClusterEventRedelivery.RETRY_HORIZON_MS; elapsed += ClusterEventRedelivery.MAX_BACKOFF_MS) {
+            advanceAndRedeliver(ClusterEventRedelivery.MAX_BACKOFF_MS);
+        }
+
+        assertThat(landed).isEmpty();
+        assertThat(redelivery.dropped(EXPIRED)).isEqualTo(1L);
+        assertThat(redelivery.held()).isZero();
+    }
+
     /// A full buffer drops its OLDEST entry (CTO ruling), counted.
     @Test
     void deliver_beyondCapacity_dropsTheOldest() {

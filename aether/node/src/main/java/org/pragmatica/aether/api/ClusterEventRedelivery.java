@@ -116,6 +116,11 @@ final class ClusterEventRedelivery {
                                maybeLanded || cause instanceof PublishOutcomeUnknown);
         }
 
+        /// This event with its horizon restarted at `now`: the stream refused with a transient cause (#2077).
+        Pending rebasedAt(long now) {
+            return new Pending(event, now, attempts, nextAttemptAt, onGivenUp, onDelivered, maybeLanded);
+        }
+
         GiveUpOutcome outcome() {
             return maybeLanded
                    ? GiveUpOutcome.POSSIBLY_DELIVERED
@@ -325,7 +330,7 @@ final class ClusterEventRedelivery {
 
     private Unit onRetryFailure(Pending attempted, Cause cause) {
         var now = clock.getAsLong();
-        var pending = attempted.afterFailure(cause);
+        var pending = pauseHorizonWhileRefusing(attempted.afterFailure(cause), cause, now);
 
         if (isPermanent(cause)) {
             return dropHeld(DropReason.PERMANENT, pending);
@@ -334,6 +339,16 @@ final class ClusterEventRedelivery {
         return pending.expiredAt(now)
                ? expire(pending)
                : enqueue(pending.failedAgain(now));
+    }
+
+    /// The horizon bounds how long a stream that refuses for good is waited on. A transient refusal (a partition owner not
+    /// yet promoted, a retryable forward response) is the stream saying "not yet": the event is held for as long as the stream
+    /// keeps saying it, and the horizon runs from the last such answer (#2077). A promotion held up by failure detection can
+    /// last past the horizon; the buffer's own bound ([#CAPACITY], oldest first) still caps what a long refusal can hold.
+    private static Pending pauseHorizonWhileRefusing(Pending pending, Cause cause, long now) {
+        return cause instanceof Cause.Transient
+               ? pending.rebasedAt(now)
+               : pending;
     }
 
     /// A cause no retry can fix: the event itself is refused (too large for the stream), whoever owns it.
