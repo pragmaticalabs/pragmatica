@@ -141,6 +141,22 @@ public enum OperatorWarningCode {
                              "replacement",
                              WarningLevel.INFO,
                              NODE_REPLACEMENT_FAILED_KEPT_BOTH),
+    /// A rolling upgrade run (#1543 part F) was started: every node is being replaced, serially, by a node running the target
+    /// version, so the cluster runs mixed versions until it ends. The subject is always `upgrade` (there is one run). Closed by
+    /// [#UPGRADE_COMPLETED] or [#UPGRADE_ABORTED].
+    UPGRADE_STARTED("upgrade-started", "upgrade", WarningLevel.INFO),
+    /// The recovery of [#UPGRADE_STARTED]: every node reports the target version.
+    UPGRADE_COMPLETED("upgrade-completed", "upgrade", WarningLevel.INFO, UPGRADE_STARTED),
+    /// The recovery of [#UPGRADE_STARTED] for a run an operator abandoned: the cluster is left running the versions named in the
+    /// message, and no replacement is left half-done (an abort waits for the replacement in flight to end).
+    UPGRADE_ABORTED("upgrade-aborted", "upgrade", WarningLevel.WARNING, UPGRADE_STARTED),
+    /// The run stopped and needs an operator: a replacement was rolled back or stopped with both nodes kept, or an operator paused
+    /// it. The message names the node, the reason and the way on. Closed by [#UPGRADE_RESUMED] or [#UPGRADE_PAUSE_ENDED].
+    UPGRADE_PAUSED("upgrade-paused", "upgrade", WarningLevel.WARNING),
+    /// The recovery of [#UPGRADE_PAUSED]: an operator resumed the run.
+    UPGRADE_RESUMED("upgrade-resumed", "upgrade", WarningLevel.INFO, UPGRADE_PAUSED),
+    /// The recovery of [#UPGRADE_PAUSED] when the run did not resume: it was aborted while paused.
+    UPGRADE_PAUSE_ENDED("upgrade-pause-ended", "upgrade", WarningLevel.INFO, UPGRADE_PAUSED),
     /// A replica of a `confirmation_factor` 1 stream cut its divergent tail back to the last offset it shares with its
     /// owner (#1730 phase 2). With that factor the acknowledgement was the old owner's alone, so the discarded offsets
     /// may have been acknowledged and are lost; the message names them. A stream that confirms with replicas
