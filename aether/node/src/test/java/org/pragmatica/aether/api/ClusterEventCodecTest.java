@@ -387,7 +387,9 @@ class ClusterEventCodecTest {
                        new ClusterEvent.ScheduledTaskOutcomeUnknown(ts, sev, "ScheduledTaskOutcomeUnknown", d),
                        new ClusterEvent.ScheduledTaskOutcomeRestored(ts, sev, "ScheduledTaskOutcomeRestored", d),
                        new ClusterEvent.ScheduledTaskFireHeld(ts, sev, "ScheduledTaskFireHeld", d),
-                       new ClusterEvent.ScheduledTaskFireReleased(ts, sev, "ScheduledTaskFireReleased", d));
+                       new ClusterEvent.ScheduledTaskFireReleased(ts, sev, "ScheduledTaskFireReleased", d),
+                       new ClusterEvent.RoutePrefixCollision(ts, sev, "RoutePrefixCollision", d),
+                       new ClusterEvent.RoutePrefixCollisionCleared(ts, sev, "RoutePrefixCollisionCleared", d));
     }
 
     /// Guards [#allClosedVariants] against silent drift.

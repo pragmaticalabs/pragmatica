@@ -16,6 +16,7 @@
 package org.pragmatica.consensus.net;
 
 import java.util.List;
+import java.util.Map;
 
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Cause;
@@ -37,6 +38,10 @@ public sealed interface NetworkServiceMessage extends Message.Local {
 
     /// Notification that a connection attempt to a node has failed.
     record ConnectionFailed(NodeId nodeId, Cause cause) implements NetworkServiceMessage {}
+
+    /// Request frames dropped at the offline-buffer flush because their callers had already given up (#1996).
+    /// `byPath` counts them by message type, the request path they belong to.
+    record OfflineFramesExpired(NodeId nodeId, int count, Map<String, Integer> byPath) implements NetworkServiceMessage {}
 
     /// Notification that a connection to a node has been established.
     ///

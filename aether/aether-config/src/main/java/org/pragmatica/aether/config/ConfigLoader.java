@@ -953,7 +953,11 @@ public final class ConfigLoader {
                                                   parseTimeSpan(doc,
                                                                 "timeouts.cluster",
                                                                 "community_absence",
-                                                                d.communityAbsence()));
+                                                                d.communityAbsence()),
+                                                  parseTimeSpan(doc,
+                                                                "timeouts.cluster",
+                                                                "offline_buffer_cap",
+                                                                d.offlineBufferCap()));
     }
 
     private static TimeoutsConfig.ConsensusTimeouts parseConsensusTimeouts(TomlDocument doc,

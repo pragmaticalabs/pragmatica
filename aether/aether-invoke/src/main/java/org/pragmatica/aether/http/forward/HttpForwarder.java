@@ -1167,8 +1167,10 @@ public interface HttpForwarder {
                                                             requestData,
                                                             pipeline,
                                                             deadline.toWireMillis());
-
-                clusterNetwork.send(targetNode, forwardRequest);
+                // hopTimeout is the wait that just started and the moment the caller retries elsewhere, so the frame must
+                // not outlive it in an offline buffer (#1996). Always bounded here: `remainingMillis` may be NO_BUDGET,
+                // but the hop wait never is.
+                clusterNetwork.send(targetNode, forwardRequest, hopTimeout);
                 log.trace("Forwarded request to {} [{}] correlationId={}", targetNode, requestId, correlationId);
                 internalPromise.onSuccess(resultPromise::succeed)
                                .onFailure(cause -> handleInternalFailure(cause,

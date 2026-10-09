@@ -43,6 +43,52 @@ class ClusterTimeoutsAbsenceOrderingTest {
         assertTrue(defaults.communityAbsence().nanos() > defaults.pingInterval().nanos());
     }
 
+    /// #1996: the longest a request frame may wait in a peer's offline buffer is a cluster timeout, 30s by default, and an
+    /// operator's value reaches the transport through the loader rather than being silently ignored.
+    @Test
+    void offlineBufferCap_defaultsToThirtySeconds_andIsReadFromToml() {
+        assertThat(ClusterTimeouts.clusterTimeouts().offlineBufferCap()).isEqualTo(timeSpan(30).seconds());
+
+        ConfigLoader.loadFromString("""
+                                    [cluster]
+                                    environment = "docker"
+
+                                    [timeouts.cluster]
+                                    offline_buffer_cap = "7s"
+                                    """)
+                    .onFailure(cause -> Assertions.fail(cause.message()))
+                    .onSuccess(config -> assertThat(config.timeouts().cluster().offlineBufferCap()).isEqualTo(timeSpan(7).seconds()));
+    }
+
+    /// The floor is wired, not merely declared: a cap under it comes back as a validation failure naming the key, and the
+    /// floor itself and the default pass (so a validator rejecting everything would not satisfy the first test).
+    @Test
+    void validate_offlineBufferCapBelowTheFloor_failsNamingTheKey() {
+        ConfigValidator.validate(configWith(withCap(timeSpan(4).seconds())))
+                       .onSuccessRun(Assertions::fail)
+                       .onFailure(cause -> assertThat(cause.message()).contains("timeouts.cluster.offline_buffer_cap"));
+        ConfigValidator.validate(configWith(withCap(timeSpan(0).seconds())))
+                       .onSuccessRun(Assertions::fail);
+    }
+
+    @Test
+    void validate_offlineBufferCapAtTheFloor_succeeds() {
+        ConfigValidator.validate(configWith(withCap(timeSpan(5).seconds()))).onFailureRun(Assertions::fail);
+        ConfigValidator.validate(AetherConfig.aetherConfig(Environment.DOCKER)).onFailureRun(Assertions::fail);
+    }
+
+    private static ClusterTimeouts withCap(TimeSpan cap) {
+        var defaults = ClusterTimeouts.clusterTimeouts();
+
+        return new ClusterTimeouts(defaults.hello(),
+                                   defaults.reconciliationInterval(),
+                                   defaults.pingInterval(),
+                                   defaults.channelProtection(),
+                                   defaults.coreAbsence(),
+                                   defaults.communityAbsence(),
+                                   cap);
+    }
+
     @Test
     void absenceWindowsOrdered_inverted_isFalse() {
         assertFalse(windows(timeSpan(30).seconds(), timeSpan(20).seconds()).absenceWindowsOrdered());
@@ -88,7 +134,8 @@ class ClusterTimeoutsAbsenceOrderingTest {
                                    defaults.pingInterval(),
                                    defaults.channelProtection(),
                                    coreAbsence,
-                                   communityAbsence);
+                                   communityAbsence,
+                                   defaults.offlineBufferCap());
     }
 
     private static AetherConfig configWith(ClusterTimeouts cluster) {
