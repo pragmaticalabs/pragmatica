@@ -184,6 +184,153 @@ class ClusterEventRedeliveryTest {
         assertThat(landed).isEmpty();
     }
 
+    /// #2077: the horizon bounds how long a stream that REFUSES for good is waited on. A stream that answers "not yet promoted"
+    /// is not refusing for good: the refusal is its own transient classification, and a promotion held up by detection can last
+    /// past the horizon (bigboy repro-1: the leader declared the dead node at +217 s). The event must land when the owner
+    /// activates, however long that took.
+    @Test
+    void redeliver_streamRefusesPromotionPastTheHorizon_eventStillLandsWhenOwnerActivates() {
+        var refusal = new StreamError.OwnerNotActivated("system:cluster-events", 0);
+        var sixMinutes = 2 * ClusterEventRedelivery.RETRY_HORIZON_MS - ClusterEventRedelivery.RETRY_HORIZON_MS / 5;
+
+        fail(10_000, refusal);
+        redelivery.deliver(event("node-failed"));
+        for (long elapsed = 0; elapsed < sixMinutes; elapsed += ClusterEventRedelivery.MAX_BACKOFF_MS) {
+            advanceAndRedeliver(ClusterEventRedelivery.MAX_BACKOFF_MS);
+        }
+        scriptedFailures.clear();
+        advanceAndRedeliver(ClusterEventRedelivery.MAX_BACKOFF_MS);
+
+        assertThat(landed).extracting(ClusterEvent::summary).containsExactly("node-failed");
+        assertThat(redelivery.dropped(EXPIRED)).isZero();
+        assertThat(redelivery.held()).isZero();
+    }
+
+    /// The control: the pause is for the transient promotion refusal only. A stream that fails any other way still expires the
+    /// event a horizon after its last transient refusal.
+    @Test
+    void redeliver_refusalTurnsNonTransient_expiresAHorizonAfterTheLastTransientRefusal() {
+        var refusal = new StreamError.OwnerNotActivated("system:cluster-events", 0);
+
+        fail(10, refusal);
+        fail(10_000, UNKNOWN);
+        redelivery.deliver(event("node-failed"));
+        for (long elapsed = 0; elapsed < 2 * ClusterEventRedelivery.RETRY_HORIZON_MS; elapsed += ClusterEventRedelivery.MAX_BACKOFF_MS) {
+            advanceAndRedeliver(ClusterEventRedelivery.MAX_BACKOFF_MS);
+        }
+
+        assertThat(landed).isEmpty();
+        assertThat(redelivery.dropped(EXPIRED)).isEqualTo(1L);
+        assertThat(redelivery.held()).isZero();
+    }
+
+    /// A transient cause that is not a promotion refusal: the stream is slow or its breaker is open, not unpromoted.
+    private record SlowStream() implements Cause.Transient {
+        @Override
+        public String message() {
+            return "stream timed out";
+        }
+    }
+
+    /// The ruling's allow-list is by exact type: a `Cause.Transient` that is not a promotion refusal ages as on rc4.
+    @Test
+    void redeliver_transientNonPromotionCause_expiresAtTheHorizon() {
+        fail(10_000, new SlowStream());
+        redelivery.deliver(event("slow"));
+        for (long elapsed = 0; elapsed <= ClusterEventRedelivery.RETRY_HORIZON_MS + ClusterEventRedelivery.MAX_BACKOFF_MS; elapsed += ClusterEventRedelivery.MAX_BACKOFF_MS) {
+            advanceAndRedeliver(ClusterEventRedelivery.MAX_BACKOFF_MS);
+        }
+
+        assertThat(landed).isEmpty();
+        assertThat(redelivery.dropped(EXPIRED)).isEqualTo(1L);
+    }
+
+    /// `PublishOutcomeUnknown` is unchanged: the event may have landed, and re-publishing past the horizon risks duplicates.
+    @Test
+    void redeliver_publishOutcomeUnknownAfterPromotionRefusals_expiresAHorizonAfterTheLastRefusal() {
+        fail(5, new StreamError.OwnerNotActivated("system:cluster-events", 0));
+        fail(10_000, UNKNOWN);
+        redelivery.deliver(event("maybe-landed"));
+        for (long elapsed = 0; elapsed <= 2 * ClusterEventRedelivery.RETRY_HORIZON_MS; elapsed += ClusterEventRedelivery.MAX_BACKOFF_MS) {
+            advanceAndRedeliver(ClusterEventRedelivery.MAX_BACKOFF_MS);
+        }
+
+        assertThat(redelivery.dropped(EXPIRED)).isEqualTo(1L);
+        assertThat(landed).isEmpty();
+    }
+
+    /// A forwarder sees the owner's refusal as a retryable response carrying its text: both promotion refusals count.
+    @Test
+    void redeliver_forwardedPromotionRefusals_pauseTheHorizonToo() {
+        var notPromoted = new StreamForwardError.RemotePublishRetryable(new StreamError.OwnerNotActivated("system:cluster-events", 0).message());
+        var noConfig = new StreamForwardError.RemotePublishRetryable(new StreamError.StreamConfigNotYetVisible("system:cluster-events").message());
+
+        assertThat(ClusterEventRedelivery.isPromotionRefusal(new StreamError.OwnerNotActivated("system:cluster-events", 0))).isTrue();
+        assertThat(ClusterEventRedelivery.isPromotionRefusal(new StreamError.StreamConfigNotYetVisible("system:cluster-events"))).isTrue();
+        assertThat(ClusterEventRedelivery.isPromotionRefusal(notPromoted)).isTrue();
+        assertThat(ClusterEventRedelivery.isPromotionRefusal(noConfig)).isTrue();
+        assertThat(ClusterEventRedelivery.isPromotionRefusal(new StreamForwardError.RemotePublishRetryable("capacity deferred"))).isFalse();
+        assertThat(ClusterEventRedelivery.isPromotionRefusal(new StreamForwardError.RemotePublishFailed(notPromoted.detail()))).isFalse();
+
+        fail(10_000, notPromoted);
+        redelivery.deliver(event("forwarded"));
+        for (long elapsed = 0; elapsed < 2 * ClusterEventRedelivery.RETRY_HORIZON_MS; elapsed += ClusterEventRedelivery.MAX_BACKOFF_MS) {
+            advanceAndRedeliver(ClusterEventRedelivery.MAX_BACKOFF_MS);
+        }
+        scriptedFailures.clear();
+        advanceAndRedeliver(ClusterEventRedelivery.MAX_BACKOFF_MS);
+
+        assertThat(landed).extracting(ClusterEvent::summary).containsExactly("forwarded");
+        assertThat(redelivery.dropped(EXPIRED)).isZero();
+    }
+
+    /// An event held past the horizon by promotion refusals keeps the operator signal: the once-per-node ERROR fires, the event stays.
+    @Test
+    void redeliver_promotionRefusalHeldPastTheHorizon_logsTheErrorOnce_andKeepsTheEvent() {
+        var logged = capture();
+
+        try {
+            fail(10_000, new StreamError.OwnerNotActivated("system:cluster-events", 0));
+            redelivery.deliver(event("a"));
+            redelivery.deliver(event("b"));
+            for (long elapsed = 0; elapsed < ClusterEventRedelivery.RETRY_HORIZON_MS - 10_000; elapsed += 1_000) {
+                advanceAndRedeliver(1_000);
+            }
+            assertThat(logged.stream().filter(line -> line.startsWith("ERROR "))).as("nothing is reported inside the horizon").isEmpty();
+            for (long elapsed = 0; elapsed <= 20_000 + 2 * ClusterEventRedelivery.MAX_BACKOFF_MS; elapsed += 1_000) {
+                advanceAndRedeliver(1_000);
+            }
+        } finally {
+            release();
+        }
+
+        assertThat(redelivery.held()).as("both events are still held").isEqualTo(2L);
+        assertThat(redelivery.dropped(EXPIRED)).isZero();
+        assertThat(logged.stream().filter(line -> line.startsWith("ERROR ")))
+            .hasSize(1)
+            .allMatch(line -> line.contains("kept, not dropped"));
+    }
+
+    /// An overflow drop is reported when it happens, not at a next success that a refusing stream never gives.
+    @Test
+    void deliver_overflow_isLoggedAtTheDrop() {
+        var logged = capture();
+
+        try {
+            fail(ClusterEventRedelivery.CAPACITY + 1, UNKNOWN);
+            for (int i = 0; i <= ClusterEventRedelivery.CAPACITY; i++) {
+                redelivery.deliver(event("e" + i));
+            }
+        } finally {
+            release();
+        }
+
+        assertThat(redelivery.dropped(OVERFLOW)).isEqualTo(1L);
+        assertThat(logged.stream().filter(line -> line.startsWith("WARN ")))
+            .hasSize(1)
+            .allMatch(line -> line.contains("dropping the oldest"));
+    }
+
     /// A full buffer drops its OLDEST entry (CTO ruling), counted.
     @Test
     void deliver_beyondCapacity_dropsTheOldest() {
