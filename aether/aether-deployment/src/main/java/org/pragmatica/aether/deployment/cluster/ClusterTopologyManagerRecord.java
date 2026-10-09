@@ -2301,7 +2301,6 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         seenInstances.remove(nodeId);
         listedAbsent.remove(nodeId);
         failedReaps.remove(nodeId);
-        drainGraceChains.remove(nodeId);
         var marked = unconfirmedReaps.remove(nodeId);
         var persisted = persistedMarks.get().get().containsKey(nodeId);
 
