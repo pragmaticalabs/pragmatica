@@ -141,7 +141,15 @@ class LivePlacementMembersWiringTest {
     /// the unbounded factory is for tests only.
     @Test
     void backfillSingleFlight_isBoundedByTheConfiguredIdleBound() {
-        assertThat(assemblyCode()).contains("streamPartitionManager.quarantineView(),Option.some(streamingConfig.backfillFlightIdleBound()));");
+        assertThat(assemblyCode()).contains("streamPartitionManager.quarantineView(),Option.some(streamingConfig.backfillFlightIdleBound()))");
+    }
+
+    /// #2077: the promotion decision's ISR evidence is the RAW committed record read from the store, never the liveness-filtered
+    /// routing view (`streamCommittedOwnerSource`), which hides a dead owner. Binding the routing view here would let a node's own
+    /// membership view vouch for itself.
+    @Test
+    void backfillIsrEvidence_isTheRawCommittedRecord_notTheRoutingView() {
+        assertThat(assemblyCode()).contains(".withCommittedIsr(KvCommittedStreamOwnerSource.kvCommittedStreamOwnerSource(kvStore));");
     }
 
     /// #1339 / #1732: `AetherNodeReplicaSetTriggersTest` drives the trigger helpers through wiring it builds itself, so

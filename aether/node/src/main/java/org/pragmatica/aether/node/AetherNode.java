@@ -5790,7 +5790,9 @@ public interface AetherNode extends ManageableNode {
                                                                           streamCommittedOwnerSource,
                                                                           streamPartitionManager::syncReplicated,
                                                                           streamPartitionManager.quarantineView(),
-                                                                          Option.some(streamingConfig.backfillFlightIdleBound()));
+                                                                          Option.some(streamingConfig.backfillFlightIdleBound()))
+                                                       // #2077: the RAW committed ISR, never the liveness-filtered routing view above.
+                                                       .withCommittedIsr(KvCommittedStreamOwnerSource.kvCommittedStreamOwnerSource(kvStore));
         var streamBackfillExecutor = Executors.newSingleThreadExecutor(runnable -> daemonThread(runnable,
                                                                                                 "stream-partition-backfill"));
         // A2: per-node controller that reconciles the (previously never-populated) ReplicaRegistry

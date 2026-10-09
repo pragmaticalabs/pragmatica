@@ -635,20 +635,157 @@ class PartitionBackfillTest {
                     ? Promise.success(5L)
                     : ReplicationError.General.REPLICATION_TIMEOUT.promise();
             var liveWithoutDead = List.of(owner, self);
-            var control = partitionBackfill(registry, recovery, CatchupTransport.NOOP, probe, selfWatermarkOf(8L), self, BOUND, clock::get, () -> all);
+            var control = partitionBackfill(registry, recovery, CatchupTransport.NOOP, probe, selfWatermarkOf(8L), self, BOUND, clock::get, () -> all).withCommittedIsr((_, _) -> List.of(owner, self));
 
             control.backfill(STREAM, PARTITION).await();
             clock.set(BOUND.millis() + 1);
             assertThat(control.backfill(STREAM, PARTITION).await().isFailure()).as("control: the unreachable peer is a live member").isTrue();
             assertThat(descriptorFor(self).state()).isEqualTo(ReplicationState.SYNCING);
 
-            var backfill = partitionBackfill(registry, recovery, CatchupTransport.NOOP, probe, selfWatermarkOf(8L), self, BOUND, clock::get, () -> liveWithoutDead);
+            var backfill = partitionBackfill(registry, recovery, CatchupTransport.NOOP, probe, selfWatermarkOf(8L), self, BOUND, clock::get, () -> liveWithoutDead).withCommittedIsr((_, _) -> List.of(owner, self));
 
             backfill.backfill(STREAM, PARTITION).await();   // arms this instance's bound at the current clock
             clock.addAndGet(BOUND.millis() + 1);
             assertThat(backfill.backfill(STREAM, PARTITION).await().isSuccess()).as("the unreachable peer is not a live member").isTrue();
             assertThat(descriptorFor(self).state()).isEqualTo(ReplicationState.CAUGHT_UP);
             assertThat(descriptorFor(self).confirmedOffset()).isEqualTo(8L);
+        }
+
+        /// #2077 (v-2079 BLOCK): local membership is not consensus. Committed ISR = {XX, YY}, both holding acked offset 8; self is a
+        /// registered NON-ISR replica lagging at 3. XX and YY are both dead in self's view: unreachable and dropped from its live
+        /// members. Self must stay SYNCING: promoting would serve offset 3 past records acked up to 8. A peer that is not live may
+        /// be ignored only when self, or a reachable probed peer, is named in the RAW committed ISR.
+        @Test
+        void backfill_nonIsrCandidate_bothIsrHoldersDroppedFromLocalView_staysSyncing() {
+            var xx = NodeId.nodeId("node-xx").unwrap();
+            var yy = NodeId.nodeId("node-yy").unwrap();
+            var live = ReplicaPlacement.rank(STREAM, PARTITION, List.of(NODE_AA, NODE_BB, NODE_CC));
+            var self = live.get(1);
+
+            registry.registerReplica(STREAM, PARTITION, xx);
+            registry.registerReplica(STREAM, PARTITION, yy);
+            registry.registerReplica(STREAM, PARTITION, self);
+
+            var clock = new AtomicLong(0L);
+            ReplicaWatermarkProbe probe = (target, _, _) -> target.equals(xx) || target.equals(yy)
+                                                            ? ReplicationError.General.REPLICATION_TIMEOUT.promise()
+                                                            : Promise.success(3L);
+            var backfill = partitionBackfill(registry, recovery, CatchupTransport.NOOP, probe, selfWatermarkOf(3L), self, BOUND, clock::get, () -> live)
+                    .withCommittedIsr((_, _) -> List.of(xx, yy));
+
+            backfill.backfill(STREAM, PARTITION).await();
+            clock.addAndGet(BOUND.millis() + 1);
+
+            assertThat(backfill.backfill(STREAM, PARTITION).await().isFailure()).isTrue();
+            assertThat(descriptorFor(self).state()).as("self lacks acked offsets 4..8 held only by the dead ISR").isEqualTo(ReplicationState.SYNCING);
+        }
+
+        /// The control: a NON-ISR candidate that reaches an ISR peer is not blocked by a dead non-ISR replica. The reachable ISR
+        /// peer holds every acked record, so the contest runs on what is reachable (self is ahead of it here and promotes).
+        @Test
+        void backfill_nonIsrCandidate_reachableIsrPeer_deadNonIsrPeerIgnored() {
+            var all = List.of(NODE_AA, NODE_BB, NODE_CC);
+            var ranked = ReplicaPlacement.rank(STREAM, PARTITION, all);
+            var isrPeer = ranked.get(0);
+            var self = ranked.get(1);
+            var dead = ranked.get(2);
+
+            registry.registerReplica(STREAM, PARTITION, isrPeer);
+            registry.registerReplica(STREAM, PARTITION, dead);
+            registry.registerReplica(STREAM, PARTITION, self);
+
+            var clock = new AtomicLong(0L);
+            ReplicaWatermarkProbe probe = (target, _, _) -> target.equals(isrPeer)
+                                                            ? Promise.success(5L)
+                                                            : ReplicationError.General.REPLICATION_TIMEOUT.promise();
+            var backfill = partitionBackfill(registry, recovery, CatchupTransport.NOOP, probe, selfWatermarkOf(8L), self, BOUND, clock::get, () -> List.of(isrPeer, self))
+                    .withCommittedIsr((_, _) -> List.of(isrPeer));
+
+            backfill.backfill(STREAM, PARTITION).await();
+            clock.addAndGet(BOUND.millis() + 1);
+
+            assertThat(backfill.backfill(STREAM, PARTITION).await().isSuccess()).isTrue();
+            assertThat(descriptorFor(self).state()).isEqualTo(ReplicationState.CAUGHT_UP);
+        }
+
+        /// An empty member view means "cannot judge liveness", never "nobody is alive": even with the ISR vouching for self, an
+        /// unreachable peer then blocks.
+        @Test
+        void backfill_emptyMemberView_isrNamesSelf_unreachablePeerStillBlocks() {
+            var all = List.of(NODE_AA, NODE_BB, NODE_CC);
+            var ranked = ReplicaPlacement.rank(STREAM, PARTITION, all);
+            var owner = ranked.get(0);
+            var self = ranked.get(1);
+            var dead = ranked.get(2);
+
+            registry.registerReplica(STREAM, PARTITION, owner);
+            registry.registerReplica(STREAM, PARTITION, dead);
+            registry.registerReplica(STREAM, PARTITION, self);
+
+            var clock = new AtomicLong(0L);
+            ReplicaWatermarkProbe probe = (target, _, _) -> target.equals(owner)
+                                                            ? Promise.success(5L)
+                                                            : ReplicationError.General.REPLICATION_TIMEOUT.promise();
+            var backfill = partitionBackfill(registry, recovery, CatchupTransport.NOOP, probe, selfWatermarkOf(8L), self, BOUND, clock::get, List::of)
+                    .withCommittedIsr((_, _) -> List.of(self));
+
+            backfill.backfill(STREAM, PARTITION).await();
+            clock.addAndGet(BOUND.millis() + 1);
+
+            assertThat(backfill.backfill(STREAM, PARTITION).await().isFailure()).isTrue();
+            assertThat(descriptorFor(self).state()).isEqualTo(ReplicationState.SYNCING);
+        }
+
+        /// Only a peer that is BOTH unreachable and not live is ignored. A peer that is not live in this view but answers the probe
+        /// keeps its say: here it is ahead of self, so self does not promote.
+        @Test
+        void backfill_isrNamesSelf_nonLivePeerThatAnswersAndIsAhead_stillBlocksPromotion() {
+            var all = List.of(NODE_AA, NODE_BB, NODE_CC);
+            var ranked = ReplicaPlacement.rank(STREAM, PARTITION, all);
+            var owner = ranked.get(0);
+            var self = ranked.get(1);
+            var ahead = ranked.get(2);
+
+            registry.registerReplica(STREAM, PARTITION, owner);
+            registry.registerReplica(STREAM, PARTITION, ahead);
+            registry.registerReplica(STREAM, PARTITION, self);
+
+            var clock = new AtomicLong(0L);
+            ReplicaWatermarkProbe probe = (target, _, _) -> Promise.success(target.equals(ahead) ? 10L : 5L);
+            var backfill = partitionBackfill(registry, recovery, CatchupTransport.NOOP, probe, selfWatermarkOf(8L), self, BOUND, clock::get, () -> List.of(owner, self))
+                    .withCommittedIsr((_, _) -> List.of(self));
+
+            backfill.backfill(STREAM, PARTITION).await();
+            clock.addAndGet(BOUND.millis() + 1);
+
+            assertThat(backfill.backfill(STREAM, PARTITION).await().isFailure()).isTrue();
+            assertThat(descriptorFor(self).state()).isEqualTo(ReplicationState.SYNCING);
+        }
+
+        /// No committed ISR (cold start, or no ISR source bound): no evidence, so a non-live unreachable peer blocks as before.
+        @Test
+        void backfill_noCommittedIsr_nonLiveUnreachablePeer_stillBlocks() {
+            var all = List.of(NODE_AA, NODE_BB, NODE_CC);
+            var ranked = ReplicaPlacement.rank(STREAM, PARTITION, all);
+            var owner = ranked.get(0);
+            var self = ranked.get(1);
+            var dead = ranked.get(2);
+
+            registry.registerReplica(STREAM, PARTITION, owner);
+            registry.registerReplica(STREAM, PARTITION, dead);
+            registry.registerReplica(STREAM, PARTITION, self);
+
+            var clock = new AtomicLong(0L);
+            ReplicaWatermarkProbe probe = (target, _, _) -> target.equals(owner)
+                                                            ? Promise.success(5L)
+                                                            : ReplicationError.General.REPLICATION_TIMEOUT.promise();
+            var backfill = partitionBackfill(registry, recovery, CatchupTransport.NOOP, probe, selfWatermarkOf(8L), self, BOUND, clock::get, () -> List.of(owner, self));
+
+            backfill.backfill(STREAM, PARTITION).await();
+            clock.addAndGet(BOUND.millis() + 1);
+
+            assertThat(backfill.backfill(STREAM, PARTITION).await().isFailure()).isTrue();
+            assertThat(descriptorFor(self).state()).isEqualTo(ReplicationState.SYNCING);
         }
 
         @Test
@@ -2051,10 +2188,33 @@ class PartitionBackfillTest {
                                              OWNER,
                                              BOUND,
                                              new AtomicLong(0L)::get,
-                                             () -> live);
+                                             () -> live).withCommittedIsr((_, _) -> List.of(OWNER));
 
             assertThat(backfill.backfill(STREAM, PARTITION).await().isSuccess()).isTrue();
             assertThat(descriptorFor(OWNER).state()).isEqualTo(ReplicationState.CAUGHT_UP);
+        }
+
+        /// The owner path's twin of the tail-loss guard: the blind survivor is dead in the live view and unreachable, and the owner
+        /// is NOT in the committed ISR, so it waits for the bound as before instead of promoting at once.
+        @Test
+        void backfill_freshOwnerNotInCommittedIsr_blindSurvivorUnreachableAndNotLive_stillWaitsForTheBound() {
+            registry.registerReplica(STREAM, PARTITION, OWNER);
+            registry.registerReplica(STREAM, PARTITION, SURVIVOR);
+
+            ReplicaWatermarkProbe unreachable = (_, _, _) -> ReplicationError.General.REPLICATION_TIMEOUT.promise();
+            var live = MEMBERS.stream().filter(member -> !member.equals(SURVIVOR)).toList();
+            var backfill = partitionBackfill(registry,
+                                             recovery,
+                                             failIfCatchup(),
+                                             unreachable,
+                                             localHeadWatermark(),
+                                             OWNER,
+                                             BOUND,
+                                             new AtomicLong(0L)::get,
+                                             () -> live).withCommittedIsr((_, _) -> List.of(SURVIVOR));
+
+            assertThat(backfill.backfill(STREAM, PARTITION).await().isFailure()).isTrue();
+            assertThat(descriptorFor(OWNER).state()).isEqualTo(ReplicationState.SYNCING);
         }
 
         /// #1431: a blind survivor that ANSWERS with a page cut before its first event (the backstop cause) is not an
