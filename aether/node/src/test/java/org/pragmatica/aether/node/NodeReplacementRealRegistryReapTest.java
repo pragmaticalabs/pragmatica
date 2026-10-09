@@ -415,6 +415,49 @@ class NodeReplacementRealRegistryReapTest {
         assertThat(committed().unwrap().phase()).isEqualTo(NodeReplacementPhase.DONE);
     }
 
+    /// Ruling e9959fa6d(2) for the replacement wiring's own memory: the confirmation of a reap describes one incarnation of the id. The id is up again
+    /// (a node restarted under it) and retired by a later replacement: its new instance is terminated, not skipped as "already reaped".
+    @Test
+    void aNodeSeenUpAgain_isReapedAgainByALaterReplacement_notSkippedAsAlreadyReaped() {
+        put(AetherKey.CapacityLedgerKey.INSTANCE, new CapacityLedgerValue(4, 1, true));
+        put(new AetherKey.CapacityReservationKey(OLD), new CapacityReservationValue("west", realBinding, "core", CapacityReservationPhase.OBSERVED));
+        states.put(OLD, "Dead");
+        record(new NodeReplacementValue(FRESH, "core", NodeReplacementPhase.RETIRING_OLD, 999_999L, "west", "", NodeReplacementValue.MODE_CTM, 0, "", 1L));
+        listing.set(Promise.success(List.of(instance(OLD, "i-1", InstanceStatus.RUNNING))));
+        wiring.reconciler().reconcile().await();
+        wiring.reconciler().reconcile().await();
+        assertThat(committed().unwrap().phase()).isEqualTo(NodeReplacementPhase.DONE);
+        assertThat(terminates.get()).isEqualTo(1);
+
+        // The id is up again, with a new instance and a new reservation, and a later replacement retires it.
+        put(new AetherKey.CapacityReservationKey(OLD), new CapacityReservationValue("west", realBinding, "core", CapacityReservationPhase.OBSERVED));
+        states.put(OLD, "Member");
+        joins(OLD);
+        listing.set(Promise.success(List.of(instance(OLD, "i-2", InstanceStatus.RUNNING))));
+        var later = new NodeReplacementValue(new NodeId("fresh-2"), "core", NodeReplacementPhase.RETIRING_OLD, 999_999L, "west", "", NodeReplacementValue.MODE_CTM, 0, "", 2L);
+
+        replaceRecord(later);
+        wiring.reconciler().reconcile().await();
+        states.put(OLD, "Dead");
+        wiring.reconciler().reconcile().await();
+        wiring.reconciler().reconcile().await();
+
+        assertThat(terminates.get()).as("the second incarnation's instance is terminated, not skipped as already reaped").isEqualTo(2);
+    }
+
+    @SuppressWarnings({"rawtypes", "unchecked"})
+    private void replaceRecord(NodeReplacementValue next) {
+        var key = new AetherKey.NodeReplacementKey(OLD);
+        var existing = store.getTyped(key, NodeReplacementValue.class);
+
+        store.process(store.createBatch(List.of(new KVCommand.LeaderTransaction(key,
+                                                                                java.util.UUID.randomUUID().toString(),
+                                                                                LEADER,
+                                                                                List.of(),
+                                                                                List.of(new KVCommand.Mutation<>(key, existing.map(v -> (AetherValue) v), Option.some((AetherValue) next)))))));
+        index.put(key, next);
+    }
+
     // ---- #2062: every retirement reap is a confirmed reap -----------------------------------------------------------------
 
     private void retire(NodeId node) {

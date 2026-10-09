@@ -311,7 +311,8 @@ public final class NodeReplacementWiring {
         private final Map<NodeId, String> drainBlocked = new ConcurrentHashMap<>();
         private final Map<NodeId, String> drainRefused = new ConcurrentHashMap<>();
         // Nodes whose provider instance a listing after the terminate showed gone, why the last attempt on a node did not, and
-        // when the attempts on a node began. Held per leader: a new leader repeats the (idempotent) confirmation.
+        // when the attempts on a node began. Held per leader: a new leader repeats the (idempotent) confirmation. Held per node INCARNATION: a node
+        // seen up again is forgotten ([#forgetReapOfLiveNode]).
         private final Set<NodeId> reaped = ConcurrentHashMap.newKeySet();
         private final Map<NodeId, String> reapFailure = new ConcurrentHashMap<>();
         private final Map<NodeId, Long> reapSince = new ConcurrentHashMap<>();
@@ -363,6 +364,8 @@ public final class NodeReplacementWiring {
 
             noteLiveInstance(original, record, oldAlive);
             noteLiveInstance(record.replacement(), record, alive(newState));
+            forgetReapOfLiveNode(original, oldAlive);
+            forgetReapOfLiveNode(record.replacement(), alive(newState));
 
             return new Observation(in.clock().getAsLong(),
                                    oldAlive,
@@ -382,6 +385,14 @@ public final class NodeReplacementWiring {
                                    reaped.contains(original),
                                    reapFailure.getOrDefault(original,
                                                             reapFailure.getOrDefault(record.replacement(), "")));
+        }
+
+        /// A node that is up under an id whose reap was confirmed is a new incarnation of the id (ruling e9959fa6d(2)): the confirmation described the
+        /// previous one and must not stand in for the reap of this one.
+        private void forgetReapOfLiveNode(NodeId node, boolean up) {
+            if (up) {
+                reaped.remove(node);
+            }
         }
 
         private DrainState drainState(NodeId original, boolean oldAlive) {
