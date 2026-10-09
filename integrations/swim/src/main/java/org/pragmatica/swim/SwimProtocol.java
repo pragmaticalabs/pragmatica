@@ -125,7 +125,8 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// 2026-06-11): consulted in [#emitFaultyOrUnknown] ONLY for a never-`everSeenHealthy`
     /// peer past its join grace. While the predicate reports a LIVE transport connection for
     /// the peer, the FAULTY verdict is DEFERRED (`UnknownObserved` keeps being emitted; the
-    /// verdict is re-evaluated on every subsequent FAULTY edge — never latched): a peer with
+    /// verdict is re-evaluated on every subsequent FAULTY edge and replayed on the tick once the link is gone
+    /// ([#reevaluateTransportVetoedFaulty], #2077) — never latched): a peer with
     /// an open transport link is busy-but-alive (boot deploy-storm starves its first
     /// probe-ack), not a ghost. FAULTY for a never-healthy peer therefore requires
     /// co-confirmation: join-grace expired AND no live transport connection. This is one-way
@@ -2747,7 +2748,7 @@ public final class SwimProtocol implements SwimMessageHandler {
     ///   `FaultyObserved` regardless of `everSeenHealthy` — EXCEPT when the never-HEALTHY
     ///   peer still has a LIVE transport connection (gate RCA fix, 2026-06-11): then the
     ///   verdict is DEFERRED (`UnknownObserved`, re-evaluated on every subsequent FAULTY
-    ///   edge — never latched). FAULTY for a never-healthy peer requires co-confirmation:
+    ///   edge and replayed on the tick once the link is gone, #2077 — never latched). FAULTY for a never-healthy peer requires co-confirmation:
     ///   no live transport connection — a busy-but-alive joiner whose first probe-ack is
     ///   starved by the boot deploy-storm must not be false-killed while its transport link
     ///   is provably up. The `RECOVERING` branch is the critical compose-restart fix: peers

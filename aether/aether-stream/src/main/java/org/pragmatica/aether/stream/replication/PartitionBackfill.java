@@ -1605,7 +1605,8 @@ public final class PartitionBackfill {
         return replicas.stream()
                        .filter(descriptor -> !descriptor.nodeId()
                                                         .equals(self))
-                       .filter(descriptor -> isLive(live, descriptor.nodeId()))
+                       .filter(descriptor -> isLive(live,
+                                                    descriptor.nodeId()))
                        .filter(descriptor -> descriptor.confirmedOffset() < 0)
                        .map(ReplicaDescriptor::nodeId)
                        .sorted()

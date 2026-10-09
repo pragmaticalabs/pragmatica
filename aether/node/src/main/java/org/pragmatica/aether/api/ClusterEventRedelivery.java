@@ -40,7 +40,9 @@ import static org.pragmatica.lang.Unit.unit;
 /// had no durable record.
 ///
 /// **What.** A failed publish is buffered and retried with backoff until it lands or its age passes
-/// [#RETRY_HORIZON_MS]. A retry re-sends the SAME event object, stamped once with `details.eventId` when the
+/// [#RETRY_HORIZON_MS]. A transient refusal (`Cause.Transient`, for example a partition owner not yet promoted)
+/// restarts that age, so the horizon bounds a stream that refuses for good, not a promotion that is merely slow (#2077).
+/// A retry re-sends the SAME event object, stamped once with `details.eventId` when the
 /// aggregator accepted it ([ClusterEventIdentity]). An event that landed despite an unknown outcome and is then
 /// sent again is therefore a duplicate with the same `eventId`, and `ClusterEventAggregator.events()` and the event
 /// feed remove it on read.
