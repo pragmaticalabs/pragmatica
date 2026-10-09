@@ -184,6 +184,20 @@ class EmberPlannedDepartureAlertsTest {
         }
 
         assertThat(cluster.getLeaderManagementPort().isPresent()).as("a leader is elected").isTrue();
+        // #2061: a leader is NOT a readable cluster-events stream. The stream's partition is created and promoted after the
+        // quorum forms; a node blackholed before that point is a co-replica that cold-start promotion waits for ("cold-start
+        // self-promotion BLOCKED - a co-replica is unreachable"), so the stream never becomes writable and EVERY observer
+        // reads events=0, while the local node-health alert still fires. CI hit exactly that on #2068 and #2072: blackhole
+        // 5-7 s after quorum. Acting only once every node can read an event keeps the event-surface assertions meaning
+        // "the stream carried the record" instead of racing the stream's own boot. A precondition only: no assertion below
+        // is weakened.
+        awaitCondition(() -> "the cluster-events stream is readable on every node before the scenario starts; nodes reading nothing: " + silentNodes(),
+                       EVENT_REPLICATION_BUDGET_MS,
+                       () -> silentNodes().isEmpty());
+    }
+
+    private List<String> silentNodes() {
+        return cluster.allNodes().stream().filter(n -> events(n).isEmpty()).map(n -> n.self().id()).toList();
     }
 
     private String followerOf(String leaderId) {
