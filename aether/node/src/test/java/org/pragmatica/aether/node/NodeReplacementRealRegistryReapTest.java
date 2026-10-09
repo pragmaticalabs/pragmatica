@@ -924,14 +924,14 @@ class NodeReplacementRealRegistryReapTest {
     }
 
     /// An inherited mark carries the memory that the instance was seen into the successor's own reap, so that a drain on the successor, whose
-    /// first listing is empty, is confirmed gone and closes the mark. (The at-once re-check is made to fail first, by an unreachable provider.)
+    /// first listing is empty, is confirmed gone and closes the mark. (The at-once re-check is made to fail first, by an unreachable provider; the periodic one is 15 s away.)
     @Test
     void aSuccessorsOwnReap_remembersWhatTheInheritedMarkSaw() throws Exception {
         markAfterSeeingTheInstance("the listing still showed the instance");
         within(10, () -> assertThat(persistedMark(OLD).map(AetherValue.UnconfirmedTerminationValue::seen).or(false)).isTrue());
         ctmUnderTest.deactivate();
         var successorEvents = new java.util.concurrent.CopyOnWriteArrayList<String>();
-        var successor = newManager(lifecycle, false, 60_000L, successorEvents);
+        var successor = newManager(lifecycle, false, 3_000L, successorEvents);
 
         Thread.sleep(500);
         listing.set(Promise.success(List.of()));
