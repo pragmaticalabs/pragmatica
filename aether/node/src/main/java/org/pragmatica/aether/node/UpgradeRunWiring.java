@@ -201,7 +201,7 @@ public final class UpgradeRunWiring {
                      .begin(node, targetVersion)
                      .<BeginResult> map(_ -> new BeginResult.Started())
                      .recover(cause -> switch (cause) {
-                case NodeReplacementService.Refusal.NotLeader _, NodeReplacementService.Refusal.AlreadyReplacing _ -> new BeginResult.Deferred(cause.message());
+                case NodeReplacementService.Refusal.NotLeader _, NodeReplacementService.Refusal.AlreadyReplacing _, NodeReplacementService.Refusal.Conflict _, NodeReplacementService.Refusal.UnknownNode _ -> new BeginResult.Deferred(cause.message());
                 case NodeReplacementService.Refusal _ -> new BeginResult.Refused(cause.message());
                 default -> new BeginResult.Deferred(cause.message());
             });
@@ -214,11 +214,11 @@ public final class UpgradeRunWiring {
         }
     }
 
-    private static final class Service implements UpgradeRunService {
+    static final class Service implements UpgradeRunService {
         private final Inputs in;
-        private final Env environment;
+        private final UpgradeRunReconciler.Environment environment;
 
-        Service(Inputs in, Env environment) {
+        Service(Inputs in, UpgradeRunReconciler.Environment environment) {
             this.in = in;
             this.environment = environment;
         }
@@ -266,18 +266,27 @@ public final class UpgradeRunWiring {
                      .run();
         }
 
+        /// A request, applied when the replacement in flight is terminal. It never downgrades a pending ABORT: the second operator's
+        /// pause is refused, not allowed to quietly cancel the first one's abort.
         @Override
         public Promise<UpgradeRunValue> pause() {
-            return request("pause",
-                           UpgradeRunState.RUNNING,
-                           run -> run.with(run.index(),
-                                           run.inFlight(),
-                                           run.state(),
-                                           UpgradeStop.PAUSE,
-                                           run.reason(),
-                                           now()));
+            return in.index()
+                     .run()
+                     .filter(run -> run.state() == UpgradeRunState.RUNNING && run.stop() == UpgradeStop.ABORT)
+                     .fold(() -> request("pause",
+                                         UpgradeRunState.RUNNING,
+                                         run -> run.with(run.index(),
+                                                         run.inFlight(),
+                                                         run.state(),
+                                                         UpgradeStop.PAUSE,
+                                                         run.reason(),
+                                                         now())),
+                           _ -> new Refusal.NotApplicable("RUNNING with an abort pending", "pause").<UpgradeRunValue> promise());
         }
 
+        /// A RUNNING run takes an ABORT request, applied when the replacement in flight is terminal. A PAUSED run has no replacement
+        /// in flight that is not terminal (every pause is committed from a terminal record, or before one began), so it ends ABORTED
+        /// at once: through RUNNING it would announce a resume that never happened.
         @Override
         public Promise<UpgradeRunValue> abort() {
             return in.index()
@@ -287,10 +296,13 @@ public final class UpgradeRunWiring {
                            run -> run.state() == UpgradeRunState.PAUSED
                                   ? change(run,
                                            run.with(run.index(),
-                                                    run.inFlight(),
-                                                    UpgradeRunState.RUNNING,
-                                                    UpgradeStop.ABORT,
-                                                    run.reason(),
+                                                    "",
+                                                    UpgradeRunState.ABORTED,
+                                                    UpgradeStop.NONE,
+                                                    "aborted by an operator after " + run.index()
+                                                   + " of " + run.order()
+                                                                 .size()
+                                                   + " nodes",
                                                     now()))
                                   : change(run,
                                            run.with(run.index(),

@@ -3606,7 +3606,7 @@ Disable CTM auto-heal. Writes `AutoHealStateValue(enabled=false, reason)` throug
 
 ### POST /api/v1/cluster/upgrade
 
-Change the version the cluster provisions (#1543 part C). The upgrade rewrites the `[cluster] version` line of the committed TOML — the one replacements render their image tag and jar URL from — and stores the same version beside it, under the `expectedVersion` fence. After it, every node a replacement or scale-up provisions boots the target version, and a later `POST /api/v1/cluster/config` built from the committed TOML does not put the old version back. After the version is stored the leader starts a rolling-upgrade run (`GET /api/v1/upgrade/status`) that replaces the running nodes, one at a time, through the replacement machinery: no node is restarted under its own id. A re-issued upgrade to the stored version starts the run again if one is still owed (a node does not yet report the version) and otherwise answers `already at version`; an upgrade to a different version while a run is live is refused (`409`).
+Change the version the cluster provisions (#1543 part C). The upgrade rewrites the `[cluster] version` line of the committed TOML — the one replacements render their image tag and jar URL from — and stores the same version beside it, under the `expectedVersion` fence. After it, every node a replacement or scale-up provisions boots the target version, and a later `POST /api/v1/cluster/config` built from the committed TOML does not put the old version back. After the version is stored the leader starts a rolling-upgrade run (`GET /api/v1/upgrade/status`) that replaces the running nodes, one at a time, through the replacement machinery: no node is restarted under its own id. A re-issued upgrade to the stored version starts the run again if one is still owed (a node does not yet report the version) and otherwise answers `already at version`. A node's version is known to the leader only when it joined after bootstrap (a bootstrap peer's version is not yet carried to the other nodes), and a node whose version is unknown counts as not on the target, so a same-version re-issue on a cluster that was never upgraded replaces such nodes; an upgrade to a different version while a run is live is refused (`409`).
 
 **RBAC:** ADMIN
 
@@ -4656,7 +4656,7 @@ the leader (`NotLeader`); `401`/`403` when the caller is not authorized.
 
 The rolling-upgrade run (#1543 part F), started by `POST /api/v1/cluster/upgrade`. Route target is `LEADER`. The run replaces every node
 that does not report the target version, one replacement at a time through the replacement machinery above: cores first with the
-leader last, then workers. It never restarts a node under its own id.
+leader last (the leader when the run starts; a leader change mid-run is not re-ordered, the new leader is replaced by drain and re-election like any node), then workers. It never restarts a node under its own id.
 
 **Response:** `present` (false = there never was a run; the other fields are empty), `targetVersion`, `state` (`RUNNING`, `PAUSED`,
 `COMPLETED`, `ABORTED`), `stop` (the pending request: `NONE`, `PAUSE`, `ABORT`), `index` of `total` nodes done, `inFlight` (the node being

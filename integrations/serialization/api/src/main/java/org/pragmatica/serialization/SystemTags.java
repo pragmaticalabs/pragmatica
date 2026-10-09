@@ -623,7 +623,7 @@ public interface SystemTags {
         pin(table, 2133, "org.pragmatica.aether.slice.kvstore.AetherValue.UpgradeRunValue");
         pin(table, 2134, "org.pragmatica.aether.slice.kvstore.AetherValue.UpgradeRunState");
         pin(table, 2135, "org.pragmatica.aether.slice.kvstore.AetherValue.UpgradeStop");
-        // ---- 2132..16383 RESERVED ----
+        // ---- 2136..16383 RESERVED ----
         rejectDuplicateTags(table);
 
         return Map.copyOf(table);

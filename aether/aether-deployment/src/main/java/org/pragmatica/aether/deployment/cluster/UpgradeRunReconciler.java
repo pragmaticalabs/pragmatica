@@ -11,6 +11,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.UpgradeRunValue;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 
@@ -58,11 +59,19 @@ public interface UpgradeRunReconciler {
                 if (!environment.isLeader() || !running.compareAndSet(false, true)) {
                     return Promise.unitPromise();
                 }
+                // A tick that throws before it has a promise (a bad observation) must still release the guard, or no later tick would run.
+                return Result.lift(this::tick).fold(cause -> {
+                                                        running.set(false);
 
+                                                        return cause.<Unit> promise();
+                                                    },
+                                                    promise -> promise.onResultRun(() -> running.set(false)));
+            }
+
+            private Promise<Unit> tick() {
                 return environment.run()
                                   .filter(run -> run.state() == UpgradeRunState.RUNNING)
-                                  .fold(Promise::unitPromise, this::advance)
-                                  .onResultRun(() -> running.set(false));
+                                  .fold(Promise::unitPromise, this::advance);
             }
 
             private Promise<Unit> advance(UpgradeRunValue run) {

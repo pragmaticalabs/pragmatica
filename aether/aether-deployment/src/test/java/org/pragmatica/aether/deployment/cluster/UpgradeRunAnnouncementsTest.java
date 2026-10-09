@@ -32,6 +32,13 @@ class UpgradeRunAnnouncementsTest {
         assertThat(codes(Option.none(), run(UpgradeRunState.RUNNING, 0, 1L))).containsExactly(OperatorWarningCode.UPGRADE_STARTED);
     }
 
+    /// A node that first learns of the run through a replayed put, with the run already under way (or ended), must not announce a start.
+    @Test
+    void aRunFirstSeenUnderWay_orEnded_announcesNoStart() {
+        assertThat(codes(Option.none(), run(UpgradeRunState.RUNNING, 1, 1L))).isEmpty();
+        assertThat(codes(Option.none(), run(UpgradeRunState.COMPLETED, 3, 1L))).containsExactly(OperatorWarningCode.UPGRADE_COMPLETED);
+    }
+
     @Test
     void aNewRun_afterAnEndedOne_announcesStartedAgain() {
         assertThat(codes(Option.some(run(UpgradeRunState.COMPLETED, 2, 1L)), run(UpgradeRunState.RUNNING, 0, 9L)))
