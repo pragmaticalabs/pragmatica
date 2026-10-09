@@ -203,6 +203,16 @@ class NodeReplacementRealRegistryReapTest {
 
         ctm.setOperatorWarningSink(OperatorWarningSink.handingOffTo(warning -> warnings.add(warning.code().code() + ":" + warning.subject() + ":" + warning.message())));
         ctm.setRetirementRefusal(_ -> Option.none());
+        ctm.setHierarchyStateWriter(org.pragmatica.aether.deployment.cluster.HierarchyStateWriter.hierarchyStateWriter(() -> store.getTyped(LeaderKey.INSTANCE, LeaderValue.class),
+                                                                                                                       key -> store.get(key),
+                                                                                                                       this::process));
+        ctm.setUnconfirmedMarks(() -> {
+            var marks = new java.util.HashMap<NodeId, AetherValue.UnconfirmedTerminationValue>();
+
+            store.forEach(AetherKey.UnconfirmedTerminationKey.class, AetherValue.UnconfirmedTerminationValue.class, (key, mark) -> marks.put(key.nodeId(), mark));
+
+            return Map.copyOf(marks);
+        });
         ctm.activate();
 
         return ctm;
@@ -635,6 +645,52 @@ class NodeReplacementRealRegistryReapTest {
         assertThat(raised("instance-termination-unconfirmed")).isTrue();
         assertThat(terminates.get()).isEqualTo(1);
         assertThat(successor).isNotSameAs(ctmUnderTest);
+    }
+
+    private Option<AetherValue.UnconfirmedTerminationValue> persistedMark(NodeId node) {
+        return store.getTyped(new AetherKey.UnconfirmedTerminationKey(node), AetherValue.UnconfirmedTerminationValue.class);
+    }
+
+    /// (c) The marks live in the replicated store: written when the node is marked, inherited by the next leader, which announces the open mark
+    /// again (a recovery can be published only by the node that raised the warning), re-checks it at once and, the instance being gone, fires the
+    /// recovery and deletes the mark. This is the case a per-manager set cannot serve: the old leader never confirms anything.
+    @Test
+    void aMark_survivesALeaderChange_andTheSuccessorClosesItWhenTheInstanceIsGone() throws Exception {
+        put(AetherKey.CapacityLedgerKey.INSTANCE, new CapacityLedgerValue(3, 1, true));
+        listing.set(Promise.success(List.of(instance(OLD, "i-1", InstanceStatus.RUNNING))));
+        lagTerminate.set(true);
+        // The old leader saw the instance and had its terminate accepted, but its relisting still showed it: unconfirmed, and it marks the node.
+        assertThat(ctmUnderTest.reapRetired(OLD, WEST, false).await().isFailure()).isTrue();
+        ctmUnderTest.markUnconfirmed(OLD, "the listing still showed the instance");
+
+        within(10, () -> assertThat(persistedMark(OLD).map(AetherValue.UnconfirmedTerminationValue::seen).or(false)).as("persisted, with the memory that it was seen").isTrue());
+
+        ctmUnderTest.deactivate();
+        // The instance disappears while no leader is looking (the provider's delete completed).
+        listing.set(Promise.success(List.of()));
+
+        newManager(lifecycle, false);
+
+        within(15, () -> assertThat(raised("instance-termination-confirmed")).as("the successor closed a mark it did not write").isTrue());
+        within(5, () -> assertThat(persistedMark(OLD).isEmpty()).as("and deleted it").isTrue());
+        assertThat(warnings.stream().filter(w -> w.startsWith("instance-termination-unconfirmed:" + OLD.id())).count())
+            .as("announced again by the successor so that its own aggregator can close it")
+            .isEqualTo(2);
+    }
+
+    /// (c) A mark whose instance was NEVER listed is not closed by an empty listing, on the old leader or the new: the mark is persisted with seen=false.
+    @Test
+    void aMarkOfAnInstanceNeverListed_isNotClosedByTheSuccessor() throws Exception {
+        ctmUnderTest.markUnconfirmed(OLD, "never listed");
+        within(10, () -> assertThat(persistedMark(OLD).map(AetherValue.UnconfirmedTerminationValue::seen).or(true)).isFalse());
+        ctmUnderTest.deactivate();
+        listing.set(Promise.success(List.of()));
+
+        newManager(lifecycle, false);
+        Thread.sleep(2500);
+
+        assertThat(persistedMark(OLD).isPresent()).as("still open: nothing proves the instance is gone").isTrue();
+        assertThat(raised("instance-termination-confirmed")).isFalse();
     }
 
     private final class CountingProvider implements ComputeProvider {

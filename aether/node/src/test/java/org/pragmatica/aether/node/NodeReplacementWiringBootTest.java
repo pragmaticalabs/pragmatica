@@ -110,6 +110,30 @@ class NodeReplacementWiringBootTest {
         assertThat(sink).as("a hand-off sink to the event aggregator, not the log-only default").isNotSameAs(OperatorWarningSink.logOnly());
     }
 
+    /// #2062: the marks of retired nodes whose termination is unconfirmed are read from the node's replicated store, so a new leader inherits
+    /// them. Without the wiring the topology manager reads an empty map and a successor never sees an open mark.
+    @Test
+    @Timeout(value = 120, unit = SECONDS)
+    @SuppressWarnings({"rawtypes", "unchecked"})
+    void theTopologyManager_readsTheUnconfirmedMarksFromTheNodesStore() {
+        node = bootedNode();
+        var mark = new AetherValue.UnconfirmedTerminationValue("provider unreachable", true);
+        var leader = new org.pragmatica.cluster.state.kvstore.LeaderValue(self, 1);
+        var key = new AetherKey.UnconfirmedTerminationKey(FRESH);
+        var store = (org.pragmatica.cluster.state.kvstore.KVStore) node.kvStore();
+
+        store.process(store.createBatch(java.util.List.of(new org.pragmatica.cluster.state.kvstore.KVCommand.Put(org.pragmatica.cluster.state.kvstore.LeaderKey.INSTANCE, leader))));
+        store.process(store.createBatch(java.util.List.of(new org.pragmatica.cluster.state.kvstore.KVCommand.LeaderTransaction(key,
+                                                                                                                             java.util.UUID.randomUUID().toString(),
+                                                                                                                             leader,
+                                                                                                                             java.util.List.of(),
+                                                                                                                             java.util.List.of(new org.pragmatica.cluster.state.kvstore.KVCommand.Mutation<>(key, Option.none(), Option.some(mark)))))));
+
+        var marks = ((ClusterTopologyManager) accessor(node, "clusterTopologyManagerInstance")).unconfirmedMarks();
+
+        assertThat(marks).as("read from the replicated store").containsEntry(FRESH, mark);
+    }
+
     private static Object accessor(AetherNode booted, String name) {
         return Result.lift(() -> {
             var method = booted.getClass().getDeclaredMethod(name);

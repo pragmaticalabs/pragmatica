@@ -19,5 +19,7 @@
 - **The manager owns the unconfirmed-termination lifecycle.** `ClusterTopologyManager.markUnconfirmed(node, cause)` marks the node and raises
   `instance-termination-unconfirmed` (once); every raiser goes through it. While it is the active leader the manager re-checks each marked node at a low
   bounded rate (one confirmed-reap attempt per node per five provisioning windows) and raises `instance-termination-confirmed` on a real confirmation.
-  A manager that has just become leader owns no marks: its activation replay re-marks the instances it finds still listed at the provider and closes
-  the mark itself when the reap is confirmed. [unverified: the marks of a leader whose instance is already gone are not carried over.]
+  The marks live in the replicated store (`UnconfirmedTerminationKey`/`Value`, wire tags 2132/2133, runtime state): written by `markUnconfirmed`, removed on
+  the recovery. A manager that has just become leader inherits every persisted mark, announces it again (a recovery can be published only by the node
+  whose aggregator raised the warning), re-checks it at once, and closes it when the instance is gone; the mark remembers whether the provider ever listed the
+  instance, so an instance that was never listed is not closed by an empty listing, on either leader.
