@@ -97,6 +97,21 @@ class OwnerPromotionAlarmTest {
         assertThat(published).extracting(OperatorWarning::subject).doesNotHaveDuplicates().allMatch(subject -> subject.startsWith("orders[3]/OWNER_ACTIVATION"));
     }
 
+    /// The same escape raised twice (a second tenure, same partition, gate and skipped members) must not collapse into one subject: the
+    /// event layer throttles per (code, subject) for 60 s, and every escape is to be an event. The subject carries the instant.
+    @Test
+    void promotionEscape_sameEscapeTwice_hasDistinctSubjects() throws InterruptedException {
+        var alarm = AetherNode.ownerPromotionAlarm(sink);
+        var escape = new OwnerActivation.PromotionEscape("orders", 3, OwnerActivation.EscapeGate.OWNER_ACTIVATION, NodeId.randomNodeId(), List.of(PEER), TimeSpan.timeSpan(120).seconds(), TimeSpan.timeSpan(121).seconds());
+
+        alarm.escaped(escape);
+        Thread.sleep(20);
+        alarm.escaped(escape);
+
+        await().atMost(java.time.Duration.ofSeconds(5)).until(() -> published.size() == 2);
+        assertThat(published).extracting(OperatorWarning::subject).doesNotHaveDuplicates();
+    }
+
     /// The blocks that still have no code stay a log line: ending one raises no event, there is nothing to recover.
     @Test
     void otherBlock_endingRaisesNoEvent() throws InterruptedException {

@@ -745,10 +745,10 @@ class OwnerActivationTest {
         assertThat(gate.activate(STREAM, PARTITION).await().isSuccess()).as("ownership left").isFalse();
 
         record.set(Option.some(ownedWithIsr(SELF, List.of(SELF, PEER_A, PEER_B), 10L)));
-        unreachable.remove(PEER_A);
+        members.set(List.of(SELF));
         lineageAccepts.set(true);
 
-        assertThat(gate.activate(STREAM, PARTITION).await().isSuccess()).as("a new tenure, every member answering").isTrue();
+        assertThat(gate.activate(STREAM, PARTITION).await().isSuccess()).as("a new tenure with no other member to probe").isTrue();
         assertThat(escapes).isEmpty();
     }
 
