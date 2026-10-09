@@ -6,12 +6,20 @@ package org.pragmatica.aether.stream.forward;
 
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.io.TimeSpan;
 
 
 @FunctionalInterface
 public interface StreamForwardTransport {
     @Contract
     void send(NodeId target, StreamForwardMessage message);
+
+    /// As [#send(NodeId, StreamForwardMessage)] for a request whose caller stops waiting after `callerWait` (#1996): a
+    /// transport with an offline buffer drops the frame at the flush once that wait has passed. Default ignores it.
+    @Contract
+    default void send(NodeId target, StreamForwardMessage message, TimeSpan callerWait) {
+        send(target, message);
+    }
 
     StreamForwardTransport NOOP = (_, _) -> {};
 }

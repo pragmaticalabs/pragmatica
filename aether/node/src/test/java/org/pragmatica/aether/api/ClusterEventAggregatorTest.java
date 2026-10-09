@@ -24,6 +24,7 @@ import org.pragmatica.aether.stream.StreamPartitionManager;
 import org.pragmatica.aether.stream.StreamPartitionManager.Exhaustion;
 import org.pragmatica.aether.stream.SystemStreamFactories;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.net.NetworkServiceMessage;
 import org.pragmatica.consensus.leader.LeaderNotification;
 import org.pragmatica.consensus.topology.ClusterStateNotification;
 import org.pragmatica.consensus.topology.MembershipDecision;
@@ -1277,6 +1278,29 @@ class ClusterEventAggregatorTest {
             .containsExactly("orders[3]", "orders[4]", "orders[3]");
         assertThat(events.getLast().details()).containsEntry("suppressedSince", "999");
         assertThat(events.getFirst().details()).containsEntry("suppressedSince", "0");
+    }
+
+    /// #1996: request frames the transport dropped at an offline-buffer flush reach the event stream, naming the peer, how many
+    /// frames and of which message types. A point event with no recovery: the frames are already gone. A reattach flapping
+    /// inside the throttle window folds into `suppressedSince` rather than flooding the stream.
+    @Test
+    void onOfflineFramesExpired_emitsAWarningNamingThePeerCountAndPath_andThrottlesPerPeer() {
+        var h = Harness.create(Harness.defaultRetention(), NOT_OWNER);
+        var peer = new NodeId("peer-1");
+
+        h.aggregator().onOfflineFramesExpired(new NetworkServiceMessage.OfflineFramesExpired(peer, 3, Map.of("InvokeRequest", 3)));
+        h.aggregator().onOfflineFramesExpired(new NetworkServiceMessage.OfflineFramesExpired(peer, 1, Map.of("HttpForwardRequest", 1)));
+        h.aggregator().onOfflineFramesExpired(new NetworkServiceMessage.OfflineFramesExpired(new NodeId("peer-2"), 2, Map.of("PublishForward", 2)));
+
+        var events = h.events();
+
+        assertThat(events).as("one per peer per window; the second report for peer-1 is held back").hasSize(2);
+        assertThat(events.getFirst()).isInstanceOf(ClusterEvent.OperatorWarning.class);
+        assertThat(events.getFirst().severity()).isEqualTo(ClusterEvent.Severity.WARNING);
+        assertThat(events.getFirst().details()).containsEntry("code", "offline-frames-expired")
+                                               .containsEntry("subject", "peer-1");
+        assertThat(events.getFirst().summary()).contains("3 buffered request frame(s)").contains("InvokeRequest=3");
+        assertThat(events.getLast().details()).containsEntry("subject", "peer-2");
     }
 
     private static OperatorWarning diverged(String subject) {

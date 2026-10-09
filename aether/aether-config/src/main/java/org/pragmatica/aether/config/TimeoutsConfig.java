@@ -144,19 +144,27 @@ public record TimeoutsConfig(InvocationTimeouts invocation,
     /// has a second floor to clear — pings originate from the leader, so a leader election is a
     /// legitimate ping gap, and a value below worst-case election time dissolves healthy communities
     /// during a routine election.
+    ///
+    /// `offlineBufferCap` (#1996) is the longest a request frame (an invocation, a forward, a stream or replication
+    /// request, a command forward) may be held in a peer's offline buffer while the peer is unreachable. A frame
+    /// is dropped at the flush once its caller's own deadline has passed, and never held longer than this; the cap
+    /// alone governs only a request with no caller deadline (a fire-and-forget invocation). A policy default
+    /// matching the longest caller wait the cluster ships with, not a measured value.
     public record ClusterTimeouts(TimeSpan hello,
                                   TimeSpan reconciliationInterval,
                                   TimeSpan pingInterval,
                                   TimeSpan channelProtection,
                                   TimeSpan coreAbsence,
-                                  TimeSpan communityAbsence) {
+                                  TimeSpan communityAbsence,
+                                  TimeSpan offlineBufferCap) {
         public static ClusterTimeouts clusterTimeouts() {
             return new ClusterTimeouts(timeSpan(5).seconds(),
                                        timeSpan(5).seconds(),
                                        timeSpan(1).seconds(),
                                        timeSpan(15).seconds(),
                                        timeSpan(10).seconds(),
-                                       timeSpan(20).seconds());
+                                       timeSpan(20).seconds(),
+                                       timeSpan(30).seconds());
         }
 
         /// The #590 ordering invariant as a predicate, so the one comparison that matters lives beside

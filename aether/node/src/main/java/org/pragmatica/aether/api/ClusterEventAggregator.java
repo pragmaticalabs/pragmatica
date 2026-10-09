@@ -2174,6 +2174,19 @@ public final class ClusterEventAggregator {
         return Map.of("nodeId", nodeId, "fence", String.valueOf(fence), "since", String.valueOf(since));
     }
 
+    /// #1996: request frames the transport dropped at an offline-buffer flush because their callers had given up. The
+    /// transport has already logged the drop, so this only emits, through the same per-`(code, subject)` throttle as
+    /// every operator warning. A reattach flapping inside the window folds into `suppressedSince`; the exact total is
+    /// the `quic_offline_expired_total` metric.
+    @Contract
+    public void onOfflineFramesExpired(NetworkServiceMessage.OfflineFramesExpired event) {
+        onOperatorWarning(OperatorWarning.operatorWarning(OperatorWarningCode.OFFLINE_FRAMES_EXPIRED,
+                                                          event.nodeId().id(),
+                                                          "Dropped " + event.count()
+                                                         + " buffered request frame(s) for peer " + event.nodeId().id()
+                                                         + " on reattach, their callers had already given up: " + event.byPath()));
+    }
+
     @Contract
     public void onConnectionFailed(NetworkServiceMessage.ConnectionFailed event) {
         emit(new ConnectionFailed(hlcClock.now(),
