@@ -4952,11 +4952,9 @@ public interface AetherNode extends ManageableNode {
                                                                                                                      .filter(coreAdmission::isAllowed)
                                                                                                                      .collect(Collectors.toUnmodifiableSet()),
                                                                                             stableCdmReadyNodesSupplier,
-                                                                                            id -> clusterNode.topologyManager()
-                                                                                                             .get(id)
-                                                                                                             .flatMap(info -> Option.option(info.labels()
-                                                                                                                                                .get(NodeInfo.LABEL_VERSION)))
-                                                                                                             .or(""),
+                                                                                            id -> AdvertisedVersion.of(id,
+                                                                                                                       clusterNode.topologyManager(),
+                                                                                                                       Option.option(membershipFsmRef.get())),
                                                                                             clusterTopologyManager,
                                                                                             id -> managementServerRef.get()
                                                                                                                      .fold(() -> Promise.success(NodeReplacementWiring.DrainOutcome.pending("management server not ready")),
@@ -4992,11 +4990,9 @@ public interface AetherNode extends ManageableNode {
                                                                               commands -> clusterNode.apply(commands),
                                                                               upgradeRuns,
                                                                               membershipFsmRef::get,
-                                                                              id -> clusterNode.topologyManager()
-                                                                                               .get(id)
-                                                                                               .flatMap(info -> Option.option(info.labels()
-                                                                                                                                  .get(NodeInfo.LABEL_VERSION)))
-                                                                                               .or(""),
+                                                                              id -> AdvertisedVersion.of(id,
+                                                                                                         clusterNode.topologyManager(),
+                                                                                                         Option.option(membershipFsmRef.get())),
                                                                               replacementWiring.service(),
                                                                               System::currentTimeMillis));
 

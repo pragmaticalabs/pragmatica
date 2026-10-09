@@ -96,7 +96,7 @@ class EmberUpgradeRunTest {
 
         assertThat(now).as("three nodes, none of them an original id").hasSize(3).doesNotContainAnyElementsOf(originals);
         assertThat(advertisedVersions()).as("every node advertises the target version").containsOnly(NEW);
-        assertThat(versionsSeenBy(survivor, now)).as("and the leader's own view of every node, which is what the run reads").containsOnly(NEW);
+        assertThat(viewedBy(survivor, now)).as("and the leader's own view of every node, which is what the run reads").containsOnly(NEW);
         awaitCondition("the installed electorate is the three new nodes", 120_000L, () -> EmberNodeReplacementTest.installedVoters(awaitLeader()).equals(now));
     }
 
@@ -152,6 +152,32 @@ class EmberUpgradeRunTest {
         assertThat(advertisedVersions()).as("exactly the replaced node reports the target; the run did not go on").containsExactlyInAnyOrder(NEW, OLD, OLD);
     }
 
+    /// The pin for what Ember measured (#1543 F): with the version only in the bootstrap peer LIST, a node's topology holds its own label
+    /// and no other, for ever. The label rides the handshake into the membership descriptor like role and source, so every node sees every
+    /// peer's version, bootstrap peers included, and `/nodes/lifecycle` and the upgrade status report real versions.
+    @Test
+    @Timeout(600)
+    void everyNodeSeesEveryPeersVersion_bootstrapPeersIncluded() {
+        start("upv");
+        awaitLeader();
+
+        var everyone = ids(live());
+
+        awaitCondition("every node sees every node's version", 120_000L, () -> live().stream().allMatch(viewer -> viewedBy(viewer, everyone).stream().allMatch(OLD::equals)));
+
+        for (var viewer : live()) {
+            assertThat(viewedBy(viewer, everyone)).as("%s's view of %s", viewer.self().id(), everyone).hasSize(3).containsOnly(OLD);
+        }
+    }
+
+    private static List<String> viewedBy(AetherNode viewer, Set<NodeId> ids) {
+        return ids.stream()
+                  .map(id -> org.pragmatica.aether.node.AdvertisedVersion.of(id,
+                                                                            EmberNodeReplacementTest.runtime(viewer).topologyManager(),
+                                                                            Option.option(viewer.membershipFsm())))
+                  .toList();
+    }
+
     // ---- plumbing ---------------------------------------------------------------------------------------------------
 
     private void start(String prefix) {
@@ -192,16 +218,6 @@ class EmberUpgradeRunTest {
         return live().stream()
                      .map(node -> Option.option(EmberNodeReplacementTest.runtime(node).topologyManager().self().labels().get(NodeInfo.LABEL_VERSION)).or("<none>"))
                      .toList();
-    }
-
-    /// The version label of each of `ids` as `viewer` (the leader) sees it. Holds for a node that JOINED after bootstrap, which the
-    /// leader learns from its handshake.
-    private List<String> versionsSeenBy(AetherNode viewer, Set<NodeId> ids) {
-        var topology = EmberNodeReplacementTest.runtime(viewer).topologyManager();
-
-        return ids.stream()
-                  .map(id -> topology.get(id).flatMap(info -> Option.option(info.labels().get(NodeInfo.LABEL_VERSION))).or("<none>"))
-                  .toList();
     }
 
     /// The newest committed run any node knows: nodes apply the leader's commits at slightly different moments, so the highest epoch wins.

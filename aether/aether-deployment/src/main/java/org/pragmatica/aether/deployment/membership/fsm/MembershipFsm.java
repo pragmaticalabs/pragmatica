@@ -2270,7 +2270,10 @@ public final class MembershipFsm {
                                         : prev.role(),
                                         prev.source().isBlank()
                                         ? next.source()
-                                        : prev.source());
+                                        : prev.source(),
+                                        prev.version().isBlank()
+                                        ? next.version()
+                                        : prev.version());
         }
 
         /// The stored last-wins descriptor (address + role + source). Retained across DEAD so a dead
