@@ -103,7 +103,8 @@ public final class PeerState {
     /// clock is the one that measured the caller's timeout. A frame is expired AT its instant, not after it: the
     /// caller's timer fires at that same instant, so a frame flushed exactly then has an answer nobody collects.
     public record Expiry(boolean bounded, long atNanos) {
-        /// State-convergence traffic (SWIM, DHT anti-entropy, consensus) that tolerates a late frame.
+        /// No expiry: the frame is held until the buffer's size bound evicts it. The transport never offers this (#1996: every
+        /// frame it buffers expires at its caller's deadline or the cluster cap); it exists for the PeerState-level API and its tests.
         public static final Expiry NEVER = new Expiry(false, 0L);
 
         public static Expiry after(TimeSpan lifetime, long nowNanos) {
