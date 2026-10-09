@@ -12,7 +12,7 @@
   drain-grace backstop both reap the same one; a node that joins again is a new incarnation, and what was remembered of the previous one is dropped), and a provider whose listing lags its delete is confirmed by the retry.
 - **EXTERNAL nodes make no provider call on any path.** A node whose reservation carries no provider binding (an operator started it) is confirmed by
   leaving the membership; its capacity is returned and terminating it through the lifecycle is a no-op.
-- [verified: real `SourceComputeRegistry` + real `CapacityControlledLifecycle` + real topology manager, `NodeReplacementRealRegistryReapTest` (45
+- [verified: real `SourceComputeRegistry` + real `CapacityControlledLifecycle` + real topology manager, `NodeReplacementRealRegistryReapTest` (46
   tests): scale-down of an unlisted bootstrap node, listing error retried, event and its recovery only on a real confirmation, stopped instance
   terminated, lagging listing, second reap of a confirmed and of an external node, refused chain ends in the event; `ClusterTopologyManagerReapRetiredTest`;
   the operator-warning sink wiring is pinned by a boot test.] [verified: Ember class x2, 0 refusals per run.] [unverified: a real cloud run.]
@@ -31,5 +31,5 @@
   follow-up. A mark whose instance WAS listed keeps being re-checked.
 - **A node that joins again is a new incarnation.** What the manager remembered of the previous one (its reap was confirmed, its instance was seen, its
   termination was unconfirmed) is dropped on its join, so a reused id is reaped, not "confirmed gone" while it is a member. The release of a counted EXTERNAL
-  reservation against an empty ledger is refused as inconsistent, as the release of a provider reservation is, instead of clamping at zero. A rejoin that drops
+  reservation against an empty ledger is refused as inconsistent, as the release of a provider reservation is, instead of clamping at zero. The replacement wiring's own "already reaped" memory is dropped when the node is seen up again. A rejoin that drops
   an open mark closes its warning cluster-wide with `instance-termination-rejoined`, never with a confirmation: nothing was terminated.
