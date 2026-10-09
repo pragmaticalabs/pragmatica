@@ -203,6 +203,12 @@ public interface ClusterTopologyManager extends TopologyManager {
     }
 
     /// #2062: where the unconfirmed-termination operator events go (default: nowhere, the log line stands).
+    /// #2062: where the persisted "termination not confirmed" marks are read from (the replicated store), so that a new leader inherits every
+    /// open mark. Default: none.
+    default org.pragmatica.lang.Unit setUnconfirmedMarks(java.util.function.Supplier<java.util.Map<NodeId, org.pragmatica.aether.slice.kvstore.AetherValue.UnconfirmedTerminationValue>> reader) {
+        return org.pragmatica.lang.Unit.unit();
+    }
+
     /// The sink the unconfirmed-termination events go to (readable so that the node's wiring can be pinned).
     default org.pragmatica.utility.warning.OperatorWarningSink operatorWarningSink() {
         return org.pragmatica.utility.warning.OperatorWarningSink.logOnly();

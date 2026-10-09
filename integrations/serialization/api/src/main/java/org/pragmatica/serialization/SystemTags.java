@@ -618,7 +618,10 @@ public interface SystemTags {
         pin(table, 2129, "org.pragmatica.aether.slice.kvstore.AetherKey.NodeReplacementKey");
         pin(table, 2130, "org.pragmatica.aether.slice.kvstore.AetherValue.NodeReplacementValue");
         pin(table, 2131, "org.pragmatica.aether.slice.kvstore.AetherValue.NodeReplacementPhase");
-        // ---- 2132..16383 RESERVED ----
+        // #2062: the persisted "termination not confirmed" mark — next free after 2131
+        pin(table, 2132, "org.pragmatica.aether.slice.kvstore.AetherKey.UnconfirmedTerminationKey");
+        pin(table, 2133, "org.pragmatica.aether.slice.kvstore.AetherValue.UnconfirmedTerminationValue");
+        // ---- 2134..16383 RESERVED ----
         rejectDuplicateTags(table);
 
         return Map.copyOf(table);

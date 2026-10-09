@@ -129,6 +129,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                     Set<NodeId> confirmedReaps,
                                     ConcurrentHashMap<NodeId, Long> failedReaps,
                                     org.pragmatica.lang.concurrent.CancellableTask unconfirmedRecheck,
+                                    AtomicReference<Supplier<Map<NodeId, AetherValue.UnconfirmedTerminationValue>>> persistedMarks,
                                     org.pragmatica.lang.concurrent.CancellableTask workerTopologyPolling) implements ClusterTopologyManager {
     private static final Logger log = LoggerFactory.getLogger(ClusterTopologyManager.class);
     private static final int MINIMUM_CLUSTER_SIZE = 3;
@@ -268,7 +269,15 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                                 ConcurrentHashMap.newKeySet(),
                                                 new ConcurrentHashMap<>(),
                                                 org.pragmatica.lang.concurrent.CancellableTask.cancellableTask(),
+                                                new AtomicReference<>(Map::of),
                                                 org.pragmatica.lang.concurrent.CancellableTask.cancellableTask());
+    }
+
+    @Override
+    public Unit setUnconfirmedMarks(Supplier<Map<NodeId, AetherValue.UnconfirmedTerminationValue>> reader) {
+        persistedMarks.set(reader);
+
+        return unit();
     }
 
     @Override
@@ -2118,20 +2127,43 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                         .onFailure(cause -> reapUnconfirmed(nodeId, epoch, retriesLeft, cause));
     }
 
-    /// The bound is spent and the instance is still not confirmed terminated: an operator event naming the node and the last cause, once.
+    /// The bound is spent and the instance is still not confirmed terminated: an operator event naming the node and the last cause, once, and the
+    /// mark persisted in the replicated store so that the next leader inherits it.
     @Override
     public Unit markUnconfirmed(NodeId nodeId, String cause) {
         if (unconfirmedReaps.add(nodeId)) {
-            org.pragmatica.utility.warning.OperatorWarnings.raise(log,
-                                                                  warningSink.get(),
-                                                                  org.pragmatica.utility.warning.OperatorWarningCode.INSTANCE_TERMINATION_UNCONFIRMED,
-                                                                  nodeId.id(),
-                                                                  "The termination of the instance of retired node {} is not confirmed ({}); it may still be running at the provider and billing: terminate it, then the cluster confirms it by listing",
-                                                                  nodeId.id(),
-                                                                  cause);
+            raiseUnconfirmedEvent(nodeId, cause);
+            writeMark(nodeId,
+                      Option.some(new AetherValue.UnconfirmedTerminationValue(cause, seenInstances.contains(nodeId))));
         }
 
         return unit();
+    }
+
+    private void raiseUnconfirmedEvent(NodeId nodeId, String cause) {
+        org.pragmatica.utility.warning.OperatorWarnings.raise(log,
+                                                              warningSink.get(),
+                                                              org.pragmatica.utility.warning.OperatorWarningCode.INSTANCE_TERMINATION_UNCONFIRMED,
+                                                              nodeId.id(),
+                                                              "The termination of the instance of retired node {} is not confirmed ({}); it may still be running at the provider and billing: terminate it, then the cluster confirms it by listing",
+                                                              nodeId.id(),
+                                                              cause);
+    }
+
+    /// Writes (or, with an empty value, removes) the replicated mark for `nodeId`. A failed write is logged: the in-memory mark and the event stand,
+    /// and the next leader simply does not inherit it.
+    private void writeMark(NodeId nodeId, Option<AetherValue.UnconfirmedTerminationValue> value) {
+        var key = new AetherKey.UnconfirmedTerminationKey(nodeId);
+        var existing = Option.option(persistedMarks.get().get().get(nodeId)).map(mark -> (AetherValue) mark);
+
+        hierarchyWriter.get()
+                       .commit(List.of(new KVCommand.Mutation<AetherKey, AetherValue>(key,
+                                                                                      existing,
+                                                                                      value.map(mark -> (AetherValue) mark))),
+                               List.of())
+                       .onFailure(cause -> log.warn("CTM: the unconfirmed-termination mark of {} was not persisted: {}",
+                                                    nodeId,
+                                                    cause.message()));
     }
 
     /// While active, every marked node is re-checked at a low bounded rate (one confirmed-reap attempt per node per interval, five provisioning windows,
@@ -2150,14 +2182,51 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
             return;
         }
 
-        unconfirmedReaps.forEach(nodeId -> reapRetired(nodeId,
-                                                       lifecycleManager.sourceOf(nodeId).or(SourceName.DEFAULT),
-                                                       false));
+        var persisted = persistedMarks.get().get();
+        var nodes = new java.util.HashSet<>(unconfirmedReaps);
+
+        nodes.addAll(persisted.keySet());
+        nodes.forEach(nodeId -> {
+            var remembered = Option.option(persisted.get(nodeId))
+                                   .map(AetherValue.UnconfirmedTerminationValue::seen)
+                                   .or(false);
+
+            reapRetired(nodeId,
+                        lifecycleManager.sourceOf(nodeId).or(SourceName.DEFAULT),
+                        remembered);
+        });
+    }
+
+    /// A manager that has just become leader inherits the replicated marks: each is adopted, announced again by THIS node (the previous leader's
+    /// event can be closed only by the node that raised it), and re-checked at once, so a mark whose instance is already gone is closed now.
+    private void adoptPersistedMarks() {
+        var epoch = activationEpoch.get();
+
+        persistedMarks.get()
+                      .get()
+                      .forEach((nodeId, mark) -> {
+                                   if (unconfirmedReaps.add(nodeId)) {
+                                   raiseUnconfirmedEvent(nodeId,
+                                                         "still unconfirmed after a leader change: " + mark.cause());
+                               }
+
+                                   if (mark.seen()) {
+                                   seenInstances.add(nodeId);
+                               }
+                               });
+        SharedScheduler.schedule(() -> recheckUnconfirmed(epoch), failedReapInterval());
     }
 
     private void reapConfirmed(NodeId nodeId) {
         failedReaps.remove(nodeId);
-        if (unconfirmedReaps.remove(nodeId)) {
+        var marked = unconfirmedReaps.remove(nodeId);
+        var persisted = persistedMarks.get().get().containsKey(nodeId);
+
+        if (persisted) {
+            writeMark(nodeId, Option.none());
+        }
+
+        if (marked || persisted) {
             org.pragmatica.utility.warning.OperatorWarnings.raise(log,
                                                                   warningSink.get(),
                                                                   org.pragmatica.utility.warning.OperatorWarningCode.INSTANCE_TERMINATION_CONFIRMED,
@@ -2428,6 +2497,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         reconcileWorkerTopology();
         startWorkerTopologyPolling(TimeSpan.timeSpan(10).seconds());
         startUnconfirmedRecheck();
+        adoptPersistedMarks();
         // #1050 R4 — one-shot activation replay: reap orphaned core instances that nothing else replays.
         scheduleActivationReplay();
         // #689 — re-compare every retained provisioning intent against what membership holds now.

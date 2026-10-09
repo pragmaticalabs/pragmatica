@@ -1222,6 +1222,16 @@ public sealed interface AetherKey extends StructuredKey permits AetherKey.Cluste
         }
     }
 
+    /// #2062: a retired node whose instance the CTM could not confirm terminated at the provider. Runtime state: it names nodes a restored cluster
+    /// no longer has. Written by the active topology manager when it marks the node and removed when the termination is confirmed, so a new leader
+    /// inherits every open "unconfirmed" and can close it.
+    record UnconfirmedTerminationKey(NodeId nodeId) implements RuntimeKey {
+        @Override
+        public String asString() {
+            return "unconfirmed-termination/" + nodeId.id();
+        }
+    }
+
     record CommunityPlacementAvailabilityKey(String communityId, String source, Option<String> zone) implements RuntimeKey {
         @Override
         public String asString() {
