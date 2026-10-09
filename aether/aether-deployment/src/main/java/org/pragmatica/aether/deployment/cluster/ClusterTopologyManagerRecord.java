@@ -987,6 +987,13 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     }
 
     @Override
+    public Unit announceUnconfirmedTermination(NodeId node, int attempts, String detail) {
+        raiseUnconfirmed(node, attempts, detail);
+
+        return unit();
+    }
+
+    @Override
     public Promise<List<String>> replacementInstanceIds(NodeId node) {
         return lifecycleManager.instancesForNode(node)
                                .map(listed -> listed.stream()
@@ -1076,8 +1083,10 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     }
 
     private static Cause zonesExhausted(List<String> zones) {
-        return Causes.cause("CTM v2: provisionReplacement exhausted all configured zones on capacity unavailability: " + String.join(", ",
-                                                                                                                                     zones));
+        // Typed, so a caller can tell an explicit capacity refusal (nothing created) from a failure that may have left an instance (#1111).
+        return EnvironmentError.capacityUnavailable(String.join(", ", zones),
+                                                    new IllegalStateException("CTM v2: provisionReplacement exhausted all configured zones on capacity unavailability: " + String.join(", ",
+                                                                                                                                                                                       zones)));
     }
 
     /// #334 — the ordered zone list to rotate over for a replacement of `intendedRole`, reusing the

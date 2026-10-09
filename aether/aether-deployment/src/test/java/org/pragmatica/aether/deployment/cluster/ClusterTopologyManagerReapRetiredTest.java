@@ -125,6 +125,31 @@ class ClusterTopologyManagerReapRetiredTest {
         assertThat(terminates.get()).isZero();
     }
 
+    /// #1111: a caller that gave up on confirming an orphan's termination hands it to the manager, the single raiser of the pair. The
+    /// unconfirmed event fires once however often it is handed over, and a LATER confirmed reap of the node (here the departure reap, as
+    /// the grace backstop and the activation replay take) raises the matching confirmed event for the same subject.
+    @Test
+    void announcedUnconfirmedTermination_firesOnce_andIsClearedByALaterConfirmedReap() {
+        var events = new java.util.concurrent.CopyOnWriteArrayList<org.pragmatica.utility.warning.OperatorWarning>();
+
+        ctm.setOperatorWarningSink(org.pragmatica.utility.warning.OperatorWarningSink.handingOffTo(events::add));
+        ctm.announceUnconfirmedTermination(OLD, 5, "still listed at the provider; provider instance(s) [i-1]");
+        ctm.announceUnconfirmedTermination(OLD, 5, "again");
+
+        org.awaitility.Awaitility.await().atMost(2, java.util.concurrent.TimeUnit.SECONDS).until(() -> events.size() == 1);
+        assertThat(events.getFirst().code()).isEqualTo(org.pragmatica.utility.warning.OperatorWarningCode.INSTANCE_TERMINATION_UNCONFIRMED);
+        assertThat(events.getFirst().subject()).isEqualTo(OLD.id());
+        assertThat(events.getFirst().message()).contains("i-1");
+
+        providerLists(oldInstance("i-1", InstanceStatus.RUNNING));
+        ctm.onMembershipDecision(org.pragmatica.consensus.topology.MembershipDecision.nodeRemoved(OLD, List.of(SELF)));
+
+        org.awaitility.Awaitility.await().atMost(5, java.util.concurrent.TimeUnit.SECONDS).until(() -> events.size() == 2);
+        assertThat(events.getLast().code()).isEqualTo(org.pragmatica.utility.warning.OperatorWarningCode.INSTANCE_TERMINATION_CONFIRMED);
+        assertThat(events.getLast().subject()).isEqualTo(OLD.id());
+        assertThat(terminates.get()).as("the later reap terminated the instance").isEqualTo(1);
+    }
+
     @Test
     void anInstanceListedNowAsTerminated_needsNoEarlierObservation() {
         providerLists(oldInstance("i-1", InstanceStatus.TERMINATED));

@@ -34,6 +34,7 @@ import org.pragmatica.aether.deployment.cluster.SliceOwnershipQuery.DrainRefusal
 import org.pragmatica.aether.deployment.membership.MembershipConfig;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsm;
 import org.pragmatica.aether.environment.ClusterName;
+import org.pragmatica.aether.environment.EnvironmentError;
 import org.pragmatica.aether.environment.ProvisionContext;
 import org.pragmatica.aether.environment.SourceName;
 import org.pragmatica.consensus.NodeId;
@@ -44,9 +45,6 @@ import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.lang.utils.TimeSource;
 import org.pragmatica.utility.ULID;
-import org.pragmatica.utility.warning.OperatorWarningCode;
-import org.pragmatica.utility.warning.OperatorWarningSink;
-import org.pragmatica.utility.warning.OperatorWarnings;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -359,10 +357,6 @@ public final class LeaderReconciler {
     private static final int SUBSTITUTE_GENERATION = 1;
 
     private final ConcurrentHashMap<NodeId, InFlightEntry> inFlightProvisioning = new ConcurrentHashMap<>();
-
-    /// Where an abandoned replacement's failed reap is announced. Log-only until `AetherNode` wires the node's event log.
-    private final AtomicReference<OperatorWarningSink> operatorWarnings = new AtomicReference<>(OperatorWarningSink.logOnly());
-
     /// Node ids with a provider status query outstanding (#1049) — the single-flight guard, so a slow
     /// provider never accumulates stacked queries for the same replacement across poll ticks.
     private final Set<NodeId> statusQueriesOutstanding = ConcurrentHashMap.newKeySet();
@@ -733,14 +727,6 @@ public final class LeaderReconciler {
     @Contract
     void setReconcileListener(Consumer<ReconcileIntent> newListener) {
         reconcileListener = newListener;
-    }
-
-    /// Inject the sink an abandoned replacement's unconfirmed reap is announced through (#1111). `null` resets to log-only.
-    @Contract
-    public void setOperatorWarnings(OperatorWarningSink sink) {
-        operatorWarnings.set(sink == null
-                             ? OperatorWarningSink.logOnly()
-                             : sink);
     }
 
     /// Verified consensus authority, independent of desired provider capacity. Empty means no evidence.
@@ -1784,17 +1770,33 @@ public final class LeaderReconciler {
     }
 
     /// The provision call failed. That includes a readiness timeout, which fails the call AFTER the instance was created, so the
-    /// instance may exist with nothing tracking it (#1111). The call's failure cannot say whether anything was created, and an empty
-    /// listing is not proof either (listings lag a create and omit what they cannot attribute), so the reap is asked as for an unseen
-    /// instance: confirmed by a listed-and-terminated instance, otherwise retried and then announced as unconfirmed.
+    /// instance may exist with nothing tracking it (#1111). Unless the failure is a typed create refusal ([`#isCreateRefusal`]), it
+    /// cannot say whether anything was created, and an empty listing is not proof either (listings lag a create and omit what they
+    /// cannot attribute), so the reap is asked as for an unseen instance: confirmed by a listed-and-terminated instance, otherwise
+    /// retried and then announced as unconfirmed.
     @Contract
     private void dropFailedProvision(NodeId placeholder, Cause cause) {
-        if (inFlightProvisioning.remove(placeholder) != null) {
-            log.info("LeaderReconciler dropping in-flight replacement {}: its provision call failed ({})",
-                     placeholder,
-                     cause.message());
+        if (inFlightProvisioning.remove(placeholder) == null) {
+            return;
+        }
+
+        log.info("LeaderReconciler dropping in-flight replacement {}: its provision call failed ({})",
+                 placeholder,
+                 cause.message());
+        if (!isCreateRefusal(cause)) {
             reapAbandoned(AbandonReason.PROVISION_FAILED, placeholder, false);
         }
+    }
+
+    /// A typed refusal raised before or by the provider's create call is evidence that NOTHING was created: no instance id exists, and
+    /// the failure already has its own surface (the manager records it as a provisioning failure and its breaker counts it). It is
+    /// neither reaped nor announced as an unconfirmed termination. Anything else, a readiness timeout above all, may have left an
+    /// instance behind.
+    private static boolean isCreateRefusal(Cause cause) {
+        return switch (cause) {
+            case EnvironmentError.ProvisionFailed _, EnvironmentError.CapacityUnavailable _, EnvironmentError.CredentialsMissing _, EnvironmentError.NodeCapExceeded _, EnvironmentError.OperationNotSupported _ -> true;
+            default -> false;
+        };
     }
 
     /// Keep the in-flight placeholder only for a real [`ProvisionDisposition.Dispatched`] boot; a
@@ -2081,16 +2083,12 @@ public final class LeaderReconciler {
                  attempt,
                  cause.message());
         if (attempt >= REAP_ATTEMPT_BOUND) {
-            OperatorWarnings.raise(log,
-                                   operatorWarnings.get(),
-                                   OperatorWarningCode.INSTANCE_TERMINATION_UNCONFIRMED,
-                                   id.id(),
-                                   "Abandoned replacement {} (source '{}', instance(s) {}) could not be confirmed terminated after {} attempts: {}. It may still be running and billed; terminate the instance at the provider if this persists",
-                                   id.id(),
-                                   source,
-                                   instances,
-                                   attempt,
-                                   cause.message());
+            ctm.announceUnconfirmedTermination(id,
+                                               attempt,
+                                               cause.message()
+                                              + "; provider instance(s) " + instances
+                                              + " in source '" + source
+                                              + "'");
 
             return;
         }

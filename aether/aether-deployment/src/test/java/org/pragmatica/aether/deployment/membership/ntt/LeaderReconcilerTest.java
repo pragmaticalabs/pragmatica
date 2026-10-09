@@ -28,6 +28,9 @@ import org.pragmatica.aether.deployment.cluster.ProvisionDisposition;
 import org.pragmatica.aether.deployment.cluster.ReplacementInstanceState;
 import org.pragmatica.aether.deployment.cluster.SliceOwnershipQuery;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsm;
+import org.pragmatica.aether.environment.EnvironmentError;
+import org.pragmatica.aether.environment.InstanceId;
+import org.pragmatica.aether.environment.InstanceStatus;
 import org.pragmatica.aether.environment.ProvisionContext;
 import org.pragmatica.aether.environment.SourceName;
 import org.pragmatica.aether.slice.SliceState;
@@ -2748,14 +2751,48 @@ class LeaderReconcilerTest {
                 .containsExactly(new RecordingCtm.ReapCall(minted, RecordingCtm.REPLACEMENT_SOURCE, false));
         }
 
+        /// An explicit create refusal (a typed refusal, no instance id) is evidence that nothing was created: it is not reaped and not
+        /// announced as an unconfirmed termination; the manager records it as a provisioning failure.
+        @Test
+        void capacityRefusal_isNeitherReapedNorAnnounced() {
+            assertNothingWasCreated(EnvironmentError.capacityUnavailable("fsn1", new RuntimeException("no capacity")));
+        }
+
+        @Test
+        void provisionFailedRefusal_isNeitherReapedNorAnnounced() {
+            assertNothingWasCreated(EnvironmentError.provisionFailed(new RuntimeException("quota exceeded")));
+        }
+
+        @Test
+        void unsupportedOperationRefusal_isNeitherReapedNorAnnounced() {
+            assertNothingWasCreated(EnvironmentError.operationNotSupported("spot"));
+        }
+
+        private void assertNothingWasCreated(Cause refusal) {
+            ctm.failNextProvision(refusal);
+            dispatchOne();
+
+            assertThat(ctm.reapCalls()).as("nothing was created, so nothing is reaped").isEmpty();
+            assertThat(ctm.announcements()).isEmpty();
+            assertThat(reconciler.inFlightProvisioningKeys()).as("the placeholder is dropped all the same").isEmpty();
+        }
+
+        /// Control for the refusal rule: a readiness timeout is typed too, but it carries an instance id and the create DID happen.
+        @Test
+        void aReadinessTimeout_isNotARefusal_itIsReaped() {
+            ctm.failNextProvision(EnvironmentError.provisionReadinessTimeout(InstanceId.instanceId("i-1").unwrap(),
+                                                                             InstanceStatus.PROVISIONING,
+                                                                             300_000L));
+            var minted = dispatchOne();
+
+            assertThat(ctm.reapCalls()).extracting(RecordingCtm.ReapCall::node).containsExactly(minted);
+        }
+
         /// A readiness timeout fails the call AFTER the create, and the provider's listing may lag or omit the instance, so an empty
         /// listing is not "nothing was created": the reap stays unconfirmed (bounded retry, then the unconfirmed event) and is never
         /// reported confirmed.
         @Test
         void failedProvisionCall_withAnEmptyListing_staysUnconfirmed_thenAnnounced_neverConfirmed() {
-            var events = new CopyOnWriteArrayList<org.pragmatica.utility.warning.OperatorWarning>();
-
-            reconciler.setOperatorWarnings(org.pragmatica.utility.warning.OperatorWarningSink.handingOffTo(events::add));
             ctm.providerListsNoInstances();
             ctm.failNextProvision(Causes.cause("readiness timed out"));
             var minted = dispatchOne();
@@ -2768,36 +2805,29 @@ class LeaderReconcilerTest {
                                        .allSatisfy(call -> assertThat(call).isEqualTo(new RecordingCtm.ReapCall(minted,
                                                                                                                    RecordingCtm.REPLACEMENT_SOURCE,
                                                                                                                    false)));
-            await().atMost(2, TimeUnit.SECONDS).until(() -> events.size() == 1);
-            assertThat(events.getFirst().code()).isEqualTo(org.pragmatica.utility.warning.OperatorWarningCode.INSTANCE_TERMINATION_UNCONFIRMED);
-            assertThat(events.getFirst().subject()).isEqualTo(minted.id());
-
-            assertThat(events).as("no confirmed event: nothing was ever listed or terminated").hasSize(1);
+            assertThat(ctm.announcements()).as("announced once, through the manager, which alone raises (and later clears) the event")
+                                           .extracting(RecordingCtm.Announcement::node)
+                                           .containsExactly(minted);
         }
 
         /// At the bound the event is raised once and the active retries STOP: no provider call is made after it, however long the
         /// clock runs; a later observation (the next activation replay) owns the instance.
         @Test
         void afterTheBound_theEventFiresOnce_andNoProviderCallIsMade() {
-            var events = new CopyOnWriteArrayList<org.pragmatica.utility.warning.OperatorWarning>();
-
-            reconciler.setOperatorWarnings(org.pragmatica.utility.warning.OperatorWarningSink.handingOffTo(events::add));
             ctm.failReaps(Causes.cause("still listed at the provider after terminate"));
             ctm.failNextProvision(Causes.cause("readiness timed out"));
             var abandoned = dispatchOne();
             for (var attempt = 2; attempt <= 5; attempt++) {
                 runPendingReapRetry(EXPECTED_POLL_INTERVAL);
             }
-            await().atMost(2, TimeUnit.SECONDS).until(() -> events.size() == 1);
             assertThat(reapCallsFor(abandoned)).hasSize(5);
 
             for (var tick = 0; tick < 20; tick++) {
                 advanceOnePollInterval();
-                scheduler.tasksByDelay(timeSpan(EXPECTED_POLL_INTERVAL.millis() * 4).millis()).forEach(ManualTask::runIfLive);
             }
 
             assertThat(reapCallsFor(abandoned)).as("no provider call for it after the bound (the deficit re-dispatches other ids, which are other orphans)").hasSize(5);
-            assertThat(events.stream().filter(event -> event.subject().equals(abandoned.id()))).as("one event for it").hasSize(1);
+            assertThat(ctm.announcements().stream().filter(announcement -> announcement.node().equals(abandoned))).as("announced once").hasSize(1);
         }
 
         /// The reap is requested only after the entry left the in-flight map, for every reason, so a racing poll answer cannot leave
@@ -2870,13 +2900,10 @@ class LeaderReconcilerTest {
                                                     .contains(RecordingCtm.REPLACEMENT_SOURCE.value()));
         }
 
-        /// A refused or failed reap is retried; when the bound is spent the operator is told, naming the instance, and the leader
-        /// keeps trying, so a later success closes the condition with its recovery event.
+        /// A refused or failed reap is retried; when the bound is spent the manager is handed the orphan to announce, with the
+        /// instance named, and the reconciler stops asking the provider.
         @Test
         void unconfirmedReap_isRetriedWithinABound_thenAnnouncedNamingTheInstance() {
-            var events = new CopyOnWriteArrayList<org.pragmatica.utility.warning.OperatorWarning>();
-
-            reconciler.setOperatorWarnings(org.pragmatica.utility.warning.OperatorWarningSink.handingOffTo(events::add));
             ctm.failReaps(Causes.cause("still listed at the provider after terminate"));
             var minted = dispatchOne();
 
@@ -2888,14 +2915,15 @@ class LeaderReconcilerTest {
                 runPendingReapRetry(EXPECTED_POLL_INTERVAL);
                 assertThat(ctm.reapCalls()).as("attempt " + attempt).hasSize(attempt);
             }
-            assertThat(events).as("inside the bound nothing is announced").isEmpty();
+            assertThat(ctm.announcements()).as("inside the bound nothing is announced").isEmpty();
 
             runPendingReapRetry(EXPECTED_POLL_INTERVAL);
             assertThat(ctm.reapCalls()).as("fifth and last fast attempt").hasSize(5);
-            await().atMost(2, TimeUnit.SECONDS).until(() -> events.size() == 1);
-            assertThat(events.getFirst().code()).isEqualTo(org.pragmatica.utility.warning.OperatorWarningCode.INSTANCE_TERMINATION_UNCONFIRMED);
-            assertThat(events.getFirst().subject()).isEqualTo(minted.id());
-            assertThat(events.getFirst().message()).contains(RecordingCtm.instanceIdOf(minted)).contains("still listed at the provider");
+            assertThat(ctm.announcements()).hasSize(1);
+            var announced = ctm.announcements().getFirst();
+            assertThat(announced.node()).isEqualTo(minted);
+            assertThat(announced.attempts()).isEqualTo(5);
+            assertThat(announced.detail()).contains(RecordingCtm.instanceIdOf(minted)).contains("still listed at the provider");
         }
 
         private List<RecordingCtm.ReapCall> reapCallsFor(NodeId node) {
@@ -4180,6 +4208,21 @@ class LeaderReconcilerTest {
         @Contract
         void providerListsInstances() {
             providerListsInstances.set(true);
+        }
+
+        record Announcement(NodeId node, int attempts, String detail) {}
+
+        private final List<Announcement> announcements = new CopyOnWriteArrayList<>();
+
+        List<Announcement> announcements() {
+            return List.copyOf(announcements);
+        }
+
+        @Override
+        public Unit announceUnconfirmedTermination(NodeId node, int attempts, String detail) {
+            announcements.add(new Announcement(node, attempts, detail));
+
+            return unit();
         }
 
         List<ReapCall> reapCalls() {
