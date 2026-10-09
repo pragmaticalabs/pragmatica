@@ -152,6 +152,11 @@ public enum ManagementRoute {
     NODE_REPLACE(POST, "/nodes/replace", List.of("id"), LEADER),
     NODE_REPLACEMENTS(GET, "/nodes/replacements", List.of(), LEADER),
     NODE_REPLACEMENT_SETTLE(POST, "/nodes/replacements/settle", List.of("id"), LEADER),
+    // #1543 F: the rolling-upgrade run (started by POST /cluster/upgrade). The leader drives it and commits it, so all four run there.
+    UPGRADE_STATUS(GET, "/upgrade/status", List.of(), LEADER),
+    UPGRADE_PAUSE(POST, "/upgrade/pause", List.of(), LEADER),
+    UPGRADE_RESUME(POST, "/upgrade/resume", List.of(), LEADER),
+    UPGRADE_ABORT(POST, "/upgrade/abort", List.of(), LEADER),
     NODE_PROMOTE(POST, "/nodes/promote", List.of("id"), LEADER),
     NODE_INFLIGHT(GET, "/nodes/inflight", List.of(), LOCAL),
     NODE_INFLIGHT_GET(GET, "/nodes/inflight", List.of("id"), RouteTarget.nodeIdParam(0)),

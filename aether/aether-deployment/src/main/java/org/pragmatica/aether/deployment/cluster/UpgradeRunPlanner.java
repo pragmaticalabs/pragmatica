@@ -31,7 +31,7 @@ public sealed interface UpgradeRunPlanner {
 
     /// One member as the run sees it: `role` is `core`, `worker` or `spot`; `version` is its advertised version (`""` = none).
     record Member(String role, String version) {
-        boolean replaceable() {
+        public boolean replaceable() {
             return "core".equalsIgnoreCase(role) || "worker".equalsIgnoreCase(role);
         }
     }

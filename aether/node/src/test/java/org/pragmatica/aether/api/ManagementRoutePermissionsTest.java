@@ -131,6 +131,10 @@ class ManagementRoutePermissionsTest {
             assertThat(ManagementRoutePermissions.permissionFor(ManagementRoute.NODE_REPLACE)).isEqualTo(OPERATOR_AND_ABOVE);
             assertThat(ManagementRoutePermissions.permissionFor(ManagementRoute.NODE_REPLACEMENT_SETTLE)).isEqualTo(OPERATOR_AND_ABOVE);
             assertThat(ManagementRoutePermissions.permissionFor(ManagementRoute.NODE_REPLACEMENTS)).isEqualTo(ALL_AUTHENTICATED);
+            assertThat(ManagementRoutePermissions.permissionFor(ManagementRoute.UPGRADE_STATUS)).isEqualTo(ALL_AUTHENTICATED);
+            assertThat(ManagementRoutePermissions.permissionFor(ManagementRoute.UPGRADE_PAUSE)).isEqualTo(OPERATOR_AND_ABOVE);
+            assertThat(ManagementRoutePermissions.permissionFor(ManagementRoute.UPGRADE_RESUME)).isEqualTo(OPERATOR_AND_ABOVE);
+            assertThat(ManagementRoutePermissions.permissionFor(ManagementRoute.UPGRADE_ABORT)).isEqualTo(OPERATOR_AND_ABOVE);
         }
     }
 }

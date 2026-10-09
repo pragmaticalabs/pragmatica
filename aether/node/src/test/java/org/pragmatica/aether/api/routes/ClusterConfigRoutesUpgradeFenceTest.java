@@ -168,6 +168,7 @@ class ClusterConfigRoutesUpgradeFenceTest {
     private static Object dispatch(TestKVStore store, Method method, Object[] args) {
         return switch (method.getName()) {
             case "kvStore" -> store;
+            case "upgradeRunService" -> org.pragmatica.aether.deployment.cluster.UpgradeRunService.unavailable();
             case "isLeader" -> true;
             case "apply" -> applyBatch(store, args);
             default -> throw new UnsupportedOperationException("Not implemented in test proxy: " + method.getName());

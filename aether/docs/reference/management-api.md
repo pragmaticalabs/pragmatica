@@ -55,6 +55,7 @@ Roles are hierarchical: ADMIN has all OPERATOR permissions, and OPERATOR has all
 | Blueprint validate | ADMIN | `POST /api/v1/blueprints/validate` |
 | Node drain | OPERATOR | `POST /api/v1/nodes/drain/{id}` |
 | Node replacement | OPERATOR | `POST /api/v1/nodes/replace/{id}`, `POST /api/v1/nodes/replacements/settle/{id}` |
+| Rolling upgrade run (pause/resume/abort) | OPERATOR | `POST /api/v1/upgrade/pause`, `POST /api/v1/upgrade/resume`, `POST /api/v1/upgrade/abort` |
 | Scaling | OPERATOR | `POST /api/v1/scale` |
 | Schema operations | OPERATOR | `POST /api/v1/schema/*` |
 | Deployment strategies | OPERATOR | `POST /api/v1/deploy`, `POST /api/v1/deploy/promote/*`, `POST /api/v1/deploy/rollback/*`, `POST /api/v1/deploy/complete/*`, `POST /api/v1/ab-tests/*` |
@@ -3605,7 +3606,7 @@ Disable CTM auto-heal. Writes `AutoHealStateValue(enabled=false, reason)` throug
 
 ### POST /api/v1/cluster/upgrade
 
-Change the version the cluster provisions (#1543 part C). The upgrade rewrites the `[cluster] version` line of the committed TOML — the one replacements render their image tag and jar URL from — and stores the same version beside it, under the `expectedVersion` fence. After it, every node a replacement or scale-up provisions boots the target version, and a later `POST /api/v1/cluster/config` built from the committed TOML does not put the old version back. It does **not** restart or replace any running node.
+Change the version the cluster provisions (#1543 part C). The upgrade rewrites the `[cluster] version` line of the committed TOML — the one replacements render their image tag and jar URL from — and stores the same version beside it, under the `expectedVersion` fence. After it, every node a replacement or scale-up provisions boots the target version, and a later `POST /api/v1/cluster/config` built from the committed TOML does not put the old version back. After the version is stored the leader starts a rolling-upgrade run (`GET /api/v1/upgrade/status`) that replaces the running nodes, one at a time, through the replacement machinery: no node is restarted under its own id. A re-issued upgrade to the stored version starts the run again if one is still owed (a node does not yet report the version) and otherwise answers `already at version`; an upgrade to a different version while a run is live is refused (`409`).
 
 **RBAC:** ADMIN
 
@@ -4463,6 +4464,10 @@ separate, still in-flight consolidation effort (spec §3.2–§3.3) owns that su
 | POST | `/api/v1/nodes/replace/{id}` | Node Lifecycle |
 | GET | `/api/v1/nodes/replacements` | Node Lifecycle |
 | POST | `/api/v1/nodes/replacements/settle/{id}` | Node Lifecycle |
+| GET | `/api/v1/upgrade/status` | Node Lifecycle |
+| POST | `/api/v1/upgrade/pause` | Node Lifecycle |
+| POST | `/api/v1/upgrade/resume` | Node Lifecycle |
+| POST | `/api/v1/upgrade/abort` | Node Lifecycle |
 | GET | `/api/v1/scheduled-tasks` | Scheduled Tasks |
 | GET | `/api/v1/scheduled-tasks/{section}` | Scheduled Tasks |
 | POST | `/api/v1/scheduled-tasks/pause/{section}/{artifact}/{methodName}` | Scheduled Tasks |
@@ -4646,6 +4651,38 @@ Settle a replacement that stopped in `FAILED_KEPT_BOTH` (both nodes kept). Body 
 old node; `{"outcome": "roll-back"}` gives the new node up. `400` for any other outcome or an id that does not parse; `409` when the node has no replacement in `FAILED_KEPT_BOTH`
 (`NothingToSettle`; an unknown node reads the same way), the record changed concurrently, or the node is not
 the leader (`NotLeader`); `401`/`403` when the caller is not authorized.
+
+### GET /api/v1/upgrade/status
+
+The rolling-upgrade run (#1543 part F), started by `POST /api/v1/cluster/upgrade`. Route target is `LEADER`. The run replaces every node
+that does not report the target version, one replacement at a time through the replacement machinery above: cores first with the
+leader last, then workers. It never restarts a node under its own id.
+
+**Response:** `present` (false = there never was a run; the other fields are empty), `targetVersion`, `state` (`RUNNING`, `PAUSED`,
+`COMPLETED`, `ABORTED`), `stop` (the pending request: `NONE`, `PAUSE`, `ABORT`), `index` of `total` nodes done, `inFlight` (the node being
+replaced now, empty = none), `order` (the original node ids in the order they are replaced), `reason` (why it is paused or ended),
+`startedAtMs`, `updatedAtMs`, `epoch`.
+
+A `PAUSED` run needs an operator: its `reason` names the node whose replacement was rolled back or stopped with both nodes kept (settle
+it with `POST /api/v1/nodes/replacements/settle/{id}` first), or the refusal that stopped the start. Operator events: `upgrade-started`,
+`upgrade-completed`, `upgrade-aborted`, `upgrade-paused` (with `upgrade-resumed` / `upgrade-pause-ended` as its recovery).
+
+### POST /api/v1/upgrade/pause
+
+Ask the run to stop. A pause is a request: it takes effect once the replacement in flight reaches a terminal state (immediately when none
+is in flight); a replacement is never cut off mid-phase. Authorization OPERATOR, route target `LEADER`. Response: the run, as above.
+`404` there is no run; `409` the run is not `RUNNING`, it changed concurrently, or the node is not the leader.
+
+### POST /api/v1/upgrade/resume
+
+Continue a `PAUSED` run. A node whose replacement was rolled back is tried again; a replacement that is still stopped with both nodes kept
+pauses the run again, naming it. Authorization OPERATOR, route target `LEADER`. `404` there is no run; `409` the run is not `PAUSED`.
+
+### POST /api/v1/upgrade/abort
+
+End the run. Like a pause it is a request that waits for the replacement in flight to reach a terminal state, then the run is `ABORTED`;
+nodes already replaced stay replaced, the others stay as they are. Not resumable: a new `POST /api/v1/cluster/upgrade` starts a new run.
+Authorization OPERATOR, route target `LEADER`. `404` there is no run; `409` the run has already ended.
 
 ### POST /api/v1/nodes/promote/{id}
 
