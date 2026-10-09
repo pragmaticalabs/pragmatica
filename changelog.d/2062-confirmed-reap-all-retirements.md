@@ -16,3 +16,8 @@
   tests): scale-down of an unlisted bootstrap node, listing error retried, event and its recovery only on a real confirmation, stopped instance
   terminated, lagging listing, second reap of a confirmed and of an external node, refused chain ends in the event; `ClusterTopologyManagerReapRetiredTest`;
   the operator-warning sink wiring is pinned by a boot test.] [verified: Ember class x2, 0 refusals per run.] [unverified: a real cloud run.]
+- **The manager owns the unconfirmed-termination lifecycle.** `ClusterTopologyManager.markUnconfirmed(node, cause)` marks the node and raises
+  `instance-termination-unconfirmed` (once); every raiser goes through it. While it is the active leader the manager re-checks each marked node at a low
+  bounded rate (one confirmed-reap attempt per node per five provisioning windows) and raises `instance-termination-confirmed` on a real confirmation.
+  A manager that has just become leader owns no marks: its activation replay re-marks the instances it finds still listed at the provider and closes
+  the mark itself when the reap is confirmed. [unverified: the marks of a leader whose instance is already gone are not carried over.]
