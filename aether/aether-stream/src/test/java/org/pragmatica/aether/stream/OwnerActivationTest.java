@@ -713,6 +713,32 @@ class OwnerActivationTest {
         assertThat(escapes).isEmpty();
     }
 
+    /// #2080: a pending escape belongs to the tenure that made it. Ownership left this node before the activation completed, and a
+    /// later tenure activated with every member answering: the first tenure's escape must not be reported for it. Mutation: not
+    /// dropping the pending escape when ownership leaves turns this red.
+    @Test
+    void activate_pendingEscapeOfAnEndedTenure_isNotReportedForTheNextOne() {
+        var gate = lineageGate(TimeSpan.timeSpan(0).millis());
+
+        record.set(Option.some(ownedWithIsr(SELF, List.of(SELF, PEER_A, PEER_B), 5L)));
+        members.set(List.of(SELF, PEER_A, PEER_B));
+        unreachable.add(PEER_A);
+        LockSupport.parkNanos(2_000_000L);
+        gate.activate(STREAM, PARTITION).await();
+        LockSupport.parkNanos(2_000_000L);
+        assertThat(gate.activate(STREAM, PARTITION).await().isSuccess()).as("went ahead, epoch start refused").isFalse();
+
+        record.set(Option.some(ownedBy(PEER_B, 9)));
+        assertThat(gate.activate(STREAM, PARTITION).await().isSuccess()).as("ownership left").isFalse();
+
+        record.set(Option.some(ownedWithIsr(SELF, List.of(SELF, PEER_A, PEER_B), 10L)));
+        unreachable.remove(PEER_A);
+        lineageAccepts.set(true);
+
+        assertThat(gate.activate(STREAM, PARTITION).await().isSuccess()).as("a new tenure, every member answering").isTrue();
+        assertThat(escapes).isEmpty();
+    }
+
     /// #2080: a block that was standing is told as resolved the moment the gate stops waiting, even when the activation then fails
     /// at the epoch-start commit: the partition no longer waits for the members the block names.
     @Test
