@@ -14,7 +14,7 @@
   orphan to the topology manager (`markUnconfirmed`), the single raiser, which raises the operator event
   `instance-termination-unconfirmed` once (subject: the replacement's node id; the message names the instance and the cause). The active
   retries then STOP: no provider call is made for that replacement afterwards. Because the manager remembers the node, a later confirmed
-  reap of it (the grace backstop, or the next leader activation's replay) raises `instance-termination-confirmed` for the same subject.
+  reap of it (the grace backstop, the activation replay, or the manager's own periodic re-check, #2062) raises `instance-termination-confirmed` for the same subject.
   Operator recovery: terminate the named instance at the provider. Retries also stop when the replacement joins membership or leadership
   changes.
   [verified: LeaderReconcilerTest$AbandonedReplacementReap.unconfirmedReap_isRetriedWithinABound_thenAnnouncedNamingTheInstance, afterTheBound_theEventFiresOnce_andNoProviderCallIsMade; ClusterTopologyManagerReapRetiredTest.announcedUnconfirmedTermination_firesOnce_andIsClearedByALaterConfirmedReap]
@@ -26,4 +26,4 @@
 - **A replacement that joined is never reaped**, including one whose ceiling evicts it before the reconcile pass that would clear it.
   [verified: LeaderReconcilerTest$AbandonedReplacementReap.joinedReplacement_isNeverReaped_whenItsCeilingPasses, retriedReap_stopsWhenTheReplacementJoins]
 - [design intent — unverified: no run against a live provider; a leader that loses leadership mid-retry leaves the instance to the next activation replay]
-- [unverified: the reconciler tests use a fake topology manager that restates the empty-listing rule (the rule itself is pinned against the real manager in ClusterTopologyManagerReapRetiredTest); the recovery needs a later manager reap of the node: on a stable leader nothing re-lists a never-joined abandoned replacement after the bound (the activation replay runs only at activation), and a leader change loses the manager's in-memory pairing; an instance an operator removes by hand does not clear the event]
+- [unverified: the reconciler tests use a fake topology manager that restates the empty-listing rule (the rule itself is pinned against the real manager in ClusterTopologyManagerReapRetiredTest); the manager's periodic re-check, KV persistence and successor inheritance of the mark are #2062's and are not exercised by this change's tests]
