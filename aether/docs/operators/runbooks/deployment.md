@@ -129,7 +129,9 @@
 
 ### Upgrade Aether Version
 
-Rolling upgrade procedure (one node at a time):
+Upgrade by rolling replacement, not by restarting nodes. A node id never returns: stopping a node,
+copying a new jar over it and starting it again under the same id is refused by the cluster (fresh
+boot token). Each node is replaced under a **new** NodeId, one at a time:
 
 1. **Verify cluster health**
    ```bash
@@ -137,46 +139,28 @@ Rolling upgrade procedure (one node at a time):
    # Must show quorum=true
    ```
 
-2. **For each node (one at a time):**
-
-   a. Stop the node
+2. **Run the rolling upgrade**
    ```bash
-   systemctl stop aether
+   aether cluster upgrade --version <X.Y.Z> --wait
    ```
+   The leader replaces every node not on the target version, one at a time (cores first, the current
+   leader last among them, then workers). Follow it with `aether cluster upgrade-status`; pause,
+   resume or abort with `aether cluster upgrade-pause|upgrade-resume|upgrade-abort`. Workers are
+   replaced serially (one live replacement cluster-wide); parallel batches come in a later release.
+   See the [Rolling Upgrade guide](../../guides/rolling-upgrade.md) for failure handling.
 
-   b. Backup current version
+   To replace a single node (for example a failed one) outside an upgrade:
    ```bash
-   cp /opt/aether/aether-node.jar /opt/aether/aether-node.jar.backup
+   curl -X POST http://node1:8080/api/v1/nodes/replace/<node-id>
    ```
-
-   c. Deploy new version
-   ```bash
-   cp aether-node-new.jar /opt/aether/aether-node.jar
-   ```
-
-   d. Start node
-   ```bash
-   systemctl start aether
-   ```
-
-   e. Wait for node to rejoin cluster
-   ```bash
-   while ! curl -s http://localhost:8080/health | grep -q '"quorum":true'; do
-     sleep 5
-   done
-   ```
-
-   f. Verify cluster health before proceeding to next node
-   ```bash
-   curl http://node1:8080/health
-   ```
+   The leader provisions the new node under a fresh id. To start it yourself, name a fresh id with
+   `-d '{"replacement": "<fresh id>"}'` and launch the node under that id. Do not `systemctl start`
+   the old unit again. See
+   [`POST /api/v1/nodes/replace/{id}`](../../reference/management-api.md#post-apiv1nodesreplaceid).
 
 3. **Verify all nodes on new version**
    ```bash
-   for node in node1 node2 node3; do
-     echo -n "$node: "
-     curl -s http://$node:8080/info | jq -r '.version'
-   done
+   curl -s http://node1:8080/api/v1/nodes/lifecycle | jq '.[] | {nodeId, version}'
    ```
 
 ## TLS Configuration

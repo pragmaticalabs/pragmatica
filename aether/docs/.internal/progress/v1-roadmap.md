@@ -184,7 +184,7 @@ Loan Processing Application — same spec implemented in JBCT slice and Spring B
 | Streaming Phase 3: PostgreSQL + exactly-once | High | Production streaming |
 | Secret rotation provider implementations | High | watchRotation SPI exists, zero providers implement it |
 | Capacity planning guide | High | Sizing guidance for operators |
-| Upgrade path automated test (0.x → 1.0) | High | rolling-aether-upgrade.sh exists, needs CI automation |
+| Upgrade path automated test (0.x → 1.0) | High | `rolling-aether-upgrade.sh` removed (#1543); replaced by `aether cluster upgrade --wait`, needs CI automation |
 | Consumer groups + CDC adapter | Medium | Streaming Phase 1+ |
 | Log aggregation documentation | Medium | Guidance, not code |
 | Error message actionability audit | Medium | Pass through all Cause messages |

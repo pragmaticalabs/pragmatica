@@ -2522,10 +2522,10 @@ See [`cluster-generation-spec.md`](../specs/cluster-generation-spec.md) §14.
 
 ### `aether cluster upgrade`
 
-Change the version the cluster provisions. The command rewrites `[cluster] version` in the committed TOML (the version replacements and scale-ups boot) and stores the same version beside it; it does not restart or replace any running node.
+Roll the cluster to a new version by replacement (#1543). The command rewrites `[cluster] version` in the committed TOML (the version replacements and scale-ups boot) and stores the same version beside it; the leader then starts a rolling-upgrade run that replaces every node not on the target version, one at a time: cores first, the current leader last among them, then workers. Each node is replaced under a new NodeId through the node-replacement machinery; no node is restarted under its own id. Never two replacements at once. A re-issued command is idempotent. Workers are replaced serially (one live replacement cluster-wide); parallel community batches come in a later release.
 
 ```bash
-aether cluster upgrade --version <X.Y.Z>
+aether cluster upgrade --version <X.Y.Z> [--wait] [--wait-timeout-minutes <N>]
 ```
 
 The upgrade is refused (HTTP 409) when a runtime profile used by a source role pins `image` (container) or `jar_url` (JVM) literally: the pin would win over the version, so nothing would change. Write the pin with `{version}` (`image = "registry/aether-node:{version}"`) and it follows the upgrade; the placeholder has to be in the config the cluster was bootstrapped with, since `aether cluster apply` does not currently change runtime-profile content. A version change inside a file given to `aether cluster apply` is likewise refused, with a pointer back to this command — `cluster upgrade` is the only way to change the version.
@@ -2535,6 +2535,8 @@ The upgrade is refused (HTTP 409) when a runtime profile used by a source role p
 | Option | Description |
 |--------|-------------|
 | `--version` | Target version in X.Y.Z format |
+| `--wait` | Block until the run ends. Exit code `0` completed, `1` aborted or paused (the reason is printed), `2` timed out (the run continues on the cluster) |
+| `--wait-timeout-minutes` | Timeout for `--wait`, in minutes (default 180) |
 | `-o json` | Output raw JSON (`-o=<format>`; `--json` never existed — corrected 2026-08-09) |
 
 Example:
@@ -2551,6 +2553,48 @@ If the cluster is already at the target version:
 ```
 Already at version 0.26.0. No upgrade needed.
 ```
+
+See the [Rolling Upgrade guide](../guides/rolling-upgrade.md) for the procedure and failure handling.
+
+### `aether cluster upgrade-status`
+
+Show the rolling-upgrade run started by `aether cluster upgrade` (`GET /api/v1/upgrade/status`).
+
+```bash
+aether cluster upgrade-status
+```
+
+Reports the target version, the run state (`RUNNING`, `PAUSED`, `COMPLETED`, `ABORTED`), the pending stop request (`NONE`, `PAUSE`, `ABORT`), the number of nodes done out of the total, the node being replaced now, the replacement order, and the reason a run is paused or ended. When there never was a run, `present` is false and the other fields are empty.
+
+### `aether cluster upgrade-pause`
+
+Ask the run to pause (`POST /api/v1/upgrade/pause`). OPERATOR.
+
+```bash
+aether cluster upgrade-pause
+```
+
+A pause is a request: it takes effect when the replacement in flight reaches a terminal state (immediately when none is in flight), never mid-replacement. Refused (HTTP 409) when the run is not `RUNNING`.
+
+### `aether cluster upgrade-resume`
+
+Continue a `PAUSED` run (`POST /api/v1/upgrade/resume`). OPERATOR.
+
+```bash
+aether cluster upgrade-resume
+```
+
+A node whose replacement was rolled back is tried again. A replacement that stopped with both nodes kept (`FAILED_KEPT_BOTH`) pauses the run again until it is settled with `POST /api/v1/nodes/replacements/settle/{id}`. Refused (HTTP 409) when the run is not `PAUSED`.
+
+### `aether cluster upgrade-abort`
+
+End the run (`POST /api/v1/upgrade/abort`). OPERATOR.
+
+```bash
+aether cluster upgrade-abort
+```
+
+Like a pause it is a request that waits for the replacement in flight to reach a terminal state. Nodes already replaced stay replaced; the others stay as they are. Not resumable: a new `aether cluster upgrade --version ...` starts a new run. Refused (HTTP 409) when the run has already ended.
 
 ### `aether cluster bootstrap`
 
@@ -2627,6 +2671,8 @@ Destroy takes every slice below its `minAvailable` floor by definition (it drain
 ### `aether cluster apply`
 
 Apply cluster configuration changes with desired-state reconciliation.
+
+A change of a source role's runtime profile name is refused (#1543): rolling it meant stopping a node and starting another in its place under the same id, and a node id never returns. Nodes move onto new software by replacement under a fresh id (`aether cluster upgrade --version X.Y.Z --wait`, or `POST /api/v1/nodes/replace/{id}` for one node). There is no supported way today to change a source role's runtime profile on a running cluster.
 
 ```bash
 aether cluster apply <config-file> [--cluster <name>] [--dry-run] [--yes] [--resume] [--rollback] [--full-check]
@@ -2710,7 +2756,7 @@ The leader generates 32 bytes of fresh key material and publishes it through con
 (`POST /api/v1/cluster/gossip-key/rotate`); every running node switches to the new key and keeps
 accepting the previous one for the overlap. Use it after a suspected `cluster_secret` or gossip-key
 leak: the daily key is derived from `cluster_secret`, so this is the only mitigation that does not
-require reconfiguring and restarting every node. The output carries key ids only, never key material.
+require reconfiguring every node and replacing each one under a fresh node id (or a whole-cluster cold restart). The output carries key ids only, never key material.
 
 **Before you run this, know two limits — SECURITY.md has the detail.** The **first** rotation has no
 overlap, because there is no prior record whose key could be carried; it replaces the boot key

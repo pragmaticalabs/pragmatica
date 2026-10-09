@@ -55,8 +55,7 @@ import static org.pragmatica.aether.environment.SourceName.sourceNameOrDefault;
 /// the serving node itself is drained last and completes on its own address refusing. The `@Timeout` is the red
 /// signal: with the old wait the site blocks for its whole 120 s budget and the test is killed long before.
 ///
-/// Sites reached here: all four `WaveExecutor` sites (scale-down, SSH rolling restart, compute rolling restart,
-/// `drainOldNodes`), `ClusterDestroyCommand`, `ClusterDrainCommand --wait`.
+/// Sites reached here: the `WaveExecutor` sites (scale-down, `drainOldNodes`), `ClusterDestroyCommand`, `ClusterDrainCommand --wait`.
 @Timeout(value = 40, unit = TimeUnit.SECONDS)
 class DrainWaitCallSitesTest {
     private static final String UNRESOLVABLE_HOST = "drain-test.invalid";
@@ -95,24 +94,30 @@ class DrainWaitCallSitesTest {
         return new ScriptedDrainHttp(drainAccepted(NODE), lifecycle(NODE, "DRAINING"), notFound(NODE), connectionRefused());
     }
 
-    /// #1720: in a rolling restart the second drain is commonly asked for before the first node's displaced instance
-    /// is ACTIVE again, and the floor refuses it. The refusal is transient, so the wave waits it out rather than
-    /// ending the upgrade on the first 409.
+    /// #1543 F: a runtime change used to roll a role by stopping a node and starting another in its place (the SSH branch under the SAME
+    /// id). It is refused for every source type, with the supported alternatives named, and BEFORE any node is touched: no drain is
+    /// requested and no lifecycle is polled.
     @Test
-    void rollingRestart_aTransientSliceFloorRefusal_isWaitedOut() {
-        var http = drainsThenHalts().withDrainSequence(ScriptedDrainHttp.sliceFloorRefused(NODE), drainAccepted(NODE));
-        ClusterHttpClient.HTTP_OPS_REF.set(http);
-        var config = sshConfig(UNRESOLVABLE_HOST);
-        var plan = DiffPlan.diffPlan(List.of(),
-                                     List.of(new DiffAction.RuntimeChange(sourceNameOrDefault("dc"), NodeRole.CORE, "a", "b")),
-                                     List.of(),
-                                     List.of());
+    void aRuntimeChange_isRefusedForEverySourceType_namingTheSupportedWay_andTouchesNoNode() {
+        for (var type : List.of(SourceType.SSH, SourceType.CLOUD, SourceType.DOCKER, SourceType.FORGE)) {
+            var http = drainsThenHalts();
+            ClusterHttpClient.HTTP_OPS_REF.set(http);
+            var config = config(type, "unused-host");
+            var plan = DiffPlan.diffPlan(List.of(),
+                                         List.of(new DiffAction.RuntimeChange(sourceNameOrDefault("dc"), NodeRole.CORE, "a", "b")),
+                                         List.of(),
+                                         List.of());
 
-        var result = WaveExecutor.execute(plan, config, config);
+            var result = WaveExecutor.execute(plan, config, config);
 
-        assertThat(http.drainPosts()).as("refused once, then re-requested and admitted").isEqualTo(2);
-        assertThat(http.lifecycleGets()).as("and the drain wait then ran to the halt").isEqualTo(3);
-        assertThat(failureText(result)).doesNotContain("minAvailable").doesNotContain("did not complete drain");
+            assertThat(failureText(result)).as("%s", type)
+                                           .contains("dc.core (a -> b)")
+                                           .contains("aether cluster upgrade --version X.Y.Z --wait")
+                                           .contains("/api/v1/nodes/replace/{id}")
+                                           .contains("no supported way today");
+            assertThat(http.drainPosts()).as("%s: no drain requested", type).isZero();
+            assertThat(http.lifecycleGets()).as("%s: no lifecycle polled", type).isZero();
+        }
     }
 
     /// A refusal that outlasts the bound still ends the drain, naming the slice.
@@ -155,23 +160,6 @@ class DrainWaitCallSitesTest {
         assertThat(http.drainPosts()).as("the drain was requested").isEqualTo(1);
         assertThat(http.lifecycleGets()).as("and the wait ran past the relayed 404 to the refusal").isEqualTo(3);
         assertThat(failureText(result)).as("the only thing left to fail is the unreachable ssh host").doesNotContain("did not complete drain");
-    }
-
-    @Test
-    void rollingRestartOfSshNodes_proceedsPastTheDrainWait_toTheSshStop() {
-        var http = drainsThenHalts();
-        ClusterHttpClient.HTTP_OPS_REF.set(http);
-        var config = sshConfig(UNRESOLVABLE_HOST);
-        var plan = DiffPlan.diffPlan(List.of(),
-                                     List.of(new DiffAction.RuntimeChange(sourceNameOrDefault("dc"), NodeRole.CORE, "a", "b")),
-                                     List.of(),
-                                     List.of());
-
-        var result = WaveExecutor.execute(plan, config, config);
-
-        assertThat(http.drainPosts()).isEqualTo(1);
-        assertThat(http.lifecycleGets()).isEqualTo(3);
-        assertThat(failureText(result)).doesNotContain("did not complete drain");
     }
 
     /// `unknown` (503) is the answer for a LIVE member missing from the soft readiness view (a transient evict, a new
@@ -276,25 +264,6 @@ class DrainWaitCallSitesTest {
         assertThat(results.getFirst().success()).isFalse();
         assertThat(results.getFirst().reason()).contains("refused with HTTP 409");
         assertThat(http.lifecycleGets()).isZero();
-    }
-
-    /// `drainAndDestroyComputeNode`: a CLOUD source with no provider configured fails at the destroy
-    /// dispatch (`NO_PROVIDER`, before any network), which is reached only if the drain wait returned.
-    @Test
-    void rollingRestartOfComputeNodes_proceedsPastTheDrainWait_toTheDestroy() {
-        var http = drainsThenHalts();
-        ClusterHttpClient.HTTP_OPS_REF.set(http);
-        var config = config(SourceType.CLOUD, "unused-host");
-        var plan = DiffPlan.diffPlan(List.of(),
-                                     List.of(new DiffAction.RuntimeChange(sourceNameOrDefault("dc"), NodeRole.CORE, "a", "b")),
-                                     List.of(),
-                                     List.of());
-
-        var result = WaveExecutor.execute(plan, config, config);
-
-        assertThat(http.drainPosts()).isEqualTo(1);
-        assertThat(http.lifecycleGets()).as("the wait ran to the refusal before the destroy was dispatched").isEqualTo(3);
-        assertThat(failureText(result)).doesNotContain("did not complete drain");
     }
 
     /// `drainOldNodes` (replace-before-retire) sits behind provisioning, so it is driven directly.

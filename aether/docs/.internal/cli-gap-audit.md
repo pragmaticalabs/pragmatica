@@ -62,7 +62,7 @@ The two `*_STATUS` enum entries had names inverted from their semantics — `CLU
 
 These were discovered after the first sweep and would have silently broken the system if missed:
 - **`RoutePermissionRegistry.java`** — RBAC permission registry was keyed off old singular paths. After the rename, the registry's path-prefix matching would have failed to resolve permissions for the new plural paths, falling through to ADMIN_ONLY default for every authenticated mutation. **Fixed.**
-- **`aether/script/rolling-aether-upgrade.sh`** — 8 live curl calls to old paths in production rolling-upgrade script. **Fixed.**
+- ~~`aether/script/rolling-aether-upgrade.sh`~~ — script removed (#1543); replaced by `aether cluster upgrade --wait`. (Its 8 old-path curl calls were fixed before removal.)
 - **Dashboard JS** (`index.html`, `app.js`, `stores/requests.js`, `stores/cluster.js`, `stores/events.js`) — live RestClient calls to old paths. **Fixed.**
 - **`forge/Dockerfile` + `forge/docker-compose.yml`** — healthcheck commands hitting `/api/status` (now `/api/nodes/status`). **Fixed.**
 - **`aether/docker/scaling-test/*.sh`** — scaling-test scripts with live API curl. **Fixed.**

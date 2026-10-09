@@ -106,9 +106,11 @@ effort; this page does not describe it until it lands.
 
 ## Rolling upgrades and node version skew
 
-The operator-facing procedure exists and is real: `rolling-aether-upgrade.sh` drains a node,
-shuts it down, has the operator restart it on the new binary, and canary-watches it before moving
-to the next node [mechanism: [`../guides/rolling-upgrade.md`](../guides/rolling-upgrade.md)]. That
+The operator-facing procedure exists and is real: `aether cluster upgrade --wait` stores the target
+version and the leader replaces every node not on it, one at a time and each under a new NodeId
+(no node is restarted under its own id), with a canary confirming each replacement before the old
+node retires [mechanism: [`../guides/rolling-upgrade.md`](../guides/rolling-upgrade.md)]. The old
+`rolling-aether-upgrade.sh` script was removed (#1543). That
 guide states the cluster "remains in a valid mixed-version state" during the rollout, and the part
 of that claim this page can verify is the slice-loading layer: envelope-format compatibility
 (above) is exactly what lets an old-format and new-format slice coexist across nodes mid-rollout.

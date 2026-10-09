@@ -321,127 +321,36 @@ public final class WaveExecutor {
         };
     }
 
+    /// #1543 F: refused. Rolling a role onto a new runtime here stopped a node and started another in its place by deterministic
+    /// id (the SSH branch re-registered the SAME id on the same host), so a node came back under an id the cluster had retired. See
+    /// [RuntimeChangeNotSupported] for the supported ways to change what a node runs.
     private static Result<Integer> executeRuntimeChange(DiffAction.RuntimeChange change,
                                                         ClusterBootstrapConfig stored,
                                                         ClusterBootstrapConfig desired,
                                                         CreatedNodes created) {
-        logAction("~",
-                  change.sourceName()
-                 + "." + change.role().value()
-                 + ": runtime change " + change.fromRuntime()
-                 + " -> " + change.toRuntime());
-
-        return lookupSource(change.sourceName(), stored.sources()).flatMap(source -> rollingRestart(change.sourceName(),
-                                                                                                    change.role(),
-                                                                                                    source,
-                                                                                                    desired,
-                                                                                                    created));
+        return new RuntimeChangeNotSupported(change.sourceName(),
+                                             change.role(),
+                                             change.fromRuntime(),
+                                             change.toRuntime()).result();
     }
 
-    private static Result<Integer> rollingRestart(SourceName sourceName,
-                                                  NodeRole role,
-                                                  SourceProfile source,
-                                                  ClusterBootstrapConfig desired,
-                                                  CreatedNodes created) {
-        var managementPort = desired.operations().ports().management();
-        var maxUnavailable = resolveMaxUnavailable(role, desired);
-        var nodeCount = option(source.roles().get(role)).flatMap(RoleSubTable::count).or(0);
-        var modified = 0;
-
-        for (int batch = 0; batch < nodeCount; batch += maxUnavailable) {
-            var batchSize = Math.min(maxUnavailable, nodeCount - batch);
-            var result = rollingRestartBatch(sourceName,
-                                             role,
-                                             source,
-                                             desired,
-                                             managementPort,
-                                             batch,
-                                             batchSize,
-                                             created);
-
-            if (result.isFailure()) {
-                return result;
-            }
-
-            modified += result.or(0);
+    /// There is no supported way today to change the runtime profile of a source role on a running cluster: replacements are
+    /// provisioned from the committed cluster config, and `cluster apply` does not change runtime-profile content. What IS supported
+    /// is moving nodes onto a new VERSION by replacement.
+    public record RuntimeChangeNotSupported(SourceName sourceName, NodeRole role, String from, String to) implements Cause {
+        @Override
+        public String message() {
+            return "Changing the runtime of " + sourceName.value()
+                 + "." + role.value()
+                 + " (" + from
+                 + " -> " + to
+                 + ") by apply is not supported: "
+                 + "it would stop a node and start another in its place under the same id, and a node id never returns. "
+                 + "Nodes are moved onto new software by REPLACEMENT under a fresh id: `aether cluster upgrade --version X.Y.Z --wait` replaces every node "
+                 + "one at a time, and `POST /api/v1/nodes/replace/{id}` replaces one. Replacements are provisioned from the committed cluster config, "
+                 + "and `aether cluster apply` does not change runtime-profile content, so there is no supported way today to change a source role's "
+                 + "runtime profile on a running cluster.";
         }
-
-        return success(modified);
-    }
-
-    private static Result<Integer> rollingRestartBatch(SourceName sourceName,
-                                                       NodeRole role,
-                                                       SourceProfile source,
-                                                       ClusterBootstrapConfig desired,
-                                                       int managementPort,
-                                                       int startIndex,
-                                                       int batchSize,
-                                                       CreatedNodes created) {
-        var modified = 0;
-
-        for (int i = startIndex; i < startIndex + batchSize; i++) {
-            var nodeId = sourceName.value() + "-" + role.value() + "-" + i;
-            var result = rollingRestartSingleNode(nodeId, sourceName, role, source, desired, managementPort, created);
-
-            if (result.isFailure()) {
-                return result;
-            }
-
-            modified++;
-        }
-
-        return success(modified);
-    }
-
-    private static Result<Integer> rollingRestartSingleNode(String nodeId,
-                                                            SourceName sourceName,
-                                                            NodeRole role,
-                                                            SourceProfile source,
-                                                            ClusterBootstrapConfig desired,
-                                                            int managementPort,
-                                                            CreatedNodes created) {
-        logAction("~", "  draining " + nodeId + "...");
-
-        return drainAndDestroyNode(nodeId, sourceName, role, source, managementPort).flatMap(_ -> reprovisionNode(sourceName,
-                                                                                                                  role,
-                                                                                                                  desired,
-                                                                                                                  created))
-                                  .map(_ -> logAndCount("~", "  " + nodeId + " restarted with new runtime", 1));
-    }
-
-    private static Result<Unit> drainAndDestroyNode(String nodeId,
-                                                    SourceName sourceName,
-                                                    NodeRole role,
-                                                    SourceProfile source,
-                                                    int managementPort) {
-        return switch (source.type()) {
-            case SSH -> drainSshNode(nodeId, sourceName, source, managementPort);
-            case CLOUD, DOCKER -> drainAndDestroyComputeNode(nodeId, sourceName, role, source, managementPort);
-            case FORGE -> forgeRestartPlaceholder(nodeId);
-        };
-    }
-
-    private static Result<Unit> drainSshNode(String nodeId,
-                                             SourceName sourceName,
-                                             SourceProfile source,
-                                             int managementPort) {
-        var hosts = option(source.roles()
-                                 .values()
-                                 .stream()
-                                 .flatMap(r -> r.hosts()
-                                                .stream()
-                                                .flatMap(List::stream))
-                                 .toList()).filter(l -> !l.isEmpty())
-                          .or(List.of());
-
-        if (hosts.isEmpty()) {
-            return Result.unitResult();
-        }
-
-        var host = hosts.getFirst();
-
-        return ClusterHttpClient.drainNodeAndAwait(host, managementPort, nodeId, DRAIN_TIMEOUT_MS).flatMap(_ -> sshStopNode(host,
-                                                                                                                            source));
     }
 
     private static Result<Unit> sshStopNode(String host, SourceProfile source) {
@@ -450,35 +359,6 @@ public final class WaveExecutor {
         logAction("~", "  SSH stop on " + host);
 
         return RemoteCommandRunner.ssh(host, "docker stop aether-node || true", sshConfig).mapToUnit();
-    }
-
-    private static Result<Unit> drainAndDestroyComputeNode(String nodeId,
-                                                           SourceName sourceName,
-                                                           NodeRole role,
-                                                           SourceProfile source,
-                                                           int managementPort) {
-        var address = resolveNodeAddress(nodeId);
-
-        return ClusterHttpClient.drainNodeAndAwait(address, managementPort, nodeId, DRAIN_TIMEOUT_MS).flatMap(_ -> dispatchDestroy(sourceName,
-                                                                                                                                   source,
-                                                                                                                                   role,
-                                                                                                                                   1,
-                                                                                                                                   managementPort));
-    }
-
-    private static Result<List<ProvisionedNode>> reprovisionNode(SourceName sourceName,
-                                                                 NodeRole role,
-                                                                 ClusterBootstrapConfig desired,
-                                                                 CreatedNodes created) {
-        return lookupSource(sourceName,
-                            desired.sources()).flatMap(source -> dispatchProvision(sourceName,
-                                                                                   source,
-                                                                                   role,
-                                                                                   1,
-                                                                                   desired,
-                                                                                   created))
-                           .flatMap(nodes -> waitForNewNodes(nodes,
-                                                             desired.operations().ports().management()));
     }
 
     private static Result<List<ProvisionedNode>> waitForNewNodes(List<ProvisionedNode> nodes, int managementPort) {
@@ -585,13 +465,6 @@ public final class WaveExecutor {
         return success(0);
     }
 
-    private static int resolveMaxUnavailable(NodeRole role, ClusterBootstrapConfig config) {
-        return role == NodeRole.CORE
-               ? config.coreTopology()
-                       .maxUnavailable()
-               : Integer.MAX_VALUE;
-    }
-
     private static String resolveNodeAddress(String nodeId) {
         return nodeId;
     }
@@ -602,12 +475,6 @@ public final class WaveExecutor {
         var port = source.sshPort().or(22);
 
         return SshConfig.sshConfig(user, keyPath, port);
-    }
-
-    private static Result<Unit> forgeRestartPlaceholder(String nodeId) {
-        logAction("~", "  " + nodeId + "/forge: in-process node will be restarted by Forge");
-
-        return Result.unitResult();
     }
 
     private static Result<Integer> executeRemovals(List<DiffAction> removals,

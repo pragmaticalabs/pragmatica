@@ -262,7 +262,7 @@ quorum/core-membership everywhere. **There is no ACTIVE↔PASSIVE transition, by
 points on a promotion ladder, and there is deliberately no simple way to move between them. Rabia is
 leaderless and needs no learner: a joining or rejoining **core** node comes up as ACTIVE and catches up
 via the existing **single-snapshot sync**; a rejoining same-id node is admitted by **incarnation
-fencing** (§9.4 #2, Docker-validated). The learner/promote machinery is therefore *not* built — §9.4 #3
+fencing** (§9.4 #2, Docker-validated). *Superseded by #1543 (2026-10-09): a node id never returns; a new process under the same NodeId is refused under terminal removal (fresh boot token). Recovery is replacement under a new NodeId.* The learner/promote machinery is therefore *not* built — §9.4 #3
 is struck. (etcd's learner is retained in §9.1/§9.6 only as surveyed prior art, not an adopted model.)
 
 ### 9.4 Prerequisites (concrete, bounded)
@@ -298,6 +298,7 @@ is struck. (etcd's learner is retained in §9.1/§9.6 only as surveyed prior art
    (the higher boot incarnation un-fenced it; the old terminal-evict Set would have blocked it forever).
    Surplus-drain-to-5 lagged (a new-ULID replacement joined → cluster held at 6, node-5 UNKNOWN) — the
    separate **#68** post-multikill quiesce churn, not a rejoin regression.
+   *Superseded by #1543 (2026-10-09): the same-id `docker start` rejoin recorded here is no longer a supported recovery. A node id never returns; a new process under the same NodeId is refused (fresh boot token), and recovery is a replacement under a fresh NodeId. Kept as history of the incarnation-fence validation.*
 3. **REJECTED (2026-06-05).** "Rejoin via PASSIVE" is a Raft artifact (§9.3): PASSIVE is a worker
    construction with no mode transition by design. Rejoin is fully covered by incarnation fencing
    (#2, validated) + the existing single-snapshot sync — no learner phase, nothing to build.

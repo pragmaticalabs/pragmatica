@@ -140,7 +140,7 @@ Operator/leader-initiated: `ScaleDown(source, WORKER, n)` → the leader picks v
 
 ### 4.4 Rejoin
 
-A worker that vanishes and returns with the same NodeId within the FSM's recovery window behaves as a transient (SUSPECT→MEMBER, fine). A worker that was terminally evicted does **not** rejoin (D6): the fence rejects it; ops guidance is reprovision (fresh id). No worker-side analogue of the core's incarnation-bump rejoin flow is built or supported.
+A worker that vanishes and returns with the same NodeId within the FSM's recovery window behaves as a transient (SUSPECT→MEMBER, fine). *Superseded by #1543 (2026-10-09): a node id never returns. A stopped, killed or restarted-in-place worker is refused under terminal removal (fresh boot token); the supported action is replacement under a new NodeId, `POST /api/v1/nodes/replace/{id}`. The window above covers a transport blip of a live process, not a restart.* A worker that was terminally evicted does **not** rejoin (D6): the fence rejects it; ops guidance is reprovision (fresh id). No worker-side analogue of the core's incarnation-bump rejoin flow is built or supported.
 
 ## 5. What replaces `GroupAssignment`/`GroupMembershipTracker`
 
@@ -229,7 +229,7 @@ Deployment (CDM/NDM/`WorkerDeploymentManager`) consumes from this layer: (a) `Al
 | Watch relay re-introduces the multi-authority gap (governor's view vs core's) | The relay is a *projection* of the committed stream with seq numbers; gap → re-pull from the core (single source of truth). The governor caches, never decides KV content (A11 covers only its own atoms). |
 | Governor churn under load (election flaps) thrashes announcements/relay | Incumbent-sticky election + communityTerm fencing (existing); follower subscriptions survive governor change (re-subscribe from last seq to the new governor — gap protocol covers the seam). |
 | Join-storm on a fresh source (100 workers at once) | No snapshot herd (D5); assignment is O(1) per join at the leader; FORMING communities absorb in parallel (width-first). Validate in Phase B/C gates. |
-| D6 (disposable identity) surprises operators who restart a worker in place | Restart-in-place within the recovery window is fine (SUSPECT→MEMBER). Only terminal eviction requires reprovision; document in ops guide + clear error on fenced rejoin. |
+| D6 (disposable identity) surprises operators who restart a worker in place | Restart-in-place within the recovery window is fine (SUSPECT→MEMBER). Only terminal eviction requires reprovision; document in ops guide + clear error on fenced rejoin. *Superseded by #1543 (2026-10-09): restart-in-place is not fine under boot tokens; a new process under the same NodeId is refused, so replace the worker under a fresh id.* |
 | Lazy label pull (D9) leaves a window where a transitively-learned peer has unknown role | Unknown-role peers are counted as nothing (not core, not worker) and never enter any connection set until resolved — fail-closed; resolution is one round-trip, cached. |
 
 ## 13. Open questions

@@ -8,7 +8,7 @@
 #       RestartNode / NodeRestarted, ComputeProvider#restart, `docker start`, `compose start`, `docker restart`,
 #       `systemctl restart`, `kubectl rollout restart` — outside ALLOW below.
 #   C2  every ALLOW entry still matches something (a stale entry hides the next regression: delete it when
-#       the code it excuses goes — parts B and F of #1543 empty the bootstrap and upgrade-script lines).
+#       the code it excuses goes — part B of #1543 emptied the bootstrap line, part F the upgrade-script line).
 #   C3  controls: the detector finds each pattern when planted, ignores comment lines, and reports an
 #       allow-listed file only through ALLOW (a detector that cannot fail proves nothing).
 #   H1  the REAL 02w cleanup(): after a confirmed kill it restores the baseline through auto-heal and issues
@@ -38,7 +38,6 @@ PATTERN='(^|[^_[:alnum:]])start_node([^_[:alnum:]]|$)|cloud_revive_vm|cloud_stop
 # to an excused file (a `docker start` appended to chaos-controller.sh) is still a violation. The path is a prefix.
 ALLOW=(
   'aether/script/demo-cluster.sh|start_node|first start of a demo cluster, not a relaunch'
-  'aether/script/rolling-aether-upgrade.sh|systemctl restart|docker restart|kubectl rollout restart|#1543 part F replaces the script with `aether cluster upgrade --wait`'
   'aether/cli/src/main/java/org/pragmatica/aether/cli/cluster/BootstrapPhaseDeploy.java|&& systemctl start " [+] NodeUserDataRenderer[.]JVM_UNIT_NAME;|#1959 guarded FIRST start: refuses an ever-started node (C4 pins the guard)'
   'aether/cli/src/test/java/org/pragmatica/aether/cli/cluster/BootstrapLaunchOnceTest.java|systemctl (start|restart)|docker (run|restart)|refusal seam: asserts the #1959 guard and that no restart is ever issued'
   'aether/cli/src/test/java/org/pragmatica/aether/cli/cluster/BootstrapPhaseDeployCloudSshRestartTest.java|systemctl start|asserts the guarded first-start command shape (#1959)'

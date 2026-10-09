@@ -528,7 +528,7 @@ REQ-A02: The BASTION_IP is the Aether LB VM's public IP (from .cloud-env).
 **Adaptation in `lib/cluster.sh`:**
 
 ```
-REQ-A03: kill_node() in cloud mode:
+REQ-A03: kill_node() in cloud mode (note, #1543, 2026-10-09: a killed node is never restarted under its old id; it is replaced under a fresh id by CTM auto-heal, see REQ-A04):
          Map node-1..5 to private IPs 10.0.1.11..15.
          SSH via bastion: ssh -J root@${BASTION_IP} root@10.0.1.1${node_num} "docker kill aether-node"
          Note: container name is "aether-node" (not "aether-node-1") because each VM runs a single container.

@@ -21,9 +21,10 @@ import tools.jackson.databind.JsonNode;
 
 import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_CONFIG_GET;
 import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_UPGRADE;
+import static org.pragmatica.aether.management.route.ManagementRoute.UPGRADE_STATUS;
 
 
-@Command(name = "upgrade", description = "Upgrade cluster to a target version")
+@Command(name = "upgrade", description = "Upgrade cluster to a target version: every node is replaced, one at a time, by a node running it (see also upgrade-status, upgrade-pause, upgrade-resume, upgrade-abort)")
 @SuppressWarnings({"JBCT-RET-01", "JBCT-PAT-01", "JBCT-SEQ-01"})
 class ClusterUpgradeCommand implements Callable<Integer> {
     private static final Pattern VERSION_PATTERN = Pattern.compile("^\\d+\\.\\d+\\.\\d+$");
@@ -31,6 +32,12 @@ class ClusterUpgradeCommand implements Callable<Integer> {
 
     @Option(names = "--version", required = true, description = "Target version (e.g., 0.26.0)")
     private String targetVersion;
+
+    @Option(names = "--wait", description = "Wait until the rolling upgrade run ends (exit 0 completed; 1 aborted or paused, 2 timed out)")
+    private boolean wait;
+
+    @Option(names = "--wait-timeout-minutes", description = "With --wait: how long to wait (default 180)", defaultValue = "180")
+    private long waitTimeoutMinutes;
 
     @CommandLine.ParentCommand
     private ClusterCommand parent;
@@ -44,7 +51,7 @@ class ClusterUpgradeCommand implements Callable<Integer> {
                             .flatMap(_ -> validateVersion())
                             .flatMap(this::fetchCurrentConfig)
                             .flatMap(this::initiateUpgrade)
-                            .fold(ClusterUpgradeCommand::onFailure, this::onSuccess);
+                            .fold(ClusterUpgradeCommand::onFailure, this::onInitiated);
     }
 
     private Result<String> validateVersion() {
@@ -62,13 +69,27 @@ class ClusterUpgradeCommand implements Callable<Integer> {
     private Result<String> initiateUpgrade(JsonNode config) {
         var currentVersion = config.path("version").asText("unknown");
 
-        if (targetVersion.equals(currentVersion)) {
+        if (targetVersion.equals(currentVersion) && !runIsOwed()) {
             return new UpgradeError.AlreadyAtVersion(targetVersion).result();
         }
 
         return ClusterHttpClient.post(CLUSTER_UPGRADE,
                                       buildUpgradeJson(targetVersion,
                                                        config.path("configVersion").asLong(0)));
+    }
+
+    /// The stored version already is the target, but the run towards it may not have finished (it is live, or a node was left behind):
+    /// then the request goes to the server, which attaches to a live run or starts the one that is owed.
+    private boolean runIsOwed() {
+        return ClusterHttpClient.fetch(UPGRADE_STATUS)
+                                .flatMap(UpgradeRunWait.MAPPER::readTree)
+                                .map(status -> status.path("present")
+                                                     .asBoolean(false) && (status.path("state")
+                                                                                 .asText("")
+                                                                                 .equals("RUNNING") || status.path("state")
+                                                                                                             .asText("")
+                                                                                                             .equals("PAUSED")))
+                                .or(false);
     }
 
     /// Field names here MUST match `ManagementApiResponses.UpgradeRequest`; the CLI cannot depend on
@@ -79,8 +100,56 @@ class ClusterUpgradeCommand implements Callable<Integer> {
         return "{\"targetVersion\":\"" + targetVersion + "\",\"expectedVersion\":" + expectedVersion + "}";
     }
 
-    private int onSuccess(String json) {
-        return OutputFormatter.printAction(json, parent.outputOptions(), "Upgrade initiated.");
+    private int onInitiated(String json) {
+        var printed = OutputFormatter.printAction(json, parent.outputOptions(), "Upgrade initiated.");
+
+        return wait && printed == ExitCode.SUCCESS
+               ? awaitRun()
+               : printed;
+    }
+
+    private int awaitRun() {
+        var outcome = UpgradeRunWait.await(() -> ClusterHttpClient.fetch(UPGRADE_STATUS),
+                                           System::currentTimeMillis,
+                                           ClusterUpgradeCommand::sleep,
+                                           waitTimeoutMinutes * 60_000L,
+                                           5_000L,
+                                           System.out::println);
+
+        return exitFor(outcome);
+    }
+
+    static int exitFor(UpgradeRunWait outcome) {
+        return switch (outcome) {
+            case UpgradeRunWait.Completed completed -> {
+                System.out.println("Upgrade to " + completed.targetVersion() + " completed: every node reports it.");
+                yield ExitCode.SUCCESS;
+            }
+            case UpgradeRunWait.Aborted aborted -> {
+                System.err.println("Upgrade aborted: " + aborted.reason());
+                yield ExitCode.ERROR;
+            }
+            case UpgradeRunWait.Paused paused -> {
+                System.err.println("Upgrade paused, it needs an operator: " + paused.reason() + "\nFix the cause, then `aether cluster upgrade-resume` (or `upgrade-abort`).");
+                yield ExitCode.ERROR;
+            }
+            case UpgradeRunWait.NoRun _ -> {
+                System.err.println("Error: the cluster reports no upgrade run.");
+                yield ExitCode.ERROR;
+            }
+            case UpgradeRunWait.TimedOut timedOut -> {
+                System.err.println("Timed out waiting for the upgrade (last seen: " + timedOut.lastSeen() + "). The run continues on the cluster: `aether cluster upgrade-status`.");
+                yield ExitCode.TIMEOUT;
+            }
+        };
+    }
+
+    private static void sleep(long ms) {
+        try {
+            Thread.sleep(ms);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
     }
 
     private static int onFailure(Cause cause) {
