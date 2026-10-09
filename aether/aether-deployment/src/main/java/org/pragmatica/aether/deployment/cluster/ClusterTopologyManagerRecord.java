@@ -128,6 +128,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                     Set<NodeId> seenInstances,
                                     Set<NodeId> confirmedReaps,
                                     ConcurrentHashMap<NodeId, Long> failedReaps,
+                                    org.pragmatica.lang.concurrent.CancellableTask unconfirmedRecheck,
                                     org.pragmatica.lang.concurrent.CancellableTask workerTopologyPolling) implements ClusterTopologyManager {
     private static final Logger log = LoggerFactory.getLogger(ClusterTopologyManager.class);
     private static final int MINIMUM_CLUSTER_SIZE = 3;
@@ -266,6 +267,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                                 ConcurrentHashMap.newKeySet(),
                                                 ConcurrentHashMap.newKeySet(),
                                                 new ConcurrentHashMap<>(),
+                                                org.pragmatica.lang.concurrent.CancellableTask.cancellableTask(),
                                                 org.pragmatica.lang.concurrent.CancellableTask.cancellableTask());
     }
 
@@ -1800,6 +1802,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         }
 
         if (confirmedReaps.contains(node)) {
+            reapConfirmed(node);
             // Idempotent per node: NodeRemoved and the drain-grace backstop both reap, and a reap confirmed once is not re-asked (and so
             // cannot be reported as unconfirmed by a listing that, correctly, no longer shows the instance).
             return Promise.unitPromise();
@@ -1811,7 +1814,10 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
             return liveness.demonstrablyLive(node)
                    ? Causes.cause("external node " + node.id() + " has not left the membership yet").promise()
                    : lifecycleManager.releaseExternal(node)
-                                     .onSuccess(_ -> confirmedReaps.add(node));
+                                     .onSuccess(_ -> {
+                                         confirmedReaps.add(node);
+                                         reapConfirmed(node);
+                                     });
         }
 
         var seen = seenBefore || seenInstances.contains(node);
@@ -1826,7 +1832,10 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                                    ? confirmedAbsent(node, listed, seen)
                                                    : terminateThenConfirm(node, source);
                                         })
-                               .onSuccess(_ -> confirmedReaps.add(node))
+                               .onSuccess(_ -> {
+                                   confirmedReaps.add(node);
+                                   reapConfirmed(node);
+                               })
                                .mapError(cause -> Causes.cause("instance of " + node.id() + ": " + cause.message()));
     }
 
@@ -2134,17 +2143,40 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     }
 
     /// The bound is spent and the instance is still not confirmed terminated: an operator event naming the node and the last cause, once.
-    private void raiseUnconfirmed(NodeId nodeId, int attempts, String cause) {
+    @Override
+    public Unit markUnconfirmed(NodeId nodeId, String cause) {
         if (unconfirmedReaps.add(nodeId)) {
             org.pragmatica.utility.warning.OperatorWarnings.raise(log,
                                                                   warningSink.get(),
                                                                   org.pragmatica.utility.warning.OperatorWarningCode.INSTANCE_TERMINATION_UNCONFIRMED,
                                                                   nodeId.id(),
-                                                                  "The termination of the instance of retired node {} is not confirmed after {} attempts ({}); it may still be running at the provider and billing: terminate it, then the cluster confirms it by listing",
+                                                                  "The termination of the instance of retired node {} is not confirmed ({}); it may still be running at the provider and billing: terminate it, then the cluster confirms it by listing",
                                                                   nodeId.id(),
-                                                                  attempts,
                                                                   cause);
         }
+
+        return unit();
+    }
+
+    /// While active, every marked node is re-checked at a low bounded rate (one confirmed-reap attempt per node per interval, five provisioning windows,
+    /// five minutes at the default): a confirmation raises the recovery. A manager that becomes leader starts with an empty set and re-marks what the
+    /// activation replay finds still listed ([#terminateOrphan]).
+    private void startUnconfirmedRecheck() {
+        var epoch = activationEpoch.get();
+        var interval = TimeSpan.timeSpan(Math.max(1L,
+                                                  autoHealConfig.provisioningTimeout().millis() * 5)).millis();
+
+        unconfirmedRecheck.set(SharedScheduler.scheduleAtFixedRate(() -> recheckUnconfirmed(epoch), interval));
+    }
+
+    private void recheckUnconfirmed(long epoch) {
+        if (!active.get() || activationEpoch.get() != epoch) {
+            return;
+        }
+
+        unconfirmedReaps.forEach(nodeId -> reapRetired(nodeId,
+                                                       lifecycleManager.sourceOf(nodeId).or(SourceName.DEFAULT),
+                                                       false));
     }
 
     private void reapConfirmed(NodeId nodeId) {
@@ -2161,7 +2193,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
 
     private void reapUnconfirmed(NodeId nodeId, long epoch, int retriesLeft, org.pragmatica.lang.Cause cause) {
         if (retriesLeft <= 0) {
-            raiseUnconfirmed(nodeId, FAILED_REAP_RETRIES, cause.message());
+            markUnconfirmed(nodeId, "after " + FAILED_REAP_RETRIES + " attempts: " + cause.message());
 
             return;
         }
@@ -2238,7 +2270,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     @Contract
     private void continueRefusedReap(NodeId nodeId, long epoch, int retriesLeft, String reason) {
         if (retriesLeft <= 0) {
-            raiseUnconfirmed(nodeId, REFUSED_REAP_RETRIES, "refused: " + reason);
+            markUnconfirmed(nodeId, "after " + REFUSED_REAP_RETRIES + " attempts, refused: " + reason);
 
             return;
         }
@@ -2313,6 +2345,8 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         log.warn("CTM: activation replay — instance of {} was untracked, not live and not in flight at two reads {}ms apart; terminating",
                  nodeId,
                  activationReplayGrace().millis());
+        // The previous leader's open "unconfirmed" event cannot be closed by this manager unless it owns the mark: re-mark what is still listed.
+        markUnconfirmed(nodeId, "found still listed at the provider by the activation replay");
         terminateDeparted(nodeId);
     }
 
@@ -2417,6 +2451,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         // previous leader may have died mid-provisioning, and only the active CTM acts on it.
         reconcileWorkerTopology();
         startWorkerTopologyPolling(TimeSpan.timeSpan(10).seconds());
+        startUnconfirmedRecheck();
         // #1050 R4 — one-shot activation replay: reap orphaned core instances that nothing else replays.
         scheduleActivationReplay();
         // #689 — re-compare every retained provisioning intent against what membership holds now.
@@ -2485,6 +2520,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         // replay re-parks any such instance its own SWIM still reports alive (SF-1) and reaps the rest.
         abandonedReaps.clear();
         workerTopologyPolling.cancel();
+        unconfirmedRecheck.cancel();
         pendingDrains.keySet().forEach(drainCommandClear);
         pendingDrains.clear();
         log.info("CTM: Deactivated");
