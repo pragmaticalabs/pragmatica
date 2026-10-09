@@ -40,40 +40,45 @@ class PiggybackBufferConcurrencyTest {
     private static final InetSocketAddress ADDR_A = new InetSocketAddress("127.0.0.1", 9001);
     private static final InetSocketAddress ADDR_B = new InetSocketAddress("127.0.0.1", 9002);
 
-    private static final int READS = 1_000_000;
+    private static final int MAX_SIZE = 1_000_000;
+    // Each peek disseminates the entry once and it is evicted at 3 * MAX_SIZE, so a ticker capped at
+    // MAX_SIZE peeks can never exhaust it, however the scheduler orders the two threads (#1895).
+    private static final int TICKER_PEEKS = MAX_SIZE;
     private static final int ROUNDS = 20_000;
 
     @Test
     void faultyCount_neverReadsZero_whileAFaultyEntryIsBuffered_underAConcurrentPeekTicker() throws InterruptedException {
-        // maxSize 1_000_000 → eviction after 3_000_000 disseminations; the ticker never gets there,
-        // so the FAULTY entry is present for the whole run and every 0 is a mid-peek observation.
-        var buffer = PiggybackBuffer.piggybackBuffer(1_000_000);
+        var buffer = PiggybackBuffer.piggybackBuffer(MAX_SIZE);
         buffer.addUpdate(MembershipUpdate.membershipUpdate(NODE_A, MemberState.FAULTY, 1, ADDR_A));
         buffer.addUpdate(MembershipUpdate.membershipUpdate(NODE_B, MemberState.SUSPECT, 1, ADDR_B));
 
-        var stop = new AtomicBoolean();
         var peeks = new AtomicLong();
+        // The ticker does a fixed amount of work and the reader reads for exactly as long as the ticker
+        // is alive: overlap is guaranteed by construction and the entry's dissemination budget cannot be
+        // exhausted, so neither a stalled reader nor a stalled ticker changes the outcome.
         var ticker = Thread.ofPlatform().start(() -> {
-            while (!stop.get()) {
+            for (int tick = 0; tick < TICKER_PEEKS; tick++) {
                 buffer.peekUpdates(8);
                 peeks.incrementAndGet();
             }
         });
 
-        var zeroReads = 0;
+        var reads = 0L;
+        var zeroReads = 0L;
 
-        for (int read = 0; read < READS; read++) {
+        do {
             if (buffer.faultyCount() == 0) {
                 zeroReads++;
             }
-        }
-        stop.set(true);
+            reads++;
+        } while (ticker.isAlive());
         ticker.join();
 
-        assertThat(peeks.get()).as("control: the ticker peeked concurrently with the reads").isPositive();
+        assertThat(peeks.get()).as("control: the ticker completed its peeks").isEqualTo(TICKER_PEEKS);
+        assertThat(reads).as("control: the reader read while the ticker was running").isPositive();
         assertThat(buffer.faultyCount()).as("control: the FAULTY entry was never evicted").isEqualTo(1);
         assertThat(zeroReads).as("faultyCount() read 0 while a FAULTY entry was buffered (of %d reads, %d concurrent peeks)",
-                                 READS,
+                                 reads,
                                  peeks.get())
                              .isZero();
     }
