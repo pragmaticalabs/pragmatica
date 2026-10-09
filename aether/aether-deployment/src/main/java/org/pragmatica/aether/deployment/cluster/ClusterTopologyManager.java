@@ -209,6 +209,11 @@ public interface ClusterTopologyManager extends TopologyManager {
         return org.pragmatica.lang.Unit.unit();
     }
 
+    /// The replicated marks this manager reads (readable so that the node's wiring can be pinned).
+    default java.util.Map<NodeId, org.pragmatica.aether.slice.kvstore.AetherValue.UnconfirmedTerminationValue> unconfirmedMarks() {
+        return java.util.Map.of();
+    }
+
     /// The sink the unconfirmed-termination events go to (readable so that the node's wiring can be pinned).
     default org.pragmatica.utility.warning.OperatorWarningSink operatorWarningSink() {
         return org.pragmatica.utility.warning.OperatorWarningSink.logOnly();

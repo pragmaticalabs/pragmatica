@@ -274,6 +274,12 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     }
 
     @Override
+    public Map<NodeId, AetherValue.UnconfirmedTerminationValue> unconfirmedMarks() {
+        return persistedMarks.get()
+                             .get();
+    }
+
+    @Override
     public Unit setUnconfirmedMarks(Supplier<Map<NodeId, AetherValue.UnconfirmedTerminationValue>> reader) {
         persistedMarks.set(reader);
 
