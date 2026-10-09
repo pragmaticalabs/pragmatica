@@ -342,8 +342,10 @@ record SourceNodeLifecycleManager(SourceComputeRegistry registry,
 
     @Override
     public Option<SourceName> sourceOf(NodeId nodeId) {
-        return sourceForNode.apply(nodeId)
-                            .option();
+        // A node with no authoritative placement or descriptor source (a bootstrap node of the local harness) is reaped in the default
+        // source; the registry resolves that only for an explicitly local provider, so in a cloud it fails loudly (retried, then the
+        // unconfirmed-termination event) instead of acting through an account nobody named.
+        return Option.some(sourceForNode.apply(nodeId).or(SourceName.DEFAULT));
     }
 
     @Override
