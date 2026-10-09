@@ -54,10 +54,12 @@ class PiggybackBufferConcurrencyTest {
 
     @Test
     void faultyCount_neverReadsZero_whileAFaultyEntryIsBuffered_underAConcurrentPeekTicker() throws InterruptedException {
-        // Eviction is impossible by construction (see TICKER_PEEKS). Overlap is NOT: a reader that is
-        // descheduled until the ticker is done reads an idle buffer and would pass against broken code.
-        // Such a trial is not asserted on; if no trial overlapped, nothing was tested, so the test is
-        // skipped rather than reported green (and not red either: a stalled runner is not a defect).
+        // Eviction is impossible by construction (see TICKER_PEEKS), so every trial asserts its controls and
+        // that no read saw 0: a zero read is itself proof the read raced a peek, even when the overlap
+        // counter missed it (a read wholly inside one peek). Overlap decides only pass versus skip: a
+        // reader descheduled until the ticker is done reads an idle buffer and tests nothing, so if no
+        // trial overlapped the test is skipped rather than reported green (and not red either: a stalled
+        // runner is not a defect).
         var overlapped = new ArrayList<Trial>();
 
         for (int trial = 0; trial < TRIALS && overlapped.isEmpty(); trial++) {
@@ -65,6 +67,11 @@ class PiggybackBufferConcurrencyTest {
 
             assertThat(result.peeks()).as("control: the ticker completed its peeks").isEqualTo(TICKER_PEEKS);
             assertThat(result.faultyAfter()).as("control: the FAULTY entry was never evicted").isEqualTo(1);
+            assertThat(result.zeroReads()).as("faultyCount() read 0 while a FAULTY entry was buffered (trial %d: %d overlapped reads, %d peeks)",
+                                              trial,
+                                              result.overlapped(),
+                                              result.peeks())
+                                          .isZero();
 
             if (result.overlapped() > 0) {
                 overlapped.add(result);
@@ -72,13 +79,6 @@ class PiggybackBufferConcurrencyTest {
         }
 
         assumeThat(overlapped).as("no reader/ticker overlap in %d trials; nothing was tested", TRIALS).isNotEmpty();
-
-        var result = overlapped.getFirst();
-
-        assertThat(result.zeroReads()).as("faultyCount() read 0 while a FAULTY entry was buffered (of %d overlapped reads, %d peeks)",
-                                          result.overlapped(),
-                                          result.peeks())
-                                      .isZero();
     }
 
     private static Trial runTrial() throws InterruptedException {
