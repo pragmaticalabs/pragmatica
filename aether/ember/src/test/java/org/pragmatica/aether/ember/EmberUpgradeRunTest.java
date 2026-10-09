@@ -80,7 +80,7 @@ class EmberUpgradeRunTest {
         var originals = ids(live());
 
         assertThat(originals).hasSize(3);
-        assertThat(versionsSeenBy(leader)).as("before the run every node reports the old label").containsOnly(OLD);
+        assertThat(advertisedVersions()).as("before the run every node advertises the old label").containsOnly(OLD);
 
         cluster.nodeVersion(NEW);
         leader.upgradeRunService().start(NEW).await(START_BOUND).onFailure(cause -> throwBecause(cause.message()));
@@ -95,7 +95,8 @@ class EmberUpgradeRunTest {
         var now = ids(live());
 
         assertThat(now).as("three nodes, none of them an original id").hasSize(3).doesNotContainAnyElementsOf(originals);
-        assertThat(versionsSeenBy(survivor)).as("every node reports the target version").containsOnly(NEW);
+        assertThat(advertisedVersions()).as("every node advertises the target version").containsOnly(NEW);
+        assertThat(versionsSeenBy(survivor, now)).as("and the leader's own view of every node, which is what the run reads").containsOnly(NEW);
         awaitCondition("the installed electorate is the three new nodes", 120_000L, () -> EmberNodeReplacementTest.installedVoters(awaitLeader()).equals(now));
     }
 
@@ -148,9 +149,7 @@ class EmberUpgradeRunTest {
         assertThat(abandoned).as("a record abandoned mid-phase").isEmpty();
         assertThat(recordOf(inFlight[0]).phase()).as("the replacement in flight finished, it was not cut off").isEqualTo(NodeReplacementPhase.DONE);
 
-        var versions = versionsSeenBy(awaitLeader());
-
-        assertThat(versions).as("exactly the replaced node reports the target; the run did not go on").containsExactlyInAnyOrder(NEW, OLD, OLD);
+        assertThat(advertisedVersions()).as("exactly the replaced node reports the target; the run did not go on").containsExactlyInAnyOrder(NEW, OLD, OLD);
     }
 
     // ---- plumbing ---------------------------------------------------------------------------------------------------
@@ -186,13 +185,23 @@ class EmberUpgradeRunTest {
         return found[0];
     }
 
-    /// The version label each live node reports, as `viewer` sees it.
-    private List<String> versionsSeenBy(AetherNode viewer) {
+    /// The version label each live node advertises about ITSELF. This is what "every node reports the target" means here: a node's own
+    /// topology holds its own label for certain, whereas the label of a BOOTSTRAP peer never reaches another node's topology (measured on
+    /// a 3-core Ember cluster: unchanged after 60 s, each node saw only its own), so a peer's view cannot be asserted for those.
+    private List<String> advertisedVersions() {
+        return live().stream()
+                     .map(node -> Option.option(EmberNodeReplacementTest.runtime(node).topologyManager().self().labels().get(NodeInfo.LABEL_VERSION)).or("<none>"))
+                     .toList();
+    }
+
+    /// The version label of each of `ids` as `viewer` (the leader) sees it. Holds for a node that JOINED after bootstrap, which the
+    /// leader learns from its handshake.
+    private List<String> versionsSeenBy(AetherNode viewer, Set<NodeId> ids) {
         var topology = EmberNodeReplacementTest.runtime(viewer).topologyManager();
 
-        return live().stream()
-                     .map(node -> topology.get(node.self()).flatMap(info -> Option.option(info.labels().get(NodeInfo.LABEL_VERSION))).or("<none>"))
-                     .toList();
+        return ids.stream()
+                  .map(id -> topology.get(id).flatMap(info -> Option.option(info.labels().get(NodeInfo.LABEL_VERSION))).or("<none>"))
+                  .toList();
     }
 
     /// The newest committed run any node knows: nodes apply the leader's commits at slightly different moments, so the highest epoch wins.
