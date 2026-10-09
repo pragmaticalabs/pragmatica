@@ -32,6 +32,12 @@
   ("old node retired but its instance is not confirmed terminated at the provider (<cause>); terminate it, then settle keep-new"), and the
   `node-replacement-failed-kept-both` event carries that reason. A rollback is `ROLLED_BACK` only once the replacement's instance is confirmed gone;
   after the retiring budget it too keeps both, naming the cause. The general retirement paths (scale-down, departure) still use the log-and-drop reap: #2062.
+- **What "confirmed gone" means.** `reapRetired(node, source, seenBefore)`: an EMPTY provider listing proves absence only for an instance the provider
+  listed before (the Env lists both nodes while they are up, from JOINING on and again before the drain) or one this call listed and terminated; a
+  never-listed instance (an unlabelled VM, a lagging listing) stays unconfirmed and the replacement ends `FAILED_KEPT_BOTH` naming the node. The
+  observed set is per leader. A node whose reservation carries no provider binding (`""` or `external-uncounted`, an EXTERNAL admission) has no provider
+  instance of ours: it is confirmed by leaving the membership, its reservation is then released (counted) or dropped (uncounted), and terminating it
+  through the lifecycle is a no-op. The cold-boot safety test accepts either safe kept-both reason, each asserted explicitly.
 - **A node that arrived on an uncounted reservation keeps it** (no counting ledger): it is that node's only admission intent, needed again if a worker
   loses its community assignment. A rollback, where the node never arrived, still drops it.
 - **Operator events** are derived from the committed record on every node and raised only by the cluster-events owner, so exactly one
