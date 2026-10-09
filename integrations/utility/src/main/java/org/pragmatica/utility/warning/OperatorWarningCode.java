@@ -113,11 +113,13 @@ public enum OperatorWarningCode {
     /// message names the node, the last cause and what to do. Its recovery is [#INSTANCE_TERMINATION_CONFIRMED].
     INSTANCE_TERMINATION_UNCONFIRMED("instance-termination-unconfirmed", "deployment", WarningLevel.WARNING),
     /// The recovery of [#INSTANCE_TERMINATION_UNCONFIRMED], same subject (#2062): a later reap of the node was confirmed by a provider
-    /// listing (or the operator removed the instance and a repeat reap found none it had listed).
+    /// listing (or the operator removed the instance and a repeat reap found none it had listed). The warning it closes is open in the
+    /// cluster (a replicated mark), not only in the aggregator of the node that raised it, so a later leader's confirmation closes it too.
     INSTANCE_TERMINATION_CONFIRMED("instance-termination-confirmed",
                                    "deployment",
                                    WarningLevel.INFO,
-                                   INSTANCE_TERMINATION_UNCONFIRMED),
+                                   INSTANCE_TERMINATION_UNCONFIRMED,
+                                   true),
     /// A node replacement (#1543) was committed: a fresh-id node is taking over from the subject (the ORIGINAL node). Raised once,
     /// when the record is first committed. Closed by [#NODE_REPLACEMENT_COMPLETED] or [#NODE_REPLACEMENT_ROLLED_BACK].
     NODE_REPLACEMENT_STARTED("node-replacement-started", "replacement", WarningLevel.INFO),
@@ -258,17 +260,27 @@ public enum OperatorWarningCode {
     private final String subsystem;
     private final WarningLevel level;
     private final Option<OperatorWarningCode> recoveryOf;
+    private final boolean closesAcrossNodes;
     OperatorWarningCode(String code, String subsystem, WarningLevel level) {
         this.code = code;
         this.subsystem = subsystem;
         this.level = level;
         this.recoveryOf = Option.none();
+        this.closesAcrossNodes = false;
     }
     OperatorWarningCode(String code, String subsystem, WarningLevel level, OperatorWarningCode recoveryOf) {
         this.code = code;
         this.subsystem = subsystem;
         this.level = level;
         this.recoveryOf = Option.some(recoveryOf);
+        this.closesAcrossNodes = false;
+    }
+    OperatorWarningCode(String code, String subsystem, WarningLevel level, OperatorWarningCode recoveryOf, boolean closesAcrossNodes) {
+        this.code = code;
+        this.subsystem = subsystem;
+        this.level = level;
+        this.recoveryOf = Option.some(recoveryOf);
+        this.closesAcrossNodes = closesAcrossNodes;
     }
     /// The stable kebab-case identifier of the condition.
     public String code() {
@@ -284,6 +296,12 @@ public enum OperatorWarningCode {
     /// condition an operator has seen, so the event layer publishes it exactly then (#752).
     public Option<OperatorWarningCode> recoveryOf() {
         return recoveryOf;
+    }
+    /// Whether this recovery may be published by a node that did not raise the warning it closes (#2062): the warning's open state is held
+    /// by the cluster, not by the raising node's event layer, so the layer need not have seen it. The raiser of such a recovery owns the
+    /// "is it open" decision.
+    public boolean closesAcrossNodes() {
+        return closesAcrossNodes;
     }
     /// Whether some other code is the recovery of this one.
     public boolean hasRecovery() {

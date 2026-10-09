@@ -526,6 +526,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         // A rejoin under the same id ends the parked episode: the new incarnation's death, if it comes, arrives
         // as its own `NodeRemoved` (verify-1057-r3 NIT-1 — a stale park would run a second chain beside it).
         abandonedReaps.remove(joined.nodeId());
+        forgetIncarnation(joined.nodeId());
         // #689: `NodeJoined` is the CORE channel and carries no role — read the role the FSM classified
         // this join by (`MembershipFsm.memberDescriptor`), never the observer's frozen first sighting.
         checkAdvertisedRole(joined.nodeId(),
@@ -545,6 +546,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
             return;
         }
 
+        forgetIncarnation(decision.nodeId());
         checkAdvertisedRole(decision.nodeId(),
                             Option.some(decision.role()),
                             "WorkerJoinDecision");
@@ -1792,16 +1794,10 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
             return Causes.cause("reap of " + node.id() + " refused: " + refusal.unwrap()).promise();
         }
 
-        if (confirmedReaps.contains(node)) {
-            reapConfirmed(node);
-            // Idempotent per node: NodeRemoved and the drain-grace backstop both reap, and a reap confirmed once is not re-asked (and so
-            // cannot be reported as unconfirmed by a listing that, correctly, no longer shows the instance).
-            return Promise.unitPromise();
-        }
-
         if (lifecycleManager.externalNode(node)) {
             // An operator started this node: there is no provider instance of ours to list or terminate, on ANY path. It is confirmed by its
-            // departure from the membership, and its capacity is then returned.
+            // departure from the membership, and its capacity is then returned. Asked BEFORE the confirmed-reap memory: a committed EXTERNAL
+            // reservation is a new incarnation of the id (an earlier one's was released), whatever [#confirmedReaps] remembers.
             return liveness.demonstrablyLive(node)
                    ? Causes.cause("external node " + node.id() + " has not left the membership yet").promise()
                    : lifecycleManager.releaseExternal(node)
@@ -1809,6 +1805,10 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                          confirmedReaps.add(node);
                                          reapConfirmed(node);
                                      });
+        }
+
+        if (confirmedReaps.contains(node)) {
+            return reapedAgain(node);
         }
 
         var seen = seenBefore || seenInstances.contains(node);
@@ -1828,6 +1828,19 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                    reapConfirmed(node);
                                })
                                .mapError(cause -> Causes.cause("instance of " + node.id() + ": " + cause.message()));
+    }
+
+    /// Idempotent per node INCARNATION: NodeRemoved and the drain-grace backstop both reap, and a reap confirmed once is not re-asked (and so cannot be
+    /// reported as unconfirmed by a listing that, correctly, no longer shows the instance). A node that shows life again is a new incarnation whose
+    /// join has not been seen yet ([#forgetIncarnation]): it is never confirmed gone.
+    private Promise<Unit> reapedAgain(NodeId node) {
+        if (liveness.demonstrablyLive(node)) {
+            return Causes.cause("node " + node.id() + " shows life again after a confirmed reap: not confirmed gone").promise();
+        }
+
+        reapConfirmed(node);
+
+        return Promise.unitPromise();
     }
 
     /// A listed instance that is not already TERMINATED (running, booting, or merely STOPPED: a stopped VM still bills and holds its slot)
@@ -2101,11 +2114,9 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                          .onEmpty(() -> terminateRetired(nodeId));
     }
 
-    /// A provider failure is logged at WARN and NOT retried here — FER, with the activation replay as the backstop:
-    /// the failures seen are mostly permanent until state changes (no provider wired, no capacity reservation
-    /// committed for the id), so a timer would repeat a refusal, while a transient provider error leaves the instance
-    /// listed, and the next activation's replay selects it again. Guarantee earned: the failure is visible, not that
-    /// the VM is gone.
+    /// Every retirement reap is a CONFIRMED reap ([#confirmedReap]): a failed or refused attempt is retried, bounded, and the bound being spent ends in
+    /// the operator event ([#markUnconfirmed]) rather than a log line. The activation replay stays the backstop for a leader that dies mid-chain.
+    /// Guarantee earned: the failure is visible and the VM is terminated only once a listing shows it gone, not that every reap succeeds.
     @Contract
     private void terminateRetired(NodeId nodeId) {
         abandonedReaps.remove(nodeId);
@@ -2115,8 +2126,14 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     }
 
     /// #2062: every retirement reap is a CONFIRMED reap ([#reapRetired]): list (which commits a bootstrap node's missing reservation),
-    /// terminate, re-list (a lifecycle that cannot name the node's source keeps the plain terminate by node id). A failed or refused attempt is retried, bounded, and when the bound is spent an operator event names the node
+    /// terminate, re-list. A failed or refused attempt is retried, bounded, and when the bound is spent an operator event names the node
     /// and the cause: an instance that may still be running is never dropped silently.
+    ///
+    /// A node that shows life while the chain runs is never terminated by it: the chain stops and parks the reap for the next SWIM FAULTY,
+    /// exactly as [#reapUnlessLive] abandons (the first attempt was checked by it; the retries, up to two minutes later, are checked here).
+    ///
+    /// The `terminateNode(nodeId)` branch is unreachable with the production lifecycle, whose [NodeLifecycleManager#sourceOf] is total; it serves a
+    /// lifecycle on the interface default (a test double), which cannot name a source.
     @Contract
     private void confirmedReap(NodeId nodeId, long epoch, int retriesLeft) {
         if (!active.get() || activationEpoch.get() != epoch) {
@@ -2134,24 +2151,40 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     }
 
     /// The bound is spent and the instance is still not confirmed terminated: an operator event naming the node and the last cause, once, and the
-    /// mark persisted in the replicated store so that the next leader inherits it.
+    /// mark persisted in the replicated store so that the next leader inherits it (without raising the event again: the warning stays open until a
+    /// confirmation closes it, by whichever leader makes it).
     @Override
     public Unit markUnconfirmed(NodeId nodeId, String cause) {
         if (unconfirmedReaps.add(nodeId)) {
-            raiseUnconfirmedEvent(nodeId, cause);
-            writeMark(nodeId,
-                      Option.some(new AetherValue.UnconfirmedTerminationValue(cause, seenInstances.contains(nodeId))));
+            var seen = seenInstances.contains(nodeId);
+
+            raiseUnconfirmedEvent(nodeId, cause, seen);
+            writeMark(nodeId, Option.some(new AetherValue.UnconfirmedTerminationValue(cause, seen)));
         }
 
         return unit();
     }
 
-    private void raiseUnconfirmedEvent(NodeId nodeId, String cause) {
+    /// A mark whose instance the provider has listed is re-checked by listing and closes itself. One whose instance was never listed (an unlabelled
+    /// VM, or a provider that only ever failed) cannot be confirmed by listing, so it is not re-checked: it stays an operator warning, and says so.
+    private void raiseUnconfirmedEvent(NodeId nodeId, String cause, boolean seen) {
+        if (seen) {
+            org.pragmatica.utility.warning.OperatorWarnings.raise(log,
+                                                                  warningSink.get(),
+                                                                  org.pragmatica.utility.warning.OperatorWarningCode.INSTANCE_TERMINATION_UNCONFIRMED,
+                                                                  nodeId.id(),
+                                                                  "The termination of the instance of retired node {} is not confirmed ({}); it may still be running at the provider and billing: terminate it, then the cluster confirms it by listing",
+                                                                  nodeId.id(),
+                                                                  cause);
+
+            return;
+        }
+
         org.pragmatica.utility.warning.OperatorWarnings.raise(log,
                                                               warningSink.get(),
                                                               org.pragmatica.utility.warning.OperatorWarningCode.INSTANCE_TERMINATION_UNCONFIRMED,
                                                               nodeId.id(),
-                                                              "The termination of the instance of retired node {} is not confirmed ({}); it may still be running at the provider and billing: terminate it, then the cluster confirms it by listing",
+                                                              "The cluster cannot confirm the termination of the instance of retired node {} ({}): it has never listed an instance of it and will not re-check; it may still be running at the provider and billing: verify at the provider and terminate it by hand",
                                                               nodeId.id(),
                                                               cause);
     }
@@ -2172,9 +2205,9 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                                     cause.message()));
     }
 
-    /// While active, every marked node is re-checked at a low bounded rate (one confirmed-reap attempt per node per interval, five provisioning windows,
-    /// five minutes at the default): a confirmation raises the recovery. A manager that becomes leader starts with an empty set and re-marks what the
-    /// activation replay finds still listed ([#terminateOrphan]).
+    /// While active, every marked node whose instance the provider has listed is re-checked at a low bounded rate (one confirmed-reap attempt per node per
+    /// interval, five provisioning windows, five minutes at the default): a confirmation raises the recovery. A node that shows life is left alone, and a
+    /// mark whose instance was never listed is not re-checked at all ([#raiseUnconfirmedEvent]); an EXTERNAL node is re-checked by membership, not listing.
     private void startUnconfirmedRecheck() {
         var epoch = activationEpoch.get();
         var interval = TimeSpan.timeSpan(Math.max(1L,
@@ -2192,35 +2225,61 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         var nodes = new java.util.HashSet<>(unconfirmedReaps);
 
         nodes.addAll(persisted.keySet());
-        nodes.forEach(nodeId -> {
-            var remembered = Option.option(persisted.get(nodeId))
-                                   .map(AetherValue.UnconfirmedTerminationValue::seen)
-                                   .or(false);
-
-            reapRetired(nodeId,
-                        lifecycleManager.sourceOf(nodeId).or(SourceName.DEFAULT),
-                        remembered);
-        });
+        nodes.forEach(nodeId -> recheckMarked(nodeId,
+                                              Option.option(persisted.get(nodeId))
+                                                    .map(AetherValue.UnconfirmedTerminationValue::seen)
+                                                    .or(false)));
     }
 
-    /// A manager that has just become leader inherits the replicated marks: each is adopted, announced again by THIS node (the previous leader's
-    /// event can be closed only by the node that raised it), and re-checked at once, so a mark whose instance is already gone is closed now.
+    private void recheckMarked(NodeId nodeId, boolean persistedSeen) {
+        if (liveness.demonstrablyLive(nodeId)) {
+            log.debug("CTM: unconfirmed mark of {} not re-checked — it shows life; a live node is never terminated", nodeId);
+
+            return;
+        }
+
+        var seen = persistedSeen || seenInstances.contains(nodeId);
+
+        if (!seen && !lifecycleManager.externalNode(nodeId)) {
+            return;
+        }
+
+        reapRetired(nodeId, lifecycleManager.sourceOf(nodeId).or(SourceName.DEFAULT), seen);
+    }
+
+    /// A manager that has just become leader inherits the replicated marks: each is adopted without announcing it again (the warning the previous
+    /// leader raised is still open, and a confirmation by any leader closes it) and re-checked at once, so a mark whose instance is already gone is
+    /// closed now.
     private void adoptPersistedMarks() {
         var epoch = activationEpoch.get();
 
         persistedMarks.get()
                       .get()
                       .forEach((nodeId, mark) -> {
-                                   if (unconfirmedReaps.add(nodeId)) {
-                                   raiseUnconfirmedEvent(nodeId,
-                                                         "still unconfirmed after a leader change: " + mark.cause());
-                               }
-
+                                   unconfirmedReaps.add(nodeId);
                                    if (mark.seen()) {
                                    seenInstances.add(nodeId);
                                }
                                });
-        SharedScheduler.schedule(() -> recheckUnconfirmed(epoch), failedReapInterval());
+        SharedScheduler.schedule(() -> recheckUnconfirmed(epoch), TimeSpan.timeSpan(1).millis());
+    }
+
+    /// A node that has joined (or been re-admitted) is a new incarnation of its id: what was remembered of the previous one - that its reap was
+    /// confirmed, that its instance was seen, that its termination was unconfirmed - does not describe it, and is dropped. Without this a reused
+    /// id would be "confirmed gone" while it is a member, and its instance and slot would leak.
+    private void forgetIncarnation(NodeId nodeId) {
+        confirmedReaps.remove(nodeId);
+        seenInstances.remove(nodeId);
+        var marked = unconfirmedReaps.remove(nodeId);
+        var persisted = persistedMarks.get().get().containsKey(nodeId);
+
+        if (persisted) {
+            writeMark(nodeId, Option.none());
+        }
+
+        if (marked || persisted) {
+            log.info("CTM: the unconfirmed-termination mark of {} dropped — the node joined again", nodeId);
+        }
     }
 
     private void reapConfirmed(NodeId nodeId) {
@@ -2259,6 +2318,15 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
 
     private void retryConfirmedReap(NodeId nodeId, long epoch, int retriesLeft) {
         if (!failedReaps.remove(nodeId, epoch)) {
+            return;
+        }
+
+        if (liveness.demonstrablyLive(nodeId)) {
+            abandonedReaps.add(nodeId);
+            log.warn("CTM: retry of the confirmed reap of {} stopped — it shows life ({}); a live node is never terminated by a retry; re-armed by the next SWIM FAULTY for it",
+                     nodeId,
+                     liveness.evidence(nodeId));
+
             return;
         }
 
@@ -2396,8 +2464,8 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         log.warn("CTM: activation replay — instance of {} was untracked, not live and not in flight at two reads {}ms apart; terminating",
                  nodeId,
                  activationReplayGrace().millis());
-        // The previous leader's open "unconfirmed" event cannot be closed by this manager unless it owns the mark: re-mark what is still listed.
-        markUnconfirmed(nodeId, "found still listed at the provider by the activation replay");
+        // UNCONFIRMED means "tried and not confirmed": the orphan is marked only if its terminate attempts fail ([#confirmedReap]); a mark a previous
+        // leader left is inherited ([#adoptPersistedMarks]) and closed by whichever leader confirms.
         terminateDeparted(nodeId);
     }
 

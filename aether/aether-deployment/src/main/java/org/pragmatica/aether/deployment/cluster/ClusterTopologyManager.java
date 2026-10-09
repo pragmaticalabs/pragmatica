@@ -193,7 +193,6 @@ public interface ClusterTopologyManager extends TopologyManager {
         return org.pragmatica.lang.Unit.unit();
     }
 
-    /// #1543: the committed replacement pairings, read by worker surplus selection.
     /// #2062: the manager owns the unconfirmed-termination lifecycle. Marks `node` as retired with an instance whose termination is NOT confirmed and
     /// raises `instance-termination-unconfirmed` (once per node). While this manager is the active leader it re-checks every marked node at a low
     /// bounded rate and raises `instance-termination-confirmed` on a real confirmation. Every raiser goes through here; nothing raises the pair
@@ -202,7 +201,6 @@ public interface ClusterTopologyManager extends TopologyManager {
         return org.pragmatica.lang.Unit.unit();
     }
 
-    /// #2062: where the unconfirmed-termination operator events go (default: nowhere, the log line stands).
     /// #2062: where the persisted "termination not confirmed" marks are read from (the replicated store), so that a new leader inherits every
     /// open mark. Default: none.
     default org.pragmatica.lang.Unit setUnconfirmedMarks(java.util.function.Supplier<java.util.Map<NodeId, org.pragmatica.aether.slice.kvstore.AetherValue.UnconfirmedTerminationValue>> reader) {
@@ -219,10 +217,12 @@ public interface ClusterTopologyManager extends TopologyManager {
         return org.pragmatica.utility.warning.OperatorWarningSink.logOnly();
     }
 
+    /// #2062: where the unconfirmed-termination operator events go (default: nowhere, the log line stands).
     default org.pragmatica.lang.Unit setOperatorWarningSink(org.pragmatica.utility.warning.OperatorWarningSink sink) {
         return org.pragmatica.lang.Unit.unit();
     }
 
+    /// #1543: the committed replacement pairings, read by worker surplus selection.
     default org.pragmatica.lang.Unit setNodeReplacements(NodeReplacementIndex index) {
         return org.pragmatica.lang.Unit.unit();
     }

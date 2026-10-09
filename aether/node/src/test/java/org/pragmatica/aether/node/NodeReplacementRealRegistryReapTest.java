@@ -22,6 +22,7 @@ import org.pragmatica.aether.deployment.cluster.NodeReplacementIndex;
 import org.pragmatica.aether.deployment.cluster.NodeReplacementPlanner;
 import org.pragmatica.aether.deployment.cluster.SourceComputeRegistry;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsm;
+import org.pragmatica.aether.deployment.membership.fsm.WorkerJoinDecision;
 import org.pragmatica.aether.environment.AutoHealConfig;
 import org.pragmatica.aether.environment.ComputeProvider;
 import org.pragmatica.aether.environment.EnvironmentError;
@@ -47,9 +48,11 @@ import org.pragmatica.cluster.state.kvstore.LeaderValue;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.consensus.topology.GenerationSnapshotSource;
+import org.pragmatica.consensus.topology.MembershipDecision;
 import org.pragmatica.consensus.topology.MembershipView;
 import org.pragmatica.consensus.topology.TopologyConfig;
 import org.pragmatica.consensus.topology.TopologyObserver;
+import org.pragmatica.hlc.HlcTimestamp;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
@@ -101,6 +104,10 @@ class NodeReplacementRealRegistryReapTest {
     });
     private final java.util.List<String> warnings = new java.util.concurrent.CopyOnWriteArrayList<>();
     private final java.util.concurrent.atomic.AtomicBoolean lagTerminate = new java.util.concurrent.atomic.AtomicBoolean();
+    /// The provider accepts a terminate but its listing never changes: the instance is still listed afterwards.
+    private final java.util.concurrent.atomic.AtomicBoolean stuck = new java.util.concurrent.atomic.AtomicBoolean();
+    /// When set, a terminate answers with this promise (an attempt in flight) after counting itself.
+    private final AtomicReference<Promise<Unit>> terminateGate = new AtomicReference<>();
     private final AtomicInteger lists = new AtomicInteger();
     private final AtomicInteger terminates = new AtomicInteger();
     private final AtomicReference<Promise<List<InstanceInfo>>> listing = new AtomicReference<>(Promise.success(List.of()));
@@ -173,6 +180,15 @@ class NodeReplacementRealRegistryReapTest {
     /// A real topology manager over the real lifecycle. `replayCapable` gives it a committed cluster name and a quorum-safe view, as a node that has
     /// just become leader has, so that its activation replay reads the provider.
     private ClusterTopologyManager newManager(NodeLifecycleManager lifecycleManager, boolean replayCapable) {
+        return newManager(lifecycleManager, replayCapable, 60L, warnings);
+    }
+
+    /// `provisioningMillis` sizes every interval the manager derives (retry: a sixth, re-check: five, replay grace: one); `into` receives the
+    /// operator events this manager raises, so that two managers (a leader and its successor) can be told apart.
+    private ClusterTopologyManager newManager(NodeLifecycleManager lifecycleManager,
+                                              boolean replayCapable,
+                                              long provisioningMillis,
+                                              java.util.List<String> into) {
         var snapshotSource = new GenerationSnapshotSource() {
             @Override public Option<MembershipView> currentMembershipView() { return Option.none(); }
             @Override public long observedRabiaTerm() { return 0L; }
@@ -182,7 +198,7 @@ class NodeReplacementRealRegistryReapTest {
         var observer = TopologyObserver.topologyObserver(config, MessageRouter.mutable(), snapshotSource).unwrap();
         var ctm = ClusterTopologyManager.clusterTopologyManager(observer,
                                                                 lifecycleManager,
-                                                                AutoHealConfig.DEFAULT.withProvisioningTimeout(timeSpan(60).millis()),
+                                                                AutoHealConfig.DEFAULT.withProvisioningTimeout(timeSpan(provisioningMillis).millis()),
                                                                 DeploymentMap.deploymentMap(),
                                                                 snapshotSource,
                                                                 () -> replayCapable
@@ -201,7 +217,7 @@ class NodeReplacementRealRegistryReapTest {
                                                                                                       () -> 3,
                                                                                                       _ -> Option.none()));
 
-        ctm.setOperatorWarningSink(OperatorWarningSink.handingOffTo(warning -> warnings.add(warning.code().code() + ":" + warning.subject() + ":" + warning.message())));
+        ctm.setOperatorWarningSink(OperatorWarningSink.handingOffTo(warning -> into.add(warning.code().code() + ":" + warning.subject() + ":" + warning.message())));
         ctm.setRetirementRefusal(_ -> Option.none());
         ctm.setHierarchyStateWriter(org.pragmatica.aether.deployment.cluster.HierarchyStateWriter.hierarchyStateWriter(() -> store.getTyped(LeaderKey.INSTANCE, LeaderValue.class),
                                                                                                                        key -> store.get(key),
@@ -478,10 +494,15 @@ class NodeReplacementRealRegistryReapTest {
         return warnings.stream().anyMatch(w -> w.startsWith(code + ":" + OLD.id()));
     }
 
-    /// B1 (v-2062): NodeRemoved and the drain-grace backstop both reap a drained node. The second finds the instance already gone and is
-    /// not re-asked: no provider call, and no "may still be running" event.
+    private void joins(NodeId node) {
+        ctmUnderTest.onMembershipDecision(MembershipDecision.nodeJoined(node, List.of(CORE, node)));
+    }
+
+    /// B1 (v-2062), per INCARNATION (v-2068 F2): NodeRemoved and the drain-grace backstop both reap a drained node. The second finds the instance
+    /// already gone and is not re-asked: no provider call, and no "may still be running" event. The same id joining again is a new incarnation
+    /// (a bootstrap index re-minted, a harness restarting a node under its id): its RUNNING instance is terminated and its reservation released.
     @Test
-    void aSecondReapOfAnAlreadyConfirmedInstance_raisesNoUnconfirmedEvent() throws Exception {
+    void aSecondReapOfTheSameIncarnation_isNotReAsked_butARejoinedIdIsReapedAgain() throws Exception {
         put(AetherKey.CapacityLedgerKey.INSTANCE, new CapacityLedgerValue(3, 1, true));
         listing.set(Promise.success(List.of(instance(OLD, "i-1", InstanceStatus.RUNNING))));
 
@@ -492,8 +513,85 @@ class NodeReplacementRealRegistryReapTest {
         retire(OLD);
         Thread.sleep(1500);
 
-        assertThat(lists.get() + terminates.get()).as("not re-asked").isEqualTo(calls);
+        assertThat(lists.get() + terminates.get()).as("the same incarnation is not re-asked").isEqualTo(calls);
         assertThat(warnings).as("confirmed once, never reported unconfirmed").noneMatch(w -> w.startsWith("instance-termination-unconfirmed:"));
+
+        joins(OLD);
+        states.put(OLD, "Dead");
+        listing.set(Promise.success(List.of(instance(OLD, "i-2", InstanceStatus.RUNNING))));
+        retire(OLD);
+
+        within(10, () -> assertThat(terminates.get()).as("the second incarnation's instance is terminated").isEqualTo(2));
+        within(10, () -> assertThat(reservation(OLD).isEmpty()).as("and its reservation released").isTrue());
+        assertThat(warnings).noneMatch(w -> w.startsWith("instance-termination-unconfirmed:"));
+    }
+
+    /// v-2068 N2, which fails at 4e68c278d: the same id, a second RUNNING instance, after the node joined again.
+    @Test
+    void aReusedNodeIdsRunningInstance_isTerminatedOnItsSecondRetirement_afterItJoinedAgain() {
+        put(AetherKey.CapacityLedgerKey.INSTANCE, new CapacityLedgerValue(3, 1, true));
+        listing.set(Promise.success(List.of(instance(OLD, "i-1", InstanceStatus.RUNNING))));
+        retire(OLD);
+        within(10, () -> assertThat(terminates.get()).isEqualTo(1));
+        within(10, () -> assertThat(reservation(OLD).isEmpty()).isTrue());
+
+        joins(OLD);
+        listing.set(Promise.success(List.of(instance(OLD, "i-2", InstanceStatus.RUNNING))));
+        retire(OLD);
+
+        within(10, () -> assertThat(terminates.get()).as("the second instance is terminated").isEqualTo(2));
+    }
+
+    /// v-2068 N1, which fails at 4e68c278d: an EXTERNAL id re-admitted after its first retirement (its new reservation committed) and retired again:
+    /// the new reservation is released and its slot returned, whatever the manager remembers of the first incarnation.
+    @Test
+    void aReadmittedExternalId_isReleasedOnItsSecondRetirement_andItsSlotReturned() {
+        put(AetherKey.CapacityLedgerKey.INSTANCE, new CapacityLedgerValue(5, 1, true));
+        put(new AetherKey.CapacityReservationKey(OLD), new CapacityReservationValue("west", "", "core", CapacityReservationPhase.OBSERVED));
+        retire(OLD);
+        within(10, () -> assertThat(reservation(OLD).isEmpty()).isTrue());
+        put(new AetherKey.CapacityReservationKey(OLD), new CapacityReservationValue("west", "", "core", CapacityReservationPhase.OBSERVED));
+
+        retire(OLD);
+
+        within(10, () -> assertThat(reservation(OLD).isEmpty()).as("the second incarnation's reservation is released").isTrue());
+        assertThat(store.getTyped(AetherKey.CapacityLedgerKey.INSTANCE, CapacityLedgerValue.class).unwrap().allocated()).as("both slots returned").isEqualTo(3);
+        assertThat(lists.get() + terminates.get()).as("no provider call, either incarnation").isZero();
+    }
+
+    /// v-2068 N1b, which fails at 4e68c278d: a re-admitted EXTERNAL node that is still a member is not confirmed gone (598476d86: confirmation is
+    /// its departure from the membership).
+    @Test
+    void aReadmittedExternalId_thatIsStillAMember_isNotConfirmedGone() {
+        put(AetherKey.CapacityLedgerKey.INSTANCE, new CapacityLedgerValue(5, 1, true));
+        put(new AetherKey.CapacityReservationKey(OLD), new CapacityReservationValue("west", "", "core", CapacityReservationPhase.OBSERVED));
+        retire(OLD);
+        within(10, () -> assertThat(reservation(OLD).isEmpty()).isTrue());
+        put(new AetherKey.CapacityReservationKey(OLD), new CapacityReservationValue("west", "", "core", CapacityReservationPhase.OBSERVED));
+        states.put(OLD, "Member");
+
+        var result = ctmUnderTest.reapRetired(OLD, WEST, false).await();
+
+        assertThat(result.isFailure()).as("a live external node is not confirmed gone").isTrue();
+        assertThat(reservation(OLD).isPresent()).as("and keeps its reservation").isTrue();
+    }
+
+    /// A node confirmed gone that shows life BEFORE its join is seen (the join is a separate message) is not confirmed gone again, and is not
+    /// terminated: the memory describes an incarnation that has ended.
+    @Test
+    void aConfirmedNodeThatShowsLifeAgain_isNeitherConfirmedGoneNorTerminated() {
+        put(AetherKey.CapacityLedgerKey.INSTANCE, new CapacityLedgerValue(3, 1, true));
+        listing.set(Promise.success(List.of(instance(OLD, "i-1", InstanceStatus.RUNNING))));
+        retire(OLD);
+        within(10, () -> assertThat(reservation(OLD).isEmpty()).isTrue());
+        var calls = terminates.get() + lists.get();
+        listing.set(Promise.success(List.of(instance(OLD, "i-2", InstanceStatus.RUNNING))));
+        states.put(OLD, "Member");
+
+        var result = ctmUnderTest.reapRetired(OLD, WEST, true).await();
+
+        assertThat(result.isFailure()).as("not confirmed gone while it shows life").isTrue();
+        assertThat(terminates.get() + lists.get()).as("and no provider call").isEqualTo(calls);
     }
 
     /// B3: a provider whose delete is asynchronous (the listing empties 40 ms after the accepted terminate). Confirmed, whichever attempt
@@ -525,6 +623,20 @@ class NodeReplacementRealRegistryReapTest {
 
         assertThat(lists.get() + terminates.get()).as("no provider call, first or second reap").isZero();
         assertThat(warnings).isEmpty();
+    }
+
+    /// The release of a counted EXTERNAL reservation treats an empty ledger as inconsistent, exactly as the release of a provider reservation does
+    /// (it used to clamp at zero and delete the reservation, hiding the discrepancy). Returning a slot is pinned by the EXTERNAL retirement tests.
+    @Test
+    void releasingACountedExternalReservation_againstAnEmptyLedger_isRefused_notClamped() {
+        put(AetherKey.CapacityLedgerKey.INSTANCE, new CapacityLedgerValue(0, 1, true));
+        put(new AetherKey.CapacityReservationKey(OLD), new CapacityReservationValue("west", "", "core", CapacityReservationPhase.OBSERVED));
+
+        var refused = lifecycle.releaseExternal(OLD).await();
+
+        assertThat(refused.isFailure()).as("an empty ledger cannot return a slot").isTrue();
+        refused.onFailure(cause -> assertThat(cause.message()).contains("inconsistent"));
+        assertThat(reservation(OLD).isPresent()).as("and the reservation is kept").isTrue();
     }
 
     /// B2: a STOPPED instance (Hetzner "off", AWS/GCP/Azure "stopped", Docker "exited") is terminated, with or without a reservation, and its
@@ -605,13 +717,27 @@ class NodeReplacementRealRegistryReapTest {
         assertThat(warnings.stream().filter(w -> w.contains("a second raiser"))).isEmpty();
     }
 
-    /// (b) A node marked from outside is re-checked by the active leader and the recovery fires on a real confirmation.
-    @Test
-    void aMarkedNode_isRecheckedByTheLeader_andConfirmedWhenItsInstanceIsTerminated() {
+    /// The provider listed the instance, accepted a terminate, and still listed it afterwards: the node is remembered as seen, and marked. The
+    /// listing then FAILS (a re-check that cannot ask closes nothing), so the mark stays open until the test sets what the provider answers. (A mark
+    /// whose instance was never listed is not re-checked by listing - see [#aMarkOfAnInstanceNeverListed_isNotRechecked_isNotClosedByTheSuccessor_andSaysSo].)
+    private void markAfterSeeingTheInstance(String cause) throws Exception {
         put(AetherKey.CapacityLedgerKey.INSTANCE, new CapacityLedgerValue(3, 1, true));
         listing.set(Promise.success(List.of(instance(OLD, "i-1", InstanceStatus.RUNNING))));
+        lagTerminate.set(true);
+        assertThat(ctmUnderTest.reapRetired(OLD, WEST, false).await().isFailure()).as("terminate accepted, relisting still shows it").isTrue();
+        Thread.sleep(200);
+        lagTerminate.set(false);
+        terminates.set(0);
+        listing.set(EnvironmentError.operationNotSupported("provider API down").promise());
+        lists.set(0);
+        ctmUnderTest.markUnconfirmed(OLD, cause);
+    }
 
-        ctmUnderTest.markUnconfirmed(OLD, "marked by another raiser");
+    /// (b) A node marked from outside is re-checked by the active leader and the recovery fires on a real confirmation.
+    @Test
+    void aMarkedNode_isRecheckedByTheLeader_andConfirmedWhenItsInstanceIsTerminated() throws Exception {
+        markAfterSeeingTheInstance("marked by another raiser");
+        listing.set(Promise.success(List.of(instance(OLD, "i-1", InstanceStatus.RUNNING))));
 
         within(15, () -> assertThat(raised("instance-termination-confirmed")).as("recovery on the leader's own re-check").isTrue());
         assertThat(terminates.get()).isEqualTo(1);
@@ -620,77 +746,243 @@ class NodeReplacementRealRegistryReapTest {
     /// (b) The re-check is low-rate and bounded: one attempt per marked node per interval (five provisioning windows = 300 ms here).
     @Test
     void theRecheck_isLowRate_andNeverClearsOnAFailingListing() throws Exception {
+        markAfterSeeingTheInstance("marked by another raiser");
         listing.set(EnvironmentError.operationNotSupported("provider API down").promise());
-        ctmUnderTest.markUnconfirmed(OLD, "marked by another raiser");
-        var before = lists.get();
 
         Thread.sleep(1700);
 
-        var attempts = lists.get() - before;
-
-        assertThat(attempts).as("about one listing per 300 ms, not a hot loop").isBetween(2, 12);
+        assertThat(lists.get()).as("about one listing per 300 ms, not a hot loop").isBetween(2, 12);
         assertThat(raised("instance-termination-confirmed")).isFalse();
     }
 
-    /// (c) A manager that has just become leader owns no marks: it re-derives them from what its activation replay finds still listed at the
-    /// provider, raises the event itself and closes it itself when the reap is confirmed.
+    /// v-2068 N3, which fails at 4e68c278d (ruling e9959fa6d(1)): the re-check never terminates, or confirms gone, a node that shows life. A
+    /// partitioned worker whose terminate failed while the provider was unreachable is back under its id; the retirement refusal admits workers
+    /// unconditionally, so only the liveness check stands between the re-check and a live member. Control inside the run: the same mark, the node
+    /// gone, IS terminated and confirmed - the re-check was running, and only the liveness stopped it.
     @Test
-    void aNewLeader_rederivesTheMarkFromTheReplay_andClosesIt() {
-        put(AetherKey.CapacityLedgerKey.INSTANCE, new CapacityLedgerValue(3, 1, true));
-        listing.set(Promise.success(List.of(labelled(OLD, "i-1"))));
-
-        var successor = newManager(lifecycle, true);
-
-        within(20, () -> assertThat(raised("instance-termination-confirmed")).as("the successor closed the mark it re-derived").isTrue());
-        assertThat(raised("instance-termination-unconfirmed")).isTrue();
-        assertThat(terminates.get()).isEqualTo(1);
-        assertThat(successor).isNotSameAs(ctmUnderTest);
-    }
-
-    private Option<AetherValue.UnconfirmedTerminationValue> persistedMark(NodeId node) {
-        return store.getTyped(new AetherKey.UnconfirmedTerminationKey(node), AetherValue.UnconfirmedTerminationValue.class);
-    }
-
-    /// (c) The marks live in the replicated store: written when the node is marked, inherited by the next leader, which announces the open mark
-    /// again (a recovery can be published only by the node that raised the warning), re-checks it at once and, the instance being gone, fires the
-    /// recovery and deletes the mark. This is the case a per-manager set cannot serve: the old leader never confirms anything.
-    @Test
-    void aMark_survivesALeaderChange_andTheSuccessorClosesItWhenTheInstanceIsGone() throws Exception {
-        put(AetherKey.CapacityLedgerKey.INSTANCE, new CapacityLedgerValue(3, 1, true));
+    void theRecheck_neverTerminatesOrConfirmsALiveMember() throws Exception {
+        markAfterSeeingTheInstance("provider unreachable while it departed");
         listing.set(Promise.success(List.of(instance(OLD, "i-1", InstanceStatus.RUNNING))));
-        lagTerminate.set(true);
-        // The old leader saw the instance and had its terminate accepted, but its relisting still showed it: unconfirmed, and it marks the node.
-        assertThat(ctmUnderTest.reapRetired(OLD, WEST, false).await().isFailure()).isTrue();
-        ctmUnderTest.markUnconfirmed(OLD, "the listing still showed the instance");
+        states.put(OLD, "Member");
 
-        within(10, () -> assertThat(persistedMark(OLD).map(AetherValue.UnconfirmedTerminationValue::seen).or(false)).as("persisted, with the memory that it was seen").isTrue());
+        Thread.sleep(1500);
 
-        ctmUnderTest.deactivate();
-        // The instance disappears while no leader is looking (the provider's delete completed).
-        listing.set(Promise.success(List.of()));
+        assertThat(terminates.get()).as("a demonstrably live member is never terminated by the re-check").isZero();
+        assertThat(raised("instance-termination-confirmed")).as("nor confirmed gone").isFalse();
 
-        newManager(lifecycle, false);
+        states.remove(OLD);
 
-        within(15, () -> assertThat(raised("instance-termination-confirmed")).as("the successor closed a mark it did not write").isTrue());
-        within(5, () -> assertThat(persistedMark(OLD).isEmpty()).as("and deleted it").isTrue());
-        assertThat(warnings.stream().filter(w -> w.startsWith("instance-termination-unconfirmed:" + OLD.id())).count())
-            .as("announced again by the successor so that its own aggregator can close it")
-            .isEqualTo(2);
+        within(15, () -> assertThat(raised("instance-termination-confirmed")).as("control: once it is gone the same re-check closes the mark").isTrue());
+        assertThat(terminates.get()).as("control: and terminates it").isEqualTo(1);
     }
 
-    /// (c) A mark whose instance was NEVER listed is not closed by an empty listing, on the old leader or the new: the mark is persisted with seen=false.
+    /// Ruling e9959fa6d(1) for the retry chain: a failed attempt is retried a sixth of a provisioning window later (1 s here); a node that shows
+    /// life in between is not terminated by the retry.
     @Test
-    void aMarkOfAnInstanceNeverListed_isNotClosedByTheSuccessor() throws Exception {
+    void aConfirmedReapRetry_neverTerminatesANodeThatShowsLifeMeanwhile() throws Exception {
+        ctmUnderTest.deactivate();
+        var manager = newManager(lifecycle, false, 6_000L, warnings);
+
+        put(AetherKey.CapacityLedgerKey.INSTANCE, new CapacityLedgerValue(3, 1, true));
+        listing.set(EnvironmentError.operationNotSupported("provider API down").promise());
+        manager.drainNode(OLD, org.pragmatica.aether.deployment.cluster.DrainReason.OPERATOR_COMMAND).await();
+        within(10, () -> assertThat(lists.get()).as("the first attempt failed").isGreaterThanOrEqualTo(1));
+        states.put(OLD, "Member");
+        listing.set(Promise.success(List.of(instance(OLD, "i-1", InstanceStatus.RUNNING))));
+
+        Thread.sleep(2500);
+
+        assertThat(terminates.get()).as("the retry found life and stopped: nothing terminated").isZero();
+
+        states.remove(OLD);
+        manager.onSwimFaulty(OLD);
+
+        within(10, () -> assertThat(terminates.get()).as("parked, not forgotten: SWIM FAULTY re-arms the reap once the node is gone").isEqualTo(1));
+        manager.deactivate();
+    }
+
+    /// Ruling e9959fa6d(3): a mark whose instance the provider never listed is not re-checked by listing - ever. It stays an operator warning,
+    /// and the warning says the cluster cannot confirm it and the operator must verify and terminate it by hand. (A mark that WAS seen promises
+    /// the cluster will confirm it by listing, and does not ask for a hand.)
+    @Test
+    void aMarkOfAnInstanceNeverListed_isNotRechecked_isNotClosedByTheSuccessor_andSaysSo() throws Exception {
         ctmUnderTest.markUnconfirmed(OLD, "never listed");
         within(10, () -> assertThat(persistedMark(OLD).map(AetherValue.UnconfirmedTerminationValue::seen).or(true)).isFalse());
+        within(5, () -> assertThat(warnings).anyMatch(w -> w.startsWith("instance-termination-unconfirmed:" + OLD.id())
+                                                         && w.contains("cannot confirm")
+                                                         && w.contains("by hand")));
+        Thread.sleep(1500);
+
+        assertThat(lists.get()).as("five re-check intervals passed on the leader: no periodic listing").isZero();
+
         ctmUnderTest.deactivate();
         listing.set(Promise.success(List.of()));
 
         newManager(lifecycle, false);
         Thread.sleep(2500);
 
+        assertThat(lists.get()).as("nor on the successor").isZero();
         assertThat(persistedMark(OLD).isPresent()).as("still open: nothing proves the instance is gone").isTrue();
         assertThat(raised("instance-termination-confirmed")).isFalse();
+    }
+
+    @Test
+    void aMarkOfAnInstanceThatWasListed_promisesTheClusterWillConfirmIt_andAsksForNoHand() throws Exception {
+        markAfterSeeingTheInstance("the listing still showed the instance");
+
+        within(5, () -> assertThat(warnings).anyMatch(w -> w.startsWith("instance-termination-unconfirmed:" + OLD.id()) && w.contains("confirms it by listing")));
+        assertThat(warnings).noneMatch(w -> w.contains("by hand"));
+    }
+
+    /// (c) Ruling e9959fa6d(4): a manager that has just become leader does not mark what its activation replay finds listed - it terminates it. Marking
+    /// is for an orphan whose terminate FAILED. A clean orphan reap raises neither event.
+    @Test
+    void aNewLeader_terminatesAnOrphanFromTheReplay_withoutRaisingAnUnconfirmedEvent() throws Exception {
+        put(AetherKey.CapacityLedgerKey.INSTANCE, new CapacityLedgerValue(3, 1, true));
+        listing.set(Promise.success(List.of(labelled(OLD, "i-1"))));
+
+        var successor = newManager(lifecycle, true);
+
+        within(20, () -> assertThat(terminates.get()).isEqualTo(1));
+        within(10, () -> assertThat(reservation(OLD).isEmpty()).as("confirmed: the reservation is released").isTrue());
+        Thread.sleep(500);
+
+        assertThat(warnings).as("tried and confirmed: neither event").noneMatch(w -> w.contains(OLD.id()));
+        assertThat(successor).isNotSameAs(ctmUnderTest);
+    }
+
+    /// Ruling e9959fa6d(4): UNCONFIRMED means "tried and not confirmed". An orphan whose terminate is still in flight is not marked; it is marked
+    /// when its attempts fail (the provider accepted them and the instance is still listed).
+    @Test
+    void anOrphanFromTheReplay_isMarkedOnlyAfterItsTerminateAttemptsFail() throws Exception {
+        put(AetherKey.CapacityLedgerKey.INSTANCE, new CapacityLedgerValue(3, 1, true));
+        listing.set(Promise.success(List.of(labelled(OLD, "i-1"))));
+        var gate = Promise.<Unit> promise();
+
+        terminateGate.set(gate);
+        newManager(lifecycle, true, 600L, warnings);
+        within(20, () -> assertThat(terminates.get()).as("the terminate is in flight").isEqualTo(1));
+        Thread.sleep(800);
+
+        assertThat(raised("instance-termination-unconfirmed")).as("in flight is not 'tried and not confirmed'").isFalse();
+        assertThat(persistedMark(OLD).isEmpty()).isTrue();
+
+        stuck.set(true);
+        terminateGate.set(null);
+        gate.succeed(Unit.unit());
+
+        within(30, () -> assertThat(raised("instance-termination-unconfirmed")).as("raised once the attempts have failed").isTrue());
+        assertThat(terminates.get()).as("after more than one attempt").isGreaterThan(1);
+    }
+
+    private Option<AetherValue.UnconfirmedTerminationValue> persistedMark(NodeId node) {
+        return store.getTyped(new AetherKey.UnconfirmedTerminationKey(node), AetherValue.UnconfirmedTerminationValue.class);
+    }
+
+    /// (c) Rulings e9959fa6d(4) and (5). The marks live in the replicated store: written when the node is marked, inherited by the next leader, which
+    /// does NOT announce the open mark again (the previous leader's warning is still open), re-checks it at once and, the instance being gone, raises
+    /// the recovery and deletes the mark. The recovery is raised by the successor, a node that never raised the warning it closes.
+    @Test
+    void aMark_survivesALeaderChange_andTheSuccessorClosesTheOldLeadersWarning() throws Exception {
+        markAfterSeeingTheInstance("the listing still showed the instance");
+
+        within(10, () -> assertThat(persistedMark(OLD).map(AetherValue.UnconfirmedTerminationValue::seen).or(false)).as("persisted, with the memory that it was seen").isTrue());
+        within(5, () -> assertThat(raised("instance-termination-unconfirmed")).isTrue());
+
+        ctmUnderTest.deactivate();
+        // The instance disappears while no leader is looking (the provider's delete completed).
+        listing.set(Promise.success(List.of()));
+
+        var successorEvents = new java.util.concurrent.CopyOnWriteArrayList<String>();
+
+        newManager(lifecycle, false, 60_000L, successorEvents);
+
+        within(5, () -> assertThat(successorEvents).as("the successor closed a mark it did not write, at once").anyMatch(w -> w.startsWith("instance-termination-confirmed:" + OLD.id())));
+        within(5, () -> assertThat(persistedMark(OLD).isEmpty()).as("and deleted it").isTrue());
+        assertThat(successorEvents).as("without announcing the open mark again").noneMatch(w -> w.startsWith("instance-termination-unconfirmed:"));
+        assertThat(warnings.stream().filter(w -> w.startsWith("instance-termination-unconfirmed:" + OLD.id())).count())
+            .as("the old leader's warning is the only one")
+            .isEqualTo(1);
+    }
+
+    /// v-2068 checklist 3: adoption re-checks at once. The periodic re-check is 5 minutes away at this size (5 x 60 s) and the retry interval 10 s,
+    /// so only an immediate re-check closes the mark inside two seconds.
+    @Test
+    void aSuccessor_rechecksAnInheritedMarkAtOnce_notAtTheNextPeriodicTick() throws Exception {
+        markAfterSeeingTheInstance("the listing still showed the instance");
+        within(10, () -> assertThat(persistedMark(OLD).isPresent()).isTrue());
+        ctmUnderTest.deactivate();
+        listing.set(Promise.success(List.of()));
+
+        newManager(lifecycle, false, 60_000L, warnings);
+
+        within(2, () -> assertThat(persistedMark(OLD).isEmpty()).as("closed inside two seconds, long before any periodic tick").isTrue());
+    }
+
+    /// v-2068 checklist 3: the recovery of a marked EXTERNAL node by the re-check. EXTERNAL is re-checked by membership, not listing (so
+    /// ruling (3) does not exempt it), only once the node has left, and with no provider call. Adopted by a successor whose periodic re-check is
+    /// minutes away, so only the direct close can raise the event inside two seconds.
+    @Test
+    void aMarkedExternalNode_isClosedByTheRecheck_onceItHasLeft_withNoProviderCall() throws Exception {
+        put(AetherKey.CapacityLedgerKey.INSTANCE, new CapacityLedgerValue(5, 1, true));
+        put(new AetherKey.CapacityReservationKey(OLD), new CapacityReservationValue("west", "", "core", CapacityReservationPhase.OBSERVED));
+        states.put(OLD, "Member");
+        ctmUnderTest.markUnconfirmed(OLD, "release conflicted");
+        within(10, () -> assertThat(persistedMark(OLD).isPresent()).isTrue());
+        Thread.sleep(1000);
+
+        assertThat(reservation(OLD).isPresent()).as("a member keeps its reservation").isTrue();
+        assertThat(raised("instance-termination-confirmed")).isFalse();
+
+        ctmUnderTest.deactivate();
+        states.remove(OLD);
+        var successorEvents = new java.util.concurrent.CopyOnWriteArrayList<String>();
+
+        newManager(lifecycle, false, 60_000L, successorEvents);
+
+        within(2, () -> assertThat(successorEvents).anyMatch(w -> w.startsWith("instance-termination-confirmed:" + OLD.id())));
+        assertThat(reservation(OLD).isEmpty()).as("its reservation is released").isTrue();
+        assertThat(lists.get() + terminates.get()).as("no provider call").isZero();
+    }
+
+    /// A late failure marks a node whose reap another chain has already confirmed: the re-check closes it from the memory, with no provider call.
+    @Test
+    void aMarkRaisedAfterTheConfirmation_isClosedByTheRecheck_withoutAProviderCall() throws Exception {
+        put(AetherKey.CapacityLedgerKey.INSTANCE, new CapacityLedgerValue(3, 1, true));
+        listing.set(Promise.success(List.of(instance(OLD, "i-1", InstanceStatus.RUNNING))));
+        retire(OLD);
+        within(10, () -> assertThat(reservation(OLD).isEmpty()).isTrue());
+        var calls = lists.get() + terminates.get();
+
+        ctmUnderTest.markUnconfirmed(OLD, "a chain that lost the race");
+
+        within(10, () -> assertThat(raised("instance-termination-confirmed")).isTrue());
+        assertThat(lists.get() + terminates.get()).as("closed from the memory").isEqualTo(calls);
+    }
+
+    /// Ruling e9959fa6d(2): a node that joins is a new incarnation; the mark of the previous one is dropped, and the re-check never touches the
+    /// member (no terminate).
+    @Test
+    void aNodeThatJoinsAgain_dropsTheMarkOfItsPreviousIncarnation() throws Exception {
+        markAfterSeeingTheInstance("the listing still showed the instance");
+        within(10, () -> assertThat(persistedMark(OLD).isPresent()).isTrue());
+        states.put(OLD, "Member");
+
+        joins(OLD);
+
+        within(5, () -> assertThat(persistedMark(OLD).isEmpty()).isTrue());
+        Thread.sleep(800);
+        assertThat(terminates.get()).isZero();
+    }
+
+    @Test
+    void aWorkerThatJoinsAgain_dropsTheMarkOfItsPreviousIncarnation() {
+        ctmUnderTest.markUnconfirmed(OLD, "never listed");
+        within(10, () -> assertThat(persistedMark(OLD).isPresent()).isTrue());
+
+        ctmUnderTest.onWorkerJoin(new WorkerJoinDecision(OLD, "worker", HlcTimestamp.ZERO));
+
+        within(5, () -> assertThat(persistedMark(OLD).isEmpty()).isTrue());
     }
 
     private final class CountingProvider implements ComputeProvider {
@@ -702,6 +994,14 @@ class NodeReplacementRealRegistryReapTest {
         @Override
         public Promise<Unit> terminate(InstanceId id) {
             terminates.incrementAndGet();
+            if (terminateGate.get() != null) {
+                return terminateGate.get();
+            }
+
+            if (stuck.get()) {
+                return Promise.unitPromise();
+            }
+
             if (lagTerminate.get()) {
                 org.pragmatica.lang.utils.SharedScheduler.schedule(() -> listing.set(Promise.success(List.of())), timeSpan(40).millis());
             } else {

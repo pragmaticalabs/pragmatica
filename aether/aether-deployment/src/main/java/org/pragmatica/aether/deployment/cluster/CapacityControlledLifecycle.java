@@ -535,11 +535,13 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
         var counted = !UNCOUNTED_BINDING.equals(reservation.sourceBinding());
         var accepted = counted
                        ? ledger().fold(() -> transact(key, List.of(drop)),
-                                       current -> mutate(Option.some(current),
-                                                         new CapacityLedgerValue(Math.max(0, current.allocated() - 1),
-                                                                                 current.version() + 1,
-                                                                                 current.inventoryComplete()),
-                                                         List.of(drop)))
+                                       current -> current.allocated() <= 0
+                                                  ? Causes.cause("Capacity ledger is inconsistent with its reservation").<Boolean> promise()
+                                                  : mutate(Option.some(current),
+                                                           new CapacityLedgerValue(current.allocated() - 1,
+                                                                                   current.version() + 1,
+                                                                                   current.inventoryComplete()),
+                                                           List.of(drop)))
                        : transact(key, List.of(drop));
 
         return accepted.flatMap(done -> done

@@ -32,6 +32,7 @@ import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.consensus.topology.GenerationSnapshotSource;
+import org.pragmatica.consensus.topology.MembershipDecision;
 import org.pragmatica.consensus.topology.MembershipView;
 import org.pragmatica.consensus.topology.TopologyConfig;
 import org.pragmatica.consensus.topology.TopologyObserver;
@@ -217,9 +218,10 @@ class ClusterTopologyManagerReapRetiredTest {
         assertThat(reap().isFailure()).as("a status the provider cannot state is not 'gone'").isTrue();
     }
 
-    /// B1: a reap confirmed once is idempotent per node: a second reap (the drain-grace backstop after NodeRemoved) asks the provider nothing.
+    /// B1, per INCARNATION (v-2068 F2): a reap confirmed once is idempotent for that incarnation of the node (the drain-grace backstop after
+    /// NodeRemoved asks the provider nothing); the same id joining again is a new incarnation, and its instance is terminated.
     @Test
-    void aSecondReapOfAConfirmedNode_makesNoProviderCall() {
+    void aSecondReapOfTheSameIncarnation_makesNoProviderCall_butARejoinedIdIsReapedAgain() {
         providerLists(oldInstance("i-1", InstanceStatus.RUNNING));
         assertThat(reap(false).isSuccess()).isTrue();
         var calls = terminates.get();
@@ -228,6 +230,12 @@ class ClusterTopologyManagerReapRetiredTest {
 
         assertThat(reap(false).isSuccess()).as("already confirmed: not re-asked, so not failed by a later listing").isTrue();
         assertThat(terminates.get()).isEqualTo(calls);
+
+        ctm.onMembershipDecision(MembershipDecision.nodeJoined(OLD, List.of(SELF, OLD)));
+        providerLists(oldInstance("i-2", InstanceStatus.RUNNING));
+
+        assertThat(reap(false).isSuccess()).as("the new incarnation is asked again").isTrue();
+        assertThat(terminates.get()).as("and its instance is terminated").isEqualTo(calls + 1);
     }
 
     /// B3: a provider whose listing lags its delete. The first reap saw the instance and had its terminate accepted but the relisting still
