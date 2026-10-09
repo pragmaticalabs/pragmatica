@@ -600,7 +600,8 @@ class OwnerActivationTest {
     /// the same input without the ISR) and reports a block, never an escape.
     @Test
     void activate_isrCandidate_silentMemberPastTheBound_activatesAndReportsTheEscape() {
-        var gate = gateReportingEscapes(TimeSpan.timeSpan(0).millis());
+        // the alarm is far off, so a block here would mean the gate waited and then escaped without ending it
+        var gate = gateReportingEscapes(TimeSpan.timeSpan(10).seconds(), TimeSpan.timeSpan(0).millis());
 
         record.set(Option.some(ownedWithIsr(SELF, List.of(SELF, PEER_A, PEER_B), 5L)));
         members.set(List.of(SELF, PEER_A, PEER_B));
@@ -798,6 +799,83 @@ class OwnerActivationTest {
             assertThat(escape.elapsed().millis()).isGreaterThanOrEqualTo(300L);
             assertThat(escape.message()).contains("promotion_escape_after").contains(escape.bound().toString());
         });
+    }
+
+    private boolean runGate(OwnerActivation gate) {
+        LockSupport.parkNanos(2_000_000L);
+
+        return gate.activate(STREAM, PARTITION).await().isSuccess();
+    }
+
+    /// #2080, per-member bound (v-2084 F1): the silence of one member is not inherited by another. PEER_A is silent past the bound, then
+    /// answers while PEER_B goes silent for the first time: PEER_B has been silent for ~0 ms, so the gate keeps waiting for it.
+    /// Mutation: one clock per partition instead of per member turns this red.
+    @Test
+    void activate_isrCandidate_aMemberThatJustWentSilent_isNotEscapedBecauseAnotherWasSilentLong() throws Exception {
+        var gate = gateReportingEscapes(TimeSpan.timeSpan(300).millis());
+
+        record.set(Option.some(ownedWithIsr(SELF, List.of(SELF, PEER_A, PEER_B), 5L)));
+        members.set(List.of(SELF, PEER_A, PEER_B));
+        unreachable.add(PEER_A);
+        assertThat(runGate(gate)).isFalse();
+        Thread.sleep(400);
+
+        unreachable.remove(PEER_A);
+        unreachable.add(PEER_B);
+
+        assertThat(runGate(gate)).as("PEER_B has been silent for ~0 ms").isFalse();
+        assertThat(escapes).isEmpty();
+        Thread.sleep(400);
+
+        assertThat(runGate(gate)).as("PEER_B past its own bound").isTrue();
+        assertThat(escapes).singleElement().satisfies(escape -> assertThat(escape.skipped()).containsExactly(PEER_B));
+    }
+
+    /// #2080: with one member past the bound and another at 0 ms, the gate waits until BOTH are past; the escape then skips both, and
+    /// the elapsed time it names is the SHORTEST silence.
+    @Test
+    void activate_isrCandidate_oneMemberPastTheBoundAndOneFresh_waitsForBoth() throws Exception {
+        var gate = gateReportingEscapes(TimeSpan.timeSpan(300).millis());
+
+        record.set(Option.some(ownedWithIsr(SELF, List.of(SELF, PEER_A, PEER_B), 5L)));
+        members.set(List.of(SELF, PEER_A, PEER_B));
+        unreachable.add(PEER_A);
+        assertThat(runGate(gate)).isFalse();
+        Thread.sleep(400);
+        unreachable.add(PEER_B);
+
+        assertThat(runGate(gate)).as("PEER_A past the bound, PEER_B fresh").isFalse();
+        Thread.sleep(400);
+
+        assertThat(runGate(gate)).as("both past").isTrue();
+        assertThat(escapes).singleElement().satisfies(escape -> {
+            assertThat(escape.skipped()).containsExactlyInAnyOrder(PEER_A, PEER_B);
+            assertThat(escape.elapsed().millis()).as("the shortest silence").isBetween(300L, 700L);
+        });
+    }
+
+    /// #2080: a flapping member resets only its own clock. PEER_B stays silent past the bound while PEER_A answers once and goes silent
+    /// again: PEER_A's clock restarted, so the gate waits for it.
+    @Test
+    void activate_isrCandidate_aFlappingMemberResetsOnlyItsOwnClock() throws Exception {
+        var gate = gateReportingEscapes(TimeSpan.timeSpan(300).millis());
+
+        record.set(Option.some(ownedWithIsr(SELF, List.of(SELF, PEER_A, PEER_B), 5L)));
+        members.set(List.of(SELF, PEER_A, PEER_B));
+        unreachable.add(PEER_A);
+        unreachable.add(PEER_B);
+        assertThat(runGate(gate)).isFalse();
+        Thread.sleep(200);
+        unreachable.remove(PEER_A);
+        assertThat(runGate(gate)).as("PEER_A answered, PEER_B still silent").isFalse();
+        Thread.sleep(200);
+        unreachable.add(PEER_A);
+
+        assertThat(runGate(gate)).as("PEER_B ~400 ms silent, PEER_A restarted").isFalse();
+        assertThat(escapes).isEmpty();
+        Thread.sleep(400);
+
+        assertThat(runGate(gate)).as("both past their own bounds").isTrue();
     }
 
     /// #2080: the bound is CONTINUOUS unreachability. With a bound of 150 ms the first run (silence just started) waits, and a run after

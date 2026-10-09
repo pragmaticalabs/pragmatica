@@ -19,7 +19,6 @@ import org.pragmatica.serialization.Serializer;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.kvstore.AetherValue.StreamPartitionOwnershipValue;
 import org.pragmatica.aether.stream.CommittedStreamOwnerSource;
-import org.pragmatica.aether.stream.KvCommittedStreamOwnerSource;
 import org.pragmatica.aether.stream.StreamPartitionManager;
 import org.pragmatica.aether.stream.replication.CatchupTransport;
 import org.pragmatica.aether.stream.replication.PartitionBackfill;
@@ -41,6 +40,9 @@ import org.junit.jupiter.api.Test;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
 
+/// #2080 (T1d, wiring; F8): the helper takes the node's KV store and builds the committed-ISR reader itself, so no call site can hand it a
+/// different source. Replacing that reader by one that names nobody turns the first test red.
+///
 /// #2080 (T1d, wiring): the node binds the replica promotion contest's escape through `AetherNode#bindPromotionAlarm` -- the code the
 /// production assembly calls. Driven end to end over a real backfill and registry: with the committed in-sync set naming this node the
 /// contest escapes a silent co-replica and the OPERATOR EVENT reaches the sink; with the record naming another node, or no record at
@@ -83,7 +85,7 @@ class PromotionEscapeWiringTest {
                                                            List::of,
                                                            CommittedStreamOwnerSource.none());
 
-        AetherNode.bindPromotionAlarm(backfill, sink, KvCommittedStreamOwnerSource.kvCommittedStreamOwnerSource(kvStoreHolding(record)), BOUND);
+        AetherNode.bindPromotionAlarm(backfill, sink, kvStoreHolding(record), BOUND);
         backfill.backfill(STREAM, PARTITION).await();      // arms the source wait
         pause();
         backfill.backfill(STREAM, PARTITION).await();      // the contest starts and sees the silent peer

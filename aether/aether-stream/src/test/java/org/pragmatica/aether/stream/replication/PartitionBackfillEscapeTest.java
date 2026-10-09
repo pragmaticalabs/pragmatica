@@ -212,6 +212,105 @@ class PartitionBackfillEscapeTest {
         assertThat(escapes).singleElement().satisfies(escape -> assertThat(escape.bound()).isEqualTo(TimeSpan.timeSpan(25).seconds()));
     }
 
+    private final java.util.Set<NodeId> muted = java.util.concurrent.ConcurrentHashMap.newKeySet();
+
+    /// NODE_AA (self, holds 8) with NODE_BB and NODE_CC answering 5 unless they are in [#muted].
+    private PartitionBackfill backfillWithMutedSet() {
+        ReplicaWatermarkProbe probe = (target, _, _) -> muted.contains(target)
+                                                        ? ReplicationError.General.REPLICATION_TIMEOUT.promise()
+                                                        : Promise.success(5L);
+        var backfill = partitionBackfill(registry, recovery, CatchupTransport.NOOP, probe, (_, _) -> 8L, NODE_AA, BOUND, clock::get);
+
+        backfill.committedIsr((_, _, node) -> node.equals(NODE_AA));
+        backfill.promotionEscapeAfter(BOUND);
+        backfill.blockAlarm(new OwnerActivation.BlockAlarm() {
+            @Override
+            public Unit raise(OwnerActivation.ActivationBlock block) {
+                return Unit.unit();
+            }
+
+            @Override
+            public Unit escaped(OwnerActivation.PromotionEscape escape) {
+                escapes.add(escape);
+
+                return Unit.unit();
+            }
+        });
+
+        return backfill;
+    }
+
+    private boolean contestAt(PartitionBackfill backfill, long clockMs) {
+        clock.set(clockMs);
+
+        return backfill.backfill(STREAM, PARTITION).await().isSuccess();
+    }
+
+    /// Per-member bound at the contest (v-2084 F1): NODE_CC is silent past the bound, then answers while NODE_BB goes silent for the first
+    /// time -- NODE_BB has been silent for 0 ms and the contest keeps waiting for it. Mutation: one clock per partition turns this red.
+    @Test
+    void backfill_isrCandidate_aPeerThatJustWentSilent_isNotEscapedBecauseAnotherWasSilentLong() {
+        var backfill = backfillWithMutedSet();
+        var b = BOUND.millis();
+
+        contestAt(backfill, 0L);                    // arms the source wait
+        muted.add(NODE_CC);
+        assertThat(contestAt(backfill, b + 1)).isFalse();      // CC silent since b+1
+        assertThat(contestAt(backfill, 2 * b + 1)).as("CC past its bound: sanity of the fixture").isTrue();
+        registry.registerReplica(STREAM, PARTITION, NODE_AA);
+        escapes.clear();
+        muted.clear();
+
+        // second episode on the same instance: CC silent long, then CC answers and BB goes silent
+        var again = backfillWithMutedSet();
+
+        contestAt(again, 10 * b);
+        muted.add(NODE_CC);
+        assertThat(contestAt(again, 11 * b)).isFalse();        // CC silent since 11b
+        muted.remove(NODE_CC);
+        muted.add(NODE_BB);
+
+        assertThat(contestAt(again, 12 * b + 1)).as("BB silent for 0 ms").isFalse();
+        assertThat(escapes).isEmpty();
+        assertThat(contestAt(again, 13 * b + 2)).as("BB past its own bound").isTrue();
+        assertThat(escapes).singleElement().satisfies(escape -> assertThat(escape.skipped()).containsExactly(NODE_BB));
+    }
+
+    /// One peer past the bound and one at 0 ms: the contest waits until both are past, then skips both.
+    @Test
+    void backfill_isrCandidate_onePeerPastTheBoundAndOneFresh_waitsForBoth() {
+        var backfill = backfillWithMutedSet();
+        var b = BOUND.millis();
+
+        contestAt(backfill, 0L);
+        muted.add(NODE_CC);
+        assertThat(contestAt(backfill, b)).isFalse();                  // CC silent since b
+        muted.add(NODE_BB);
+        assertThat(contestAt(backfill, b + b / 2)).isFalse();          // BB silent since 1.5b
+        assertThat(contestAt(backfill, 2 * b)).as("CC at 1.0b, BB at 0.5b").isFalse();
+        assertThat(escapes).isEmpty();
+        assertThat(contestAt(backfill, 2 * b + b / 2)).as("both at least 1.0b").isTrue();
+        assertThat(escapes).singleElement().satisfies(escape -> assertThat(escape.skipped()).containsExactlyInAnyOrder(NODE_BB, NODE_CC));
+    }
+
+    /// A flapping peer resets only its own clock: NODE_BB stays silent past the bound while NODE_CC answers once and goes silent again.
+    @Test
+    void backfill_isrCandidate_aFlappingPeerResetsOnlyItsOwnClock() {
+        var backfill = backfillWithMutedSet();
+        var b = BOUND.millis();
+
+        contestAt(backfill, 0L);
+        muted.add(NODE_BB);
+        muted.add(NODE_CC);
+        assertThat(contestAt(backfill, b)).isFalse();                  // both silent since b
+        muted.remove(NODE_CC);
+        assertThat(contestAt(backfill, b + b / 2)).isFalse();          // CC answered: its clock is gone
+        muted.add(NODE_CC);
+        assertThat(contestAt(backfill, 2 * b)).as("BB at 1.0b, CC restarted").isFalse();
+        assertThat(escapes).isEmpty();
+        assertThat(contestAt(backfill, 3 * b)).as("CC at 1.0b too").isTrue();
+    }
+
     /// The run of unreachability must be CONTINUOUS: a round in which every peer answers restarts it. The answering round here
     /// DECLINES (a peer is ahead), so nothing else forgets the partition's wait, and the only thing that can make the last round
     /// fail is the restarted run. Mutation: not ending the run on an all-answer round turns the last assertion red.

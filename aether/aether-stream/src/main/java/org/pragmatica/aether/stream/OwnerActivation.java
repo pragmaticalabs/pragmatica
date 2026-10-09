@@ -64,7 +64,7 @@ import org.slf4j.LoggerFactory;
 /// production form would be a wedged JVM whose network stack still completes handshakes), so detection alone does not bound
 /// the wait; the bounded escape below does, for the candidates it covers.
 ///
-/// **The bounded escape (#2080).** After `promotionEscapeAfter` (`[streaming] promotion_escape_after`, 120 s by default, never below the alarm bound) of continuous probe failure a candidate named in the
+/// **The bounded escape (#2080).** After `promotionEscapeAfter` (`[streaming] promotion_escape_after`, 120 s by default, never below the alarm bound) of continuous probe failure of EACH silent member (the bound is per member: a member that just went silent keeps the partition blocked even when another is past the bound, and an answer resets only that member's clock) a candidate named in the
 /// partition's COMMITTED in-sync set (`isrVersion > 0` and the set contains this node) stops waiting for the silent members:
 /// the responders are caught up from and reconciled exactly as before, and when the activation completes one
 /// `stream-promotion-past-unreachable-peers` operator event (through [BlockAlarm#escaped]) names the partition, the candidate and
@@ -491,6 +491,10 @@ public final class OwnerActivation {
     private final Map<PartitionKey, ActivationBlock> lineageBlocks = new ConcurrentHashMap<>();
     /// When the current run of probe failures started (`System.nanoTime`), per partition.
     private final Map<PartitionKey, Long> unreachableSince = new ConcurrentHashMap<>();
+    /// Per silent member, since when it has been continuously unreachable (`System.nanoTime`), per partition (#2080): the escape bound is
+    /// PER MEMBER, so a member that just went silent is never skipped because another one is past the bound. A member that answers (or
+    /// leaves the live set) loses its entry; the whole map goes with the activation and with ownership.
+    private final Map<PartitionKey, Map<NodeId, Long>> silentSince = new ConcurrentHashMap<>();
     /// How long members must stay unreachable before an ISR-named candidate goes ahead without them (#2080, `[streaming]
     /// promotion_escape_after`). Never until wired: a gate that is not told its bound does not escape.
     private volatile TimeSpan promotionEscapeAfter = TimeSpan.timeSpan(Long.MAX_VALUE).nanos();
@@ -866,6 +870,7 @@ public final class OwnerActivation {
         ended(unreachableBlocks.remove(key));
         ended(lineageBlocks.remove(key));
         unreachableSince.remove(key);
+        silentSince.remove(key);
         pendingEscapes.remove(key);
 
         return Unit.unit();
@@ -1001,10 +1006,12 @@ public final class OwnerActivation {
         var responders = answered.stream().map(PeerWatermark::node).toList();
         var key = PartitionKey.partitionKey(stream, partition);
         var silent = peers.stream().filter(peer -> !responders.contains(peer)).toList();
-        var since = unreachableSince.computeIfAbsent(key, _ -> System.nanoTime());
 
-        if (pastBound(since) && isrElected(stream, partition)) {
-            return proceedWithout(stream, partition, key, silent, answered, since);
+        unreachableSince.computeIfAbsent(key, _ -> System.nanoTime());
+        var shortest = shortestSilence(key, silent);
+
+        if (shortest.map(this::pastBound).or(false) && isrElected(stream, partition)) {
+            return proceedWithout(stream, partition, key, silent, answered, shortest.or(0L));
         }
 
         trackUnreachable(key, stream, partition, silent, answered);
@@ -1012,8 +1019,21 @@ public final class OwnerActivation {
         return ActivationError.HOLDER_UNREACHABLE.promise();
     }
 
-    private boolean pastBound(long sinceNanos) {
-        return System.nanoTime() - sinceNanos > promotionEscapeAfter.nanos();
+    /// Updates the per-member clocks of the partition to `silent` (a member that answered or left the live set loses its entry, a newly
+    /// silent one starts at now) and returns how long the member that has been silent for the SHORTEST time has been, in nanoseconds:
+    /// the escape may go ahead only when even that member is past the bound. None without a silent member.
+    private Option<Long> shortestSilence(PartitionKey key, List<NodeId> silent) {
+        var clocks = silentSince.computeIfAbsent(key, _ -> new ConcurrentHashMap<>());
+        var now = System.nanoTime();
+
+        clocks.keySet().retainAll(silent);
+        silent.forEach(peer -> clocks.putIfAbsent(peer, now));
+
+        return Option.from(clocks.values().stream().map(since -> now - since).min(Long::compare));
+    }
+
+    private boolean pastBound(long silentNanos) {
+        return silentNanos > promotionEscapeAfter.nanos();
     }
 
     /// #2080, the bounded escape. `silent` have not answered for longer than the bound and this node is the candidate named in the
@@ -1027,14 +1047,14 @@ public final class OwnerActivation {
                                          PartitionKey key,
                                          List<NodeId> silent,
                                          List<PeerWatermark> answered,
-                                         long sinceNanos) {
+                                         long silentNanos) {
         var escape = new PromotionEscape(stream,
                                          partition,
                                          EscapeGate.OWNER_ACTIVATION,
                                          self,
                                          silent,
                                          promotionEscapeAfter,
-                                         TimeSpan.timeSpan(System.nanoTime() - sinceNanos).nanos());
+                                         TimeSpan.timeSpan(silentNanos).nanos());
 
         ended(unreachableBlocks.remove(key));
 
@@ -1204,6 +1224,7 @@ public final class OwnerActivation {
     /// Every member answered: the unreachable run is over, and a report of it no longer describes the partition.
     private Unit clearUnreachable(PartitionKey key) {
         unreachableSince.remove(key);
+        silentSince.remove(key);
         pendingEscapes.remove(key);
         ended(unreachableBlocks.remove(key));
 

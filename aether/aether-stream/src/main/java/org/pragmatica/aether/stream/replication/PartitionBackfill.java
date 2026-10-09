@@ -82,7 +82,7 @@ import static org.pragmatica.aether.stream.replication.ReplicationMessage.Replic
 ///          might be caught-up with newer state, so promoting past it could serve stale events — the
 ///          node stays SYNCING instead ({@link BackfillError.General#UNREACHABLE_REPLICA_BLOCKS_PROMOTION}).
 ///          The one exception is the bounded escape (#2080): a replica that stayed unreachable for
-///          {@link #promotionEscapeAfter} (continuously; `[streaming] promotion_escape_after`, 120 s by default, never below the source wait) is not waited for when self is named in the partition's
+///          {@link #promotionEscapeAfter} (continuously, EACH unreachable replica on its own clock; `[streaming] promotion_escape_after`, 120 s by default, never below the source wait) is not waited for when self is named in the partition's
 ///          COMMITTED in-sync set, because every acknowledged record is on every member of that set; the escape is
 ///          reported as an operator event and the contest runs over the replicas that answered.
 ///        - self's own watermark must be `>= max(seen peer watermarks)`; on an exact tie the
@@ -162,9 +162,10 @@ public final class PartitionBackfill {
     /// How long a co-replica must stay unreachable before an ISR-named candidate goes ahead without it (#2080, `[streaming]
     /// promotion_escape_after`); never until wired.
     private volatile TimeSpan promotionEscapeAfter = TimeSpan.timeSpan(Long.MAX_VALUE).nanos();
-    /// First instant (ms) of the CONTINUOUS run of contest rounds in which some co-replica did not answer, per partition (#2080). A
-    /// round in which every co-replica answers ends the run, as does any promotion of the partition ([#forgetNoSource]).
-    private final ConcurrentHashMap<PartitionKey, Long> unreachableSinceMs;
+    /// Per unreachable co-replica, the first instant (ms) of its CONTINUOUS run of contest rounds without an answer, per partition (#2080):
+    /// the escape bound is per member. A round in which a co-replica answers ends only its run (a member that left the replica set loses its
+    /// entry); any promotion of the partition drops them all ([#forgetNoSource]).
+    private final ConcurrentHashMap<PartitionKey, ConcurrentHashMap<NodeId, Long>> unreachableSinceMs;
 
     /// The oversized-peer block last reported per partition, so a redrive of the same condition is silent (#1937).
     private final ConcurrentHashMap<PartitionKey, OwnerActivation.ActivationBlock> reportedOversized;
@@ -2012,7 +2013,7 @@ public final class PartitionBackfill {
             return decideAmongAnswering(streamName, partition, peers, selfWm, results, tieBreak);
         }
 
-        var escapeAfter = mayProceedWithout(streamName, partition, key);
+        var escapeAfter = mayProceedWithout(streamName, partition, key, silent);
 
         if (escapeAfter.isEmpty()) {
             log.warn("Backfill {}[{}]: cold-start self-promotion BLOCKED — a co-replica is unreachable "
@@ -2056,14 +2057,21 @@ public final class PartitionBackfill {
                              indexes.stream().map(results::get).toList());
     }
 
-    /// Arms the run of unreachability on its first round and answers how long it has lasted when that passed [#promotionEscapeAfter]
+    /// Arms each silent peer's own run of unreachability on its first round and answers how long the SHORTEST of them has lasted when that passed [#promotionEscapeAfter]
     /// AND self is named in the COMMITTED in-sync set (the raw record, not the routing view); none otherwise.
-    private Option<TimeSpan> mayProceedWithout(String streamName, int partition, PartitionKey key) {
-        var since = unreachableSinceMs.computeIfAbsent(key, _ -> clock.getAsLong());
-        var elapsed = clock.getAsLong() - since;
+    private Option<TimeSpan> mayProceedWithout(String streamName,
+                                               int partition,
+                                               PartitionKey key,
+                                               List<NodeId> silent) {
+        var now = clock.getAsLong();
+        var clocks = unreachableSinceMs.computeIfAbsent(key, _ -> new ConcurrentHashMap<>());
 
-        return elapsed >= promotionEscapeAfter.millis() && committedIsr.names(streamName, partition, self)
-               ? Option.some(TimeSpan.timeSpan(elapsed).millis())
+        clocks.keySet().retainAll(silent);
+        silent.forEach(peer -> clocks.putIfAbsent(peer, now));
+        var shortest = clocks.values().stream().mapToLong(since -> now - since).min().orElse(0L);
+
+        return shortest >= promotionEscapeAfter.millis() && committedIsr.names(streamName, partition, self)
+               ? Option.some(TimeSpan.timeSpan(shortest).millis())
                : Option.none();
     }
 

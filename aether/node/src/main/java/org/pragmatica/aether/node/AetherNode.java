@@ -2083,8 +2083,10 @@ public interface AetherNode extends ManageableNode {
     /// wiring is the code the wiring test drives.
     static Unit bindPromotionAlarm(PartitionBackfill backfill,
                                    OperatorWarningSink sink,
-                                   CommittedStreamIsrSource committedIsr,
+                                   KVStore<AetherKey, AetherValue> kvStore,
                                    TimeSpan promotionEscapeAfter) {
+        var committedIsr = KvCommittedStreamOwnerSource.kvCommittedStreamOwnerSource(kvStore);
+
         backfill.blockAlarm(ownerPromotionAlarm(sink));
         backfill.promotionEscapeAfter(promotionEscapeAfter);
         backfill.committedIsr((stream, partition, node) -> committedIsr.committedIsr(stream, partition)
@@ -6026,10 +6028,7 @@ public interface AetherNode extends ManageableNode {
         // #1937: the promoted owner's backfill refuses for a peer's oversized event too, and reports it the way the gate does.
         // #2080: its cold-start contest proceeds past unreachable co-replicas only for a node the COMMITTED in-sync set names, and
         // reports that escape the way the gate does.
-        bindPromotionAlarm(streamPartitionBackfill,
-                           operatorWarningSink,
-                           KvCommittedStreamOwnerSource.kvCommittedStreamOwnerSource(kvStore),
-                           streamingConfig.promotionEscapeAfter());
+        bindPromotionAlarm(streamPartitionBackfill, operatorWarningSink, kvStore, streamingConfig.promotionEscapeAfter());
         streamPartitionManager.ownerServeGate(ownerActivation::admit);
         // #1730 phase 2: the gate's relaxation for a divergent peer respects the candidate's durable sealed floor, and a peer it
         // leaves out loses the row this registry kept for it from an earlier tenure.

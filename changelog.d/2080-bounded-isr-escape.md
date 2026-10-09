@@ -3,7 +3,7 @@
   activation gate (`OwnerActivation`) and the replica promotion contest (`PartitionBackfill`) — waited for every live member, and a member
   that keeps its transport handshaking while answering nothing never reaches DEAD (a wedged JVM). After the new setting
   `[streaming] promotion_escape_after` (default 120 s, refused if below the alarm bounds: two SWIM suspect windows and the contest's source
-  wait, 20 s each at the defaults) of continuous unreachability, a candidate named in the partition's COMMITTED in-sync set
+  wait, 20 s each at the defaults) of continuous unreachability of EACH silent member (the bound is per member: a member that just went silent keeps the partition blocked even when another is past the bound; an answer resets only that member's clock), a candidate named in the partition's COMMITTED in-sync set
   (`isrVersion > 0`, read from the raw committed record, never from the routing view) goes ahead without the silent members and, once the
   activation completes (the contest: once the replica is promoted), raises one CRITICAL operator event,
   `stream-promotion-past-unreachable-peers`, naming the partition, the candidate, the members it skipped, the configured bound and the
