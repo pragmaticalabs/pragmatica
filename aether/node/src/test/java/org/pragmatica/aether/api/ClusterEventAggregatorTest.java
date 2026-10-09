@@ -2117,12 +2117,14 @@ class ClusterEventAggregatorTest {
                              OperatorWarningCode.HTTP_TLS_ROTATION_RESTORED,
                              OperatorWarningCode.CLUSTER_TLS_RENEWAL_RESTORED,
                              OperatorWarningCode.BACKUP_CONFIG_RESTORED,
-                             OperatorWarningCode.BACKUP_RESTORE_UNBLOCKED);
+                             OperatorWarningCode.BACKUP_RESTORE_UNBLOCKED,
+                             OperatorWarningCode.INSTANCE_TERMINATION_CONFIRMED);
         assertThat(java.util.Arrays.stream(OperatorWarningCode.values()).filter(OperatorWarningCode::hasRecovery).toList())
             .containsExactlyInAnyOrder(OperatorWarningCode.NODE_REPLACEMENT_STARTED,
                              OperatorWarningCode.NODE_REPLACEMENT_JOIN_OVERDUE,
                              OperatorWarningCode.NODE_REPLACEMENT_DRAIN_BLOCKED,
                              OperatorWarningCode.NODE_REPLACEMENT_FAILED_KEPT_BOTH,
+                             OperatorWarningCode.INSTANCE_TERMINATION_UNCONFIRMED,
                              OperatorWarningCode.SLICE_FLOOR_DRAIN_REFUSED,
                              OperatorWarningCode.STREAM_CONSUMER_STATE_DIVERGED,
                              OperatorWarningCode.STREAM_CONSUMER_NOT_REGISTERED,
