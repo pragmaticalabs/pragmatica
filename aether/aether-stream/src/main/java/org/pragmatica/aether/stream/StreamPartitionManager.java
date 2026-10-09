@@ -2314,6 +2314,28 @@ public final class StreamPartitionManager implements AutoCloseable {
         }
     }
 
+    /// The subject of a standing `stream-divergent-tail-cut-refused` is gone from this node (the replica was released, the stream
+    /// destroyed or reaped): the warning is closed with the paired recovery so that no operator warning outlives its subject. The
+    /// quarantine that went with the ring takes the obstacle with it; a node that hosts the partition again starts a new episode.
+    @Contract
+    private void closeRefusedCuts(java.util.function.Predicate<PartitionRef> scope, String reason) {
+        refusedCuts.keySet().stream().filter(scope).toList().forEach(ref -> closeRefusedCut(ref, reason));
+    }
+
+    @Contract
+    private void closeRefusedCut(PartitionRef ref, String reason) {
+        if (refusedCuts.remove(ref) != null) {
+            OperatorWarnings.raise(log,
+                                   operatorWarnings,
+                                   OperatorWarningCode.STREAM_DIVERGENT_TAIL_CUT_RESUMED,
+                                   ref.streamName() + "[" + ref.partition() + "]",
+                                   "Replica {}[{}]: the refused divergent-tail cut no longer stands -- {}.",
+                                   ref.streamName(),
+                                   ref.partition(),
+                                   reason);
+        }
+    }
+
     @Contract
     private void cutResumed(String streamName, int partition, PartitionRef ref) {
         if (refusedCuts.remove(ref) != null) {
@@ -4594,6 +4616,9 @@ public final class StreamPartitionManager implements AutoCloseable {
         evictionListener.onStreamDeleted(entry.config().name());
         forgetHeldBack(entry);
         forgetFootprint(entry.config().name());
+        closeRefusedCuts(ref -> ref.streamName()
+                                   .equals(entry.config().name()),
+                         "the stream is gone from this node");
 
         return success(unit());
     }
@@ -5172,6 +5197,7 @@ public final class StreamPartitionManager implements AutoCloseable {
         mp.close();
         forgetReplicatedWrites(ref.streamName(), ref.partition(), mp.wal());
         releaseCandidacy.remove(ref);
+        closeRefusedCuts(ref::equals, "this node no longer hosts the partition's replica");
         freeReshuffleSlot(ref);
         dropDurableWatermark(ref);
         releasedSinceBoot.incrementAndGet();

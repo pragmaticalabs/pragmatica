@@ -612,6 +612,72 @@ class StreamPartitionManagerDivergentTailTest {
         one.close();
     }
 
+    private StreamPartitionManager refusedCutManager(String dir) throws Exception {
+        var path = walDir.resolve(dir);
+        var one = streamPartitionManager(Long.MAX_VALUE, Option.some(path));
+
+        one.createStream(StreamConfig.streamConfig("single")).onFailure(cause -> fail(cause.message()));
+        one.operatorWarnings(lossWarningsOnly());
+        for (var i = 0; i < 8; i++) {
+            one.appendRecovered("single", PARTITION, i, ("r" + i).getBytes(UTF_8), 1000L + i, org.pragmatica.aether.slice.generation.Epoch.epoch(1L, 2L, 3L)).unwrap();
+        }
+        one.syncReplicated("single", PARTITION).await();
+        one.appendRecovered("single", PARTITION, 3, "different".getBytes(UTF_8), 1003L, org.pragmatica.aether.slice.generation.Epoch.epoch(1L, 2L, 3L));
+        blockRecoverySegments(path);
+        assertThat(one.repairDivergence("single", PARTITION, _ -> true).isFailure()).isTrue();
+        awaitRefusals(1);
+
+        return one;
+    }
+
+    /// #2084 round 4: no operator warning outlives its subject. A standing `stream-divergent-tail-cut-refused` is closed with the paired
+    /// recovery when the stream is destroyed. Mutation: not closing refusals when a stream is released turns this red.
+    @Test
+    void refusedCut_closesWhenTheStreamIsDestroyed() throws Exception {
+        var one = refusedCutManager("refusal-destroyed");
+
+        one.destroyStream("single");
+        awaitRefusals(2);
+
+        assertThat(refusals).extracting(OperatorWarning::code)
+                            .containsExactly(OperatorWarningCode.STREAM_DIVERGENT_TAIL_CUT_REFUSED, OperatorWarningCode.STREAM_DIVERGENT_TAIL_CUT_RESUMED);
+        assertThat(refusals.getLast().subject()).isEqualTo(refusals.getFirst().subject());
+        assertThat(refusals.getLast().message()).contains("gone from this node");
+        one.close();
+    }
+
+    /// The same when this node stops hosting the partition's replica (role lost, the ring released). Mutation: not closing refusals in the
+    /// partition release turns this red.
+    @Test
+    void refusedCut_closesWhenTheReplicaIsReleased() throws Exception {
+        var one = refusedCutManager("refusal-released");
+        var role = new java.util.concurrent.atomic.AtomicReference<>(org.pragmatica.aether.stream.replication.ReplicaSetController.Role.REPLICA);
+
+        one.placementRoleSupplier((_, _) -> role.get());
+        one.clusterSizeSupplier(() -> 3);
+        one.replicaCatchupSource((_, _) -> new StreamPartitionManager.ReplicaCatchupSource.CatchupView(3, true));
+        one.ownerReleaseGuard((_, _) -> true);
+        role.set(org.pragmatica.aether.stream.replication.ReplicaSetController.Role.NONE);
+        for (var tick = 0; tick < 5; tick++) {
+            one.reconcileReshuffle();
+        }
+        awaitRefusals(2);
+
+        assertThat(refusals).extracting(OperatorWarning::code)
+                            .containsExactly(OperatorWarningCode.STREAM_DIVERGENT_TAIL_CUT_REFUSED, OperatorWarningCode.STREAM_DIVERGENT_TAIL_CUT_RESUMED);
+        assertThat(refusals.getLast().message()).contains("no longer hosts");
+        one.close();
+    }
+
+    /// Control: destroying a stream that has NO standing refusal raises nothing.
+    @Test
+    void destroyingAStreamWithoutAStandingRefusal_raisesNoRecovery() {
+        manager.destroyStream(STREAM);
+        quietPeriod();
+
+        assertThat(refusals).isEmpty();
+    }
+
     /// #2084 F5, the witness: a cut refused because its truncation witness cannot be made durable raises the same episode event.
     @Test
     void repairDivergence_keepsFailingToWriteTheWitness_raisesOneEventForTheEpisode() throws Exception {

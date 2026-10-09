@@ -893,7 +893,7 @@ class OwnerActivationTest {
     }
 
     /// #2080 (v-2084 O9): a gate that was never told its escape bound never escapes, however long a member stays silent and whatever the
-    /// record says. Production always wires it; this pins the default. Mutation: a finite default turns this red.
+    /// record says. Production always wires it; this pins the default. The alarm is far off so that the observed-continuity gap rule cannot restart the clock and mask a finite default. Mutation: a finite default (0 ms) turns this red.
     @Test
     void activate_gateWithoutAnEscapeBound_neverEscapes() {
         var gate = OwnerActivation.ownerActivation(SELF,
@@ -907,7 +907,7 @@ class OwnerActivationTest {
                                                    consensusActive::get,
                                                    this::range,
                                                    recordingAlarm(),
-                                                   TimeSpan.timeSpan(0).millis());
+                                                   TimeSpan.timeSpan(1).hours());
 
         record.set(Option.some(ownedWithIsr(SELF, List.of(SELF, PEER_A, PEER_B), 5L)));
         members.set(List.of(SELF, PEER_A, PEER_B));

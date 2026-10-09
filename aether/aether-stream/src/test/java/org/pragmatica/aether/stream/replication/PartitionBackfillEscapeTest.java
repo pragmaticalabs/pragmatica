@@ -320,14 +320,14 @@ class PartitionBackfillEscapeTest {
 
         noReader.promotionEscapeAfter(BOUND);
 
-        assertThat(contestAfter(noReader, 100 * BOUND.millis())).as("no committed-ISR reader wired").isFalse();
+        assertThat(contestAfter(noReader, BOUND.millis())).as("no committed-ISR reader wired (rounds a bound apart: one observed run)").isFalse();
 
         var noBound = partitionBackfill(registry, recovery, CatchupTransport.NOOP, probe, (_, _) -> 8L, NODE_AA, BOUND, clock::get);
 
         noBound.committedIsr((_, _, _) -> true);
         clock.set(0L);
 
-        assertThat(contestAfter(noBound, 100 * BOUND.millis())).as("no escape bound wired").isFalse();
+        assertThat(contestAfter(noBound, BOUND.millis())).as("no escape bound wired").isFalse();
         assertThat(selfState()).isEqualTo(ReplicationState.SYNCING);
         assertThat(escapes).isEmpty();
     }
