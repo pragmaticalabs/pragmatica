@@ -201,14 +201,14 @@ class PartitionBackfillEscapeTest {
     @Test
     void backfill_isrCandidate_escapeBoundIsItsOwn_notTheSourceWait() {
         var backfill = backfill((_, _, node) -> node.equals(NODE_AA));
+        var b = BOUND.millis();
 
         backfill.promotionEscapeAfter(TimeSpan.timeSpan(25).seconds());
-
-        assertThat(contestAfter(backfill, BOUND.millis())).as("silent for 10 s of a 25 s bound").isFalse();
+        contestAfter(backfill, 0L);                                     // arms the source wait; the contest starts at b + 1 (CC silent)
+        assertThat(contestAt(backfill, 2 * b + 1)).as("silent for 10 s of a 25 s bound").isFalse();
+        assertThat(contestAt(backfill, 3 * b + 1)).as("silent for 20 s").isFalse();
         assertThat(escapes).isEmpty();
-        clock.addAndGet(15_000L);
-
-        assertThat(backfill.backfill(STREAM, PARTITION).await().isSuccess()).as("silent for 25 s").isTrue();
+        assertThat(contestAt(backfill, 3 * b + 1 + 5_000L)).as("silent for 25 s").isTrue();
         assertThat(escapes).singleElement().satisfies(escape -> assertThat(escape.bound()).isEqualTo(TimeSpan.timeSpan(25).seconds()));
     }
 
@@ -272,7 +272,7 @@ class PartitionBackfillEscapeTest {
 
         assertThat(contestAt(again, 12 * b + 1)).as("BB silent for 0 ms").isFalse();
         assertThat(escapes).isEmpty();
-        assertThat(contestAt(again, 13 * b + 2)).as("BB past its own bound").isTrue();
+        assertThat(contestAt(again, 13 * b + 1)).as("BB past its own bound").isTrue();
         assertThat(escapes).singleElement().satisfies(escape -> assertThat(escape.skipped()).containsExactly(NODE_BB));
     }
 
@@ -309,6 +309,44 @@ class PartitionBackfillEscapeTest {
         assertThat(contestAt(backfill, 2 * b)).as("BB at 1.0b, CC restarted").isFalse();
         assertThat(escapes).isEmpty();
         assertThat(contestAt(backfill, 3 * b)).as("CC at 1.0b too").isTrue();
+    }
+
+    /// A backfill that was never told its committed-ISR reader (B1) or its escape bound never escapes: unwired means conservative.
+    /// Production wires both. Mutations: a reader that names self by default, or a finite default bound, each turn a case red.
+    @Test
+    void backfill_withoutTheEscapeWiring_neverEscapes() {
+        ReplicaWatermarkProbe probe = (target, _, _) -> target.equals(NODE_BB) ? Promise.success(5L) : ReplicationError.General.REPLICATION_TIMEOUT.promise();
+        var noReader = partitionBackfill(registry, recovery, CatchupTransport.NOOP, probe, (_, _) -> 8L, NODE_AA, BOUND, clock::get);
+
+        noReader.promotionEscapeAfter(BOUND);
+
+        assertThat(contestAfter(noReader, 100 * BOUND.millis())).as("no committed-ISR reader wired").isFalse();
+
+        var noBound = partitionBackfill(registry, recovery, CatchupTransport.NOOP, probe, (_, _) -> 8L, NODE_AA, BOUND, clock::get);
+
+        noBound.committedIsr((_, _, _) -> true);
+        clock.set(0L);
+
+        assertThat(contestAfter(noBound, 100 * BOUND.millis())).as("no escape bound wired").isFalse();
+        assertThat(selfState()).isEqualTo(ReplicationState.SYNCING);
+        assertThat(escapes).isEmpty();
+    }
+
+    /// #2084 R2 at the contest: rounds that never looked at a peer are not silence. NODE_CC is silent when the contest starts (b + 1) and
+    /// not looked at again until 4b, far longer than the source-wait bound (b): its run restarts at 4b, so at 4b + b/2 the escape bound (b)
+    /// is not met. Mutation: dropping the gap rule turns this red. Dense rounds (every test above) still escape at the bound.
+    @Test
+    void backfill_isrCandidate_anUnobservedGap_isNotCountedAsSilence() {
+        var backfill = backfillWithMutedSet();
+        var b = BOUND.millis();
+
+        contestAt(backfill, 0L);
+        muted.add(NODE_CC);
+        assertThat(contestAt(backfill, b + 1)).isFalse();
+        assertThat(contestAt(backfill, 4 * b)).as("first look after the gap").isFalse();
+        assertThat(contestAt(backfill, 4 * b + b / 2)).as("silent for b/2 since the gap").isFalse();
+        assertThat(escapes).isEmpty();
+        assertThat(contestAt(backfill, 5 * b)).as("silent for b since the gap").isTrue();
     }
 
     /// The run of unreachability must be CONTINUOUS: a round in which every peer answers restarts it. The answering round here

@@ -151,6 +151,17 @@ public enum OperatorWarningCode {
     /// whatever the confirmation factor: the segment is the only copy of what left the live stream, and is never deleted
     /// automatically. The message names the stream, the partition, the offset range and the segment file.
     STREAM_DIVERGENT_TAIL_PRESERVED("stream-divergent-tail-preserved", "stream-replication", WarningLevel.WARNING),
+    /// A replica's divergent-tail cut is REFUSED because what it must do first could not be done (#2084): the records could not be
+    /// written to a recovery segment (`RepairPreserveFailed`) or the truncation witness could not be made durable
+    /// (`RepairWitnessFailed`), typically a full or read-only volume. The copy stays quarantined with nothing removed and the repair is
+    /// retried; raised once per distinct failure episode, naming the partition and the cause. Ended by
+    /// [#STREAM_DIVERGENT_TAIL_CUT_RESUMED].
+    STREAM_DIVERGENT_TAIL_CUT_REFUSED("stream-divergent-tail-cut-refused", "stream-replication", WarningLevel.WARNING),
+    /// The recovery of a [#STREAM_DIVERGENT_TAIL_CUT_REFUSED] (#2084), same subject: the cut went through, its records preserved.
+    STREAM_DIVERGENT_TAIL_CUT_RESUMED("stream-divergent-tail-cut-resumed",
+                                      "stream-replication",
+                                      WarningLevel.INFO,
+                                      STREAM_DIVERGENT_TAIL_CUT_REFUSED),
     /// A stream partition's promotion proceeded past members that did not answer for longer than the bound (#2080): the
     /// candidate is named in the partition's committed in-sync set, so it holds every acknowledged record outside the
     /// full-cluster cold-restart case, where an unreachable node whose disk is ahead may hold acknowledged records the new

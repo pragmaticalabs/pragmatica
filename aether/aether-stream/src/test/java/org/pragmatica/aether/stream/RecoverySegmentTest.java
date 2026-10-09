@@ -117,6 +117,51 @@ class RecoverySegmentTest {
         assertThat(other.file()).isNotEqualTo(first.file());
     }
 
+    /// The reuse check means what the doc says: identical offsets, timestamps, epoch keys AND payloads. Same range and no epochs, but one
+    /// payload (or one timestamp) different, is another loss: a separate file. Mutations: ignoring payload or timestamp turns each red.
+    @Test
+    void write_samePositionsOtherPayloadOrTimestamp_isNotReused() {
+        var wal = dir.resolve("s-9.wal");
+        var first = RecoverySegment.write(wal, "orders", 0, List.of(), pagesOf(0L, 2L), 0L, 2L, 10L).unwrap();
+        RecoverySegment.Pages otherPayload = (start, max) -> Result.success(LongStream.rangeClosed(start, 2L)
+                                                                                      .mapToObj(offset -> OffHeapRingBuffer.RawEvent.rawEvent(offset, ("x-" + offset).getBytes(StandardCharsets.UTF_8), 5000L + offset))
+                                                                                      .toList());
+        RecoverySegment.Pages otherTimestamp = (start, max) -> Result.success(LongStream.rangeClosed(start, 2L)
+                                                                                        .mapToObj(offset -> OffHeapRingBuffer.RawEvent.rawEvent(offset, ("payload-" + offset).getBytes(StandardCharsets.UTF_8), 9L))
+                                                                                        .toList());
+        var byPayload = RecoverySegment.write(wal, "orders", 0, List.of(), otherPayload, 0L, 2L, 11L).unwrap();
+        var byTimestamp = RecoverySegment.write(wal, "orders", 0, List.of(), otherTimestamp, 0L, 2L, 12L).unwrap();
+
+        assertThat(byPayload.file()).isNotEqualTo(first.file());
+        assertThat(byTimestamp.file()).isNotEqualTo(first.file()).isNotEqualTo(byPayload.file());
+    }
+
+    /// A page that does not start where the range continues (a hole, a repeat) is refused, never copied as if it were the range.
+    @Test
+    void write_aPageThatSkipsTheRequestedOffset_isRefused() {
+        RecoverySegment.Pages skipping = (start, max) -> Result.success(LongStream.rangeClosed(start + 1L, 4L).mapToObj(RecoverySegmentTest::event).toList());
+
+        assertThat(RecoverySegment.write(dir.resolve("s-10.wal"), "orders", 0, List.of(), skipping, 0L, 4L, 1L).isFailure()).isTrue();
+        assertThat(RecoverySegment.fileFor(dir.resolve("s-10.wal"), 0L, 4L, 1L)).doesNotExist();
+    }
+
+    /// The checksum covers the timestamp, and the trailer's count is checked against the header's range (not against what was read).
+    @Test
+    void read_detectsAFlippedTimestampByte_andAWrongTrailerCount() throws Exception {
+        var file = RecoverySegment.write(dir.resolve("s-11.wal"), "orders", 0, List.of(), pagesOf(0L, 2L), 0L, 2L, 3L).unwrap().file();
+        var bytes = Files.readAllBytes(file);
+        var timestampFlipped = bytes.clone();
+        var countWrong = bytes.clone();
+        // header: magic 8 + UTF "orders" 2+6 + partition 4 + first/last/created 24 = 44; first entry: offset 8, then the timestamp
+        timestampFlipped[44 + 8 + 7] ^= 0x01;
+        countWrong[bytes.length - 8 - 1] ^= 0x01;
+        Files.write(dir.resolve("ts-flipped.seg"), timestampFlipped);
+        Files.write(dir.resolve("count-wrong.seg"), countWrong);
+
+        assertThat(RecoverySegment.read(dir.resolve("ts-flipped.seg")).isFailure()).isTrue();
+        assertThat(RecoverySegment.read(dir.resolve("count-wrong.seg")).isFailure()).isTrue();
+    }
+
     @Test
     void read_detectsAFlippedByte_aTruncation_andAForeignFile() throws Exception {
         var wal = dir.resolve("s-4.wal");

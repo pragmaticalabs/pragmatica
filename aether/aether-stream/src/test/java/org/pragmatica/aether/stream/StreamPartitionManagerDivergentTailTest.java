@@ -41,10 +41,19 @@ class StreamPartitionManagerDivergentTailTest {
     /// DATA-LOSS warning, which the preserved event does not replace, so they must keep seeing exactly that one and nothing else.
     private final java.util.List<OperatorWarning> preserved = new java.util.concurrent.CopyOnWriteArrayList<>();
 
+    /// The events of #2084 (a cut refused for its segment or witness, and its end), kept apart from [#warnings] for the same reason.
+    private final java.util.List<OperatorWarning> refusals = new java.util.concurrent.CopyOnWriteArrayList<>();
+
     private OperatorWarningSink lossWarningsOnly() {
-        return OperatorWarningSink.handingOffTo(warning -> (warning.code() == OperatorWarningCode.STREAM_DIVERGENT_TAIL_PRESERVED
-                                                            ? preserved
-                                                            : warnings).add(warning));
+        return OperatorWarningSink.handingOffTo(warning -> bucketOf(warning).add(warning));
+    }
+
+    private java.util.List<OperatorWarning> bucketOf(OperatorWarning warning) {
+        return switch (warning.code()) {
+            case STREAM_DIVERGENT_TAIL_PRESERVED -> preserved;
+            case STREAM_DIVERGENT_TAIL_CUT_REFUSED, STREAM_DIVERGENT_TAIL_CUT_RESUMED -> refusals;
+            default -> warnings;
+        };
     }
 
     @BeforeEach
@@ -562,6 +571,82 @@ class StreamPartitionManagerDivergentTailTest {
         assertThat(one.repairDivergence("single", PARTITION, _ -> true).unwrap().isPresent()).as("control: with the obstacle gone the cut proceeds").isTrue();
         assertThat(segmentsUnder(path)).hasSize(1);
         one.close();
+    }
+
+    /// #2084 F5: a cut that keeps being refused (here: the recovery segment cannot be written) is an operator event, not only a log line:
+    /// ONE event for the episode however often the repair is retried, naming the partition and the cause; the cut that finally goes through
+    /// raises the paired recovery. Mutation: no event, or one per retry, turns this red.
+    @Test
+    void repairDivergence_keepsFailingToPreserve_raisesOneEventForTheEpisode_andARecoveryWhenItGoesThrough() throws Exception {
+        var path = walDir.resolve("preserve-event");
+        var one = streamPartitionManager(Long.MAX_VALUE, Option.some(path));
+
+        one.createStream(StreamConfig.streamConfig("single")).onFailure(cause -> fail(cause.message()));
+        one.operatorWarnings(lossWarningsOnly());
+        for (var i = 0; i < 8; i++) {
+            one.appendRecovered("single", PARTITION, i, ("r" + i).getBytes(UTF_8), 1000L + i, org.pragmatica.aether.slice.generation.Epoch.epoch(1L, 2L, 3L)).unwrap();
+        }
+        one.syncReplicated("single", PARTITION).await();
+        one.appendRecovered("single", PARTITION, 3, "different".getBytes(UTF_8), 1003L, org.pragmatica.aether.slice.generation.Epoch.epoch(1L, 2L, 3L));
+        var obstacles = blockRecoverySegments(path);
+
+        for (var attempt = 0; attempt < 3; attempt++) {
+            assertThat(one.repairDivergence("single", PARTITION, _ -> true).isFailure()).isTrue();
+        }
+        awaitRefusals(1);
+        quietPeriod();
+
+        assertThat(refusals).as("one event for three refusals").singleElement().satisfies(event -> {
+            assertThat(event.code()).isEqualTo(OperatorWarningCode.STREAM_DIVERGENT_TAIL_CUT_REFUSED);
+            assertThat(event.subject()).isEqualTo("single[0]");
+            assertThat(event.message()).contains("single[0]").contains("recovery segment");
+        });
+        for (var obstacle : obstacles) {
+            java.nio.file.Files.delete(obstacle);
+        }
+        assertThat(one.repairDivergence("single", PARTITION, _ -> true).unwrap().isPresent()).isTrue();
+        awaitRefusals(2);
+
+        assertThat(refusals).extracting(OperatorWarning::code)
+                            .containsExactly(OperatorWarningCode.STREAM_DIVERGENT_TAIL_CUT_REFUSED, OperatorWarningCode.STREAM_DIVERGENT_TAIL_CUT_RESUMED);
+        one.close();
+    }
+
+    /// #2084 F5, the witness: a cut refused because its truncation witness cannot be made durable raises the same episode event.
+    @Test
+    void repairDivergence_keepsFailingToWriteTheWitness_raisesOneEventForTheEpisode() throws Exception {
+        var path = walDir.resolve("witness-event");
+        var one = streamPartitionManager(Long.MAX_VALUE, Option.some(path));
+
+        one.createStream(StreamConfig.streamConfig("single").withReplication(ReplicationFactors.replicationFactors(1, 1).unwrap()))
+           .onFailure(cause -> fail(cause.message()));
+        one.operatorWarnings(lossWarningsOnly());
+        for (var i = 0; i < 8; i++) {
+            one.appendRecovered("single", PARTITION, i, ("r" + i).getBytes(UTF_8), 1000L + i, org.pragmatica.aether.slice.generation.Epoch.epoch(1L, 2L, 3L)).unwrap();
+        }
+        one.syncReplicated("single", PARTITION).await();
+        one.appendRecovered("single", PARTITION, 3, "different".getBytes(UTF_8), 1003L, org.pragmatica.aether.slice.generation.Epoch.epoch(1L, 2L, 3L));
+        blockWitnessFiles(path);
+
+        for (var attempt = 0; attempt < 2; attempt++) {
+            assertThat(one.repairDivergence("single", PARTITION, _ -> true).isFailure()).isTrue();
+        }
+        awaitRefusals(1);
+        quietPeriod();
+
+        assertThat(refusals).singleElement().satisfies(event -> {
+            assertThat(event.code()).isEqualTo(OperatorWarningCode.STREAM_DIVERGENT_TAIL_CUT_REFUSED);
+            assertThat(event.message()).contains("single[0]").contains("truncation witness");
+        });
+        one.close();
+    }
+
+    private void awaitRefusals(int expected) {
+        var deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(5);
+
+        while (refusals.size() < expected && System.nanoTime() < deadline) {
+            Thread.onSpinWait();
+        }
     }
 
     /// #2080: an ephemeral copy (no WAL, no volume) has nothing to retain; the cut proceeds as before and claims no segment.

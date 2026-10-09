@@ -523,7 +523,8 @@ class OwnerActivationTest {
 
     /// A gate whose alarm records the escapes as well as the blocks, with `bound` as the unreachable bound.
     private OwnerActivation gateReportingEscapes(TimeSpan bound) {
-        return gateReportingEscapes(bound, bound);
+        // the alarm is far off: observed continuity (#2084 R2) restarts a member's clock after a gap longer than the alarm bound
+        return gateReportingEscapes(TimeSpan.timeSpan(1).hours(), bound);
     }
 
     /// `alarmAfter`: when the unreachable-members block is reported; `escapeAfter`: when an ISR-named candidate goes ahead (#2080).
@@ -661,6 +662,10 @@ class OwnerActivationTest {
     }
 
     private OwnerActivation lineageGate(TimeSpan bound) {
+        return lineageGate(TimeSpan.timeSpan(1).hours(), bound);
+    }
+
+    private OwnerActivation lineageGate(TimeSpan alarmAfter, TimeSpan bound) {
         var gate = OwnerActivation.ownerActivation(SELF,
                                                (_, _) -> record.get(),
                                                (_, _) -> placementOwner.get(),
@@ -672,7 +677,7 @@ class OwnerActivationTest {
                                                consensusActive::get,
                                                this::range,
                                                recordingAlarm(),
-                                               bound,
+                                               alarmAfter,
                                                (_, _) -> 1L,
                                                this::lineageCommit);
 
@@ -756,13 +761,13 @@ class OwnerActivationTest {
     /// #2080: a block that was standing is told as resolved the moment the gate stops waiting, even when the activation then fails
     /// at the epoch-start commit: the partition no longer waits for the members the block names.
     @Test
-    void activate_blockedThenEscapes_theBlockIsResolvedAtOnce_evenIfTheEpochStartIsStillRefused() {
-        var gate = lineageGate(TimeSpan.timeSpan(0).millis());
+    void activate_blockedThenEscapes_theBlockIsResolvedAtOnce_evenIfTheEpochStartIsStillRefused() throws Exception {
+        var gate = lineageGate(TimeSpan.timeSpan(50).millis(), TimeSpan.timeSpan(0).millis());
 
         record.set(Option.some(ownedWithIsr(SELF, List.of(PEER_A, PEER_B), 5L)));
         members.set(List.of(SELF, PEER_A, PEER_B));
         unreachable.add(PEER_A);
-        activateAfterBound(gate);
+        roundsUntil(gate, () -> !alarms.isEmpty());
         assertThat(alarms).singleElement().isInstanceOf(OwnerActivation.ActivationBlock.HoldersUnreachable.class);
 
         record.set(Option.some(ownedWithIsr(SELF, List.of(SELF, PEER_A, PEER_B), 6L)));
@@ -778,27 +783,36 @@ class OwnerActivationTest {
     /// escape names the configured bound and the time elapsed. Mutation: escaping at the alarm bound turns the first assertion red.
     @Test
     void activate_isrCandidate_betweenTheAlarmAndTheEscapeBound_reportsTheBlockAndWaits_thenEscapes() throws Exception {
-        var gate = gateReportingEscapes(TimeSpan.timeSpan(0).millis(), TimeSpan.timeSpan(300).millis());
+        var gate = gateReportingEscapes(TimeSpan.timeSpan(100).millis(), TimeSpan.timeSpan(300).millis());
 
         record.set(Option.some(ownedWithIsr(SELF, List.of(SELF, PEER_A, PEER_B), 5L)));
         members.set(List.of(SELF, PEER_A, PEER_B));
         unreachable.add(PEER_A);
-        LockSupport.parkNanos(2_000_000L);
-        gate.activate(STREAM, PARTITION).await();
-        LockSupport.parkNanos(2_000_000L);
 
-        assertThat(gate.activate(STREAM, PARTITION).await().isSuccess()).as("past the alarm, before the escape bound: waits").isFalse();
+        assertThat(roundsUntil(gate, () -> !alarms.isEmpty())).as("past the alarm, before the escape bound: waits").isFalse();
         assertThat(alarms).singleElement().isInstanceOf(OwnerActivation.ActivationBlock.HoldersUnreachable.class);
         assertThat(escapes).isEmpty();
-        Thread.sleep(400);
 
-        assertThat(gate.activate(STREAM, PARTITION).await().isSuccess()).as("past the escape bound").isTrue();
+        assertThat(roundsUntil(gate, () -> false)).as("past the escape bound").isTrue();
         assertThat(resolvedBlocks).containsExactly(alarms.getFirst());
         assertThat(escapes).singleElement().satisfies(escape -> {
             assertThat(escape.bound()).isEqualTo(TimeSpan.timeSpan(300).millis());
             assertThat(escape.elapsed().millis()).isGreaterThanOrEqualTo(300L);
             assertThat(escape.message()).contains("promotion_escape_after").contains(escape.bound().toString());
         });
+    }
+
+    /// Runs the gate every 25 ms until `done` holds or two seconds pass: dense rounds, closer together than any alarm bound used here.
+    private boolean roundsUntil(OwnerActivation gate, java.util.function.BooleanSupplier done) throws Exception {
+        var deadline = System.nanoTime() + 2_000_000_000L;
+        var activated = false;
+
+        while (!done.getAsBoolean() && !activated && System.nanoTime() < deadline) {
+            activated = gate.activate(STREAM, PARTITION).await().isSuccess();
+            Thread.sleep(25);
+        }
+
+        return activated;
     }
 
     private boolean runGate(OwnerActivation gate) {
@@ -878,6 +892,156 @@ class OwnerActivationTest {
         assertThat(runGate(gate)).as("both past their own bounds").isTrue();
     }
 
+    /// #2080 (v-2084 O9): a gate that was never told its escape bound never escapes, however long a member stays silent and whatever the
+    /// record says. Production always wires it; this pins the default. Mutation: a finite default turns this red.
+    @Test
+    void activate_gateWithoutAnEscapeBound_neverEscapes() {
+        var gate = OwnerActivation.ownerActivation(SELF,
+                                                   (_, _) -> record.get(),
+                                                   (_, _) -> placementOwner.get(),
+                                                   Option.some(this::round),
+                                                   members::get,
+                                                   this::probe,
+                                                   (_, _) -> localWatermark.get(),
+                                                   this::catchUp,
+                                                   consensusActive::get,
+                                                   this::range,
+                                                   recordingAlarm(),
+                                                   TimeSpan.timeSpan(0).millis());
+
+        record.set(Option.some(ownedWithIsr(SELF, List.of(SELF, PEER_A, PEER_B), 5L)));
+        members.set(List.of(SELF, PEER_A, PEER_B));
+        unreachable.add(PEER_A);
+
+        for (var attempt = 0; attempt < 4; attempt++) {
+            assertThat(runGate(gate)).isFalse();
+        }
+
+        assertThat(escapes).isEmpty();
+    }
+
+    private final Set<NodeId> oversizedPeers = ConcurrentHashMap.newKeySet();
+
+    private Promise<Long> probeOrOversized(NodeId target, String stream, int partition) {
+        return oversizedPeers.contains(target)
+               ? new OwnerPeerReads.EventExceedsReadCap(7L).<Long> promise()
+               : probe(target, stream, partition);
+    }
+
+    private OwnerActivation gateWithOversizablePeers(TimeSpan alarmAfter, TimeSpan escapeAfter) {
+        var gate = OwnerActivation.ownerActivation(SELF,
+                                                   (_, _) -> record.get(),
+                                                   (_, _) -> placementOwner.get(),
+                                                   Option.some(this::round),
+                                                   members::get,
+                                                   this::probeOrOversized,
+                                                   (_, _) -> localWatermark.get(),
+                                                   this::catchUp,
+                                                   consensusActive::get,
+                                                   this::range,
+                                                   recordingAlarm(),
+                                                   alarmAfter);
+
+        gate.promotionEscapeAfter(escapeAfter);
+
+        return gate;
+    }
+
+    /// #2084 R1: a round refused because a peer's event is oversized still tells the clocks who answered. PEER_A is silent at 0 ms, answers at
+    /// 150 ms (in a round refused for PEER_B's oversized event, PEER_C silent) and is silent again at 400 ms: its clock restarted at 150 ms,
+    /// so after 250 ms of silence the gate keeps waiting. Mutation: not updating the clocks on the oversized path turns this red.
+    @Test
+    void activate_answerDuringAnOversizedRound_resetsTheMembersClock() throws Exception {
+        var peerC = new NodeId("peer-c");
+        var gate = gateWithOversizablePeers(TimeSpan.timeSpan(1).hours(), TimeSpan.timeSpan(300).millis());
+
+        record.set(Option.some(ownedWithIsr(SELF, List.of(SELF, PEER_A, PEER_B, peerC), 5L)));
+        members.set(List.of(SELF, PEER_A, PEER_B, peerC));
+        unreachable.add(PEER_A);
+        assertThat(runGate(gate)).as("t=0: A silent").isFalse();
+        Thread.sleep(150);
+        unreachable.remove(PEER_A);
+        unreachable.add(peerC);
+        oversizedPeers.add(PEER_B);
+        assertThat(runGate(gate)).as("t=150: A answers, B oversized, C silent").isFalse();
+        Thread.sleep(250);
+        oversizedPeers.clear();
+        unreachable.clear();
+        unreachable.add(PEER_A);
+
+        assertThat(runGate(gate)).as("t=400: A silent for 250 ms since it last answered").isFalse();
+        assertThat(escapes).isEmpty();
+    }
+
+    /// #2084 R2, observed continuity: an unobserved gap is not silence. PEER_A is silent at 0 ms, no round looks at it for 400 ms (longer
+    /// than the 150 ms alarm bound), and the next round sees it silent again: its run restarts there, so the 300 ms bound is not met.
+    /// Mutation: dropping the gap rule turns this red; the dense-rounds control below must still escape at the bound.
+    @Test
+    void activate_unobservedGap_isNotCountedAsSilence() throws Exception {
+        var gate = gateReportingEscapes(TimeSpan.timeSpan(150).millis(), TimeSpan.timeSpan(300).millis());
+
+        record.set(Option.some(ownedWithIsr(SELF, List.of(SELF, PEER_A, PEER_B), 5L)));
+        members.set(List.of(SELF, PEER_A, PEER_B));
+        unreachable.add(PEER_A);
+        assertThat(runGate(gate)).isFalse();
+        Thread.sleep(400);
+
+        assertThat(runGate(gate)).as("silent again after an unobserved gap").isFalse();
+        assertThat(escapes).isEmpty();
+    }
+
+    @Test
+    void activate_denseRounds_stillEscapeAtTheBound() throws Exception {
+        var gate = gateReportingEscapes(TimeSpan.timeSpan(150).millis(), TimeSpan.timeSpan(300).millis());
+
+        record.set(Option.some(ownedWithIsr(SELF, List.of(SELF, PEER_A, PEER_B), 5L)));
+        members.set(List.of(SELF, PEER_A, PEER_B));
+        unreachable.add(PEER_A);
+
+        assertThat(roundsUntil(gate, () -> false)).as("rounds 25 ms apart, silent throughout").isTrue();
+        assertThat(escapes).singleElement().satisfies(escape -> assertThat(escape.elapsed().millis()).isGreaterThanOrEqualTo(300L));
+    }
+
+    /// #2084 F9 (E4): a clock does not survive the tenure. PEER_A's silence is 400 ms old when ownership leaves this node; when ownership
+    /// returns and PEER_A is silent for the first time of the new tenure, the gate waits. Mutation: not dropping the clocks when ownership
+    /// leaves turns this red.
+    @Test
+    void activate_silenceClockDoesNotSurviveTheTenure() throws Exception {
+        var gate = lineageGate(TimeSpan.timeSpan(1).hours(), TimeSpan.timeSpan(300).millis());
+
+        record.set(Option.some(ownedWithIsr(SELF, List.of(SELF, PEER_A, PEER_B), 5L)));
+        members.set(List.of(SELF, PEER_A, PEER_B));
+        unreachable.add(PEER_A);
+        assertThat(runGate(gate)).isFalse();
+        Thread.sleep(400);
+        record.set(Option.some(ownedBy(PEER_B, 9)));
+        assertThat(runGate(gate)).as("ownership left").isFalse();
+        record.set(Option.some(ownedWithIsr(SELF, List.of(SELF, PEER_A, PEER_B), 10L)));
+        lineageAccepts.set(true);
+
+        assertThat(runGate(gate)).as("PEER_A silent for ~0 ms in the new tenure").isFalse();
+    }
+
+    /// #2084 F9 (E5): a member that answered and goes silent again within the bound starts from zero. Mutation: not dropping the clocks when
+    /// every member answers lets it inherit the old silence and turns this red.
+    @Test
+    void activate_silentThenAnswersThenSilentAgain_startsFromZero() throws Exception {
+        var gate = lineageGate(TimeSpan.timeSpan(1).hours(), TimeSpan.timeSpan(300).millis());
+
+        record.set(Option.some(ownedWithIsr(SELF, List.of(SELF, PEER_A, PEER_B), 5L)));
+        members.set(List.of(SELF, PEER_A, PEER_B));
+        unreachable.add(PEER_A);
+        assertThat(runGate(gate)).isFalse();
+        Thread.sleep(400);
+        unreachable.clear();
+        assertThat(runGate(gate)).as("everyone answers (the epoch start is refused)").isFalse();
+        unreachable.add(PEER_A);
+        lineageAccepts.set(true);
+
+        assertThat(runGate(gate)).as("silent again: zero, not 400 ms, so the gate waits (and does not activate)").isFalse();
+        assertThat(escapes).isEmpty();
+    }
+
     /// #2080: the bound is CONTINUOUS unreachability. With a bound of 150 ms the first run (silence just started) waits, and a run after
     /// the bound has passed goes ahead. Mutation: restarting the clock on every run means the bound never elapses.
     @Test
@@ -916,18 +1080,18 @@ class OwnerActivationTest {
     /// #2080: a candidate that was first blocked (not yet named in the committed set) and reported the block gets that block RESOLVED
     /// when the set comes to name it and it goes ahead: the partition no longer waits for the members the block names.
     @Test
-    void activate_blockedThenNamedInTheIsr_theBlockIsResolved_andTheEscapeReported() {
-        var gate = gateReportingEscapes(TimeSpan.timeSpan(0).millis());
+    void activate_blockedThenNamedInTheIsr_theBlockIsResolved_andTheEscapeReported() throws Exception {
+        var gate = gateReportingEscapes(TimeSpan.timeSpan(50).millis(), TimeSpan.timeSpan(0).millis());
 
         record.set(Option.some(ownedWithIsr(SELF, List.of(PEER_A, PEER_B), 5L)));
         members.set(List.of(SELF, PEER_A, PEER_B));
         unreachable.add(PEER_A);
-        assertThat(activateAfterBound(gate)).isFalse();
+        assertThat(roundsUntil(gate, () -> !alarms.isEmpty())).isFalse();
         assertThat(alarms).singleElement().isInstanceOf(OwnerActivation.ActivationBlock.HoldersUnreachable.class);
 
         record.set(Option.some(ownedWithIsr(SELF, List.of(SELF, PEER_A, PEER_B), 6L)));
 
-        assertThat(activateAfterBound(gate)).isTrue();
+        assertThat(roundsUntil(gate, () -> false)).isTrue();
         assertThat(resolvedBlocks).as("the unreachable-members block is told as resolved").containsExactly(alarms.getFirst());
         assertThat(escapes).hasSize(1);
     }
@@ -943,7 +1107,7 @@ class OwnerActivationTest {
 
         for (var candidate : cases) {
             alarms.clear();
-            var gate = gateReportingEscapes(TimeSpan.timeSpan(0).millis());
+            var gate = gateReportingEscapes(TimeSpan.timeSpan(0).millis(), TimeSpan.timeSpan(0).millis());
 
             record.set(candidate);
             members.set(List.of(SELF, PEER_A, PEER_B));

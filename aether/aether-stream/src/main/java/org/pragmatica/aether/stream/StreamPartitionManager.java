@@ -242,6 +242,8 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// a copy may hold a lineage the owner never had (an ex-owner's unacknowledged records), so nothing it recovered is
     /// visible to a read served here until [#markVerified] covers it; its own appends do not drag it into view either.
     private final Set<String> unverifiedReplicas = ConcurrentHashMap.newKeySet();
+    /// The cause of the cut refusal last reported per partition (#2084), so a repair retried against the same obstacle reports nothing more.
+    private final Map<PartitionRef, String> refusedCuts = new ConcurrentHashMap<>();
     /// #1730 phase 2: where a replica's divergent-tail truncation is reported to the operator, late-bound
     /// ([#operatorWarnings(OperatorWarningSink)]); log-only until then.
     private volatile OperatorWarningSink operatorWarnings = OperatorWarningSink.logOnly();
@@ -2279,11 +2281,50 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                               keep,
                                                               authority))
                                      .onSuccess(cut -> reportCut(streamName, partition, cut))
-                                     .onFailure(cause -> log.warn("Replica {}[{}] could not cut its divergent tail back to offset {}: {}",
-                                                                  streamName,
-                                                                  partition,
-                                                                  keep,
-                                                                  cause.message()));
+                                     .onSuccess(_ -> cutResumed(streamName, partition, ref))
+                                     .onFailure(cause -> cutRefused(streamName, partition, ref, keep, cause));
+    }
+
+    /// The cut failed. A refusal for what the cut must do FIRST (the recovery segment, the truncation witness: typically a full or
+    /// read-only volume) leaves the copy quarantined and is retried by the next repair; it would otherwise be visible only in the log, so
+    /// it raises `stream-divergent-tail-cut-refused` once per distinct failure episode (partition and cause), and the cut that finally
+    /// goes through raises `stream-divergent-tail-cut-resumed`. Any other failure is logged as before.
+    @Contract
+    private void cutRefused(String streamName, int partition, PartitionRef ref, long keep, Cause cause) {
+        log.warn("Replica {}[{}] could not cut its divergent tail back to offset {}: {}",
+                 streamName,
+                 partition,
+                 keep,
+                 cause.message());
+        if (cause instanceof StreamError.RepairPreserveFailed || cause instanceof StreamError.RepairWitnessFailed) {
+            var previous = refusedCuts.put(ref, cause.message());
+
+            if (!cause.message().equals(previous)) {
+                OperatorWarnings.raise(log,
+                                       operatorWarnings,
+                                       OperatorWarningCode.STREAM_DIVERGENT_TAIL_CUT_REFUSED,
+                                       streamName + "[" + partition + "]",
+                                       "Replica {}[{}] cannot cut its divergent tail back to offset {}: {}. It stays quarantined with its records "
+                                      + "untouched and the repair is retried; check the volume holding its WAL (full or read-only).",
+                                       streamName,
+                                       partition,
+                                       keep,
+                                       cause.message());
+            }
+        }
+    }
+
+    @Contract
+    private void cutResumed(String streamName, int partition, PartitionRef ref) {
+        if (refusedCuts.remove(ref) != null) {
+            OperatorWarnings.raise(log,
+                                   operatorWarnings,
+                                   OperatorWarningCode.STREAM_DIVERGENT_TAIL_CUT_RESUMED,
+                                   streamName + "[" + partition + "]",
+                                   "Replica {}[{}] cut its divergent tail back after the refusal that had stopped it; its records are preserved.",
+                                   streamName,
+                                   partition);
+        }
     }
 
     /// A divergence found by comparing owner-epoch provenance is established only when THIS copy's history can vouch for

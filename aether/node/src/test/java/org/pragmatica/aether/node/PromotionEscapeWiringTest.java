@@ -86,11 +86,12 @@ class PromotionEscapeWiringTest {
                                                            CommittedStreamOwnerSource.none());
 
         AetherNode.bindPromotionAlarm(backfill, sink, kvStoreHolding(record), BOUND);
-        backfill.backfill(STREAM, PARTITION).await();      // arms the source wait
-        pause();
-        backfill.backfill(STREAM, PARTITION).await();      // the contest starts and sees the silent peer
-        pause();
-        backfill.backfill(STREAM, PARTITION).await();      // silent for longer than the bound
+        // rounds 100 ms apart (closer than the 150 ms source wait, so each peer's silence is one observed run): the source wait arms, the
+        // contest starts and sees the silent peer, and 150 ms later the escape bound is met
+        for (var round = 0; round < 7; round++) {
+            backfill.backfill(STREAM, PARTITION).await();
+            pause();
+        }
 
         return registry.replicasFor(STREAM, PARTITION)
                        .stream()
@@ -120,7 +121,7 @@ class PromotionEscapeWiringTest {
 
     private static void pause() {
         try {
-            Thread.sleep(BOUND.millis() + 100);
+            Thread.sleep(100);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         }

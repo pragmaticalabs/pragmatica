@@ -810,6 +810,42 @@ class ConfigLoaderTest {
             .onFailure(cause -> Assertions.fail("exactly the alarm bound is allowed: " + cause.message()));
     }
 
+    /// #2084 F3: the validation floor is the LARGER of two swim suspect windows and the replica contest's source-wait bound; pinned with
+    /// non-default values so neither term, nor a single suspect window, can stand in for the other. Mutations: alarm-only, contest-only and
+    /// one-window floors each turn a case red.
+    @Test
+    void loadFromString_promotionEscapeAfter_floorIsTheLargerOfTheAlarmAndTheContestWait() {
+        var suspect30 = """
+            [cluster]
+            environment = "docker"
+            nodes = 3
+
+            [timeouts.swim]
+            suspect_timeout = "30s"
+
+            [streaming]
+            promotion_escape_after = "%s"
+            """;
+        var readTimeout10 = """
+            [cluster]
+            environment = "docker"
+            nodes = 3
+
+            [streaming]
+            read_forward_timeout = "10s"
+            promotion_escape_after = "%s"
+            """;
+
+        ConfigLoader.loadFromString(suspect30.formatted("59s"))
+            .onSuccess(config -> Assertions.fail("two 30 s suspect windows give a 60 s floor; 59 s must be refused"))
+            .onFailure(cause -> assertThat(cause.message()).contains("promotion_escape_after").contains("60000"));
+        ConfigLoader.loadFromString(suspect30.formatted("60s")).onFailure(cause -> Assertions.fail("exactly the 60 s floor is allowed: " + cause.message()));
+        ConfigLoader.loadFromString(readTimeout10.formatted("99s"))
+            .onSuccess(config -> Assertions.fail("a 10 s read timeout gives a 100 s contest wait; 99 s must be refused"))
+            .onFailure(cause -> assertThat(cause.message()).contains("promotion_escape_after").contains("100000"));
+        ConfigLoader.loadFromString(readTimeout10.formatted("100s")).onFailure(cause -> Assertions.fail("exactly the 100 s floor is allowed: " + cause.message()));
+    }
+
     // SPEC: §8.3 absence of [streaming] section → defaults
     @Test
     void loadFromString_streamingSectionAbsent_defaultsApplied() {

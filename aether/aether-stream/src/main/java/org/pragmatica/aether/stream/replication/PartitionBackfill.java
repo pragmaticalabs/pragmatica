@@ -86,8 +86,12 @@ import static org.pragmatica.aether.stream.replication.ReplicationMessage.Replic
 ///          COMMITTED in-sync set, because every acknowledged record is on every member of that set; the escape is
 ///          reported as an operator event and the contest runs over the replicas that answered.
 ///        - self's own watermark must be `>= max(seen peer watermarks)`; on an exact tie the
-///          deterministic tie-break (lowest {@link NodeId}) elects exactly ONE promoter, so the cluster
-///          cannot promote two divergent replicas.
+///          deterministic tie-break (lowest {@link NodeId}) elects exactly ONE promoter among the replicas that can
+///          see each other. Two replicas that cannot reach each other do not see the tie, so under the bounded escape
+///          (below) BOTH may promote (#2084, accepted): each holds every acknowledged record (it is named in the committed
+///          in-sync set), write ownership stays fenced by the committed owner epoch, and neither serves a tail it has not
+///          compared with the committed owner of the current epoch (`StreamPartitionManager#servedIfVerified`, independent
+///          of the registry state this promotion sets).
 ///   The promotion is logged at WARN with every watermark seen (an operator-visible bootstrap decision).
 ///
 /// ## Flow
@@ -165,7 +169,10 @@ public final class PartitionBackfill {
     /// Per unreachable co-replica, the first instant (ms) of its CONTINUOUS run of contest rounds without an answer, per partition (#2080):
     /// the escape bound is per member. A round in which a co-replica answers ends only its run (a member that left the replica set loses its
     /// entry); any promotion of the partition drops them all ([#forgetNoSource]).
-    private final ConcurrentHashMap<PartitionKey, ConcurrentHashMap<NodeId, Long>> unreachableSinceMs;
+    private final ConcurrentHashMap<PartitionKey, ConcurrentHashMap<NodeId, Silence>> unreachableSinceMs;
+
+    /// A peer's current run of silence in contest rounds: its first instant and the last round that saw it silent (ms).
+    private record Silence(long since, long last) {}
 
     /// The oversized-peer block last reported per partition, so a redrive of the same condition is silent (#1937).
     private final ConcurrentHashMap<PartitionKey, OwnerActivation.ActivationBlock> reportedOversized;
@@ -1993,11 +2000,12 @@ public final class PartitionBackfill {
     /// tie-break. Any unreachable peer, or a peer with a strictly higher watermark, or a tie lost to a
     /// lower NodeId, leaves self SYNCING.
     ///
-    /// The one exception to (a) is the bounded escape (#2080): peers that stayed unreachable for [#sourceWaitBound] are
-    /// not waited for when self is named in the partition's COMMITTED in-sync set, because every acknowledged record is on every
-    /// member of that set. (b) then runs over the peers that answered. The escape is reported (once per distinct set of silent
-    /// peers) through the [OwnerActivation.BlockAlarm] once the contest has actually promoted self; a self outside the set, or a
-    /// record with no set, keeps waiting.
+    /// The one exception to (a) is the bounded escape (#2080): peers that EACH stayed unreachable, continuously and on their own
+    /// clock, for [#promotionEscapeAfter] are not waited for when self is named in the partition's COMMITTED in-sync set, because
+    /// every acknowledged record is on every member of that set. (b) then runs over the peers that answered. The escape is reported
+    /// through the [OwnerActivation.BlockAlarm] once per promotion that took it (there is no dedupe: a later promotion of the same
+    /// partition that escapes again reports again), after the contest has actually promoted self; a self outside the set, or a record
+    /// with no set, keeps waiting.
     private Promise<Long> decidePromotionUnquarantined(String streamName,
                                                        int partition,
                                                        List<NodeId> peers,
@@ -2067,12 +2075,21 @@ public final class PartitionBackfill {
         var clocks = unreachableSinceMs.computeIfAbsent(key, _ -> new ConcurrentHashMap<>());
 
         clocks.keySet().retainAll(silent);
-        silent.forEach(peer -> clocks.putIfAbsent(peer, now));
-        var shortest = clocks.values().stream().mapToLong(since -> now - since).min().orElse(0L);
+        silent.forEach(peer -> clocks.merge(peer, new Silence(now, now), (known, _) -> continued(known, now)));
+        var shortest = clocks.values().stream().mapToLong(silence -> now - silence.since()).min().orElse(0L);
 
         return shortest >= promotionEscapeAfter.millis() && committedIsr.names(streamName, partition, self)
                ? Option.some(TimeSpan.timeSpan(shortest).millis())
                : Option.none();
+    }
+
+    /// Observed continuity (#2084): a peer last seen silent by a contest round more than [#sourceWaitBound] ago starts a new run at
+    /// this observation, so rounds that never reached the contest do not count as silence. THE THRESHOLD IS A GUESS, the contest's own
+    /// "too long to be one continuous look" measure; redrive rounds come every few seconds.
+    private Silence continued(Silence known, long now) {
+        return now - known.last() > sourceWaitBound.millis()
+               ? new Silence(now, now)
+               : new Silence(known.since(), now);
     }
 
     private void reportEscape(String streamName, int partition, List<NodeId> silent, TimeSpan elapsed) {

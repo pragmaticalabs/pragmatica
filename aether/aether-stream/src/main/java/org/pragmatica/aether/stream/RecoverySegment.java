@@ -323,8 +323,11 @@ public final class RecoverySegment {
             var count = in.readLong();
 
             expect(in, END_MAGIC);
-            if (count != entries.size()) {
-                throw new IOException("trailer counts " + count + " records, the segment holds " + entries.size());
+            if (count != last - first + 1L) {
+                throw new IOException("trailer counts " + count
+                                     + " records, the header's range [" + first
+                                     + ", " + last
+                                     + "] holds " + (last - first + 1L));
             }
 
             return new Contents(stream, partition, first, last, created, List.copyOf(entries));

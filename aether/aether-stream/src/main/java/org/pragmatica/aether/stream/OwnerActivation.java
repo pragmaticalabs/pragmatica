@@ -64,7 +64,7 @@ import org.slf4j.LoggerFactory;
 /// production form would be a wedged JVM whose network stack still completes handshakes), so detection alone does not bound
 /// the wait; the bounded escape below does, for the candidates it covers.
 ///
-/// **The bounded escape (#2080).** After `promotionEscapeAfter` (`[streaming] promotion_escape_after`, 120 s by default, never below the alarm bound) of continuous probe failure of EACH silent member (the bound is per member: a member that just went silent keeps the partition blocked even when another is past the bound, and an answer resets only that member's clock) a candidate named in the
+/// **The bounded escape (#2080).** After `promotionEscapeAfter` (`[streaming] promotion_escape_after`, 120 s by default, never below the alarm bound) of continuous probe failure of EACH silent member (the bound is per member: a member that just went silent keeps the partition blocked even when another is past the bound, and an answer resets only that member's clock, including an answer in a round refused for another peer's oversized event; a gap between two rounds longer than `unreachableAlarmAfter` is not counted as silence, so the clock restarts at the later observation. THE GAP THRESHOLD IS A GUESS: the alarm bound is the nearest existing measure of "too long to be one continuous look") a candidate named in the
 /// partition's COMMITTED in-sync set (`isrVersion > 0` and the set contains this node) stops waiting for the silent members:
 /// the responders are caught up from and reconciled exactly as before, and when the activation completes one
 /// `stream-promotion-past-unreachable-peers` operator event (through [BlockAlarm#escaped]) names the partition, the candidate and
@@ -494,7 +494,11 @@ public final class OwnerActivation {
     /// Per silent member, since when it has been continuously unreachable (`System.nanoTime`), per partition (#2080): the escape bound is
     /// PER MEMBER, so a member that just went silent is never skipped because another one is past the bound. A member that answers (or
     /// leaves the live set) loses its entry; the whole map goes with the activation and with ownership.
-    private final Map<PartitionKey, Map<NodeId, Long>> silentSince = new ConcurrentHashMap<>();
+    private final Map<PartitionKey, Map<NodeId, Silence>> silentSince = new ConcurrentHashMap<>();
+
+    /// A member's current run of silence: when it began and when a round last saw it silent (`System.nanoTime`).
+    private record Silence(long since, long last) {}
+
     /// How long members must stay unreachable before an ISR-named candidate goes ahead without them (#2080, `[streaming]
     /// promotion_escape_after`). Never until wired: a gate that is not told its bound does not escape.
     private volatile TimeSpan promotionEscapeAfter = TimeSpan.timeSpan(Long.MAX_VALUE).nanos();
@@ -982,6 +986,8 @@ public final class OwnerActivation {
         if (silent.isEmpty()) {
             clearUnreachable(key);
         } else {
+            // the members that DID answer in this round reset their escape clocks here too (#2084 R1), not only on the unrefused path
+            shortestSilence(key, silent);
             trackUnreachable(key, stream, partition, silent, answered);
         }
 
@@ -1027,9 +1033,19 @@ public final class OwnerActivation {
         var now = System.nanoTime();
 
         clocks.keySet().retainAll(silent);
-        silent.forEach(peer -> clocks.putIfAbsent(peer, now));
+        silent.forEach(peer -> clocks.merge(peer, new Silence(now, now), (known, _) -> continued(known, now)));
 
-        return Option.from(clocks.values().stream().map(since -> now - since).min(Long::compare));
+        return Option.from(clocks.values().stream().map(silence -> now - silence.since()).min(Long::compare));
+    }
+
+    /// Observed continuity (#2084): the gate is demand-driven, so a stretch in which no round looked at the member is not evidence that
+    /// it stayed silent. A member last seen silent more than `unreachableAlarmAfter` ago starts a new run at this observation; rounds
+    /// closer together than that extend the run. THE THRESHOLD IS A GUESS (the alarm bound is the nearest existing "too long to be one
+    /// continuous look" measure; the re-drive backs off to 2 s, so a blocked partition is looked at far more often than 20 s).
+    private Silence continued(Silence known, long now) {
+        return now - known.last() > unreachableAlarmAfter.nanos()
+               ? new Silence(now, now)
+               : new Silence(known.since(), now);
     }
 
     private boolean pastBound(long silentNanos) {
