@@ -2084,7 +2084,7 @@ class ClusterTopologyManagerActuatorTest {
             manager.activate();
             removed(manager, DEAD);
             await().atMost(Duration.ofSeconds(10))
-                   .until(() -> appender.capturedWarns().stream().anyMatch(msg -> msg.contains("giving up")));
+                   .until(() -> appender.capturedWarns().stream().anyMatch(msg -> msg.contains("instance-termination-unconfirmed") && msg.contains("refused:")));
             voters.set(Set.of());
             settleFor(Duration.ofMillis(300));
 
