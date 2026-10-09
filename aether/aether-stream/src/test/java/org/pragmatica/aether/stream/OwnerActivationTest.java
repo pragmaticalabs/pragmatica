@@ -519,6 +519,150 @@ class OwnerActivationTest {
         assertThat(reporting.blockOf(STREAM, PARTITION)).as("an activation clears the block").isEqualTo(Option.none());
     }
 
+    private final List<OwnerActivation.PromotionEscape> escapes = new CopyOnWriteArrayList<>();
+
+    /// A gate whose alarm records the escapes as well as the blocks, with `bound` as the unreachable bound.
+    private OwnerActivation gateReportingEscapes(TimeSpan bound) {
+        var alarm = new OwnerActivation.BlockAlarm() {
+            @Override
+            public Unit raise(OwnerActivation.ActivationBlock block) {
+                return OwnerActivationTest.this.raise(block);
+            }
+
+            @Override
+            public Unit escaped(OwnerActivation.PromotionEscape escape) {
+                escapes.add(escape);
+
+                return Unit.unit();
+            }
+        };
+
+        return OwnerActivation.ownerActivation(SELF,
+                                               (_, _) -> record.get(),
+                                               (_, _) -> placementOwner.get(),
+                                               Option.some(this::round),
+                                               members::get,
+                                               this::probe,
+                                               (_, _) -> localWatermark.get(),
+                                               this::catchUp,
+                                               consensusActive::get,
+                                               this::range,
+                                               alarm,
+                                               bound);
+    }
+
+    private static StreamPartitionOwnershipValue ownedWithIsr(NodeId owner, List<NodeId> isr, long isrVersion) {
+        return StreamPartitionOwnershipValue.streamPartitionOwnershipValue(owner,
+                                                                           Epoch.epoch(0L, 3L, 0),
+                                                                           3L,
+                                                                           HlcTimestamp.ZERO,
+                                                                           isr,
+                                                                           isrVersion);
+    }
+
+    /// Runs the gate until it succeeds, at most three times, each after the bound (0 ms or longer) has certainly elapsed.
+    private boolean activateAfterBound(OwnerActivation gate) {
+        for (var attempt = 0; attempt < 3; attempt++) {
+            LockSupport.parkNanos(2_000_000L);
+            if (gate.activate(STREAM, PARTITION).await().isSuccess()) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// #2080 (T1a): a candidate named in the committed ISR (isrVersion > 0) does not wait for a member that stayed silent past the
+    /// bound: it activates, catches up from the responder that is ahead, and reports ONE escape naming the partition, the candidate
+    /// and the silent member. Red on rc4: the gate stays blocked (`activate_unreachablePastAlarmWindow_staysBlockedAndReportsOnce` is
+    /// the same input without the ISR) and reports a block, never an escape.
+    @Test
+    void activate_isrCandidate_silentMemberPastTheBound_activatesAndReportsTheEscape() {
+        var gate = gateReportingEscapes(TimeSpan.timeSpan(0).millis());
+
+        record.set(Option.some(ownedWithIsr(SELF, List.of(SELF, PEER_A, PEER_B), 5L)));
+        members.set(List.of(SELF, PEER_A, PEER_B));
+        unreachable.add(PEER_A);
+        peerWatermarks.put(PEER_B, 24L);
+
+        assertThat(activateAfterBound(gate)).as("activated past the silent member").isTrue();
+        assertThat(gate.isActivated(STREAM, PARTITION)).isTrue();
+        assertThat(catchUps).as("still caught up from the responder that is ahead").containsExactly("peer-b@24");
+        assertThat(escapes).singleElement().satisfies(escape -> {
+            assertThat(escape.streamName()).isEqualTo(STREAM);
+            assertThat(escape.partition()).isEqualTo(PARTITION);
+            assertThat(escape.gate()).isEqualTo(OwnerActivation.EscapeGate.OWNER_ACTIVATION);
+            assertThat(escape.candidate()).isEqualTo(SELF);
+            assertThat(escape.skipped()).containsExactly(PEER_A);
+        });
+        assertThat(alarms).as("the partition is not waiting any more: no unreachable-members block").isEmpty();
+        assertThat(gate.blockOf(STREAM, PARTITION)).isEqualTo(Option.none());
+    }
+
+    /// #2080 (T1a): the escape is reported when the gate went ahead, not when it merely stopped waiting. While the catch-up from the
+    /// responder fails nothing proceeded and nothing is reported; the attempt that lands reports ONE escape.
+    @Test
+    void activate_isrCandidate_escapeReportedOnlyOnceTheGateWentAhead() {
+        var gate = gateReportingEscapes(TimeSpan.timeSpan(0).millis());
+
+        record.set(Option.some(ownedWithIsr(SELF, List.of(SELF, PEER_A, PEER_B), 5L)));
+        members.set(List.of(SELF, PEER_A, PEER_B));
+        unreachable.add(PEER_A);
+        peerWatermarks.put(PEER_B, 24L);
+        catchUpSucceeds.set(false);
+
+        for (var attempt = 0; attempt < 4; attempt++) {
+            LockSupport.parkNanos(2_000_000L);
+            assertThat(gate.activate(STREAM, PARTITION).await().isSuccess()).isFalse();
+        }
+
+        assertThat(escapes).as("the gate did not go ahead: nothing is reported").isEmpty();
+
+        catchUpSucceeds.set(true);
+
+        assertThat(gate.activate(STREAM, PARTITION).await().isSuccess()).isTrue();
+        assertThat(escapes).as("one escape").hasSize(1);
+    }
+
+    /// #2080 (T1b): the escape needs the ISR conjunct. A candidate NOT named in a committed ISR, a record whose ISR was never committed
+    /// (isrVersion 0), and a first owner with no record at all stay blocked past the bound and report the block, never an escape.
+    /// Mutation: deleting the ISR conjunct from the gate turns each of the three red.
+    @Test
+    void activate_silentMemberPastTheBound_withoutAnIsrNamingTheCandidate_staysBlocked() {
+        var outsideIsr = ownedWithIsr(SELF, List.of(PEER_A, PEER_B), 5L);
+        var neverCommitted = ownedWithIsr(SELF, List.of(SELF, PEER_A, PEER_B), 0L);
+        var cases = List.<Option<StreamPartitionOwnershipValue>> of(Option.some(outsideIsr), Option.some(neverCommitted), Option.none());
+
+        for (var candidate : cases) {
+            alarms.clear();
+            var gate = gateReportingEscapes(TimeSpan.timeSpan(0).millis());
+
+            record.set(candidate);
+            members.set(List.of(SELF, PEER_A, PEER_B));
+            unreachable.add(PEER_A);
+
+            assertThat(activateAfterBound(gate)).as("blocked: " + candidate).isFalse();
+            assertThat(gate.isActivated(STREAM, PARTITION)).isFalse();
+            assertThat(escapes).as("no escape: " + candidate).isEmpty();
+            assertThat(alarms).as("the block is reported instead: " + candidate)
+                              .singleElement()
+                              .isInstanceOf(OwnerActivation.ActivationBlock.HoldersUnreachable.class);
+        }
+    }
+
+    /// #2080: within the bound even an ISR candidate waits -- the escape is bounded, not immediate.
+    @Test
+    void activate_isrCandidate_silentMemberWithinTheBound_stillWaits() {
+        var gate = gateReportingEscapes(PromotionTestRanges.NEVER_ALARM);
+
+        record.set(Option.some(ownedWithIsr(SELF, List.of(SELF, PEER_A, PEER_B), 5L)));
+        members.set(List.of(SELF, PEER_A, PEER_B));
+        unreachable.add(PEER_A);
+
+        assertThat(activateAfterBound(gate)).isFalse();
+        assertThat(escapes).isEmpty();
+    }
+
     /// A divergence block is cleared by the activation that follows once the divergent member is gone (pins the
     /// activation's own block clearing: nothing else clears a divergence block).
     @Test

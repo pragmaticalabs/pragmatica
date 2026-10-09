@@ -37,12 +37,21 @@ class StreamPartitionManagerDivergentTailTest {
 
     private StreamPartitionManager manager;
     private final java.util.List<OperatorWarning> warnings = new java.util.concurrent.CopyOnWriteArrayList<>();
+    /// The events of #2080 (a cut preserved its records in a recovery segment), kept apart from [#warnings]: those tests pin the
+    /// DATA-LOSS warning, which the preserved event does not replace, so they must keep seeing exactly that one and nothing else.
+    private final java.util.List<OperatorWarning> preserved = new java.util.concurrent.CopyOnWriteArrayList<>();
+
+    private OperatorWarningSink lossWarningsOnly() {
+        return OperatorWarningSink.handingOffTo(warning -> (warning.code() == OperatorWarningCode.STREAM_DIVERGENT_TAIL_PRESERVED
+                                                            ? preserved
+                                                            : warnings).add(warning));
+    }
 
     @BeforeEach
     void setUp() {
         manager = streamPartitionManager(Long.MAX_VALUE, Option.some(walDir));
         manager.createStream(StreamConfig.streamConfig(STREAM)).onFailure(cause -> fail(cause.message()));
-        manager.operatorWarnings(OperatorWarningSink.handingOffTo(warnings::add));
+        manager.operatorWarnings(lossWarningsOnly());
         for (var i = 0; i < 10; i++) {
             manager.appendRecovered(STREAM, PARTITION, i, ("replica-" + i).getBytes(UTF_8), 1000L + i, org.pragmatica.aether.slice.generation.Epoch.ZERO).unwrap();
         }
@@ -151,7 +160,7 @@ class StreamPartitionManagerDivergentTailTest {
 
         one.createStream(StreamConfig.streamConfig("single").withReplication(ReplicationFactors.replicationFactors(1, 1).unwrap()))
            .onFailure(cause -> fail(cause.message()));
-        one.operatorWarnings(OperatorWarningSink.handingOffTo(warnings::add));
+        one.operatorWarnings(lossWarningsOnly());
         for (var i = 0; i < 8; i++) {
             one.appendRecovered("single", PARTITION, i, ("r" + i).getBytes(UTF_8), 1000L + i, org.pragmatica.aether.slice.generation.Epoch.epoch(1L, 2L, 3L)).unwrap();
         }
@@ -181,7 +190,7 @@ class StreamPartitionManagerDivergentTailTest {
 
         one.createStream(StreamConfig.streamConfig("single").withReplication(ReplicationFactors.replicationFactors(1, 1).unwrap()))
            .onFailure(cause -> fail(cause.message()));
-        one.operatorWarnings(OperatorWarningSink.handingOffTo(warnings::add));
+        one.operatorWarnings(lossWarningsOnly());
         one.repairReportBound(org.pragmatica.lang.io.TimeSpan.timeSpan(300).millis());
         for (var i = 0; i < 12; i++) {
             one.appendRecovered("single", PARTITION, i, ("r" + i).getBytes(UTF_8), 1000L + i, org.pragmatica.aether.slice.generation.Epoch.epoch(1L, 2L, 3L)).unwrap();
@@ -213,7 +222,7 @@ class StreamPartitionManagerDivergentTailTest {
 
         one.createStream(StreamConfig.streamConfig("single").withReplication(ReplicationFactors.replicationFactors(1, 1).unwrap()))
            .onFailure(cause -> fail(cause.message()));
-        one.operatorWarnings(OperatorWarningSink.handingOffTo(warnings::add));
+        one.operatorWarnings(lossWarningsOnly());
         one.repairReportBound(org.pragmatica.lang.io.TimeSpan.timeSpan(300).millis());
         for (var i = 0; i < 8; i++) {
             one.appendRecovered("single", PARTITION, i, ("r" + i).getBytes(UTF_8), 1000L + i, org.pragmatica.aether.slice.generation.Epoch.epoch(1L, 2L, 3L)).unwrap();
@@ -238,7 +247,7 @@ class StreamPartitionManagerDivergentTailTest {
 
         one.createStream(StreamConfig.streamConfig("single").withReplication(ReplicationFactors.replicationFactors(1, 1).unwrap()))
            .onFailure(cause -> fail(cause.message()));
-        one.operatorWarnings(OperatorWarningSink.handingOffTo(warnings::add));
+        one.operatorWarnings(lossWarningsOnly());
         one.repairReportBound(org.pragmatica.lang.io.TimeSpan.timeSpan(400).millis());
         for (var i = 0; i < 12; i++) {
             one.appendRecovered("single", PARTITION, i, ("r" + i).getBytes(UTF_8), 1000L + i, org.pragmatica.aether.slice.generation.Epoch.epoch(1L, 2L, 3L)).unwrap();
@@ -272,7 +281,7 @@ class StreamPartitionManagerDivergentTailTest {
 
         one.createStream(StreamConfig.streamConfig("single").withReplication(ReplicationFactors.replicationFactors(1, 1).unwrap()))
            .onFailure(cause -> fail(cause.message()));
-        one.operatorWarnings(OperatorWarningSink.handingOffTo(warnings::add));
+        one.operatorWarnings(lossWarningsOnly());
         for (var i = 0; i < 8; i++) {
             one.appendRecovered("single", PARTITION, i, ("r" + i).getBytes(UTF_8), 1000L + i, org.pragmatica.aether.slice.generation.Epoch.epoch(1L, 2L, 3L)).unwrap();
         }
@@ -309,7 +318,7 @@ class StreamPartitionManagerDivergentTailTest {
 
         restarted.createStream(StreamConfig.streamConfig("single").withReplication(ReplicationFactors.replicationFactors(1, 1).unwrap()))
                  .onFailure(cause -> fail(cause.message()));
-        restarted.operatorWarnings(OperatorWarningSink.handingOffTo(warnings::add));
+        restarted.operatorWarnings(lossWarningsOnly());
         awaitWarnings(1);
 
         assertThat(warnings).singleElement().satisfies(warning -> assertThat(warning.message()).contains("unknown range"));
@@ -334,7 +343,7 @@ class StreamPartitionManagerDivergentTailTest {
 
         one.createStream(StreamConfig.streamConfig("single").withReplication(ReplicationFactors.replicationFactors(1, 1).unwrap()))
            .onFailure(cause -> fail(cause.message()));
-        one.operatorWarnings(OperatorWarningSink.handingOffTo(warnings::add));
+        one.operatorWarnings(lossWarningsOnly());
         for (var i = 0; i < 12; i++) {
             one.appendRecovered("single", PARTITION, i, ("r" + i).getBytes(UTF_8), 1000L + i, org.pragmatica.aether.slice.generation.Epoch.ZERO).unwrap();
         }
@@ -353,6 +362,144 @@ class StreamPartitionManagerDivergentTailTest {
 
         assertThat(warnings).as("ONE event for the whole truncation").singleElement().satisfies(warning -> assertThat(warning.message()).contains("[5, 11]").contains("7 events"));
         one.close();
+    }
+
+    /// #2080: the cut writes exactly the records it removes -- offset, timestamp, payload and the owner epoch each was written
+    /// under -- to a recovery segment beside the WAL, and names the stream, partition, range and file in an operator event.
+    @Test
+    void repairDivergence_preservesExactlyTheCutRecords_withEpochs_andRaisesTheEvent() throws Exception {
+        var path = walDir.resolve("preserve");
+        var one = streamPartitionManager(Long.MAX_VALUE, Option.some(path));
+        var first = org.pragmatica.aether.slice.generation.Epoch.epoch(1L, 2L, 3L);
+        var second = org.pragmatica.aether.slice.generation.Epoch.epoch(1L, 3L, 4L);
+
+        one.createStream(StreamConfig.streamConfig("single")).onFailure(cause -> fail(cause.message()));
+        one.operatorWarnings(lossWarningsOnly());
+        for (var i = 0; i < 10; i++) {
+            one.appendRecovered("single", PARTITION, i, ("r" + i).getBytes(UTF_8), 2000L + i, i < 7 ? first : second).unwrap();
+        }
+        one.syncReplicated("single", PARTITION).await();
+        one.appendRecovered("single", PARTITION, 5, "different".getBytes(UTF_8), 2005L, second);
+        assertThat(one.quarantinedAt("single", PARTITION).or(-1L)).isEqualTo(5L);
+
+        var cut = one.repairDivergence("single", PARTITION, _ -> true).unwrap().unwrap();
+        var segments = segmentsUnder(path);
+
+        assertThat(segments).as("one segment for the one cut").hasSize(1);
+        var contents = RecoverySegment.read(segments.getFirst()).unwrap();
+
+        assertThat(contents.streamName()).isEqualTo("single");
+        assertThat(contents.partition()).isEqualTo(PARTITION);
+        assertThat(contents.first()).isEqualTo(cut.firstRemoved()).isEqualTo(5L);
+        assertThat(contents.last()).isEqualTo(cut.lastRemoved()).isEqualTo(9L);
+        assertThat(contents.entries()).extracting(RecoverySegment.Entry::offset).containsExactly(5L, 6L, 7L, 8L, 9L);
+        assertThat(contents.entries()).extracting(entry -> new String(entry.payload(), UTF_8))
+                                      .as("the records as the copy held them, not the owner's different one")
+                                      .containsExactly("r5", "r6", "r7", "r8", "r9");
+        assertThat(contents.entries()).extracting(RecoverySegment.Entry::timestampMillis).containsExactly(2005L, 2006L, 2007L, 2008L, 2009L);
+        var epochs = contents.entries().stream().map(entry -> entry.epoch().or("none")).toList();
+
+        assertThat(epochs.get(0)).as("5 and 6 were written under the first epoch").isEqualTo(epochs.get(1)).isNotEqualTo("none");
+        assertThat(epochs.get(2)).as("7..9 under the second").isEqualTo(epochs.get(4)).isNotEqualTo(epochs.get(1)).isNotEqualTo("none");
+        assertThat(one.readAppended("single", PARTITION, 0, 100).unwrap()).as("and the live stream lost them").hasSize(5);
+        awaitPreserved(1);
+        assertThat(preserved).singleElement().satisfies(event -> {
+            assertThat(event.code()).isEqualTo(OperatorWarningCode.STREAM_DIVERGENT_TAIL_PRESERVED);
+            assertThat(event.message()).contains("single[0]").contains("[5, 9]").contains("5 events").contains(segments.getFirst().getFileName().toString());
+        });
+        one.close();
+    }
+
+    /// #2080: a segment that cannot be made durable REFUSES the cut. Nothing is removed, the copy stays quarantined, no event claims a
+    /// preserved loss, and no half-written segment or witness is left; with the obstacle gone the same cut then proceeds.
+    @Test
+    void repairDivergence_whenTheRecoverySegmentCannotBeWritten_refusesTheCut_andRemovesNothing() throws Exception {
+        var path = walDir.resolve("preserve-refused");
+        var one = streamPartitionManager(Long.MAX_VALUE, Option.some(path));
+
+        one.createStream(StreamConfig.streamConfig("single")).onFailure(cause -> fail(cause.message()));
+        one.operatorWarnings(lossWarningsOnly());
+        for (var i = 0; i < 8; i++) {
+            one.appendRecovered("single", PARTITION, i, ("r" + i).getBytes(UTF_8), 1000L + i, org.pragmatica.aether.slice.generation.Epoch.epoch(1L, 2L, 3L)).unwrap();
+        }
+        one.syncReplicated("single", PARTITION).await();
+        one.appendRecovered("single", PARTITION, 3, "different".getBytes(UTF_8), 1003L, org.pragmatica.aether.slice.generation.Epoch.epoch(1L, 2L, 3L));
+        var obstacles = blockRecoverySegments(path);
+
+        assertThat(obstacles).as("the obstacle is in place").isNotEmpty();
+
+        var refused = one.repairDivergence("single", PARTITION, _ -> true);
+
+        assertThat(refused.isFailure()).as("the cut is refused when its records cannot be preserved").isTrue();
+        refused.onFailure(cause -> assertThat(cause).isInstanceOf(StreamError.RepairPreserveFailed.class));
+        assertThat(one.readAppended("single", PARTITION, 0, 20).unwrap()).as("nothing was cut").hasSize(8);
+        assertThat(one.quarantinedAt("single", PARTITION).isPresent()).as("the copy stays quarantined").isTrue();
+        assertThat(segmentsUnder(path)).as("no segment under its final name").isEmpty();
+        assertThat(filesUnder(path, ".pending-cut")).as("the witness of a cut that did not happen is restored away").isEmpty();
+        quietPeriod();
+        assertThat(preserved).as("no event claims a preserved loss").isEmpty();
+        assertThat(warnings).isEmpty();
+
+        for (var obstacle : obstacles) {
+            java.nio.file.Files.delete(obstacle);
+        }
+
+        assertThat(one.repairDivergence("single", PARTITION, _ -> true).unwrap().isPresent()).as("control: with the obstacle gone the cut proceeds").isTrue();
+        assertThat(segmentsUnder(path)).hasSize(1);
+        one.close();
+    }
+
+    /// #2080: an ephemeral copy (no WAL, no volume) has nothing to retain; the cut proceeds as before and claims no segment.
+    @Test
+    void repairDivergence_withoutAWal_cutsAsBefore_andRaisesNoPreservedEvent() {
+        var ephemeral = streamPartitionManager(Long.MAX_VALUE, Option.none());
+
+        ephemeral.createStream(StreamConfig.streamConfig("single")).onFailure(cause -> fail(cause.message()));
+        ephemeral.operatorWarnings(lossWarningsOnly());
+        for (var i = 0; i < 8; i++) {
+            ephemeral.appendRecovered("single", PARTITION, i, ("r" + i).getBytes(UTF_8), 1000L + i, org.pragmatica.aether.slice.generation.Epoch.ZERO).unwrap();
+        }
+        ephemeral.appendRecovered("single", PARTITION, 3, "different".getBytes(UTF_8), 1003L, org.pragmatica.aether.slice.generation.Epoch.ZERO);
+
+        assertThat(ephemeral.repairDivergence("single", PARTITION, _ -> true).unwrap().isPresent()).isTrue();
+        assertThat(ephemeral.readAppended("single", PARTITION, 0, 20).unwrap()).hasSize(3);
+        quietPeriod();
+        assertThat(preserved).isEmpty();
+        ephemeral.close();
+    }
+
+    private static List<Path> segmentsUnder(Path root) throws java.io.IOException {
+        return filesUnder(root, ".seg");
+    }
+
+    private static List<Path> filesUnder(Path root, String contains) throws java.io.IOException {
+        try (var files = java.nio.file.Files.walk(root)) {
+            return files.filter(java.nio.file.Files::isRegularFile)
+                        .filter(file -> file.getFileName().toString().contains(contains))
+                        .toList();
+        }
+    }
+
+    /// Puts a directory where the segment's temporary file goes: a write there fails with the platform's own error, whoever runs
+    /// the test.
+    private static List<Path> blockRecoverySegments(Path root) throws java.io.IOException {
+        var blocked = new java.util.ArrayList<Path>();
+
+        try (var files = java.nio.file.Files.walk(root)) {
+            for (var wal : files.filter(java.nio.file.Files::isRegularFile).filter(file -> file.getFileName().toString().endsWith(".wal")).toList()) {
+                blocked.add(java.nio.file.Files.createDirectories(RecoverySegment.temporaryFor(wal)));
+            }
+        }
+
+        return blocked;
+    }
+
+    private void awaitPreserved(int expected) {
+        var deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(5);
+
+        while (preserved.size() < expected && System.nanoTime() < deadline) {
+            Thread.onSpinWait();
+        }
     }
 
     /// The sink hands warnings to a virtual thread; wait for the expected number to arrive.

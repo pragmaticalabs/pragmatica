@@ -144,6 +144,17 @@ public sealed interface StreamError extends Cause {
         }
     }
 
+    /// A repair was refused because the records its cut would remove could not be preserved in a recovery segment first (#2080): the
+    /// copy keeps its records and stays quarantined, and the repair is retried. Nothing is removed that was not first made durable.
+    record RepairPreserveFailed(String streamName, int partition, String reason) implements StreamError, Cause.Transient {
+        @Override
+        public String message() {
+            return "Repair of %s[%d] refused: the records its cut would remove could not be preserved in a recovery segment (%s)".formatted(streamName,
+                                                                                                                                            partition,
+                                                                                                                                            reason);
+        }
+    }
+
     /// This node holds records at or above the start of the committed owner's current epoch that it has not compared with the
     /// owner (it was demoted, or the epoch advanced while it was away): it serves nothing from there and acknowledges nothing,
     /// until a backfill has verified it for the epoch (#1730 phase 2). Retriable: the backfill redrive verifies it.

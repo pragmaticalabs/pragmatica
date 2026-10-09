@@ -7,6 +7,7 @@ package org.pragmatica.aether.node;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 
+import org.pragmatica.aether.stream.OwnerActivation;
 import org.pragmatica.aether.stream.OwnerActivation.ActivationBlock;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.io.TimeSpan;
@@ -75,6 +76,25 @@ class OwnerPromotionAlarmTest {
         assertThat(published).extracting(OperatorWarning::subject).containsOnly("orders[3]");
         assertThat(OperatorWarningCode.STREAM_OWNER_LINEAGE_COMMITTED.recoveryOf())
             .isEqualTo(org.pragmatica.lang.Option.some(OperatorWarningCode.STREAM_OWNER_LINEAGE_REFUSED));
+    }
+
+    /// #2080: an escape is a CRITICAL point event naming the partition, the candidate, the skipped members and the gate, with no
+    /// recovery code; two escapes of one partition for different members are two subjects, so the event layer's throttle keeps both.
+    @Test
+    void promotionEscape_raisesItsCriticalCode_naming_thePartition_theCandidate_andTheSkippedMembers() {
+        var alarm = AetherNode.ownerPromotionAlarm(sink);
+        var other = NodeId.randomNodeId();
+        var candidate = NodeId.randomNodeId();
+
+        alarm.escaped(new OwnerActivation.PromotionEscape("orders", 3, OwnerActivation.EscapeGate.OWNER_ACTIVATION, candidate, List.of(PEER), TimeSpan.timeSpan(20).seconds()));
+        alarm.escaped(new OwnerActivation.PromotionEscape("orders", 3, OwnerActivation.EscapeGate.OWNER_ACTIVATION, candidate, List.of(other), TimeSpan.timeSpan(20).seconds()));
+
+        await().atMost(java.time.Duration.ofSeconds(5)).until(() -> published.size() == 2);
+        assertThat(published).extracting(OperatorWarning::code).containsOnly(OperatorWarningCode.STREAM_PROMOTION_PAST_UNREACHABLE_PEERS);
+        assertThat(OperatorWarningCode.STREAM_PROMOTION_PAST_UNREACHABLE_PEERS.level()).isEqualTo(org.pragmatica.utility.warning.WarningLevel.CRITICAL);
+        assertThat(OperatorWarningCode.STREAM_PROMOTION_PAST_UNREACHABLE_PEERS.recoveryOf()).isEqualTo(org.pragmatica.lang.Option.none());
+        assertThat(published.get(0).message()).contains("orders[3]").contains(candidate.toString()).contains(PEER.toString());
+        assertThat(published).extracting(OperatorWarning::subject).doesNotHaveDuplicates().allMatch(subject -> subject.startsWith("orders[3]/OWNER_ACTIVATION"));
     }
 
     /// The blocks that still have no code stay a log line: ending one raises no event, there is nothing to recover.

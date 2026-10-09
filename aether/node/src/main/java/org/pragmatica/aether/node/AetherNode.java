@@ -2048,7 +2048,44 @@ public interface AetherNode extends ManageableNode {
             public Unit resolved(OwnerActivation.ActivationBlock block) {
                 return resolveOwnerPromotionBlock(sink, block);
             }
+
+            @Override
+            public Unit escaped(OwnerActivation.PromotionEscape escape) {
+                return raisePromotionEscape(sink, escape);
+            }
         };
+    }
+
+    /// #2080: a promotion that went ahead without unreachable members is a CRITICAL operator event, one per escape, from both gates.
+    /// The subject carries the gate and the skipped members, so two escapes of one partition are two events for the throttle.
+    private static Unit raisePromotionEscape(OperatorWarningSink sink, OwnerActivation.PromotionEscape escape) {
+        return OperatorWarnings.raise(LOG,
+                                      sink,
+                                      OperatorWarningCode.STREAM_PROMOTION_PAST_UNREACHABLE_PEERS,
+                                      escape.streamName()
+                                     + "[" + escape.partition()
+                                     + "]/" + escape.gate()
+                                     + "/without=" + escape.skipped()
+                                                           .stream()
+                                                           .map(NodeId::id)
+                                                           .sorted()
+                                                           .toList(),
+                                      "{}",
+                                      escape.message());
+    }
+
+    /// What the promoted owner's backfill and its cold-start contest need from the node (#1937, #2080): where its blocks and escapes
+    /// are reported, and where it reads whether a node is named in a partition's committed in-sync set. One place, so the production
+    /// wiring is the code the wiring test drives.
+    static Unit bindPromotionAlarm(PartitionBackfill backfill,
+                                   OperatorWarningSink sink,
+                                   OwnerActivation.OwnershipRecordSource records) {
+        backfill.blockAlarm(ownerPromotionAlarm(sink));
+        backfill.committedIsr((stream, partition, node) -> records.committed(stream, partition)
+                                                                  .filter(record -> record.committedIsrNames(node))
+                                                                  .isPresent());
+
+        return Unit.unit();
     }
 
     private static String partitionSubject(OwnerActivation.ActivationBlock block) {
@@ -5978,8 +6015,14 @@ public interface AetherNode extends ManageableNode {
         streamPartitionManager.ownershipRecords((stream, partition) -> kvStore.getTyped(StreamPartitionOwnershipKey.streamPartitionOwnershipKey(stream,
                                                                                                                                                 partition),
                                                                                         StreamPartitionOwnershipValue.class));
-        // #1937: the promoted owner's backfill refuses for a peer's oversized event too, and reports it the way the gate does
-        streamPartitionBackfill.blockAlarm(ownerPromotionAlarm(operatorWarningSink));
+        // #1937: the promoted owner's backfill refuses for a peer's oversized event too, and reports it the way the gate does.
+        // #2080: its cold-start contest proceeds past unreachable co-replicas only for a node the COMMITTED in-sync set names, and
+        // reports that escape the way the gate does.
+        bindPromotionAlarm(streamPartitionBackfill,
+                           operatorWarningSink,
+                           (stream, partition) -> kvStore.getTyped(StreamPartitionOwnershipKey.streamPartitionOwnershipKey(stream,
+                                                                                                                           partition),
+                                                                   StreamPartitionOwnershipValue.class));
         streamPartitionManager.ownerServeGate(ownerActivation::admit);
         // #1730 phase 2: the gate's relaxation for a divergent peer respects the candidate's durable sealed floor, and a peer it
         // leaves out loses the row this registry kept for it from an earlier tenure.

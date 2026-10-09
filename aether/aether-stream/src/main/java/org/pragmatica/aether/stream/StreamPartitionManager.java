@@ -2327,6 +2327,7 @@ public final class StreamPartitionManager implements AutoCloseable {
         var epoch = divergentEpoch(streamName, partition, divergedAtOffset);
         var prospective = new TailCut(keep, head - keep, keep + 1, head, epoch);
         var wrote = new java.util.concurrent.atomic.AtomicBoolean(false);
+        var preserved = new java.util.concurrent.atomic.AtomicReference<RecoverySegment.Preserved>();
 
         return ring.truncateSuffix(keep,
                                    () -> authorised(streamName, partition, divergedAtOffset, authority).flatMap(_ -> witnessBeforeCut(streamName,
@@ -2334,6 +2335,12 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                                                                                                       wal,
                                                                                                                                       prospective))
                                                    .onSuccess(_ -> wrote.set(wal.isPresent()))
+                                                   .flatMap(_ -> preserveBeforeCut(streamName,
+                                                                                   partition,
+                                                                                   wal,
+                                                                                   ring,
+                                                                                   prospective,
+                                                                                   preserved))
                                                    .flatMap(_ -> wal.map(appendLog -> appendLog.truncateSuffix(keep))
                                                                     .or(Result.unitResult())),
                                    _ -> forgetCutState(streamName, partition, ref, divergedAtOffset, keep))
@@ -2342,7 +2349,61 @@ public final class StreamPartitionManager implements AutoCloseable {
                        restoreWitness(streamName, partition, wal);
                    }
                    })
+                   .onSuccess(_ -> option(preserved.get()).onPresent(segment -> reportPreserved(streamName,
+                                                                                                partition,
+                                                                                                segment)))
                    .map(removed -> new TailCut(keep, removed, keep + 1, head, epoch));
+    }
+
+    /// #2080, preserve before cut: a WAL copy writes the records this cut will remove to a recovery segment on its own volume BEFORE
+    /// anything is removed, in the same ordered section as the cut (no replicated append lands between the read and the cut),
+    /// right after the witness. A segment that cannot be made durable REFUSES the cut (typed, retriable; the copy stays quarantined
+    /// and untouched, and the witness is restored), so a durable cut never exists without a durable copy of what it removed. A
+    /// persistently failing volume therefore leaves no segment per retry; the one case that leaves a segment for a cut that did
+    /// not happen is the WAL's own truncate failing after it, which keeps the records twice, never zero times. A copy with no WAL is
+    /// ephemeral: nothing is on a volume to retain, and the cut proceeds as before.
+    private Result<Unit> preserveBeforeCut(String streamName,
+                                           int partition,
+                                           Option<AppendLog> wal,
+                                           OffHeapRingBuffer ring,
+                                           TailCut prospective,
+                                           java.util.concurrent.atomic.AtomicReference<RecoverySegment.Preserved> preserved) {
+        return wal.map(appendLog -> RecoverySegment.write(appendLog.path(),
+                                                          streamName,
+                                                          partition,
+                                                          appendLog.epochHistory(),
+                                                          ring::readAppended,
+                                                          prospective.firstRemoved(),
+                                                          prospective.lastRemoved(),
+                                                          System.currentTimeMillis())
+                                                   .onSuccess(preserved::set)
+                                                   .onFailure(cause -> log.warn("Replica {}[{}] could not preserve the records its cut would remove: {}",
+                                                                                streamName,
+                                                                                partition,
+                                                                                cause.message()))
+                                                   .mapError(cause -> (Cause) new StreamError.RepairPreserveFailed(streamName,
+                                                                                                                   partition,
+                                                                                                                   cause.message()))
+                                                   .map(_ -> Unit.unit()))
+                  .or(Result.unitResult());
+    }
+
+    /// The cut is durable and its records are in the recovery segment: the operator is told which stream, partition and offsets
+    /// left the live stream and where they are kept. Raised for every cut that removed records, whatever the confirmation factor.
+    @Contract
+    private void reportPreserved(String streamName, int partition, RecoverySegment.Preserved preserved) {
+        OperatorWarnings.raise(log,
+                               operatorWarnings,
+                               OperatorWarningCode.STREAM_DIVERGENT_TAIL_PRESERVED,
+                               streamName + "[" + partition + "]@" + preserved.first() + "-" + preserved.last(),
+                               "Replica {}[{}] cut offsets [{}, {}] ({} events) that diverged from its owner and kept them in recovery segment {}; "
+                              + "the segment is never deleted automatically",
+                               streamName,
+                               partition,
+                               preserved.first(),
+                               preserved.last(),
+                               preserved.records(),
+                               preserved.file());
     }
 
     /// A WAL copy writes the witness of what this cut will discard BEFORE it discards it, in the same ordered section: if the
@@ -2456,7 +2517,7 @@ public final class StreamPartitionManager implements AutoCloseable {
         return new StreamError.RepairWitnessFailed(streamName, partition, reason).result();
     }
 
-    private static Result<Unit> syncDirectory(Path directory) {
+    static Result<Unit> syncDirectory(Path directory) {
         try (var channel = FileChannel.open(directory, StandardOpenOption.READ)) {
             channel.force(true);
 
