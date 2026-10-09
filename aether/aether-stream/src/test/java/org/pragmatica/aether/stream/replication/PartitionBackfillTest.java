@@ -612,6 +612,45 @@ class PartitionBackfillTest {
             assertThat(descriptorFor(NODE_AA).confirmedOffset()).isEqualTo(-1L);
         }
 
+        /// #2077: the contest waits on registry replicas, and the registry keeps a committed-ISR member until the leader
+        /// commits an ISR shrink. A co-replica the node's own membership view has dropped is not a peer that "might hold
+        /// newer state": the activation gate already stops waiting for it. Unreachable AND absent from the live members
+        /// promotes; unreachable and still live stays SYNCING. Self is the SECOND-ranked member, so the contest (not the
+        /// owner-immediate path) decides.
+        @Test
+        void backfill_unreachablePeerNotInLiveMembers_promotes_whileUnreachableLivePeerStillBlocks() {
+            var all = List.of(NODE_AA, NODE_BB, NODE_CC);
+            var ranked = ReplicaPlacement.rank(STREAM, PARTITION, all);
+            var owner = ranked.get(0);
+            var self = ranked.get(1);
+            var dead = ranked.get(2);
+
+            registry.registerReplica(STREAM, PARTITION, owner);
+            registry.registerReplica(STREAM, PARTITION, dead);
+            registry.registerReplica(STREAM, PARTITION, self);
+
+            var clock = new AtomicLong(0L);
+            ReplicaWatermarkProbe probe = (target, _, _) ->
+                    target.equals(owner)
+                    ? Promise.success(5L)
+                    : ReplicationError.General.REPLICATION_TIMEOUT.promise();
+            var liveWithoutDead = List.of(owner, self);
+            var control = partitionBackfill(registry, recovery, CatchupTransport.NOOP, probe, selfWatermarkOf(8L), self, BOUND, clock::get, () -> all);
+
+            control.backfill(STREAM, PARTITION).await();
+            clock.set(BOUND.millis() + 1);
+            assertThat(control.backfill(STREAM, PARTITION).await().isFailure()).as("control: the unreachable peer is a live member").isTrue();
+            assertThat(descriptorFor(self).state()).isEqualTo(ReplicationState.SYNCING);
+
+            var backfill = partitionBackfill(registry, recovery, CatchupTransport.NOOP, probe, selfWatermarkOf(8L), self, BOUND, clock::get, () -> liveWithoutDead);
+
+            backfill.backfill(STREAM, PARTITION).await();   // arms this instance's bound at the current clock
+            clock.addAndGet(BOUND.millis() + 1);
+            assertThat(backfill.backfill(STREAM, PARTITION).await().isSuccess()).as("the unreachable peer is not a live member").isTrue();
+            assertThat(descriptorFor(self).state()).isEqualTo(ReplicationState.CAUGHT_UP);
+            assertThat(descriptorFor(self).confirmedOffset()).isEqualTo(8L);
+        }
+
         @Test
         void backfill_caughtUpSourceExists_normalBackfill_noPromotionPathTaken() {
             // A genuine CAUGHT_UP source exists: the normal backfill path runs and the probe/promotion
@@ -1990,6 +2029,30 @@ class PartitionBackfillTest {
 
             // Bound elapsed: degraded self-promote at the local watermark (available, not wedged).
             clock.set(BOUND.millis() + 1);
+            assertThat(backfill.backfill(STREAM, PARTITION).await().isSuccess()).isTrue();
+            assertThat(descriptorFor(OWNER).state()).isEqualTo(ReplicationState.CAUGHT_UP);
+        }
+
+        /// #2077: the owner path's twin. The blind survivor is unreachable and absent from the live members, so there is
+        /// no possibly-ahead peer to wait for: the owner promotes at once, not after `sourceWaitBound`. The live-member
+        /// arm is the arm above.
+        @Test
+        void backfill_freshOwnerEmptyRing_blindSurvivorUnreachableAndNotLive_promotesWithoutWaitingForTheBound() {
+            registry.registerReplica(STREAM, PARTITION, OWNER);
+            registry.registerReplica(STREAM, PARTITION, SURVIVOR);
+
+            ReplicaWatermarkProbe unreachable = (_, _, _) -> ReplicationError.General.REPLICATION_TIMEOUT.promise();
+            var live = MEMBERS.stream().filter(member -> !member.equals(SURVIVOR)).toList();
+            var backfill = partitionBackfill(registry,
+                                             recovery,
+                                             failIfCatchup(),
+                                             unreachable,
+                                             localHeadWatermark(),
+                                             OWNER,
+                                             BOUND,
+                                             new AtomicLong(0L)::get,
+                                             () -> live);
+
             assertThat(backfill.backfill(STREAM, PARTITION).await().isSuccess()).isTrue();
             assertThat(descriptorFor(OWNER).state()).isEqualTo(ReplicationState.CAUGHT_UP);
         }

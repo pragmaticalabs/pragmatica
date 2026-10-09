@@ -6,6 +6,7 @@ package org.pragmatica.aether.stream.replication;
 
 import java.util.Comparator;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
@@ -1599,9 +1600,12 @@ public final class PartitionBackfill {
     /// survivor with a known local offset was already weighed by {@link #aheadSurvivor} and is excluded, so
     /// no redundant probe is issued and the local-registry HIT path stays authoritative.
     private List<NodeId> blindPeers(List<ReplicaDescriptor> replicas) {
+        var live = liveMembers();
+
         return replicas.stream()
                        .filter(descriptor -> !descriptor.nodeId()
                                                         .equals(self))
+                       .filter(descriptor -> isLive(live, descriptor.nodeId()))
                        .filter(descriptor -> descriptor.confirmedOffset() < 0)
                        .map(ReplicaDescriptor::nodeId)
                        .sorted()
@@ -2098,11 +2102,27 @@ public final class PartitionBackfill {
     }
 
     private List<NodeId> peerNodeIds(List<ReplicaDescriptor> replicas) {
+        var live = liveMembers();
+
         return replicas.stream()
                        .map(ReplicaDescriptor::nodeId)
                        .filter(nodeId -> !nodeId.equals(self))
+                       .filter(nodeId -> isLive(live, nodeId))
                        .sorted()
                        .toList();
+    }
+
+    /// The live placement members, read once per decision (#2077). The registry keeps a committed-ISR member until the
+    /// leader commits an ISR shrink, so a peer this node's own membership view has already dropped can sit in the
+    /// replica set for tens of seconds; the activation gate ({@link org.pragmatica.aether.stream.OwnerActivation}) stops
+    /// waiting for exactly such a peer, and the promotion decision must read the same fact. An EMPTY view means
+    /// "cannot judge liveness", never "nobody is alive" (self is always a member of a wired view), so it filters nothing.
+    private Set<NodeId> liveMembers() {
+        return Set.copyOf(membersSupplier.get());
+    }
+
+    private static boolean isLive(Set<NodeId> live, NodeId nodeId) {
+        return live.isEmpty() || live.contains(nodeId);
     }
 
     private long selfConfirmedOffset(List<ReplicaDescriptor> replicas) {
