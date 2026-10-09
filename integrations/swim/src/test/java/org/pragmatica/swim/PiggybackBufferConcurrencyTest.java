@@ -17,6 +17,7 @@
 package org.pragmatica.swim;
 
 import java.net.InetSocketAddress;
+import java.util.ArrayList;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -26,6 +27,7 @@ import org.pragmatica.swim.SwimMember.MemberState;
 import org.pragmatica.swim.SwimMessage.MembershipUpdate;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assumptions.assumeThat;
 
 /// #1151: `PiggybackBuffer.peekUpdates` used to drain the deque and re-add the survivors after the
 /// loop, unlocked, so every other thread saw an EMPTY buffer for the width of the peek. The probe
@@ -44,18 +46,47 @@ class PiggybackBufferConcurrencyTest {
     // Each peek disseminates the entry once and it is evicted at 3 * MAX_SIZE, so a ticker capped at
     // MAX_SIZE peeks can never exhaust it, however the scheduler orders the two threads (#1895).
     private static final int TICKER_PEEKS = MAX_SIZE;
+    private static final int TRIALS = 3;
     private static final int ROUNDS = 20_000;
+
+    /// Outcome of one reader/ticker trial. `overlapped` counts the reads during which a peek landed.
+    private record Trial(long overlapped, long zeroReads, long peeks, int faultyAfter) {}
 
     @Test
     void faultyCount_neverReadsZero_whileAFaultyEntryIsBuffered_underAConcurrentPeekTicker() throws InterruptedException {
+        // Eviction is impossible by construction (see TICKER_PEEKS). Overlap is NOT: a reader that is
+        // descheduled until the ticker is done reads an idle buffer and would pass against broken code.
+        // Such a trial is not asserted on; if no trial overlapped, nothing was tested, so the test is
+        // skipped rather than reported green (and not red either: a stalled runner is not a defect).
+        var overlapped = new ArrayList<Trial>();
+
+        for (int trial = 0; trial < TRIALS && overlapped.isEmpty(); trial++) {
+            var result = runTrial();
+
+            assertThat(result.peeks()).as("control: the ticker completed its peeks").isEqualTo(TICKER_PEEKS);
+            assertThat(result.faultyAfter()).as("control: the FAULTY entry was never evicted").isEqualTo(1);
+
+            if (result.overlapped() > 0) {
+                overlapped.add(result);
+            }
+        }
+
+        assumeThat(overlapped).as("no reader/ticker overlap in %d trials; nothing was tested", TRIALS).isNotEmpty();
+
+        var result = overlapped.getFirst();
+
+        assertThat(result.zeroReads()).as("faultyCount() read 0 while a FAULTY entry was buffered (of %d overlapped reads, %d peeks)",
+                                          result.overlapped(),
+                                          result.peeks())
+                                      .isZero();
+    }
+
+    private static Trial runTrial() throws InterruptedException {
         var buffer = PiggybackBuffer.piggybackBuffer(MAX_SIZE);
         buffer.addUpdate(MembershipUpdate.membershipUpdate(NODE_A, MemberState.FAULTY, 1, ADDR_A));
         buffer.addUpdate(MembershipUpdate.membershipUpdate(NODE_B, MemberState.SUSPECT, 1, ADDR_B));
 
         var peeks = new AtomicLong();
-        // The ticker does a fixed amount of work and the reader reads for exactly as long as the ticker
-        // is alive: overlap is guaranteed by construction and the entry's dissemination budget cannot be
-        // exhausted, so neither a stalled reader nor a stalled ticker changes the outcome.
         var ticker = Thread.ofPlatform().start(() -> {
             for (int tick = 0; tick < TICKER_PEEKS; tick++) {
                 buffer.peekUpdates(8);
@@ -63,24 +94,22 @@ class PiggybackBufferConcurrencyTest {
             }
         });
 
-        var reads = 0L;
+        var overlapped = 0L;
         var zeroReads = 0L;
 
         do {
+            var before = peeks.get();
+
             if (buffer.faultyCount() == 0) {
                 zeroReads++;
             }
-            reads++;
+            if (peeks.get() != before) {
+                overlapped++;
+            }
         } while (ticker.isAlive());
         ticker.join();
 
-        assertThat(peeks.get()).as("control: the ticker completed its peeks").isEqualTo(TICKER_PEEKS);
-        assertThat(reads).as("control: the reader read while the ticker was running").isPositive();
-        assertThat(buffer.faultyCount()).as("control: the FAULTY entry was never evicted").isEqualTo(1);
-        assertThat(zeroReads).as("faultyCount() read 0 while a FAULTY entry was buffered (of %d reads, %d concurrent peeks)",
-                                 reads,
-                                 peeks.get())
-                             .isZero();
+        return new Trial(overlapped, zeroReads, peeks.get(), buffer.faultyCount());
     }
 
     @Test
