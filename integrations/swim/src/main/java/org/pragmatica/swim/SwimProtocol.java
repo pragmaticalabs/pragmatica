@@ -178,6 +178,7 @@ public final class SwimProtocol implements SwimMessageHandler {
         lastEmittedHealth.keySet().removeIf(peer -> !inMembershipScope(peer));
         transportHints.keySet().removeIf(peer -> !inMembershipScope(peer));
         coldBootSuppressedFaulty.keySet().removeIf(peer -> !inMembershipScope(peer));
+        transportVetoedFaulty.keySet().removeIf(peer -> !inMembershipScope(peer));
         refutedIdentities.removeIf(peer -> !inMembershipScope(peer));
         tombstones.keySet().removeIf(peer -> !inMembershipScope(peer));
         pendingProbes.values().removeIf(probe -> !inMembershipScope(probe.targetId()));
@@ -370,6 +371,13 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// FAULTY until the residency sweep, which (window now closed) tombstoned it, and the real
     /// FAULTY → Departed waited out the tombstone TTL and a fresh probe cycle — 3 min 40 s in run 7.
     private final Map<NodeId, Boolean> coldBootSuppressedFaulty = new ConcurrentHashMap<>();
+    /// Never-HEALTHY peers whose FAULTY edge the live-transport veto turned into `UnknownObserved` (#2077), mapped to
+    /// that edge's first-hand flag. The veto defers a verdict; it must not drop it. A member already FAULTY gets no
+    /// further FAULTY edge, so [#reevaluateTransportVetoedFaulty] replays the edge on the tick once the link that
+    /// vetoed it is gone. Without the replay the peer sat FAULTY until the residency sweep and its real departure
+    /// waited out the tombstone TTL and a fresh probe cycle: 217 s against 79 s on the survivors that were not holding
+    /// a deferral (bigboy repro-1).
+    private final Map<NodeId, Boolean> transportVetoedFaulty = new ConcurrentHashMap<>();
     /// Peers whose identity a transport dial refuted (#1830): the dialed address answered with a
     /// different NodeId, so the seeded identity is not there. Consulted only by the cold-boot
     /// suppression, which shields never-HEALTHY peers alone — so a refutation cannot touch a peer
@@ -849,6 +857,7 @@ public final class SwimProtocol implements SwimMessageHandler {
         refreshSelfAlive();
         expireSuspectMembers();
         reevaluateColdBootSuppressedFaulty();
+        reevaluateTransportVetoedFaulty();
         cleanupFaultyMembers();
         selectNextProbeTarget().onPresent(this::probeTarget);
     }
@@ -1151,6 +1160,7 @@ public final class SwimProtocol implements SwimMessageHandler {
         lastProbedAt.remove(peer);
         faultyStampedAtMs.remove(peer);
         coldBootSuppressedFaulty.remove(peer);
+        transportVetoedFaulty.remove(peer);
         refutedIdentities.remove(peer);
         // Emission-free hygiene (formerly done by the sweep-time DepartedObserved
         // emission, which is gone — the pair fires at the FAULTY edge): drop the
@@ -2773,6 +2783,7 @@ public final class SwimProtocol implements SwimMessageHandler {
         if (!everSeenHealthy.contains(peer) && transportConnected.test(peer)) {
             LOG.info("SWIM transport veto: never-HEALTHY peer {} has a LIVE transport connection — deferring FAULTY (emitting UNKNOWN, re-checked on the next FAULTY edge)",
                      peer.id());
+            transportVetoedFaulty.put(peer, firstHand);
             emitObservationOnEdge(peer, SwimHealth.UNKNOWN, () -> new SwimObservation.UnknownObserved(peer, incarnation));
 
             return;
@@ -2920,6 +2931,37 @@ public final class SwimProtocol implements SwimMessageHandler {
                  member.nodeId().id());
         faultyStampedAtMs.put(member.nodeId(), System.currentTimeMillis());
         tombstoneOnFaultyEdge(member.nodeId(), member.incarnation());
+        emitFaultyOrUnknown(member.nodeId(), member.incarnation(), firstHand);
+    }
+
+    /// Replay the FAULTY edges the live-transport veto deferred (#2077) once the vetoing link is gone. Runs on every
+    /// tick BEFORE the residency sweep, like [#reevaluateColdBootSuppressedFaulty]. A peer whose link is still up keeps
+    /// its deferral (the veto's safety is unchanged: a busy-but-alive joiner with a live link is not departed); a
+    /// peer no longer FAULTY, or since observed HEALTHY, has nothing to replay.
+    private void reevaluateTransportVetoedFaulty() {
+        if (transportVetoedFaulty.isEmpty()) {
+            return;
+        }
+
+        transportVetoedFaulty.keySet().forEach(this::reevaluateVetoedFaulty);
+    }
+
+    private void reevaluateVetoedFaulty(NodeId peer) {
+        if (transportConnected.test(peer)) {
+            return;
+        }
+
+        option(transportVetoedFaulty.remove(peer)).onPresent(firstHand -> replayIfStillVetoed(peer, firstHand));
+    }
+
+    private void replayIfStillVetoed(NodeId peer, boolean firstHand) {
+        option(members.get(peer)).filter(this::isNeverHealthyFaulty)
+              .onPresent(member -> replayVetoedFaultyEdge(member, firstHand));
+    }
+
+    private void replayVetoedFaultyEdge(SwimMember member, boolean firstHand) {
+        LOG.info("SWIM transport veto lifted (#2077): replaying the deferred FAULTY edge for never-HEALTHY peer {}",
+                 member.nodeId().id());
         emitFaultyOrUnknown(member.nodeId(), member.incarnation(), firstHand);
     }
 
