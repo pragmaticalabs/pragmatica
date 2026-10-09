@@ -3071,11 +3071,29 @@ public sealed interface AetherValue {
                                     UpgradeStop newStop,
                                     String newReason,
                                     long now) {
-            return new UpgradeRunValue(targetVersion, order, newIndex, newInFlight, newState, newStop, newReason, startedAtMs, now, epoch + 1);
+            return new UpgradeRunValue(targetVersion,
+                                       order,
+                                       newIndex,
+                                       newInFlight,
+                                       newState,
+                                       newStop,
+                                       newReason,
+                                       startedAtMs,
+                                       now,
+                                       epoch + 1);
         }
 
         public UpgradeRunValue withOrder(List<NodeId> newOrder, long now) {
-            return new UpgradeRunValue(targetVersion, newOrder, index, inFlight, state, stop, reason, startedAtMs, now, epoch + 1);
+            return new UpgradeRunValue(targetVersion,
+                                       newOrder,
+                                       index,
+                                       inFlight,
+                                       state,
+                                       stop,
+                                       reason,
+                                       startedAtMs,
+                                       now,
+                                       epoch + 1);
         }
 
         public boolean live() {
