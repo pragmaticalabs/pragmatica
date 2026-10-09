@@ -905,6 +905,42 @@ class NodeReplacementRealRegistryReapTest {
             .isEqualTo(1);
     }
 
+    /// Ruling e9959fa6d(4): an inherited mark is not re-raised - not at adoption, and not when the successor's own reap attempts then fail either.
+    @Test
+    void aSuccessorsFailingReap_doesNotRaiseAgainAMarkItInherited() throws Exception {
+        markAfterSeeingTheInstance("the listing still showed the instance");
+        within(10, () -> assertThat(persistedMark(OLD).isPresent()).isTrue());
+        ctmUnderTest.deactivate();
+        stuck.set(true);
+        listing.set(Promise.success(List.of(labelled(OLD, "i-1"))));
+        var successorEvents = new java.util.concurrent.CopyOnWriteArrayList<String>();
+
+        newManager(lifecycle, true, 600L, successorEvents);
+
+        within(30, () -> assertThat(terminates.get()).as("the replay's chain ran its retries out").isGreaterThanOrEqualTo(13));
+        Thread.sleep(500);
+
+        assertThat(successorEvents).as("the mark was inherited: nothing raised again").noneMatch(w -> w.startsWith("instance-termination-unconfirmed:"));
+    }
+
+    /// An inherited mark carries the memory that the instance was seen into the successor's own reap, so that a drain on the successor, whose
+    /// first listing is empty, is confirmed gone and closes the mark. (The at-once re-check is made to fail first, by an unreachable provider.)
+    @Test
+    void aSuccessorsOwnReap_remembersWhatTheInheritedMarkSaw() throws Exception {
+        markAfterSeeingTheInstance("the listing still showed the instance");
+        within(10, () -> assertThat(persistedMark(OLD).map(AetherValue.UnconfirmedTerminationValue::seen).or(false)).isTrue());
+        ctmUnderTest.deactivate();
+        var successorEvents = new java.util.concurrent.CopyOnWriteArrayList<String>();
+        var successor = newManager(lifecycle, false, 60_000L, successorEvents);
+
+        Thread.sleep(500);
+        listing.set(Promise.success(List.of()));
+        successor.drainNode(OLD, org.pragmatica.aether.deployment.cluster.DrainReason.OPERATOR_COMMAND).await();
+
+        within(10, () -> assertThat(successorEvents).anyMatch(w -> w.startsWith("instance-termination-confirmed:" + OLD.id())));
+        assertThat(persistedMark(OLD).isEmpty()).isTrue();
+    }
+
     /// v-2068 checklist 3: adoption re-checks at once. The periodic re-check is 5 minutes away at this size (5 x 60 s) and the retry interval 10 s,
     /// so only an immediate re-check closes the mark inside two seconds.
     @Test
