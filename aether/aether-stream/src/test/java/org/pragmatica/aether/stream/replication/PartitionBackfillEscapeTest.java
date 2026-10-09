@@ -195,6 +195,23 @@ class PartitionBackfillEscapeTest {
         assertThat(escapes).hasSize(1);
     }
 
+    /// The escape has its own bound, later than the source wait that starts the contest: with the escape bound at 25 s the contest has
+    /// observed the silent peer for a full source-wait bound (10 s) and still waits. Mutation: using the source-wait bound for the
+    /// escape turns this red.
+    @Test
+    void backfill_isrCandidate_escapeBoundIsItsOwn_notTheSourceWait() {
+        var backfill = backfill((_, _, node) -> node.equals(NODE_AA));
+
+        backfill.promotionEscapeAfter(TimeSpan.timeSpan(25).seconds());
+
+        assertThat(contestAfter(backfill, BOUND.millis())).as("silent for 10 s of a 25 s bound").isFalse();
+        assertThat(escapes).isEmpty();
+        clock.addAndGet(15_000L);
+
+        assertThat(backfill.backfill(STREAM, PARTITION).await().isSuccess()).as("silent for 25 s").isTrue();
+        assertThat(escapes).singleElement().satisfies(escape -> assertThat(escape.bound()).isEqualTo(TimeSpan.timeSpan(25).seconds()));
+    }
+
     /// The run of unreachability must be CONTINUOUS: a round in which every peer answers restarts it. The answering round here
     /// DECLINES (a peer is ahead), so nothing else forgets the partition's wait, and the only thing that can make the last round
     /// fail is the restarted run. Mutation: not ending the run on an all-answer round turns the last assertion red.

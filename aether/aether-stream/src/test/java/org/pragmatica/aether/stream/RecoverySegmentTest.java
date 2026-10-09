@@ -106,6 +106,17 @@ class RecoverySegmentTest {
         }
     }
 
+    /// Same offsets, timestamps and payloads under a DIFFERENT owner-epoch history are another lineage's loss, not the same one: a
+    /// separate file. Mutation: ignoring the epoch in the comparison turns this red.
+    @Test
+    void write_sameRecordsOtherEpochs_isNotReused() {
+        var wal = dir.resolve("s-8.wal");
+        var first = RecoverySegment.write(wal, "orders", 0, history(), pagesOf(0L, 4L), 0L, 4L, 10L).unwrap();
+        var other = RecoverySegment.write(wal, "orders", 0, List.of(), pagesOf(0L, 4L), 0L, 4L, 11L).unwrap();
+
+        assertThat(other.file()).isNotEqualTo(first.file());
+    }
+
     @Test
     void read_detectsAFlippedByte_aTruncation_andAForeignFile() throws Exception {
         var wal = dir.resolve("s-4.wal");
