@@ -270,7 +270,7 @@ SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$StreamRegistrationValue (n
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$StreamRegistryValue (entry:org.pragmatica.aether.slice.stream.StreamRegistryEntry)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$TopicSubscriptionValue (nodeId:org.pragmatica.consensus.NodeId)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$TopologyEntry (sourceName:java.lang.String,role:java.lang.String,count:int)
-SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$UnconfirmedTerminationValue (cause:java.lang.String,seen:boolean)
+SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$UnconfirmedTerminationValue (cause:java.lang.String,seen:boolean,absent:boolean)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$VersionRoutingValue (oldVersion:org.pragmatica.aether.artifact.Version,newVersion:org.pragmatica.aether.artifact.Version,newWeight:int,oldWeight:int,updatedAt:long)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$WorkerSliceDirectiveValue (artifact:org.pragmatica.aether.artifact.Artifact,targetInstances:int,placement:java.lang.String,targetCommunity:org.pragmatica.lang.Option<java.lang.String>,updatedAt:long)
 SHAPE org.pragmatica.aether.slice.stream.StreamRegistryEntry (address:org.pragmatica.aether.slice.resource.ResourceAddress,retention:org.pragmatica.aether.slice.RetentionPolicy,registeredAtEpochMillis:long,registeredBy:org.pragmatica.aether.slice.stream.StreamRegistryEntry$RegisteredByKind,refCount:int)

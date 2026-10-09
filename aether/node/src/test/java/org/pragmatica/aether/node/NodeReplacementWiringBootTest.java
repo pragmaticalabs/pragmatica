@@ -117,7 +117,7 @@ class NodeReplacementWiringBootTest {
     @SuppressWarnings({"rawtypes", "unchecked"})
     void theTopologyManager_readsTheUnconfirmedMarksFromTheNodesStore() {
         node = bootedNode();
-        var mark = new AetherValue.UnconfirmedTerminationValue("provider unreachable", true);
+        var mark = new AetherValue.UnconfirmedTerminationValue("provider unreachable", true, false);
         var leader = new org.pragmatica.cluster.state.kvstore.LeaderValue(self, 1);
         var key = new AetherKey.UnconfirmedTerminationKey(FRESH);
         var store = (org.pragmatica.cluster.state.kvstore.KVStore) node.kvStore();

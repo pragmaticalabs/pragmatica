@@ -3028,8 +3028,10 @@ public sealed interface AetherValue {
     }
 
     /// #2062: why the termination of a retired node's instance is not confirmed (`cause`), and whether the provider ever listed the instance
-    /// (`seen`): only for a node it listed does a later empty listing mean "gone", so a new leader re-checking the mark keeps that memory.
-    record UnconfirmedTerminationValue(String cause, boolean seen) implements AetherValue, org.pragmatica.cluster.state.kvstore.LeaderAuthorized {}
+    /// (`seen`): only for a node it listed does a later empty listing mean "gone", so a new leader re-checking the mark keeps that memory. `absent`
+    /// is set when a listing SUCCEEDED and did not contain the instance: no listing can ever confirm such a mark, so it is not re-checked. A listing
+    /// that FAILED proves nothing, and a mark that only ever met failures keeps `absent` false and keeps being re-checked.
+    record UnconfirmedTerminationValue(String cause, boolean seen, boolean absent) implements AetherValue, org.pragmatica.cluster.state.kvstore.LeaderAuthorized {}
 
     /// #1543 replacement steps. `DONE` and `ROLLED_BACK` are terminal and inert; `FAILED_KEPT_BOTH` is terminal
     /// and keeps both nodes until an operator settles it. `REVERTING` swaps the original back into the electorate

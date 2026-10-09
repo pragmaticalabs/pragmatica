@@ -120,6 +120,14 @@ public enum OperatorWarningCode {
                                    WarningLevel.INFO,
                                    INSTANCE_TERMINATION_UNCONFIRMED,
                                    true),
+    /// The other recovery of [#INSTANCE_TERMINATION_UNCONFIRMED], same subject (#2062): the node joined the cluster again, a new incarnation, so the
+    /// warning about its previous incarnation no longer applies. NOTHING was terminated: this is not a confirmation. Like the confirmation it closes a
+    /// warning another node may have raised.
+    INSTANCE_TERMINATION_REJOINED("instance-termination-rejoined",
+                                  "deployment",
+                                  WarningLevel.INFO,
+                                  INSTANCE_TERMINATION_UNCONFIRMED,
+                                  true),
     /// A node replacement (#1543) was committed: a fresh-id node is taking over from the subject (the ORIGINAL node). Raised once,
     /// when the record is first committed. Closed by [#NODE_REPLACEMENT_COMPLETED] or [#NODE_REPLACEMENT_ROLLED_BACK].
     NODE_REPLACEMENT_STARTED("node-replacement-started", "replacement", WarningLevel.INFO),

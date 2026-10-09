@@ -1488,7 +1488,17 @@ class ClusterEventAggregatorTest {
 
         assertThat(successor.events()).isEmpty();
         assertThat(java.util.Arrays.stream(OperatorWarningCode.values()).filter(OperatorWarningCode::closesAcrossNodes).toList())
-            .containsExactly(OperatorWarningCode.INSTANCE_TERMINATION_CONFIRMED);
+            .containsExactlyInAnyOrder(OperatorWarningCode.INSTANCE_TERMINATION_CONFIRMED, OperatorWarningCode.INSTANCE_TERMINATION_REJOINED);
+    }
+
+    /// Amendment B: the rejoin resolution closes the previous leader's warning the same way, and is a different event from a confirmation.
+    @Test
+    void onOperatorWarning_theRejoinResolution_isPublishedByANodeThatDidNotRaiseTheWarning() {
+        var successor = Harness.create();
+
+        successor.aggregator().onOperatorWarning(OperatorWarning.operatorWarning(OperatorWarningCode.INSTANCE_TERMINATION_REJOINED, "core-old", "rejoined"));
+
+        assertThat(codes(successor)).containsExactly("instance-termination-rejoined");
     }
 
     private static final String CRON_TASK = "cache/org.example:my-slice:1.0.0/cleanup";
@@ -2144,7 +2154,8 @@ class ClusterEventAggregatorTest {
                              OperatorWarningCode.CLUSTER_TLS_RENEWAL_RESTORED,
                              OperatorWarningCode.BACKUP_CONFIG_RESTORED,
                              OperatorWarningCode.BACKUP_RESTORE_UNBLOCKED,
-                             OperatorWarningCode.INSTANCE_TERMINATION_CONFIRMED);
+                             OperatorWarningCode.INSTANCE_TERMINATION_CONFIRMED,
+                             OperatorWarningCode.INSTANCE_TERMINATION_REJOINED);
         assertThat(java.util.Arrays.stream(OperatorWarningCode.values()).filter(OperatorWarningCode::hasRecovery).toList())
             .containsExactlyInAnyOrder(OperatorWarningCode.NODE_REPLACEMENT_STARTED,
                              OperatorWarningCode.NODE_REPLACEMENT_JOIN_OVERDUE,

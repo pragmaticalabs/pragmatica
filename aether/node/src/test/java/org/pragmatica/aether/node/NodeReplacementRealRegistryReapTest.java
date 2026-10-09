@@ -708,6 +708,7 @@ class NodeReplacementRealRegistryReapTest {
     /// (a) Every raiser goes through the manager: marking raises the event once, naming the node and the cause.
     @Test
     void markUnconfirmed_raisesTheEventOnce_namingTheNodeAndTheCause() {
+        listing.set(EnvironmentError.operationNotSupported("provider API down").promise());
         ctmUnderTest.markUnconfirmed(OLD, "reaper says: provider unreachable");
         ctmUnderTest.markUnconfirmed(OLD, "a second raiser");
 
@@ -806,14 +807,18 @@ class NodeReplacementRealRegistryReapTest {
     /// the cluster will confirm it by listing, and does not ask for a hand.)
     @Test
     void aMarkOfAnInstanceNeverListed_isNotRechecked_isNotClosedByTheSuccessor_andSaysSo() throws Exception {
+        put(AetherKey.CapacityLedgerKey.INSTANCE, new CapacityLedgerValue(3, 1, true));
+        assertThat(ctmUnderTest.reapRetired(OLD, WEST, false).await().isFailure()).as("a listing SUCCEEDED and showed nothing: not confirmed gone").isTrue();
         ctmUnderTest.markUnconfirmed(OLD, "never listed");
-        within(10, () -> assertThat(persistedMark(OLD).map(AetherValue.UnconfirmedTerminationValue::seen).or(true)).isFalse());
+        within(10, () -> assertThat(persistedMark(OLD).map(m -> !m.seen() && m.absent()).or(false)).as("seen=false, absent=true").isTrue());
         within(5, () -> assertThat(warnings).anyMatch(w -> w.startsWith("instance-termination-unconfirmed:" + OLD.id())
                                                          && w.contains("cannot confirm")
                                                          && w.contains("by hand")));
+        var listsBefore = lists.get();
+
         Thread.sleep(1500);
 
-        assertThat(lists.get()).as("five re-check intervals passed on the leader: no periodic listing").isZero();
+        assertThat(lists.get() - listsBefore).as("five re-check intervals passed on the leader: no periodic listing").isZero();
 
         ctmUnderTest.deactivate();
         listing.set(Promise.success(List.of()));
@@ -821,9 +826,54 @@ class NodeReplacementRealRegistryReapTest {
         newManager(lifecycle, false);
         Thread.sleep(2500);
 
-        assertThat(lists.get()).as("nor on the successor").isZero();
+        assertThat(lists.get() - listsBefore).as("nor on the successor").isZero();
         assertThat(persistedMark(OLD).isPresent()).as("still open: nothing proves the instance is gone").isTrue();
         assertThat(raised("instance-termination-confirmed")).isFalse();
+    }
+
+    /// Amendment A: a listing that FAILED is not absence. A mark that only ever met failing listings is not the permanent operator warning: its text
+    /// says the listing is failing, it keeps being re-checked at the normal cadence, and it is confirmed once the provider answers and the instance is
+    /// gone. (The control is the test above: a listing that SUCCEEDED and showed nothing is permanent.)
+    @Test
+    void aMarkThatOnlyMetFailingListings_isRechecked_andConfirmedOnceTheProviderAnswers() throws Exception {
+        put(AetherKey.CapacityLedgerKey.INSTANCE, new CapacityLedgerValue(3, 1, true));
+        listing.set(EnvironmentError.operationNotSupported("provider API down").promise());
+        retire(OLD);
+        within(20, () -> assertThat(warnings).anyMatch(w -> w.startsWith("instance-termination-unconfirmed:" + OLD.id())));
+
+        assertThat(warnings).anyMatch(w -> w.startsWith("instance-termination-unconfirmed:" + OLD.id()) && w.contains("listing is failing") && !w.contains("by hand"));
+        assertThat(persistedMark(OLD).map(m -> !m.seen() && !m.absent()).or(false)).as("not seen, and nothing proves it absent").isTrue();
+        var before = lists.get();
+
+        Thread.sleep(1500);
+
+        assertThat(lists.get() - before).as("still re-checked at the normal cadence").isGreaterThanOrEqualTo(2);
+
+        listing.set(Promise.success(List.of(instance(OLD, "i-1", InstanceStatus.RUNNING))));
+
+        within(15, () -> assertThat(raised("instance-termination-confirmed")).as("confirmed once the provider answers").isTrue());
+        assertThat(terminates.get()).isGreaterThanOrEqualTo(1);
+        assertThat(persistedMark(OLD).isEmpty()).isTrue();
+    }
+
+    /// A failing-listing mark whose re-check finally gets a SUCCESSFUL listing that shows no instance becomes the permanent operator warning: the
+    /// mark is rewritten, the event is raised again asking for a hand, and the re-checks stop.
+    @Test
+    void aFailingListingMark_becomesOperatorOnly_onceAListingSucceedsAndShowsNothing() throws Exception {
+        put(AetherKey.CapacityLedgerKey.INSTANCE, new CapacityLedgerValue(3, 1, true));
+        listing.set(EnvironmentError.operationNotSupported("provider API down").promise());
+        ctmUnderTest.markUnconfirmed(OLD, "provider unreachable");
+        within(10, () -> assertThat(persistedMark(OLD).isPresent()).isTrue());
+
+        listing.set(Promise.success(List.of()));
+
+        within(10, () -> assertThat(persistedMark(OLD).map(AetherValue.UnconfirmedTerminationValue::absent).or(false)).as("rewritten as absent").isTrue());
+        within(5, () -> assertThat(warnings).anyMatch(w -> w.startsWith("instance-termination-unconfirmed:" + OLD.id()) && w.contains("by hand")));
+        var before = lists.get();
+
+        Thread.sleep(1200);
+
+        assertThat(lists.get() - before).as("and no longer re-checked").isZero();
     }
 
     @Test
@@ -1007,8 +1057,10 @@ class NodeReplacementRealRegistryReapTest {
         joins(OLD);
 
         within(5, () -> assertThat(persistedMark(OLD).isEmpty()).isTrue());
+        within(5, () -> assertThat(raised("instance-termination-rejoined")).as("the open warning is closed with the rejoin resolution").isTrue());
         Thread.sleep(800);
         assertThat(terminates.get()).isZero();
+        assertThat(raised("instance-termination-confirmed")).as("nothing was terminated: no confirmation").isFalse();
     }
 
     /// The dropped mark belongs to the previous incarnation: when the new one is retired and cannot be reaped, the operator is told again.
@@ -1033,6 +1085,8 @@ class NodeReplacementRealRegistryReapTest {
         ctmUnderTest.onWorkerJoin(new WorkerJoinDecision(OLD, "worker", HlcTimestamp.ZERO));
 
         within(5, () -> assertThat(persistedMark(OLD).isEmpty()).isTrue());
+        within(5, () -> assertThat(raised("instance-termination-rejoined")).isTrue());
+        assertThat(raised("instance-termination-confirmed")).isFalse();
     }
 
     private final class CountingProvider implements ComputeProvider {

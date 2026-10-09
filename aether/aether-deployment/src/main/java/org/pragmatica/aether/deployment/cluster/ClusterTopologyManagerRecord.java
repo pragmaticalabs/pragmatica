@@ -127,6 +127,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                     Set<NodeId> unconfirmedReaps,
                                     Set<NodeId> seenInstances,
                                     Set<NodeId> confirmedReaps,
+                                    Set<NodeId> listedAbsent,
                                     ConcurrentHashMap<NodeId, Long> failedReaps,
                                     org.pragmatica.lang.concurrent.CancellableTask unconfirmedRecheck,
                                     AtomicReference<Supplier<Map<NodeId, AetherValue.UnconfirmedTerminationValue>>> persistedMarks,
@@ -264,6 +265,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                                 new AtomicReference<>(HierarchyStateWriter.unavailable()),
                                                 new ConcurrentHashMap<>(),
                                                 new AtomicReference<>(org.pragmatica.utility.warning.OperatorWarningSink.logOnly()),
+                                                ConcurrentHashMap.newKeySet(),
                                                 ConcurrentHashMap.newKeySet(),
                                                 ConcurrentHashMap.newKeySet(),
                                                 ConcurrentHashMap.newKeySet(),
@@ -1817,6 +1819,8 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                .flatMap(listed -> {
                                             if (!listed.isEmpty()) {
                                             seenInstances.add(node);
+                                        } else if (!seen) {
+                                            listedAbsent.add(node);
                                         }
 
                                             return allTerminated(listed)
@@ -2157,35 +2161,31 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     public Unit markUnconfirmed(NodeId nodeId, String cause) {
         if (unconfirmedReaps.add(nodeId)) {
             var seen = seenInstances.contains(nodeId);
+            var absent = !seen && listedAbsent.contains(nodeId);
 
-            raiseUnconfirmedEvent(nodeId, cause, seen);
+            raiseUnconfirmedEvent(nodeId, cause, seen, absent);
             writeMark(nodeId,
-                      Option.some(new AetherValue.UnconfirmedTerminationValue(cause, seen)));
+                      Option.some(new AetherValue.UnconfirmedTerminationValue(cause, seen, absent)));
         }
 
         return unit();
     }
 
-    /// A mark whose instance the provider has listed is re-checked by listing and closes itself. One whose instance was never listed (an unlabelled
-    /// VM, or a provider that only ever failed) cannot be confirmed by listing, so it is not re-checked: it stays an operator warning, and says so.
-    private void raiseUnconfirmedEvent(NodeId nodeId, String cause, boolean seen) {
-        if (seen) {
-            org.pragmatica.utility.warning.OperatorWarnings.raise(log,
-                                                                  warningSink.get(),
-                                                                  org.pragmatica.utility.warning.OperatorWarningCode.INSTANCE_TERMINATION_UNCONFIRMED,
-                                                                  nodeId.id(),
-                                                                  "The termination of the instance of retired node {} is not confirmed ({}); it may still be running at the provider and billing: terminate it, then the cluster confirms it by listing",
-                                                                  nodeId.id(),
-                                                                  cause);
-
-            return;
-        }
+    /// Three marks. One whose instance the provider has listed is re-checked by listing and closes itself. One whose instance the provider has
+    /// NEVER listed although a listing succeeded (an unlabelled VM) cannot be confirmed by listing, so it is not re-checked: it stays an operator
+    /// warning, and says so. One that only ever met FAILED listings proves nothing about the instance: it is re-checked, and says that listing is failing.
+    private void raiseUnconfirmedEvent(NodeId nodeId, String cause, boolean seen, boolean absent) {
+        var template = absent
+                       ? "The cluster cannot confirm the termination of the instance of retired node {} ({}): a listing succeeded and has never shown an instance of it, and the cluster will not re-check; it may still be running at the provider and billing: verify at the provider and terminate it by hand"
+                       : seen
+                         ? "The termination of the instance of retired node {} is not confirmed ({}); it may still be running at the provider and billing: terminate it, then the cluster confirms it by listing"
+                         : "The termination of the instance of retired node {} is not confirmed ({}): the provider's listing is failing, so it is not known whether the instance exists; it may still be running at the provider and billing; the cluster keeps re-checking and confirms it once a listing shows it gone";
 
         org.pragmatica.utility.warning.OperatorWarnings.raise(log,
                                                               warningSink.get(),
                                                               org.pragmatica.utility.warning.OperatorWarningCode.INSTANCE_TERMINATION_UNCONFIRMED,
                                                               nodeId.id(),
-                                                              "The cluster cannot confirm the termination of the instance of retired node {} ({}): it has never listed an instance of it and will not re-check; it may still be running at the provider and billing: verify at the provider and terminate it by hand",
+                                                              template,
                                                               nodeId.id(),
                                                               cause);
     }
@@ -2226,13 +2226,10 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         var nodes = new java.util.HashSet<>(unconfirmedReaps);
 
         nodes.addAll(persisted.keySet());
-        nodes.forEach(nodeId -> recheckMarked(nodeId,
-                                              Option.option(persisted.get(nodeId))
-                                                    .map(AetherValue.UnconfirmedTerminationValue::seen)
-                                                    .or(false)));
+        nodes.forEach(nodeId -> recheckMarked(nodeId, Option.option(persisted.get(nodeId))));
     }
 
-    private void recheckMarked(NodeId nodeId, boolean persistedSeen) {
+    private void recheckMarked(NodeId nodeId, Option<AetherValue.UnconfirmedTerminationValue> persisted) {
         if (liveness.demonstrablyLive(nodeId)) {
             log.debug("CTM: unconfirmed mark of {} not re-checked — it shows life; a live node is never terminated",
                       nodeId);
@@ -2240,15 +2237,31 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
             return;
         }
 
-        var seen = persistedSeen || seenInstances.contains(nodeId);
+        var seen = persisted.map(AetherValue.UnconfirmedTerminationValue::seen).or(false) || seenInstances.contains(nodeId);
+        var absent = persisted.map(AetherValue.UnconfirmedTerminationValue::absent).or(false) || listedAbsent.contains(nodeId);
 
-        if (!seen && !lifecycleManager.externalNode(nodeId)) {
+        if (!seen && absent && !lifecycleManager.externalNode(nodeId)) {
             return;
         }
 
         reapRetired(nodeId,
                     lifecycleManager.sourceOf(nodeId).or(SourceName.DEFAULT),
-                    seen);
+                    seen).onFailure(_ -> operatorOnlyOnceAbsent(nodeId, persisted));
+    }
+
+    /// A mark that met only failed listings is re-checked; the first re-check whose listing SUCCEEDS and shows no instance turns it into the operator
+    /// warning it would have been had that listing come first: the mark is rewritten and the event raised again, with the text that asks for a hand.
+    private void operatorOnlyOnceAbsent(NodeId nodeId, Option<AetherValue.UnconfirmedTerminationValue> persisted) {
+        var wasAbsent = persisted.map(AetherValue.UnconfirmedTerminationValue::absent).or(false);
+
+        if (wasAbsent || seenInstances.contains(nodeId) || !listedAbsent.contains(nodeId)) {
+            return;
+        }
+
+        var cause = persisted.map(AetherValue.UnconfirmedTerminationValue::cause).or("a listing succeeded and showed no instance");
+
+        raiseUnconfirmedEvent(nodeId, cause, false, true);
+        writeMark(nodeId, Option.some(new AetherValue.UnconfirmedTerminationValue(cause, false, true)));
     }
 
     /// A manager that has just become leader inherits the replicated marks: each is adopted without announcing it again (the warning the previous
@@ -2264,6 +2277,10 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                    if (mark.seen()) {
                                    seenInstances.add(nodeId);
                                }
+
+                                   if (mark.absent()) {
+                                   listedAbsent.add(nodeId);
+                               }
                                });
         SharedScheduler.schedule(() -> recheckUnconfirmed(epoch),
                                  TimeSpan.timeSpan(1).millis());
@@ -2275,6 +2292,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     private void forgetIncarnation(NodeId nodeId) {
         confirmedReaps.remove(nodeId);
         seenInstances.remove(nodeId);
+        listedAbsent.remove(nodeId);
         var marked = unconfirmedReaps.remove(nodeId);
         var persisted = persistedMarks.get().get().containsKey(nodeId);
 
@@ -2283,8 +2301,18 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         }
 
         if (marked || persisted) {
-            log.info("CTM: the unconfirmed-termination mark of {} dropped — the node joined again", nodeId);
+            closeAsRejoined(nodeId);
         }
+    }
+
+    /// The warning about the previous incarnation is closed, cluster-wide, with the REJOINED resolution: nothing was terminated, so it is not a confirmation.
+    private void closeAsRejoined(NodeId nodeId) {
+        org.pragmatica.utility.warning.OperatorWarnings.raise(log,
+                                                              warningSink.get(),
+                                                              org.pragmatica.utility.warning.OperatorWarningCode.INSTANCE_TERMINATION_REJOINED,
+                                                              nodeId.id(),
+                                                              "Retired node {} joined the cluster again: the unconfirmed termination of its previous incarnation no longer applies (nothing was terminated)",
+                                                              nodeId.id());
     }
 
     private void reapConfirmed(NodeId nodeId) {
