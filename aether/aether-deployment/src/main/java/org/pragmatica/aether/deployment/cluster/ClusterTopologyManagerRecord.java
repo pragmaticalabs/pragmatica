@@ -2159,7 +2159,8 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
             var seen = seenInstances.contains(nodeId);
 
             raiseUnconfirmedEvent(nodeId, cause, seen);
-            writeMark(nodeId, Option.some(new AetherValue.UnconfirmedTerminationValue(cause, seen)));
+            writeMark(nodeId,
+                      Option.some(new AetherValue.UnconfirmedTerminationValue(cause, seen)));
         }
 
         return unit();
@@ -2233,7 +2234,8 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
 
     private void recheckMarked(NodeId nodeId, boolean persistedSeen) {
         if (liveness.demonstrablyLive(nodeId)) {
-            log.debug("CTM: unconfirmed mark of {} not re-checked — it shows life; a live node is never terminated", nodeId);
+            log.debug("CTM: unconfirmed mark of {} not re-checked — it shows life; a live node is never terminated",
+                      nodeId);
 
             return;
         }
@@ -2244,7 +2246,9 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
             return;
         }
 
-        reapRetired(nodeId, lifecycleManager.sourceOf(nodeId).or(SourceName.DEFAULT), seen);
+        reapRetired(nodeId,
+                    lifecycleManager.sourceOf(nodeId).or(SourceName.DEFAULT),
+                    seen);
     }
 
     /// A manager that has just become leader inherits the replicated marks: each is adopted without announcing it again (the warning the previous
@@ -2261,7 +2265,8 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                    seenInstances.add(nodeId);
                                }
                                });
-        SharedScheduler.schedule(() -> recheckUnconfirmed(epoch), TimeSpan.timeSpan(1).millis());
+        SharedScheduler.schedule(() -> recheckUnconfirmed(epoch),
+                                 TimeSpan.timeSpan(1).millis());
     }
 
     /// A node that has joined (or been re-admitted) is a new incarnation of its id: what was remembered of the previous one - that its reap was

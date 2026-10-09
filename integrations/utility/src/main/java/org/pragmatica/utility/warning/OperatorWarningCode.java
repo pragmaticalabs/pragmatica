@@ -275,7 +275,11 @@ public enum OperatorWarningCode {
         this.recoveryOf = Option.some(recoveryOf);
         this.closesAcrossNodes = false;
     }
-    OperatorWarningCode(String code, String subsystem, WarningLevel level, OperatorWarningCode recoveryOf, boolean closesAcrossNodes) {
+    OperatorWarningCode(String code,
+                        String subsystem,
+                        WarningLevel level,
+                        OperatorWarningCode recoveryOf,
+                        boolean closesAcrossNodes) {
         this.code = code;
         this.subsystem = subsystem;
         this.level = level;
