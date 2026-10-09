@@ -859,7 +859,9 @@ public final class ClusterConfigRoutes implements RouteSource {
             // A re-issued upgrade: the version is already stored, so the only thing left to do is the run, if one is still owed.
             return runs.start(targetVersion)
                        .map(_ -> new UpgradeResponse("INITIATED", currentVersion, targetVersion))
-                       .mapError(cause -> new UpgradeError.AlreadyAtVersion(targetVersion));
+                       .mapError(cause -> nothingOwed(cause)
+                                          ? new UpgradeError.AlreadyAtVersion(targetVersion)
+                                          : cause);
         }
 
         if (runs.status().filter(UpgradeRunValue::live).isPresent()) {
@@ -884,6 +886,12 @@ public final class ClusterConfigRoutes implements RouteSource {
                                                                                                       currentVersion,
                                                                                                       targetVersion));
                                          });
+    }
+
+    /// Nothing to start: every node already reports the version, a run towards it is already live, or this node has no run service. Any other
+    /// refusal (not the leader, a concurrent change) is a real answer and is surfaced.
+    private static boolean nothingOwed(Cause cause) {
+        return cause instanceof UpgradeRunService.Refusal.NothingToReplace || cause instanceof UpgradeRunService.Refusal.AlreadyRunning || cause instanceof UpgradeRunService.Refusal.Unavailable;
     }
 
     /// #1543 F: the version is stored, so the rolling replacement of the running nodes follows. Nothing to replace (every node already

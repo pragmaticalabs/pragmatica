@@ -34,6 +34,7 @@ class UpgradeRunReconcilerTest {
     private final List<String> calls = new ArrayList<>();
     private boolean leader = true;
     private boolean accept = true;
+    private boolean explode = false;
     private BeginResult beginResult = new BeginResult.Started();
 
     private static UpgradeRunValue run() {
@@ -66,6 +67,10 @@ class UpgradeRunReconcilerTest {
 
         @Override
         public Observation observe() {
+            if (explode) {
+                throw new IllegalStateException("bad observation");
+            }
+
             return new Observation(Map.of(C1, new Member("core", "1.0.0"), C2, new Member("core", "1.0.0")), Map.<NodeId, NodeReplacementValue> of());
         }
 
@@ -141,6 +146,19 @@ class UpgradeRunReconcilerTest {
 
         assertThat(committed.get().inFlight()).isEmpty();
         assertThat(calls).containsExactly("begin:core-1:1.1.0", "commit:RUNNING:core-1");
+    }
+
+    /// A tick that throws before it has a promise must not leave the reentrancy guard set, or no later tick would ever run.
+    @Test
+    void aTickThatThrows_releasesTheGuard_soTheNextTickRuns() {
+        explode = true;
+
+        assertThat(reconciler.reconcile().await().isFailure()).as("the failure is reported, not thrown").isTrue();
+
+        explode = false;
+        reconciler.reconcile().await();
+
+        assertThat(calls).as("the next tick ran").containsExactly("begin:core-1:1.1.0", "commit:RUNNING:core-1");
     }
 
     @Test

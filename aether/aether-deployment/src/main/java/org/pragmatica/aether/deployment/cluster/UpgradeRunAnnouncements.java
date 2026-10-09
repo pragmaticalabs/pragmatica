@@ -24,11 +24,22 @@ public final class UpgradeRunAnnouncements {
 
     public record Announcement(OperatorWarningCode code, String subject, String message) {}
 
+    /// The first commit of a run: RUNNING, nothing done, nothing in flight, no request pending. A node that first learns of a run through
+    /// a replayed put, with the run already under way or ended, must not announce that it started.
+    private static boolean isNewRun(Option<UpgradeRunValue> before, UpgradeRunValue after) {
+        var fresh = after.state() == UpgradeRunState.RUNNING && after.index() == 0 && after.inFlight().isEmpty() && after.stop() == org.pragmatica.aether.slice.kvstore.AetherValue.UpgradeStop.NONE;
+
+        return fresh
+               && (before.isEmpty() || (!before.unwrap()
+                                               .live() && before.unwrap()
+                                                                .startedAtMs() != after.startedAtMs()));
+    }
+
     public static List<Announcement> of(Option<UpgradeRunValue> before, UpgradeRunValue after) {
         var out = new ArrayList<Announcement>();
         var prior = before.map(UpgradeRunValue::state).or(UpgradeRunState.UNKNOWN);
 
-        if (before.isEmpty() || (!before.unwrap().live() && after.live() && before.unwrap().startedAtMs() != after.startedAtMs())) {
+        if (isNewRun(before, after)) {
             out.add(new Announcement(OperatorWarningCode.UPGRADE_STARTED,
                                      SUBJECT,
                                      "Rolling upgrade to " + after.targetVersion()

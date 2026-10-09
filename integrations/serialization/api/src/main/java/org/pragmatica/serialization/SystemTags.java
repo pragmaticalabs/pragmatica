@@ -619,11 +619,11 @@ public interface SystemTags {
         pin(table, 2130, "org.pragmatica.aether.slice.kvstore.AetherValue.NodeReplacementValue");
         pin(table, 2131, "org.pragmatica.aether.slice.kvstore.AetherValue.NodeReplacementPhase");
         // #1543 part F: the rolling-upgrade run — next free after 2135
-        pin(table, 2132, "org.pragmatica.aether.slice.kvstore.AetherKey.UpgradeRunKey");
-        pin(table, 2133, "org.pragmatica.aether.slice.kvstore.AetherValue.UpgradeRunValue");
+        pin(table, 2136, "org.pragmatica.aether.slice.kvstore.AetherKey.UpgradeRunKey");
+        pin(table, 2137, "org.pragmatica.aether.slice.kvstore.AetherValue.UpgradeRunValue");
         pin(table, 2134, "org.pragmatica.aether.slice.kvstore.AetherValue.UpgradeRunState");
         pin(table, 2135, "org.pragmatica.aether.slice.kvstore.AetherValue.UpgradeStop");
-        // ---- 2132..16383 RESERVED ----
+        // ---- 2138..16383 RESERVED ----
         rejectDuplicateTags(table);
 
         return Map.copyOf(table);
