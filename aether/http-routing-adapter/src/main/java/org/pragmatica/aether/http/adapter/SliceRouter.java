@@ -228,7 +228,7 @@ public interface SliceRouter {
                              ? HttpStatus.BAD_REQUEST
                              : HttpStatus.NOT_FOUND;
 
-                return problemResponse(status, cause.message(), request);
+                return problemResponse(status, HttpError.clientMessage(cause), request);
             }
 
             private Promise<HttpResponseData> handleVersionedRoute(Route<?> route, HttpRequestContext request) {

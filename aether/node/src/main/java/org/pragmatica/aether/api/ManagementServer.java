@@ -104,6 +104,7 @@ import org.pragmatica.aether.stream.StreamPartitionManager;
 import org.pragmatica.aether.stream.StreamReadRouter;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.http.HttpMethod;
+import org.pragmatica.http.HttpError;
 import org.pragmatica.http.HttpStatus;
 import org.pragmatica.aether.api.routes.EntityCheckpointRoutes;
 import org.pragmatica.aether.resource.entity.EntityCheckpointDriver;
@@ -1465,7 +1466,7 @@ class ManagementServerImpl implements ManagementServer {
         log.warn("Management forward failed [{}] {}: {}", requestId, path, cause.message());
         ProblemResponses.writeProblem(response,
                                       org.pragmatica.http.HttpStatus.SERVICE_UNAVAILABLE,
-                                      "Management forward failed: " + cause.message(),
+                                      "Management forward failed: " + HttpError.clientMessage(cause),
                                       path,
                                       requestId);
     }
@@ -1842,7 +1843,7 @@ class ManagementServerImpl implements ManagementServer {
                        .onSuccess(json -> response.respond(httpStatus, json))
                        .onFailure(cause -> ProblemResponses.writeProblem(response,
                                                                          org.pragmatica.http.HttpStatus.INTERNAL_SERVER_ERROR,
-                                                                         cause.message(),
+                                                                         HttpError.clientMessage(cause),
                                                                          "/health",
                                                                          ""));
     }
@@ -2095,7 +2096,7 @@ class ManagementServerImpl implements ManagementServer {
             response.header("WWW-Authenticate", "ApiKey realm=\"Aether\"");
         }
 
-        ProblemResponses.writeProblem(response, toRoutingStatus(status), cause.message(), path, requestId);
+        ProblemResponses.writeProblem(response, toRoutingStatus(status), HttpError.clientMessage(cause), path, requestId);
     }
 
     private static org.pragmatica.http.HttpStatus toRoutingStatus(HttpStatus status) {

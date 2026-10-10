@@ -19,6 +19,7 @@ import java.nio.charset.StandardCharsets;
 
 import org.pragmatica.http.CommonContentType;
 import org.pragmatica.http.ContentType;
+import org.pragmatica.http.HttpError;
 import org.pragmatica.http.HttpStatus;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
@@ -80,7 +81,7 @@ public interface ResponseWriter {
 
     /// Write 500 Internal Server Error response.
     default void internalError(Cause cause) {
-        error(HttpStatus.INTERNAL_SERVER_ERROR, cause.message());
+        error(HttpStatus.INTERNAL_SERVER_ERROR, HttpError.clientMessage(cause));
     }
 
     /// Write JSON response with status.

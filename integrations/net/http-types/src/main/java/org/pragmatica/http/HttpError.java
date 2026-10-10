@@ -17,6 +17,7 @@ package org.pragmatica.http;
 
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.utils.Causes;
 
 
 public interface HttpError extends Cause, HttpStatusAware {
@@ -35,11 +36,25 @@ public interface HttpError extends Cause, HttpStatusAware {
         return status().message();
     }
 
-    /// [#clientMessage()] for an [HttpError], the plain message of any other cause.
+    /// The one renderer of a [Cause] into client-facing text (#2101). Every client-body producer calls this and
+    /// never `Cause::message` directly: an [HttpError] gives its [#clientMessage()], a composite joins its members'
+    /// client text (recursively), any other cause gives its own top-level message. The origin chain is left to the
+    /// server log.
     static String clientMessage(Cause cause) {
-        return cause instanceof HttpError error
-               ? error.clientMessage()
-               : cause.message();
+        return switch (cause) {
+            case HttpError error -> error.clientMessage();
+            case Causes.CompositeCause composite -> compositeClientMessage(composite);
+            default -> cause.message();
+        };
+    }
+
+    private static String compositeClientMessage(Causes.CompositeCause composite) {
+        var builder = new StringBuilder("Composite:");
+
+        composite.stream().forEach(member -> builder.append("\n  ")
+                                                    .append(clientMessage(member)));
+
+        return builder.toString();
     }
 
     static HttpError httpError(HttpStatus status, Cause source) {
