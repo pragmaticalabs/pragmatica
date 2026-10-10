@@ -28,6 +28,10 @@ import org.pragmatica.aether.deployment.cluster.ProvisionDisposition;
 import org.pragmatica.aether.deployment.cluster.ReplacementInstanceState;
 import org.pragmatica.aether.deployment.cluster.SliceOwnershipQuery;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsm;
+import org.pragmatica.aether.environment.ClusterName;
+import org.pragmatica.aether.environment.EnvironmentError;
+import org.pragmatica.aether.environment.InstanceId;
+import org.pragmatica.aether.environment.InstanceStatus;
 import org.pragmatica.aether.environment.ProvisionContext;
 import org.pragmatica.aether.environment.SourceName;
 import org.pragmatica.aether.slice.SliceState;
@@ -2027,7 +2031,7 @@ class LeaderReconcilerTest {
 
         /// #1786 — replacements the provider lists but that never join (Addendum 7's shape, repeating): one
         /// missing slot mints at most an original and ONE substitute per ceiling window, never a chain of them —
-        /// the ceiling forgets an entry without terminating its instance, so each mint is a paid server.
+        /// each mint is a paid server (the dropped entry's instance is reaped since #1111; the cap bounds the spend until that reap is confirmed).
         /// Worst case in flight for the slot: 2. (Adopted from v1770's P1 probe.)
         @Test
         void inFlightEntry_neverJoiningConfirmedReplacements_mintAtMostOneSubstitutePerSlot() {
@@ -2655,6 +2659,307 @@ class LeaderReconcilerTest {
             assertThat(reconciler.inFlightProvisioningCount())
                     .as("a genuine boot failure removes the in-flight placeholder (existing behavior)")
                     .isZero();
+        }
+    }
+
+    /// #1111 — a replacement the leader stops tracking (ceiling, 12 absent listings, FAILED, a failed provision call) is no longer
+    /// tracked by anything, so only a CONFIRMED reap of its instance keeps it from running, billed, until a leader change. The
+    /// pins assert the reap request to the CTM for each reason; the control is a replacement that joined.
+    @Nested
+    class AbandonedReplacementReap {
+        private NodeId dispatchOne() {
+            configuredCoreCount.set(5);
+            seedClusterWithPeers(PEER_A, PEER_B, PEER_C, PEER_D);
+            reconciler.activate();
+            scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
+            removePeers(PEER_D);
+            triggerAndFireReconcile();
+            advancePastProvisioningGates();
+            triggerAndFireReconcile();
+            assertThat(ctm.provisionReplacementCalls()).hasSize(1);
+
+            return ctm.provisionReplacementCalls().getFirst();
+        }
+
+        @Test
+        void ceilingEviction_reapsTheInstance_unseenBecauseTheProviderNeverListedIt() {
+            ctm.setReplacementCeiling(timeSpan(2).minutes());
+            var minted = dispatchOne();
+
+            ctm.reportInstanceState(minted, ReplacementInstanceState.UNKNOWN);
+            advancePollIntervals(8);
+            assertThat(ctm.reapCalls()).as("at the ceiling, not past it, nothing is abandoned").isEmpty();
+
+            advancePollIntervals(2);
+
+            assertThat(reconciler.inFlightProvisioningKeys()).doesNotContain(minted);
+            assertThat(ctm.reapCalls())
+                .as("past the ceiling the instance is reaped through the CTM, in the replacement's source")
+                .containsExactly(new RecordingCtm.ReapCall(minted, RecordingCtm.REPLACEMENT_SOURCE, false));
+        }
+
+        @Test
+        void failedInstance_isReaped_asAnInstanceTheProviderListed() {
+            var minted = dispatchOne();
+
+            ctm.reportInstanceState(minted, ReplacementInstanceState.FAILED);
+            advancePollIntervals(1);
+
+            assertThat(ctm.reapCalls()).containsExactly(new RecordingCtm.ReapCall(minted, RecordingCtm.REPLACEMENT_SOURCE, true));
+        }
+
+        @Test
+        void twelveAbsentListings_reapTheInstance_asNeverListed_neverBefore() {
+            var minted = dispatchOne();
+
+            ctm.reportInstanceState(minted, ReplacementInstanceState.ABSENT);
+            advanceAndTick(10_000);
+            for (var i = 1; i < EXPECTED_ABSENT_LISTINGS; i++) {
+                advanceAndTick(EXPECTED_POLL_INTERVAL.millis());
+            }
+            assertThat(ctm.reapCalls()).as("twelve absences inside the first-listing floor are not a deletion").isEmpty();
+
+            advanceAndTick(EXPECTED_POLL_INTERVAL.millis());
+
+            assertThat(reconciler.inFlightProvisioningKeys()).isEmpty();
+            assertThat(ctm.reapCalls())
+                .as("an instance the provider NEVER listed is reaped as unseen: an empty listing alone must not confirm it gone")
+                .containsExactly(new RecordingCtm.ReapCall(minted, RecordingCtm.REPLACEMENT_SOURCE, false));
+        }
+
+        /// The other arm of the same drop: an instance the provider listed (CONFIRMED) and then stopped listing is gone.
+        @Test
+        void listedThenAbsent_reapsTheInstance_asSeen() {
+            var minted = dispatchOne();
+
+            ctm.reportInstanceState(minted, ReplacementInstanceState.PRESENT);
+            advancePollIntervals(1);
+            ctm.reportInstanceState(minted, ReplacementInstanceState.ABSENT);
+            advancePollIntervals(1);
+
+            assertThat(reconciler.inFlightProvisioningKeys()).doesNotContain(minted);
+            assertThat(ctm.reapCalls()).containsExactly(new RecordingCtm.ReapCall(minted, RecordingCtm.REPLACEMENT_SOURCE, true));
+        }
+
+        @Test
+        void failedProvisionCall_withAnInstanceAtTheProvider_reapsItAsUnseen() {
+            ctm.failNextProvision(Causes.cause("readiness timed out"));
+            var minted = dispatchOne();
+
+            assertThat(reconciler.inFlightProvisioningKeys()).isEmpty();
+            assertThat(ctm.reapCalls())
+                .as("a failed call proves nothing was listed: the reap is asked as unseen, and the listing that shows the instance confirms it")
+                .containsExactly(new RecordingCtm.ReapCall(minted, RecordingCtm.REPLACEMENT_SOURCE, false));
+        }
+
+        /// An explicit create refusal (a typed refusal, no instance id) is evidence that nothing was created: it is not reaped and not
+        /// announced as an unconfirmed termination; the manager records it as a provisioning failure.
+        @Test
+        void capacityRefusal_isNeitherReapedNorAnnounced() {
+            assertNothingWasCreated(EnvironmentError.capacityUnavailable("fsn1", new RuntimeException("error during placement (resource_unavailable)")));
+        }
+
+        @Test
+        void nodeCapRefusal_isNeitherReapedNorAnnounced() {
+            assertNothingWasCreated(EnvironmentError.nodeCapExceeded(ClusterName.clusterName("test-cluster").unwrap(), 12, 12));
+        }
+
+        @Test
+        void noProviderRefusal_isNeitherReapedNorAnnounced() {
+            assertNothingWasCreated(EnvironmentError.operationNotSupported("provisionNode: no ComputeProvider"));
+        }
+
+        @Test
+        void missingCredentialsRefusal_isNeitherReapedNorAnnounced() {
+            assertNothingWasCreated(EnvironmentError.CredentialsMissing.credentialsMissing("hetzner", List.of("HCLOUD_TOKEN")).unwrap());
+        }
+
+        /// What Hetzner delivers for a server that was CREATED and then went `off` during readiness (`createAndConfirm(...).mapError(
+        /// toProvisionError)`, default arm): `ProvisionFailed`, not a readiness timeout. The server exists and bills; it is reaped.
+        @Test
+        void hetznerCreatedThenOff_isProvisionFailed_andIsReaped() {
+            assertMaybeCreatedIsReaped(EnvironmentError.provisionFailed("cx22",
+                                                                       "fsn1",
+                                                                       new RuntimeException(readinessMessage("42", InstanceStatus.STOPPING))));
+        }
+
+        /// What AWS delivers for an instance that never reached RUNNING after RunInstances (`confirmRunning(...).mapError(toProvisionError)`).
+        @Test
+        void awsNeverRunning_isProvisionFailed_andIsReaped() {
+            assertMaybeCreatedIsReaped(EnvironmentError.provisionFailed("t3.medium",
+                                                                       "eu-central-1a",
+                                                                       new RuntimeException(readinessMessage("i-0abc", InstanceStatus.PROVISIONING))));
+        }
+
+        @Test
+        void anUntypedFailure_isReaped_asMaybeCreated() {
+            assertMaybeCreatedIsReaped(Causes.cause("connection reset while waiting for the create"));
+        }
+
+        private static String readinessMessage(String instanceId, InstanceStatus lastStatus) {
+            return EnvironmentError.provisionReadinessTimeout(InstanceId.instanceId(instanceId).unwrap(), lastStatus, 300_000L).message();
+        }
+
+        private void assertMaybeCreatedIsReaped(Cause failure) {
+            ctm.failNextProvision(failure);
+            var minted = dispatchOne();
+
+            assertThat(ctm.reapCalls()).as("a cause raised after the create may have left a billed instance")
+                                       .containsExactly(new RecordingCtm.ReapCall(minted, RecordingCtm.REPLACEMENT_SOURCE, false));
+        }
+
+        private void assertNothingWasCreated(Cause refusal) {
+            ctm.failNextProvision(refusal);
+            dispatchOne();
+
+            assertThat(ctm.reapCalls()).as("refused before the create: nothing exists, so nothing is reaped").isEmpty();
+            assertThat(ctm.announcements()).isEmpty();
+            assertThat(reconciler.inFlightProvisioningKeys()).as("the placeholder is dropped all the same").isEmpty();
+        }
+
+        /// A readiness timeout fails the call AFTER the create, and the provider's listing may lag or omit the instance, so an empty
+        /// listing is not "nothing was created": the reap stays unconfirmed (bounded retry, then the unconfirmed event) and is never
+        /// reported confirmed.
+        @Test
+        void failedProvisionCall_withAnEmptyListing_staysUnconfirmed_thenAnnounced_neverConfirmed() {
+            ctm.providerListsNoInstances();
+            ctm.failNextProvision(Causes.cause("readiness timed out"));
+            var minted = dispatchOne();
+
+            for (var attempt = 2; attempt <= 5; attempt++) {
+                runPendingReapRetry(EXPECTED_POLL_INTERVAL);
+            }
+
+            assertThat(ctm.reapCalls()).as("five attempts, every one asked as unseen").hasSize(5)
+                                       .allSatisfy(call -> assertThat(call).isEqualTo(new RecordingCtm.ReapCall(minted,
+                                                                                                                   RecordingCtm.REPLACEMENT_SOURCE,
+                                                                                                                   false)));
+            assertThat(ctm.announcements()).as("announced once, through the manager, which alone raises (and later clears) the event")
+                                           .extracting(RecordingCtm.Announcement::node)
+                                           .containsExactly(minted);
+        }
+
+        /// At the bound the event is raised once and the active retries STOP: no provider call is made after it, however long the
+        /// clock runs; a later observation (the next activation replay) owns the instance.
+        @Test
+        void afterTheBound_theEventFiresOnce_andNoProviderCallIsMade() {
+            ctm.failReaps(Causes.cause("still listed at the provider after terminate"));
+            ctm.failNextProvision(Causes.cause("readiness timed out"));
+            var abandoned = dispatchOne();
+            for (var attempt = 2; attempt <= 5; attempt++) {
+                runPendingReapRetry(EXPECTED_POLL_INTERVAL);
+            }
+            assertThat(reapCallsFor(abandoned)).hasSize(5);
+
+            for (var tick = 0; tick < 20; tick++) {
+                advanceOnePollInterval();
+            }
+
+            assertThat(reapCallsFor(abandoned)).as("no provider call for it after the bound (the deficit re-dispatches other ids, which are other orphans)").hasSize(5);
+            assertThat(ctm.announcements().stream().filter(announcement -> announcement.node().equals(abandoned))).as("announced once").hasSize(1);
+        }
+
+        /// The reap is requested only after the entry left the in-flight map, for every reason, so a racing poll answer cannot leave
+        /// an entry tracked while its instance is being terminated (and a second chain started from it).
+        @Test
+        void reap_isRequestedOnlyAfterTheEntryLeftTheMap_forEveryReason() {
+            ctm.trackedBy(reconciler::inFlightProvisioningKeys);
+            ctm.setReplacementCeiling(timeSpan(2).minutes());
+            var ceilinged = dispatchOne();
+
+            advancePollIntervals(10);
+            assertThat(ctm.reapCalls()).extracting(RecordingCtm.ReapCall::node).containsExactly(ceilinged);
+            assertThat(ctm.trackedWhenReaped()).as("ceiling").containsExactly(false);
+        }
+
+        @Test
+        void reap_isRequestedOnlyAfterTheEntryLeftTheMap_whenTheProviderReportsFailed() {
+            ctm.trackedBy(reconciler::inFlightProvisioningKeys);
+            var minted = dispatchOne();
+
+            ctm.reportInstanceState(minted, ReplacementInstanceState.FAILED);
+            advancePollIntervals(1);
+
+            assertThat(ctm.trackedWhenReaped()).as("provider FAILED").containsExactly(false);
+        }
+
+        /// Control: a replacement that joined is never terminated, though the sweep that evicts it for its ceiling runs before
+        /// any reconcile pass that would have cleared it (the clock jumps past the ceiling in one step, so no pass runs between
+        /// the join and the eviction).
+        @Test
+        void joinedReplacement_isNeverReaped_whenItsCeilingPasses() {
+            ctm.setReplacementCeiling(timeSpan(2).minutes());
+            var minted = dispatchOne();
+
+            seedClusterWithPeers(minted);
+            ctm.reportInstanceState(minted, ReplacementInstanceState.UNKNOWN);
+            advanceAndRunSweepOnly(135_000);
+
+            assertThat(reconciler.inFlightProvisioningKeys()).as("the sweep evicted the entry").doesNotContain(minted);
+            assertThat(ctm.reapCalls()).as("a member of the cluster is not reaped").isEmpty();
+        }
+
+        /// Control: a replacement whose reap is being retried and which then joins is left alone by the retry.
+        @Test
+        void retriedReap_stopsWhenTheReplacementJoins() {
+            ctm.failReaps(Causes.cause("still listed at the provider after terminate"));
+            var minted = dispatchOne();
+
+            ctm.reportInstanceState(minted, ReplacementInstanceState.FAILED);
+            advancePollIntervals(1);
+            assertThat(ctm.reapCalls()).hasSize(1);
+
+            seedClusterWithPeers(minted);
+            runPendingReapRetry(EXPECTED_POLL_INTERVAL);
+
+            assertThat(ctm.reapCalls()).as("the retry found a member and did not reap").hasSize(1);
+        }
+
+        @Test
+        void abandonment_warnsWithSourceNodeIdAndInstanceId() {
+            var minted = dispatchOne();
+
+            ctm.reportInstanceState(minted, ReplacementInstanceState.FAILED);
+            var warns = capturingReconcilerWarns(() -> advancePollIntervals(1));
+
+            assertThat(warns)
+                .as("the WARN names the node id, the instance id and the source")
+                .anySatisfy(line -> assertThat(line).contains(minted.id())
+                                                    .contains(RecordingCtm.instanceIdOf(minted))
+                                                    .contains(RecordingCtm.REPLACEMENT_SOURCE.value()));
+        }
+
+        /// A refused or failed reap is retried; when the bound is spent the manager is handed the orphan to announce, with the
+        /// instance named, and the reconciler stops asking the provider.
+        @Test
+        void unconfirmedReap_isRetriedWithinABound_thenAnnouncedNamingTheInstance() {
+            ctm.failReaps(Causes.cause("still listed at the provider after terminate"));
+            var minted = dispatchOne();
+
+            ctm.reportInstanceState(minted, ReplacementInstanceState.FAILED);
+            advancePollIntervals(1);
+            assertThat(ctm.reapCalls()).as("first attempt").hasSize(1);
+
+            for (var attempt = 2; attempt <= 4; attempt++) {
+                runPendingReapRetry(EXPECTED_POLL_INTERVAL);
+                assertThat(ctm.reapCalls()).as("attempt " + attempt).hasSize(attempt);
+            }
+            assertThat(ctm.announcements()).as("inside the bound nothing is announced").isEmpty();
+
+            runPendingReapRetry(EXPECTED_POLL_INTERVAL);
+            assertThat(ctm.reapCalls()).as("fifth and last fast attempt").hasSize(5);
+            assertThat(ctm.announcements()).hasSize(1);
+            var announced = ctm.announcements().getFirst();
+            assertThat(announced.node()).isEqualTo(minted);
+            assertThat(announced.detail()).contains(RecordingCtm.instanceIdOf(minted)).contains("still listed at the provider");
+        }
+
+        private List<RecordingCtm.ReapCall> reapCallsFor(NodeId node) {
+            return ctm.reapCalls().stream().filter(call -> call.node().equals(node)).toList();
+        }
+
+        private void runPendingReapRetry(TimeSpan delay) {
+            scheduler.tasksByDelay(delay).stream().filter(ManualTask::pending).reduce((first, second) -> second).orElseThrow().runIfLive();
         }
     }
 
@@ -3908,6 +4213,102 @@ class LeaderReconcilerTest {
             return replacementCeiling.get();
         }
 
+        // #1111 — the confirmed reap the reconciler issues for an abandoned replacement. Every call is recorded; by default it
+        // succeeds, so a test that is not about the reap schedules no retries.
+        record ReapCall(NodeId node, SourceName source, boolean seenBefore) {}
+
+        static final SourceName REPLACEMENT_SOURCE = SourceName.sourceName("hetzner-core").unwrap();
+        private final List<ReapCall> reapCalls = new CopyOnWriteArrayList<>();
+        private final AtomicReference<Option<Cause>> reapFailure = new AtomicReference<>(Option.none());
+        private final AtomicBoolean providerListsInstances = new AtomicBoolean(true);
+        private final List<Boolean> trackedWhenReaped = new CopyOnWriteArrayList<>();
+        private volatile java.util.function.Supplier<Set<NodeId>> tracked = Set::of;
+
+        @Contract
+        void trackedBy(java.util.function.Supplier<Set<NodeId>> tracked) {
+            this.tracked = tracked;
+        }
+
+        List<Boolean> trackedWhenReaped() {
+            return List.copyOf(trackedWhenReaped);
+        }
+
+        @Contract
+        void providerListsInstances() {
+            providerListsInstances.set(true);
+        }
+
+        record Announcement(NodeId node, String detail) {}
+
+        private final List<Announcement> announcements = new CopyOnWriteArrayList<>();
+
+        List<Announcement> announcements() {
+            return List.copyOf(announcements);
+        }
+
+        @Override
+        public Unit markUnconfirmed(NodeId node, String detail) {
+            announcements.add(new Announcement(node, detail));
+
+            return unit();
+        }
+
+        List<ReapCall> reapCalls() {
+            return List.copyOf(reapCalls);
+        }
+
+        @Contract
+        void failReaps(Cause cause) {
+            reapFailure.set(Option.some(cause));
+        }
+
+        @Contract
+        void succeedReaps() {
+            reapFailure.set(Option.none());
+        }
+
+        @Contract
+        void providerListsNoInstances() {
+            providerListsInstances.set(false);
+        }
+
+        static String instanceIdOf(NodeId node) {
+            return "srv-" + node.id();
+        }
+
+        @Override
+        public Promise<Unit> reapRetired(NodeId node, SourceName source, boolean seenBefore) {
+            reapCalls.add(new ReapCall(node, source, seenBefore));
+            trackedWhenReaped.add(tracked.get().contains(node));
+
+            // The empty-listing rule of the real manager: an instance the provider does not list is gone only if it was listed before.
+            var unlisted = !providerListsInstances.get() && !seenBefore;
+
+            return reapFailure.get()
+                              .map(Cause::<Unit> promise)
+                              .or(() -> unlisted
+                                        ? Causes.cause("the provider lists no instance of " + node.id()
+                                                       + " and has never listed one: not confirmed gone").<Unit> promise()
+                                        : Promise.success(unit()));
+        }
+
+        @Override
+        public Promise<Boolean> instanceListed(NodeId node, SourceName source) {
+            return Promise.success(providerListsInstances.get());
+        }
+
+        @Override
+        public SourceName replacementSource(NodeRole intendedRole) {
+            return REPLACEMENT_SOURCE;
+        }
+
+        @Override
+        public Promise<List<String>> replacementInstanceIds(NodeId node) {
+            return Promise.success(providerListsInstances.get()
+                                   ? List.of(instanceIdOf(node))
+                                   : List.of());
+        }
+
         @Override
         public Promise<Unit> reconcile() {
             reconcileCount.incrementAndGet();
@@ -4399,6 +4800,10 @@ class LeaderReconcilerTest {
 
         boolean cancelled() {
             return cancelled;
+        }
+
+        boolean pending() {
+            return !cancelled && !done;
         }
 
         @Contract

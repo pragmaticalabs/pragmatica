@@ -1008,6 +1008,21 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                    .or(SourceProfile.DEFAULT_REPLACEMENT_CEILING);
     }
 
+    @Override
+    public SourceName replacementSource(NodeRole intendedRole) {
+        return replacementSourceName(intendedRole);
+    }
+
+    @Override
+    public Promise<List<String>> replacementInstanceIds(NodeId node) {
+        return lifecycleManager.instancesForNode(node)
+                               .map(listed -> listed.stream()
+                                                    .map(instance -> instance.id()
+                                                                             .value())
+                                                    .toList())
+                               .recover(_ -> List.of());
+    }
+
     /// The cloud [SourceProfile] backing `intendedRole` in the persisted cluster TOML, or empty when there
     /// is no committed TOML (the bootstrap seed) or it is unparseable or no cloud source declares the role.
     private Option<SourceProfile> persistedCloudSource(NodeRole intendedRole) {
@@ -1088,8 +1103,10 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     }
 
     private static Cause zonesExhausted(List<String> zones) {
-        return Causes.cause("CTM v2: provisionReplacement exhausted all configured zones on capacity unavailability: " + String.join(", ",
-                                                                                                                                     zones));
+        // Typed, so a caller can tell an explicit capacity refusal (nothing created) from a failure that may have left an instance (#1111).
+        return EnvironmentError.capacityUnavailable(String.join(", ", zones),
+                                                    new IllegalStateException("CTM v2: provisionReplacement exhausted all configured zones on capacity unavailability: " + String.join(", ",
+                                                                                                                                                                                       zones)));
     }
 
     /// #334 — the ordered zone list to rotate over for a replacement of `intendedRole`, reusing the

@@ -263,6 +263,9 @@ class ClusterTopologyManagerZoneRotationTest {
             result.onFailure(cause -> assertThat(cause.message())
                     .as("the exhaustion cause names the zones that were tried")
                     .contains("fsn1", "nbg1", "hel1"));
+            result.onFailure(cause -> assertThat(cause)
+                    .as("typed as a capacity refusal: nothing was created, so a caller must not reap or announce it (#1111)")
+                    .isInstanceOf(org.pragmatica.aether.environment.EnvironmentError.CapacityUnavailable.class));
             assertThat(lifecycleManager.attemptedZones())
                     .as("each zone attempted exactly once in order, then bail (no infinite loop)")
                     .containsExactly("fsn1", "nbg1", "hel1");
