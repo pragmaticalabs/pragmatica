@@ -165,6 +165,49 @@ class CatchupAndBackfillAlarmOrderTest {
         assertThat(events).containsExactly("raise:7", "resolved:7");
     }
 
+    /// A stale flight's clear must not clear its successor's block: the successor raised, the stale view (not current) clears and resolves
+    /// nothing, and only the successor's own clear resolves it. Mutation: the `current` gate in `clearOversized` always true turns this red.
+    @Test
+    void backfill_aStaleFlightsClear_doesNotResolveTheSuccessorsBlock() throws Exception {
+        var events = new CopyOnWriteArrayList<String>();
+        var manager = StreamPartitionManager.streamPartitionManager(Long.MAX_VALUE);
+
+        manager.createStream(StreamConfig.streamConfig(STREAM));
+        var base = partitionBackfill(replicaRegistry(),
+                                     manager.alignedRecovery(),
+                                     CatchupTransport.NOOP,
+                                     (_, _, _) -> ReplicationError.General.REPLICATION_TIMEOUT.promise(),
+                                     (_, _) -> 3L,
+                                     SELF,
+                                     TimeSpan.timeSpan(10).seconds(),
+                                     () -> 0L);
+
+        base.blockAlarm(new OwnerActivation.BlockAlarm() {
+            @Override
+            public Unit raise(OwnerActivation.ActivationBlock block) {
+                events.add("raise");
+
+                return Unit.unit();
+            }
+
+            @Override
+            public Unit resolved(OwnerActivation.ActivationBlock block) {
+                events.add("resolved");
+
+                return Unit.unit();
+            }
+        });
+
+        var successor = base.withCurrent(() -> true);
+        var stale = base.withCurrent(() -> false);
+
+        successor.oversizedPeer(STREAM, PARTITION, PEER, new OwnerPeerReads.EventExceedsReadCap(7L));
+        stale.clearOversized(STREAM, PARTITION);
+        assertThat(events).as("the stale flight's clear resolved nothing").containsExactly("raise");
+        successor.clearOversized(STREAM, PARTITION);
+        assertThat(events).as("the successor's own clear still resolves its block").containsExactly("raise", "resolved");
+    }
+
     /// Lock order and delivery order under real threads: raise and clear race over many episodes at the two sites; the deadlock detector sees no
     /// cycle, every thread finishes inside the bound, and no key ever delivers a recovery before its raise.
     @Test

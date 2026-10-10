@@ -172,7 +172,14 @@ class RefusedCutAlarmOrderTest {
         var deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(60);
 
         while ((repairer.isAlive() || destroyer.isAlive()) && System.nanoTime() < deadline) {
-            assertThat(ManagementFactory.getThreadMXBean().findDeadlockedThreads()).as("no deadlocked thread while racing").isNull();
+            var dead = ManagementFactory.getThreadMXBean().findDeadlockedThreads();
+
+            if (dead != null) {
+                for (var info : ManagementFactory.getThreadMXBean().getThreadInfo(dead, true, true)) {
+                    System.err.println("DEADLOCKDUMP " + info);
+                }
+            }
+            assertThat(dead).as("no deadlocked thread while racing").isNull();
             Thread.onSpinWait();
         }
 
@@ -190,6 +197,189 @@ class RefusedCutAlarmOrderTest {
         }
 
         assertThat(delivered.stream().filter(w -> w.code() == OperatorWarningCode.STREAM_DIVERGENT_TAIL_CUT_REFUSED).count()).as("the race raised refusals").isPositive();
+    }
+
+    /// Manager-level lock order (#2004, from v-2096's CutsDeadlock probe): the refused-cut monitor against the manager's own locks. Workers drive
+    /// the real paths on one manager: a refused repair (monitor, ring section), a repair that goes through (`forgetCutState` under the ring's append
+    /// section, then `quarantineLock`), a divergence record (`quarantineLock`) and the destroy (monitor), so a monitor nested with either lock in
+    /// either order is a cycle the detector finds. Mutation (shown in the round-2 result): nesting `quarantineLock` inside the monitor in
+    /// `cutRefused` and the monitor inside `quarantineLock` in `forgetCutState` turns this red.
+    @Test
+    void managerLocksAndTheRefusedCutMonitor_neverDeadlock() throws Exception {
+        var manager = streamPartitionManager(Long.MAX_VALUE, Option.some(walDir));
+        var rounds = 25;
+        var workers = new java.util.ArrayList<Thread>();
+
+        manager.operatorWarnings(sink);
+        for (var w = 0; w < 4; w++) {
+            var id = w;
+            var worker = new Thread(() -> {
+                try {
+                    for (var round = 0; round < rounds; round++) {
+                        var name = "w" + id + "r" + round;
+
+                        withQuarantinedStream(manager, name);
+                        manager.repairDivergence(name, PARTITION, _ -> true);
+                        unblockSegmentsOf(name);
+                        manager.repairDivergence(name, PARTITION, _ -> true);
+                        withQuarantinedStreamDiverged(manager, name);
+                        manager.destroyStream(name);
+                    }
+                } catch (Exception e) {
+                    throw new AssertionError(e);
+                }
+            }, "worker-" + id);
+
+            worker.setDaemon(true);
+            workers.add(worker);
+        }
+        workers.forEach(Thread::start);
+
+        var deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(90);
+
+        while (workers.stream().anyMatch(Thread::isAlive) && System.nanoTime() < deadline) {
+            var dead = ManagementFactory.getThreadMXBean().findDeadlockedThreads();
+
+            if (dead != null) {
+                for (var info : ManagementFactory.getThreadMXBean().getThreadInfo(dead, true, true)) {
+                    System.err.println("DEADLOCKDUMP " + info);
+                }
+            }
+            assertThat(dead).as("no deadlocked thread").isNull();
+            Thread.onSpinWait();
+        }
+
+        assertThat(workers.stream().anyMatch(Thread::isAlive)).as("all workers finished inside the bound").isFalse();
+        assertThat(ManagementFactory.getThreadMXBean().findDeadlockedThreads()).isNull();
+        awaitQuiet();
+        assertThat(delivered.stream().filter(w -> w.code() == OperatorWarningCode.STREAM_DIVERGENT_TAIL_CUT_REFUSED).count()).as("refusals were raised").isPositive();
+    }
+
+    /// The same cycle search with the manager's lock-taking steps in tight loops (v-2096's CutsDeadlock probe): `cutRefused` and `cutResumed`
+    /// (the monitor) against `forgetCutState` (`quarantineLock`, which production runs inside the ring's append section). The window between two
+    /// acquisitions is a few instructions, so the real repair paths above rarely land in it; these loops do. Mutation shown in the round-2 result:
+    /// nesting `quarantineLock` inside the monitor in `cutRefused` and the monitor inside `quarantineLock` in `forgetCutState` turns this red.
+    @Test
+    void cutsAndForgetCutState_inTightLoops_neverDeadlock() throws Exception {
+        var manager = streamPartitionManager(Long.MAX_VALUE);
+
+        manager.operatorWarnings(OperatorWarningSink.logOnly());
+
+        var refClass = Class.forName(StreamPartitionManager.class.getName() + "$PartitionRef");
+        var refConstructor = refClass.getDeclaredConstructor(String.class, int.class);
+        var cutRefused = StreamPartitionManager.class.getDeclaredMethod("cutRefused", String.class, int.class, refClass, long.class, org.pragmatica.lang.Cause.class);
+        var cutResumed = StreamPartitionManager.class.getDeclaredMethod("cutResumed", String.class, int.class, refClass);
+        var forget = StreamPartitionManager.class.getDeclaredMethod("forgetCutState", String.class, int.class, refClass, long.class, long.class);
+
+        refConstructor.setAccessible(true);
+        cutRefused.setAccessible(true);
+        cutResumed.setAccessible(true);
+        forget.setAccessible(true);
+
+        var stop = new AtomicBoolean();
+        var failure = new AtomicReference<Throwable>();
+        var refuser = new Thread(() -> loop(stop, failure, i -> {
+            var name = "s" + i % 50;
+            var ref = refConstructor.newInstance(name, 0);
+
+            cutRefused.invoke(manager, name, 0, ref, 5L, new StreamError.RepairPreserveFailed(name, 0, "m" + i));
+            cutResumed.invoke(manager, name, 0, ref);
+        }), "refuser");
+        var forgetter = new Thread(() -> loop(stop, failure, i -> {
+            var name = "s" + i % 50;
+
+            forget.invoke(manager, name, 0, refConstructor.newInstance(name, 0), 1L, 0L);
+        }), "forgetter");
+
+        refuser.setDaemon(true);
+        forgetter.setDaemon(true);
+        refuser.start();
+        forgetter.start();
+
+        var deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(6);
+        long[] dead = null;
+
+        while (System.nanoTime() < deadline && dead == null) {
+            dead = ManagementFactory.getThreadMXBean().findDeadlockedThreads();
+            Thread.onSpinWait();
+        }
+
+        stop.set(true);
+        assertThat(dead).as("no deadlocked thread between the refused-cut monitor and quarantineLock").isNull();
+        assertThat(failure.get()).as("the loops ran the real methods without error").isNull();
+        refuser.join(TimeUnit.SECONDS.toMillis(WAIT_SECONDS));
+        forgetter.join(TimeUnit.SECONDS.toMillis(WAIT_SECONDS));
+        assertThat(refuser.isAlive() || forgetter.isAlive()).as("both loops ended").isFalse();
+    }
+
+    private interface Step {
+        void run(int i) throws Exception;
+    }
+
+    private static void loop(AtomicBoolean stop, AtomicReference<Throwable> failure, Step step) {
+        try {
+            for (var i = 0; !stop.get(); i++) {
+                step.run(i);
+            }
+        } catch (Throwable t) {
+            failure.set(t);
+        }
+    }
+
+    /// A divergence recorded again on an already repaired stream, so the destroy has a quarantine to take with it.
+    private void withQuarantinedStreamDiverged(StreamPartitionManager manager, String name) {
+        manager.appendRecovered(name, PARTITION, 2, "again".getBytes(UTF_8), 1002L, EPOCH);
+    }
+
+    private void unblockSegmentsOf(String name) throws Exception {
+        try (var files = Files.walk(walDir)) {
+            for (var obstacle : files.filter(Files::isDirectory).filter(dir -> dir.getFileName().toString().contains(name) && dir.getFileName().toString().endsWith(".tmp")).toList()) {
+                Files.delete(obstacle);
+            }
+        }
+    }
+
+    /// Positive control for the detector: two locks taken in opposite orders ARE reported. The locks are interruptible and the threads are
+    /// freed afterwards, so the deliberate deadlock cannot be seen by the other tests of this JVM.
+    @Test
+    void controlTheDetectorSeesAnInversion() throws InterruptedException {
+        var first = new java.util.concurrent.locks.ReentrantLock();
+        var second = new java.util.concurrent.locks.ReentrantLock();
+        var bothHold = new java.util.concurrent.CountDownLatch(2);
+        var left = new Thread(() -> crossLock(first, second, bothHold), "control-left");
+        var right = new Thread(() -> crossLock(second, first, bothHold), "control-right");
+
+        left.start();
+        right.start();
+
+        var deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(WAIT_SECONDS);
+
+        while (ManagementFactory.getThreadMXBean().findDeadlockedThreads() == null && System.nanoTime() < deadline) {
+            Thread.onSpinWait();
+        }
+
+        var found = ManagementFactory.getThreadMXBean().findDeadlockedThreads();
+
+        left.interrupt();
+        right.interrupt();
+        left.join(TimeUnit.SECONDS.toMillis(WAIT_SECONDS));
+        right.join(TimeUnit.SECONDS.toMillis(WAIT_SECONDS));
+        assertThat(found).as("the control inversion is detected").isNotNull();
+        assertThat(ManagementFactory.getThreadMXBean().findDeadlockedThreads()).as("the control freed its threads").isNull();
+    }
+
+    private static void crossLock(java.util.concurrent.locks.ReentrantLock outer, java.util.concurrent.locks.ReentrantLock inner, java.util.concurrent.CountDownLatch bothHold) {
+        outer.lock();
+        try {
+            bothHold.countDown();
+            bothHold.await(WAIT_SECONDS, TimeUnit.SECONDS);
+            inner.lockInterruptibly();
+            inner.unlock();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        } finally {
+            outer.unlock();
+        }
     }
 
     private static void awaitBlockedOrDone(Thread thread) {
