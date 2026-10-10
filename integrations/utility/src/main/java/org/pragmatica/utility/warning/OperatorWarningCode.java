@@ -131,6 +131,9 @@ public enum OperatorWarningCode {
     /// A node that had a pending operator drain joined the cluster again (#2062): a new incarnation, so the pending drain was cancelled and its grace will
     /// not terminate it. The subject is the node. Re-issue the drain if it is still intended.
     NODE_DRAIN_CANCELLED_REJOINED("node-drain-cancelled-rejoined", "deployment", WarningLevel.WARNING),
+    /// A node that a replacement retired (#2062) joined the cluster again - a restart of a supposedly gone instance. Its identity is superseded by the node that
+    /// replaced it, so it is refused and is being drained: re-admitting it would add a node beside its replacement. The subject is the retired node.
+    NODE_RETIRED_IDENTITY_REJOINED("node-retired-identity-rejoined", "deployment", WarningLevel.WARNING),
     /// An operator-started (EXTERNAL) node joined the cluster again while the release of its previous incarnation's capacity reservation was being committed
     /// (#2062), and its capacity reservation could not be reconciled: either the ledger cannot count its slot (the node is refused and is being drained), or the
     /// reconciliation failed and the node's reservation is not known to be in step with the ledger. Never log-only. The subject is the node.

@@ -466,13 +466,15 @@ public final class NodeReplacementWiring {
                                      .reapRetired(node,
                                                   source,
                                                   seen.contains(node)))
-                     .<EffectResult> map(_ -> confirmedGone(node))
+                     .<EffectResult> map(_ -> confirmedGone(node,
+                                                            record.replacement()))
                      .recover(cause -> notConfirmed(node, cause, boundedByRetiring));
         }
 
-        private EffectResult confirmedGone(NodeId node) {
-            // Retired by the replacement, for good: the admission marker (the ticket a rejoin would be admitted again from) goes with it.
-            in.ctm().forgetAdmission(node);
+        private EffectResult confirmedGone(NodeId node, NodeId replacement) {
+            // Retired by the replacement, for good: its identity is SUPERSEDED. The admission ticket is replaced by a retirement tombstone, so a restart of the
+            // supposedly gone instance is refused and evicted when it joins, never admitted beside its replacement.
+            in.ctm().supersedeAdmission(node, replacement);
             reaped.add(node);
             reapFailure.remove(node);
             reapSince.remove(node);

@@ -104,6 +104,30 @@ public interface NodeLifecycleManager {
         return Promise.unitPromise();
     }
 
+    /// The node was retired by a replacement: its admission marker becomes a retirement tombstone naming the node that replaced it, so a later join of the same
+    /// identity is refused ([RetiredIdentityRejoined]) instead of being admitted again. Replaces the marker's ticket; idempotent; never a provider call.
+    default Promise<Unit> supersedeAdmission(NodeId nodeId, NodeId replacement) {
+        return Promise.unitPromise();
+    }
+
+    /// A superseded identity joined: it is refused and evicted, never admitted again.
+    record RetiredIdentityRejoined(String node, String replacement) implements org.pragmatica.lang.Cause {
+        @Override
+        public String message() {
+            return "node " + node + " was retired by a replacement (" + replacement + ") and its identity is superseded";
+        }
+    }
+
+    /// A node joined with no capacity reservation, no ticket and no tombstone: nothing is known to restore or to refuse. The manager decides whether that is
+    /// expected (a configured voter of the first formation) or an operator event.
+    record NoReservationOnJoin(String node) implements org.pragmatica.lang.Cause {
+        @Override
+        public String message() {
+            return "node " + node
+                 + " joined with no capacity reservation, no admission ticket and no retirement tombstone";
+        }
+    }
+
     /// The re-admission of a node that joined again was refused (the ledger cannot count its slot): the node is not admitted and is to be evicted.
     record ReadmissionRefused(String message) implements org.pragmatica.lang.Cause {}
 

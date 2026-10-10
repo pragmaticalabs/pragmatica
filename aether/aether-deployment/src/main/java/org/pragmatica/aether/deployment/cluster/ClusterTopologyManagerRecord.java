@@ -2323,6 +2323,16 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     }
 
     @Override
+    public Unit supersedeAdmission(NodeId nodeId, NodeId replacement) {
+        lifecycleManager.supersedeAdmission(nodeId, replacement)
+                        .onFailure(cause -> log.warn("CTM: the retirement tombstone of {} was not written: {}",
+                                                     nodeId,
+                                                     cause.message()));
+
+        return unit();
+    }
+
+    @Override
     public Unit forgetAdmission(NodeId nodeId) {
         lifecycleManager.forgetAdmission(nodeId)
                         .onFailure(cause -> log.warn("CTM: the admission marker of {} was not deleted: {}",
@@ -2336,6 +2346,16 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     /// again is refused and evicted (the DRAIN command, with no reap - it is the operator's node), any other failure leaves it a member whose reservation is not
     /// known to be in step with the ledger.
     private void rejoinNotReconciled(NodeId nodeId, org.pragmatica.lang.Cause cause) {
+        if (cause instanceof NodeLifecycleManager.RetiredIdentityRejoined retired) {
+            refuseSupersededIdentity(nodeId, retired);
+
+            return;
+        }
+
+        if (cause instanceof NodeLifecycleManager.NoReservationOnJoin && genesisVoters.get().get().contains(nodeId)) {
+            return;
+        }
+
         var refused = cause instanceof NodeLifecycleManager.ReadmissionRefused;
 
         if (refused) {
@@ -2351,6 +2371,19 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                                               : "External node {} joined again but its capacity reservation could not be reconciled with the ledger ({}): check the reservation and the ledger",
                                                               nodeId.id(),
                                                               cause.message());
+    }
+
+    /// A node a replacement retired joined again: its identity is superseded. It is refused and evicted (the DRAIN command, no reap), never admitted again, and the
+    /// operator is told which node replaced it.
+    private void refuseSupersededIdentity(NodeId nodeId, NodeLifecycleManager.RetiredIdentityRejoined retired) {
+        drainCommandSink.accept(nodeId);
+        org.pragmatica.utility.warning.OperatorWarnings.raise(log,
+                                                              warningSink.get(),
+                                                              org.pragmatica.utility.warning.OperatorWarningCode.NODE_RETIRED_IDENTITY_REJOINED,
+                                                              nodeId.id(),
+                                                              "Node {} joined again but it was retired by a replacement ({}): its identity is superseded, so it is refused and is being drained; it is not admitted beside its replacement",
+                                                              nodeId.id(),
+                                                              retired.replacement());
     }
 
     /// A drain was issued to the previous incarnation: it does not apply to the one that has just joined. The pending entry is removed, so the grace expiry

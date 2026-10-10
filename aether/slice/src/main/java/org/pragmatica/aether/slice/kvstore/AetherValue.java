@@ -3034,9 +3034,17 @@ public sealed interface AetherValue {
     /// It is a separate value, so [CapacityReservationValue] keeps its wire shape and an older writer's bytes still decode (a rolling upgrade is mixed-version).
     /// `released` is the EXTERNAL reservation the last release of the node deleted, written by the release itself in the same transaction: a node that joins
     /// when its reservation is already gone (whichever leader released it, however long before) is admitted again from it.
-    record CapacityAdmissionValue(long admissions, Option<CapacityReservationValue> released) implements AetherValue, org.pragmatica.cluster.state.kvstore.LeaderAuthorized {
+    /// `supersededBy` is the retirement tombstone: the node was retired by a replacement (the id of the node that replaced it), so its identity is SUPERSEDED. A
+    /// join of a superseded id is refused and the node evicted, never admitted again: that would add a core beside its replacement.
+    record CapacityAdmissionValue(long admissions,
+                                  Option<CapacityReservationValue> released,
+                                  Option<String> supersededBy) implements AetherValue, org.pragmatica.cluster.state.kvstore.LeaderAuthorized {
         public CapacityAdmissionValue(long admissions) {
-            this(admissions, Option.none());
+            this(admissions, Option.none(), Option.none());
+        }
+
+        public CapacityAdmissionValue(long admissions, Option<CapacityReservationValue> released) {
+            this(admissions, released, Option.none());
         }
     }
 

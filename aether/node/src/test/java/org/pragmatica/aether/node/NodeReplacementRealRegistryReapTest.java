@@ -1017,7 +1017,7 @@ class NodeReplacementRealRegistryReapTest {
 
         Thread.sleep(2500);
 
-        assertThat(warnings).as("the new incarnation is not marked").noneMatch(w -> w.contains(OLD.id()));
+        assertThat(warnings).as("the new incarnation is not marked").noneMatch(w -> w.startsWith("instance-termination-unconfirmed:" + OLD.id()));
         assertThat(terminates.get()).isZero();
         manager.deactivate();
     }
@@ -1226,9 +1226,7 @@ class NodeReplacementRealRegistryReapTest {
         assertThat(ledger().allocated()).isEqualTo(4);
     }
 
-    /// Marker lifecycle, case 2 - retired by a replacement: when the replacement ends and the original is confirmed gone, its ticket is deleted.
-    @Test
-    void aNodeRetiredByAReplacement_hasItsMarkerDeleted() {
+    private void retireTheOriginalByAReplacement() {
         put(AetherKey.CapacityLedgerKey.INSTANCE, new CapacityLedgerValue(5, 1, true));
         put(new AetherKey.CapacityReservationKey(OLD), new CapacityReservationValue("west", "", "core", CapacityReservationPhase.OBSERVED));
         states.put(OLD, "Dead");
@@ -1239,7 +1237,55 @@ class NodeReplacementRealRegistryReapTest {
 
         assertThat(committed().unwrap().phase()).isEqualTo(NodeReplacementPhase.DONE);
         assertThat(reservation(OLD).isEmpty()).as("released with the reap").isTrue();
-        assertThat(admissionMarker().isEmpty()).as("and its ticket is deleted: the node is retired for good").isTrue();
+    }
+
+    /// Marker lifecycle, case 2 - retired by a replacement: the ticket is REPLACED by a retirement tombstone naming the replacement (the identity is superseded), not
+    /// just deleted - a restart of the supposedly gone instance must be recognised (round 10).
+    @Test
+    void aNodeRetiredByAReplacement_hasItsTicketReplacedByATombstone() {
+        retireTheOriginalByAReplacement();
+
+        within(10, () -> assertThat(admissionMarker().flatMap(AetherValue.CapacityAdmissionValue::supersededBy)).as("tombstoned").isEqualTo(Option.some(FRESH.id())));
+        assertThat(admissionMarker().flatMap(AetherValue.CapacityAdmissionValue::released).isEmpty()).as("and no ticket to re-admit from").isTrue();
+    }
+
+    /// Round 10, N13c (v-2068): a core retired by a replacement restarts and joins again (SWIM promotes it, voter history admits it, no reservation exists). Its identity is
+    /// SUPERSEDED: it is refused, evicted and announced naming its replacement - never admitted beside it.
+    @Test
+    void aReplacementRetiredCoreThatRejoins_isRefusedEvictedAndAnnounced() throws Exception {
+        retireTheOriginalByAReplacement();
+        within(10, () -> assertThat(admissionMarker().flatMap(AetherValue.CapacityAdmissionValue::supersededBy).isPresent()).isTrue());
+        var slots = ledger().allocated();
+
+        states.put(OLD, "Member");
+        joins(OLD);
+
+        within(10, () -> assertThat(warnings).anyMatch(w -> w.startsWith("node-retired-identity-rejoined:" + OLD.id()) && w.contains(FRESH.id())));
+        assertThat(requestedDrains).as("evicted").contains(OLD);
+        assertThat(reservation(OLD).isEmpty()).as("not admitted again").isTrue();
+        assertThat(ledger().allocated()).as("no slot taken").isEqualTo(slots);
+    }
+
+    /// Round 10, item 2: a member with no reservation, no ticket and no tombstone is never left alone silently - here a node whose reservation was deleted by a rollback
+    /// (nothing was ever remembered) arriving late.
+    @Test
+    void aJoinWithNoReservationNoTicketAndNoTombstone_raisesAnOperatorEvent() throws Exception {
+        states.put(OLD, "Member");
+        joins(OLD);
+
+        within(10, () -> assertThat(warnings).anyMatch(w -> w.startsWith("external-rejoin-unreconciled:" + OLD.id()) && w.contains("no capacity reservation")));
+        assertThat(reservation(OLD).isEmpty()).isTrue();
+    }
+
+    /// ... except a configured voter of the first formation: its reservation is observed by the inventory later, so its join is expected to find none.
+    @Test
+    void aGenesisVotersJoinWithNoReservation_isNotAnEvent() throws Exception {
+        ctmUnderTest.setGenesisVoters(() -> List.of(OLD));
+        states.put(OLD, "Member");
+        joins(OLD);
+        Thread.sleep(500);
+
+        assertThat(warnings).noneMatch(w -> w.startsWith("external-rejoin-unreconciled:"));
     }
 
     /// Round 9: the release committed first AND the ledger cannot count the slot again: the rejoin is refused, the operator is told and the node is evicted.

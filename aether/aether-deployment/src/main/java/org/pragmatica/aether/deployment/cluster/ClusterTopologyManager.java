@@ -222,6 +222,11 @@ public interface ClusterTopologyManager extends TopologyManager {
         return org.pragmatica.lang.Unit.unit();
     }
 
+    /// #2062: the node was retired by `replacement`: its admission marker becomes a retirement tombstone, so its identity, if it rejoins, is refused. Default: nothing.
+    default org.pragmatica.lang.Unit supersedeAdmission(NodeId node, NodeId replacement) {
+        return org.pragmatica.lang.Unit.unit();
+    }
+
     /// #2062: the node is gone for good (retired by a replacement): its admission marker is deleted ([NodeLifecycleManager#forgetAdmission]). Default: nothing.
     default org.pragmatica.lang.Unit forgetAdmission(NodeId node) {
         return org.pragmatica.lang.Unit.unit();

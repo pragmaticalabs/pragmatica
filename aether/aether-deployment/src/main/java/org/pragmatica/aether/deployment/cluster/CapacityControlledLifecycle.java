@@ -538,12 +538,35 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
                                          : Promise.unitPromise());
     }
 
-    /// The node joined and has NO reservation. When a release deleted an EXTERNAL one (the marker remembers it, whoever released it) the node is admitted again
-    /// as a new admission, never left a member without a reservation and a slot; a node whose reservation was never an EXTERNAL one released has nothing to restore.
+    /// The node joined and has NO reservation. A node retired by a replacement is SUPERSEDED (its tombstone): it is refused. When a release deleted an EXTERNAL reservation
+    /// (the marker remembers it, whoever released it) the node is admitted again as a new admission, never left a member without a reservation and a slot. Anything
+    /// else - no marker, or a marker with neither - is reported to the manager ([NoReservationOnJoin]); it is never silently left alone.
     private Promise<Unit> admitReleased(NodeId node, AetherKey.CapacityReservationKey key) {
-        return admission(node).flatMap(AetherValue.CapacityAdmissionValue::released)
-                        .fold(Promise::unitPromise,
-                              released -> admitAgain(node, key, released));
+        return admission(node).fold(() -> new NoReservationOnJoin(node.id()).<Unit> promise(),
+                                    marker -> marker.supersededBy()
+                                                    .fold(() -> marker.released()
+                                                                      .fold(() -> new NoReservationOnJoin(node.id()).<Unit> promise(),
+                                                                            released -> admitAgain(node, key, released)),
+                                                          replacement -> new RetiredIdentityRejoined(node.id(),
+                                                                                                     replacement).<Unit> promise()));
+    }
+
+    @Override
+    public Promise<Unit> supersedeAdmission(NodeId node, NodeId replacement) {
+        var key = new AetherKey.CapacityAdmissionKey(node);
+        var before = marker(node);
+        var admissions = before.map(AetherValue.CapacityAdmissionValue.class::cast)
+                               .map(AetherValue.CapacityAdmissionValue::admissions)
+                               .or(0L);
+        var tombstone = new AetherValue.CapacityAdmissionValue(admissions,
+                                                               Option.none(),
+                                                               Option.some(replacement.id()));
+
+        return transact(key,
+                        List.of(new KVCommand.Mutation<AetherKey, AetherValue>(key, before, Option.some(tombstone)))).flatMap(done -> done
+                                                                                                                                      ? Promise.unitPromise()
+                                                                                                                                      : Causes.cause("The retirement tombstone of " + node.id()
+                                                                                                                                                    + " conflicted").promise());
     }
 
     @Override
@@ -577,7 +600,9 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
 
         return new KVCommand.Mutation<>(new AetherKey.CapacityAdmissionKey(node),
                                         before,
-                                        Option.some(new AetherValue.CapacityAdmissionValue(next, Option.none())));
+                                        Option.some(new AetherValue.CapacityAdmissionValue(next,
+                                                                                           Option.none(),
+                                                                                           Option.none())));
     }
 
     /// The marker as the release leaves it: the same admission count, remembering the reservation it deleted.
