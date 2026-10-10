@@ -7,6 +7,7 @@ package org.pragmatica.aether.stream.forward;
 import java.util.ArrayList;
 import java.util.List;
 
+import org.pragmatica.http.HttpError;
 import org.pragmatica.aether.stream.replication.ReplicationError;
 import org.pragmatica.aether.slice.PublishOutcomeUnknown;
 import org.pragmatica.aether.slice.ResourceCapacityExhausted;
@@ -359,12 +360,15 @@ final class DefaultStreamForwardHandler implements StreamForwardHandler {
     /// an event that may be in the log. Every other cause is permanent.
     @Contract
     private void sendPublishFailure(PublishForward request, Cause cause) {
+        log.warn("Forwarded publish failure correlationId={} (cause chain: {})",
+                 request.correlationId(),
+                 HttpError.causeChain(cause));
         if (isRetryable(cause)) {
-            sendRetryableResponse(request, cause.message());
+            sendRetryableResponse(request, HttpError.clientMessage(cause));
         } else if (cause instanceof PublishOutcomeUnknown) {
-            sendOutcomeUnknownResponse(request, cause.message());
+            sendOutcomeUnknownResponse(request, HttpError.clientMessage(cause));
         } else {
-            sendFailureResponse(request, cause.message());
+            sendFailureResponse(request, HttpError.clientMessage(cause));
         }
     }
 
@@ -462,7 +466,10 @@ final class DefaultStreamForwardHandler implements StreamForwardHandler {
             return;
         }
 
-        sendReadFailure(request, cause.message());
+        log.warn("Forwarded read failure correlationId={} (cause chain: {})",
+                 request.correlationId(),
+                 HttpError.causeChain(cause));
+        sendReadFailure(request, HttpError.clientMessage(cause));
     }
 
     @Contract

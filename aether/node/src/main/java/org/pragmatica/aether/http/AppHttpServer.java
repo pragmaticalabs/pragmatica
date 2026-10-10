@@ -1558,8 +1558,12 @@ class AppHttpServerAdapter implements AppHttpServer {
                                         HttpForwardRequest request,
                                         String prefix,
                                         Cause cause) {
-        log.error("{} [{}]: {}", prefix, request.requestId(), cause.message());
-        sendForwardError(network, request, prefix + ": " + cause.message());
+        log.error("{} [{}]: {} (cause chain: {})",
+                  prefix,
+                  request.requestId(),
+                  cause.message(),
+                  HttpError.causeChain(cause));
+        sendForwardError(network, request, prefix + ": " + HttpError.clientMessage(cause));
     }
 
     @Contract
@@ -1776,7 +1780,8 @@ class AppHttpServerAdapter implements AppHttpServer {
                                       long startTime,
                                       HttpRequestContext httpCtx) {
         routeInfo.onPresent(info -> recordMetricsFailure(info, startTime, httpCtx.body().length, cause));
-        sendForwardError(network, request, cause.message());
+        log.warn("[{}] Forwarded request failed (cause chain: {})", request.requestId(), HttpError.causeChain(cause));
+        sendForwardError(network, request, HttpError.clientMessage(cause));
     }
 
     private void sendForwardSuccess(ClusterNetwork network,

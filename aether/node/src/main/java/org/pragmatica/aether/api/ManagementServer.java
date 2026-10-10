@@ -1543,9 +1543,7 @@ class ManagementServerImpl implements ManagementServer {
 
         Result.<HttpRequestContext, byte[]> lift1(des::decode,
                                                   request.requestData())
-              .onFailure(cause -> sendManagementForwardError(network,
-                                                             request,
-                                                             "Deserialization failed: " + cause.message()))
+              .onFailure(cause -> sendManagementForwardFailure(network, request, "Deserialization failed: ", cause))
               .onSuccess(context -> dispatchManagementForward(context, request, network, ser));
     }
 
@@ -1599,9 +1597,7 @@ class ManagementServerImpl implements ManagementServer {
                                                                                        request,
                                                                                        ser,
                                                                                        responseData))
-                               .onFailure(cause -> sendManagementForwardError(network,
-                                                                              request,
-                                                                              cause.message()));
+                               .onFailure(cause -> sendManagementForwardFailure(network, request, "", cause));
 
                 return;
             }
@@ -1643,9 +1639,7 @@ class ManagementServerImpl implements ManagementServer {
                                                                                                                                  .self(),
                                                                                                                      request.sender(),
                                                                                                                      this::resolvePartitionOwner))
-                             .onFailure(cause -> sendManagementForwardError(network,
-                                                                            request,
-                                                                            cause.message()))
+                             .onFailure(cause -> sendManagementForwardFailure(network, request, "", cause))
                              .isFailure()) {
             return;
         }
@@ -1653,9 +1647,7 @@ class ManagementServerImpl implements ManagementServer {
         if (router.handle(serverCtx, responseCapture)) {
             responseCapture.completion()
                            .onSuccess(responseData -> sendManagementForwardSuccess(network, request, ser, responseData))
-                           .onFailure(cause -> sendManagementForwardError(network,
-                                                                          request,
-                                                                          cause.message()));
+                           .onFailure(cause -> sendManagementForwardFailure(network, request, "", cause));
 
             return;
         }
@@ -1667,9 +1659,7 @@ class ManagementServerImpl implements ManagementServer {
                                                                                        request,
                                                                                        ser,
                                                                                        responseData))
-                               .onFailure(cause -> sendManagementForwardError(network,
-                                                                              request,
-                                                                              cause.message()));
+                               .onFailure(cause -> sendManagementForwardFailure(network, request, "", cause));
 
                 return;
             }
@@ -1778,9 +1768,10 @@ class ManagementServerImpl implements ManagementServer {
                                               HttpResponseData responseData) {
         Result.lift1(ser::encode, responseData)
               .onSuccess(payload -> sendManagementForwardPayload(network, request, payload))
-              .onFailure(cause -> sendManagementForwardError(network,
-                                                             request,
-                                                             "Response serialization failed: " + cause.message()));
+              .onFailure(cause -> sendManagementForwardFailure(network,
+                                                               request,
+                                                               "Response serialization failed: ",
+                                                               cause));
     }
 
     private void sendManagementForwardPayload(ClusterNetwork network, HttpForwardRequest request, byte[] payload) {
@@ -1793,6 +1784,16 @@ class ManagementServerImpl implements ManagementServer {
 
         network.send(request.sender(), forwardResponse);
         log.trace("Sent management forward success response [{}]", request.requestId());
+    }
+
+    private void sendManagementForwardFailure(ClusterNetwork network,
+                                              HttpForwardRequest request,
+                                              String prefix,
+                                              Cause cause) {
+        log.warn("[{}] Management forward request failed (cause chain: {})",
+                 request.requestId(),
+                 HttpError.causeChain(cause));
+        sendManagementForwardError(network, request, prefix + HttpError.clientMessage(cause));
     }
 
     private void sendManagementForwardError(ClusterNetwork network, HttpForwardRequest request, String errorMessage) {

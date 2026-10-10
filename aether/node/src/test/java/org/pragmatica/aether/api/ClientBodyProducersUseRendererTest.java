@@ -27,10 +27,22 @@ class ClientBodyProducersUseRendererTest {
                                                           "src/main/java/org/pragmatica/aether/api/routes/MavenProtocolRoutes.java",
                                                           "../http-routing-adapter/src/main/java/org/pragmatica/aether/http/adapter/SliceRouter.java",
                                                           "../../integrations/net/http-server/src/main/java/org/pragmatica/http/server/ResponseWriter.java",
+                                                          "../aether-invoke/src/main/java/org/pragmatica/aether/invoke/InvocationHandler.java",
+                                                          "../aether-stream/src/main/java/org/pragmatica/aether/stream/forward/StreamForwardHandler.java",
+                                                          "src/main/java/org/pragmatica/aether/node/entityforward/EntityForwardService.java",
                                                           "../../integrations/net/http-types/src/main/java/org/pragmatica/http/ProblemDetail.java");
 
-    private static final Pattern STATEMENT_START = Pattern.compile("\\b(sendProblem|writeProblem|plainErrorResponse|problemResponse|response\\.error|fromCause)\\(|(?<![\\w.])error\\(");
-    private static final Pattern DIRECT_RENDER = Pattern.compile("\\b(cause|transientCause|failure|httpError)\\.message\\(\\)");
+    /// Statements that put text on a client body or on an inter-node error reply the caller echoes into one.
+    private static final Pattern STATEMENT_START = Pattern.compile("\\b(sendProblem|writeProblem|plainErrorResponse|problemResponse|response\\.error|fromCause|sendErrorResponse|sendRetryableResponse|sendOutcomeUnknownResponse|sendFailureResponse|sendReadFailure|sendForwardError|sendManagementForwardError|sendManagementForwardFailure|failure\\.apply)\\(|(?<![\\w.])error\\(");
+    private static final String CAUSE_VAR = "(?:cause|transientCause|failure|httpError)";
+    /// Every way to render a cause other than the renderer: `.message()`, `.toString()`, `String.valueOf(cause)`,
+    /// an implicit toString by concatenation, a `Cause::message` method reference, and a cast to Cause before `.message()`.
+    private static final Pattern DIRECT_RENDER = Pattern.compile("\\b" + CAUSE_VAR + "\\.(?:message|toString)\\(\\)"
+                                                                 + "|String\\.valueOf\\(\\s*" + CAUSE_VAR + "\\s*\\)"
+                                                                 + "|\\bCause::message"
+                                                                 + "|\\(\\(\\s*(?:[\\w.]+\\.)?Cause\\s*\\)[^)]*\\)\\.message\\(\\)"
+                                                                 + "|\\+\\s*" + CAUSE_VAR + "\\s*(?=[,;)+])"
+                                                                 + "|\\b" + CAUSE_VAR + "\\s*\\+\\s*[\"(]");
 
     private record Statement(String text) {}
 
@@ -62,7 +74,42 @@ class ClientBodyProducersUseRendererTest {
     }
 
     @Test
+    void scanner_flagsToString_control() {
+        assertThat(violations("sendProblem(response, status, cause.toString(), path, id);")).hasSize(1);
+    }
+
+    @Test
+    void scanner_flagsStringValueOf_control() {
+        assertThat(violations("sendProblem(response, status, String.valueOf(cause), path, id);")).hasSize(1);
+    }
+
+    @Test
+    void scanner_flagsMethodReference_control() {
+        assertThat(violations("sendProblem(response, status, opt.map(Cause::message).or(\"x\"), path, id);")).hasSize(1);
+    }
+
+    @Test
+    void scanner_flagsCastBeforeMessage_control() {
+        assertThat(violations("sendProblem(response, status, ((Cause) failureObject).message(), path, id);")).hasSize(1);
+        assertThat(violations("sendProblem(response, status, ((org.pragmatica.lang.Cause) x).message(), path, id);")).hasSize(1);
+    }
+
+    @Test
+    void scanner_flagsImplicitToStringByConcatenation_control() {
+        assertThat(violations("sendForwardError(network, request, \"Failed: \" + cause);")).hasSize(1);
+        assertThat(violations("sendForwardError(network, request, cause + \" failed\");")).hasSize(1);
+    }
+
+    @Test
+    void scanner_flagsInterNodeErrorReplies_control() {
+        assertThat(violations("sendErrorResponse(request, cause.message());")).hasSize(1);
+        assertThat(violations("failure.apply(name, cause.message())")).hasSize(1);
+    }
+
+    @Test
     void scanner_passesTheRenderer_control() {
+        assertThat(violations("sendErrorResponse(request, HttpError.clientMessage(cause));")).isEmpty();
+        assertThat(violations("sendForwardError(network, request, prefix + \": \" + HttpError.clientMessage(cause));")).isEmpty();
         assertThat(violations("sendProblem(response, status, HttpError.clientMessage(cause), path, id);")).isEmpty();
         assertThat(violations("log.warn(\"failed {}\", cause.message());")).isEmpty();
     }

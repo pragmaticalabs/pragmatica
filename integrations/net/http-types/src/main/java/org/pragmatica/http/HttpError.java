@@ -57,6 +57,27 @@ public interface HttpError extends Cause, HttpStatusAware {
         return builder.toString();
     }
 
+    /// The full origin chain as one line, for server-side logs only (#2101): every link joined by `<-`. An
+    /// [HttpError] link contributes its status alone (its origin is the next link), so nothing is repeated.
+    /// Never put this in a client body; [#clientMessage(Cause)] is the client-facing renderer.
+    static String causeChain(Cause cause) {
+        var chain = new StringBuilder();
+
+        cause.iterate(link -> chain.append(chain.isEmpty()
+                                           ? ""
+                                           : " <- ")
+                                   .append(chainLinkText(link)));
+
+        return chain.toString();
+    }
+
+    private static String chainLinkText(Cause link) {
+        return link instanceof HttpError error
+               ? error.status()
+                      .message()
+               : link.message();
+    }
+
     static HttpError httpError(HttpStatus status, Cause source) {
         record httpError(HttpStatus status, Cause origin) implements HttpError {
             @Override
