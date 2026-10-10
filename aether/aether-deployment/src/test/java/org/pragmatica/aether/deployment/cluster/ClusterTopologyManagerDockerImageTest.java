@@ -215,6 +215,31 @@ class ClusterTopologyManagerDockerImageTest {
         assertThat(lifecycleManager.lastSpec()).isNotNull();
     }
 
+    /// The same rule for the retirement and the listing of such a node: the sole declaring source, a typed refusal for several, "default" only
+    /// with no committed config.
+    @Test
+    void sourceOfSourcelessNode_soleSource_isNamed() {
+        clusterStore.seedToml(DOCKER_TOML);
+
+        assertThat(ctm.sourceOfSourcelessNode(NodeRole.CORE).map(SourceName::value).or("<refused>")).isEqualTo("dock");
+    }
+
+    @Test
+    void sourceOfSourcelessNode_severalSources_isTheTypedRefusal() {
+        clusterStore.seedToml(DOCKER_TOML + "\n[source.dock2]\ntype = \"docker\"\n\n[source.dock2.core]\ncount = 3\nruntime = \"app\"\n");
+
+        ctm.sourceOfSourcelessNode(NodeRole.CORE)
+           .onSuccess(source -> org.junit.jupiter.api.Assertions.fail("must not guess: " + source))
+           .onFailure(cause -> assertThat(cause).isInstanceOf(ReplacementSourceUnresolved.class));
+    }
+
+    @Test
+    void sourceOfSourcelessNode_noCommittedConfig_isDefault() {
+        clusterStore.seedBootstrapSeed();
+
+        assertThat(ctm.sourceOfSourcelessNode(NodeRole.CORE).map(SourceName::value).or("<refused>")).isEqualTo("default");
+    }
+
     private org.pragmatica.lang.Result<ProvisionDisposition> withoutSource() {
         return ctm.provisionReplacementWithoutSource(nodeId("node-replacement").unwrap(), Set.of(SELF, PEER_A, PEER_B), NodeRole.CORE).await();
     }

@@ -1117,6 +1117,13 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                                                                                        source.name())));
     }
 
+    @Override
+    public Result<SourceName> sourceOfSourcelessNode(NodeRole intendedRole) {
+        return committedToml().flatMap(ClusterTopologyManagerRecord::parseConfig)
+                            .fold(() -> Result.success(ProvisionContext.DEFAULT_SOURCE_NAME),
+                                  config -> soleSourceDeclaring(config, intendedRole).map(SourceProfile::name));
+    }
+
     private static Result<SourceProfile> soleSourceDeclaring(ClusterBootstrapConfig config, NodeRole role) {
         var declaring = config.sources()
                               .values()

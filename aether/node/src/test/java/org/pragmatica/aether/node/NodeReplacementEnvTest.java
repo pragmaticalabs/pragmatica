@@ -58,6 +58,7 @@ class NodeReplacementEnvTest {
     private final Map<AetherKey, AetherValue> stored = new HashMap<>();
     private final Map<NodeId, String> states = new HashMap<>();
     private final NodeReplacementIndex index = NodeReplacementIndex.nodeReplacementIndex();
+    private static final org.pragmatica.aether.environment.SourceName DOCK = org.pragmatica.aether.environment.SourceName.sourceNameOrDefault("dock");
     private final ClusterTopologyManager ctm = mock(ClusterTopologyManager.class);
     private final AtomicBoolean oldDraining = new AtomicBoolean(false);
     private volatile long now = 1_000L;
@@ -69,6 +70,8 @@ class NodeReplacementEnvTest {
         when(ctm.provisionReplacement(any(), any(), any(), any(), any())).thenReturn(Promise.success(ProvisionDisposition.dispatched()));
         // these records carry no source (a freshly bootstrapped node's), so the replacement asks for the source to be derived: the without-source form
         when(ctm.provisionReplacementWithoutSource(any(), any(), any())).thenReturn(Promise.success(ProvisionDisposition.dispatched()));
+        // ... and so does the retirement and the listing: the source is the config's sole one for the role, never the source "default"
+        when(ctm.sourceOfSourcelessNode(any())).thenReturn(org.pragmatica.lang.Result.success(DOCK));
         when(ctm.drainNode(any(), any())).thenAnswer(call -> Promise.unitPromise());
         when(ctm.reapRetired(any(), any(), anyBoolean())).thenAnswer(call -> Promise.unitPromise());
         when(ctm.instanceListed(any(), any())).thenAnswer(call -> Promise.success(true));
@@ -292,7 +295,7 @@ class NodeReplacementEnvTest {
         record(NodeReplacementPhase.DRAINING_OLD, 999_999L);
         wiring.reconciler().reconcile().await();
 
-        verify(ctm, atLeastOnce()).instanceListed(eq(OLD), any());
+        verify(ctm, atLeastOnce()).instanceListed(eq(OLD), eq(DOCK));
 
         states.put(OLD, "Dead");
         commands.clear();
@@ -300,14 +303,27 @@ class NodeReplacementEnvTest {
         record(NodeReplacementPhase.RETIRING_OLD, 999_999L);
         wiring.reconciler().reconcile().await();
 
-        verify(ctm).reapRetired(eq(OLD), any(), eq(true));
+        verify(ctm).reapRetired(eq(OLD), eq(DOCK), eq(true));
 
         var fresh = NodeReplacementWiring.wire(inputs(NodeReplacementPlanner.Timings.parse("60000,60000,60000,60000,0,60000,60000")));
 
         commands.clear();
         fresh.reconciler().reconcile().await();
 
-        verify(ctm).reapRetired(eq(OLD), any(), eq(false));
+        verify(ctm).reapRetired(eq(OLD), eq(DOCK), eq(false));
+    }
+
+    /// The source of a node with no source label is ambiguous (several sources declare the role): its retirement is not attempted at any
+    /// provider, and the reason reaches the record. It is not read as gone.
+    @Test
+    void anAmbiguousSource_neverReapsAtAnyProvider_andIsNotReadAsGone() {
+        when(ctm.sourceOfSourcelessNode(any())).thenReturn(Causes.cause("role core is declared by sources [a, b]").<org.pragmatica.aether.environment.SourceName> result());
+        states.put(OLD, "Dead");
+        record(NodeReplacementPhase.RETIRING_OLD, 999_999L);
+        wiring.reconciler().reconcile().await();
+
+        verify(ctm, never()).reapRetired(any(), any(), anyBoolean());
+        assertThat(commands).as("not read as gone: no DONE committed").isEmpty();
     }
 
     /// A replacement that was up (the membership read it alive) and was then lost before any drain is listed while it is up, so its rollback
@@ -318,7 +334,7 @@ class NodeReplacementEnvTest {
         record(NodeReplacementPhase.CANARY, 999_999L);
         wiring.reconciler().reconcile().await();
 
-        verify(ctm).instanceListed(eq(NEW), any());
+        verify(ctm).instanceListed(eq(NEW), eq(DOCK));
 
         states.remove(NEW);
         commands.clear();

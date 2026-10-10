@@ -47,6 +47,7 @@ import org.pragmatica.consensus.rabia.VoterConfiguration;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.utility.warning.OperatorWarningSink;
@@ -453,6 +454,16 @@ public final class NodeReplacementWiring {
                                         .recover(cause -> new EffectResult.Failed(cause.message()));
         }
 
+        /// The source a record's node is addressed by at the provider: its own, or -- for a blank one -- the sole source of the committed config
+        /// declaring the role (a typed refusal otherwise), never the source "default".
+        private Result<SourceName> effectiveSource(NodeReplacementValue record) {
+            return record.source()
+                         .isBlank()
+                   ? in.ctm()
+                       .sourceOfSourcelessNode(NodeRole.nodeRole(record.role()).or(NodeRole.CORE))
+                   : Result.success(SourceName.sourceNameOrDefault(record.source()));
+        }
+
         /// Done only when the provider's own listing, taken after the terminate, shows the instance gone. A refusal, a listing that
         /// fails or an instance still listed is Deferred with its cause (never read as gone) and tried again on the next tick; a
         /// rollback gives up after the retirement budget (Failed, which keeps the pair for the operator), while the retirement's
@@ -465,7 +476,6 @@ public final class NodeReplacementWiring {
             reapSince.putIfAbsent(node,
                                   in.clock().getAsLong());
             var reservation = reservationOf(node);
-            var source = SourceName.sourceNameOrDefault(record.source());
             var confirmed = isExternalKind(reservation)
                             ? in.ctm()
                                 .drainNode(node, DrainReason.REPLACED)
@@ -474,10 +484,11 @@ public final class NodeReplacementWiring {
                                                                    !boundedByRetiring))
                             : in.ctm()
                                 .drainNode(node, DrainReason.REPLACED)
-                                .flatMap(_ -> in.ctm()
-                                                .reapRetired(node,
-                                                             source,
-                                                             seen.contains(node)));
+                                .flatMap(_ -> effectiveSource(record).async()
+                                                             .flatMap(source -> in.ctm()
+                                                                                  .reapRetired(node,
+                                                                                               source,
+                                                                                               seen.contains(node))));
 
             return confirmed.<EffectResult> map(_ -> confirmedGone(node))
                             .recover(cause -> notConfirmed(node, cause, boundedByRetiring));
@@ -546,8 +557,11 @@ public final class NodeReplacementWiring {
         /// safely call gone (the old node self-halts after its drain). A listing that fails or lists nothing observes nothing and
         /// never blocks the drain; external-kind reservations have no provider instance to list.
         private Promise<Unit> observeInstances(NodeId original, NodeReplacementValue record) {
-            var source = SourceName.sourceNameOrDefault(record.source());
+            return effectiveSource(record).fold(_ -> Promise.unitPromise(),
+                                                source -> observeInstances(original, record, source));
+        }
 
+        private Promise<Unit> observeInstances(NodeId original, NodeReplacementValue record, SourceName source) {
             return Stream.of(original,
                              record.replacement())
                          .filter(node -> !isExternalKind(reservationOf(node)))
@@ -574,15 +588,23 @@ public final class NodeReplacementWiring {
                 return;
             }
 
-            in.ctm()
-              .instanceListed(node,
-                              SourceName.sourceNameOrDefault(record.source()))
-              .onSuccess(listed -> {
-                  if (listed) {
-                  seen.add(node);
-              }
-              })
-              .onResultRun(() -> observing.remove(node));
+            effectiveSource(record).fold(_ -> {
+                                             observing.remove(node);
+
+                                             return Unit.unit();
+                                         },
+                                         source -> {
+                                             in.ctm()
+                                               .instanceListed(node, source)
+                                               .onSuccess(listed -> {
+                                             if (listed) {
+                                             seen.add(node);
+                                         }
+                                         })
+                                               .onResultRun(() -> observing.remove(node));
+
+                                             return Unit.unit();
+                                         });
         }
 
         private Option<AetherValue.CapacityReservationValue> reservationOf(NodeId node) {
