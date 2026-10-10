@@ -2385,27 +2385,24 @@ public final class StreamPartitionManager implements AutoCloseable {
                                     long divergedAtOffset,
                                     long keep,
                                     QuarantineView.RepairAuthority authority) {
-        var head = ring.headOffset();
         var wal = walFor(streamName, partition);
         var epoch = divergentEpoch(streamName, partition, divergedAtOffset);
-        var prospective = new TailCut(keep, head - keep, keep + 1, head, epoch);
         var wrote = new java.util.concurrent.atomic.AtomicBoolean(false);
         var preserved = new java.util.concurrent.atomic.AtomicReference<RecoverySegment.Preserved>();
 
+        cutWindowHook.run();
+
         return ring.truncateSuffix(keep,
-                                   () -> authorised(streamName, partition, divergedAtOffset, authority).flatMap(_ -> witnessBeforeCut(streamName,
-                                                                                                                                      partition,
-                                                                                                                                      wal,
-                                                                                                                                      prospective))
-                                                   .onSuccess(_ -> wrote.set(wal.isPresent()))
-                                                   .flatMap(_ -> preserveBeforeCut(streamName,
-                                                                                   partition,
-                                                                                   wal,
-                                                                                   ring,
-                                                                                   prospective,
-                                                                                   preserved))
-                                                   .flatMap(_ -> wal.map(appendLog -> appendLog.truncateSuffix(keep))
-                                                                    .or(Result.unitResult())),
+                                   () -> cutInsideSection(streamName,
+                                                          partition,
+                                                          divergedAtOffset,
+                                                          keep,
+                                                          authority,
+                                                          wal,
+                                                          ring,
+                                                          epoch,
+                                                          wrote,
+                                                          preserved),
                                    _ -> forgetCutState(streamName, partition, ref, divergedAtOffset, keep))
                    .onFailure(_ -> {
                        if (wrote.get()) {
@@ -2415,7 +2412,43 @@ public final class StreamPartitionManager implements AutoCloseable {
                    .onSuccess(_ -> option(preserved.get()).onPresent(segment -> reportPreserved(streamName,
                                                                                                 partition,
                                                                                                 segment)))
-                   .map(removed -> new TailCut(keep, removed, keep + 1, head, epoch));
+                   .map(removed -> new TailCut(keep, removed, keep + 1, keep + removed, epoch));
+    }
+
+    /// Test seam (#2086): runs just before the ring's ordered section is entered, i.e. at the point where the cut used to have read the
+    /// head. The quarantine fence for replicated appends is enforced inside the ring's lock, so a replicated append cannot land here; only an append that
+    /// does not pass that fence (an owner-local append) could. Even then the segment and the witness cover it, because the head is read INSIDE the section.
+    private volatile Runnable cutWindowHook = () -> {};
+
+    @Contract
+    void cutWindowHook(Runnable hook) {
+        this.cutWindowHook = hook;
+    }
+
+    /// What the cut does under the ring's append lock, in order: the authority check, the witness, the recovery segment, the WAL cut.
+    /// The head is read HERE (#2086), under the lock, so an append that arrived between the repair's start and the lock (only an owner-local
+    /// one can: the quarantine fence for replicated appends is enforced inside the lock) is in the witness and in the segment as it is in the cut.
+    private Result<Unit> cutInsideSection(String streamName,
+                                          int partition,
+                                          long divergedAtOffset,
+                                          long keep,
+                                          QuarantineView.RepairAuthority authority,
+                                          Option<AppendLog> wal,
+                                          OffHeapRingBuffer ring,
+                                          Option<Epoch> epoch,
+                                          java.util.concurrent.atomic.AtomicBoolean wrote,
+                                          java.util.concurrent.atomic.AtomicReference<RecoverySegment.Preserved> preserved) {
+        var head = ring.headOffset();
+        var prospective = new TailCut(keep, head - keep, keep + 1, head, epoch);
+
+        return authorised(streamName, partition, divergedAtOffset, authority).flatMap(_ -> witnessBeforeCut(streamName,
+                                                                                                            partition,
+                                                                                                            wal,
+                                                                                                            prospective))
+                         .onSuccess(_ -> wrote.set(wal.isPresent()))
+                         .flatMap(_ -> preserveBeforeCut(streamName, partition, wal, ring, prospective, preserved))
+                         .flatMap(_ -> wal.map(appendLog -> appendLog.truncateSuffix(keep))
+                                          .or(Result.unitResult()));
     }
 
     /// #2080, preserve before cut: a WAL copy writes the records this cut will remove to a recovery segment on its own volume BEFORE
