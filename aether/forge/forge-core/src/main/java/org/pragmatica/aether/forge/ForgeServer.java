@@ -150,7 +150,6 @@ public final class ForgeServer {
         var startupConfig = startupConfigResult.unwrap();
         // #909 - an aether.toml that exists and does not load is refused before anything is created, not dropped to the NONE defaults.
         ForgeAppConfig.loadOrRefuse(startupConfig.forgeConfig(), System::exit);
-
         var forgeConfig = loadForgeConfig(startupConfig);
 
         printBanner(forgeConfig, startupConfig);
@@ -333,8 +332,8 @@ public final class ForgeServer {
     /// byte-for-byte unchanged.
     private void applyApiVersioning(EmberCluster clusterInstance) {
         siblingAppConfig().map(AetherConfig::appHttp)
-                          .onPresent(appHttp -> clusterInstance.withApiVersioningDetection(appHttp.apiVersioningDetection(),
-                                                                                           appHttp.apiVersionHeaderName()));
+                        .onPresent(appHttp -> clusterInstance.withApiVersioningDetection(appHttp.apiVersioningDetection(),
+                                                                                         appHttp.apiVersionHeaderName()));
     }
 
     /// The sibling `aether.toml`, or none when there is no such file. One that exists and does not load is refused (#909): the cause is logged
@@ -367,13 +366,13 @@ public final class ForgeServer {
     /// be written into committed config.
     private void applyAppHttpSecurity(EmberCluster clusterInstance) {
         siblingAppConfig().map(AetherConfig::appHttp)
-                          .filter(appHttp -> !appHttp.apiKeys()
-                                                     .isEmpty())
-                          .onPresent(appHttp -> {
-                                         clusterInstance.withAppHttpSecurity(appHttp.securityMode(),
-                                                                             appHttp.apiKeys());
-                                         operatorApiKey.set(adminCapableKey(appHttp));
-                                     });
+                        .filter(appHttp -> !appHttp.apiKeys()
+                                                   .isEmpty())
+                        .onPresent(appHttp -> {
+                                       clusterInstance.withAppHttpSecurity(appHttp.securityMode(),
+                                                                           appHttp.apiKeys());
+                                       operatorApiKey.set(adminCapableKey(appHttp));
+                                   });
     }
 
     /// Pick the credential Forge itself will present. An ADMIN-roled key is preferred because the

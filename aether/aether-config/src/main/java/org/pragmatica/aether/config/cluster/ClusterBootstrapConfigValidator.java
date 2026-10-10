@@ -482,24 +482,26 @@ public final class ClusterBootstrapConfigValidator {
     /// URL is judged by [JwksUrl], the predicate config load applies.
     private static void checkJwtWithoutJwks(String name, SourceProfile source, List<String> errors) {
         composedAppHttp(source).filter(doc -> isJwtServer(doc))
-                               .flatMap(doc -> jwksProblem(doc))
-                               .onPresent(problem -> errors.add("PF-28: Source '" + name + "' sets [app-http] security_mode = \"jwt\" but "
-                                                                + problem + ". Every node would refuse to start: there is nothing to verify"
-                                                                + " tokens against. jwks_url is required (issuer/audience optional); set it, or change"
-                                                                + " security_mode."));
+                       .flatMap(doc -> jwksProblem(doc))
+                       .onPresent(problem -> errors.add("PF-28: Source '" + name
+                                                       + "' sets [app-http] security_mode = \"jwt\" but " + problem
+                                                       + ". Every node would refuse to start: there is nothing to verify"
+                                                       + " tokens against. jwks_url is required (issuer/audience optional); set it, or change"
+                                                       + " security_mode."));
     }
 
     private static Option<TomlDocument> composedAppHttp(SourceProfile source) {
         return Result.all(DefaultNodeConfig.globalDefault(),
                           DefaultNodeConfig.sourceTypeDefault(source.type()))
-                     .map((global, typeDefault) -> NodeConfigComposer.compose(global, typeDefault, source.nodeConfig(), TomlDocument.EMPTY))
+                     .map((global, typeDefault) -> NodeConfigComposer.compose(global,
+                                                                              typeDefault,
+                                                                              source.nodeConfig(),
+                                                                              TomlDocument.EMPTY))
                      .option();
     }
 
     private static boolean isJwtServer(TomlDocument doc) {
-        var jwt = doc.getString("app-http", "security_mode")
-                     .map(mode -> "jwt".equalsIgnoreCase(mode.trim()))
-                     .or(false);
+        var jwt = doc.getString("app-http", "security_mode").map(mode -> "jwt".equalsIgnoreCase(mode.trim())).or(false);
         var enabled = doc.getString("app-http", "enabled")
                          .map(value -> "true".equalsIgnoreCase(value.trim()))
                          .or(false);
@@ -510,7 +512,8 @@ public final class ClusterBootstrapConfigValidator {
     private static Option<String> jwksProblem(TomlDocument doc) {
         return doc.getString("app-http", "jwks_url")
                   .fold(() -> Option.some("jwks_url is missing"),
-                        url -> JwksUrl.jwksUrl(url).fold(cause -> Option.some(cause.message()), _ -> Option.empty()));
+                        url -> JwksUrl.jwksUrl(url).fold(cause -> Option.some(cause.message()),
+                                                         _ -> Option.empty()));
     }
 
     private static boolean securityDisabled(SourceProfile source) {

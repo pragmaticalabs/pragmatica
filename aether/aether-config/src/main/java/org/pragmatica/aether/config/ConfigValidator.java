@@ -107,10 +107,9 @@ public final class ConfigValidator {
     }
 
     private static Option<ConfigError> unusableJwksUrl(String jwksUrl) {
-        return JwksUrl.jwksUrl(jwksUrl)
-                      .fold(cause -> Option.some(ConfigError.securityMisconfigured("[app-http] security_mode = \"jwt\" but " + cause.message()
-                                                                                 + ". " + JWKS_URL_RULE)),
-                            _ -> Option.empty());
+        return JwksUrl.jwksUrl(jwksUrl).fold(cause -> Option.some(ConfigError.securityMisconfigured("[app-http] security_mode = \"jwt\" but " + cause.message()
+                                                                                                   + ". " + JWKS_URL_RULE)),
+                                             _ -> Option.empty());
     }
 
     static final String JWKS_URL_RULE = "jwks_url must be an absolute https URL (http only to a loopback host).";
