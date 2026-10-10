@@ -533,18 +533,26 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
 
         return store.getTyped(key, CapacityReservationValue.class)
                     .filter(value -> isExternalBinding(value.sourceBinding()))
-                    .fold(Promise::unitPromise,
+                    .fold(() -> admitReleased(node, key),
                           reservation -> restamp(node, reservation, READMISSION_ATTEMPTS));
+    }
+
+    /// The node joined and has NO reservation. When a release deleted an EXTERNAL one (the marker remembers it, whoever released it) the node is admitted again
+    /// as a new admission, never left a member without a reservation and a slot; a node whose reservation was never an EXTERNAL one released has nothing to restore.
+    private Promise<Unit> admitReleased(NodeId node, AetherKey.CapacityReservationKey key) {
+        return admission(node).flatMap(AetherValue.CapacityAdmissionValue::released)
+                        .fold(Promise::unitPromise,
+                              released -> admitAgain(node, key, released));
+    }
+
+    private Option<AetherValue.CapacityAdmissionValue> admission(NodeId node) {
+        return store.getTyped(new AetherKey.CapacityAdmissionKey(node), AetherValue.CapacityAdmissionValue.class);
     }
 
     private Option<AetherValue> marker(NodeId node) {
         return store.getTyped(new AetherKey.CapacityAdmissionKey(node),
                               AetherValue.CapacityAdmissionValue.class)
                     .map(value -> (AetherValue) value);
-    }
-
-    private static Option<Object> witnessed(Option<AetherValue> value) {
-        return value.map(present -> (Object) present);
     }
 
     private static KVCommand.Mutation<AetherKey, AetherValue> bumpMarker(NodeId node, Option<AetherValue> before) {
@@ -554,7 +562,21 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
 
         return new KVCommand.Mutation<>(new AetherKey.CapacityAdmissionKey(node),
                                         before,
-                                        Option.some(new AetherValue.CapacityAdmissionValue(next)));
+                                        Option.some(new AetherValue.CapacityAdmissionValue(next, Option.none())));
+    }
+
+    /// The marker as the release leaves it: the same admission count, remembering the reservation it deleted.
+    private static KVCommand.Mutation<AetherKey, AetherValue> rememberReleased(NodeId node,
+                                                                               Option<AetherValue> before,
+                                                                               CapacityReservationValue released) {
+        var admissions = before.map(AetherValue.CapacityAdmissionValue.class::cast)
+                               .map(AetherValue.CapacityAdmissionValue::admissions)
+                               .or(0L);
+
+        return new KVCommand.Mutation<>(new AetherKey.CapacityAdmissionKey(node),
+                                        before,
+                                        Option.some(new AetherValue.CapacityAdmissionValue(admissions,
+                                                                                           Option.some(released))));
     }
 
     /// The node joined while its EXTERNAL reservation `reservation` is present: bump the admission marker, guarded by a read witness that the reservation is
@@ -579,7 +601,9 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
         var current = store.getTyped(key, CapacityReservationValue.class);
 
         if (current.isEmpty()) {
-            return admitAgain(node, key, read);
+            return admission(node).flatMap(AetherValue.CapacityAdmissionValue::released)
+                            .fold(() -> admitAgain(node, key, read),
+                                  released -> admitAgain(node, key, released));
         }
 
         return attemptsLeft > 1
@@ -625,22 +649,21 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
     /// counter, ledger or not.
     private Promise<Unit> releaseExternal(AetherKey.CapacityReservationKey key, CapacityReservationValue reservation) {
         var drop = new KVCommand.Mutation<AetherKey, AetherValue>(key, Option.some(reservation), Option.none());
-        // The release commits only if the admission marker is still what it read: a join since then bumped it (and a join committed before this release
-        // would have failed on the reservation), so a release that began before a rejoin cannot delete what the new incarnation holds.
-        var guards = List.<KVCommand.ReadWitness<AetherKey>> of(new KVCommand.ReadWitness<AetherKey>(new AetherKey.CapacityAdmissionKey(key.nodeId()),
-                                                                                                     witnessed(marker(key.nodeId()))));
+        // The release commits only if the admission marker is still what it read - the marker mutation is a compare-and-set - and it leaves the marker
+        // remembering the reservation it deleted. A join since the read bumped the marker, so a release that began before a rejoin cannot delete what the
+        // new incarnation holds; a rejoin that finds the reservation already gone admits the node again from the remembered one.
+        var remember = rememberReleased(key.nodeId(), marker(key.nodeId()), reservation);
         var counted = !UNCOUNTED_BINDING.equals(reservation.sourceBinding());
         var accepted = counted
-                       ? ledger().fold(() -> transact(key, guards, List.of(drop)),
+                       ? ledger().fold(() -> transact(key, List.of(drop, remember)),
                                        current -> current.allocated() <= 0
                                                   ? Causes.cause("Capacity ledger is inconsistent with its reservation").<Boolean> promise()
                                                   : mutate(Option.some(current),
                                                            new CapacityLedgerValue(current.allocated() - 1,
                                                                                    current.version() + 1,
                                                                                    current.inventoryComplete()),
-                                                           guards,
-                                                           List.of(drop)))
-                       : transact(key, guards, List.of(drop));
+                                                           List.of(drop, remember)))
+                       : transact(key, List.of(drop, remember));
 
         return accepted.flatMap(done -> done
                                         ? Promise.unitPromise()

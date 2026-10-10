@@ -1146,6 +1146,112 @@ class NodeReplacementRealRegistryReapTest {
         staleReleaseAtARejoinKeepsTheReservation("");
     }
 
+    private Option<AetherValue.CapacityAdmissionValue> admissionMarker() {
+        return store.getTyped(new AetherKey.CapacityAdmissionKey(OLD), AetherValue.CapacityAdmissionValue.class);
+    }
+
+    /// Round 9, N11 (v-2068): the EXTERNAL release has already COMMITTED when the rejoin is processed. The reservation is gone; the release remembered it in
+    /// the admission marker, so the rejoin is a fresh admission - a reservation and a slot - and the ledger counts the live reservation.
+    @Test
+    void aReleaseCommittedBeforeTheRejoinIsProcessed_admitsTheNodeAgain() throws Exception {
+        put(AetherKey.CapacityLedgerKey.INSTANCE, new CapacityLedgerValue(5, 1, true));
+        put(new AetherKey.CapacityReservationKey(OLD), new CapacityReservationValue("west", "", "core", CapacityReservationPhase.OBSERVED));
+        assertThat(ctmUnderTest.reapRetired(OLD, WEST, false).await().isSuccess()).isTrue();
+        assertThat(reservation(OLD).isEmpty()).as("the release committed").isTrue();
+        assertThat(ledger().allocated()).isEqualTo(4);
+
+        states.put(OLD, "Member");
+        joins(OLD);
+
+        within(10, () -> assertThat(reservation(OLD).isPresent()).as("the new incarnation was admitted again").isTrue());
+        assertThat(ledger().allocated()).as("with its slot: the ledger counts the live reservation").isEqualTo(5);
+        assertThat(admissionMarker().map(AetherValue.CapacityAdmissionValue::released).or(Option.none()).isEmpty()).as("nothing left to restore").isTrue();
+        assertThat(warnings).noneMatch(w -> w.startsWith("external-rejoin-unreconciled:"));
+    }
+
+    /// N11b: the same, for a node whose first join (while admitted) already created the marker.
+    @Test
+    void aReleaseCommittedBeforeTheRejoin_admitsTheNodeAgain_whenTheMarkerExistsFromItsFirstJoin() throws Exception {
+        put(AetherKey.CapacityLedgerKey.INSTANCE, new CapacityLedgerValue(5, 1, true));
+        put(new AetherKey.CapacityReservationKey(OLD), new CapacityReservationValue("west", "", "core", CapacityReservationPhase.OBSERVED));
+        states.put(OLD, "Member");
+        joins(OLD);
+        within(10, () -> assertThat(admissionMarker().map(AetherValue.CapacityAdmissionValue::admissions).or(0L)).as("the first join created the marker").isEqualTo(1L));
+        states.remove(OLD);
+        assertThat(ctmUnderTest.reapRetired(OLD, WEST, false).await().isSuccess()).isTrue();
+        assertThat(reservation(OLD).isEmpty()).isTrue();
+
+        states.put(OLD, "Member");
+        joins(OLD);
+
+        within(10, () -> assertThat(reservation(OLD).isPresent()).isTrue());
+        assertThat(ledger().allocated()).isEqualTo(5);
+        assertThat(admissionMarker().map(AetherValue.CapacityAdmissionValue::admissions).or(0L)).as("the re-admission bumped the marker").isEqualTo(2L);
+    }
+
+    /// Round 9: the release committed first AND the ledger cannot count the slot again: the rejoin is refused, the operator is told and the node is evicted.
+    @Test
+    void aReleaseCommittedBeforeTheRejoin_whoseReadmissionIsRefused_isEvictedWithAnOperatorEvent() throws Exception {
+        put(AetherKey.CapacityLedgerKey.INSTANCE, new CapacityLedgerValue(5, 1, false));
+        put(new AetherKey.CapacityReservationKey(OLD), new CapacityReservationValue("west", "", "core", CapacityReservationPhase.OBSERVED));
+        assertThat(ctmUnderTest.reapRetired(OLD, WEST, false).await().isSuccess()).isTrue();
+
+        states.put(OLD, "Member");
+        joins(OLD);
+
+        within(10, () -> assertThat(warnings).anyMatch(w -> w.startsWith("external-rejoin-unreconciled:" + OLD.id()) && w.contains("refused")));
+        assertThat(requestedDrains).as("evicted").contains(OLD);
+        assertThat(reservation(OLD).isEmpty()).isTrue();
+        assertThat(ledger().allocated()).as("no slot taken").isEqualTo(4);
+    }
+
+    /// k10 (v-2068): a re-admission bumps the marker. A release that read the marker BEFORE the node was released and admitted again - the reservation is then
+    /// equal to what it read - must not be able to commit against the new incarnation.
+    @Test
+    void aStaleReleaseThatReadTheMarkerBeforeAReadmission_isRefused() throws Exception {
+        put(AetherKey.CapacityLedgerKey.INSTANCE, new CapacityLedgerValue(5, 1, true));
+        put(new AetherKey.CapacityAdmissionKey(OLD), new AetherValue.CapacityAdmissionValue(1L));
+        put(new AetherKey.CapacityReservationKey(OLD), new CapacityReservationValue("west", "", "core", CapacityReservationPhase.OBSERVED));
+        var gate = Promise.<Unit> promise();
+
+        processGate.set(gate);
+        var stale = ctmUnderTest.reapRetired(OLD, WEST, false);
+        Thread.sleep(300);
+        assertThat(ctmUnderTest.reapRetired(OLD, WEST, false).await().isSuccess()).as("the node is released for real meanwhile").isTrue();
+        states.put(OLD, "Member");
+        joins(OLD);
+        within(10, () -> assertThat(reservation(OLD).isPresent()).as("and admitted again with an equal reservation").isTrue());
+
+        gate.succeed(Unit.unit());
+
+        assertThat(stale.await().isFailure()).as("the stale release is refused").isTrue();
+        assertThat(reservation(OLD).isPresent()).as("the new incarnation keeps its reservation").isTrue();
+        assertThat(ledger().allocated()).as("and its slot").isEqualTo(5);
+    }
+
+    /// k12 (v-2068): release-first with an UNCOUNTED reservation. The release took no slot, so the fresh admission must not take one either.
+    @Test
+    void anUncountedReleaseOrderedBeforeTheRejoin_readmitsWithoutTakingASlot() throws Exception {
+        var gate = Promise.<Unit> promise();
+
+        put(AetherKey.CapacityLedgerKey.INSTANCE, new CapacityLedgerValue(5, 1, true));
+        put(new AetherKey.CapacityReservationKey(OLD),
+            new CapacityReservationValue("west", org.pragmatica.aether.deployment.cluster.CapacityControlledLifecycle.UNCOUNTED_BINDING, "core", CapacityReservationPhase.OBSERVED));
+        fifoGate.set(gate);
+        var reap = ctmUnderTest.reapRetired(OLD, WEST, false);
+        Thread.sleep(300);
+        states.put(OLD, "Member");
+        joins(OLD);
+        Thread.sleep(200);
+        fifoGate.set(null);
+        gate.succeed(Unit.unit());
+        reap.await();
+
+        within(10, () -> assertThat(reservation(OLD).isPresent()).as("admitted again").isTrue());
+        assertThat(reservation(OLD).unwrap().sourceBinding()).isEqualTo(org.pragmatica.aether.deployment.cluster.CapacityControlledLifecycle.UNCOUNTED_BINDING);
+        assertThat(ledger().allocated()).as("an uncounted reservation holds no slot: the ledger is untouched").isEqualTo(5);
+    }
+
     /// N9b: afterwards the new incarnation leaves and is retired: a real release (one slot taken, one returned) with no provider call (598476d86).
     @Test
     void afterAStaleExternalRelease_theNewIncarnationsRetirement_makesNoProviderCallAndReturnsItsSlot() throws Exception {

@@ -3032,7 +3032,13 @@ public sealed interface AetherValue {
     /// #2062: the admission marker of an EXTERNAL node's capacity reservation. A node that joins while its reservation is present bumps the marker; a release of
     /// the reservation is committed only against the marker value it read (a read witness), so a release that began before the join cannot commit after it.
     /// It is a separate value, so [CapacityReservationValue] keeps its wire shape and an older writer's bytes still decode (a rolling upgrade is mixed-version).
-    record CapacityAdmissionValue(long admissions) implements AetherValue, org.pragmatica.cluster.state.kvstore.LeaderAuthorized {}
+    /// `released` is the EXTERNAL reservation the last release of the node deleted, written by the release itself in the same transaction: a node that joins
+    /// when its reservation is already gone (whichever leader released it, however long before) is admitted again from it.
+    record CapacityAdmissionValue(long admissions, Option<CapacityReservationValue> released) implements AetherValue, org.pragmatica.cluster.state.kvstore.LeaderAuthorized {
+        public CapacityAdmissionValue(long admissions) {
+            this(admissions, Option.none());
+        }
+    }
 
     @Codec
     enum CapacityReservationPhase {
