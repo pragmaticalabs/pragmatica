@@ -218,14 +218,17 @@ class CrossNodeCauseChainLeakTest {
         assertThat(body).doesNotContain(HIDDEN);
     }
 
+    /// A non-HttpError wrapper: its own `message()` is the top text only, so the sentinel reaches the log solely through
+    /// the chain the handler writes, not through the message line.
     @Test
     void chainedErrorOnNodeB_isInNodeBLog_withBothIdsToJoinTheNodes() {
         var calleeLog = new ArrayList<String>();
 
-        clientBodyOnA(chainedHttpError(), calleeLog);
+        clientBodyOnA(new Chained(VISIBLE, Causes.cause(HIDDEN)), calleeLog);
 
         synchronized (calleeLog) {
-            assertThat(String.join("\n", calleeLog)).contains(HIDDEN).containsPattern("requestId=\\S+\\] Failed to complete invocation \\[[^\\]]+\\]");
+            assertThat(String.join("\n", calleeLog)).contains(HIDDEN)
+                                                      .containsPattern("requestId=\\S+\\] Failed to complete invocation \\[[^\\]]+\\]");
         }
     }
 }
