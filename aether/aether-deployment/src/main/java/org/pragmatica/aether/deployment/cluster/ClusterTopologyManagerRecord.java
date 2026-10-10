@@ -2352,7 +2352,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
             return;
         }
 
-        if (cause instanceof NodeLifecycleManager.NoReservationOnJoin && genesisVoters.get().get().contains(nodeId)) {
+        if (cause instanceof NodeLifecycleManager.NoReservationOnJoin && !knownExternal(nodeId)) {
             return;
         }
 
@@ -2371,6 +2371,19 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                                               : "External node {} joined again but its capacity reservation could not be reconciled with the ledger ({}): check the reservation and the ledger",
                                                               nodeId.id(),
                                                               cause.message());
+    }
+
+    /// A node is known to be EXTERNAL (started by an operator, not provisioned or admitted by the cluster) only through what the cluster committed about it: an
+    /// admission ticket or a tombstone (handled before this), or a replacement record of EXTERNAL mode that names it as the replacement - the only way an operator's
+    /// node is admitted, and a record that outlives the replacement. A join with no reservation by any other node - a configured core joining after formation, a
+    /// locally admitted worker, a provider-provisioned node - is routine and raises nothing.
+    private boolean knownExternal(NodeId nodeId) {
+        return nodeReplacements.get()
+                               .all()
+                               .values()
+                               .stream()
+                               .anyMatch(record -> AetherValue.NodeReplacementValue.MODE_EXTERNAL.equals(record.mode()) && record.replacement()
+                                                                                                                                 .equals(nodeId));
     }
 
     /// A node a replacement retired joined again: its identity is superseded. It is refused and evicted (the DRAIN command, no reap), never admitted again, and the

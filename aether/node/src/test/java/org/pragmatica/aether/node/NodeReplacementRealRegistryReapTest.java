@@ -238,6 +238,7 @@ class NodeReplacementRealRegistryReapTest {
 
         ctm.setOperatorWarningSink(OperatorWarningSink.handingOffTo(warning -> into.add(warning.code().code() + ":" + warning.subject() + ":" + warning.message())));
         ctm.setRetirementRefusal(_ -> Option.none());
+        ctm.setNodeReplacements(index);
         ctm.setHierarchyStateWriter(org.pragmatica.aether.deployment.cluster.HierarchyStateWriter.hierarchyStateWriter(() -> store.getTyped(LeaderKey.INSTANCE, LeaderValue.class),
                                                                                                                        key -> store.get(key),
                                                                                                                        this::process));
@@ -1267,10 +1268,11 @@ class NodeReplacementRealRegistryReapTest {
         assertThat(ledger().allocated()).as("no slot taken").isEqualTo(slots);
     }
 
-    /// Round 10, item 2: a member with no reservation, no ticket and no tombstone is never left alone silently - here a node whose reservation was deleted by a rollback
-    /// (nothing was ever remembered) arriving late.
+    /// Round 10 item 2, scoped by round 11 (N14): an EXTERNAL node - one an EXTERNAL replacement record names as the replacement, which outlives the replacement - that joins
+    /// with no reservation, no ticket and no tombstone is never left alone silently (here: its reservation was deleted by a rollback, and the operator's node arrives late).
     @Test
-    void aJoinWithNoReservationNoTicketAndNoTombstone_raisesAnOperatorEvent() throws Exception {
+    void anExternalNodeJoiningWithNoReservationNoTicketAndNoTombstone_raisesAnOperatorEvent() throws Exception {
+        record(new NodeReplacementValue(OLD, "core", NodeReplacementPhase.ROLLED_BACK, 1L, "west", "", NodeReplacementValue.MODE_EXTERNAL, 0, "", 1L));
         states.put(OLD, "Member");
         joins(OLD);
 
@@ -1278,7 +1280,27 @@ class NodeReplacementRealRegistryReapTest {
         assertThat(reservation(OLD).isEmpty()).isTrue();
     }
 
-    /// ... except a configured voter of the first formation: its reservation is observed by the inventory later, so its join is expected to find none.
+    /// N14 (v-2068): a configured core that joins after formation (not a genesis voter) with no reservation is routine: no event.
+    @Test
+    void aLateConfiguredCoreWithNoReservation_raisesNothing() throws Exception {
+        states.put(OLD, "Member");
+        joins(OLD);
+        Thread.sleep(500);
+
+        assertThat(warnings).noneMatch(w -> w.startsWith("external-rejoin-unreconciled:"));
+    }
+
+    /// N14: a worker the cluster admitted locally joins with no reservation: no event. (Its replacement record, if any, is CTM mode.)
+    @Test
+    void aLocallyAdmittedWorkerWithNoReservation_raisesNothing() throws Exception {
+        record(new NodeReplacementValue(OLD, "worker", NodeReplacementPhase.DONE, 1L, "west", "", NodeReplacementValue.MODE_CTM, 0, "", 1L));
+        ctmUnderTest.onWorkerJoin(new WorkerJoinDecision(OLD, "worker", HlcTimestamp.ZERO));
+        Thread.sleep(500);
+
+        assertThat(warnings).noneMatch(w -> w.startsWith("external-rejoin-unreconciled:"));
+    }
+
+    /// ... and a configured voter of the first formation, as before.
     @Test
     void aGenesisVotersJoinWithNoReservation_isNotAnEvent() throws Exception {
         ctmUnderTest.setGenesisVoters(() -> List.of(OLD));
