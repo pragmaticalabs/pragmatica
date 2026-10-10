@@ -270,6 +270,27 @@ class NodeReplacementReconcilerTest {
         assertThat(model.effects).containsExactly("PROVISION");
     }
 
+    /// #1543 F2: the record's reason (what the operator event and the paused upgrade print) names the CAUSE of a refusal, not only
+    /// that one happened: "No configured source for replacement default" tells the operator which source to fix.
+    @Test
+    void provisionRefused_recordsTheCauseInTheReason_boundedInLength() {
+        var model = new Model();
+
+        model.begin(NodeReplacementPhase.PROVISIONING);
+        model.provisionResult = new EffectResult.Failed("No configured source for replacement default");
+        driver(model).reconcile().await();
+
+        assertThat(model.records.get(OLD).reason()).isEqualTo("provisioning refused: No configured source for replacement default");
+
+        var long_ = new Model();
+
+        long_.begin(NodeReplacementPhase.PROVISIONING);
+        long_.provisionResult = new EffectResult.Failed("x".repeat(5_000));
+        driver(long_).reconcile().await();
+
+        assertThat(long_.records.get(OLD).reason().length()).isLessThan(400);
+    }
+
     @Test
     void provisionDeferred_holdsAndRetries() {
         var model = new Model();

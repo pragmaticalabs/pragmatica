@@ -7,6 +7,7 @@ package org.pragmatica.aether.cli.cluster;
 import java.util.concurrent.Callable;
 
 import org.pragmatica.aether.environment.ClusterName;
+import org.pragmatica.aether.environment.SourceName;
 import org.pragmatica.aether.cli.ExitCode;
 import org.pragmatica.aether.cli.cluster.init.CoreWorkerSplit;
 import org.pragmatica.aether.config.cluster.ClusterIdentity;
@@ -56,6 +57,12 @@ class ClusterScaffoldCommand implements Callable<Integer> {
     @Option(names = "--cluster-port", defaultValue = "6000", description = "QUIC cluster transport port (default 6000)")
     private int clusterPort;
 
+    /// The `[source.<name>]` of the cluster config the nodes will be governed by. Each node gets it as `AETHER_SOURCE`: a node learns
+    /// its source only from that variable, and without it the label is `default`, which no config names, so a replacement (an
+    /// upgrade's, an auto-heal's) is refused for want of a source. `docker` is the name the repo's docker configs use.
+    @Option(names = "--source", defaultValue = "docker", description = "Source name of the cluster config these nodes belong to (default docker)")
+    private String source;
+
     @CommandLine.ParentCommand
     private ClusterCommand parent;
 
@@ -70,7 +77,14 @@ class ClusterScaffoldCommand implements Callable<Integer> {
     }
 
     private Result<String> renderValidated(ClusterName clusterName) {
-        return validateFormat().flatMap(_ -> render(clusterName));
+        return validateFormat().flatMap(_ -> validateSource())
+                             .flatMap(_ -> render(clusterName));
+    }
+
+    private Result<String> validateSource() {
+        return SourceName.sourceName(source)
+                         .map(SourceName::value)
+                         .mapError(_ -> new ScaffoldError.InvalidSource(source));
     }
 
     private Result<String> validateFormat() {
@@ -90,7 +104,8 @@ class ClusterScaffoldCommand implements Callable<Integer> {
                                                            image,
                                                            mgmtPortBase,
                                                            appPortBase,
-                                                           clusterPort));
+                                                           clusterPort,
+                                                           source));
     }
 
     private static int onSuccess(String rendered) {
@@ -106,6 +121,13 @@ class ClusterScaffoldCommand implements Callable<Integer> {
     }
 
     sealed interface ScaffoldError extends Cause {
+        record InvalidSource(String value) implements ScaffoldError {
+            @Override
+            public String message() {
+                return "Invalid --source '" + value + "': expected a source name such as docker or primary";
+            }
+        }
+
         record UnsupportedFormat(String format) implements ScaffoldError {
             @Override
             public String message() {

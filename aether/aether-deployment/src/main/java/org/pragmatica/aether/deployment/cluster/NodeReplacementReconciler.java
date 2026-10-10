@@ -26,6 +26,7 @@ import org.pragmatica.lang.io.TimeSpan;
 /// No lock is taken here and none is held across a callback: the driver is called from a scheduler thread, never from
 /// an FSM listener (#1946's rule).
 public interface NodeReplacementReconciler {
+    int MAX_CAUSE_CHARS = 300;
     Promise<Unit> reconcile();
 
     /// The outcome of an effect.
@@ -145,10 +146,24 @@ public interface NodeReplacementReconciler {
                 return switch (result) {
                     case EffectResult.Done _ -> plan.next().fold(Promise::unitPromise,
                                                                  next -> commit(original, record, next));
-                    case EffectResult.Failed _ -> plan.onFailure().fold(Promise::unitPromise,
-                                                                        next -> commit(original, record, next));
+                    case EffectResult.Failed failed -> plan.onFailure().fold(Promise::unitPromise,
+                                                                             next -> commit(original,
+                                                                                            record,
+                                                                                            withCause(next, failed)));
                     case EffectResult.Deferred _ -> Promise.unitPromise();
                 };
+            }
+
+            /// The record's reason is what the operator event and the upgrade run print: a refusal says WHY ("No configured source for
+            /// replacement default"), not only that it happened. Bounded, because the record is replicated.
+            private static NodeReplacementValue withCause(NodeReplacementValue next, EffectResult.Failed failed) {
+                var cause = failed.reason().length() > MAX_CAUSE_CHARS
+                            ? failed.reason().substring(0, MAX_CAUSE_CHARS)
+                            : failed.reason();
+
+                return cause.isBlank()
+                       ? next
+                       : next.withReason(next.reason() + ": " + cause);
             }
 
             private Promise<Unit> commit(NodeId original, NodeReplacementValue before, NodeReplacementValue next) {

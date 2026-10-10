@@ -54,6 +54,36 @@ class ClusterScaffoldCommandTest {
         assertThat(secretLines).allMatch(line -> line.matches(".*\\$\\{AETHER_CLUSTER_SECRET:\\?[^}]+}.*"));
     }
 
+    /// #1543 F2: scaffold -> apply -> upgrade. The nodes' source label must equal the source of the config that is applied, or the
+    /// first replacement is refused ("No configured source for replacement default"). Through the CLI, as an operator runs it.
+    @Test
+    void call_dockerComposeTemplate_everyNodeCarriesAetherSource_defaultDocker() {
+        assertThat(runScaffold("--name", "us-prod", "--template", "docker-compose", "--nodes", "5")).isZero();
+        assertThat(out.toString().lines().filter(line -> line.contains("AETHER_SOURCE:")).toList()).containsExactly("    AETHER_SOURCE: \"docker\"");
+    }
+
+    @Test
+    void call_dockerComposeTemplate_sourceOption_namesTheSourceOfTheConfig() {
+        assertThat(runScaffold("--name", "us-prod", "--template", "docker-compose", "--nodes", "5", "--source", "primary")).isZero();
+        assertThat(out.toString()).contains("    AETHER_SOURCE: \"primary\"");
+    }
+
+    @Test
+    void call_dockerComposeTemplate_invalidSource_isRefused_andEmitsNothing() {
+        var err = new ByteArrayOutputStream();
+        var original = System.err;
+
+        System.setErr(new PrintStream(err));
+        try {
+            assertThat(runScaffold("--name", "us-prod", "--template", "docker-compose", "--nodes", "5", "--source", "Bad Source!")).isNotZero();
+        } finally {
+            System.setErr(original);
+        }
+
+        assertThat(err.toString()).contains("Invalid --source");
+        assertThat(out.toString()).isEmpty();
+    }
+
     @Test
     void call_dockerComposeTemplate_emitsClusterSecretAsRequiredShellReference() {
         var exitCode = runScaffold("--name", "us-prod", "--template", "docker-compose", "--nodes", "5");
