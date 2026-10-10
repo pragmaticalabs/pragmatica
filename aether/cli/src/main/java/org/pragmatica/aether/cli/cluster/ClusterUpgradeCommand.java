@@ -5,12 +5,14 @@
 package org.pragmatica.aether.cli.cluster;
 
 import java.util.concurrent.Callable;
+import java.util.function.Supplier;
 import java.util.regex.Pattern;
 
 import org.pragmatica.aether.cli.ExitCode;
 import org.pragmatica.aether.cli.OutputFormatter;
 import org.pragmatica.json.JsonMapper;
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Result;
 
 import picocli.CommandLine;
@@ -20,6 +22,7 @@ import picocli.CommandLine.Option;
 import tools.jackson.databind.JsonNode;
 
 import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_CONFIG_GET;
+import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_TOPOLOGY;
 import static org.pragmatica.aether.management.route.ManagementRoute.CLUSTER_UPGRADE;
 import static org.pragmatica.aether.management.route.ManagementRoute.UPGRADE_STATUS;
 
@@ -109,14 +112,40 @@ class ClusterUpgradeCommand implements Callable<Integer> {
     }
 
     private int awaitRun() {
-        var outcome = UpgradeRunWait.await(() -> ClusterHttpClient.fetch(UPGRADE_STATUS),
+        return awaitRun(waitTimeoutMinutes * 60_000L);
+    }
+
+    /// Package-private so a test drives the real wiring (endpoint in force, topology, failover) with a short bound.
+    int awaitRun(long boundMs) {
+        var outcome = UpgradeRunWait.await(statusPoll(),
                                            System::currentTimeMillis,
                                            ClusterUpgradeCommand::sleep,
-                                           waitTimeoutMinutes * 60_000L,
+                                           boundMs,
                                            5_000L,
                                            System.out::println);
 
         return exitFor(outcome);
+    }
+
+    /// The run replaces every node, the one polled included, so the poll follows the live membership once the endpoint stops
+    /// answering (#1543 F2). The credential stays what the endpoint in force had: the candidates are the cluster's own members.
+    private static Supplier<Result<String>> statusPoll() {
+        var override = ClusterHttpClient.ENDPOINT_OVERRIDE.get();
+        var fromContext = ClusterHttpClient.ENDPOINT_FROM_CONTEXT.get() || override == null || override.isBlank();
+
+        return ClusterHttpClient.resolveEndpoint().<Supplier<Result<String>>> fold(_ -> () -> ClusterHttpClient.fetch(UPGRADE_STATUS),
+                                                                                   primary -> UpgradeStatusPoll.upgradeStatusPoll(primary,
+                                                                                                                                  () -> ClusterHttpClient.fetch(UPGRADE_STATUS),
+                                                                                                                                  () -> ClusterHttpClient.fetch(CLUSTER_TOPOLOGY),
+                                                                                                                                  endpoint -> switchEndpoint(endpoint,
+                                                                                                                                                             fromContext),
+                                                                                                                                  System.out::println));
+    }
+
+    @Contract
+    private static void switchEndpoint(String endpoint, boolean fromContext) {
+        ClusterHttpClient.setEndpointOverride(endpoint);
+        ClusterHttpClient.ENDPOINT_FROM_CONTEXT.set(fromContext);
     }
 
     static int exitFor(UpgradeRunWait outcome) {
