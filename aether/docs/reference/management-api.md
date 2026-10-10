@@ -6382,7 +6382,7 @@ security_mode = "none"
 
 | Field | Required | Default | Description |
 |-------|----------|---------|-------------|
-| `jwks_url` | Yes | -- | JWKS endpoint URL for public key fetching. With `security_mode = "jwt"` and an enabled app-http server, a missing `jwks_url` fails config validation, so the node refuses to start with exit code 65 (#909, #2052); cluster bootstrap rejects it as PF-28 |
+| `jwks_url` | Yes | -- | JWKS endpoint URL for public key fetching. With `security_mode = "jwt"` and an enabled app-http server, a missing `jwks_url` fails config validation, so the node refuses to start with exit code 65 (#909, #2052); cluster bootstrap rejects it as PF-34 |
 | `issuer` | No | _(skip validation)_ | Expected `iss` claim value |
 | `audience` | No | _(skip validation)_ | Expected `aud` claim value |
 | `role_claim` | No | `"role"` | JWT claim name for role extraction |

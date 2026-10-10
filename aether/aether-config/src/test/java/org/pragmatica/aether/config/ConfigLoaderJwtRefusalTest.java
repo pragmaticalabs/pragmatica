@@ -79,7 +79,7 @@ class ConfigLoaderJwtRefusalTest {
             """.formatted(jwksUrl);
     }
 
-    /// F2: a jwks_url that is blank, relative, unparseable or plain http to a remote host is refused at load, by the same predicate PF-28 applies.
+    /// F2: a jwks_url that is blank, relative, unparseable or plain http to a remote host is refused at load, by the same predicate PF-34 applies.
     @Test
     void anUnusableJwksUrl_isRefusedAtLoad_withTheSameTypedCause() {
         for (var bad : List.of("   ", "/relative/jwks.json", "http://auth.example.com/jwks.json", "ht tp://x")) {
@@ -104,5 +104,26 @@ class ConfigLoaderJwtRefusalTest {
     void theMissingKeyMessage_saysIssuerAndAudienceAreOptional() {
         ConfigLoader.loadFromString(CLUSTER + "\n[app-http]\nenabled = \"true\"\nsecurity_mode = \"jwt\"\n")
                     .onFailure(cause -> assertThat(cause.message()).contains("jwks_url is required (issuer/audience optional)"));
+    }
+
+    /// N1: a padded jwks_url is accepted AND stored trimmed. The string the predicate judged is the string the node will fetch, so the node cannot
+    /// boot on a URL with a leading space and then reject every token.
+    @Test
+    void aPaddedJwksUrl_isStoredTrimmed() {
+        var loaded = ConfigLoader.loadFromString(appHttpJwt("   https://auth.example.com/jwks.json  "));
+
+        assertThat(loaded.isSuccess()).isTrue();
+        loaded.onSuccess(config -> assertThat(config.appHttp().jwtConfig().map(JwtConfig::jwksUrl).or("<none>")).isEqualTo("https://auth.example.com/jwks.json"));
+    }
+
+    /// C10/A6: the operator-facing text of the two refusals, pinned.
+    @Test
+    void theMessages_nameTheKey_theCause_andTheRule() {
+        ConfigLoader.loadFromString(appHttpJwt("http://auth.example.com/jwks.json"))
+                    .onFailure(cause -> assertThat(cause.message()).contains("Security misconfiguration: [app-http] security_mode = \"jwt\" but jwks_url "
+                                                                             + "'http://auth.example.com/jwks.json' must use https (http is accepted only to a loopback host)")
+                                                                   .contains("jwks_url must be an absolute https URL (http only to a loopback host)."));
+        ConfigLoader.loadFromString(appHttpJwt("   "))
+                    .onFailure(cause -> assertThat(cause.message()).contains("but jwks_url is blank. jwks_url must be an absolute https URL"));
     }
 }

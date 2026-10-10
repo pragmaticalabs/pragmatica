@@ -473,7 +473,7 @@ public final class ClusterBootstrapConfigValidator {
                   + " network, or enable authentication.");
     }
 
-    /// PF-28 (#909) — a node refuses to boot on `security_mode = "jwt"` with no usable `jwks_url`. Caught here, before any server is
+    /// PF-34 (#909) — a node refuses to boot on `security_mode = "jwt"` with no usable `jwks_url`. Caught here, before any server is
     /// provisioned, so a cloud bootstrap does not pay for a fleet that will all refuse to start.
     ///
     /// Judged on the COMPOSED document (global default + source-type default + the source's `node_config`), the composition a node loads: the
@@ -483,7 +483,7 @@ public final class ClusterBootstrapConfigValidator {
     private static void checkJwtWithoutJwks(String name, SourceProfile source, List<String> errors) {
         composedAppHttp(source).filter(doc -> isJwtServer(doc))
                        .flatMap(doc -> jwksProblem(doc))
-                       .onPresent(problem -> errors.add("PF-28: Source '" + name
+                       .onPresent(problem -> errors.add("PF-34: Source '" + name
                                                        + "' sets [app-http] security_mode = \"jwt\" but " + problem
                                                        + ". Every node would refuse to start: there is nothing to verify"
                                                        + " tokens against. jwks_url is required (issuer/audience optional); set it, or change"

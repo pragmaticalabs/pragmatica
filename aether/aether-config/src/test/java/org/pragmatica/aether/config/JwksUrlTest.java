@@ -11,7 +11,7 @@ import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-/// #909: the one rule for a usable `jwks_url`, used by config load and by cluster bootstrap (PF-28). Rule: https, or http to a loopback host.
+/// #909: the one rule for a usable `jwks_url`, used by config load and by cluster bootstrap (PF-34). Rule: https, or http to a loopback host.
 class JwksUrlTest {
     private static String problem(String url) {
         return JwksUrl.jwksUrl(url).fold(cause -> cause.message(), ok -> "ACCEPTED " + ok);
@@ -33,6 +33,7 @@ class JwksUrlTest {
     void relativeOrHostless_isRejected() {
         assertThat(problem("/relative/jwks.json")).contains("absolute URL with a host");
         assertThat(problem("https:///jwks.json")).contains("absolute URL with a host");
+        assertThat(problem("//example.com/jwks.json")).as("a scheme-less URL with a host is still not absolute").contains("absolute URL with a host");
     }
 
     @Test

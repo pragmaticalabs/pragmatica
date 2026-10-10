@@ -542,34 +542,34 @@ class ClusterBootstrapConfigValidatorTest {
                                                               .contains("unauthenticated management API"));
         }
 
-        /// PF-28 (#909): a jwt source with no jwks_url would provision nodes that all refuse to boot.
+        /// PF-34 (#909): a jwt source with no jwks_url would provision nodes that all refuse to boot.
         @Test
-        void validate_jwtWithoutJwks_returnsPf28() {
+        void validate_jwtWithoutJwks_returnsPf34() {
             validate(cloudConfigWithOverlay(Map.<String, Object>of("security_mode", "jwt", "enabled", "true")))
                 .onSuccess(v -> Assertions.fail("Expected failure"))
-                .onFailure(cause -> assertThat(cause.message()).contains("PF-28").contains("jwks_url"));
+                .onFailure(cause -> assertThat(cause.message()).contains("PF-34").contains("jwks_url"));
         }
 
         @Test
         void validate_jwtWithJwks_succeeds() {
             validate(cloudConfigWithOverlay(Map.<String, Object>of("security_mode", "jwt", "enabled", "true",
                                                    "jwks_url", "https://auth.example.com/jwks.json")))
-                .onFailure(cause -> assertThat(cause.message()).doesNotContain("PF-28"));
+                .onFailure(cause -> assertThat(cause.message()).doesNotContain("PF-34"));
         }
 
-        /// Only the jwt mode needs a jwks_url: an enabled app-http under another mode without one is not PF-28.
+        /// Only the jwt mode needs a jwks_url: an enabled app-http under another mode without one is not PF-34.
         @Test
-        void validate_nonJwtModeWithoutJwks_isNotPf28() {
+        void validate_nonJwtModeWithoutJwks_isNotPf34() {
             validate(cloudConfigWithOverlay(Map.<String, Object>of("security_mode", "api_key", "enabled", "true")))
-                .onFailure(cause -> assertThat(cause.message()).doesNotContain("PF-28"));
+                .onFailure(cause -> assertThat(cause.message()).doesNotContain("PF-34"));
         }
 
         /// A blank jwks_url verifies nothing either.
         @Test
-        void validate_jwtWithBlankJwks_returnsPf28() {
+        void validate_jwtWithBlankJwks_returnsPf34() {
             validate(cloudConfigWithOverlay(Map.<String, Object>of("security_mode", "jwt", "enabled", "true", "jwks_url", "   ")))
                 .onSuccess(v -> Assertions.fail("Expected failure"))
-                .onFailure(cause -> assertThat(cause.message()).contains("PF-28"));
+                .onFailure(cause -> assertThat(cause.message()).contains("PF-34"));
         }
 
         /// F1: the global default sets `[app-http] enabled = true`, so an overlay that only says `security_mode = "jwt"` IS an enabled server. Judged
@@ -578,37 +578,55 @@ class ClusterBootstrapConfigValidatorTest {
         void validate_jwtWithoutJwksOnTheDefaultEnabledShape_isRefused() {
             validate(cloudConfigWithOverlay(Map.<String, Object>of("security_mode", "jwt")))
                 .onSuccess(v -> Assertions.fail("Expected failure"))
-                .onFailure(cause -> assertThat(cause.message()).contains("PF-28").contains("jwks_url"));
+                .onFailure(cause -> assertThat(cause.message()).contains("PF-34").contains("jwks_url"));
         }
 
         @Test
         void validate_jwtWithoutJwksOnExplicitlyDisabledAppHttp_isNotRefused() {
             validate(cloudConfigWithOverlay(Map.<String, Object>of("security_mode", "jwt", "enabled", "false")))
-                .onFailure(cause -> assertThat(cause.message()).doesNotContain("PF-28"));
+                .onFailure(cause -> assertThat(cause.message()).doesNotContain("PF-34"));
         }
 
         /// F3 (P3): an overlay that sets no security_mode is not a jwt server, whatever else it says.
         @Test
-        void validate_overlayWithoutSecurityMode_isNotPf28() {
+        void validate_overlayWithoutSecurityMode_isNotPf34() {
             validate(cloudConfigWithOverlay(Map.<String, Object>of("enabled", "true")))
-                .onFailure(cause -> assertThat(cause.message()).doesNotContain("PF-28"));
+                .onFailure(cause -> assertThat(cause.message()).doesNotContain("PF-34"));
         }
 
-        /// F2: PF-28 applies the same URL predicate config load does.
+        /// F2: PF-34 applies the same URL predicate config load does.
         @Test
-        void validate_jwtWithAnUnusableJwksUrl_returnsPf28() {
+        void validate_jwtWithAnUnusableJwksUrl_returnsPf34() {
             for (var bad : List.of("   ", "/relative/jwks.json", "http://auth.example.com/jwks.json", "ftp://auth.example.com/jwks.json", "https://", "ht tp://x")) {
                 validate(cloudConfigWithOverlay(Map.<String, Object>of("security_mode", "jwt", "jwks_url", bad)))
                     .onSuccess(v -> Assertions.fail("Expected failure for '" + bad + "'"))
-                    .onFailure(cause -> assertThat(cause.message()).as(bad).contains("PF-28").contains("jwks_url"));
+                    .onFailure(cause -> assertThat(cause.message()).as(bad).contains("PF-34").contains("jwks_url"));
             }
         }
 
+        /// N1 in PF-34: a padded URL is accepted (the node loads it trimmed).
         @Test
-        void validate_jwtWithHttpsOrLoopbackHttpJwks_isNotPf28() {
+        void validate_jwtWithAPaddedJwksUrl_isNotPf34() {
+            validate(cloudConfigWithOverlay(Map.<String, Object>of("security_mode", "jwt", "jwks_url", "  https://auth.example.com/jwks.json ")))
+                .onFailure(cause -> assertThat(cause.message()).doesNotContain("PF-34"));
+        }
+
+        /// C10/A6: the exact operator-facing wording and the URL cause text.
+        @Test
+        void validate_pf34Messages_arePinned() {
+            validate(cloudConfigWithOverlay(Map.<String, Object>of("security_mode", "jwt")))
+                .onFailure(cause -> assertThat(cause.message())
+                    .contains("PF-34: Source 'cloud-src' sets [app-http] security_mode = \"jwt\" but jwks_url is missing. Every node would refuse to start"));
+            validate(cloudConfigWithOverlay(Map.<String, Object>of("security_mode", "jwt", "jwks_url", "http://auth.example.com/jwks.json")))
+                .onFailure(cause -> assertThat(cause.message())
+                    .contains("PF-34: Source 'cloud-src' sets [app-http] security_mode = \"jwt\" but jwks_url 'http://auth.example.com/jwks.json' must use https"));
+        }
+
+        @Test
+        void validate_jwtWithHttpsOrLoopbackHttpJwks_isNotPf34() {
             for (var good : List.of("https://auth.example.com/jwks.json", "http://localhost:8080/jwks.json", "http://127.0.0.1/jwks.json", "http://[::1]:9000/jwks.json")) {
                 validate(cloudConfigWithOverlay(Map.<String, Object>of("security_mode", "jwt", "jwks_url", good)))
-                    .onFailure(cause -> assertThat(cause.message()).as(good).doesNotContain("PF-28"));
+                    .onFailure(cause -> assertThat(cause.message()).as(good).doesNotContain("PF-34"));
             }
         }
 

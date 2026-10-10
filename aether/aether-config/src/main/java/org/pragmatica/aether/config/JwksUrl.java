@@ -12,7 +12,7 @@ import org.pragmatica.lang.Verify;
 import org.pragmatica.lang.utils.Causes;
 
 
-/// The one rule for a usable `[app-http] jwks_url` (#909). Config load and cluster bootstrap (PF-28) both call this, so a bootstrap that
+/// The one rule for a usable `[app-http] jwks_url` (#909). Config load and cluster bootstrap (PF-34) both call this, so a bootstrap that
 /// passes cannot hand a node a URL the node then refuses.
 ///
 /// Rule: a non-blank absolute URL with a host and the `https` scheme; `http` is accepted only to a loopback host (`localhost`, `127.0.0.1`,
