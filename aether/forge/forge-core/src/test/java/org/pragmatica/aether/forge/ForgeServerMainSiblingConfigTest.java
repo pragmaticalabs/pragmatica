@@ -49,5 +49,6 @@ class ForgeServerMainSiblingConfigTest {
         assertThat(finished).as("main must refuse promptly, not start a cluster; output:\n" + output).isTrue();
         assertThat(process.exitValue()).as("output:\n" + output).isEqualTo(1);
         assertThat(output).contains("FATAL").contains("aether.toml").contains("jwks_url");
+        assertThat(output).as("refused BEFORE anything is created: no banner, no cluster start").doesNotContain("AETHER FORGE").doesNotContain("Starting Forge server");
     }
 }

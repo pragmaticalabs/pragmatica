@@ -6,12 +6,12 @@
   `--config=` file that fails validation refuses the boot with exit code 65 (#2052), a FATAL line on stderr naming
   the file and the cause. A server with `enabled = false` serves nothing and is not refused.
   [verified: `ConfigLoaderJwtRefusalTest`, `JwksUrlTest`, `MainConfigGivenBootTest#aGivenConfigWithJwtButNoJwksUrl_refusesToStart_namingTheMissingSetting`, `ForgeAppConfigTest`, `AetherCliConfigWarningTest`]
-- **Cluster bootstrap catches it before provisioning (PF-28)**, judged on the COMPOSED node config (global default +
+- **Cluster bootstrap catches it before provisioning (PF-34)**, judged on the COMPOSED node config (global default +
   source-type default + the source's `node_config`), the composition a node loads. The global default sets
   `[app-http] enabled = true`, so an overlay that only says `security_mode = "jwt"` is an enabled server and is
   refused; a server disabled with an explicit `enabled = false` is not. A cloud bootstrap therefore does not create a
   fleet of nodes that will all refuse to start.
-- **`jwks_url` must be usable, not merely present.** Config load and PF-28 apply one rule (`JwksUrl`): a non-blank
+- **`jwks_url` must be usable, not merely present.** Config load and PF-34 apply one rule (`JwksUrl`): a non-blank
   absolute URL with a host and the `https` scheme; plain `http` is accepted only to a loopback host (`localhost`,
   `127.0.0.1`, `::1`) for local development. A blank, relative, unparseable or remote-`http` URL is refused. This rule
   (https, loopback-http exception) is a stated default, not an owner ruling; say if it should differ.
