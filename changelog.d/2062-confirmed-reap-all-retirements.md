@@ -12,7 +12,7 @@
   drain-grace backstop both reap the same one; a node that joins again is a new incarnation, and what was remembered of the previous one is dropped), and a provider whose listing lags its delete is confirmed by the retry.
 - **EXTERNAL nodes make no provider call on any path.** A node whose reservation carries no provider binding (an operator started it) is confirmed by
   leaving the membership; its capacity is returned and terminating it through the lifecycle is a no-op.
-- [verified: real `SourceComputeRegistry` + real `CapacityControlledLifecycle` + real topology manager, `NodeReplacementRealRegistryReapTest` (54
+- [verified: real `SourceComputeRegistry` + real `CapacityControlledLifecycle` + real topology manager, `NodeReplacementRealRegistryReapTest` (59
   tests): scale-down of an unlisted bootstrap node, listing error retried, event and its recovery only on a real confirmation, stopped instance
   terminated, lagging listing, second reap of a confirmed and of an external node, refused chain ends in the event; `ClusterTopologyManagerReapRetiredTest`;
   the operator-warning sink wiring is pinned by a boot test.] [verified: Ember class x2, 0 refusals per run.] [unverified: a real cloud run.]
@@ -22,7 +22,7 @@
   node per five provisioning windows) and raises `instance-termination-confirmed` on a real confirmation. A node that shows life is never terminated or
   confirmed gone by the re-check, by a retry of the confirmed reap, or by the memory of an earlier reap; a gated retry that finds life parks the reap and marks the
   node unconfirmed, so no reap ends in silence. The one exception is the drain-grace backstop: its node is a drained node that did not exit, alive by
-  definition, so its bounded retry chain is not gated (and reads no membership); a rejoin cancels the chain, and a chain that runs out of attempts raises the event. The marks live in the replicated store
+  definition, so its bounded retry chain is not gated (and reads no membership); a rejoin cancels the chain, and a chain that runs out of attempts raises the event. Every chain, attempt and retry belongs to the incarnation of the node it began under (a per-node generation bumped by each join): a rejoin while an attempt is in flight leaves the new incarnation unterminated, unconfirmed and unmarked. The marks live in the replicated store
   (`UnconfirmedTerminationKey`/`Value`, wire tags 2132/2133, runtime state): written by `markUnconfirmed`, removed on the recovery. A manager that has just
   become leader inherits every persisted mark without announcing it again, re-checks it at once, and closes it when the instance is gone; the recovery
   is published by whichever node confirms it, so it closes the warning the previous leader raised (`OperatorWarningCode#closesAcrossNodes`).
