@@ -504,6 +504,13 @@ public final class OwnerActivation {
     /// `ArrayBlockingQueue` offer, a rejection handler that only counts, never caller-runs). Nothing above it holds a lock the
     /// partition manager shares: `admit`, which starts an activation, is called outside every `StreamPartitionManager` monitor.
     /// An alarm that blocked or took a lock would break this, so [BlockAlarm] says it must not.
+    ///
+    /// **Which monitors are observable.** An activation of one partition is single-flight, so every raise happens on that activation's
+    /// thread; the only other writers are the external clears ([#clearBlock], [#onQuorumStateChange]), whose resolves are atomic
+    /// (`remove`), so one block is resolved once. The monitors in `report`, `trackUnreachable`, the lineage slot and the two external
+    /// clears are what orders a raise against such a clear. The three resolves issued on the activation thread itself
+    /// (`noLongerOversized`, `clearUnreachable`, `proceedWithout`) take the monitor so that every resolve is ordered the same way,
+    /// but they cannot race a raise, so no test can tell them from an unguarded resolve.
     private final Object alarmOrder = new Object();
     /// When the current run of probe failures started (`System.nanoTime`), per partition.
     private final Map<PartitionKey, Long> unreachableSince = new ConcurrentHashMap<>();
