@@ -125,6 +125,8 @@ class EscapePromotedReplicaServesNoUnackedTailTest {
         assertThat(stateOf(bb)).as("BB promoted past silent AA (accepted, F2)").isEqualTo(ReplicationState.CAUGHT_UP);
         assertThat(escapes).hasSize(2);
         for (var replica : List.of(aa, bb)) {
+            // The owner reports everything visible (#2087), so what holds the tail back below is the epoch gate, not the owner's bound.
+            replica.manager().commitAdvanced(STREAM, PARTITION, 9L, E2);
             var refused = replica.manager().readServing(STREAM, PARTITION, 5L, 10);
 
             assertThat(refused.isFailure()).as("%s must not serve from offset 5", replica.self()).isTrue();

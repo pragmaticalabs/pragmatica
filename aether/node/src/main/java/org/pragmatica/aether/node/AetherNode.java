@@ -6117,6 +6117,8 @@ public interface AetherNode extends ManageableNode {
                                                                                                                                               partition,
                                                                                                                                               record)));
         periodicTasks.defer(() -> SharedScheduler.scheduleAtFixedRate(isrMonitor::tick, ISR_MONITOR_INTERVAL));
+        // #2087: the owner repeats its visible position, so one lost announcement delays a replica by one tick, never longer.
+        periodicTasks.defer(() -> SharedScheduler.scheduleAtFixedRate(streamPartitionManager::repeatVisible, ISR_MONITOR_INTERVAL));
         allEntries.add(MessageRouter.Entry.route(ClusterStateNotification.class, ownerActivation::onQuorumStateChange));
         // Reconcile on every membership decision (all variants via the tail helper) and on
         // ClusterStateNotification edges (PASSIVE suppresses; PASSIVE->ACTIVE re-reconciles).
@@ -6509,6 +6511,10 @@ public interface AetherNode extends ManageableNode {
                                                                                                   operatorWarningSink);
         // #1730 phase 2 (B7): a copy not yet compared with the committed owner of the current epoch acknowledges nothing.
         streamReplicationReceiveHandler.ackGate(streamPartitionManager::replicaVerified);
+        // #2087: a replica serves a consumer read only up to the owner's reported visible position.
+        streamReplicationReceiveHandler.commitSink(streamPartitionManager::commitAdvanced);
+        allEntries.add(MessageRouter.Entry.route(ReplicationMessage.CommitAdvance.class,
+                                                 streamReplicationReceiveHandler::onCommitAdvance));
         allEntries.add(MessageRouter.Entry.route(ReplicationMessage.ReplicateEvents.class,
                                                  streamReplicationReceiveHandler::onReplicateEvents));
         allEntries.add(MessageRouter.Entry.route(ReplicationMessage.ReplicateAck.class,
