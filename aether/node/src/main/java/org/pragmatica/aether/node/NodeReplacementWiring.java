@@ -471,6 +471,8 @@ public final class NodeReplacementWiring {
         }
 
         private EffectResult confirmedGone(NodeId node) {
+            // Retired by the replacement, for good: the admission marker (the ticket a rejoin would be admitted again from) goes with it.
+            in.ctm().forgetAdmission(node);
             reaped.add(node);
             reapFailure.remove(node);
             reapSince.remove(node);

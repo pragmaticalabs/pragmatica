@@ -1189,6 +1189,41 @@ class NodeReplacementRealRegistryReapTest {
         assertThat(admissionMarker().map(AetherValue.CapacityAdmissionValue::admissions).or(0L)).as("the re-admission bumped the marker").isEqualTo(2L);
     }
 
+    /// Marker lifecycle, case 1 - permanent removal: the ticket the release left is deleted when the node is decommissioned, so a node that never returns
+    /// leaves nothing behind and a later node reusing the id cannot be admitted from a stale ticket.
+    @Test
+    void aDecommissionedNodesMarker_isDeleted_soAReusedIdIsNotAdmittedFromAStaleTicket() throws Exception {
+        put(AetherKey.CapacityLedgerKey.INSTANCE, new CapacityLedgerValue(5, 1, true));
+        put(new AetherKey.CapacityReservationKey(OLD), new CapacityReservationValue("west", "", "core", CapacityReservationPhase.OBSERVED));
+        assertThat(ctmUnderTest.reapRetired(OLD, WEST, false).await().isSuccess()).isTrue();
+        assertThat(admissionMarker().flatMap(AetherValue.CapacityAdmissionValue::released).isPresent()).as("the release left a ticket").isTrue();
+
+        ctmUnderTest.onMembershipDecision(MembershipDecision.nodeDecommissioned(OLD, List.of(CORE)));
+
+        within(10, () -> assertThat(admissionMarker().isEmpty()).as("the ticket is deleted with the node").isTrue());
+        states.put(OLD, "Member");
+        joins(OLD);
+        Thread.sleep(500);
+        assertThat(reservation(OLD).isEmpty()).as("a node reusing the id is not admitted from the stale ticket").isTrue();
+        assertThat(ledger().allocated()).isEqualTo(4);
+    }
+
+    /// Marker lifecycle, case 2 - retired by a replacement: when the replacement ends and the original is confirmed gone, its ticket is deleted.
+    @Test
+    void aNodeRetiredByAReplacement_hasItsMarkerDeleted() {
+        put(AetherKey.CapacityLedgerKey.INSTANCE, new CapacityLedgerValue(5, 1, true));
+        put(new AetherKey.CapacityReservationKey(OLD), new CapacityReservationValue("west", "", "core", CapacityReservationPhase.OBSERVED));
+        states.put(OLD, "Dead");
+        record(new NodeReplacementValue(FRESH, "core", NodeReplacementPhase.RETIRING_OLD, 999_999L, "west", "", NodeReplacementValue.MODE_CTM, 0, "", 1L));
+
+        wiring.reconciler().reconcile().await();
+        wiring.reconciler().reconcile().await();
+
+        assertThat(committed().unwrap().phase()).isEqualTo(NodeReplacementPhase.DONE);
+        assertThat(reservation(OLD).isEmpty()).as("released with the reap").isTrue();
+        assertThat(admissionMarker().isEmpty()).as("and its ticket is deleted: the node is retired for good").isTrue();
+    }
+
     /// Round 9: the release committed first AND the ledger cannot count the slot again: the rejoin is refused, the operator is told and the node is evicted.
     @Test
     void aReleaseCommittedBeforeTheRejoin_whoseReadmissionIsRefused_isEvictedWithAnOperatorEvent() throws Exception {

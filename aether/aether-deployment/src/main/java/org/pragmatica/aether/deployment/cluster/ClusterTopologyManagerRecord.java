@@ -694,6 +694,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         provisionedRoleIntents.remove(decommissioned.nodeId());
         recordedPlacements.remove(decommissioned.nodeId());
         incarnations.remove(decommissioned.nodeId());
+        forgetAdmission(decommissioned.nodeId());
         roleMismatchLedger.remove(decommissioned.nodeId());
         reapDepartedNode(decommissioned.nodeId());
     }
@@ -2319,6 +2320,16 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                });
         SharedScheduler.schedule(() -> recheckUnconfirmed(epoch),
                                  TimeSpan.timeSpan(1).millis());
+    }
+
+    @Override
+    public Unit forgetAdmission(NodeId nodeId) {
+        lifecycleManager.forgetAdmission(nodeId)
+                        .onFailure(cause -> log.warn("CTM: the admission marker of {} was not deleted: {}",
+                                                     nodeId,
+                                                     cause.message()));
+
+        return unit();
     }
 
     /// The rejoin of an EXTERNAL node could not be reconciled with its capacity reservation: never log-only. The operator is told; a node the ledger cannot count

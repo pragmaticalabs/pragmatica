@@ -545,6 +545,20 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
                               released -> admitAgain(node, key, released));
     }
 
+    @Override
+    public Promise<Unit> forgetAdmission(NodeId node) {
+        var key = new AetherKey.CapacityAdmissionKey(node);
+
+        return marker(node).fold(Promise::unitPromise,
+                                 present -> transact(key,
+                                                     List.of(new KVCommand.Mutation<AetherKey, AetherValue>(key,
+                                                                                                            Option.some(present),
+                                                                                                            Option.none()))).flatMap(done -> done
+                                                                                                                                             ? Promise.unitPromise()
+                                                                                                                                             : Causes.cause("The admission marker of " + node.id()
+                                                                                                                                                           + " changed while it was being deleted").promise()));
+    }
+
     private Option<AetherValue.CapacityAdmissionValue> admission(NodeId node) {
         return store.getTyped(new AetherKey.CapacityAdmissionKey(node), AetherValue.CapacityAdmissionValue.class);
     }

@@ -97,6 +97,13 @@ public interface NodeLifecycleManager {
         return Promise.unitPromise();
     }
 
+    /// Deletes the admission marker of a node that is gone for good (decommissioned, or retired by a replacement): it holds the reservation the last EXTERNAL
+    /// release deleted, so that a rejoin could be admitted again from it. Kept until then, deleted when the node can no longer rejoin, so that a node that never
+    /// returns leaves nothing behind and a reused id cannot be admitted from a stale ticket. Idempotent; never a provider call.
+    default Promise<Unit> forgetAdmission(NodeId nodeId) {
+        return Promise.unitPromise();
+    }
+
     /// The re-admission of a node that joined again was refused (the ledger cannot count its slot): the node is not admitted and is to be evicted.
     record ReadmissionRefused(String message) implements org.pragmatica.lang.Cause {}
 
