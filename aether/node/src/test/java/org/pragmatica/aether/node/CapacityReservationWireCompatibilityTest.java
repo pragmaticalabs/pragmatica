@@ -7,8 +7,11 @@ package org.pragmatica.aether.node;
 import java.util.HexFormat;
 
 import org.junit.jupiter.api.Test;
+import org.pragmatica.aether.slice.kvstore.AetherKey_CapacityAdmissionKeyCodec;
 import org.pragmatica.aether.slice.kvstore.AetherValue.CapacityReservationPhase;
 import org.pragmatica.aether.slice.kvstore.AetherValue.CapacityReservationValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue_CapacityAdmissionValueCodec;
+import org.pragmatica.aether.slice.kvstore.AetherValue_CapacityReservationValueCodec;
 import org.pragmatica.serialization.FrameworkCodecs;
 import org.pragmatica.serialization.SliceCodec;
 
@@ -34,5 +37,14 @@ class CapacityReservationWireCompatibilityTest {
     @Test
     void aReservation_encodesToTheRc4Bytes() {
         assertThat(HexFormat.of().formatHex(CODEC.encode(VALUE))).isEqualTo(RC4_BYTES);
+    }
+
+    /// The tags of the admission marker are pinned in `SystemTags`: 2134..2137 belong to the rolling-upgrade run state (#1543 F1/F2, open PRs), so the pair is
+    /// 2138/2139; the reservation keeps its rc4 tag.
+    @Test
+    void theAdmissionMarkerAndTheReservationCarryTheirPinnedTags() {
+        assertThat(AetherKey_CapacityAdmissionKeyCodec.TAG).isEqualTo(2138);
+        assertThat(AetherValue_CapacityAdmissionValueCodec.TAG).isEqualTo(2139);
+        assertThat(AetherValue_CapacityReservationValueCodec.TAG).isEqualTo(1691);
     }
 }
