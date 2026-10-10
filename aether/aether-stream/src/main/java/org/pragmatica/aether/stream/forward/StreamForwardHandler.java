@@ -207,8 +207,14 @@ final class DefaultStreamForwardHandler implements StreamForwardHandler {
         }
 
         serveRead(request).onSuccess(events -> sendReadSuccess(request, events, Epoch.ZERO))
-                 .onFailure(cause -> sendReadFailure(request,
-                                                     cause.message()));
+                 .onFailure(cause -> sendPlainReadFailure(request, cause));
+    }
+
+    private void sendPlainReadFailure(ReadForward request, Cause cause) {
+        log.warn("Forwarded read failure correlationId={} (cause chain: {})",
+                 request.correlationId(),
+                 HttpError.causeChain(cause));
+        sendReadFailure(request, HttpError.clientMessage(cause));
     }
 
     /// A plain consumer read: not a replica's catch-up, not a linearizable one. It is the read that carries the owner

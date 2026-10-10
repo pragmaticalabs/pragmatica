@@ -33,7 +33,7 @@ class ClientBodyProducersUseRendererTest {
                                                           "../../integrations/net/http-types/src/main/java/org/pragmatica/http/ProblemDetail.java");
 
     /// Statements that put text on a client body or on an inter-node error reply the caller echoes into one.
-    private static final Pattern STATEMENT_START = Pattern.compile("\\b(sendProblem|writeProblem|plainErrorResponse|problemResponse|response\\.error|fromCause|sendErrorResponse|sendRetryableResponse|sendOutcomeUnknownResponse|sendFailureResponse|sendReadFailure|sendForwardError|sendManagementForwardError|sendManagementForwardFailure|failure\\.apply)\\(|(?<![\\w.])error\\(");
+    private static final Pattern STATEMENT_START = Pattern.compile("(?<!void )\\b(sendProblem|writeProblem|plainErrorResponse|problemResponse|response\\.error|fromCause|sendErrorResponse|sendRetryableResponse|sendOutcomeUnknownResponse|sendFailureResponse|sendReadFailure|sendForwardError|sendManagementForwardError|sendManagementForwardFailure|failure\\.apply)\\(|(?<![\\w.])error\\(");
     private static final String CAUSE_VAR = "(?:cause|transientCause|failure|httpError)";
     /// Every way to render a cause other than the renderer: `.message()`, `.toString()`, `String.valueOf(cause)`,
     /// an implicit toString by concatenation, a `Cause::message` method reference, and a cast to Cause before `.message()`.
@@ -104,6 +104,11 @@ class ClientBodyProducersUseRendererTest {
     void scanner_flagsInterNodeErrorReplies_control() {
         assertThat(violations("sendErrorResponse(request, cause.message());")).hasSize(1);
         assertThat(violations("failure.apply(name, cause.message())")).hasSize(1);
+    }
+
+    @Test
+    void scanner_skipsAMethodDeclaration_control() {
+        assertThat(violations("private void sendForwardError(Cause cause) { log.warn(\"x {}\", cause.message());")).isEmpty();
     }
 
     @Test
