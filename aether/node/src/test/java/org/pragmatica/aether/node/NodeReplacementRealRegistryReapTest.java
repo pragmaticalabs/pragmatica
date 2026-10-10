@@ -1206,12 +1206,14 @@ class NodeReplacementRealRegistryReapTest {
     }
 
     /// k10 (v-2068): a re-admission bumps the marker. A release that read the marker BEFORE the node was released and admitted again - the reservation is then
-    /// equal to what it read - must not be able to commit against the new incarnation.
+    /// equal to what it read - must not be able to commit against the new incarnation. (A counted reservation is also protected by the ledger's version; an
+    /// UNCOUNTED one touches no ledger, so the marker is its only guard.)
     @Test
     void aStaleReleaseThatReadTheMarkerBeforeAReadmission_isRefused() throws Exception {
-        put(AetherKey.CapacityLedgerKey.INSTANCE, new CapacityLedgerValue(5, 1, true));
+        var uncounted = org.pragmatica.aether.deployment.cluster.CapacityControlledLifecycle.UNCOUNTED_BINDING;
+
         put(new AetherKey.CapacityAdmissionKey(OLD), new AetherValue.CapacityAdmissionValue(1L));
-        put(new AetherKey.CapacityReservationKey(OLD), new CapacityReservationValue("west", "", "core", CapacityReservationPhase.OBSERVED));
+        put(new AetherKey.CapacityReservationKey(OLD), new CapacityReservationValue("west", uncounted, "core", CapacityReservationPhase.OBSERVED));
         var gate = Promise.<Unit> promise();
 
         processGate.set(gate);
@@ -1226,7 +1228,6 @@ class NodeReplacementRealRegistryReapTest {
 
         assertThat(stale.await().isFailure()).as("the stale release is refused").isTrue();
         assertThat(reservation(OLD).isPresent()).as("the new incarnation keeps its reservation").isTrue();
-        assertThat(ledger().allocated()).as("and its slot").isEqualTo(5);
     }
 
     /// k12 (v-2068): release-first with an UNCOUNTED reservation. The release took no slot, so the fresh admission must not take one either.
