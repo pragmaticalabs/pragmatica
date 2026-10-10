@@ -952,6 +952,80 @@ class NodeReplacementRealRegistryReapTest {
         assertALaterDepartureIsGated(manager, terminates.get());
     }
 
+    /// Round 5, F4 (v-2068 N8): the rejoin lands while the drained zombie's attempt is IN FLIGHT. That attempt then fails; its retry must not be
+    /// re-armed against the NEW incarnation (the chain belongs to the incarnation it began under), so the new incarnation is neither terminated nor marked.
+    @Test
+    void aRejoinDuringAnInFlightZombieAttempt_neverTerminatesOrMarksTheNewIncarnation() throws Exception {
+        ctmUnderTest.deactivate();
+        var manager = newManager(lifecycle, false, 3_000L, warnings);
+
+        put(AetherKey.CapacityLedgerKey.INSTANCE, new CapacityLedgerValue(3, 1, true));
+        states.put(OLD, "Member");
+        Promise<List<InstanceInfo>> inFlight = Promise.promise();
+        listing.set(inFlight);
+        manager.drainNode(OLD, DRAIN).await();
+        within(10, () -> assertThat(lists.get()).as("the zombie attempt is listing").isGreaterThanOrEqualTo(1));
+
+        manager.onMembershipDecision(MembershipDecision.nodeJoined(OLD, List.of(CORE, OLD)));
+        listing.set(Promise.success(List.of(instance(OLD, "i-2", InstanceStatus.RUNNING))));
+        inFlight.fail(EnvironmentError.operationNotSupported("provider API down"));
+        var before = lists.get();
+
+        Thread.sleep(2500);
+
+        assertThat(terminates.get()).as("the rejoined incarnation is never terminated by the old chain").isZero();
+        assertThat(lists.get() - before).as("and the old chain made no further attempt").isZero();
+        assertThat(warnings).as("nor marked").noneMatch(w -> w.startsWith("instance-termination-unconfirmed:"));
+        manager.deactivate();
+    }
+
+    /// The gated twin: a departure's attempt is in flight when the node joins again. Its failure must not re-arm a retry that then finds the new
+    /// incarnation alive, parks it and marks it unconfirmed.
+    @Test
+    void aRejoinDuringAnInFlightGatedAttempt_doesNotMarkTheNewIncarnation() throws Exception {
+        ctmUnderTest.deactivate();
+        var manager = newManager(lifecycle, false, 3_000L, warnings);
+
+        put(AetherKey.CapacityLedgerKey.INSTANCE, new CapacityLedgerValue(3, 1, true));
+        Promise<List<InstanceInfo>> inFlight = Promise.promise();
+        listing.set(inFlight);
+        manager.onMembershipDecision(MembershipDecision.nodeRemoved(OLD, List.of(CORE)));
+        within(10, () -> assertThat(lists.get()).as("the departure's attempt is listing").isGreaterThanOrEqualTo(1));
+
+        states.put(OLD, "Member");
+        manager.onMembershipDecision(MembershipDecision.nodeJoined(OLD, List.of(CORE, OLD)));
+        inFlight.fail(EnvironmentError.operationNotSupported("provider API down"));
+
+        Thread.sleep(2500);
+
+        assertThat(warnings).as("the new incarnation is not marked").noneMatch(w -> w.contains(OLD.id()));
+        assertThat(terminates.get()).isZero();
+        manager.deactivate();
+    }
+
+    /// A reap that began under the previous incarnation and completes after the rejoin does not vouch for the new one: it must not enter the
+    /// confirmed-reap memory, or a later reap of the new incarnation would be skipped.
+    @Test
+    void aReapThatBeganBeforeARejoin_doesNotVouchForTheNewIncarnation() throws Exception {
+        put(AetherKey.CapacityLedgerKey.INSTANCE, new CapacityLedgerValue(3, 1, true));
+        Promise<List<InstanceInfo>> inFlight = Promise.promise();
+        listing.set(inFlight);
+        var reap = ctmUnderTest.reapRetired(OLD, WEST, false);
+        within(10, () -> assertThat(lists.get()).isGreaterThanOrEqualTo(1));
+
+        joins(OLD);
+        listing.set(Promise.success(List.of(instance(OLD, "i-1", InstanceStatus.RUNNING))));
+        inFlight.succeed(List.of(instance(OLD, "i-1", InstanceStatus.RUNNING)));
+        reap.await();
+        var terminatesBefore = terminates.get();
+
+        listing.set(Promise.success(List.of(instance(OLD, "i-2", InstanceStatus.RUNNING))));
+        var again = ctmUnderTest.reapRetired(OLD, WEST, false).await();
+
+        assertThat(again.isSuccess()).isTrue();
+        assertThat(terminates.get()).as("the new incarnation's instance is asked about and terminated, not skipped as already confirmed").isGreaterThan(terminatesBefore);
+    }
+
     /// F3: a rejoin (a new incarnation) cancels the zombie's chain: no further attempt, no event.
     @Test
     void aRejoinMidChain_cancelsTheDrainedZombiesRetries() throws Exception {

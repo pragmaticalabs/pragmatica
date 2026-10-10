@@ -129,6 +129,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                     Set<NodeId> confirmedReaps,
                                     Set<NodeId> listedAbsent,
                                     Set<NodeId> drainGraceChains,
+                                    ConcurrentHashMap<NodeId, Long> incarnations,
                                     ConcurrentHashMap<NodeId, Long> failedReaps,
                                     org.pragmatica.lang.concurrent.CancellableTask unconfirmedRecheck,
                                     AtomicReference<Supplier<Map<NodeId, AetherValue.UnconfirmedTerminationValue>>> persistedMarks,
@@ -271,6 +272,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                                 ConcurrentHashMap.newKeySet(),
                                                 ConcurrentHashMap.newKeySet(),
                                                 ConcurrentHashMap.newKeySet(),
+                                                new ConcurrentHashMap<>(),
                                                 new ConcurrentHashMap<>(),
                                                 org.pragmatica.lang.concurrent.CancellableTask.cancellableTask(),
                                                 new AtomicReference<>(Map::of),
@@ -691,6 +693,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         // good, so its provisioning intent and any mismatch entry go with it.
         provisionedRoleIntents.remove(decommissioned.nodeId());
         recordedPlacements.remove(decommissioned.nodeId());
+        incarnations.remove(decommissioned.nodeId());
         roleMismatchLedger.remove(decommissioned.nodeId());
         reapDepartedNode(decommissioned.nodeId());
     }
@@ -1802,13 +1805,15 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
             // An operator started this node: there is no provider instance of ours to list or terminate, on ANY path. It is confirmed by its
             // departure from the membership, and its capacity is then returned. Asked BEFORE the confirmed-reap memory: a committed EXTERNAL
             // reservation is a new incarnation of the id (an earlier one's was released), whatever [#confirmedReaps] remembers.
+            var externalGeneration = incarnation(node);
+
             return liveness.demonstrablyLive(node)
                    ? Causes.cause("external node " + node.id() + " has not left the membership yet").promise()
                    : lifecycleManager.releaseExternal(node)
-                                     .onSuccess(_ -> {
-                                         confirmedReaps.add(node);
-                                         reapConfirmed(node);
-                                     });
+                                     .flatMap(_ -> sameIncarnation(node, externalGeneration)
+                                                   ? confirmedByIncarnation(node)
+                                                   : Causes.cause("release of " + node.id()
+                                                                 + " abandoned: the node joined again while it was releasing").<Unit> promise());
         }
 
         if (confirmedReaps.contains(node)) {
@@ -1816,9 +1821,15 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         }
 
         var seen = seenBefore || seenInstances.contains(node);
+        var generation = incarnation(node);
 
         return lifecycleManager.instancesForNode(node, source)
                                .flatMap(listed -> {
+                                            if (!sameIncarnation(node, generation)) {
+                                            return Causes.cause("reap of " + node.id()
+                                                               + " abandoned: the node joined again while it was listing").<Unit> promise();
+                                        }
+
                                             if (!listed.isEmpty()) {
                                             seenInstances.add(node);
                                         } else if (!seen) {
@@ -1829,11 +1840,30 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                                    ? confirmedAbsent(node, listed, seen)
                                                    : terminateThenConfirm(node, source);
                                         })
-                               .onSuccess(_ -> {
-                                   confirmedReaps.add(node);
-                                   reapConfirmed(node);
-                               })
+                               .flatMap(_ -> sameIncarnation(node, generation)
+                                             ? confirmedByIncarnation(node)
+                                             : Causes.cause("reap of " + node.id()
+                                                           + " abandoned: the node joined again while it was terminating").<Unit> promise())
                                .mapError(cause -> Causes.cause("instance of " + node.id() + ": " + cause.message()));
+    }
+
+    private Promise<Unit> confirmedByIncarnation(NodeId node) {
+        confirmedReaps.add(node);
+        reapConfirmed(node);
+
+        return Promise.unitPromise();
+    }
+
+    /// The incarnation of `node` the manager is on: bumped by every join ([#forgetIncarnation]). A chain, an attempt or a retry that began under an
+    /// earlier one does nothing to a later one, exactly as a chain of an earlier activation ([#activationEpoch]) does nothing to a later activation:
+    /// not terminate it, not confirm it, not re-arm against it, not mark it. The map is bounded by a leader tenure: it is emptied on activation,
+    /// when every chain of the earlier activation is dropped anyway, and a decommissioned id is removed.
+    private long incarnation(NodeId node) {
+        return Option.option(incarnations.get(node)).or(0L);
+    }
+
+    private boolean sameIncarnation(NodeId node, long generation) {
+        return incarnation(node) == generation;
     }
 
     /// Idempotent per node INCARNATION: NodeRemoved and the drain-grace backstop both reap, and a reap confirmed once is not re-asked (and so cannot be
@@ -1933,7 +1963,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     private void terminateDrained(NodeId targetNodeId) {
         log.info("CTM v2: drain grace expired for {} — reaping container + clearing DRAIN command", targetNodeId);
         drainGraceChains.add(targetNodeId);
-        confirmedReap(targetNodeId, activationEpoch.get(), FAILED_REAP_RETRIES);
+        confirmedReap(targetNodeId, activationEpoch.get(), incarnation(targetNodeId), FAILED_REAP_RETRIES);
     }
 
     /// R1′ — a surplus trim at grace expiry keys on the TARGET first. The membership inputs are read ONCE, so
@@ -2130,7 +2160,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         refusedReaps.remove(nodeId);
         failedReaps.remove(nodeId);
         drainGraceChains.remove(nodeId);
-        confirmedReap(nodeId, activationEpoch.get(), FAILED_REAP_RETRIES);
+        confirmedReap(nodeId, activationEpoch.get(), incarnation(nodeId), FAILED_REAP_RETRIES);
     }
 
     /// #2062: every retirement reap is a CONFIRMED reap ([#reapRetired]): list (which commits a bootstrap node's missing reservation),
@@ -2143,9 +2173,16 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     /// The `terminateNode(nodeId)` branch is unreachable with the production lifecycle, whose [NodeLifecycleManager#sourceOf] is total; it serves a
     /// lifecycle on the interface default (a test double), which cannot name a source.
     @Contract
-    private void confirmedReap(NodeId nodeId, long epoch, int retriesLeft) {
+    private void confirmedReap(NodeId nodeId, long epoch, long generation, int retriesLeft) {
         if (!active.get() || activationEpoch.get() != epoch) {
             log.debug("CTM: confirmed reap of {} dropped — deactivated or re-activated since; the current activation's replay owns the instance",
+                      nodeId);
+
+            return;
+        }
+
+        if (!sameIncarnation(nodeId, generation)) {
+            log.debug("CTM: confirmed reap of {} dropped — the node joined again since the chain began; a new incarnation is never terminated by it",
                       nodeId);
 
             return;
@@ -2154,8 +2191,8 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         lifecycleManager.sourceOf(nodeId)
                         .fold(() -> lifecycleManager.terminateNode(nodeId),
                               source -> reapRetired(nodeId, source, false))
-                        .onSuccess(_ -> reapConfirmed(nodeId))
-                        .onFailure(cause -> reapUnconfirmed(nodeId, epoch, retriesLeft, cause));
+                        .onSuccess(_ -> reapConfirmedIfSame(nodeId, generation))
+                        .onFailure(cause -> reapUnconfirmed(nodeId, epoch, generation, retriesLeft, cause));
     }
 
     /// The bound is spent and the instance is still not confirmed terminated: an operator event naming the node and the last cause, once, and the
@@ -2297,6 +2334,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     /// confirmed, that its instance was seen, that its termination was unconfirmed - does not describe it, and is dropped. Without this a reused
     /// id would be "confirmed gone" while it is a member, and its instance and slot would leak.
     private void forgetIncarnation(NodeId nodeId) {
+        incarnations.merge(nodeId, 1L, Long::sum);
         confirmedReaps.remove(nodeId);
         seenInstances.remove(nodeId);
         listedAbsent.remove(nodeId);
@@ -2342,7 +2380,23 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         }
     }
 
-    private void reapUnconfirmed(NodeId nodeId, long epoch, int retriesLeft, org.pragmatica.lang.Cause cause) {
+    private void reapConfirmedIfSame(NodeId nodeId, long generation) {
+        if (sameIncarnation(nodeId, generation)) {
+            reapConfirmed(nodeId);
+        }
+    }
+
+    private void reapUnconfirmed(NodeId nodeId,
+                                 long epoch,
+                                 long generation,
+                                 int retriesLeft,
+                                 org.pragmatica.lang.Cause cause) {
+        if (!sameIncarnation(nodeId, generation)) {
+            log.debug("CTM: failed reap of {} ignored — the node joined again while the attempt was in flight", nodeId);
+
+            return;
+        }
+
         if (retriesLeft <= 0) {
             markUnconfirmed(nodeId, "after " + FAILED_REAP_RETRIES + " attempts: " + cause.message());
 
@@ -2354,11 +2408,13 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                  cause.message(),
                  retriesLeft);
         failedReaps.put(nodeId, epoch);
-        SharedScheduler.schedule(() -> retryConfirmedReap(nodeId, epoch, retriesLeft - 1), failedReapInterval());
+        SharedScheduler.schedule(() -> retryConfirmedReap(nodeId, epoch, generation, retriesLeft - 1),
+                                 failedReapInterval());
     }
 
-    private void retryConfirmedReap(NodeId nodeId, long epoch, int retriesLeft) {
-        if (!failedReaps.remove(nodeId, epoch)) {
+    private void retryConfirmedReap(NodeId nodeId, long epoch, long generation, int retriesLeft) {
+        // The incarnation is asked FIRST: a retry of an earlier incarnation must not consume the entry of the chain that replaced it.
+        if (!sameIncarnation(nodeId, generation) || !failedReaps.remove(nodeId, epoch)) {
             return;
         }
 
@@ -2368,7 +2424,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
             return;
         }
 
-        confirmedReap(nodeId, epoch, retriesLeft);
+        confirmedReap(nodeId, epoch, generation, retriesLeft);
     }
 
     /// (The drain-grace mark is cleared only where a chain STARTS ([#terminateRetired]): every gated chain starts there, and a retry consults the mark
@@ -2609,6 +2665,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         // The activation epoch is bumped FIRST: every deferred reap and replay read started under this
         // activation carries it, and a re-check or resolution that finds another epoch drops out.
         activationEpoch.incrementAndGet();
+        incarnations.clear();
         workerReconcileInFlight.set(false);
         workerReconcilePending.set(false);
         recordedPlacements.clear();
