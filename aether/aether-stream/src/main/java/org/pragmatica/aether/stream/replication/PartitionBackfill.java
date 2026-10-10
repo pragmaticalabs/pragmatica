@@ -177,6 +177,14 @@ public final class PartitionBackfill {
     /// The oversized-peer block last reported per partition, so a redrive of the same condition is silent (#1937).
     private final ConcurrentHashMap<PartitionKey, OwnerActivation.ActivationBlock> reportedOversized;
 
+    /// Raise-before-resolve (#2004) for [#reportedOversized]: recording the block and raising it, and removing it and resolving it, each
+    /// happen under this monitor, so a clear that lands while a raise is in flight waits for it and delivers [raise, resolve], never
+    /// [resolve, raise] (which the aggregator drops, leaving the CRITICAL open). The partition's backfill is single-flight, but a flight
+    /// that timed out can still be running when the next one starts, and the `current` check does not make the check-then-raise atomic.
+    /// A leaf lock, like the activation gate's (`OwnerActivation`): while it is held only the map and [OwnerActivation.BlockAlarm#raise] /
+    /// `resolved` run, and the alarm must neither block nor take a lock. Shared by the per-run views.
+    private final Object oversizedOrder;
+
     /// Per-partition `confirmedOffset` at which a CAUGHT_UP non-owner replica was last re-verified against
     /// the HRW owner (#333 write-idle residual). It quiesces {@link #redriveCandidates}: a stale CAUGHT_UP
     /// non-owner is re-included in the redrive only while its current `confirmedOffset` differs from the
@@ -245,6 +253,7 @@ public final class PartitionBackfill {
         this.lastReverifyMs = new ConcurrentHashMap<>();
         this.inFlight = new ConcurrentHashMap<>();
         this.reportedOversized = new ConcurrentHashMap<>();
+        this.oversizedOrder = new Object();
         this.current = () -> true;
     }
 
@@ -276,6 +285,7 @@ public final class PartitionBackfill {
         this.ownerResolver = shared.ownerResolver;
         this.blockAlarm = shared.blockAlarm;
         this.reportedOversized = shared.reportedOversized;
+        this.oversizedOrder = shared.oversizedOrder;
         this.current = current;
     }
 
@@ -1702,12 +1712,16 @@ public final class PartitionBackfill {
     /// The oversized-peer condition no longer holds for this partition (#1937): the next promotion attempt found no peer cut
     /// before its first event, found another peer to catch up from, or this node is no longer the owner. Forgetting the report
     /// is what lets the same peer and offset raise again when it recurs, and the alarm is told so the operator sees it end.
-    private void clearOversized(String streamName, int partition) {
+    Unit clearOversized(String streamName, int partition) {
         if (!current.getAsBoolean()) {
-            return;
+            return Unit.unit();
         }
 
-        Option.option(reportedOversized.remove(partitionKey(streamName, partition))).onPresent(blockAlarm::resolved);
+        synchronized (oversizedOrder) {
+            Option.option(reportedOversized.remove(partitionKey(streamName, partition))).onPresent(blockAlarm::resolved);
+        }
+
+        return Unit.unit();
     }
 
     /// The index of the first peer that answered with a page cut before its first event, or -1 (index-aligned with `peers`).
@@ -1732,7 +1746,7 @@ public final class PartitionBackfill {
     /// #1937: reported like the activation gate's own refusal — a [OwnerActivation.ActivationBlock.PeerEventExceedsReadCap]
     /// raised to the block alarm ONCE per transition (a redrive of the same condition is silent; the condition ending and
     /// coming back raises again), not a WARN on every redrive.
-    private Promise<Long> oversizedPeer(String streamName, int partition, NodeId peer, Cause cause) {
+    Promise<Long> oversizedPeer(String streamName, int partition, NodeId peer, Cause cause) {
         if (!current.getAsBoolean()) {
             // #1937 F6 / #1638: a flight that timed out answers late; the current flight has settled the partition and its view of
             // the peer stands, so this run raises nothing.
@@ -1743,14 +1757,17 @@ public final class PartitionBackfill {
                      ? at
                      : -1L;
         var block = new OwnerActivation.ActivationBlock.PeerEventExceedsReadCap(streamName, partition, peer, offset);
-        var previous = reportedOversized.put(partitionKey(streamName, partition), block);
 
-        if (!block.equals(previous)) {
-            log.warn("Backfill {}[{}]: promoted-owner catch-up refused — {}; staying non-authoritative, never escaping at the local watermark",
-                     streamName,
-                     partition,
-                     block.message());
-            blockAlarm.raise(block);
+        synchronized (oversizedOrder) {
+            var previous = reportedOversized.put(partitionKey(streamName, partition), block);
+
+            if (!block.equals(previous)) {
+                log.warn("Backfill {}[{}]: promoted-owner catch-up refused — {}; staying non-authoritative, never escaping at the local watermark",
+                         streamName,
+                         partition,
+                         block.message());
+                blockAlarm.raise(block);
+            }
         }
 
         return cause.promise();
