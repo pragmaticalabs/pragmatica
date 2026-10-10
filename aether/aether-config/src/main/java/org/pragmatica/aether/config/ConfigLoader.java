@@ -1234,7 +1234,9 @@ public final class ConfigLoader {
         }
     }
 
-    private static boolean toBooleanValue(String s) {
+    /// The one parse of a boolean setting (`"true"`, any case, exact: no trimming), shared with cluster bootstrap's PF-34 so the bootstrap check
+    /// and the node agree on whether `[app-http] enabled` is on.
+    public static boolean toBooleanValue(String s) {
         return "true".equalsIgnoreCase(s);
     }
 
