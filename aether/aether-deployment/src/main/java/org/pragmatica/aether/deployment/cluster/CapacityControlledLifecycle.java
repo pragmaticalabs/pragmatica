@@ -532,9 +532,10 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
         var key = new AetherKey.CapacityReservationKey(node);
 
         return store.getTyped(key, CapacityReservationValue.class)
-                    .filter(value -> isExternalBinding(value.sourceBinding()))
                     .fold(() -> admitReleased(node, key),
-                          reservation -> restamp(node, reservation, READMISSION_ATTEMPTS));
+                          reservation -> isExternalBinding(reservation.sourceBinding())
+                                         ? restamp(node, reservation, READMISSION_ATTEMPTS)
+                                         : Promise.unitPromise());
     }
 
     /// The node joined and has NO reservation. When a release deleted an EXTERNAL one (the marker remembers it, whoever released it) the node is admitted again

@@ -1189,6 +1189,24 @@ class NodeReplacementRealRegistryReapTest {
         assertThat(admissionMarker().map(AetherValue.CapacityAdmissionValue::admissions).or(0L)).as("the re-admission bumped the marker").isEqualTo(2L);
     }
 
+    /// N12 (v-2068): an id whose marker still remembers a released EXTERNAL reservation joins holding a PROVIDER reservation (it was provisioned meanwhile). The
+    /// reservation is present, so there is nothing to admit again: no false "unreconciled" alarm, and the reservation and the ledger are untouched.
+    @Test
+    void aProviderReservedNodeWithAnOldExternalMemory_isNotReportedOrRecounted() throws Exception {
+        put(AetherKey.CapacityLedgerKey.INSTANCE, new CapacityLedgerValue(5, 1, true));
+        put(new AetherKey.CapacityAdmissionKey(OLD),
+            new AetherValue.CapacityAdmissionValue(1L, Option.some(new CapacityReservationValue("west", "", "core", CapacityReservationPhase.OBSERVED))));
+        put(new AetherKey.CapacityReservationKey(OLD), new CapacityReservationValue("west", realBinding, "core", CapacityReservationPhase.OBSERVED));
+
+        states.put(OLD, "Member");
+        joins(OLD);
+        Thread.sleep(500);
+
+        assertThat(warnings).as("no false alarm").noneMatch(w -> w.startsWith("external-rejoin-unreconciled:"));
+        assertThat(reservation(OLD).unwrap().sourceBinding()).as("the provider reservation is untouched").isEqualTo(realBinding);
+        assertThat(ledger().allocated()).as("and so is the ledger").isEqualTo(5);
+    }
+
     /// Marker lifecycle, case 1 - permanent removal: the ticket the release left is deleted when the node is decommissioned, so a node that never returns
     /// leaves nothing behind and a later node reusing the id cannot be admitted from a stale ticket.
     @Test
