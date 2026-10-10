@@ -14,6 +14,7 @@ import java.util.function.Function;
 import java.util.regex.Pattern;
 
 import org.pragmatica.aether.environment.ClusterName;
+import org.pragmatica.aether.environment.NodeAddress;
 import org.pragmatica.aether.cli.ExitCode;
 import org.pragmatica.json.JsonMapper;
 import org.pragmatica.lang.Cause;
@@ -276,13 +277,65 @@ class ClusterDestroyCommand implements Callable<Integer> {
                           .or(org.pragmatica.lang.Option.none());
     }
 
-    private Result<Integer> destroyEnumerated(ClusterRegistry registry, ClusterName clusterName, List<String> nodeIds) {
+    Result<Integer> destroyEnumerated(ClusterRegistry registry, ClusterName clusterName, List<String> nodeIds) {
         var outcome = drainAndShutdown(nodeIds);
         var drainResults = outcome.drains();
         var shutdownResults = outcome.shutdowns();
+
+        if (!forceUndrained && hasFailures(drainResults, shutdownResults)) {
+            return Result.success(refuseFailedOperations(clusterName, drainResults, shutdownResults));
+        }
+
         var cleanupOk = cleanupCloudResources(clusterName);
 
-        return finalizeDestruction(registry, clusterName, cleanupOk, nodeIds, drainResults, shutdownResults);
+        return finalizeDestruction(registry,
+                                   clusterName,
+                                   cleanupOk,
+                                   nodeIds,
+                                   drainResults,
+                                   shutdownResults,
+                                   forceUndrained);
+    }
+
+    private static boolean hasFailures(List<NodeResult> drainResults, List<NodeResult> shutdownResults) {
+        return drainResults.stream()
+                           .anyMatch(result -> !result.success()) || shutdownResults.stream()
+                                                                                    .anyMatch(result -> !result.success());
+    }
+
+    /// A drain or shutdown that failed is not a teardown that succeeded (#2089): reporting "destroyed successfully" with exit 0 over
+    /// failed operations told a script the cluster was gone gracefully when its nodes were never drained. Like an enumeration failure, it stops
+    /// BEFORE anything is deleted, so nothing is lost and the destroy can be re-run, and it names the explicit way through.
+    private static int refuseFailedOperations(ClusterName clusterName,
+                                              List<NodeResult> drainResults,
+                                              List<NodeResult> shutdownResults) {
+        System.err.printf("  REFUSING to delete the VMs of '%s': %s. NOTHING has been deleted and the registry entry is kept.%n",
+                          clusterName,
+                          failureSummary(drainResults, shutdownResults));
+        System.err.printf("  Re-run once the cluster answers, or accept an undrained teardown explicitly:"
+                         + " aether cluster destroy --cluster %s --yes --force-undrained%n",
+                          clusterName);
+
+        return ExitCode.ERROR;
+    }
+
+    private static String failureSummary(List<NodeResult> drainResults, List<NodeResult> shutdownResults) {
+        return failedList("drain", drainResults) + failedList("shutdown", shutdownResults);
+    }
+
+    private static String failedList(String operation, List<NodeResult> results) {
+        var failed = results.stream()
+                            .filter(result -> !result.success())
+                            .map(result -> result.nodeId() + ": " + result.reason())
+                            .toList();
+
+        return failed.isEmpty()
+               ? ""
+               : String.format("%d of %d %s operations failed (%s); ",
+                               failed.size(),
+                               results.size(),
+                               operation,
+                               String.join("; ", failed));
     }
 
     /// #998 expectation 2 — an enumeration failure stops the destroy BEFORE anything is deleted, so the
@@ -367,18 +420,40 @@ class ClusterDestroyCommand implements Callable<Integer> {
                                                List<String> nodeIds,
                                                List<NodeResult> drainResults,
                                                List<NodeResult> shutdownResults) {
+        return finalizeDestruction(registry, clusterName, cleanupOk, nodeIds, drainResults, shutdownResults, false);
+    }
+
+    static Result<Integer> finalizeDestruction(ClusterRegistry registry,
+                                               ClusterName clusterName,
+                                               boolean cleanupOk,
+                                               List<String> nodeIds,
+                                               List<NodeResult> drainResults,
+                                               List<NodeResult> shutdownResults,
+                                               boolean undrainedAccepted) {
         if (!cleanupOk) {
             logPhase(DestroyPhase.REGISTRY,
                      "Keeping the registry entry — cloud cleanup failed, and the entry is the operator's"
                     + " remaining handle on resources that may still be billing");
 
-            return Result.success(printSummary(clusterName, nodeIds, drainResults, shutdownResults, false, false));
+            return Result.success(printSummary(clusterName,
+                                               nodeIds,
+                                               drainResults,
+                                               shutdownResults,
+                                               false,
+                                               false,
+                                               undrainedAccepted));
         }
 
         logPhase(DestroyPhase.REGISTRY, "Removing the registry entry for '" + clusterName + "'");
 
         return registryRemover.apply(registry, clusterName)
-                              .map(_ -> printSummary(clusterName, nodeIds, drainResults, shutdownResults, true, true));
+                              .map(_ -> printSummary(clusterName,
+                                                     nodeIds,
+                                                     drainResults,
+                                                     shutdownResults,
+                                                     true,
+                                                     true,
+                                                     undrainedAccepted));
     }
 
     boolean cleanupCloudResources(ClusterName clusterName) {
@@ -604,7 +679,17 @@ class ClusterDestroyCommand implements Callable<Integer> {
                         .toList();
     }
 
+    /// An address carrying its OWN management port (`127.0.0.1:38913`, a docker node's published port, #2089) is used as is: grafting the
+    /// recorded endpoint's port on top would build `host:port:port`, and every sibling fallback would dial nothing.
     private static String endpointForHost(URI uri, String address) {
+        return NodeAddress.fromPersisted("", address)
+                          .managementPort()
+                          .isPresent()
+               ? uri.getScheme() + "://" + address
+               : bareHostEndpoint(uri, address);
+    }
+
+    private static String bareHostEndpoint(URI uri, String address) {
         return uri.getPort() < 0
                ? uri.getScheme() + "://" + address
                : uri.getScheme() + "://" + address + ":" + uri.getPort();
@@ -832,7 +917,31 @@ class ClusterDestroyCommand implements Callable<Integer> {
                                                                                   .or(false))
                                                    .findFirst()
                                                    .map(org.pragmatica.lang.Option::some)
-                                                   .orElse(org.pragmatica.lang.Option.none()));
+                                                   .orElse(org.pragmatica.lang.Option.none()))
+                           .orElse(() -> servingNodeByPublishedPort(nodeIds));
+    }
+
+    /// A docker cluster is reached through its nodes' PUBLISHED host ports (`127.0.0.1:<mapped>`, #2089), while a node's cluster-transport
+    /// address is its container name, so the host match above can never identify the serving node there and the destroy drained it first:
+    /// the endpoint died under the remaining drain and shutdown requests ("Connection refused" for every one). The same published-port
+    /// form the bootstrap polls use identifies it: the node whose container publishes the endpoint's own port. A container is named by its
+    /// node id, so `docker port <node id>` answers; any other endpoint (not loopback, or no such container) identifies nothing.
+    private static org.pragmatica.lang.Option<String> servingNodeByPublishedPort(List<String> nodeIds) {
+        return ClusterHttpClient.resolveEndpoint()
+                                .option()
+                                .flatMap(ClusterDestroyCommand::parseEndpoint)
+                                .filter(uri -> isLoopback(uri.getHost()))
+                                .flatMap(uri -> nodeIds.stream()
+                                                       .filter(id -> DockerHostPorts.managementPort(id)
+                                                                                    .map(port -> port == portOf(uri))
+                                                                                    .or(false))
+                                                       .findFirst()
+                                                       .map(org.pragmatica.lang.Option::some)
+                                                       .orElse(org.pragmatica.lang.Option.none()));
+    }
+
+    private static boolean isLoopback(String host) {
+        return "127.0.0.1".equals(host) || "localhost".equals(host);
     }
 
     private static org.pragmatica.lang.Option<String> nodeTransportHost(String nodeId) {
@@ -1022,7 +1131,8 @@ class ClusterDestroyCommand implements Callable<Integer> {
                                     List<NodeResult> drainResults,
                                     List<NodeResult> shutdownResults,
                                     boolean cleanupSucceeded,
-                                    boolean registryEntryRemoved) {
+                                    boolean registryEntryRemoved,
+                                    boolean undrainedAccepted) {
         System.out.println();
         System.out.printf("Cluster '%s' destruction summary:%n", clusterName);
         System.out.printf("  Nodes processed: %d%n", nodeIds.size());
@@ -1051,11 +1161,27 @@ class ClusterDestroyCommand implements Callable<Integer> {
             return ExitCode.CLEANUP_FAILED;
         }
 
-        warnIncomplete("drain", drainResults);
-        warnIncomplete("shutdown", shutdownResults);
+        if (undrainedAccepted) {
+            reportNotDrained(drainResults, shutdownResults);
+        } else {
+            warnIncomplete("drain", drainResults);
+            warnIncomplete("shutdown", shutdownResults);
+        }
+
         System.out.printf("Cluster '%s' destroyed successfully.%n", clusterName);
 
         return ExitCode.SUCCESS;
+    }
+
+    /// `--force-undrained` proceeded (#2089): say which nodes were NOT drained or shut down, because the VMs were deleted regardless and
+    /// the operator asked for exactly that, but the transcript must still say what it cost.
+    private static void reportNotDrained(List<NodeResult> drainResults, List<NodeResult> shutdownResults) {
+        var summary = failureSummary(drainResults, shutdownResults);
+
+        if (!summary.isEmpty()) {
+            System.err.printf("--force-undrained: proceeded over failed operations. NOT DRAINED / NOT SHUT DOWN: %s the VMs were deleted anyway.%n",
+                              summary);
+        }
     }
 
     /// #587 — the exit code is a retry signal and must agree with the registry: non-zero means the
