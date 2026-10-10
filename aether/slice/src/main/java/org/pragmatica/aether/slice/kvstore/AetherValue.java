@@ -3099,6 +3099,83 @@ public sealed interface AetherValue {
         UNKNOWN
     }
 
+    /// #1543 part F: the rolling-upgrade run. `order` lists the ORIGINAL nodes to replace (cores with the leader last, then
+    /// workers); `index` is how many are done; `inFlight` is the original whose replacement is running (`""` = none). A node
+    /// replaced during the run leaves the cluster under its old id, so the list is of ids that disappear: progress is the index plus
+    /// the replacement records, and a node is skipped once it is gone or already reports the target version. `stop` is an operator's
+    /// request that takes effect when the replacement in flight reaches a terminal state, never mid-phase. `epoch` is bumped on every
+    /// committed transition.
+    record UpgradeRunValue(String targetVersion,
+                           List<NodeId> order,
+                           int index,
+                           String inFlight,
+                           UpgradeRunState state,
+                           UpgradeStop stop,
+                           String reason,
+                           long startedAtMs,
+                           long updatedAtMs,
+                           long epoch) implements AetherValue, org.pragmatica.cluster.state.kvstore.LeaderAuthorized {
+        public UpgradeRunValue {
+            order = List.copyOf(order);
+        }
+
+        public UpgradeRunValue with(int newIndex,
+                                    String newInFlight,
+                                    UpgradeRunState newState,
+                                    UpgradeStop newStop,
+                                    String newReason,
+                                    long now) {
+            return new UpgradeRunValue(targetVersion,
+                                       order,
+                                       newIndex,
+                                       newInFlight,
+                                       newState,
+                                       newStop,
+                                       newReason,
+                                       startedAtMs,
+                                       now,
+                                       epoch + 1);
+        }
+
+        public UpgradeRunValue withOrder(List<NodeId> newOrder, long now) {
+            return new UpgradeRunValue(targetVersion,
+                                       newOrder,
+                                       index,
+                                       inFlight,
+                                       state,
+                                       stop,
+                                       reason,
+                                       startedAtMs,
+                                       now,
+                                       epoch + 1);
+        }
+
+        public boolean live() {
+            return state == UpgradeRunState.RUNNING || state == UpgradeRunState.PAUSED;
+        }
+    }
+
+    /// A run is `RUNNING` (the reconciler advances it), `PAUSED` (needs an operator; resumable), or ended: `COMPLETED` (every node
+    /// reports the target version) or `ABORTED`. `UNKNOWN` is the decode sentinel: inert, never advanced.
+    @Codec
+    enum UpgradeRunState {
+        RUNNING,
+        PAUSED,
+        COMPLETED,
+        ABORTED,
+        UNKNOWN
+    }
+
+    /// An operator's pending request, applied when the replacement in flight is terminal. `UNKNOWN` (an ordinal this node does not
+    /// have) is read as a PAUSE: automation stops rather than guess.
+    @Codec
+    enum UpgradeStop {
+        NONE,
+        PAUSE,
+        ABORT,
+        UNKNOWN
+    }
+
     /// A definitive no-create refusal. The operation itself is the exclusive recovery-probe token.
     record CommunityPlacementAvailabilityValue(String policyIdentity,
                                                String sourceBinding,
