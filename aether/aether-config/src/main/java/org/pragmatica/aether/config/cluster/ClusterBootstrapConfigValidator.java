@@ -14,6 +14,8 @@ import java.util.Set;
 import java.util.regex.Pattern;
 
 import org.pragmatica.aether.config.ConsensusTierBounds;
+import org.pragmatica.aether.config.JwksUrl;
+import org.pragmatica.config.toml.TomlDocument;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 
@@ -471,27 +473,44 @@ public final class ClusterBootstrapConfigValidator {
                   + " network, or enable authentication.");
     }
 
-    /// PF-28 (#909) — a node refuses to boot on `security_mode = "jwt"` with no `jwks_url` (an enabled
-    /// app-http server has nothing to verify tokens against). Caught here, before any server is
+    /// PF-28 (#909) — a node refuses to boot on `security_mode = "jwt"` with no usable `jwks_url`. Caught here, before any server is
     /// provisioned, so a cloud bootstrap does not pay for a fleet that will all refuse to start.
+    ///
+    /// Judged on the COMPOSED document (global default + source-type default + the source's `node_config`), the composition a node loads: the
+    /// global default sets `[app-http] enabled = true`, so an overlay that only says `security_mode = "jwt"` IS an enabled server. Reading the
+    /// raw overlay let that shape through. A server the operator disabled explicitly (`enabled = false`) serves nothing and is not refused. The
+    /// URL is judged by [JwksUrl], the predicate config load applies.
     private static void checkJwtWithoutJwks(String name, SourceProfile source, List<String> errors) {
-        var overlay = source.nodeConfig();
-        var jwt = overlay.flatMap(doc -> doc.getString("app-http", "security_mode"))
-                         .map(mode -> "jwt".equalsIgnoreCase(mode.trim()))
-                         .or(false);
-        var enabled = overlay.flatMap(doc -> doc.getString("app-http", "enabled"))
-                             .map(value -> "true".equalsIgnoreCase(value.trim()))
-                             .or(false);
-        var hasJwks = overlay.flatMap(doc -> doc.getString("app-http", "jwks_url"))
-                             .filter(url -> !url.isBlank())
-                             .isPresent();
+        composedAppHttp(source).filter(doc -> isJwtServer(doc))
+                               .flatMap(doc -> jwksProblem(doc))
+                               .onPresent(problem -> errors.add("PF-28: Source '" + name + "' sets [app-http] security_mode = \"jwt\" but "
+                                                                + problem + ". Every node would refuse to start: there is nothing to verify"
+                                                                + " tokens against. jwks_url is required (issuer/audience optional); set it, or change"
+                                                                + " security_mode."));
+    }
 
-        if (jwt && enabled && !hasJwks) {
-            errors.add("PF-28: Source '" + name
-                      + "' sets [app-http] security_mode = \"jwt\" without [app-http] jwks_url. Every node would"
-                      + " refuse to start: there is nothing to verify tokens against. Set jwks_url (and"
-                      + " issuer/audience), or change security_mode.");
-        }
+    private static Option<TomlDocument> composedAppHttp(SourceProfile source) {
+        return Result.all(DefaultNodeConfig.globalDefault(),
+                          DefaultNodeConfig.sourceTypeDefault(source.type()))
+                     .map((global, typeDefault) -> NodeConfigComposer.compose(global, typeDefault, source.nodeConfig(), TomlDocument.EMPTY))
+                     .option();
+    }
+
+    private static boolean isJwtServer(TomlDocument doc) {
+        var jwt = doc.getString("app-http", "security_mode")
+                     .map(mode -> "jwt".equalsIgnoreCase(mode.trim()))
+                     .or(false);
+        var enabled = doc.getString("app-http", "enabled")
+                         .map(value -> "true".equalsIgnoreCase(value.trim()))
+                         .or(false);
+
+        return jwt && enabled;
+    }
+
+    private static Option<String> jwksProblem(TomlDocument doc) {
+        return doc.getString("app-http", "jwks_url")
+                  .fold(() -> Option.some("jwks_url is missing"),
+                        url -> JwksUrl.jwksUrl(url).fold(cause -> Option.some(cause.message()), _ -> Option.empty()));
     }
 
     private static boolean securityDisabled(SourceProfile source) {

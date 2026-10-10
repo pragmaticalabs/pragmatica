@@ -342,7 +342,7 @@ public class AetherCli implements Runnable {
     }
 
     @Contract
-    private void readConfigFromPath(Path path) {
+    void readConfigFromPath(Path path) {
         ConfigLoader.load(path).onSuccess(this::setAddressFromConfig).onFailure(this::onConfigLoadFailure);
         configPath = path;
     }
@@ -382,8 +382,14 @@ public class AetherCli implements Runnable {
     }
 
     private void onConfigLoadFailure(Cause cause) {
-        System.err.println("Warning: Failed to load config: " + cause.message());
+        System.err.println(configLoadWarning(cause));
         nodeAddress = DEFAULT_ADDRESS;
+    }
+
+    /// The CLI keeps going on its default address when a config file fails to load (it is a client, not a node), but the warning carries the
+    /// CAUSE: a bare "failed to load" hides which setting was refused (#909).
+    static String configLoadWarning(Cause cause) {
+        return "Warning: Failed to load config: " + cause.message();
     }
 
     @Contract

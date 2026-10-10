@@ -5,6 +5,8 @@
 
 package org.pragmatica.aether.config;
 
+import java.util.List;
+
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -65,5 +67,42 @@ class ConfigLoaderJwtRefusalTest {
             ConfigLoader.loadFromString(CLUSTER + "\n[app-http]\nenabled = \"true\"\nsecurity_mode = \"" + mode + "\"\n")
                         .onFailure(cause -> fail("control, mode " + mode + ": " + cause.message()));
         }
+    }
+
+    private static String appHttpJwt(String jwksUrl) {
+        return CLUSTER + """
+
+            [app-http]
+            enabled = "true"
+            security_mode = "jwt"
+            jwks_url = "%s"
+            """.formatted(jwksUrl);
+    }
+
+    /// F2: a jwks_url that is blank, relative, unparseable or plain http to a remote host is refused at load, by the same predicate PF-28 applies.
+    @Test
+    void anUnusableJwksUrl_isRefusedAtLoad_withTheSameTypedCause() {
+        for (var bad : List.of("   ", "/relative/jwks.json", "http://auth.example.com/jwks.json", "ht tp://x")) {
+            ConfigLoader.loadFromString(appHttpJwt(bad))
+                        .onSuccess(_ -> fail("jwks_url '" + bad + "' must be refused at load"))
+                        .onFailure(cause -> {
+                            assertThat(cause).as(bad).isInstanceOf(ConfigValidator.ConfigError.SecurityMisconfigured.class);
+                            assertThat(cause.message()).as(bad).contains("jwks_url").contains("https");
+                        });
+        }
+    }
+
+    @Test
+    void httpsAndLoopbackHttpJwksUrls_load() {
+        for (var good : List.of("https://auth.example.com/jwks.json", "http://localhost:8080/jwks.json", "http://127.0.0.1:9000/jwks.json")) {
+            assertThat(ConfigLoader.loadFromString(appHttpJwt(good)).isSuccess()).as(good).isTrue();
+        }
+    }
+
+    /// F5: the missing-key refusal must not suggest issuer/audience are required.
+    @Test
+    void theMissingKeyMessage_saysIssuerAndAudienceAreOptional() {
+        ConfigLoader.loadFromString(CLUSTER + "\n[app-http]\nenabled = \"true\"\nsecurity_mode = \"jwt\"\n")
+                    .onFailure(cause -> assertThat(cause.message()).contains("jwks_url is required (issuer/audience optional)"));
     }
 }

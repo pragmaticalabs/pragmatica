@@ -97,15 +97,27 @@ public final class ConfigValidator {
     /// setting. A given `--config=` that fails validation refuses the boot (exit 65, #2052), so this is
     /// what stops the node. A disabled server refuses nothing, so it is not refused.
     private static Option<ConfigError> securityMisconfiguration(AppHttpConfig appHttp) {
-        return appHttp.enabled() && appHttp.securityMode() == SecurityMode.JWT && appHttp.jwtConfig()
-                                                                                         .isEmpty()
-               ? Option.some(ConfigError.securityMisconfigured(JWT_WITHOUT_JWKS_REASON))
-               : Option.empty();
+        if (!appHttp.enabled() || appHttp.securityMode() != SecurityMode.JWT) {
+            return Option.empty();
+        }
+
+        return appHttp.jwtConfig()
+                      .fold(() -> Option.some(ConfigError.securityMisconfigured(JWT_WITHOUT_JWKS_REASON)),
+                            jwt -> unusableJwksUrl(jwt.jwksUrl()));
     }
 
+    private static Option<ConfigError> unusableJwksUrl(String jwksUrl) {
+        return JwksUrl.jwksUrl(jwksUrl)
+                      .fold(cause -> Option.some(ConfigError.securityMisconfigured("[app-http] security_mode = \"jwt\" but " + cause.message()
+                                                                                 + ". " + JWKS_URL_RULE)),
+                            _ -> Option.empty());
+    }
+
+    static final String JWKS_URL_RULE = "jwks_url must be an absolute https URL (http only to a loopback host).";
+
     static final String JWT_WITHOUT_JWKS_REASON = "[app-http] security_mode = \"jwt\" but [app-http] jwks_url is missing:"
-                                                + " there is nothing to verify tokens against. Set [app-http] jwks_url"
-                                                + " (and issuer/audience), or change security_mode.";
+                                                + " there is nothing to verify tokens against. jwks_url is required"
+                                                + " (issuer/audience optional): set [app-http] jwks_url, or change security_mode.";
 
     /// #590 — the two absence windows are the two halves of one mechanism and their ORDER is a
     /// correctness property, not a preference. A community must stop serving before the core hands its
