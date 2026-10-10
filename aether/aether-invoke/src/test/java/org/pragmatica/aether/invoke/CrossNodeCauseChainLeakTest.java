@@ -172,7 +172,7 @@ class CrossNodeCauseChainLeakTest {
                                                  30_000L,
                                                  60_000L,
                                                  new StubDeploymentManager());
-        var detach = capture(InvocationHandler.class, calleeLog);
+        var detach = capture(InvocationHandlerImpl.class, calleeLog);
 
         network.invokerA = invokerA;
         try {
