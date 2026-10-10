@@ -47,17 +47,19 @@ class NodeReplacementWiringProvisionSourceTest {
     }
 
     @Test
-    void provisionFor_blankSource_asksTheTopologyManagerToDeriveIt_notTheAutoHealForm() {
-        NodeReplacementWiring.provisionFor(recordingCtm(), recordWithSource(""), Set.of()).await();
-
-        assertThat(calls).containsExactly("without-source");
-    }
-
-    @Test
     void provisionFor_namedSource_isPassedOnAsIs() {
         NodeReplacementWiring.provisionFor(recordingCtm(), recordWithSource("docker"), Set.of()).await();
 
         assertThat(calls).hasSize(1);
         assertThat(calls.getFirst()).startsWith("explicit:").contains("docker");
+    }
+
+    /// A blank source never reaches the topology manager as "default": it is refused (the reconciler commits a resolved source first).
+    @Test
+    void provisionFor_blankSource_isRefused_andNothingIsAskedOfTheTopologyManager() {
+        var result = NodeReplacementWiring.provisionFor(recordingCtm(), recordWithSource(""), Set.of()).await();
+
+        assertThat(result.isFailure()).isTrue();
+        assertThat(calls).isEmpty();
     }
 }

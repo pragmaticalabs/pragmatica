@@ -3009,6 +3009,21 @@ public sealed interface AetherValue {
             this(replacement, role, phase, phaseDeadlineMs, "", "", MODE_CTM, 0, "", 0L);
         }
 
+        /// The same record with its source resolved to `name` and nothing else changed (#1543 F2: a record created with no source gets the
+        /// config's sole declaring source committed once; every later effect and every later leader reads it).
+        public NodeReplacementValue withSource(String name) {
+            return new NodeReplacementValue(replacement,
+                                            role,
+                                            phase,
+                                            phaseDeadlineMs,
+                                            name,
+                                            targetVersion,
+                                            mode,
+                                            attempt,
+                                            reason,
+                                            epoch);
+        }
+
         /// The same record with `why` as its reason and nothing else changed (the epoch stays: it is the same decision, said more fully).
         public NodeReplacementValue withReason(String why) {
             return new NodeReplacementValue(replacement,

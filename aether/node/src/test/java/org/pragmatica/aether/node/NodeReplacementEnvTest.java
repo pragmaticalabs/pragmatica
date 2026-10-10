@@ -68,9 +68,6 @@ class NodeReplacementEnvTest {
     NodeReplacementEnvTest() {
         states.put(OLD, "Member");
         when(ctm.provisionReplacement(any(), any(), any(), any(), any())).thenReturn(Promise.success(ProvisionDisposition.dispatched()));
-        // these records carry no source (a freshly bootstrapped node's), so the replacement asks for the source to be derived: the without-source form
-        when(ctm.provisionReplacementWithoutSource(any(), any(), any())).thenReturn(Promise.success(ProvisionDisposition.dispatched()));
-        // ... and so does the retirement and the listing: the source is the config's sole one for the role, never the source "default"
         when(ctm.sourceOfSourcelessNode(any())).thenReturn(org.pragmatica.lang.Result.success(DOCK));
         when(ctm.drainNode(any(), any())).thenAnswer(call -> Promise.unitPromise());
         when(ctm.reapRetired(any(), any(), anyBoolean())).thenAnswer(call -> Promise.unitPromise());
@@ -136,7 +133,7 @@ class NodeReplacementEnvTest {
     }
 
     private void record(NodeReplacementPhase phase, long deadline) {
-        index.put(new AetherKey.NodeReplacementKey(OLD), new NodeReplacementValue(NEW, "core", phase, deadline));
+        index.put(new AetherKey.NodeReplacementKey(OLD), new NodeReplacementValue(NEW, "core", phase, deadline, "dock", "", NodeReplacementValue.MODE_CTM, 0, "", 0L));
     }
 
     // ---- N1: a drain under way is not a drain nobody asked for --------------------------------------------------------
@@ -207,7 +204,6 @@ class NodeReplacementEnvTest {
         record(NodeReplacementPhase.PROVISIONING, 999_999L);
         wiring.reconciler().reconcile().await();
 
-        verify(ctm, never()).provisionReplacementWithoutSource(any(), any(), any());
         verify(ctm, never()).provisionReplacement(any(), any(), any(), any(), any());
         assertThat(committedRecord().phase()).as("it takes the dispatched reservation as the provision having happened").isEqualTo(NodeReplacementPhase.JOINING);
     }
@@ -218,7 +214,6 @@ class NodeReplacementEnvTest {
         record(NodeReplacementPhase.PROVISIONING, 999_999L);
         wiring.reconciler().reconcile().await();
 
-        verify(ctm, never()).provisionReplacementWithoutSource(any(), any(), any());
         verify(ctm, never()).provisionReplacement(any(), any(), any(), any(), any());
         assertThat(committedRecord().phase()).as("a refused reservation is a refused provision").isEqualTo(NodeReplacementPhase.ROLLED_BACK);
 
@@ -228,7 +223,7 @@ class NodeReplacementEnvTest {
         record(NodeReplacementPhase.PROVISIONING, 999_999L);
         wiring.reconciler().reconcile().await();
 
-        verify(ctm).provisionReplacementWithoutSource(any(), any(), any());
+        verify(ctm).provisionReplacement(any(), any(), any(), any(), any());
     }
 
     // ---- #1543: DONE only after the provider's instance is confirmed gone ----------------------------------------------
@@ -313,17 +308,49 @@ class NodeReplacementEnvTest {
         verify(ctm).reapRetired(eq(OLD), eq(DOCK), eq(false));
     }
 
-    /// The source of a node with no source label is ambiguous (several sources declare the role): its retirement is not attempted at any
-    /// provider, and the reason reaches the record. It is not read as gone.
+    @SuppressWarnings("unchecked")
+    private NodeReplacementValue committedAt(int index) {
+        var transaction = (KVCommand.LeaderTransaction<AetherKey, AetherValue>) commands.get(index);
+
+        return (NodeReplacementValue) transaction.mutations().getFirst().replacement().unwrap();
+    }
+
+    /// #1543 F2: a record created with no source (a node of a cluster bootstrapped from static PEERS) is resolved ONCE, the answer
+    /// committed into the record FIRST, and the provision then runs from the committed source -- never from "default".
     @Test
-    void anAmbiguousSource_neverReapsAtAnyProvider_andIsNotReadAsGone() {
-        when(ctm.sourceOfSourcelessNode(any())).thenReturn(Causes.cause("role core is declared by sources [a, b]").<org.pragmatica.aether.environment.SourceName> result());
-        states.put(OLD, "Dead");
-        record(NodeReplacementPhase.RETIRING_OLD, 999_999L);
+    void aBlankSourceRecord_hasItsSourceCommittedFirst_thenIsProvisionedFromIt() {
+        index.put(new AetherKey.NodeReplacementKey(OLD), new NodeReplacementValue(NEW, "core", NodeReplacementPhase.PROVISIONING, 999_999L));
         wiring.reconciler().reconcile().await();
 
+        assertThat(commands).as("the source commit, then the provision's own").hasSize(2);
+        assertThat(committedAt(0).source()).isEqualTo("dock");
+        assertThat(committedAt(0).phase()).as("the source commit changes nothing else").isEqualTo(NodeReplacementPhase.PROVISIONING);
+        verify(ctm).provisionReplacement(any(), any(), any(), any(), eq(DOCK));
+        verify(ctm).sourceOfSourcelessNode(any());
+    }
+
+    /// Several sources declare the role (or none): a replacement that has not begun ends, with the typed cause in its reason, and nothing is
+    /// provisioned or reaped at any provider.
+    @Test
+    void anUnresolvableSource_atProvisioning_rollsBackWithTheCause_andTouchesNoProvider() {
+        when(ctm.sourceOfSourcelessNode(any())).thenReturn(Causes.cause("role core is declared by sources [a, b]").<org.pragmatica.aether.environment.SourceName> result());
+        index.put(new AetherKey.NodeReplacementKey(OLD), new NodeReplacementValue(NEW, "core", NodeReplacementPhase.PROVISIONING, 999_999L));
+        wiring.reconciler().reconcile().await();
+
+        assertThat(committedRecord().phase()).isEqualTo(NodeReplacementPhase.ROLLED_BACK);
+        assertThat(committedRecord().reason()).startsWith("provisioning refused: ").contains("[a, b]").doesNotContain("default");
+        verify(ctm, never()).provisionReplacement(any(), any(), any(), any(), any());
         verify(ctm, never()).reapRetired(any(), any(), anyBoolean());
-        assertThat(commands).as("not read as gone: no DONE committed").isEmpty();
+    }
+
+    /// Defence in depth: a blank source that reaches an effect is refused, never read as the source "default".
+    @Test
+    void aBlankSourceReachingAnEffect_isRefused_neverReadAsDefault() {
+        var blank = new NodeReplacementValue(NEW, "core", NodeReplacementPhase.PROVISIONING, 1L);
+
+        assertThat(NodeReplacementWiring.committedSource(blank).isFailure()).isTrue();
+        assertThat(NodeReplacementWiring.provisionFor(ctm, blank, Set.of()).await().isFailure()).isTrue();
+        verify(ctm, never()).provisionReplacement(any(), any(), any(), any(), any());
     }
 
     /// A replacement that was up (the membership read it alive) and was then lost before any drain is listed while it is up, so its rollback
@@ -377,7 +404,7 @@ class NodeReplacementEnvTest {
         owner.onTransition(NodeReplacementWiring.announcer(() -> true, sink));
         follower.onTransition(NodeReplacementWiring.announcer(() -> false, sink));
         var key = new AetherKey.NodeReplacementKey(OLD);
-        var started = new NodeReplacementValue(NEW, "core", NodeReplacementPhase.PROVISIONING, 0L);
+        var started = new NodeReplacementValue(NEW, "core", NodeReplacementPhase.PROVISIONING, 0L, "dock", "", NodeReplacementValue.MODE_CTM, 0, "", 0L);
         var walk = List.of(started,
                            started.advanced(NodeReplacementPhase.JOINING, 1L, ""),
                            started.advanced(NodeReplacementPhase.JOINING, 1L, "").advanced(NodeReplacementPhase.SWAPPING, 1L, ""),
@@ -402,7 +429,7 @@ class NodeReplacementEnvTest {
         var follower = NodeReplacementIndex.nodeReplacementIndex();
 
         follower.onTransition(NodeReplacementWiring.announcer(() -> false, OperatorWarningSink.handingOffTo(raised::add)));
-        follower.put(new AetherKey.NodeReplacementKey(OLD), new NodeReplacementValue(NEW, "core", NodeReplacementPhase.PROVISIONING, 0L));
+        follower.put(new AetherKey.NodeReplacementKey(OLD), new NodeReplacementValue(NEW, "core", NodeReplacementPhase.PROVISIONING, 0L, "dock", "", NodeReplacementValue.MODE_CTM, 0, "", 0L));
         sleepBriefly();
 
         assertThat(raised).isEmpty();

@@ -151,14 +151,6 @@ public interface ClusterTopologyManager extends TopologyManager {
                                                        Set<NodeId> clusterMembers,
                                                        NodeRole intendedRole);
 
-    /// The replacement of a node whose record carries no source. Implementations that know the committed config derive it or refuse (see
-    /// [ReplacementSourceUnresolved]); the default is the source-less form.
-    default Promise<ProvisionDisposition> provisionReplacementWithoutSource(NodeId newNodeId,
-                                                                            Set<NodeId> clusterMembers,
-                                                                            NodeRole intendedRole) {
-        return provisionReplacement(newNodeId, Option.none(), clusterMembers, intendedRole);
-    }
-
     /// The source a node WITHOUT a source label is addressed by at the provider (its retirement, its listing): the sole source of the committed
     /// config declaring the role, else a typed [ReplacementSourceUnresolved]. The default knows no config and answers the source "default".
     default org.pragmatica.lang.Result<org.pragmatica.aether.environment.SourceName> sourceOfSourcelessNode(NodeRole intendedRole) {

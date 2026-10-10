@@ -1095,28 +1095,11 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                             .or(ProvisionContext.DEFAULT_SOURCE_NAME);
     }
 
-    /// #1543 F2 -- the replacement of a node whose record carries NO source (a cluster bootstrapped from static PEERS: its peers' descriptors
-    /// hold no labels). The source is derived only when exactly ONE source, of any type, declares the role: there is no preference between
-    /// types, because replacing a docker node must never provision a cloud VM. Zero or several declaring sources are a typed refusal naming
-    /// the role and the candidates, never the source "default". Without any committed config (the bootstrap seed, forge) there is nothing to
-    /// derive from and the replacement proceeds as an auto-heal's does.
-    @Override
-    public Promise<ProvisionDisposition> provisionReplacementWithoutSource(NodeId newNodeId,
-                                                                           Set<NodeId> clusterMembers,
-                                                                           NodeRole intendedRole) {
-        return committedToml().flatMap(ClusterTopologyManagerRecord::parseConfig)
-                            .fold(() -> provisionReplacement(newNodeId,
-                                                             Option.none(),
-                                                             clusterMembers,
-                                                             intendedRole),
-                                  config -> soleSourceDeclaring(config, intendedRole).async()
-                                                               .flatMap(source -> provisionReplacement(newNodeId,
-                                                                                                       Option.none(),
-                                                                                                       clusterMembers,
-                                                                                                       intendedRole,
-                                                                                                       source.name())));
-    }
-
+    /// #1543 F2 -- the source of a node whose record carries NO source (a cluster bootstrapped from static PEERS: its peers' descriptors hold
+    /// no labels), resolved once by the replacement reconciler and committed into the record. Derived only when exactly ONE source, of any
+    /// type, declares the role: there is no preference between types, because replacing a docker node must never provision a cloud VM.
+    /// Zero or several declaring sources are a typed refusal naming the role and the candidates, never the source "default". Without any
+    /// committed config (the bootstrap seed, forge) there is nothing to derive from and the answer is "default", as before.
     @Override
     public Result<SourceName> sourceOfSourcelessNode(NodeRole intendedRole) {
         return committedToml().flatMap(ClusterTopologyManagerRecord::parseConfig)

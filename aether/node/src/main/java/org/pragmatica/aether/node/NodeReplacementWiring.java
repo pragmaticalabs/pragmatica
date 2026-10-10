@@ -306,23 +306,28 @@ public final class NodeReplacementWiring {
         return Unit.unit();
     }
 
-    /// A node of a cluster bootstrapped from static PEERS is known to its peers with no source label (a descriptor learns labels only
-    /// from a node's own handshake), so its record carries a blank source. The replacement then asks the topology manager to derive
-    /// the source from the committed config -- the sole source declaring the role, else a typed refusal; passing the blank on as "default"
-    /// named a source no config has, and the first replacement of a freshly bootstrapped cluster was refused (#1543 F2).
+    /// The provision of a replacement, from the source COMMITTED in its record. A record created with no source (a node of a cluster
+    /// bootstrapped from static PEERS has no source label) has it resolved once by the reconciler and committed back before any effect, so a
+    /// blank here is a defect, refused, and never read as the source "default" (#1543 F2).
     static Promise<ProvisionDisposition> provisionFor(ClusterTopologyManager ctm,
                                                       NodeReplacementValue record,
                                                       Set<NodeId> members) {
         var role = NodeRole.nodeRole(record.role()).or(NodeRole.CORE);
 
+        return committedSource(record).async()
+                              .flatMap(source -> ctm.provisionReplacement(record.replacement(),
+                                                                          Option.none(),
+                                                                          members,
+                                                                          role,
+                                                                          source));
+    }
+
+    /// The source a record's node is addressed by at the provider: the one committed in the record. Blank is refused, never "default".
+    static Result<SourceName> committedSource(NodeReplacementValue record) {
         return record.source()
                      .isBlank()
-               ? ctm.provisionReplacementWithoutSource(record.replacement(), members, role)
-               : ctm.provisionReplacement(record.replacement(),
-                                          Option.none(),
-                                          members,
-                                          role,
-                                          SourceName.sourceNameOrDefault(record.source()));
+               ? Causes.cause("the replacement record carries no committed source yet").result()
+               : SourceName.sourceName(record.source());
     }
 
     private static final class Env implements NodeReplacementReconciler.Environment {
@@ -362,6 +367,13 @@ public final class NodeReplacementWiring {
                                           AetherValue.CapacityReservationValue.class);
 
             return cas(in, original, Option.some(expected), next, settleReservation(next, reservation));
+        }
+
+        @Override
+        public Result<String> resolveSource(NodeId original, NodeReplacementValue record) {
+            return in.ctm()
+                     .sourceOfSourcelessNode(NodeRole.nodeRole(record.role()).or(NodeRole.CORE))
+                     .map(SourceName::value);
         }
 
         @Override
@@ -454,16 +466,6 @@ public final class NodeReplacementWiring {
                                         .recover(cause -> new EffectResult.Failed(cause.message()));
         }
 
-        /// The source a record's node is addressed by at the provider: its own, or -- for a blank one -- the sole source of the committed config
-        /// declaring the role (a typed refusal otherwise), never the source "default".
-        private Result<SourceName> effectiveSource(NodeReplacementValue record) {
-            return record.source()
-                         .isBlank()
-                   ? in.ctm()
-                       .sourceOfSourcelessNode(NodeRole.nodeRole(record.role()).or(NodeRole.CORE))
-                   : Result.success(SourceName.sourceNameOrDefault(record.source()));
-        }
-
         /// Done only when the provider's own listing, taken after the terminate, shows the instance gone. A refusal, a listing that
         /// fails or an instance still listed is Deferred with its cause (never read as gone) and tried again on the next tick; a
         /// rollback gives up after the retirement budget (Failed, which keeps the pair for the operator), while the retirement's
@@ -484,7 +486,7 @@ public final class NodeReplacementWiring {
                                                                    !boundedByRetiring))
                             : in.ctm()
                                 .drainNode(node, DrainReason.REPLACED)
-                                .flatMap(_ -> effectiveSource(record).async()
+                                .flatMap(_ -> committedSource(record).async()
                                                              .flatMap(source -> in.ctm()
                                                                                   .reapRetired(node,
                                                                                                source,
@@ -557,7 +559,7 @@ public final class NodeReplacementWiring {
         /// safely call gone (the old node self-halts after its drain). A listing that fails or lists nothing observes nothing and
         /// never blocks the drain; external-kind reservations have no provider instance to list.
         private Promise<Unit> observeInstances(NodeId original, NodeReplacementValue record) {
-            return effectiveSource(record).fold(_ -> Promise.unitPromise(),
+            return committedSource(record).fold(_ -> Promise.unitPromise(),
                                                 source -> observeInstances(original, record, source));
         }
 
@@ -588,7 +590,7 @@ public final class NodeReplacementWiring {
                 return;
             }
 
-            effectiveSource(record).fold(_ -> {
+            committedSource(record).fold(_ -> {
                                              observing.remove(node);
 
                                              return Unit.unit();
