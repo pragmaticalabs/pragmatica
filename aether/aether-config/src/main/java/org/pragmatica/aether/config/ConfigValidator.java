@@ -71,6 +71,9 @@ public final class ConfigValidator {
         storageMaintenanceErrors(config.timeouts().storageMaintenance(),
                                  errors);
         streamingErrors(config.streaming(), errors);
+        promotionEscapeErrors(config.streaming(),
+                              config.timeouts().swim().suspectTimeout(),
+                              errors);
         archiveRetentionErrors(config.slice(), errors);
         if (config.tlsEnabled()) {
             config.tls().onPresent(tls -> tlsErrors(tls, errors));
@@ -158,6 +161,23 @@ public final class ConfigValidator {
         // #1604: 0 means "derive from the filesystem"; a negative cap has no meaning.
         if (streaming.segmentDiskMaxBytes() < 0) {
             errors.add("streaming.segment_disk_max_bytes must be >= 0 (0 derives the cap from the filesystem). Got: " + streaming.segmentDiskMaxBytes());
+        }
+    }
+
+    /// `promotion_escape_after` (#2080) may not be below the alarm bounds it follows: the owner gate's (two SWIM suspect windows) and the
+    /// replica contest's (`backfillSourceWaitBound`). An escape earlier than the alarm would go ahead before the operator was told anything
+    /// was wrong, and earlier than a slow boot completes.
+    private static void promotionEscapeErrors(StreamingConfig streaming, TimeSpan suspectTimeout, List<String> errors) {
+        var alarm = StreamingConfig.ownerPromotionAlarmWindow(suspectTimeout);
+        var contest = streaming.backfillSourceWaitBound();
+        var floor = alarm.millis() >= contest.millis()
+                    ? alarm
+                    : contest;
+
+        if (streaming.promotionEscapeAfter().millis() < floor.millis()) {
+            errors.add("streaming.promotion_escape_after (%dms) must be at least %dms (the larger of two swim suspect_timeout windows and the replica contest's source-wait bound): an escape earlier than the alarm goes ahead before the operator is told".formatted(streaming.promotionEscapeAfter()
+                                                                                                                                                                                                                                                                                .millis(),
+                                                                                                                                                                                                                                                                       floor.millis()));
         }
     }
 

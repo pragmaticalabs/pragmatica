@@ -331,6 +331,33 @@ class ClusterEventRedeliveryTest {
             .allMatch(line -> line.contains("dropping the oldest"));
     }
 
+    /// The other overflow shape: every held event is IN FLIGHT (a retry whose publish has not settled), none waiting to drop, so the NEW
+    /// event is dropped, and reported at the drop for the same reason. Mutation: removing that WARN turns this red (carried from #2079's
+    /// review, nit n2).
+    @Test
+    void deliver_bufferFullOfInFlightRetries_dropsTheNewEvent_andLogsItAtTheDrop() {
+        var logged = capture();
+
+        try {
+            fail(ClusterEventRedelivery.CAPACITY + 1, UNKNOWN);
+            for (int i = 0; i < ClusterEventRedelivery.CAPACITY; i++) {
+                redelivery.deliver(event("first-wave-" + i));
+            }
+            retriesHang = true;
+            redelivery.redeliver(true);
+            assertThat(redelivery.waiting()).as("every held event is in flight").isZero();
+            assertThat(redelivery.held()).isEqualTo(ClusterEventRedelivery.CAPACITY);
+            redelivery.deliver(event("late"));
+        } finally {
+            release();
+        }
+
+        assertThat(redelivery.dropped(OVERFLOW)).isEqualTo(1L);
+        assertThat(logged.stream().filter(line -> line.startsWith("WARN ")))
+            .hasSize(1)
+            .allMatch(line -> line.contains("all in flight") && line.contains("dropping the new"));
+    }
+
     /// A full buffer drops its OLDEST entry (CTO ruling), counted.
     @Test
     void deliver_beyondCapacity_dropsTheOldest() {
