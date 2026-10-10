@@ -1257,6 +1257,7 @@ class NodeReplacementRealRegistryReapTest {
         within(10, () -> assertThat(admissionMarker().flatMap(AetherValue.CapacityAdmissionValue::supersededBy).isPresent()).isTrue());
         var slots = ledger().allocated();
 
+        requestedDrains.clear();
         states.put(OLD, "Member");
         joins(OLD);
 
