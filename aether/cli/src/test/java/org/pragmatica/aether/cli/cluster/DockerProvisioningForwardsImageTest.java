@@ -116,7 +116,7 @@ class DockerProvisioningForwardsImageTest {
     /// Resolved per role, not per source: a source with only a worker role hands the provider the WORKER's pin.
     @Test
     void bootstrapProvisioning_workerOnlySource_handsTheProviderTheWorkersPin() {
-        var config = ClusterBootstrapConfigParser.parse(PINNED.replace("[source.local.core]\n            count = 1\n            runtime = \"coreapp\"\n", "")).unwrap();
+        var config = ClusterBootstrapConfigParser.parse(removeCoreRole(PINNED)).unwrap();
 
         bootstrap(config);
 
@@ -132,6 +132,14 @@ class DockerProvisioningForwardsImageTest {
 
         assertThat(seen).as("CONTROL: the core group reached the provider factory").isNotEmpty();
         assertThat(seen.getFirst().compute()).doesNotContainKey("image_name");
+    }
+
+    private static String removeCoreRole(String toml) {
+        var without = toml.replace("[source.local.core]\ncount = 1\nruntime = \"coreapp\"\n", "");
+
+        assertThat(without).as("CONTROL: the core role was removed").isNotEqualTo(toml);
+
+        return without;
     }
 
     private static void bootstrap(org.pragmatica.aether.config.cluster.ClusterBootstrapConfig config) {
