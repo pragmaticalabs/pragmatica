@@ -14,3 +14,10 @@
   image, so the container pin is not used for it.
 - **Not covered:** a docker cluster with no committed TOML (a bootstrap seed) has no profile to resolve and keeps the
   provider's configured image; its upgrade is not refused because there is no source to inspect.
+- **`aether cluster upgrade` and `POST /api/v1/cluster/upgrade` accept SemVer pre-release versions (`1.0.0-rc5`).** The CLI
+  accepted only `X.Y.Z` (since 0.25.0), so it refused every release version of this line; the route validated nothing.
+  Both now use one rule (`ClusterUpgradeToml.isUpgradeVersion`): SemVer 2.0 with an optional pre-release, no build
+  metadata (the version becomes an image tag); anything else is a typed 400 `InvalidUpgradeVersion` before any read or write.
+- **`cluster upgrade --wait` survives the replacement of the node it polls** by following the live membership.
+- **The docker provider acts only on its own cluster's containers** (`list` filters on the cluster label; `terminate`
+  refuses with a typed `OutOfClusterScope` unless the target carries that cluster's label).

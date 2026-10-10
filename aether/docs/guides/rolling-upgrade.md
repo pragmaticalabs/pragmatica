@@ -55,7 +55,7 @@ upgrade to a different version while a run is live is refused (HTTP 409).
 
 | Option | Description |
 |--------|-------------|
-| `--version <X.Y.Z>` | Target version (required) |
+| `--version <version>` | Target version (required): SemVer `MAJOR.MINOR.PATCH` with an optional pre-release, e.g. `1.0.0` or `1.0.0-rc5`; no build metadata (`+...`), because the version becomes an image tag |
 | `--wait` | Block until the run completes, aborts, pauses, or the timeout elapses |
 | `--wait-timeout-minutes <N>` | Timeout for `--wait`, in minutes (default 180) |
 
