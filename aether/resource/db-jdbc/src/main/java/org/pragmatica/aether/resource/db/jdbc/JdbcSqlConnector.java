@@ -197,7 +197,7 @@ public final class JdbcSqlConnector implements SqlConnector {
 
     private void applyParameters(PreparedStatement stmt, Object[] params) throws SQLException {
         for (int i = 0; i < params.length; i++) {
-            stmt.setObject(i + 1, params[i]);
+            org.pragmatica.jdbc.JdbcParameters.bind(stmt, i + 1, params[i]);
         }
     }
 
@@ -369,7 +369,7 @@ public final class JdbcSqlConnector implements SqlConnector {
 
         private void txApplyParameters(PreparedStatement stmt, Object[] params) throws SQLException {
             for (int i = 0; i < params.length; i++) {
-                stmt.setObject(i + 1, params[i]);
+                org.pragmatica.jdbc.JdbcParameters.bind(stmt, i + 1, params[i]);
             }
         }
     }

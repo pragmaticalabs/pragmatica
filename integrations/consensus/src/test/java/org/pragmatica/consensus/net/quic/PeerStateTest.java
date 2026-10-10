@@ -398,6 +398,24 @@ class PeerStateTest {
         }
     }
 
+    /// #2011: a NewBatch left in the offline buffer would be re-delivered on reattach with no time limit, long after its
+    /// slot decided and beyond the committed-batch window, re-queuing a committed batch. It must never be buffered.
+    @Test
+    void offerOutbound_rabiaNewBatch_isNeverBuffered_whileOtherConsensusFramesStillAre() {
+        var evicted = state();
+
+        evicted.attach(liveConnection(), T0 + 1);
+        evicted.evict(T0 + 2);
+        var newBatch = new org.pragmatica.consensus.rabia.RabiaProtocolMessage.Asynchronous.NewBatch<org.pragmatica.consensus.Command>(
+            NodeId.nodeId("sender").unwrap(), org.pragmatica.consensus.StateMachine.Batch.emptyBatch());
+        var propose = new org.pragmatica.consensus.rabia.RabiaProtocolMessage.Synchronous.Propose<org.pragmatica.consensus.Command>(
+            NodeId.nodeId("sender").unwrap(), org.pragmatica.consensus.rabia.Phase.ZERO, org.pragmatica.consensus.StateMachine.Batch.emptyBatch());
+
+        assertThat(evicted.offerOutbound(newBatch)).isInstanceOf(OfferOutcome.NotBuffered.class);
+        assertThat(evicted.offlineBufferSize()).isZero();
+        assertThat(evicted.offerOutbound(propose)).as("control: a Propose is still buffered").isInstanceOf(OfferOutcome.Queued.class);
+    }
+
     @Test
     void offerOutbound_INIT_queues() {
         var s = state();
@@ -467,11 +485,63 @@ class PeerStateTest {
         s.offerOutbound(out((byte) 1));
         s.offerOutbound(out((byte) 2));
         s.offerOutbound(out((byte) 3));
-        var drained = s.drainOfflineBuffer();
+        var drained = s.drainOfflineBuffer(T0 + 10).live();
         assertThat(drained).hasSize(3);
-        assertThat(((TestMsg) drained.get(0)).tag()).isEqualTo((byte) 1);
-        assertThat(((TestMsg) drained.get(1)).tag()).isEqualTo((byte) 2);
-        assertThat(((TestMsg) drained.get(2)).tag()).isEqualTo((byte) 3);
+        assertThat(((TestMsg) drained.get(0).message()).tag()).isEqualTo((byte) 1);
+        assertThat(((TestMsg) drained.get(1).message()).tag()).isEqualTo((byte) 2);
+        assertThat(((TestMsg) drained.get(2).message()).tag()).isEqualTo((byte) 3);
+        assertThat(s.offlineBufferSize()).isZero();
+    }
+
+    /// #1996: the expiry instant is a boundary. Flushed ONE nanosecond before it the frame is delivered; flushed AT it, the
+    /// caller's own timer has fired at the same instant, so the frame is dropped. The pair pins `>=` against both `>` and
+    /// an off-by-one in the other direction.
+    @Test
+    void drainOfflineBuffer_expiryBoundary_deliversBeforeTheInstant_dropsAtIt() {
+        var life = org.pragmatica.lang.io.TimeSpan.timeSpan(500).nanos();
+        var before = state();
+        var at = state();
+
+        before.beginConnecting(T0 + 1);
+        at.beginConnecting(T0 + 1);
+        before.offerOutbound(out((byte) 1), PeerState.Expiry.after(life, T0));
+        at.offerOutbound(out((byte) 1), PeerState.Expiry.after(life, T0));
+
+        var beforeInstant = before.drainOfflineBuffer(T0 + 499);
+        var atInstant = at.drainOfflineBuffer(T0 + 500);
+
+        assertThat(beforeInstant.live()).as("one nanosecond before the instant, still deliverable").hasSize(1);
+        assertThat(beforeInstant.expired()).isEmpty();
+        assertThat(atInstant.live()).as("at the instant the caller has given up").isEmpty();
+        assertThat(atInstant.expired()).hasSize(1);
+    }
+
+    @Test
+    void drainOfflineBuffer_neverExpiry_isDeliveredHoweverLateTheFlush() {
+        var s = state();
+
+        s.beginConnecting(T0 + 1);
+        s.offerOutbound(out((byte) 1));
+        var drained = s.drainOfflineBuffer(T0 + Long.MAX_VALUE / 2);
+
+        assertThat(drained.live()).hasSize(1);
+        assertThat(drained.expired()).isEmpty();
+    }
+
+    @Test
+    void drainOfflineBuffer_splitsLiveFromExpired_keepingFifoOrderOfTheLive() {
+        var s = state();
+
+        s.beginConnecting(T0 + 1);
+        s.offerOutbound(out((byte) 1), PeerState.Expiry.after(org.pragmatica.lang.io.TimeSpan.timeSpan(100).nanos(), T0));
+        s.offerOutbound(out((byte) 2), PeerState.Expiry.after(org.pragmatica.lang.io.TimeSpan.timeSpan(1000).nanos(), T0));
+        s.offerOutbound(out((byte) 3), PeerState.Expiry.NEVER);
+
+        var drained = s.drainOfflineBuffer(T0 + 200);
+
+        assertThat(drained.expired()).hasSize(1);
+        assertThat(((TestMsg) drained.expired().getFirst()).tag()).isEqualTo((byte) 1);
+        assertThat(drained.live()).extracting(entry -> ((TestMsg) entry.message()).tag()).containsExactly((byte) 2, (byte) 3);
         assertThat(s.offlineBufferSize()).isZero();
     }
 
@@ -485,7 +555,7 @@ class PeerStateTest {
         s.beginConnecting(T0 + 4);      // EVICTED → CONNECTING
         assertThat(s.offlineBufferSize()).isEqualTo(1);
         s.attach(liveConnection(), T0 + 5); // CONNECTING → CONNECTED
-        assertThat(s.drainOfflineBuffer()).hasSize(1);
+        assertThat(s.drainOfflineBuffer(T0 + 10).live()).hasSize(1);
     }
 
     @Test

@@ -71,6 +71,8 @@ class EmberOrdinaryFailoverNoFalseAlertTest {
     private static final String NAMESPACE = "ember";
     private static final String VERSION = "1.0.0";
     private static final List<String> FORBIDDEN_EVENT_MARKERS = List.of("stream-divergent-tail-truncated",
+                                                                         "stream-divergent-tail-preserved",
+                                                                         "stream-promotion-past-unreachable-peers",
                                                                          "STREAM_PARTITION_FLAGGED",
                                                                          "MARKED_DIVERGED",
                                                                          "stream-catchup-source-not-answering",
@@ -125,7 +127,7 @@ class EmberOrdinaryFailoverNoFalseAlertTest {
         var samples = new ArrayList<String>();
         var deadline = System.currentTimeMillis() + FAILOVER_BUDGET_MS;
         var sampleUntil = Long.MAX_VALUE;
-        var minimumIsr = Integer.MAX_VALUE;
+        var liveIsr = new MinimumLiveIsr();
         var attempt = 0;
 
         while (System.currentTimeMillis() < deadline && System.currentTimeMillis() < sampleUntil) {
@@ -153,9 +155,7 @@ class EmberOrdinaryFailoverNoFalseAlertTest {
             }
 
             if (firstAckAt >= 0) {
-                var live = record.map(value -> value.isr().stream().filter(member -> !member.id().equals(ownerId)).count()).or(0L);
-
-                minimumIsr = (int) Math.min(minimumIsr, live);
+                liveIsr.sample(record.map(value -> value.isr().stream().filter(member -> !member.id().equals(ownerId)).count()));
             }
 
             sleepQuietly(250L);
@@ -168,7 +168,7 @@ class EmberOrdinaryFailoverNoFalseAlertTest {
                           newOwnerAt < 0 ? -1L : (newOwnerAt - killedAt) / 1_000_000L,
                           (firstAckAt - killedAt) / 1_000_000L,
                           newOwnerAt < 0 ? -1L : (firstAckAt - newOwnerAt) / 1_000_000L,
-                          minimumIsr);
+                          liveIsr.minimum());
         samples.stream().distinct().forEach(sample -> System.out.println("FAILOVER-ISR " + sample));
 
         for (var i = 0; i < 10; i++) {
@@ -178,7 +178,8 @@ class EmberOrdinaryFailoverNoFalseAlertTest {
             acked.add(payload);
         }
 
-        assertThat(minimumIsr).as("the committed ISR kept every live member after the first acknowledged publish").isGreaterThanOrEqualTo(2);
+        assertThat(liveIsr.taken()).as("at least one sample after the first ack saw an ISR the live nodes agree on").isGreaterThan(0);
+        assertThat(liveIsr.minimum()).as("the committed ISR kept every live member after the first acknowledged publish").isGreaterThanOrEqualTo(2);
         assertThat(readBack(chosen.name(), ownerId)).as("every acknowledged record reads back").containsAll(acked);
         assertThat(recoveryFlag(key, ownerId).isEmpty()).as("no partition-recovery flag was raised by an ordinary failover").isTrue();
         assertThat(events(anyLiveMgmtPort(ownerId))).as("no divergence, truncation or flag event for an ordinary failover")

@@ -1986,7 +1986,8 @@ aether cluster init --non-interactive --name test-cluster --core-nodes 5 --outpu
 | `--worker-nodes` | Worker tier size (default 0). Not bounded by the consensus-tier maximum. For an `ssh` target it is the remainder of `--hosts` after `--core-nodes` and must not be given |
 | `--hosts` | SSH hosts (ssh target only), comma-separated |
 | `--ssh-user`, `--ssh-key`, `--ssh-port` | SSH credentials (ssh target only) |
-| `--provider`, `--region`, `--instance-type`, `--credential-env` | Cloud target only |
+| `--provider`, `--region`, `--instance-type`, `--credential-env` | Cloud target only. `--credential-env`: hetzner takes the token's env var name; aws, gcp and azure take repeated `<key>=<ENV_VAR>` (e.g. `secret_access_key=MY_SECRET`), keys not named default to `<PROVIDER>_<KEY>` |
+| `--zone` | gcp only; required, no default (a zone derived from the region can name one that does not exist) |
 | `--db-host`, `--db-port`, `--db-name`, `--db-user`, `--db-password-env` | Optional Postgres backing store |
 | `--firewall` | Firewall preset: `standard`, `restrictive`, `open`, `custom` |
 | `--admin-cidr`, `--internal-cidr` | Restrictive firewall preset only |

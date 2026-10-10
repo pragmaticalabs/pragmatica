@@ -250,6 +250,13 @@ public interface ClusterSyncCollector {
     @Contract
     default void setDrainCommandHandler(Runnable handler) {}
 
+    /// Observer for the leader's broadcast drain set (#2014). Invoked on every authoritative ping,
+    /// an empty set included (absence is how a cancelled drain is noticed), on EVERY receiver and not only on the targets, so a follower
+    /// learns of a planned departure while the leader is the only node that saw `DrainRequested`.
+    /// Must be idempotent: pings repeat the set until the drain is cleared. Default no-op.
+    @Contract
+    default void setDrainSetObserver(java.util.function.Consumer<Set<NodeId>> observer) {}
+
     /// The global `drainNodes` set carried by the latest authoritative `ClusterSyncPing` — every node
     /// the leader has commanded to drain, self included when targeted. Read by the departure push so a
     /// drainer excludes the nodes leaving WITH it (issue #1818): this ping is the only carrier of that
@@ -362,6 +369,8 @@ class ClusterSyncCollectorImpl implements ClusterSyncCollector {
     /// Membership v2 (B5a) — handler invoked when an inbound DRAIN ping is received. Default
     /// no-op until `setDrainCommandHandler(...)` wires the local `DrainProcedure`. Invoked on
     /// every DRAIN ping; the handler must be idempotent (DrainProcedure is CAS-guarded).
+    private final AtomicReference<java.util.function.Consumer<Set<NodeId>>> drainSetObserver = new AtomicReference<>(_ -> {});
+
     private final AtomicReference<Runnable> drainCommandHandler = new AtomicReference<>(() -> {});
 
     /// Global drain set of the latest authoritative ping (issue #1818), recorded before the
@@ -686,6 +695,7 @@ class ClusterSyncCollectorImpl implements ClusterSyncCollector {
     /// global drain set; each receiver self-checks `drainNodes.contains(self)`.
     private void handleDrainCommand(ClusterSyncPing ping) {
         commandedDrainNodes.set(ping.drainNodes());
+        drainSetObserver.get().accept(ping.drainNodes());
         if (!ping.drainNodes().contains(self)) {
             return;
         }
@@ -898,6 +908,14 @@ class ClusterSyncCollectorImpl implements ClusterSyncCollector {
         incarnationSupplier.set(supplier == null
                                 ? () -> 0L
                                 : supplier);
+    }
+
+    @Override
+    @Contract
+    public void setDrainSetObserver(java.util.function.Consumer<Set<NodeId>> observer) {
+        drainSetObserver.set(observer == null
+                             ? _ -> {}
+                             : observer);
     }
 
     @Override

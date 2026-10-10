@@ -24,20 +24,15 @@ public final class ConfigValidator {
     /// minimum of 5 from the 2026-09-12 ruling. The policy minimum is enforced where configs are
     /// CREATED — `CoreWorkerSplit`, reached from `aether cluster init` and `scaffold`.
     ///
-    /// WHAT A FAILURE HERE ACTUALLY DOES, because it is not what this class looks like (#1019 round-1
-    /// review, S1): `ConfigLoader.load` calls [#validate] and `Main` loads through `ConfigLoader`, so
-    /// this does run on every node boot — but `Main#loadConfigFile` is
-    /// `ConfigLoader.load(path).onFailure(log::error).option()`, so a validation failure is LOGGED AND
-    /// DISCARDED and the node boots with NO CONFIG AT ALL. It does not refuse to start.
+    /// WHAT A FAILURE HERE ACTUALLY DOES (#1019 round-1 review S1, corrected by #2052): `ConfigLoader.load` calls [#validate] and `Main`
+    /// loads a GIVEN `--config=` file through it, so this runs on every such node boot, and a validation failure REFUSES the boot:
+    /// `Main#resolveConfig` fails and `Main#refuseConfig` exits 65 with a FATAL line on stderr naming the file and the cause. (Before
+    /// #2052 the failure was logged and discarded and the node booted on defaults without the file's TLS, port and secret settings.)
     ///
-    /// That makes raising this floor worse than a refusal, not safer than one. A 3-node cluster whose
-    /// config stopped validating would boot without its TLS, port and secret settings, and
-    /// `Main#configuredClusterNodes` would report 0 — which takes `Main#discoverCloudCorePeers` off its
-    /// `expected > 0` arm, leaving `expectedClusterSize` to fall through to the RESOLVED peer count. On
-    /// a cloud node that resolves nothing, `ClusterSizeGate.enforce(0)` then aborts the boot citing
-    /// "Expected cluster size 0", a diagnostic that names neither the config file nor the floor that
-    /// rejected it. The refusal that stops a sub-3-node start is [ClusterSizeGate], not this.
+    /// That makes raising this floor as consequential as raising [ClusterSizeGate]'s: a 3-node cluster whose config stopped validating
+    /// could no longer restart. With NO config file given nothing here runs, and [ClusterSizeGate] is the only floor on that boot.
     private static final int MINIMUM_CLUSTER_SIZE = 3;
+    private static final TimeSpan OFFLINE_BUFFER_CAP_FLOOR = timeSpan(5).seconds();
     /// Upper bound on the CONSENSUS tier, not on the fleet. `[cluster] nodes` is the quorum basis
     /// (`TopologyConfig#clusterSize`) and every consensus round is broadcast across it. Fleet size is
     /// bounded separately by `ClusterConfig#maxNodes`, which #298 deliberately leaves UNBOUNDED, so
@@ -71,9 +66,14 @@ public final class ConfigValidator {
         nodeErrors(config.node(), errors);
         absenceWindowErrors(config.timeouts().cluster(),
                             errors);
+        offlineBufferCapErrors(config.timeouts().cluster(),
+                               errors);
         storageMaintenanceErrors(config.timeouts().storageMaintenance(),
                                  errors);
         streamingErrors(config.streaming(), errors);
+        promotionEscapeErrors(config.streaming(),
+                              config.timeouts().swim().suspectTimeout(),
+                              errors);
         archiveRetentionErrors(config.slice(), errors);
         if (config.tlsEnabled()) {
             config.tls().onPresent(tls -> tlsErrors(tls, errors));
@@ -89,6 +89,17 @@ public final class ConfigValidator {
     /// Reported rather than clamped: substituting a working pair would hide that the operator asked
     /// for something whose failure mode is two live writers. Reported here rather than thrown from a
     /// factory so it joins every other config problem in one collected report.
+    /// #1996: the cap bounds how long ANY frame may wait in an offline buffer, including a request whose caller waits
+    /// longer. A cap below the shortest caller wait the cluster ships with (the 5s replication ack) silently shortens
+    /// that wait to the cap, and a zero or negative one expires every buffered frame. The 5s floor is a guess matching
+    /// that wait, not a measured value.
+    private static void offlineBufferCapErrors(TimeoutsConfig.ClusterTimeouts cluster, List<String> errors) {
+        if (cluster.offlineBufferCap().nanos() < OFFLINE_BUFFER_CAP_FLOOR.nanos()) {
+            errors.add("timeouts.cluster.offline_buffer_cap (%s) must be at least %s: a smaller cap cuts the wait of every buffered request".formatted(cluster.offlineBufferCap(),
+                                                                                                                                                       OFFLINE_BUFFER_CAP_FLOOR));
+        }
+    }
+
     private static void absenceWindowErrors(TimeoutsConfig.ClusterTimeouts cluster, List<String> errors) {
         if (!cluster.absenceWindowsOrdered()) {
             errors.add(("timeouts.cluster.core_absence (%s) must be strictly less than "
@@ -150,6 +161,23 @@ public final class ConfigValidator {
         // #1604: 0 means "derive from the filesystem"; a negative cap has no meaning.
         if (streaming.segmentDiskMaxBytes() < 0) {
             errors.add("streaming.segment_disk_max_bytes must be >= 0 (0 derives the cap from the filesystem). Got: " + streaming.segmentDiskMaxBytes());
+        }
+    }
+
+    /// `promotion_escape_after` (#2080) may not be below the alarm bounds it follows: the owner gate's (two SWIM suspect windows) and the
+    /// replica contest's (`backfillSourceWaitBound`). An escape earlier than the alarm would go ahead before the operator was told anything
+    /// was wrong, and earlier than a slow boot completes.
+    private static void promotionEscapeErrors(StreamingConfig streaming, TimeSpan suspectTimeout, List<String> errors) {
+        var alarm = StreamingConfig.ownerPromotionAlarmWindow(suspectTimeout);
+        var contest = streaming.backfillSourceWaitBound();
+        var floor = alarm.millis() >= contest.millis()
+                    ? alarm
+                    : contest;
+
+        if (streaming.promotionEscapeAfter().millis() < floor.millis()) {
+            errors.add("streaming.promotion_escape_after (%dms) must be at least %dms (the larger of two swim suspect_timeout windows and the replica contest's source-wait bound): an escape earlier than the alarm goes ahead before the operator is told".formatted(streaming.promotionEscapeAfter()
+                                                                                                                                                                                                                                                                                .millis(),
+                                                                                                                                                                                                                                                                       floor.millis()));
         }
     }
 

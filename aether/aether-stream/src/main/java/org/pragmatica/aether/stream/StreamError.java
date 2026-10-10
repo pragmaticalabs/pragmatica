@@ -144,6 +144,17 @@ public sealed interface StreamError extends Cause {
         }
     }
 
+    /// A repair was refused because the records its cut would remove could not be preserved in a recovery segment first (#2080): the
+    /// copy keeps its records and stays quarantined, and the repair is retried. Nothing is removed that was not first made durable.
+    record RepairPreserveFailed(String streamName, int partition, String reason) implements StreamError, Cause.Transient {
+        @Override
+        public String message() {
+            return "Repair of %s[%d] refused: the records its cut would remove could not be preserved in a recovery segment (%s)".formatted(streamName,
+                                                                                                                                            partition,
+                                                                                                                                            reason);
+        }
+    }
+
     /// This node holds records at or above the start of the committed owner's current epoch that it has not compared with the
     /// owner (it was demoted, or the epoch advanced while it was away): it serves nothing from there and acknowledges nothing,
     /// until a backfill has verified it for the epoch (#1730 phase 2). Retriable: the backfill redrive verifies it.
@@ -255,9 +266,18 @@ public sealed interface StreamError extends Cause {
     /// `StreamConfigKey`). Not a capacity shortage, so it does NOT implement
     /// {@link org.pragmatica.aether.slice.ResourceCapacityExhausted}.
     record StreamConfigNotYetVisible(String streamName) implements StreamError, Cause.Transient {
+        /// The text every message of this refusal carries. A forwarded refusal reaches the publisher as a string only
+        /// ([StreamForwardError.RemotePublishRetryable]), so [#describes] recognizes it by this marker, in this one place.
+        public static final String MESSAGE_MARKER = "Stream config not yet visible on this node";
+
         @Override
         public String message() {
-            return "Stream config not yet visible on this node: " + streamName;
+            return MESSAGE_MARKER + ": " + streamName;
+        }
+
+        /// Whether `detail` is the text of this refusal.
+        public static boolean describes(String detail) {
+            return detail.contains(MESSAGE_MARKER);
         }
     }
 
@@ -552,10 +572,20 @@ public sealed interface StreamError extends Cause {
     /// serves reads as owner. Transient: promotion runs on demand and completes within a probe/backfill round,
     /// or stays blocked while a live holder is unreachable until that holder is declared dead.
     record OwnerNotActivated(String streamName, int partition) implements StreamError, Cause.Transient {
+        /// The text every message of this refusal carries. A forwarded refusal reaches the publisher as a string only
+        /// ([StreamForwardError.RemotePublishRetryable]), so [#describes] recognizes it by this marker, in this one place.
+        public static final String MESSAGE_MARKER = "is not yet promoted on this node";
+
         @Override
         public String message() {
-            return "Stream partition %s[%d] is not yet promoted on this node (fresh ownership view and catch-up pending)".formatted(streamName,
-                                                                                                                                    partition);
+            return "Stream partition %s[%d] %s (fresh ownership view and catch-up pending)".formatted(streamName,
+                                                                                                      partition,
+                                                                                                      MESSAGE_MARKER);
+        }
+
+        /// Whether `detail` is the text of this refusal.
+        public static boolean describes(String detail) {
+            return detail.contains(MESSAGE_MARKER);
         }
     }
 

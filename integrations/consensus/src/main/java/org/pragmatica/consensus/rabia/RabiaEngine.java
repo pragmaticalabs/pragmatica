@@ -727,6 +727,10 @@ public class RabiaEngine<C extends Command> {
                                                                     new ThreadPoolExecutor.DiscardPolicy());
 
     private final ConcurrentNavigableMap<Id, Batch<C>> pendingBatches = new ConcurrentSkipListMap<>();
+
+    /// #2011: committed (batch id, correlation ids), so a delivery that trails its slot's Decision is not re-queued.
+    private final CommittedBatchLedger committedLedger = new CommittedBatchLedger(CommittedBatchLedger.DEFAULT_CAPACITY);
+
     private final Map<NodeId, SyncResponse<C>> syncResponses = new ConcurrentHashMap<>();
     private final RabiaPersistence<C> persistence;
     /// Consecutive sync rounds that failed to reach the response threshold, driving the periodic
@@ -1965,6 +1969,11 @@ public class RabiaEngine<C extends Command> {
     }
 
     private void doHandleNewBatch(Batch<C> incoming) {
+        // #2011: a NewBatch trailing its slot's Decision must not put the committed batch back in the queue.
+        committedLedger.unseen(incoming).onPresent(this::admitRemoteBatch);
+    }
+
+    private void admitRemoteBatch(Batch<C> incoming) {
         mergePending(incoming);
         if (engineState.get().isInPhase()) {
             // Already in phase - broadcast our proposal for this batch if not already proposed
@@ -1975,7 +1984,13 @@ public class RabiaEngine<C extends Command> {
     }
 
     /// Proposal retransmission must not duplicate request correlations in the pending queue.
-    private Unit learnProposedBatch(Batch<C> incoming) {
+    private Unit learnProposedBatch(Batch<C> proposed) {
+        committedLedger.unseen(proposed).onPresent(this::learnUnseenBatch);
+
+        return Unit.unit();
+    }
+
+    private void learnUnseenBatch(Batch<C> incoming) {
         pendingBatches.compute(incoming.id(),
                                (_, existing) -> Option.option(existing).fold(() -> incoming,
                                                                              current -> new Batch<>(current.id(),
@@ -1988,8 +2003,6 @@ public class RabiaEngine<C extends Command> {
                                                                                                     Math.min(current.timestamp(),
                                                                                                              incoming.timestamp()),
                                                                                                     current.commands())));
-
-        return Unit.unit();
     }
 
     /// Broadcasts own proposal for pending batch if not already proposed in current phase.
@@ -3671,6 +3684,10 @@ public class RabiaEngine<C extends Command> {
         var correlationIds = localBatch.map(Batch::correlationIds).or(() -> decision.value()
                                                                                     .correlationIds());
 
+        committedLedger.record(decision.value().id(),
+                               correlationIds);
+        committedLedger.record(decision.value().id(),
+                               decision.value().correlationIds());
         for (var correlationId : correlationIds) {
             Option.option(correlationMap.remove(correlationId)).onPresent(promise -> promise.succeed(results));
         }

@@ -168,6 +168,10 @@ public final class ClusterEventAggregator {
     private final HlcClock hlcClock;
     private final NodeId selfNode;
     private final AtomicLong quorumSequence = new AtomicLong();
+
+    /// True while THIS node drains because the leader commanded it (#2014); wired by `AetherNode`.
+    private final java.util.concurrent.atomic.AtomicReference<BooleanSupplier> selfCommandedDrain = new java.util.concurrent.atomic.AtomicReference<>(() -> false);
+
     private final ConcurrentHashMap<String, Long> deploymentStartTimes = new ConcurrentHashMap<>();
 
     private final ConcurrentHashMap<String, Long> nodeJoinTimes = new ConcurrentHashMap<>();
@@ -1195,6 +1199,12 @@ public final class ClusterEventAggregator {
                       });
     }
 
+    /// Wire the "this node is draining by command" probe (#2014), from the local `DrainProcedure`.
+    @Contract
+    public void bindSelfCommandedDrain(BooleanSupplier selfCommandedDrain) {
+        this.selfCommandedDrain.set(selfCommandedDrain);
+    }
+
     /// Quorum transitions, UN-gated via {@link #emitLocal} (#926) — previously both leader-gated.
     ///
     /// QUORUM_LOST is the most severe event this class emits (CRITICAL) and was the least emittable.
@@ -1239,6 +1249,24 @@ public final class ClusterEventAggregator {
                                                 Map.of("observedBy", selfNode.id())));
             }
             case PASSIVE -> {
+                if (selfCommandedDrain.get().getAsBoolean()) {
+                    // #2014: the leader COMMANDED this node to drain and its own drain took consensus passive.
+                    // Planned work. A REAL quorum loss on a survivor, or a QUORUM_LOSS self-drain, never gets here.
+                    LOG.info("Node {} went passive because it is draining by command — planned, not quorum loss",
+                             selfNode.id());
+
+                    return;
+                }
+
+                if (event.demoted()) {
+                    // #2014: a voter reconfiguration removed this node while the cluster kept its quorum
+                    // (`ClusterStateNotification#demoted`, #1790). Planned work: it is not quorum loss,
+                    // so it neither pages nor needs a recovery event.
+                    LOG.info("Node {} left the electorate by reconfiguration — observing a live quorum", selfNode.id());
+
+                    return;
+                }
+
                 LOG.warn("Quorum lost on {} — consensus unavailable, cluster observability degraded", selfNode.id());
                 emitLocal(new QuorumLost(hlcClock.now(),
                                          Severity.CRITICAL,
@@ -1336,6 +1364,19 @@ public final class ClusterEventAggregator {
                                  Severity.CRITICAL,
                                  "Node " + departed.id() + " failed (confirmed departure)",
                                  Map.of("nodeId", departed.id(), "observedBy", selfNode.id())));
+    }
+
+    /// A confirmed departure this node saw ANNOUNCED (an operator or controller drain, #2014). The stream
+    /// keeps the record — a departure is history — but as an INFO `NodeLeft`, not a CRITICAL `NodeFailed`:
+    /// a planned drain or replacement must not page. Same un-gated, per-observer contract as
+    /// [`#onConfirmedDeparture`]; an UNPLANNED death never reaches this method.
+    @Contract
+    public void onAnnouncedDeparture(NodeId departed) {
+        LOG.info("Node {} departed gracefully (announced drain), observed by {}", departed.id(), selfNode.id());
+        emitLocal(new NodeLeft(hlcClock.now(),
+                               Severity.INFO,
+                               "Node " + departed.id() + " departed (announced drain)",
+                               Map.of("nodeId", departed.id(), "observedBy", selfNode.id(), "cause", "DrainRequested")));
     }
 
     /// Departure-push overrun sink (issue #427, D4). The gracefully-departing node reports the chunks
@@ -1774,6 +1815,50 @@ public final class ClusterEventAggregator {
         };
     }
 
+    /// #1206: two artifacts serve one route. Derived from the committed route table on every node; `emit` publishes it on the
+    /// cluster-events owner only, once. The event id is a function of the route and the claimants, so two copies read as one.
+    @Contract
+    public void onRoutePrefixCollision(OperationalEvent.RoutePrefixCollision event) {
+        emit(new ClusterEvent.RoutePrefixCollision(hlcClock.now(),
+                                                   Severity.WARNING,
+                                                   "Route " + event.method()
+                                                  + " " + event.prefix()
+                                                  + " is claimed by " + String.join(" and ", event.artifacts())
+                                                  + ": one of them serves nothing (the lexically smaller coordinate wins)",
+                                                   routeCollisionDetails(event.method(),
+                                                                         event.prefix(),
+                                                                         event.artifacts(),
+                                                                         event.eventId())));
+    }
+
+    /// #1206: the route has one claimant again.
+    @Contract
+    public void onRoutePrefixCollisionCleared(OperationalEvent.RoutePrefixCollisionCleared event) {
+        emit(new ClusterEvent.RoutePrefixCollisionCleared(hlcClock.now(),
+                                                          Severity.INFO,
+                                                          "Route " + event.method()
+                                                         + " " + event.prefix()
+                                                         + " is no longer claimed by more than one artifact",
+                                                          routeCollisionDetails(event.method(),
+                                                                                event.prefix(),
+                                                                                event.artifacts(),
+                                                                                event.eventId())));
+    }
+
+    private static Map<String, String> routeCollisionDetails(String method,
+                                                             String prefix,
+                                                             List<String> artifacts,
+                                                             String eventId) {
+        return Map.of(ClusterEventIdentity.EVENT_ID,
+                      eventId,
+                      "method",
+                      method,
+                      "prefix",
+                      prefix,
+                      "artifacts",
+                      String.join(",", artifacts));
+    }
+
     /// #1930: a scheduled fire is still in flight when its next tick arrives. Raised by the node whose scheduler holds the
     /// fire, ONCE per fire; throttled per task and node to one event per [#EVENT_THROTTLE_MS]. Published through
     /// [#emitLocal]: the fact is that node's own, so the events-owner gate (which would drop it on every node but one) does
@@ -2131,6 +2216,19 @@ public final class ClusterEventAggregator {
 
     private static Map<String, String> writerStaleDetails(String nodeId, long fence, long since) {
         return Map.of("nodeId", nodeId, "fence", String.valueOf(fence), "since", String.valueOf(since));
+    }
+
+    /// #1996: request frames the transport dropped at an offline-buffer flush because their callers had given up. The
+    /// transport has already logged the drop, so this only emits, through the same per-`(code, subject)` throttle as
+    /// every operator warning. A reattach flapping inside the window folds into `suppressedSince`; the exact total is
+    /// the `quic_offline_expired_total` metric.
+    @Contract
+    public void onOfflineFramesExpired(NetworkServiceMessage.OfflineFramesExpired event) {
+        onOperatorWarning(OperatorWarning.operatorWarning(OperatorWarningCode.OFFLINE_FRAMES_EXPIRED,
+                                                          event.nodeId().id(),
+                                                          "Dropped " + event.count()
+                                                         + " buffered request frame(s) for peer " + event.nodeId().id()
+                                                         + " on reattach, their callers had already given up: " + event.byPath()));
     }
 
     @Contract

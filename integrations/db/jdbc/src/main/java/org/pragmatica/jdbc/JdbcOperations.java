@@ -179,7 +179,7 @@ public interface JdbcOperations {
 
         private void setParameters(java.sql.PreparedStatement stmt, Object[] params) throws java.sql.SQLException {
             for (int i = 0; i < params.length; i++) {
-                stmt.setObject(i + 1, params[i]);
+                org.pragmatica.jdbc.JdbcParameters.bind(stmt, i + 1, params[i]);
             }
         }
     }

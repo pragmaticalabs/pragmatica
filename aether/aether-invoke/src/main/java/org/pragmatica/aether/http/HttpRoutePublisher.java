@@ -514,7 +514,8 @@ class HttpRoutePublisherImpl implements HttpRoutePublisher {
                                       effective.security().asString(),
                                       declared.security().asString(),
                                       effective.pathArity(),
-                                      effective.spacers());
+                                      effective.spacers(),
+                                      effective.spacerSlots());
     }
 
     @Override

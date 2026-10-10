@@ -10,6 +10,11 @@ on:
 jobs:
   build-and-test:
     runs-on: ubuntu-latest
+    env:
+      # Anonymous Docker Hub pulls from shared runner IPs hit "toomanyrequests: unauthenticated pull rate limit".
+      # Testcontainers prepends this to every Docker Hub image (postgres, mysql, localstack, testcontainers/ryuk); the
+      # trailing slash is required. mirror.gcr.io is Google's auth-free Docker Hub cache. CI only: developer machines pull from Hub.
+      TESTCONTAINERS_HUB_IMAGE_NAME_PREFIX: mirror.gcr.io/
 
     steps:
       - name: Checkout code
@@ -22,6 +27,10 @@ jobs:
         run: |
           python3 -B -m unittest discover -s tools -p test_check_test_ports.py
           python3 -B tools/check-test-ports.py
+
+      # The heavy-forge nightly's reporting (#2017): what a night reads as (ok, red, unknown) and when the notify job may close the issue.
+      - name: Heavy-forge workflow pins
+        run: python3 -B -m unittest discover -s tools -p test_heavy_forge_workflow.py
 
       - name: Set up Java 25
         uses: actions/setup-java@v5
@@ -154,6 +163,12 @@ jobs:
 
       - name: Tools the suites use
         run: bash --version | head -1 && awk --version 2>&1 | head -1 && sed --version | head -1 && command -v mktemp tee perl pgrep mkfifo
+
+      # #2029: run-tests.sh runs lint-tests.sh under `set -euo pipefail`, so a finding that is not in lint-baseline.txt aborts
+      # every integration run before anything is provisioned. CI never ran it, so the PR that introduced the finding merged green.
+      # Waivers are keyed by file + line content, so only a NEW or EDITED finding fails here, not a shifted line.
+      - name: Integration test lint
+        run: bash aether/tests/integration/lint-tests.sh
 
       - name: Run harness stub suites
         env:

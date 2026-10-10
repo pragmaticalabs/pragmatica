@@ -141,6 +141,18 @@ public sealed interface ClusterInitError extends Cause {
         }
     }
 
+    /// A gcp target reached config generation with no zone. gcp's integration requires one, and there is NO
+    /// default: a defaulted `<region>-a` names a zone that does not exist for some regions (europe-west1 has
+    /// b, c and d), passes validation, and fails only at VM create.
+    record ZoneRequired(String provider) implements ClusterInitError {
+        @Override
+        public String message() {
+            return "No zone given for cloud provider '" + provider
+                 + "', and Aether ships no default on purpose: supply --zone. "
+                 + "A zone name derived from the region can name one that does not exist.";
+        }
+    }
+
     /// A cloud target selected a preset that carries admin-scoped rules but supplied no admin CIDR.
     ///
     /// `FirewallPresets.addAdminScoped` opens port 22 (bootstrap SSH) and the management port to

@@ -15,6 +15,14 @@
 #   --baseline F   compare against baseline file F; fail only on new findings
 #                  (default: aether/tests/integration/lint-baseline.txt)
 #
+# Baseline keys (#2029): a finding is identified by rule + file + the NORMALISED CONTENT of the flagged line
+# (`[R1] path @ function :: content — detail`), never by its line number. Keyed by number, any edit above a waived line made
+# the waiver stale and the same finding "new", which aborted every run-tests.sh (it runs this under
+# `set -euo pipefail`). Whitespace at the ends and runs of whitespace inside the line are normalised; any other
+# change to the waived line deliberately voids its waiver. Line numbers are still printed for NEW findings, from
+# a side table that is not part of the key. Two identical flagged lines in one file need two baseline entries
+# (the comparison is a multiset).
+#
 # Opt-out mechanism: tests may add an inline comment `# WARN_PASS_OK: <reason>`
 # immediately after a `log_warn ... log_pass` pattern to acknowledge an intentional
 # soft-gate. The reason must be specific.
@@ -60,17 +68,38 @@ while [ $# -gt 0 ]; do
 done
 
 FINDINGS_FILE=$(mktemp)
-trap "rm -f '$FINDINGS_FILE'" EXIT
+LOCATIONS_FILE=$(mktemp)
+trap "rm -f '$FINDINGS_FILE' '$LOCATIONS_FILE'" EXIT
 
 red()    { printf "\033[31m%s\033[0m\n" "$*"; }
 yellow() { printf "\033[33m%s\033[0m\n" "$*"; }
 green()  { printf "\033[32m%s\033[0m\n" "$*"; }
 
+# The flagged line's text with ends trimmed and inner whitespace runs collapsed: the baseline's identity for it.
+normalise_content() {
+    sed -E 's/^[[:space:]]+//;s/[[:space:]]+$//;s/[[:space:]]+/ /g'
+}
+
 emit_finding() {
     local rule="$1" file="$2" line="$3" detail="$4"
     # Normalize: strip $REPO_ROOT prefix to make findings portable across checkouts.
     local rel="${file#$REPO_ROOT/}"
-    printf "[%s] %s:%s — %s\n" "$rule" "$rel" "$line" "$detail" >> "$FINDINGS_FILE"
+    local content key fn
+    content=$(sed -n "${line}p" "$file" | normalise_content)
+    # Detail text may cite other line numbers (R3 "from line 14"); they are location, not identity. The R1 detail carries the
+    # text of the preceding log_warn instead, so the key names the pair, not just the log_pass line.
+    detail=$(printf '%s' "$detail" | sed -E 's/ (from |at )?line [0-9]+//g' | normalise_content)
+    # The enclosing shell function, so fixing one waived finding while adding an identical one in ANOTHER function is a
+    # new finding, not a swap the count cannot see. (Same text in the same function is the same finding.)
+    fn=$(awk -v target="$line" 'NR <= target && /^[[:space:]]*[A-Za-z_][A-Za-z0-9_]*\(\)[[:space:]]*\{/ { f = $1; sub(/\(\).*/, "", f) } END { print f }' "$file")
+    key=$(printf "[%s] %s @ %s :: %s — %s" "$rule" "$rel" "${fn:--}" "$content" "$detail")
+    printf '%s\n' "$key" >> "$FINDINGS_FILE"
+    printf '%s\t%s:%s\n' "$key" "$rel" "$line" >> "$LOCATIONS_FILE"
+}
+
+# Print each key from stdin followed by the file:line it was found at.
+with_locations() {
+    awk -F'\t' 'NR == FNR { loc[$1] = loc[$1] " " $2; next } { print $0 "\n      at" loc[$0] }' "$LOCATIONS_FILE" -
 }
 
 # ============================================================
@@ -85,6 +114,9 @@ lint_r1_warn_then_pass() {
         !in_test { next }
         /log_warn/ {
             warn_line = NR
+            warn_text = $0
+            gsub(/^[ \t]+|[ \t]+$/, "", warn_text)
+            gsub(/[ \t]+/, " ", warn_text)
             warn_seen = 1
             opt_out = 0
             next
@@ -95,7 +127,7 @@ lint_r1_warn_then_pass() {
         }
         warn_seen && /log_pass/ {
             if (!opt_out && (NR - warn_line) <= 5) {
-                print FILENAME ":" NR ":warn-then-pass-demotion (preceding log_warn at line " warn_line ")"
+                print FILENAME ":" NR ":warn-then-pass-demotion (preceding " warn_text ")"
             }
             warn_seen = 0
         }
@@ -243,7 +275,7 @@ case "$MODE" in
         fi
         if [ "$NEW_COUNT" -gt 0 ]; then
             red "lint: $NEW_COUNT NEW finding(s) not in baseline ($BASELINE):"
-            echo "$NEW_FINDINGS" | sed 's|^|  |'
+            echo "$NEW_FINDINGS" | with_locations | sed 's|^|  |'
             echo ""
             red "Total: $TOTAL findings (baseline allows $(wc -l < "$BASELINE" | tr -d ' '))."
             red "To accept these as known issues, append to $BASELINE."

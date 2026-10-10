@@ -39,6 +39,7 @@ public final class QuicTransportMetrics {
     private final LongAdder messagesReceived = new LongAdder();
     private final LongAdder writeFailures = new LongAdder();
     private final LongAdder backpressureDrops = new LongAdder();
+    private final LongAdder offlineExpired = new LongAdder();
     private final LongAdder backpressureQueued = new LongAdder();
     private final LongAdder backpressureRetries = new LongAdder();
     private final AtomicInteger backpressureQueueDepth = new AtomicInteger(0);
@@ -87,6 +88,11 @@ public final class QuicTransportMetrics {
     /// Inbound messages dropped because their connection peer or claimed sender is a NodeId retired by
     /// a boot-token conflict (terminal removal) — non-zero means a refused process is still sending.
     private final LongAdder bootTokenDrops = new LongAdder();
+    /// #1727: connections closed at once because a fresh handshake superseded them, and the lane streams
+    /// (unflushed or recently written) that close put at risk of discarding writes. Decides whether a
+    /// drain-before-close is worth building.
+    private final LongAdder supersededCloses = new LongAdder();
+    private final LongAdder supersededLaneStreamsAtRisk = new LongAdder();
 
     private QuicTransportMetrics() {}
 
@@ -141,6 +147,12 @@ public final class QuicTransportMetrics {
     @Contract
     public void onBackpressureDrop() {
         backpressureDrops.increment();
+    }
+
+    /// Records request frames dropped at the offline-buffer flush because their caller had already given up (#1996).
+    @Contract
+    public void onOfflineExpired(long frames) {
+        offlineExpired.add(frames);
     }
 
     /// Records that a CONSENSUS send hit the write high-watermark and was handed to the
@@ -224,6 +236,22 @@ public final class QuicTransportMetrics {
         bytesReceived.add(byteCount);
     }
 
+    /// #1727: a superseded connection was closed at once with `lanesAtRisk` lane streams holding unflushed or
+    /// recent writes.
+    @Contract
+    public void onSupersededClose(int lanesAtRisk) {
+        supersededCloses.increment();
+        supersededLaneStreamsAtRisk.add(lanesAtRisk);
+    }
+
+    public long supersededCloseCount() {
+        return supersededCloses.sum();
+    }
+
+    public long supersededLaneStreamsAtRiskCount() {
+        return supersededLaneStreamsAtRisk.sum();
+    }
+
     /// #964: records an inbound message dropped because its type tag names no codec here.
     @Contract
     public void onUnknownTypeTagDrop() {
@@ -252,6 +280,7 @@ public final class QuicTransportMetrics {
         metrics.put("quic_messages_received_total", messagesReceived.sum());
         metrics.put("quic_write_failures_total", writeFailures.sum());
         metrics.put("quic_backpressure_drops_total", backpressureDrops.sum());
+        metrics.put("quic_offline_expired_total", offlineExpired.sum());
         metrics.put("quic_backpressure_queued_total", backpressureQueued.sum());
         metrics.put("quic_backpressure_retries_total", backpressureRetries.sum());
         metrics.put("quic_backpressure_queue_depth", backpressureQueueDepth.get());
@@ -269,6 +298,9 @@ public final class QuicTransportMetrics {
         // #964: messages dropped for an unknown type tag — non-zero means mixed codec versions.
         metrics.put("quic_unknown_type_tag_drops_total", unknownTypeTagDrops.sum());
         metrics.put("quic_boot_token_drops_total", bootTokenDrops.sum());
+        // #1727: superseded closes and the lane streams they put at risk (unflushed or written in the last 2 s).
+        metrics.put("quic_superseded_closes_total", supersededCloses.sum());
+        metrics.put("quic_superseded_lane_streams_at_risk_total", supersededLaneStreamsAtRisk.sum());
 
         return Map.copyOf(metrics);
     }
@@ -303,6 +335,10 @@ public final class QuicTransportMetrics {
 
     public long writeFailureCount() {
         return writeFailures.sum();
+    }
+
+    public long offlineExpiredCount() {
+        return offlineExpired.sum();
     }
 
     public long backpressureDropCount() {

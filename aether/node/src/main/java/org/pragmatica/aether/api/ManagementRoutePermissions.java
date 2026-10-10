@@ -120,7 +120,9 @@ public sealed interface ManagementRoutePermissions {
                        ManagementRoute.ARTIFACT_PUT,
                        ManagementRoute.ARTIFACT_POST,
                        ManagementRoute.ARTIFACT_DELETE,
-                       ManagementRoute.NODE_DRAIN);
+                       ManagementRoute.NODE_DRAIN,
+                       ManagementRoute.NODE_REPLACE,
+                       ManagementRoute.NODE_REPLACEMENT_SETTLE);
     }
 
     private static List<ManagementRoute> adminRoutes() {

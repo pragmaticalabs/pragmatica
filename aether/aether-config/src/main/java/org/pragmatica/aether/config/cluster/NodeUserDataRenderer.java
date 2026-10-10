@@ -163,11 +163,14 @@ public sealed interface NodeUserDataRenderer {
                         peersValue);
         appendSshAuthorizedKeys(sb, sshAuthorizedKeys);
         appendAdvertiseHostResolution(sb);
+        var backupPath = backupPath(composedConfig);
+
         if (isContainer) {
             appendDockerInstall(sb);
             appendComposedConfig(sb, composedConfig);
+            appendBackupDirectory(sb, backupPath, true);
             if (startNode) {
-                appendContainerRun(sb, clusterName, nodeId, role, source);
+                appendContainerRun(sb, clusterName, nodeId, role, source, backupPath);
             } else {
                 appendContainerPullOnly(sb);
             }
@@ -176,6 +179,7 @@ public sealed interface NodeUserDataRenderer {
                              resolveJarUrl(runtimeProfile,
                                            config.cluster().version()));
             appendComposedConfig(sb, composedConfig);
+            appendBackupDirectory(sb, backupPath, false);
             appendJvmRun(sb,
                          clusterName,
                          role,
@@ -289,6 +293,35 @@ public sealed interface NodeUserDataRenderer {
         sb.append("fi\n\n");
     }
 
+    /// Host directory that holds the `[backup]` repository `<path>/kv-backup` of a container node (#1968).
+    String BACKUP_HOST_DIRECTORY = "/opt/aether/backups";
+
+    /// The `[backup] path` of the composed config when the backup is enabled and has a path, else empty. A node whose composed
+    /// config carries `[backup]` (the operator's `node_config`, the same for every seed and replacement of the source) needs
+    /// that path to exist and be writable on the host it boots on, which the TOML alone does not give it.
+    static Option<String> backupPath(TomlDocument composedConfig) {
+        var enabled = composedConfig.getString("backup", "enabled")
+                                    .map(value -> Boolean.parseBoolean(value.strip()))
+                                    .or(false);
+
+        return enabled
+               ? composedConfig.getString("backup", "path")
+                               .filter(path -> !path.isBlank())
+               : Option.none();
+    }
+
+    /// Creates the backup directory before the node starts. A container node gets it as a host directory owned by the
+    /// in-container `aether` user (uid 1000), bind-mounted at the configured path by [#appendContainerRun], so the repository
+    /// survives the container; a JVM node runs on the host as the unit's user and only needs the directory to exist.
+    private static void appendBackupDirectory(StringBuilder sb, Option<String> backupPath, boolean container) {
+        backupPath.onPresent(path -> {
+            sb.append("# --- Backup repository directory ([backup] path, #1968) ---\n");
+            sb.append(container
+                      ? "install -d -m 0750 -o 1000 -g 1000 " + BACKUP_HOST_DIRECTORY + "\n\n"
+                      : "install -d -m 0750 " + path + "\n\n");
+        });
+    }
+
     private static void appendComposedConfig(StringBuilder sb, TomlDocument composedConfig) {
         sb.append("# --- Write Aether config (composed: defaults + source-type + operator + CLI overlay) ---\n");
         sb.append("mkdir -p /opt/aether/config\n");
@@ -314,7 +347,8 @@ public sealed interface NodeUserDataRenderer {
                                            ClusterName clusterName,
                                            String nodeId,
                                            NodeRole role,
-                                           SourceProfile source) {
+                                           SourceProfile source,
+                                           Option<String> backupPath) {
         sb.append("# --- Pull and run ---\n");
         sb.append("if ! docker image inspect \"${AETHER_IMAGE}\" >/dev/null 2>&1; then\n");
         sb.append("    docker pull \"${AETHER_IMAGE}\"\n");
@@ -333,6 +367,11 @@ public sealed interface NodeUserDataRenderer {
         sb.append("    -l aether-node-id=").append(nodeId).append(" \\\n");
         sb.append("    -l aether-role=").append(role.value()).append(" \\\n");
         sb.append("    -v /opt/aether/config/aether.toml:/app/aether.toml:ro \\\n");
+        backupPath.onPresent(path -> sb.append("    -v ")
+                                       .append(BACKUP_HOST_DIRECTORY)
+                                       .append(':')
+                                       .append(path)
+                                       .append(" \\\n"));
         sb.append("    -e NODE_ID=\"${AETHER_NODE_ID}\" \\\n");
         sb.append("    -e CLUSTER_PORT=\"${AETHER_CLUSTER_PORT}\" \\\n");
         sb.append("    -e MANAGEMENT_PORT=\"${AETHER_MANAGEMENT_PORT}\" \\\n");
@@ -471,6 +510,11 @@ public sealed interface NodeUserDataRenderer {
         sb.append("    echo \"deb [signed-by=/etc/apt/keyrings/adoptium.asc] https://packages.adoptium.net/artifactory/deb ${CODENAME} main\" > /etc/apt/sources.list.d/adoptium.list\n");
         sb.append("    apt-get update -qq\n");
         sb.append("    apt-get install -y -qq temurin-25-jre\n");
+        sb.append("fi\n");
+        sb.append("# [backup] shells out to git (#2007): a host without it cannot back up or restore, and the node refuses to boot.\n");
+        sb.append("if ! command -v git &> /dev/null; then\n");
+        sb.append("    apt-get update -qq\n");
+        sb.append("    apt-get install -y -qq --no-install-recommends git\n");
         sb.append("fi\n");
         sb.append("mkdir -p /opt/aether\n");
         sb.append("if [ ! -s /opt/aether/aether-node.jar ]; then\n");

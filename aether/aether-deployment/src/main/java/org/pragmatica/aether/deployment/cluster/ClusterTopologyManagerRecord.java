@@ -774,11 +774,12 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     /// ACTUAL inventory with, so it MUST be the name the desired-topology entry was published
     /// under. The worker path passes `entry.sourceName()` verbatim; the core auto-heal path above
     /// resolves it from the persisted cluster config.
-    private Promise<ProvisionDisposition> provisionReplacement(NodeId newNodeId,
-                                                               Option<NodeId> failedPeer,
-                                                               Set<NodeId> clusterMembers,
-                                                               NodeRole intendedRole,
-                                                               SourceName sourceName) {
+    @Override
+    public Promise<ProvisionDisposition> provisionReplacement(NodeId newNodeId,
+                                                              Option<NodeId> failedPeer,
+                                                              Set<NodeId> clusterMembers,
+                                                              NodeRole intendedRole,
+                                                              SourceName sourceName) {
         if (intendedRole == NodeRole.CORE && (failedPeer.filter(newNodeId::equals).isPresent() || clusterMembers.contains(newNodeId) || genesisVoters.get()
                                                                                                                                                      .get()
                                                                                                                                                      .contains(newNodeId))) {
@@ -1156,6 +1157,11 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     }
 
     @Override
+    public Option<CommunityPlacementReconciler> installedCommunityPlacement() {
+        return communityPlacement.get();
+    }
+
+    @Override
     @Contract
     public synchronized void installCommunityPlacement(CommunityPlacementReconciler reconciler) {
         communityPlacement.set(Option.some(reconciler));
@@ -1420,10 +1426,10 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                            nodeReplacements.get());
 
         if (victims.size() < surplus) {
-            log.info("CTM: worker topology {}/{} — {} of the surplus is an in-flight node replacement, not terminated",
-                     entry.sourceName(),
-                     entry.role(),
-                     surplus - victims.size());
+            log.debug("CTM: worker topology {}/{} — {} of the surplus is an in-flight node replacement, not terminated",
+                      entry.sourceName(),
+                      entry.role(),
+                      surplus - victims.size());
         }
 
         var pass = Promise.unitPromise();
@@ -1719,6 +1725,61 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         scheduleGraceTerminate(targetNodeId, reason, epoch);
 
         return Promise.success(unit());
+    }
+
+    @Override
+    public Promise<Boolean> instanceListed(NodeId node, SourceName source) {
+        return lifecycleManager.instancesForNode(node, source)
+                               .map(listed -> !listed.isEmpty())
+                               .mapError(cause -> Causes.cause("instance of " + node.id() + ": " + cause.message()));
+    }
+
+    @Override
+    public Promise<Unit> reapRetired(NodeId node, SourceName source, boolean seenBefore) {
+        if (!active.get()) {
+            return Causes.cause("reap of " + node.id() + " needs the active topology manager").promise();
+        }
+
+        var refusal = retirementRefusal.get().apply(node);
+
+        if (refusal.isPresent()) {
+            return Causes.cause("reap of " + node.id() + " refused: " + refusal.unwrap()).promise();
+        }
+
+        return lifecycleManager.instancesForNode(node, source)
+                               .flatMap(listed -> goneAtProvider(listed)
+                                                  ? confirmedAbsent(node, listed, seenBefore)
+                                                  : lifecycleManager.terminateNode(node, source)
+                                                                    .flatMap(_ -> lifecycleManager.instancesForNode(node,
+                                                                                                                    source))
+                                                                    .flatMap(after -> goneAtProvider(after)
+                                                                                      ? Promise.unitPromise()
+                                                                                      : stillListed(after)))
+                               .mapError(cause -> Causes.cause("instance of " + node.id() + ": " + cause.message()));
+    }
+
+    /// An empty listing is absence only for an instance seen before; listed-and-stopped instances were seen by this very listing.
+    private static Promise<Unit> confirmedAbsent(NodeId node, List<InstanceInfo> listed, boolean seenBefore) {
+        return listed.isEmpty() && !seenBefore
+               ? Causes.cause("the provider lists no instance of " + node.id()
+                             + " and has never listed one (an unlabelled or unattributable VM, or a lagging listing): not confirmed gone").promise()
+               : Promise.unitPromise();
+    }
+
+    /// Nothing listed, or every listed instance stopping or terminated. Any instance provisioning, running or in a status the
+    /// provider could not state is NOT gone.
+    private static boolean goneAtProvider(List<InstanceInfo> instances) {
+        var state = classifyReplacementInstances(instances);
+
+        return state == ReplacementInstanceState.ABSENT || state == ReplacementInstanceState.FAILED;
+    }
+
+    private static Promise<Unit> stillListed(List<InstanceInfo> instances) {
+        return Causes.cause("still listed at the provider after terminate: " + instances.stream()
+                                                                                        .map(instance -> instance.id()
+                                                                                                                 .value()
+                                                                                                        + " " + instance.status())
+                                                                                        .toList()).promise();
     }
 
     /// Backstop reaper: after the grace period, decide the reap (for a surplus trim, through
@@ -2136,7 +2197,11 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     }
 
     private Set<NodeId> unprotectedNodeIds(List<InstanceInfo> instances) {
+        var pairedAndLive = nodeReplacements.get().retirementProtected();
+
         return nodeIdsOf(instances).filter(nodeId -> !nodeId.equals(observer.self().id()))
+                        // #1543 E: a live pairing protects its replacement (possibly still booting on a new leader) and its original
+                        .filter(nodeId -> !pairedAndLive.contains(nodeId))
                         .filter(this::unprotectedOrParked)
                         .collect(Collectors.toSet());
     }

@@ -24,6 +24,7 @@ import org.pragmatica.aether.stream.StreamPartitionManager;
 import org.pragmatica.aether.stream.StreamPartitionManager.Exhaustion;
 import org.pragmatica.aether.stream.SystemStreamFactories;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.net.NetworkServiceMessage;
 import org.pragmatica.consensus.leader.LeaderNotification;
 import org.pragmatica.consensus.topology.ClusterStateNotification;
 import org.pragmatica.consensus.topology.MembershipDecision;
@@ -674,6 +675,44 @@ class ClusterEventAggregatorTest {
         assertThat(events.getFirst().severity()).isEqualTo(ClusterEvent.Severity.CRITICAL);
     }
 
+    /// #2014 — a node removed from the electorate by a voter reconfiguration is demoted to an observer of a
+    /// live quorum. That is planned work, not quorum loss: no CRITICAL `QuorumLost`. Reverting the
+    /// `demoted()` branch in `onQuorumStateChange` turns this red.
+    @Test
+    void demotedByReconfiguration_emitsNoQuorumLost() {
+        var h = Harness.create(Harness.defaultRetention(), NOT_OWNER, () -> false, NOT_LEADER);
+        h.aggregator().onQuorumStateChange(ClusterStateNotification.demotion());
+
+        assertThat(h.events()).noneMatch(e -> e instanceof ClusterEvent.QuorumLost);
+        assertThat(h.events()).isEmpty();
+    }
+
+    /// #2014 — the DRAINEE of a leader-commanded drain goes passive through its own `DrainProcedure`; that is planned
+    /// work, not quorum loss. Reverting the `selfCommandedDrain` branch turns this red.
+    @Test
+    void commandedSelfDrain_passive_emitsNoQuorumLost() {
+        var h = Harness.create(Harness.defaultRetention(), NOT_OWNER, () -> false, NOT_LEADER);
+        h.aggregator().bindSelfCommandedDrain(() -> true);
+        h.aggregator().onQuorumStateChange(ClusterStateNotification.passive());
+
+        assertThat(h.events()).noneMatch(e -> e instanceof ClusterEvent.QuorumLost);
+    }
+
+    /// #2014 — the counterpart: a REAL quorum loss on a node that is NOT draining by command (a survivor during
+    /// someone else's drain, or a QUORUM_LOSS self-drain) still raises CRITICAL `QuorumLost`. Blanket
+    /// suppression turns this red.
+    @Test
+    void realQuorumLoss_whileNotSelfDrainingByCommand_stillEmitsCriticalQuorumLost() {
+        var h = Harness.create(Harness.defaultRetention(), NOT_OWNER, () -> false, NOT_LEADER);
+        h.aggregator().bindSelfCommandedDrain(() -> false);
+        h.aggregator().onQuorumStateChange(ClusterStateNotification.passive());
+
+        var events = h.events();
+        assertThat(events).hasSize(1);
+        assertThat(events.getFirst()).isInstanceOf(ClusterEvent.QuorumLost.class);
+        assertThat(events.getFirst().severity()).isEqualTo(ClusterEvent.Severity.CRITICAL);
+    }
+
     /// #926 — the recovery half. Quorum forms BEFORE a leader is elected, so the old gate dropped this
     /// notice at the one moment it was guaranteed false. Un-gating the loss while leaving the recovery
     /// gated would be worse than fixing neither: an operator would watch the cluster enter "quorum lost"
@@ -1241,6 +1280,29 @@ class ClusterEventAggregatorTest {
         assertThat(events.getFirst().details()).containsEntry("suppressedSince", "0");
     }
 
+    /// #1996: request frames the transport dropped at an offline-buffer flush reach the event stream, naming the peer, how many
+    /// frames and of which message types. A point event with no recovery: the frames are already gone. A reattach flapping
+    /// inside the throttle window folds into `suppressedSince` rather than flooding the stream.
+    @Test
+    void onOfflineFramesExpired_emitsAWarningNamingThePeerCountAndPath_andThrottlesPerPeer() {
+        var h = Harness.create(Harness.defaultRetention(), NOT_OWNER);
+        var peer = new NodeId("peer-1");
+
+        h.aggregator().onOfflineFramesExpired(new NetworkServiceMessage.OfflineFramesExpired(peer, 3, Map.of("InvokeRequest", 3)));
+        h.aggregator().onOfflineFramesExpired(new NetworkServiceMessage.OfflineFramesExpired(peer, 1, Map.of("HttpForwardRequest", 1)));
+        h.aggregator().onOfflineFramesExpired(new NetworkServiceMessage.OfflineFramesExpired(new NodeId("peer-2"), 2, Map.of("PublishForward", 2)));
+
+        var events = h.events();
+
+        assertThat(events).as("one per peer per window; the second report for peer-1 is held back").hasSize(2);
+        assertThat(events.getFirst()).isInstanceOf(ClusterEvent.OperatorWarning.class);
+        assertThat(events.getFirst().severity()).isEqualTo(ClusterEvent.Severity.WARNING);
+        assertThat(events.getFirst().details()).containsEntry("code", "offline-frames-expired")
+                                               .containsEntry("subject", "peer-1");
+        assertThat(events.getFirst().summary()).contains("3 buffered request frame(s)").contains("InvokeRequest=3");
+        assertThat(events.getLast().details()).containsEntry("subject", "peer-2");
+    }
+
     private static OperatorWarning diverged(String subject) {
         return OperatorWarning.operatorWarning(OperatorWarningCode.STREAM_CONSUMER_STATE_DIVERGED, subject, "diverged " + subject);
     }
@@ -1678,6 +1740,48 @@ class ClusterEventAggregatorTest {
         assertThat(h.events().getLast().details()).containsEntry("outcome", "unknown");
     }
 
+    /// #1206: the collision and its recovery reach the stream as typed events with the route and the claiming artifacts, on the
+    /// cluster-events owner only.
+    @Test
+    void routePrefixCollision_andItsRecovery_reachTheStream_withTheirDetails() {
+        var h = Harness.create();
+
+        h.aggregator().onRoutePrefixCollision(OperationalEvent.RoutePrefixCollision.routePrefixCollision("GET",
+                                                                                                         "/api/x/",
+                                                                                                         java.util.List.of("org.a:one", "org.b:two"),
+                                                                                                         "collision-id"));
+        h.aggregator().onRoutePrefixCollisionCleared(OperationalEvent.RoutePrefixCollisionCleared.routePrefixCollisionCleared("GET",
+                                                                                                                              "/api/x/",
+                                                                                                                              java.util.List.of("org.a:one", "org.b:two"),
+                                                                                                                              "cleared-id"));
+
+        var events = h.events();
+
+        assertThat(events).hasSize(2);
+        assertThat(events.get(0)).isInstanceOf(ClusterEvent.RoutePrefixCollision.class);
+        assertThat(events.get(0).type()).isEqualTo("ROUTE_PREFIX_COLLISION");
+        assertThat(events.get(0).severity()).isEqualTo(ClusterEvent.Severity.WARNING);
+        assertThat(events.get(0).details()).containsEntry("method", "GET")
+                                           .containsEntry("prefix", "/api/x/")
+                                           .containsEntry("artifacts", "org.a:one,org.b:two")
+                                           .containsEntry("eventId", "collision-id");
+        assertThat(events.get(1)).isInstanceOf(ClusterEvent.RoutePrefixCollisionCleared.class);
+        assertThat(events.get(1).type()).isEqualTo("ROUTE_PREFIX_COLLISION_CLEARED");
+        assertThat(events.get(1).severity()).isEqualTo(ClusterEvent.Severity.INFO);
+    }
+
+    @Test
+    void routePrefixCollision_isPublishedByTheEventsOwnerOnly() {
+        var h = Harness.create(Harness.defaultRetention(), () -> false);
+
+        h.aggregator().onRoutePrefixCollision(OperationalEvent.RoutePrefixCollision.routePrefixCollision("GET",
+                                                                                                         "/api/x/",
+                                                                                                         java.util.List.of("org.a:one", "org.b:two"),
+                                                                                                         "collision-id"));
+
+        assertThat(h.events()).as("every node derives it; only the owner publishes").isEmpty();
+    }
+
     /// #1723: a RESTORED nobody was told the UNKNOWN for is not an all-clear.
     @Test
     void scheduledTaskOutcome_restoredWithNoUnknown_isNotAnnounced() {
@@ -2059,27 +2163,46 @@ class ClusterEventAggregatorTest {
     }
 
     /// The pairing touches exactly the declared pairs of codes (the two consumer pairs #752/#1935, the oversized-event refusal and the
-    /// members-unreachable wait of #1937, and the slice-floor refusal of #1720); every other code keeps the plain 60 s throttle.
+    /// members-unreachable wait of #1937, the slice-floor refusal of #1720, the node-replacement conditions of #1543 and the HTTP-listener TLS rotation refusal); every other code keeps the plain 60 s throttle.
     @Test
     void onOperatorWarning_onlyTheDeclaredPairsArePaired_otherCodesUnchanged() {
         assertThat(java.util.Arrays.stream(OperatorWarningCode.values()).filter(c -> c.recoveryOf().isPresent()).toList())
-            .containsExactlyInAnyOrder(OperatorWarningCode.SLICE_FLOOR_DRAIN_ADMITTED,
+            .containsExactlyInAnyOrder(OperatorWarningCode.NODE_REPLACEMENT_COMPLETED,
+                             OperatorWarningCode.NODE_REPLACEMENT_ROLLED_BACK,
+                             OperatorWarningCode.NODE_REPLACEMENT_JOINED,
+                             OperatorWarningCode.NODE_REPLACEMENT_DRAIN_UNBLOCKED,
+                             OperatorWarningCode.NODE_REPLACEMENT_SETTLED,
+                             OperatorWarningCode.SLICE_FLOOR_DRAIN_ADMITTED,
                              OperatorWarningCode.STREAM_CONSUMER_STATE_REPAIRED,
                              OperatorWarningCode.STREAM_CONSUMER_REGISTERED_AGAIN,
                              OperatorWarningCode.STREAM_CONSUMER_DRAIN_RESTORED,
                              OperatorWarningCode.STREAM_EVENT_EXCEEDS_READ_CAP_RESOLVED,
                              OperatorWarningCode.STREAM_OWNER_PROMOTION_HOLDERS_ANSWERING,
                              OperatorWarningCode.STREAM_OWNER_LINEAGE_COMMITTED,
-                             OperatorWarningCode.STREAM_CATCHUP_SOURCE_ANSWERING_RESTORED);
+                             OperatorWarningCode.STREAM_DIVERGENT_TAIL_CUT_RESUMED,
+                             OperatorWarningCode.STREAM_CATCHUP_SOURCE_ANSWERING_RESTORED,
+                             OperatorWarningCode.HTTP_TLS_ROTATION_RESTORED,
+                             OperatorWarningCode.CLUSTER_TLS_RENEWAL_RESTORED,
+                             OperatorWarningCode.BACKUP_CONFIG_RESTORED,
+                             OperatorWarningCode.BACKUP_RESTORE_UNBLOCKED);
         assertThat(java.util.Arrays.stream(OperatorWarningCode.values()).filter(OperatorWarningCode::hasRecovery).toList())
-            .containsExactlyInAnyOrder(OperatorWarningCode.SLICE_FLOOR_DRAIN_REFUSED,
+            .containsExactlyInAnyOrder(OperatorWarningCode.NODE_REPLACEMENT_STARTED,
+                             OperatorWarningCode.NODE_REPLACEMENT_JOIN_OVERDUE,
+                             OperatorWarningCode.NODE_REPLACEMENT_DRAIN_BLOCKED,
+                             OperatorWarningCode.NODE_REPLACEMENT_FAILED_KEPT_BOTH,
+                             OperatorWarningCode.SLICE_FLOOR_DRAIN_REFUSED,
                              OperatorWarningCode.STREAM_CONSUMER_STATE_DIVERGED,
                              OperatorWarningCode.STREAM_CONSUMER_NOT_REGISTERED,
                              OperatorWarningCode.STREAM_CONSUMER_DRAIN_FAILING,
                              OperatorWarningCode.STREAM_EVENT_EXCEEDS_READ_CAP,
                              OperatorWarningCode.STREAM_OWNER_PROMOTION_HOLDERS_UNREACHABLE,
                              OperatorWarningCode.STREAM_OWNER_LINEAGE_REFUSED,
-                             OperatorWarningCode.STREAM_CATCHUP_SOURCE_NOT_ANSWERING);
+                             OperatorWarningCode.STREAM_DIVERGENT_TAIL_CUT_REFUSED,
+                             OperatorWarningCode.STREAM_CATCHUP_SOURCE_NOT_ANSWERING,
+                             OperatorWarningCode.HTTP_TLS_ROTATION_REFUSED,
+                             OperatorWarningCode.CLUSTER_TLS_RENEWAL_REFUSED,
+                             OperatorWarningCode.BACKUP_CONFIG_MISSING,
+                             OperatorWarningCode.BACKUP_RESTORE_BLOCKED);
         var recoveries = java.util.Arrays.stream(OperatorWarningCode.values()).filter(c -> c.recoveryOf().isPresent()).count();
         var t = new AtomicLong(1_000_000L);
         var h = clocked(t);

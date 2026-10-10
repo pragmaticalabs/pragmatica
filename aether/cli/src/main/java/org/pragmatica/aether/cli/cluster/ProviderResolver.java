@@ -10,7 +10,10 @@ import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
 
+import org.pragmatica.aether.config.BackupConfig;
+import org.pragmatica.aether.config.cluster.CloudCredentialSchema;
 import org.pragmatica.aether.config.cluster.NodeRole;
+import org.pragmatica.aether.config.cluster.NodeUserDataRenderer;
 import org.pragmatica.aether.config.cluster.RoleSubTable;
 import org.pragmatica.aether.config.cluster.SourceProfile;
 import org.pragmatica.aether.environment.ClusterName;
@@ -155,7 +158,9 @@ public final class ProviderResolver {
                                               Map.of()));
     }
 
-    public static Result<ComputeProvider> resolveDockerCompute() {
+    /// The Docker provider for tearing nodes down: it starts nothing, so it has no use for the source's `[backup]`. Provisioning
+    /// uses [#resolveDockerCompute(SourceProfile)], which hands the provider that backup.
+    public static Result<ComputeProvider> resolveDockerComputeWithoutBackup() {
         return lookupFactory("docker").flatMap(factory -> factory.create(dockerCloudConfig()))
                             .flatMap(ProviderResolver::extractCompute);
     }
@@ -178,7 +183,17 @@ public final class ProviderResolver {
                                                                                               firewallIds)));
     }
 
+    /// Test seam (package-private): a factory that replaces the SERVICE-LOADED Docker one, so a test can read the [CloudConfig] a
+    /// caller hands the provider without a Docker daemon. Null in production.
+    static volatile EnvironmentIntegrationFactory dockerFactoryOverride;
+
     private static Result<EnvironmentIntegrationFactory> lookupFactory(String providerName) {
+        var override = dockerFactoryOverride;
+
+        if (override != null && "docker".equals(providerName)) {
+            return Result.success(override);
+        }
+
         return EnvironmentIntegrationFactory.forProvider(providerName).toResult(factoryNotFound(providerName));
     }
 
@@ -225,14 +240,7 @@ public final class ProviderResolver {
                                         String userData,
                                         Option<ClusterName> clusterName,
                                         List<FirewallId> firewallIds) {
-        var credentials = new HashMap<String, String>();
-
-        source.credentials()
-              .onPresent(c -> {
-                             credentials.put("credentials_file", c);
-                             credentials.put("api_token", c);
-                             credentials.put("access_key", c);
-                         });
+        var credentials = CloudCredentialSchema.credentials(source, providerName);
         var compute = new HashMap<String, String>();
 
         source.region().onPresent(r -> compute.put("region", r));
@@ -252,13 +260,7 @@ public final class ProviderResolver {
 
         var discovery = clusterName.map(ProviderResolver::discoveryFor).or(Map.<String, String> of());
 
-        return new CloudConfig(providerName,
-                               Map.copyOf(credentials),
-                               Map.copyOf(compute),
-                               Map.of(),
-                               discovery,
-                               Map.of(),
-                               Map.of());
+        return new CloudConfig(providerName, credentials, Map.copyOf(compute), Map.of(), discovery, Map.of(), Map.of());
     }
 
     private static Map<String, String> discoveryFor(ClusterName clusterName) {
@@ -287,8 +289,37 @@ public final class ProviderResolver {
         return Option.option(source.roles().get(NodeRole.CORE)).flatMap(RoleSubTable::instanceType);
     }
 
+    /// The Docker provider for provisioning a source's nodes (#1968): the source's `node_config` `[backup]` is handed to it as the
+    /// `AETHER_BACKUP_*` entries of the compute map, the way a running leader hands its effective backup to the provider that mints
+    /// replacements, so the nodes it starts carry the same backup (a Docker node has no node TOML of its own).
+    public static Result<ComputeProvider> resolveDockerCompute(SourceProfile source) {
+        return lookupFactory("docker").flatMap(factory -> factory.create(dockerCloudConfig(backupEnvironment(source))))
+                            .flatMap(ProviderResolver::extractCompute);
+    }
+
+    /// The source's `[backup]` as `AETHER_BACKUP_*`; empty when the source has none, it is disabled, or it has no path.
+    static Map<String, String> backupEnvironment(SourceProfile source) {
+        return source.nodeConfig()
+                     .flatMap(doc -> NodeUserDataRenderer.backupPath(doc).map(path -> BackupConfig.backupConfig(true,
+                                                                                                                path,
+                                                                                                                doc.getString("backup",
+                                                                                                                              "remote")
+                                                                                                                   .map(String::strip)
+                                                                                                                   .or(""),
+                                                                                                                doc.getString("backup",
+                                                                                                                              "restore")
+                                                                                                                   .flatMap(raw -> BackupConfig.RestoreMode.restoreMode(raw).option())
+                                                                                                                   .or(BackupConfig.RestoreMode.AUTO))))
+                     .map(BackupConfig::asEnvironment)
+                     .or(Map.of());
+    }
+
     private static CloudConfig dockerCloudConfig() {
-        return new CloudConfig("docker", Map.of(), Map.of(), Map.of(), Map.of(), Map.of(), Map.of());
+        return dockerCloudConfig(Map.of());
+    }
+
+    private static CloudConfig dockerCloudConfig(Map<String, String> compute) {
+        return new CloudConfig("docker", Map.of(), Map.copyOf(compute), Map.of(), Map.of(), Map.of(), Map.of());
     }
 
     private static BootstrapError.ProvisionFailed factoryNotFound(String providerName) {

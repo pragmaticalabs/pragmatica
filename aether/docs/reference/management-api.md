@@ -54,6 +54,7 @@ Roles are hierarchical: ADMIN has all OPERATOR permissions, and OPERATOR has all
 | Blueprint deploy (from artifact) | OPERATOR | `POST /api/v1/blueprints/deploy` |
 | Blueprint validate | ADMIN | `POST /api/v1/blueprints/validate` |
 | Node drain | OPERATOR | `POST /api/v1/nodes/drain/{id}` |
+| Node replacement | OPERATOR | `POST /api/v1/nodes/replace/{id}`, `POST /api/v1/nodes/replacements/settle/{id}` |
 | Scaling | OPERATOR | `POST /api/v1/scale` |
 | Schema operations | OPERATOR | `POST /api/v1/schema/*` |
 | Deployment strategies | OPERATOR | `POST /api/v1/deploy`, `POST /api/v1/deploy/promote/*`, `POST /api/v1/deploy/rollback/*`, `POST /api/v1/deploy/complete/*`, `POST /api/v1/ab-tests/*` |
@@ -440,13 +441,14 @@ curl "http://localhost:8080/api/v1/events?sinceEpoch=3&sinceSeq=42"
 - `THRESHOLD_CLEARED` -- a breached metric fell below its hysteresis-adjusted clear point (owner-gated; `details` carries `metric`, `nodeId`, `value`, `clearedFrom`, `clearPoint`). Severity INFO.
 - `COMMUNITY_MINTED` -- the leader minted a worker community: its committed `CommunityValue` appeared (`details`: `communityId`, `state`, `targetSize`, `role`). Severity INFO.
 - `COMMUNITY_STATE_CHANGED` -- a community's committed lifecycle state changed; one event per edge (`details`: `communityId`, `from`, `to`, `targetSize`). `FORMING -> ACTIVE` is "formed", `ACTIVE -> DEGRADED` (severity WARNING, the only non-INFO edge) is live membership falling below the viability floor, `DEGRADED -> ACTIVE` is recovery, `-> DISSOLVED` is retirement by placement policy. Severity INFO otherwise.
-- `COMMUNITY_MEMBER_JOINED` / `COMMUNITY_MEMBER_LEFT` -- a node was added to / removed from a community's committed roster (`details`: `communityId`, `nodeId`, `governorId`, `memberCount`). The roster is assignment, not liveness: a member that stops answering stays on it and shows up as the `ACTIVE -> DEGRADED` edge instead. Severity INFO. A force-killed worker did not produce `COMMUNITY_MEMBER_LEFT` within 180 s of the kill (one Ember run, #1652; the core raised no worker leave, #1717). From the source, not measured: the roster shrinks only when the core deletes the member's activation directive (a worker leave, a decommission or a self-shutdown) and the governor's next authority write commits the smaller roster. [unverified: no live trigger of `COMMUNITY_MEMBER_LEFT` is demonstrated yet; the roster diff that emits it is pinned at unit level]
+- `COMMUNITY_MEMBER_JOINED` / `COMMUNITY_MEMBER_LEFT` -- a node was added to / removed from a community's committed roster (`details`: `communityId`, `nodeId`, `governorId`, `memberCount`). The roster is assignment, not liveness: a member that stops answering stays on it and shows up as the `ACTIVE -> DEGRADED` edge instead. Severity INFO. A force-killed worker is declared DEAD by the core once a death signal (SWIM-FAULTY or a transport disconnect) has held for `splitTimeout` (15 s by default) with no positive evidence NEWER than the signal. The governor keeps reporting a dead worker alive for up to `communityAbsence` after its last pong; such a stale report is ignored, a fresh pong, an admission or a SWIM-healthy edge vetoes, and a re-established link vetoes the transport signal. The DEAD edge raises the worker leave, which removes the activation directive; the governor's next authority write then commits the smaller roster and `COMMUNITY_MEMBER_LEFT` follows, and a replacement worker brings the community back to ACTIVE (`COMMUNITY_STATE_CHANGED` DEGRADED -> ACTIVE, `COMMUNITY_MEMBER_JOINED`). A worker evicted while merely partitioned is refused when it heals (DEAD is terminal for a NodeId) and must rejoin under a new id. [verified: `aether/forge/forge-tests/src/test/java/org/pragmatica/aether/forge/CommunityObservabilityForgeTest.java`, 2/2 green on bigboy at 5f2c189ff] [verified: `aether/aether-deployment/src/test/java/org/pragmatica/aether/deployment/membership/fsm/MembershipWorkerDeathTest.java`]
 - `DHT_REPLICATION_UNSETTLED` / `DHT_REPLICATION_SETTLED` -- a live change of the DHT's `[replication]` factors has stayed unsettled for longer than 5 minutes, so every node still reads and writes at the stricter transitional quorums; and its complement, when it settles or a newer change replaces it (#1777). `details`: `changeVersion`, `replicationFactor`, `confirmationFactor`, `since`, `reason`, and `stage` on the first. Severity WARNING / INFO. Both events come from the committed change record and go through the cluster-events owner gate, so each is published at most once per transition: it is missed if the owner cannot publish at that moment. The usual cause is a member the leader's membership view still counts that is not reporting, or a core whose catch-up cannot complete. [unverified: the 5-minute edge is pinned at unit level only; no live run has held a change unsettled that long]
 - `DHT_WRITER_STALE` / `DHT_WRITER_STALE_RESOLVED` -- this node's DHT writes have been refused for over 5 minutes by the replication-change fence, because they are stamped under an older `[replication]` change than the replicas have applied, and the node has not adopted the newer change; and its complement, once it has (#1777). Typically a live writer that the settle roster dropped: the leader's membership view held it `Dead`, or never tracked it. Raised by the refused node itself, which is the only emitter. It is a per-node fact, so it bypasses the owner gate. Published at most once per episode: it is missed if the node cannot publish at that moment. `details`: `nodeId`, `fence` (the change version its writes carry), `since`. Severity WARNING / INFO. Recovery: the node adopts the change when it next receives the committed record (a core through consensus, a worker through its projection); restarting it forces that.
 - `STREAM_FAILOVER_REFUSED` / `STREAM_FAILOVER_RESOLVED` -- a stream partition's owner is dead and no in-sync replica is live, so failover elected nobody (CRITICAL); then an owner was elected or the owner returned (INFO). `details`: `stream`, `partition`, `owner`, `isr`, `live`, `reason`. Raised once per committed transition, never per reconcile: the leader commits the refusal into the partition's ownership record with a guarded write, every node derives the event from that committed change, and only the cluster-events partition owner publishes it; see the failure almanac. At most once if no node owns the cluster-events partition at that moment (bootstrap, quorum loss): every node then drops it with a WARN and a counter, and the committed `failoverRefused` flag and the `NoInSyncReplica` partition status remain the record. The event carries a deterministic `details.eventId` (partition, ownership epoch and term, ISR version, refusal count) so two copies published by two nodes during a membership change read as one; the id includes the refusal count committed with the flag, so a recurring refusal is a new event.
 - `STREAM_CONFIG_CHANGE_NOT_APPLIED` -- a committed config for a running stream does not take effect over what the node enforces (WARNING): it lowers `confirmation_factor` or `replication_factor` (durability only increases online) or it has a different partition count (never re-shaped onto the existing rings). `details`: `stream`, `requestedConfirmationFactor`, `effectiveConfirmationFactor`, `reason` (the actual cause), `eventId`. Raised once per such committed config, compared with the enforced one, never for an adopted change (including a lowering that came with a replication-factor raise), a new life or a replayed Put; a point event, a later raise does not resolve it.
 - `STREAM_ISR_BELOW_MINIMUM` / `STREAM_ISR_RESTORED` -- a stream partition's committed in-sync set fell below its `confirmation_factor`, so acknowledged publishes to it are refused with `NOT_ENOUGH_REPLICAS` (WARNING); then it reached the factor again (INFO). `details`: `stream`, `partition`, `owner`, `isr`, `fenced`, `confirmationFactor`. Raised once per transition across the factor, never per ISR change (a committed config change that moves the enforced factor across the ISR size raises it too, with no ISR commit): every node derives it from the committed ownership record and only the cluster-events partition owner publishes it; `details.eventId` is derived from the committed record, so two copies published by two nodes during a membership change read as one. See the failure almanac.
 - `STREAM_LINEAGE_RESTARTED` -- a stream partition's owner began a new epoch WITHOUT a change of owner: its ring was rebuilt (a restart without a WAL, a lazy re-materialize, a re-created stream), so consumers that read the old epoch past `details.startOffset` re-read from it. Severity INFO: the commit proves a ring restarted, not that records were lost (activation may have pulled every record back from replicas); the loss witness is the per-node `OPERATOR_WARNING` `stream-consumer-rewound`. `details`: `stream`, `partition`, `owner`, `oldEpoch`, `newEpoch`, `startOffset`. Derived on every node from the committed ownership record and published once by the cluster-events owner; an owner change is `STREAM_FAILOVER_*`, not this event.
+- `ROUTE_PREFIX_COLLISION` / `ROUTE_PREFIX_COLLISION_CLEARED` -- two slices of different artifacts are serving the same HTTP route in the committed route table, so one of them serves nothing (the lexically smaller coordinate wins) (WARNING; `details`: `method`, `prefix`, `artifacts` (the claiming artifact bases, comma separated), `eventId`); then only one artifact claims it (INFO). Blueprint publish REFUSES an identical-route collision it can see, naming both slices and the route: a collision between two slices of the blueprint being published is a 400, one with an already-stored blueprint is a 409 naming that blueprint and slice, so this event is for what admission cannot see: a slice jar unavailable at admission, racing publishes, a slice deployed another way. Derived on every node from the committed route table and published once by the cluster-events owner; `eventId` is the route, the claimants and the newest `registeredAt`.
 - `SCHEDULED_TASK_FIRE_HELD` / `SCHEDULED_TASK_FIRE_RELEASED` -- a scheduled task's previous fire is still in flight when its next tick arrives, so the task is not firing (up to the completion bound) (WARNING; `details`: `task`, `node`, `fireAt` (when that fire started), `inFlightMs` (at the first skipped tick), `eventId`); then that fire resolved (INFO; `outcome` is `executed`, `failed`, `unknown` (the bound passed with no response) or `completed` (a manual trigger's claim), `inFlightMs` in all). Raised ONCE per in-flight fire (the per-tick log line is DEBUG), by the node whose scheduler holds the fire and published from there (a per-node fact, not owner-gated); throttled per task and node to one event per 60 s, a hold the window held back is announced after it only if the fire is still in flight, and a release is never announced without its hold.
 - `SCHEDULED_TASK_OUTCOME_UNKNOWN` / `SCHEDULED_TASK_OUTCOME_RESTORED` -- a scheduled task's newest fire has an unknown outcome (WARNING; `details`: `task` as `section/artifact/method`, `node` for an ALL-mode task, `fireAt` (when the newest fire started), `eventId`); then it does not (INFO): `reason` is `later-fire` (a later fire completed), `late-answer` (the newest fire's late response arrived; `late` is `true`) `task-removed` (the task was removed while unknown) or `node-departed` (the node that fired a per-node row left the cluster for good while it was unknown; the leader closes the row, whose `lastOutcome` then reads `NODE_DEPARTED`); `outcome` is `executed`, `failed` or `unknown` (task-removed, node-departed), and `fireAt` is that of the UNKNOWN it closes. Derived on every node from the committed task state, published once by the cluster-events owner, and throttled to one event per task per 60 s: an UNKNOWN held back by the window is announced after it only if the task is still unknown, and a RESTORED is never announced without its UNKNOWN. A fire whose response never arrives cannot hold the condition: the next fire that completes ends it. A task that stops firing while unknown stays unknown.
 - `OPERATOR_WARNING` -- a condition an operator needs to see, raised by the node that observed it (per-node fact, NOT leader-gated; see below). Severity WARNING or CRITICAL, fixed per code.
@@ -1406,6 +1408,10 @@ that belongs to a different (dead or retired) process:
   evidence and QUIC Hello together);
 - `quic_boot_token_drops_total` — inbound messages dropped because their connection peer or protocol
   sender is a retired NodeId;
+- `quic_superseded_closes_total` and `quic_superseded_lane_streams_at_risk_total` — connections closed at once
+  because a fresh handshake superseded them, and the lane streams (writes not yet accepted by quiche, or
+  written within the last 2 s) that close put at risk of discarding writes; unacked writes themselves are not
+  observable. An INFO line names the peer and the shape (same-direction re-dial or dual-dial loser);
 - `membership_process_evidence_refusals_total` — governor/worker-admission evidence the membership
   FSM refused (different token, or a DEAD/DEPARTING identity).
 
@@ -4455,6 +4461,9 @@ separate, still in-flight consolidation effort (spec §3.2–§3.3) owns that su
 | GET | `/api/v1/nodes/lifecycle/{id}` | Node Lifecycle |
 | POST | `/api/v1/nodes/drain/{id}` | Node Lifecycle |
 | POST | `/api/v1/nodes/shutdown/{id}` | Node Lifecycle |
+| POST | `/api/v1/nodes/replace/{id}` | Node Lifecycle |
+| GET | `/api/v1/nodes/replacements` | Node Lifecycle |
+| POST | `/api/v1/nodes/replacements/settle/{id}` | Node Lifecycle |
 | GET | `/api/v1/scheduled-tasks` | Scheduled Tasks |
 | GET | `/api/v1/scheduled-tasks/{section}` | Scheduled Tasks |
 | POST | `/api/v1/scheduled-tasks/pause/{section}/{artifact}/{methodName}` | Scheduled Tasks |
@@ -4600,6 +4609,44 @@ Enqueue a graceful shutdown for a node via the membership-v2 DRAIN-command chann
   "message": "Shutdown command enqueued; target will self-drain then halt via heartbeat DRAIN command"
 }
 ```
+
+### POST /api/v1/nodes/replace/{id}
+
+Start replacing a node with a fresh-id node (#1543): the replacement joins, the old node's seat (core) is swapped to it, a
+canary confirms it, then the old node drains and retires. The old node is never restarted under its own id. Route target is
+`LEADER`, authorization OPERATOR; one replacement runs at a time.
+
+Body: `{"replacement": "<fresh node id>", "targetVersion": "<version>"}`. Both fields are optional. Without `replacement` the
+leader provisions the new node (CTM mode); with it the operator starts that id itself (EXTERNAL mode) and the leader commits
+its admission together with the replacement record. `targetVersion` is the version the replacement must run before it is kept.
+Cores and workers are supported; a worker replacement swaps no voter seat.
+
+**Response:** the committed record: `original`, `replacement`, `role`, `phase`, `mode`, `source`, `targetVersion`, `attempt`,
+`reason`, `phaseDeadlineMs`, `epoch`.
+
+Statuses, from `NodeReplacementRoutes.asManagementError`: `404` unknown node. `400` the node or replacement id does not parse,
+or the node's role is not supported (`RoleNotSupported`). `401`/`403` the caller is not authorized (OPERATOR required). Every
+other refusal is `409`, never `500`:
+- another replacement is already in progress for the node, or the record changed concurrently;
+- the chosen replacement id is already a member, paired or reserved (`ReplacementIdInUse`);
+- a core replacement whose chosen id was a voter at genesis (`FormerVoterIdentity`: a core needs a fresh voter identity; restore the
+  original WAL for a same-identity restart);
+- an externally started replacement whose node has no provisioning source while the capacity ledger counts (`SourceRequired`), or that
+  would exceed the fleet node limit (`FleetFull`);
+- the node that received the request is not the leader any more (`NotLeader`; retry, the route targets the leader);
+- replacement is not available on the node (`Unavailable`, a node built without the replacement service).
+
+### GET /api/v1/nodes/replacements
+
+Every replacement record, ordered by original node id, with the fields above. `phase` is one of `PROVISIONING`, `JOINING`,
+`SWAPPING`, `CANARY`, `DRAINING_OLD`, `RETIRING_OLD`, `DONE`, `REVERTING`, `ROLLED_BACK`, `FAILED_KEPT_BOTH`.
+
+### POST /api/v1/nodes/replacements/settle/{id}
+
+Settle a replacement that stopped in `FAILED_KEPT_BOTH` (both nodes kept). Body `{"outcome": "keep-new"}` finishes retiring the
+old node; `{"outcome": "roll-back"}` gives the new node up. `400` for any other outcome or an id that does not parse; `409` when the node has no replacement in `FAILED_KEPT_BOTH`
+(`NothingToSettle`; an unknown node reads the same way), the record changed concurrently, or the node is not
+the leader (`NotLeader`); `401`/`403` when the caller is not authorized.
 
 ### POST /api/v1/nodes/promote/{id}
 

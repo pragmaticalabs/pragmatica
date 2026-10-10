@@ -16,7 +16,8 @@ public record StreamingConfig(TimeSpan publishForwardTimeout,
                               int reshuffleConcurrency,
                               long caughtUpMaxLagOffsets,
                               long segmentDiskMaxBytes,
-                              TimeSpan isrLagMax) {
+                              TimeSpan isrLagMax,
+                              TimeSpan promotionEscapeAfter) {
     public static final long DEFAULT_MAX_READ_RESPONSE_BYTES = 28L * 1024 * 1024;
     /// How many partitions one node may hold in materialize+backfill at once (`reshuffle_concurrency`).
     /// One-at-a-time starves a large reshuffle; unbounded floods backfill. Was a hard-coded constant with
@@ -62,6 +63,13 @@ public record StreamingConfig(TimeSpan publishForwardTimeout,
     /// acknowledgement unsafe. Smaller drops a slow replica sooner (shorter ack stalls, fewer copies); larger keeps
     /// it longer (an ack waits up to this long for a lagging member).
     public static final TimeSpan DEFAULT_ISR_LAG_MAX = timeSpan(30).seconds();
+    /// #2080 `promotion_escape_after`: how long a stream partition's promotion (the owner activation gate, the replica promotion
+    /// contest) waits for members that do not answer before a candidate named in the partition's COMMITTED in-sync set goes ahead
+    /// without them. Distinct from, and at least, the alarm bound (two SWIM suspect windows, 20 s at the default): after a full-cluster
+    /// cold restart the in-sync set is minted from placement, so a node whose disk is ahead and which merely boots slowly (JVM start
+    /// plus WAL replay) must not be escaped past, or divergence becomes routine on staggered restarts. THE DEFAULT IS A GUESS (the
+    /// owner's, 2026-10-09); what would settle it is the measured boot spread of a cold restart.
+    public static final TimeSpan DEFAULT_PROMOTION_ESCAPE_AFTER = timeSpan(120).seconds();
 
     /// The default `LINEARIZABLE`-read mechanism (spec §8.1): the no-op consensus round (#345 item
     /// 1e-a). The alternative `lease` mechanism is rejected at config parse until validated.
@@ -91,7 +99,8 @@ public record StreamingConfig(TimeSpan publishForwardTimeout,
                                    DEFAULT_RESHUFFLE_CONCURRENCY,
                                    DEFAULT_CAUGHT_UP_MAX_LAG_OFFSETS,
                                    DERIVE_SEGMENT_DISK_MAX_BYTES,
-                                   DEFAULT_ISR_LAG_MAX);
+                                   DEFAULT_ISR_LAG_MAX,
+                                   DEFAULT_PROMOTION_ESCAPE_AFTER);
     }
 
     public static StreamingConfig streamingConfig(TimeSpan publishForwardTimeout,
@@ -104,7 +113,8 @@ public record StreamingConfig(TimeSpan publishForwardTimeout,
                                    DEFAULT_RESHUFFLE_CONCURRENCY,
                                    DEFAULT_CAUGHT_UP_MAX_LAG_OFFSETS,
                                    DERIVE_SEGMENT_DISK_MAX_BYTES,
-                                   DEFAULT_ISR_LAG_MAX);
+                                   DEFAULT_ISR_LAG_MAX,
+                                   DEFAULT_PROMOTION_ESCAPE_AFTER);
     }
 
     public static StreamingConfig streamingConfig(TimeSpan publishForwardTimeout,
@@ -118,7 +128,8 @@ public record StreamingConfig(TimeSpan publishForwardTimeout,
                                    DEFAULT_RESHUFFLE_CONCURRENCY,
                                    DEFAULT_CAUGHT_UP_MAX_LAG_OFFSETS,
                                    DERIVE_SEGMENT_DISK_MAX_BYTES,
-                                   DEFAULT_ISR_LAG_MAX);
+                                   DEFAULT_ISR_LAG_MAX,
+                                   DEFAULT_PROMOTION_ESCAPE_AFTER);
     }
 
     public static StreamingConfig streamingConfig(TimeSpan publishForwardTimeout,
@@ -133,7 +144,8 @@ public record StreamingConfig(TimeSpan publishForwardTimeout,
                                    reshuffleConcurrency,
                                    DEFAULT_CAUGHT_UP_MAX_LAG_OFFSETS,
                                    DERIVE_SEGMENT_DISK_MAX_BYTES,
-                                   DEFAULT_ISR_LAG_MAX);
+                                   DEFAULT_ISR_LAG_MAX,
+                                   DEFAULT_PROMOTION_ESCAPE_AFTER);
     }
 
     public static StreamingConfig streamingConfig(TimeSpan publishForwardTimeout,
@@ -149,7 +161,8 @@ public record StreamingConfig(TimeSpan publishForwardTimeout,
                                    reshuffleConcurrency,
                                    caughtUpMaxLagOffsets,
                                    DERIVE_SEGMENT_DISK_MAX_BYTES,
-                                   DEFAULT_ISR_LAG_MAX);
+                                   DEFAULT_ISR_LAG_MAX,
+                                   DEFAULT_PROMOTION_ESCAPE_AFTER);
     }
 
     /// The same streaming config with the streams disk-tier cap set (`segment_disk_max_bytes`, #1604);
@@ -162,7 +175,8 @@ public record StreamingConfig(TimeSpan publishForwardTimeout,
                                    reshuffleConcurrency,
                                    caughtUpMaxLagOffsets,
                                    segmentDiskMaxBytes,
-                                   isrLagMax);
+                                   isrLagMax,
+                                   promotionEscapeAfter);
     }
 
     /// The same streaming config with the ISR lag bound set (`isr_lag_max`, #1730).
@@ -174,7 +188,26 @@ public record StreamingConfig(TimeSpan publishForwardTimeout,
                                    reshuffleConcurrency,
                                    caughtUpMaxLagOffsets,
                                    segmentDiskMaxBytes,
-                                   isrLagMax);
+                                   isrLagMax,
+                                   promotionEscapeAfter);
+    }
+
+    /// The same streaming config with the promotion escape bound set (`promotion_escape_after`, #2080).
+    public StreamingConfig withPromotionEscapeAfter(TimeSpan promotionEscapeAfter) {
+        return new StreamingConfig(publishForwardTimeout,
+                                   readForwardTimeout,
+                                   maxReadResponseBytes,
+                                   readLinearization,
+                                   reshuffleConcurrency,
+                                   caughtUpMaxLagOffsets,
+                                   segmentDiskMaxBytes,
+                                   isrLagMax,
+                                   promotionEscapeAfter);
+    }
+
+    /// The owner activation gate's alarm bound (#1555 item 8): two SWIM suspect windows. The promotion escape bound may not be below it.
+    public static TimeSpan ownerPromotionAlarmWindow(TimeSpan suspectTimeout) {
+        return suspectTimeout.plus(suspectTimeout);
     }
 
     /// The same streaming config with the `LINEARIZABLE`-read mechanism replaced — used by the config
@@ -187,7 +220,8 @@ public record StreamingConfig(TimeSpan publishForwardTimeout,
                                    reshuffleConcurrency,
                                    caughtUpMaxLagOffsets,
                                    segmentDiskMaxBytes,
-                                   isrLagMax);
+                                   isrLagMax,
+                                   promotionEscapeAfter);
     }
 
     /// Bounded wait for a caught-up source to appear before a cold-start replica self-promotes. Derived

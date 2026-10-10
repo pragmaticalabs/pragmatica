@@ -207,7 +207,7 @@ graph TB
         W2["Worker 2"]
     end
 
-    KV -->|"Decision stream<br/>(via PassiveNode)"| DS
+    KV -->|"Committed KV state<br/>(WorkerMetadataServer / WorkerMetadataClient)"| DS
     DS -->|"Relay relevant<br/>changes"| W1
     DS -->|"Relay relevant<br/>changes"| W2
 
