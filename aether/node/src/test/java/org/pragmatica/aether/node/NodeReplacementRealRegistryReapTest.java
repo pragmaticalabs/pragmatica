@@ -1119,6 +1119,33 @@ class NodeReplacementRealRegistryReapTest {
         assertThat(ledger().allocated()).as("and the slot the release returned stays returned").isEqualTo(4);
     }
 
+    private void staleReleaseAtARejoinKeepsTheReservation(String binding) throws Exception {
+        var gate = Promise.<Unit> promise();
+
+        put(new AetherKey.CapacityReservationKey(OLD), new CapacityReservationValue("west", binding, "core", CapacityReservationPhase.OBSERVED));
+        processGate.set(gate);
+        var reap = ctmUnderTest.reapRetired(OLD, WEST, false);
+        Thread.sleep(300);
+        states.put(OLD, "Member");
+        joins(OLD);
+        gate.succeed(Unit.unit());
+
+        assertThat(reap.await().isFailure()).as("the stale release does not succeed").isTrue();
+        assertThat(reservation(OLD).isPresent()).as("and deletes nothing").isTrue();
+    }
+
+    /// The same guard on the two release branches the counted-with-a-ledger test does not reach: an UNCOUNTED reservation (a ledger-less cluster) ...
+    @Test
+    void anUncountedExternalReleaseInFlightAtARejoin_leavesTheReservation() throws Exception {
+        staleReleaseAtARejoinKeepsTheReservation(org.pragmatica.aether.deployment.cluster.CapacityControlledLifecycle.UNCOUNTED_BINDING);
+    }
+
+    /// ... and a counted reservation whose ledger is absent.
+    @Test
+    void aCountedExternalReleaseWithNoLedgerInFlightAtARejoin_leavesTheReservation() throws Exception {
+        staleReleaseAtARejoinKeepsTheReservation("");
+    }
+
     /// N9b: afterwards the new incarnation leaves and is retired: a real release (one slot taken, one returned) with no provider call (598476d86).
     @Test
     void afterAStaleExternalRelease_theNewIncarnationsRetirement_makesNoProviderCallAndReturnsItsSlot() throws Exception {
