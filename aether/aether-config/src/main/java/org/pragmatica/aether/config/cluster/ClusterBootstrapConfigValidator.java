@@ -509,9 +509,7 @@ public final class ClusterBootstrapConfigValidator {
                      .flatMap(SecurityMode::securityMode)
                      .map(mode -> mode == SecurityMode.JWT)
                      .or(false);
-        var enabled = doc.getString("app-http", "enabled")
-                         .map(ConfigLoader::toBooleanValue)
-                         .or(false);
+        var enabled = doc.getString("app-http", "enabled").map(ConfigLoader::toBooleanValue).or(false);
 
         return jwt && enabled;
     }
