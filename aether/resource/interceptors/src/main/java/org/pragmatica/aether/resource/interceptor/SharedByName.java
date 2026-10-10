@@ -5,9 +5,14 @@
 package org.pragmatica.aether.resource.interceptor;
 
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicReference;
 
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Functions.Fn1;
+import org.pragmatica.lang.Functions.Fn2;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.NullReturn;
+import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 
 import static org.pragmatica.lang.Option.option;
@@ -47,6 +52,24 @@ final class SharedByName<V> {
         var share = shares.compute(name, (_, existing) -> retain(existing, candidate));
         // Counted before the holder exists; a throwing holderFactory would leak this count. Unreachable
         // today: both factories pass record constructors, which cannot throw.
+        return register(name, share, holderFactory);
+    }
+
+    /// [#acquire], refused when `conflict` finds `candidate` incompatible with the value ALREADY shared under
+    /// `name`. The check runs inside the per-name atomic `compute`, so two mismatched acquires racing for
+    /// one name cannot both pass it; a refused acquire counts no hold and leaves the shared value untouched.
+    <H> Result<H> acquireChecked(String name,
+                                 V candidate,
+                                 Fn2<Option<Cause>, V, V> conflict,
+                                 Fn1<H, V> holderFactory) {
+        var refusal = new AtomicReference<Cause>();
+        var share = shares.compute(name, (_, existing) -> retainUnlessConflicting(existing, candidate, conflict, refusal));
+
+        return option(refusal.get()).<Result<H>>map(Cause::result)
+                     .or(() -> Result.success(register(name, share, holderFactory)));
+    }
+
+    private <H> H register(String name, Share<V> share, Fn1<H, V> holderFactory) {
         var holder = holderFactory.apply(share.value());
 
         holders.put(Holder.holder(holder), name);
@@ -70,6 +93,22 @@ final class SharedByName<V> {
         shares.computeIfPresent(name, (_, share) -> share.released());
 
         return unit();
+    }
+
+    /// A conflicting candidate leaves the entry exactly as it was and records why in `refusal`.
+    private static <V> Share<V> retainUnlessConflicting(Share<V> existing,
+                                                        V candidate,
+                                                        Fn2<Option<Cause>, V, V> conflict,
+                                                        AtomicReference<Cause> refusal) {
+        return option(existing).flatMap(share -> conflict.apply(share.value(), candidate)
+                                                         .map(cause -> refuse(share, cause, refusal)))
+                     .or(() -> retain(existing, candidate));
+    }
+
+    private static <V> Share<V> refuse(Share<V> share, Cause cause, AtomicReference<Cause> refusal) {
+        refusal.set(cause);
+
+        return share;
     }
 
     private static <V> Share<V> retain(Share<V> existing, V candidate) {

@@ -19,7 +19,7 @@ import static org.pragmatica.lang.Result.success;
 
 
 public final class CacheInterceptorFactory implements ResourceFactory<CacheMethodInterceptor, CacheConfig> {
-    private final SharedByName<CacheBackend> caches = SharedByName.sharedByName();
+    private final SharedByName<SharedCache> caches = SharedByName.sharedByName();
 
     @Override
     public Class<CacheMethodInterceptor> resourceType() {
@@ -41,7 +41,7 @@ public final class CacheInterceptorFactory implements ResourceFactory<CacheMetho
     public Promise<CacheMethodInterceptor> provision(CacheConfig config, ProvisioningContext context) {
         var keyExtractor = (Fn1<Object, ?>) context.keyExtractor().or(Fn1.id());
 
-        return createCache(config, context).map(cache -> share(cache, config, keyExtractor))
+        return createCache(config, context).flatMap(cache -> share(cache, config, context, keyExtractor))
                           .async();
     }
 
@@ -58,13 +58,24 @@ public final class CacheInterceptorFactory implements ResourceFactory<CacheMetho
         return caches.contains(cacheName);
     }
 
-    private CacheMethodInterceptor share(CacheBackend candidate, CacheConfig config, Fn1<Object, ?> keyExtractor) {
-        return caches.acquire(config.cacheName(),
-                              candidate,
-                              cache -> new CacheMethodInterceptor(cache,
-                                                                  config.strategy(),
-                                                                  keyExtractor,
-                                                                  some(config.cacheName())));
+    /// Sections sharing a `cache_name` share ONE backend, built from whichever section provisions first, so
+    /// every later section must describe the same backend: a differing mode, TTL, capacity or key/value
+    /// type is refused here rather than silently adopting the first section's (#697). The strategy is NOT
+    /// compared: it shapes the interceptor, not the backend, and sections legitimately differ on it (a
+    /// `CACHE_ASIDE` reader and `WRITE_AROUND` invalidators over one namespace).
+    private Result<CacheMethodInterceptor> share(CacheBackend candidate,
+                                                 CacheConfig config,
+                                                 ProvisioningContext context,
+                                                 Fn1<Object, ?> keyExtractor) {
+        var shape = CacheShape.cacheShape(config, context);
+
+        return caches.acquireChecked(config.cacheName(),
+                                     SharedCache.sharedCache(candidate, shape),
+                                     (existing, incoming) -> existing.shape().conflictWith(incoming.shape(), config.cacheName()),
+                                     shared -> new CacheMethodInterceptor(shared.backend(),
+                                                                          config.strategy(),
+                                                                          keyExtractor,
+                                                                          some(config.cacheName())));
     }
 
     private Result<? extends CacheBackend> createCache(CacheConfig config, ProvisioningContext context) {
