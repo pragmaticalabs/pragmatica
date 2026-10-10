@@ -292,6 +292,21 @@ final class FlowPrinter {
     /// Using `leaf.text()` instead would return the source slice covering trailing trivia,
     /// causing whitespace bleed into the output.
     private void emitLeafTokens(Cursor.Leaf leaf) {
+        // A diamond `<>` or wildcard-only `<?>` has no children, so it arrives here rather than through
+        // printTypeArgs: raise the type context for it too, or its `<` reads as a relational operator (#974).
+        boolean typeContext = leaf.kindIs(RuleKind.TYPE_ARGS) || leaf.kindIs(RuleKind.WILDCARD_ONLY_TYPE_ARGS) || leaf.kindIs(RuleKind.TYPE_PARAMS);
+
+        if (typeContext) {
+            typeContextDepth++;
+        }
+
+        emitLeafTokensIn(leaf);
+        if (typeContext) {
+            typeContextDepth--;
+        }
+    }
+
+    private void emitLeafTokensIn(Cursor.Leaf leaf) {
         var tokens = leaf.cst().tokens();
         // Position of the last `}` token in this leaf (or -1). Orphan line comments are emitted
         // ONLY when they sit BEFORE a `}` within the leaf — the bodyless `{ // note }` empty-body
@@ -376,7 +391,7 @@ final class FlowPrinter {
             case TERNARY -> printTernary(br);
             case ADDITIVE -> printAdditive(br);
             case LOG_AND -> printLogAnd(br);
-            case TYPE_ARGS -> printTypeArgs(br);
+            case TYPE_ARGS, WILDCARD_ONLY_TYPE_ARGS -> printTypeArgs(br);
             case TYPE_PARAMS -> printTypeParams(br);
             case METHOD_DECL -> printMethodDecl(br);
             default -> walkTokens(br);
@@ -1372,7 +1387,14 @@ final class FlowPrinter {
                 printAlignedTo(bodyCol);
             }
 
-            printNode(stmt);
+            // A block NESTED in this statement (the body of an `if`, `for`, `try`...) must align to the statement's
+            // own column, not to the enclosing aligned block's: left on the inherited column its body printed at the
+            // same indent as the `if` that owns it and its `}` fell BELOW that column (#974). Pushing the statement
+            // column as the lambda-align base makes `printBlock` indent from it, one level in.
+            try (var nested = alignment.pushLambdaAlign(bodyCol)) {
+                printNode(stmt);
+            }
+
             newline();
         }
 
@@ -2803,7 +2825,7 @@ final class FlowPrinter {
                     case LOG_AND -> printLogAnd(br);
                     case PARAMS, ORDINARY_PARAMS -> printParams(br);
                     case RECORD_COMPONENTS -> printRecordComponents(br);
-                    case TYPE_ARGS -> printTypeArgs(br);
+                    case TYPE_ARGS, WILDCARD_ONLY_TYPE_ARGS -> printTypeArgs(br);
                     case TYPE_PARAMS -> printTypeParams(br);
                     case SWITCH_BLOCK -> printSwitchBlock(br);
                     case UNARY -> printUnary(br);
@@ -3293,6 +3315,15 @@ final class FlowPrinter {
 
         if (text.equals(">") && lastChar == '-') {
             return false;
+        }
+
+        // Outside any TYPE_ARGS / TYPE_PARAMS node this '<' / '>' is a relational or shift operator and takes a space
+        // before it whatever precedes it (#974): `1 << 21`, `MAX < x`, `arr[0] << 2`. The checks below guess "generic"
+        // from the preceding token's text, which cannot tell `HashMap<K, V>` from `MAX < x` (both: uppercase word,
+        // then `<`) and read a stale `lastWord` after a numeric literal (`USER_TAG_LIMIT = 1<< 21`); the parser
+        // already knows which it is, and says so through `typeContextDepth`.
+        if (typeContextDepth == 0 && (Character.isLetterOrDigit(lastChar) || lastChar == ')' || lastChar == ']' || lastChar == '"' || lastChar == '\'')) {
+            return true;
         }
 
         if (Character.isLetterOrDigit(lastChar)) {
