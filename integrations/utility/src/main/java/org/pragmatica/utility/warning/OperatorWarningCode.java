@@ -128,6 +128,14 @@ public enum OperatorWarningCode {
                                   WarningLevel.INFO,
                                   INSTANCE_TERMINATION_UNCONFIRMED,
                                   true),
+    /// The third recovery of [#INSTANCE_TERMINATION_UNCONFIRMED], same subject (#2062): an OPERATOR cleared the mark after verifying at the provider
+    /// and terminating the instance by hand. Not a confirmation by the cluster - the event names the operator and the instance the operator
+    /// attests. Closes the warning another node may have raised.
+    INSTANCE_TERMINATION_CLEARED("instance-termination-cleared",
+                                 "deployment",
+                                 WarningLevel.INFO,
+                                 INSTANCE_TERMINATION_UNCONFIRMED,
+                                 true),
     /// A node that had a pending operator drain joined the cluster again (#2062): a new incarnation, so the pending drain was cancelled and its grace will
     /// not terminate it. The subject is the node. Re-issue the drain if it is still intended.
     NODE_DRAIN_CANCELLED_REJOINED("node-drain-cancelled-rejoined", "deployment", WarningLevel.WARNING),

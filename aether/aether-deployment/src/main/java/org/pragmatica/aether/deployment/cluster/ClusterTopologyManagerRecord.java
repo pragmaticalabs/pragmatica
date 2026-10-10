@@ -128,6 +128,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                     Set<NodeId> seenInstances,
                                     Set<NodeId> confirmedReaps,
                                     Set<NodeId> listedAbsent,
+                                    ConcurrentHashMap<NodeId, String> knownInstanceIds,
                                     Set<NodeId> drainGraceChains,
                                     ConcurrentHashMap<NodeId, Long> incarnations,
                                     ConcurrentHashMap<NodeId, Long> failedReaps,
@@ -137,6 +138,10 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     private static final Logger log = LoggerFactory.getLogger(ClusterTopologyManager.class);
     private static final int MINIMUM_CLUSTER_SIZE = 3;
     private static final int MAX_CONSECUTIVE_PROVISIONING_FAILURES = 3;
+
+    /// Names the operator command that closes a mark after the operator verified at the provider and terminated the instance by hand. Takes the node id.
+    private static final String CLEAR_HINT = "; after you have verified and terminated it, clear this warning cluster-wide with: aether cluster clear-unconfirmed {} --instance <provider-instance-id|unknown>";
+
     private static final String NO_RETIREMENT_CHECK = "no retirement check is wired";
     /// #1804: a refused reap is re-evaluated once per provisioning window, for an hour at the default window —
     /// longer than the slowest voter handoff observed (14 min) with margin, bounded so a node that never becomes
@@ -271,6 +276,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                                 ConcurrentHashMap.newKeySet(),
                                                 ConcurrentHashMap.newKeySet(),
                                                 ConcurrentHashMap.newKeySet(),
+                                                new ConcurrentHashMap<>(),
                                                 ConcurrentHashMap.newKeySet(),
                                                 new ConcurrentHashMap<>(),
                                                 new ConcurrentHashMap<>(),
@@ -1828,6 +1834,8 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
 
                                             if (!listed.isEmpty()) {
                                             seenInstances.add(node);
+                                            knownInstanceIds.put(node,
+                                                                 instanceIds(listed));
                                         } else if (!seen) {
                                             listedAbsent.add(node);
                                         }
@@ -2209,10 +2217,10 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     /// warning, and says so. One that only ever met FAILED listings proves nothing about the instance: it is re-checked, and says that listing is failing.
     private void raiseUnconfirmedEvent(NodeId nodeId, String cause, boolean seen, boolean absent) {
         var template = absent
-                       ? "The cluster cannot confirm the termination of the instance of retired node {} ({}): a listing succeeded and has never shown an instance of it, and the cluster will not re-check; it may still be running at the provider and billing: verify at the provider and terminate it by hand"
+                       ? "The cluster cannot confirm the termination of the instance of retired node {} ({}): a listing succeeded and has never shown an instance of it, and the cluster will not re-check; it may still be running at the provider and billing: verify at the provider and terminate it by hand" + CLEAR_HINT
                        : seen
-                         ? "The termination of the instance of retired node {} is not confirmed ({}); it may still be running at the provider and billing: terminate it, then the cluster confirms it by listing"
-                         : "The termination of the instance of retired node {} is not confirmed ({}): no successful listing has shown the instance, so it is not known whether it exists (a failing listing proves nothing); it may still be running at the provider and billing; the cluster keeps re-checking and confirms it once a listing shows the instance and it is terminated, and cannot confirm an instance you terminate yourself";
+                         ? "The termination of the instance of retired node {} is not confirmed ({}); it may still be running at the provider and billing: terminate it, then the cluster confirms it by listing; if you terminated it yourself instead" + CLEAR_HINT
+                         : "The termination of the instance of retired node {} is not confirmed ({}): no successful listing has shown the instance, so it is not known whether it exists (a failing listing proves nothing); it may still be running at the provider and billing; the cluster keeps re-checking and confirms it once a listing shows the instance and it is terminated, and cannot confirm an instance you terminate yourself" + CLEAR_HINT;
 
         org.pragmatica.utility.warning.OperatorWarnings.raise(log,
                                                               warningSink.get(),
@@ -2220,7 +2228,78 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                                               nodeId.id(),
                                                               template,
                                                               nodeId.id(),
+                                                              cause,
+                                                              nodeId.id());
+    }
+
+    @Override
+    public Promise<Unit> clearUnconfirmed(NodeId nodeId, String operator, String attestedInstance) {
+        if (!active.get()) {
+            return new UnconfirmedClearRefusal.NotActive().promise();
+        }
+
+        var persisted = Option.option(persistedMarks.get().get().get(nodeId));
+
+        if (persisted.isEmpty() && !unconfirmedReaps.contains(nodeId)) {
+            return new UnconfirmedClearRefusal.NotMarked(nodeId).promise();
+        }
+
+        if (liveness.demonstrablyLive(nodeId)) {
+            return new UnconfirmedClearRefusal.NodeLive(nodeId).promise();
+        }
+
+        var generation = incarnation(nodeId);
+        var cause = persisted.map(AetherValue.UnconfirmedTerminationValue::cause).or("mark not persisted");
+        var known = Option.option(knownInstanceIds.get(nodeId)).or("never listed");
+
+        return deleteExactMark(nodeId, persisted).flatMap(_ -> afterClear(nodeId,
+                                                                          generation,
+                                                                          operator,
+                                                                          attestedInstance,
+                                                                          known,
+                                                                          cause));
+    }
+
+    /// The delete carries the exact value read, so a mark replaced since (a later incarnation's) fails the commit and survives.
+    private Promise<Unit> deleteExactMark(NodeId nodeId, Option<AetherValue.UnconfirmedTerminationValue> persisted) {
+        return persisted.fold(Promise::unitPromise,
+                              mark -> hierarchyWriter.get()
+                                                     .commit(List.of(new KVCommand.Mutation<AetherKey, AetherValue>(new AetherKey.UnconfirmedTerminationKey(nodeId),
+                                                                                                                    Option.some((AetherValue) mark),
+                                                                                                                    Option.none())),
+                                                             List.of())
+                                                     .mapError(_ -> new UnconfirmedClearRefusal.Changed(nodeId)));
+    }
+
+    private Promise<Unit> afterClear(NodeId nodeId,
+                                     long generation,
+                                     String operator,
+                                     String attestedInstance,
+                                     String known,
+                                     String cause) {
+        if (sameIncarnation(nodeId, generation)) {
+            unconfirmedReaps.remove(nodeId);
+        }
+
+        org.pragmatica.utility.warning.OperatorWarnings.raise(log,
+                                                              warningSink.get(),
+                                                              org.pragmatica.utility.warning.OperatorWarningCode.INSTANCE_TERMINATION_CLEARED,
+                                                              nodeId.id(),
+                                                              "Operator {} cleared the unconfirmed termination of retired node {}: the operator attests instance {} was verified and terminated by hand (the cluster knew instance: {}; the mark said: {})",
+                                                              operator,
+                                                              nodeId.id(),
+                                                              attestedInstance,
+                                                              known,
                                                               cause);
+
+        return Promise.unitPromise();
+    }
+
+    private static String instanceIds(List<org.pragmatica.aether.environment.InstanceInfo> listed) {
+        return listed.stream()
+                     .map(info -> info.id()
+                                      .value())
+                     .collect(java.util.stream.Collectors.joining(","));
     }
 
     /// Writes (or, with an empty value, removes) the replicated mark for `nodeId`. A failed write is logged: the in-memory mark and the event stand,
@@ -2424,6 +2503,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         lifecycleManager.readmitExternal(nodeId).onFailure(cause -> rejoinNotReconciled(nodeId, cause));
         confirmedReaps.remove(nodeId);
         seenInstances.remove(nodeId);
+        knownInstanceIds.remove(nodeId);
         listedAbsent.remove(nodeId);
         failedReaps.remove(nodeId);
         var marked = unconfirmedReaps.remove(nodeId);

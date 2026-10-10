@@ -201,6 +201,47 @@ public interface ClusterTopologyManager extends TopologyManager {
         return org.pragmatica.lang.Unit.unit();
     }
 
+    /// #2062 (owner ruling 28992d91b): an OPERATOR clears ONE mark, by node id, after verifying at the provider and terminating the instance by hand.
+    /// `attestedInstance` is the provider instance id the operator terminated (or `unknown`). Refused, with nothing cleared, when there is no mark,
+    /// when the node shows life (a live node is never cleared), or when the mark changed or this manager is not the active leader. A clear writes
+    /// the exact mark it read, so a mark of a later incarnation survives it, and closes the open warning cluster-wide. Default: not the active leader.
+    default Promise<Unit> clearUnconfirmed(NodeId node, String operator, String attestedInstance) {
+        return new UnconfirmedClearRefusal.NotActive().promise();
+    }
+
+    /// Why [#clearUnconfirmed] cleared nothing.
+    sealed interface UnconfirmedClearRefusal extends org.pragmatica.lang.Cause {
+        record NotActive() implements UnconfirmedClearRefusal {
+            @Override
+            public String message() {
+                return "Only the active leader clears an unconfirmed-termination mark";
+            }
+        }
+
+        record NotMarked(NodeId node) implements UnconfirmedClearRefusal {
+            @Override
+            public String message() {
+                return "Node " + node.id() + " has no unconfirmed-termination mark";
+            }
+        }
+
+        record NodeLive(NodeId node) implements UnconfirmedClearRefusal {
+            @Override
+            public String message() {
+                return "Node " + node.id()
+                     + " shows life in the membership; a live node is never cleared, and its instance must not be terminated";
+            }
+        }
+
+        record Changed(NodeId node) implements UnconfirmedClearRefusal {
+            @Override
+            public String message() {
+                return "The unconfirmed-termination mark of " + node.id()
+                     + " changed or was not committed; nothing was cleared, read the mark again";
+            }
+        }
+    }
+
     /// #2062: where the persisted "termination not confirmed" marks are read from (the replicated store), so that a new leader inherits every
     /// open mark. Default: none.
     default org.pragmatica.lang.Unit setUnconfirmedMarks(java.util.function.Supplier<java.util.Map<NodeId, org.pragmatica.aether.slice.kvstore.AetherValue.UnconfirmedTerminationValue>> reader) {

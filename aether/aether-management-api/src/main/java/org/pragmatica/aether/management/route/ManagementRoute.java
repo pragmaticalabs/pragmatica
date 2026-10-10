@@ -156,6 +156,8 @@ public enum ManagementRoute {
     UPGRADE_PAUSE(POST, "/upgrade/pause", List.of(), LEADER),
     UPGRADE_RESUME(POST, "/upgrade/resume", List.of(), LEADER),
     UPGRADE_ABORT(POST, "/upgrade/abort", List.of(), LEADER),
+    // #2062: an operator clears ONE unconfirmed-termination mark after terminating the instance by hand; the leader owns the marks.
+    NODE_UNCONFIRMED_CLEAR(POST, "/nodes/unconfirmed/clear", List.of("id"), LEADER),
     NODE_PROMOTE(POST, "/nodes/promote", List.of("id"), LEADER),
     NODE_INFLIGHT(GET, "/nodes/inflight", List.of(), LOCAL),
     NODE_INFLIGHT_GET(GET, "/nodes/inflight", List.of("id"), RouteTarget.nodeIdParam(0)),
