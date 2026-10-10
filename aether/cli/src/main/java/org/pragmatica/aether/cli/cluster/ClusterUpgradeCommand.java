@@ -6,10 +6,10 @@ package org.pragmatica.aether.cli.cluster;
 
 import java.util.concurrent.Callable;
 import java.util.function.Supplier;
-import java.util.regex.Pattern;
 
 import org.pragmatica.aether.cli.ExitCode;
 import org.pragmatica.aether.cli.OutputFormatter;
+import org.pragmatica.aether.config.cluster.ClusterUpgradeToml;
 import org.pragmatica.json.JsonMapper;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
@@ -30,7 +30,6 @@ import static org.pragmatica.aether.management.route.ManagementRoute.UPGRADE_STA
 @Command(name = "upgrade", description = "Upgrade cluster to a target version: every node is replaced, one at a time, by a node running it (see also upgrade-status, upgrade-pause, upgrade-resume, upgrade-abort)")
 @SuppressWarnings({"JBCT-RET-01", "JBCT-PAT-01", "JBCT-SEQ-01"})
 class ClusterUpgradeCommand implements Callable<Integer> {
-    private static final Pattern VERSION_PATTERN = Pattern.compile("^\\d+\\.\\d+\\.\\d+$");
     private static final JsonMapper MAPPER = JsonMapper.defaultJsonMapper();
 
     @Option(names = "--version", required = true, description = "Target version (e.g., 0.26.0)")
@@ -58,11 +57,16 @@ class ClusterUpgradeCommand implements Callable<Integer> {
     }
 
     private Result<String> validateVersion() {
-        if (!VERSION_PATTERN.matcher(targetVersion).matches()) {
-            return new UpgradeError.InvalidVersion(targetVersion).result();
+        return validate(targetVersion);
+    }
+
+    /// Package-private so a test pins which versions the command accepts (#1543 F2: SemVer with a pre-release, as our own releases are).
+    static Result<String> validate(String version) {
+        if (!ClusterUpgradeToml.isUpgradeVersion(version)) {
+            return new UpgradeError.InvalidVersion(version).result();
         }
 
-        return Result.success(targetVersion);
+        return Result.success(version);
     }
 
     private Result<JsonNode> fetchCurrentConfig(String version) {
@@ -197,7 +201,8 @@ class ClusterUpgradeCommand implements Callable<Integer> {
         record InvalidVersion(String version) implements UpgradeError {
             @Override
             public String message() {
-                return "Invalid version format: " + version + " (expected X.Y.Z)";
+                return "Invalid version format: " + version
+                     + " (expected SemVer MAJOR.MINOR.PATCH with an optional pre-release, e.g. 1.0.0 or 1.0.0-rc5)";
             }
         }
 

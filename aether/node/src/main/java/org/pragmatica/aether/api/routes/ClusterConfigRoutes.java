@@ -843,6 +843,10 @@ public final class ClusterConfigRoutes implements RouteSource {
     // Package-private (matching the #335/#835 handleScale precedent) so
     // ClusterConfigRoutesNoConfigTest can drive the real route handler directly.
     Promise<UpgradeResponse> handleUpgrade(UpgradeRequest request) {
+        if (!ClusterUpgradeToml.isUpgradeVersion(request.targetVersion())) {
+            return new ClusterConfigError.InvalidUpgradeVersion(request.targetVersion()).promise();
+        }
+
         return storedClusterConfig().fold(() -> noConfigForUpgrade(request), stored -> initiateUpgrade(stored, request));
     }
 

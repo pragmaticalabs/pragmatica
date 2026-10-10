@@ -23,11 +23,22 @@ import static org.pragmatica.lang.Result.success;
 public sealed interface ClusterUpgradeToml {
     record unused() implements ClusterUpgradeToml {}
 
+    /// SemVer 2.0 `MAJOR.MINOR.PATCH` with an optional pre-release (`1.0.0`, `1.0.0-rc5`, `1.0.0-alpha.1`): the shape of our own release
+    /// versions. Build metadata (`+...`) is deliberately not accepted: the version becomes an image tag, and `+` is not a legal tag
+    /// character. Numeric parts and numeric pre-release identifiers carry no leading zeros, as SemVer requires.
+    Pattern UPGRADE_VERSION = Pattern.compile("^(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)"
+                                             + "(-(0|[1-9]\\d*|\\d*[A-Za-z-][0-9A-Za-z-]*)(\\.(0|[1-9]\\d*|\\d*[A-Za-z-][0-9A-Za-z-]*))*)?$");
+
     Pattern SAFE_VERSION = Pattern.compile("^[A-Za-z0-9][A-Za-z0-9._+-]*$");
     Pattern SECTION_HEADER = Pattern.compile("^\\s*\\[([^\\[\\]]*)\\]\\s*(#.*)?$");
     Pattern ANY_TABLE_HEADER = Pattern.compile("^\\s*\\[.*$");
     Pattern VERSION_LINE = Pattern.compile("^(\\s*version\\s*=\\s*)\"[^\"]*\"(.*)$");
     String CLUSTER_SECTION = "cluster";
+
+    /// Whether `version` is a version an upgrade may target: SemVer 2.0 with an optional pre-release, no build metadata.
+    static boolean isUpgradeVersion(String version) {
+        return version != null && UPGRADE_VERSION.matcher(version).matches();
+    }
 
     /// Rewrites the `version` line of the `[cluster]` table. The result is re-parsed and must read back
     /// exactly `targetVersion`: a TOML whose version is not a plain `version = "…"` line in `[cluster]`

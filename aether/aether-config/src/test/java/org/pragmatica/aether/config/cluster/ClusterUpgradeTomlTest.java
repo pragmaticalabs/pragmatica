@@ -216,6 +216,31 @@ class ClusterUpgradeTomlTest {
         assertThat(NodeUserDataRenderer.pinnedImageFor(config, config.sources().get("dock"), NodeRole.CORE).isEmpty()).isTrue();
     }
 
+    @Test
+    void isUpgradeVersion_acceptsSemVerWithAnOptionalPreRelease_asOurOwnReleasesAre() {
+        for (var version : List.of("1.0.0", "1.0.0-rc4", "1.0.0-rc5", "10.20.30", "1.2.3-alpha.1", "1.0.0-0", "1.0.0-x-y.7")) {
+            assertThat(ClusterUpgradeToml.isUpgradeVersion(version)).as(version).isTrue();
+        }
+    }
+
+    @Test
+    void isUpgradeVersion_refusesAnythingElse() {
+        for (var version : List.of("", " 1.0.0", "1.0", "v1.0.0", "1.0.0-", "1.0.0-01", "01.0.0", "1.0.0+build", "1.0.0-rc5+b", "abc", "1.0.0.0", "1.0.0-rc..5", "../1.0.0", "1.0.0 ")) {
+            assertThat(ClusterUpgradeToml.isUpgradeVersion(version)).as("'" + version + "'").isFalse();
+        }
+
+        assertThat(ClusterUpgradeToml.isUpgradeVersion(null)).isFalse();
+    }
+
+    @Test
+    void withVersion_rc4ToRc5_rewritesTheClusterVersion_andRendersTheRc5Tag() {
+        var original = toml("[runtime.node]\ntype = \"container\"\nimage = \"registry/x:{version}\"", "runtime = \"node\"").replace("version = \"1.0.0\" # operator note", "version = \"1.0.0-rc4\"");
+        var rewritten = ClusterUpgradeToml.withVersion(original, "1.0.0-rc5").unwrap();
+
+        assertThat(ClusterBootstrapConfigParser.parse(rewritten).unwrap().cluster().version()).isEqualTo("1.0.0-rc5");
+        assertThat(render(rewritten)).contains("registry/x:1.0.0-rc5").doesNotContain("1.0.0-rc4");
+    }
+
     private static List<String> unversionedDocker(String toml) {
         return ClusterUpgradeToml.dockerSourcesWithoutVersionedImage(ClusterBootstrapConfigParser.parse(toml).unwrap());
     }

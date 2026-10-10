@@ -152,6 +152,37 @@ class ClusterConfigRoutesUpgradeTomlTest {
         assertThat(render(committed(store))).contains("registry/aether-node:1.1.0");
     }
 
+    /// #1543 F2: our own release versions carry a pre-release part; the route, the TOML rewrite and the render all take it.
+    @Test
+    void upgrade_rc4ToRc5_succeeds_andTheReplacementRendersTheRc5Image() {
+        var rc4 = UNPINNED.replace("name = \"prod\"\nversion = \"1.0.0\"", "name = \"prod\"\nversion = \"1.0.0-rc4\"");
+        var store = storeWith(committedAt(rc4, "1.0.0-rc4", 1));
+
+        var result = upgrade(store, "1.0.0-rc5", 1);
+
+        assertThat(result.isSuccess()).as(String.valueOf(result)).isTrue();
+        assertThat(committed(store).version()).isEqualTo("1.0.0-rc5");
+        assertThat(tomlVersion(committed(store))).isEqualTo("1.0.0-rc5");
+        assertThat(render(committed(store))).contains("aether-node:1.0.0-rc5").doesNotContain("1.0.0-rc4");
+    }
+
+    @Test
+    void upgrade_withAnInvalidVersion_isRefusedWith400_beforeAnyReadOrWrite() {
+        var store = storeWith(committed(UNPINNED, 1));
+
+        for (var version : java.util.List.of("", "1.0", "v1.1.0", "1.1.0+build", "../1.1.0", "abc")) {
+            var result = upgrade(store, version, 1);
+
+            assertThat(result.isFailure()).as("'" + version + "'").isTrue();
+            result.onFailure(cause -> {
+                assertThat(cause).isInstanceOf(ClusterConfigError.InvalidUpgradeVersion.class);
+                assertThat(((HttpStatusAware) cause).httpStatus()).isEqualTo(HttpStatus.BAD_REQUEST);
+            });
+        }
+
+        assertUnchanged(store, UNPINNED);
+    }
+
     @Test
     void upgrade_whenTheJarPinCarriesThePlaceholder_succeeds_andTheReplacementRendersTheTargetJar() {
         var toml = JAR_PINNED.replace("aether-node-1.0.0.jar", "v{version}/aether-node.jar");
@@ -298,9 +329,13 @@ class ClusterConfigRoutesUpgradeTomlTest {
     }
 
     private static ClusterConfigValue committed(String toml, long configVersion) {
+        return committedAt(toml, "1.0.0", configVersion);
+    }
+
+    private static ClusterConfigValue committedAt(String toml, String version, long configVersion) {
         return ClusterConfigValue.clusterConfigValue(toml,
                                                      "prod",
-                                                     "1.0.0",
+                                                     version,
                                                      List.of(new TopologyEntry("hetzner", "core", 3), new TopologyEntry("hetzner", "worker", 2)),
                                                      3,
                                                      9,

@@ -301,6 +301,21 @@ public sealed interface ClusterConfigError extends Cause, HttpStatusAware {
         }
     }
 
+    /// #1543 F2: an upgrade target must be a SemVer 2.0 version with an optional pre-release (`1.0.0`, `1.0.0-rc5`); anything else
+    /// is refused before any read or write. Our own release versions carry a pre-release part, so a strict `X.Y.Z` rule refused them.
+    record InvalidUpgradeVersion(String version) implements ClusterConfigError {
+        @Override
+        public String message() {
+            return "Invalid upgrade version '" + version
+                 + "': expected SemVer MAJOR.MINOR.PATCH with an optional pre-release, e.g. 1.0.0 or 1.0.0-rc5 (no build metadata: the version becomes an image tag)";
+        }
+
+        @Override
+        public HttpStatus httpStatus() {
+            return HttpStatus.BAD_REQUEST;
+        }
+    }
+
     /// #837: `POST /api/cluster/upgrade` against a cluster with no stored config (same
     /// post-volume-wipe state #335/#835 fixed for scale) used to route through
     /// `ClusterConfigRoutes.lookupClusterConfig()`, which folded absence into the bare,

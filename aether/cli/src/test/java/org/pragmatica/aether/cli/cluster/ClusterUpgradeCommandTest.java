@@ -17,6 +17,40 @@ class ClusterUpgradeCommandTest {
     private static final JsonMapper MAPPER = JsonMapper.defaultJsonMapper();
 
     @Test
+    void validate_acceptsOurOwnReleaseVersions_rc4ToRc5() {
+        for (var version : java.util.List.of("1.0.0", "1.0.0-rc4", "1.0.0-rc5", "1.2.3-alpha.1")) {
+            assertThat(ClusterUpgradeCommand.validate(version).isSuccess()).as(version).isTrue();
+        }
+    }
+
+    /// The command itself, not only `validate`: garbage is refused before any request is made (no cluster is reachable here).
+    @Test
+    void call_garbageVersion_isRefusedBeforeAnyRequest() {
+        var err = new java.io.ByteArrayOutputStream();
+        var original = System.err;
+
+        System.setErr(new java.io.PrintStream(err));
+        try {
+            var exit = new picocli.CommandLine(new ClusterUpgradeCommand()).execute("--version", "not-a-version");
+
+            assertThat(exit).isNotZero();
+            assertThat(err.toString()).contains("Invalid version format").contains("SemVer");
+        } finally {
+            System.setErr(original);
+        }
+    }
+
+    @Test
+    void validate_refusesGarbage_namingTheExpectedShape() {
+        for (var version : java.util.List.of("", "1.0", "v1.0.0", "1.0.0-", "1.0.0+build", "abc", "../1.0.0")) {
+            var result = ClusterUpgradeCommand.validate(version);
+
+            assertThat(result.isFailure()).as("'" + version + "'").isTrue();
+            result.onFailure(cause -> assertThat(cause.message()).contains("SemVer").contains(version));
+        }
+    }
+
+    @Test
     void buildUpgradeJson_emitsExactlyTheFieldNamesUpgradeRequestReads() {
         var json = ClusterUpgradeCommand.buildUpgradeJson("1.1.0", 42);
 
