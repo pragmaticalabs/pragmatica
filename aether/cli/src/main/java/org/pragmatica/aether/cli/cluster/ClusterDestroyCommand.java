@@ -278,7 +278,7 @@ class ClusterDestroyCommand implements Callable<Integer> {
     }
 
     Result<Integer> destroyEnumerated(ClusterRegistry registry, ClusterName clusterName, List<String> nodeIds) {
-        var outcome = drainAndShutdown(nodeIds);
+        var outcome = drainAndShutdown(nodeIds, isDockerCluster(recordedState(clusterName)));
         var drainResults = outcome.drains();
         var shutdownResults = outcome.shutdowns();
 
@@ -295,6 +295,15 @@ class ClusterDestroyCommand implements Callable<Integer> {
                                    drainResults,
                                    shutdownResults,
                                    forceUndrained);
+    }
+
+    /// `docker port` runs only for a cluster the bootstrap ledger records as docker containers: a loopback endpoint alone proves nothing (a
+    /// Forge or local cluster is on loopback too), and a hung docker daemon would add its timeout to every node of a cluster that has no docker.
+    static boolean isDockerCluster(org.pragmatica.lang.Option<BootstrapState> state) {
+        return state.map(value -> value.createdResources()
+                                       .stream()
+                                       .anyMatch(resource -> "docker".equals(resource.provider())))
+                    .or(false);
     }
 
     private static boolean hasFailures(List<NodeResult> drainResults, List<NodeResult> shutdownResults) {
@@ -682,17 +691,18 @@ class ClusterDestroyCommand implements Callable<Integer> {
     /// An address carrying its OWN management port (`127.0.0.1:38913`, a docker node's published port, #2089) is used as is: grafting the
     /// recorded endpoint's port on top would build `host:port:port`, and every sibling fallback would dial nothing.
     private static String endpointForHost(URI uri, String address) {
-        return NodeAddress.fromPersisted("", address)
-                          .managementPort()
-                          .isPresent()
-               ? uri.getScheme() + "://" + address
+        var parsed = NodeAddress.fromPersisted("", address);
+
+        return parsed.managementPort()
+                     .isPresent()
+               ? uri.getScheme() + "://" + parsed.managementHostPort(0)
                : bareHostEndpoint(uri, address);
     }
 
     private static String bareHostEndpoint(URI uri, String address) {
         return uri.getPort() < 0
-               ? uri.getScheme() + "://" + address
-               : uri.getScheme() + "://" + address + ":" + uri.getPort();
+               ? uri.getScheme() + "://" + NodeAddress.urlHost(address)
+               : uri.getScheme() + "://" + NodeAddress.urlHost(address) + ":" + uri.getPort();
     }
 
     /// #995 — this is the call that produced the observed silence: one management request, up to
@@ -869,7 +879,11 @@ class ClusterDestroyCommand implements Callable<Integer> {
     /// The drain and shutdown phases as one unit: the node serving these requests is drained LAST, and a node whose
     /// departure the drain wait observed is not sent a shutdown through an endpoint that may be that halted node.
     DrainShutdownOutcome drainAndShutdown(List<String> nodeIds) {
-        var servingNode = servingNodeId(nodeIds);
+        return drainAndShutdown(nodeIds, false);
+    }
+
+    DrainShutdownOutcome drainAndShutdown(List<String> nodeIds, boolean dockerCluster) {
+        var servingNode = servingNodeId(nodeIds, dockerCluster);
 
         warnServingNodeUnidentified(nodeIds, servingNode);
         var ordered = servingNodeLast(nodeIds, servingNode);
@@ -906,7 +920,7 @@ class ClusterDestroyCommand implements Callable<Integer> {
     /// process (#1868, v1872). Its host is matched against each node's cluster-transport host
     /// (`NODE_ENDPOINT_GET`); a failed lookup or a host that matches nothing yields `none()`, and the order is then
     /// left as enumerated — best effort, stated, never a guess.
-    private static org.pragmatica.lang.Option<String> servingNodeId(List<String> nodeIds) {
+    private static org.pragmatica.lang.Option<String> servingNodeId(List<String> nodeIds, boolean dockerCluster) {
         var endpointHost = ClusterHttpClient.resolveEndpoint()
                                             .option()
                                             .flatMap(ClusterDestroyCommand::parseEndpoint)
@@ -918,7 +932,9 @@ class ClusterDestroyCommand implements Callable<Integer> {
                                                    .findFirst()
                                                    .map(org.pragmatica.lang.Option::some)
                                                    .orElse(org.pragmatica.lang.Option.none()))
-                           .orElse(() -> servingNodeByPublishedPort(nodeIds));
+                           .orElse(() -> dockerCluster
+                                         ? servingNodeByPublishedPort(nodeIds)
+                                         : org.pragmatica.lang.Option.none());
     }
 
     /// A docker cluster is reached through its nodes' PUBLISHED host ports (`127.0.0.1:<mapped>`, #2089), while a node's cluster-transport

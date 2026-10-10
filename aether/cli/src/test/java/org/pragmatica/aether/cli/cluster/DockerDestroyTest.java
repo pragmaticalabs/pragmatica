@@ -16,6 +16,7 @@ import java.util.function.Function;
 
 import org.pragmatica.aether.cli.ExitCode;
 import org.pragmatica.aether.environment.ClusterName;
+import org.pragmatica.aether.environment.NodeAddress;
 import org.pragmatica.http.HttpOperations;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
@@ -108,7 +109,7 @@ class DockerDestroyTest {
         ClusterHttpClient.HTTP_OPS_REF.set(http);
         ClusterHttpClient.setEndpointOverride("http://127.0.0.1:38911");
 
-        var outcome = new ClusterDestroyCommand().drainAndShutdown(List.of(A, B, C));
+        var outcome = new ClusterDestroyCommand().drainAndShutdown(List.of(A, B, C), true);
 
         assertThat(http.drainOrder()).as("a serves the requests (its port is the endpoint's), so it is drained last").containsExactly(B, C, A);
         assertThat(outcome.drains()).allMatch(ClusterDestroyCommand.NodeResult::success);
@@ -123,7 +124,7 @@ class DockerDestroyTest {
         ClusterHttpClient.HTTP_OPS_REF.set(http);
         ClusterHttpClient.setEndpointOverride("http://127.0.0.1:49999");
 
-        new ClusterDestroyCommand().drainAndShutdown(List.of(A, B));
+        new ClusterDestroyCommand().drainAndShutdown(List.of(A, B), true);
 
         assertThat(http.drainOrder()).as("enumerated order, never a guess").containsExactly(A, B);
         assertThat(stderr()).contains("could not be identified");
@@ -195,5 +196,72 @@ class DockerDestroyTest {
         var siblings = ClusterDestroyCommand.siblingEndpoints(Result.success("http://127.0.0.1:38911"), Option.some(state));
 
         assertThat(siblings).containsExactly("http://127.0.0.1:38913", "http://127.0.0.1:38915");
+    }
+
+    /// A loopback endpoint alone proves nothing: a Forge or local cluster is on loopback and is not docker, and a hung daemon would add its
+    /// timeout per node. `docker port` runs only for a cluster the ledger records as docker.
+    @Test
+    void destroy_loopbackNonDockerCluster_invokesNoDockerCommand() {
+        DockerHostPorts.override = container -> {
+            throw new AssertionError("a non-docker cluster must not run docker port: " + container);
+        };
+        var http = new ScriptedDrainHttp(drainAccepted(A), notFound(A), notFound(B))
+            .withTransportAddress(A, "localnode-a:6000")
+            .withTransportAddress(B, "localnode-b:6000");
+        ClusterHttpClient.HTTP_OPS_REF.set(http);
+        ClusterHttpClient.setEndpointOverride("http://127.0.0.1:38911");
+
+        new ClusterDestroyCommand().drainAndShutdown(List.of(A, B), false);
+
+        assertThat(http.drainOrder()).containsExactly(A, B);
+    }
+
+    @Test
+    void isDockerCluster_isTrueOnlyWhenTheLedgerRecordsDockerContainers() {
+        var empty = BootstrapState.initialState(CLUSTER, "h", "now");
+        var docker = empty.withResource(CreatedResource.DockerContainer.dockerContainer("abc", "primary"));
+
+        assertThat(ClusterDestroyCommand.isDockerCluster(Option.some(docker))).isTrue();
+        assertThat(ClusterDestroyCommand.isDockerCluster(Option.some(empty))).isFalse();
+        assertThat(ClusterDestroyCommand.isDockerCluster(Option.none())).isFalse();
+    }
+
+    @Test
+    void destroyEnumerated_readsTheDockerNatureFromTheLedger() {
+        var docker = BootstrapState.initialState(CLUSTER, "h", "now")
+                                   .withResource(CreatedResource.DockerContainer.dockerContainer(A, "primary"));
+        ClusterDestroyCommand.stateLoader = name -> Result.success(Option.some(docker));
+        ClusterHttpClient.HTTP_OPS_REF.set(new ScriptedDrainHttp(drainAccepted(A), notFound(A), notFound(B), connectionRefused())
+                                               .withTransportAddress(A, A + ":6000")
+                                               .withTransportAddress(B, B + ":6000"));
+        ClusterHttpClient.setEndpointOverride("http://127.0.0.1:38911");
+
+        new ClusterDestroyCommand().destroyEnumerated(registry(), CLUSTER, List.of(A, B));
+
+        assertThat(((ScriptedDrainHttp) ClusterHttpClient.HTTP_OPS_REF.get()).drainOrder()).as("a is the serving node: drained last").containsExactly(B, A);
+    }
+
+    /// The persisted form is produced by one formatter (`NodeAddress#persisted`, which brackets an IPv6 host), so it is parsed back by one rule.
+    @Test
+    void nodeAddress_persistedForm_roundTripsIpv6_andIpv4_andBareHosts() {
+        var v6 = NodeAddress.nodeAddress("n", "::1", Option.none(), Option.some(38915));
+
+        assertThat(v6.persisted()).isEqualTo("[::1]:38915");
+        assertThat(NodeAddress.fromPersisted("n", "[::1]:38915")).isEqualTo(v6);
+        assertThat(NodeAddress.fromPersisted("n", "::1").managementPort().isPresent()).as("bare v6 carries no port").isFalse();
+        assertThat(NodeAddress.fromPersisted("n", "::1").publicIp()).isEqualTo("::1");
+        assertThat(NodeAddress.fromPersisted("n", "2001:db8::1").managementPort().isPresent()).as("trailing group is not a port").isFalse();
+        assertThat(NodeAddress.fromPersisted("n", "127.0.0.1:38911").managementPort().or(0)).isEqualTo(38911);
+        assertThat(v6.managementHostPort(8080)).isEqualTo("[::1]:38915");
+    }
+
+    @Test
+    void siblingEndpoints_ipv6Addresses_areBracketed() {
+        var state = BootstrapState.initialState(CLUSTER, "h", "now")
+                                  .withCollectedAddresses(List.of("[::1]:38915", "2001:db8::1"));
+
+        var siblings = ClusterDestroyCommand.siblingEndpoints(Result.success("http://127.0.0.1:38911"), Option.some(state));
+
+        assertThat(siblings).containsExactly("http://[::1]:38915", "http://[2001:db8::1]:38911");
     }
 }
