@@ -27,8 +27,26 @@ public interface HttpError extends Cause, HttpStatusAware {
         return status();
     }
 
+    /// The text safe to put in a client-facing body: this error's status and its top cause's message,
+    /// never the origin chain below it. [#message()] walks that chain and is for server-side logs only.
+    default String clientMessage() {
+        return message();
+    }
+
+    /// [#clientMessage()] for an [HttpError], the plain message of any other cause.
+    static String clientMessage(Cause cause) {
+        return cause instanceof HttpError error
+               ? error.clientMessage()
+               : cause.message();
+    }
+
     static HttpError httpError(HttpStatus status, Cause source) {
         record httpError(HttpStatus status, Cause origin) implements HttpError {
+            @Override
+            public String clientMessage() {
+                return status().message() + ": " + HttpError.clientMessage(origin());
+            }
+
             @Override
             public String message() {
                 var builder = new StringBuilder().append(status().message()).append(": ").append(origin().message());

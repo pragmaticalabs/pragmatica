@@ -325,20 +325,42 @@ public interface SliceRouter {
             private HttpResponseData errorToResponse(Cause cause, HttpRequestContext request) {
                 var httpError = resolveHttpError(cause);
 
-                log.warn("[requestId={}] SliceRouter error: {} {} -> {} {}",
+                log.warn("[requestId={}] SliceRouter error: {} {} -> {} {} (cause chain: {})",
                          request.requestId(),
                          request.method(),
                          request.path(),
                          httpError.status().code(),
-                         cause.message());
+                         cause.message(),
+                         causeChain(cause));
                 var problemDetail = ProblemDetail.fromHttpError(httpError, request.path(), request.requestId());
 
                 return jsonMapper.writeAsBytes(problemDetail)
                                  .fold(_ -> plainErrorResponse(httpError.status(),
-                                                               httpError.message()),
+                                                               httpError.status().message()),
                                        body -> HttpResponseData.httpResponseData(httpError.status().code(),
                                                                                  JSON_HEADERS,
                                                                                  body));
+            }
+
+            /// The full origin chain, for the server log only (#2101): a failure wrapper keeps its origin, and
+            /// that chain can carry exception messages a client must never see. An [HttpError] link
+            /// contributes its status alone -- its origin is the next link, so it is not repeated.
+            private static String causeChain(Cause cause) {
+                var chain = new StringBuilder();
+
+                cause.iterate(link -> chain.append(chain.isEmpty()
+                                                   ? ""
+                                                   : " <- ")
+                                           .append(chainLinkText(link)));
+
+                return chain.toString();
+            }
+
+            private static String chainLinkText(Cause link) {
+                return link instanceof HttpError error
+                       ? error.status()
+                              .message()
+                       : link.message();
             }
 
             /// Resolve the HTTP error for a failure. A boundary parse failure — e.g. a value-object
