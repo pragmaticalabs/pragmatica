@@ -505,12 +505,14 @@ public final class OwnerActivation {
     /// partition manager shares: `admit`, which starts an activation, is called outside every `StreamPartitionManager` monitor.
     /// An alarm that blocked or took a lock would break this, so [BlockAlarm] says it must not.
     ///
-    /// **Which monitors are observable.** An activation of one partition is single-flight, so every raise happens on that activation's
-    /// thread; the only other writers are the external clears ([#clearBlock], [#onQuorumStateChange]), whose resolves are atomic
-    /// (`remove`), so one block is resolved once. The monitors in `report`, `trackUnreachable`, the lineage slot and the two external
-    /// clears are what orders a raise against such a clear. The three resolves issued on the activation thread itself
-    /// (`noLongerOversized`, `clearUnreachable`, `proceedWithout`) take the monitor so that every resolve is ordered the same way,
-    /// but they cannot race a raise, so no test can tell them from an unguarded resolve.
+    /// **Which pairs race in production, and which sites are ordered defensively only.** An activation of one partition is single-flight, so
+    /// every raise happens on that activation's thread. The one pair that crosses threads in production is the lineage-slot raise
+    /// (`refused`, on the activation chain) against [#onQuorumStateChange] (the quorum-state notification thread); that is the reproduced
+    /// race. `clearBlock` is called only on the activation chain (its visibility is wider than that for the tests), so `report`,
+    /// `trackUnreachable`, `clearBlock` and the three resolves issued on the activation thread itself (`noLongerOversized`,
+    /// `clearUnreachable`, `proceedWithout`) cannot race a raise today; they take the monitor so that every raise and resolve is ordered the same
+    /// way, which keeps the property if a clear is ever called from another thread. The sibling gates with a real cross-thread pair
+    /// (`ForwardCatchupTransport`, `StreamPartitionManager.refusedCuts`) and the backfill's superseded flight have their own leaf monitors.
     private final Object alarmOrder = new Object();
     /// When the current run of probe failures started (`System.nanoTime`), per partition.
     private final Map<PartitionKey, Long> unreachableSince = new ConcurrentHashMap<>();

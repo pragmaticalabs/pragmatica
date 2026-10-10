@@ -1713,15 +1713,18 @@ public final class PartitionBackfill {
     /// before its first event, found another peer to catch up from, or this node is no longer the owner. Forgetting the report
     /// is what lets the same peer and offset raise again when it recurs, and the alarm is told so the operator sees it end.
     Unit clearOversized(String streamName, int partition) {
-        if (!current.getAsBoolean()) {
-            return Unit.unit();
-        }
-
         synchronized (oversizedOrder) {
-            Option.option(reportedOversized.remove(partitionKey(streamName, partition))).onPresent(blockAlarm::resolved);
+            if (current.getAsBoolean()) {
+                Option.option(reportedOversized.remove(partitionKey(streamName, partition))).onPresent(blockAlarm::resolved);
+            }
         }
 
         return Unit.unit();
+    }
+
+    /// Test seam (#2004): a per-run view of this backfill whose side effects are gated by `gate`, as a flight's are.
+    PartitionBackfill withCurrent(BooleanSupplier gate) {
+        return new PartitionBackfill(this, gate);
     }
 
     /// The index of the first peer that answered with a page cut before its first event, or -1 (index-aligned with `peers`).
@@ -1747,18 +1750,19 @@ public final class PartitionBackfill {
     /// raised to the block alarm ONCE per transition (a redrive of the same condition is silent; the condition ending and
     /// coming back raises again), not a WARN on every redrive.
     Promise<Long> oversizedPeer(String streamName, int partition, NodeId peer, Cause cause) {
-        if (!current.getAsBoolean()) {
-            // #1937 F6 / #1638: a flight that timed out answers late; the current flight has settled the partition and its view of
-            // the peer stands, so this run raises nothing.
-            return cause.promise();
-        }
-
         var offset = cause instanceof OwnerPeerReads.EventExceedsReadCap(var at)
                      ? at
                      : -1L;
         var block = new OwnerActivation.ActivationBlock.PeerEventExceedsReadCap(streamName, partition, peer, offset);
-
+        // `current` is read INSIDE the monitor (#2004): a flight that was superseded between its check and the monitor must not raise after its
+        // successor's clear, which would leave the block standing with nothing to resolve it until the next clear.
         synchronized (oversizedOrder) {
+            if (!current.getAsBoolean()) {
+                // #1937 F6 / #1638: a flight that timed out answers late; the current flight has settled the partition and its view of
+                // the peer stands, so this run raises nothing.
+                return cause.promise();
+            }
+
             var previous = reportedOversized.put(partitionKey(streamName, partition), block);
 
             if (!block.equals(previous)) {
