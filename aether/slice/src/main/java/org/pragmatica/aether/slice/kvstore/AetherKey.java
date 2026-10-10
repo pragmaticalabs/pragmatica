@@ -1210,6 +1210,16 @@ public sealed interface AetherKey extends StructuredKey permits AetherKey.Cluste
         }
     }
 
+    /// #1543 part F: the one rolling-upgrade run of the cluster. Runtime state: a run names nodes a restored cluster no longer has.
+    record UpgradeRunKey() implements RuntimeKey {
+        public static final UpgradeRunKey INSTANCE = new UpgradeRunKey();
+
+        @Override
+        public String asString() {
+            return "upgrade-run/current";
+        }
+    }
+
     record CommunityPlacementAvailabilityKey(String communityId, String source, Option<String> zone) implements RuntimeKey {
         @Override
         public String asString() {

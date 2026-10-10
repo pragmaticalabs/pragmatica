@@ -8,6 +8,12 @@ import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
 import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
+import java.util.ArrayList;
+import org.pragmatica.aether.deployment.cluster.UpgradeRunService;
+import org.pragmatica.aether.slice.kvstore.AetherValue.UpgradeRunState;
+import org.pragmatica.aether.slice.kvstore.AetherValue.UpgradeRunValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.UpgradeStop;
+
 import java.util.List;
 import java.util.Map;
 import java.util.function.BiConsumer;
@@ -40,101 +46,122 @@ import org.junit.jupiter.api.Test;
 import static org.assertj.core.api.Assertions.assertThat;
 
 
-/// #1424: `POST /api/v1/cluster/upgrade` carried no client-side version fence, the only mutating cluster-config
-/// route without one. Two operators issuing different `targetVersion`s, or an upgrade landing beside a scale or
-/// apply, resolved as last intent wins: the store-level successor CAS closes the lost update but nothing let an
-/// operator say "upgrade only if the config is still at version N". The fence now matches apply-config (#289) and
-/// scale (#1086): a stale non-zero `expectedVersion` is a 409 `VersionConflict`, and `expectedVersion=0` against
-/// a populated config is a 409 `UnfencedOverwrite`, never a wildcard. Every pin goes through the real route handler.
-class ClusterConfigRoutesUpgradeFenceTest {
+/// #1543 F — `POST /api/v1/cluster/upgrade` stores the version AND starts the rolling run, through the real route handler. The Ember
+/// tests call the run service directly, so without these the headline feature (the upgrade route rolls the cluster) was unpinned: a route
+/// that stored the version and never started anything passed every other test.
+class ClusterConfigRoutesUpgradeRunTest {
     private static final TopologyEntry CORE_3 = new TopologyEntry("eu", "core", 3);
 
-    @Test
-    void handleUpgrade_matchingExpectedVersion_isAllowed_andBumpsTheConfigVersion() {
-        var store = storeWith(committedConfig(1));
-        var response = upgrade(store, new UpgradeRequest("1.1.0", 1));
+    /// A run service that records what it was asked and answers as scripted.
+    private static final class Runs implements UpgradeRunService {
+        final List<String> started = new ArrayList<>();
+        Result<UpgradeRunValue> startAnswer = Result.success(run(UpgradeRunState.RUNNING));
+        Option<UpgradeRunValue> status = Option.none();
 
-        assertThat(response.isSuccess()).as("a fenced upgrade at the read version must land: " + response).isTrue();
-        assertThat(store.get(ClusterConfigKey.CURRENT).map(ClusterConfigValue.class::cast).unwrap().configVersion()).isEqualTo(2);
+        @Override
+        public Promise<UpgradeRunValue> start(String targetVersion) {
+            started.add(targetVersion);
+
+            return Promise.resolved(startAnswer);
+        }
+
+        @Override
+        public Option<UpgradeRunValue> status() {
+            return status;
+        }
+
+        @Override
+        public Promise<UpgradeRunValue> pause() {
+            return new Refusal.Unavailable().promise();
+        }
+
+        @Override
+        public Promise<UpgradeRunValue> resume() {
+            return new Refusal.Unavailable().promise();
+        }
+
+        @Override
+        public Promise<UpgradeRunValue> abort() {
+            return new Refusal.Unavailable().promise();
+        }
     }
 
-    /// The #1424 defect: with no client fence, an upgrade issued against a config another operator has
-    /// already moved on (stored 2, caller read 1) was re-read and committed on top.
-    @Test
-    void handleUpgrade_staleExpectedVersion_isRefusedAsVersionConflict_beforeAnyWrite() {
-        var store = storeWith(committedConfig(2));
-        var result = upgrade(store, new UpgradeRequest("1.1.0", 1));
-
-        assertThat(result.isFailure()).as("a stale expectedVersion must be refused, got: " + result).isTrue();
-        result.onFailure(cause -> {
-            assertThat(cause).isInstanceOf(ClusterConfigError.VersionConflict.class);
-            assertThat(((HttpStatusAware) cause).httpStatus()).isEqualTo(HttpStatus.CONFLICT);
-        });
-        assertUnchanged(store, 2, "1.0.0");
+    private static UpgradeRunValue run(UpgradeRunState state) {
+        return new UpgradeRunValue("1.1.0", List.of(new NodeId("a")), 0, "", state, UpgradeStop.NONE, "", 1L, 1L, 1L);
     }
 
-    /// `expectedVersion=0` is the fresh-cluster bypass of `checkVersionAsync`; every config an upgrade can reach
-    /// is populated, so here it is an unfenced overwrite, refused like on apply-config and scale.
     @Test
-    void handleUpgrade_populatedConfigWithZeroExpectedVersion_isRefusedAsUnfencedOverwrite_beforeAnyWrite() {
+    void anUpgrade_storesTheVersion_thenStartsTheRunTowardsIt() {
         var store = storeWith(committedConfig(1));
-        var result = upgrade(store, new UpgradeRequest("1.1.0", 0));
+        var runs = new Runs();
+        var result = upgrade(store, runs, new UpgradeRequest("1.1.0", 1));
 
-        assertThat(result.isFailure()).as("expectedVersion=0 against a populated config must be refused, got: " + result).isTrue();
-        result.onFailure(cause -> {
-            assertThat(cause).isInstanceOf(ClusterConfigError.UnfencedOverwrite.class);
-            assertThat(((HttpStatusAware) cause).httpStatus()).isEqualTo(HttpStatus.CONFLICT);
-        });
-        assertUnchanged(store, 1, "1.0.0");
+        assertThat(result.isSuccess()).as(result.toString()).isTrue();
+        assertThat(runs.started).as("the run was started, once, towards the stored version").containsExactly("1.1.0");
+        assertThat(store.get(ClusterConfigKey.CURRENT).map(ClusterConfigValue.class::cast).unwrap().version()).isEqualTo("1.1.0");
     }
 
-    /// Ordering pin: a no-op upgrade keeps its own answer whatever version the caller holds (the CLI treats it
-    /// as success), so the fence sits after the already-at-version check.
     @Test
-    void handleUpgrade_alreadyAtTargetVersion_answersAlreadyAtVersion_notTheFence() {
+    void aRefusedStart_isSurfaced_notSwallowed() {
         var store = storeWith(committedConfig(1));
-        var result = upgrade(store, new UpgradeRequest("1.0.0", 0));
+        var runs = new Runs();
+
+        runs.startAnswer = new UpgradeRunService.Refusal.NotLeader().result();
+
+        var result = upgrade(store, runs, new UpgradeRequest("1.1.0", 1));
+
+        assertThat(result.isFailure()).as("the version is stored but no run started: the caller must be told").isTrue();
+        result.onFailure(cause -> assertThat(cause).isInstanceOf(UpgradeRunService.Refusal.NotLeader.class));
+    }
+
+    @Test
+    void nothingToReplace_leavesTheStoredVersionAsTheWholeEffect() {
+        var store = storeWith(committedConfig(1));
+        var runs = new Runs();
+
+        runs.startAnswer = new UpgradeRunService.Refusal.NothingToReplace("1.1.0").result();
+
+        assertThat(upgrade(store, runs, new UpgradeRequest("1.1.0", 1)).isSuccess()).isTrue();
+    }
+
+    @Test
+    void aLiveRunTowardsAnotherVersion_refusesTheUpgrade_beforeAnythingIsStored() {
+        var store = storeWith(committedConfig(1));
+        var runs = new Runs();
+
+        runs.status = Option.some(run(UpgradeRunState.RUNNING));
+
+        var result = upgrade(store, runs, new UpgradeRequest("1.2.0", 1));
 
         assertThat(result.isFailure()).isTrue();
-        result.onFailure(cause -> assertThat(cause).isInstanceOf(ClusterConfigRoutes.UpgradeError.AlreadyAtVersion.class));
-        assertUnchanged(store, 1, "1.0.0");
+        assertThat(runs.started).isEmpty();
+        assertThat(store.get(ClusterConfigKey.CURRENT).map(ClusterConfigValue.class::cast).unwrap().version()).as("nothing stored").isEqualTo("1.0.0");
     }
 
-    /// An OMITTED or null `expectedVersion` is not 0: the field is a primitive `long`, the wired codec refuses
-    /// the body at decode time and `RequestContext.jsonBody` answers 400 before the route runs. This is the
-    /// breaking change for a client that omitted it.
     @Test
-    void upgradeRequest_omittedExpectedVersion_isRefusedAtDecode_neverReadAsZero() {
-        assertThat(decodeThroughWiredCodec("{\"targetVersion\":\"1.1.0\"}").isFailure()).isTrue();
-        assertThat(decodeThroughWiredCodec("{\"targetVersion\":\"1.1.0\",\"expectedVersion\":null}").isFailure()).isTrue();
+    void theSameVersionReissued_startsTheRunThatIsStillOwed_andOtherwiseAnswersAlreadyAtVersion() {
+        var store = storeWith(committedConfig(1));
+        var runs = new Runs();
+
+        assertThat(upgrade(store, runs, new UpgradeRequest("1.0.0", 1)).isSuccess()).as("a run is owed: it is started").isTrue();
+        assertThat(runs.started).containsExactly("1.0.0");
+
+        runs.startAnswer = new UpgradeRunService.Refusal.NothingToReplace("1.0.0").result();
+
+        var settled = upgrade(store, runs, new UpgradeRequest("1.0.0", 1));
+
+        assertThat(settled.isFailure()).isTrue();
+        settled.onFailure(cause -> assertThat(cause).isInstanceOf(ClusterConfigRoutes.UpgradeError.AlreadyAtVersion.class));
+
+        runs.startAnswer = new UpgradeRunService.Refusal.NotLeader().result();
+
+        var refused = upgrade(store, runs, new UpgradeRequest("1.0.0", 1));
+
+        refused.onFailure(cause -> assertThat(cause).as("a real refusal is not reported as 'already at version'").isInstanceOf(UpgradeRunService.Refusal.NotLeader.class));
     }
 
-    /// Positive control for the pin above: an explicit value DOES decode, so its failure is the missing field.
-    @Test
-    void upgradeRequest_explicitExpectedVersion_decodes() {
-        var decoded = decodeThroughWiredCodec("{\"targetVersion\":\"1.1.0\",\"expectedVersion\":7}");
-
-        assertThat(decoded.isSuccess()).as(decoded.toString()).isTrue();
-        assertThat(decoded.unwrap().expectedVersion()).isEqualTo(7L);
-    }
-
-    private static Result<UpgradeRequest> decodeThroughWiredCodec(String json) {
-        return JsonCodecAdapter.defaultCodec().deserialize(json.getBytes(StandardCharsets.UTF_8),
-                                                           TypeToken.typeToken(UpgradeRequest.class));
-    }
-
-    private static void assertUnchanged(TestKVStore store, long configVersion, String version) {
-        var committed = store.get(ClusterConfigKey.CURRENT)
-                             .filter(ClusterConfigValue.class::isInstance)
-                             .map(ClusterConfigValue.class::cast)
-                             .unwrap();
-
-        assertThat(committed.configVersion()).as("no write may land behind a refusal").isEqualTo(configVersion);
-        assertThat(committed.version()).as("no version change may land behind a refusal").isEqualTo(version);
-    }
-
-    private static Result<UpgradeResponse> upgrade(TestKVStore store, UpgradeRequest request) {
-        return ClusterConfigRoutes.clusterConfigRoutes(() -> nodeWith(store))
+    private static Result<UpgradeResponse> upgrade(TestKVStore store, UpgradeRunService runs, UpgradeRequest request) {
+        return ClusterConfigRoutes.clusterConfigRoutes(() -> nodeWith(store, runs))
                                   .handleUpgrade(request)
                                   .await();
     }
@@ -159,16 +186,16 @@ class ClusterConfigRoutesUpgradeFenceTest {
         return store;
     }
 
-    private static ManageableNode nodeWith(TestKVStore store) {
+    private static ManageableNode nodeWith(TestKVStore store, UpgradeRunService runs) {
         return (ManageableNode) Proxy.newProxyInstance(ManageableNode.class.getClassLoader(),
                                                        new Class[]{ManageableNode.class},
-                                                       (_, method, args) -> dispatch(store, method, args));
+                                                       (_, method, args) -> dispatch(store, runs, method, args));
     }
 
-    private static Object dispatch(TestKVStore store, Method method, Object[] args) {
+    private static Object dispatch(TestKVStore store, UpgradeRunService runs, Method method, Object[] args) {
         return switch (method.getName()) {
             case "kvStore" -> store;
-            case "upgradeRunService" -> org.pragmatica.aether.deployment.cluster.UpgradeRunService.unavailable();
+            case "upgradeRunService" -> runs;
             case "isLeader" -> true;
             case "apply" -> applyBatch(store, args);
             default -> throw new UnsupportedOperationException("Not implemented in test proxy: " + method.getName());
