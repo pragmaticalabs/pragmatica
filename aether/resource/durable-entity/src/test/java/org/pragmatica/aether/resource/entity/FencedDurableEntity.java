@@ -16,6 +16,7 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.aether.resource.Mutator;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
 
@@ -105,12 +106,12 @@ final class FencedDurableEntity<K, S, C extends Mutator<S>> implements DurableEn
 
     @Override
     public Promise<TimerToken> scheduleTimer(K key, Duration delay, C onFire, TimerToken token) {
-        return new EntityError.TimerNotSupported(String.valueOf(key)).promise();
+        return timersUnsupported(key);
     }
 
     @Override
     public Promise<Unit> cancelTimer(K key, TimerToken token) {
-        return new EntityError.TimerNotSupported(String.valueOf(key)).promise();
+        return timersUnsupported(key);
     }
 
     private Promise<S> doCreate(K key, S initial) {
@@ -187,5 +188,11 @@ final class FencedDurableEntity<K, S, C extends Mutator<S>> implements DurableEn
 
     private static <S> Promise<S> keyNotFound(Object key) {
         return new EntityError.EntityNotFound(String.valueOf(key)).promise();
+    }
+
+    /// Test fixtures hold no durable log to keep a pending timer in; they decline rather than accept a timer that never
+    /// fires. A running node never reaches this: its backing schedules timers as fenced log writes (#345 I4).
+    private static <T> Promise<T> timersUnsupported(Object key) {
+        return new EntityError.StorageFailed(String.valueOf(key), Causes.cause("timers are not supported by this in-memory test backing")).promise();
     }
 }

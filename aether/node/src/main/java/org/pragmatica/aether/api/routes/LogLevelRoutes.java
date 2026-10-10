@@ -13,6 +13,8 @@ import org.pragmatica.aether.api.ManagementApiResponses.LogLevelSetResponse;
 import org.pragmatica.aether.management.route.ManagementRoute;
 import org.pragmatica.http.routing.Route;
 import org.pragmatica.http.routing.RouteSource;
+import org.pragmatica.http.HttpStatus;
+import org.pragmatica.http.HttpStatusAware;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
@@ -82,7 +84,9 @@ public final class LogLevelRoutes implements RouteSource {
                                .map(_ -> new LogLevelResetResponse("level_reset", loggerName));
     }
 
-    private enum LogLevelError implements Cause {
+    /// #954: every constant is a request the caller got wrong, so each answers 400 instead of the 500 an untyped
+    /// cause is resolved to.
+    private enum LogLevelError implements Cause, HttpStatusAware {
         MISSING_FIELDS("Missing logger or level field"),
         INVALID_LEVEL("Invalid level. Must be one of: TRACE, DEBUG, INFO, WARN, ERROR, FATAL, OFF"),
         LOGGER_REQUIRED("Logger name required");
@@ -93,6 +97,10 @@ public final class LogLevelRoutes implements RouteSource {
         @Override
         public String message() {
             return message;
+        }
+        @Override
+        public HttpStatus httpStatus() {
+            return HttpStatus.BAD_REQUEST;
         }
     }
 }

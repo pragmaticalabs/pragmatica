@@ -158,81 +158,10 @@ public final class SliceAdder {
     }
 
     // Inline templates
-    private static final String SLICE_INTERFACE_TEMPLATE = """
-        package {{slicePackage}};
-
-        import org.pragmatica.aether.slice.annotation.Slice;
-        import org.pragmatica.lang.Cause;
-        import org.pragmatica.lang.Promise;
-        import org.pragmatica.lang.Result;
-        import org.pragmatica.lang.Verify;
-
-        /// {{sliceName}} slice.
-        @Slice
-        public interface {{sliceName}} {
-            record ValidGreetRequest(String name) {
-                public static Result<ValidGreetRequest> validGreetRequest(String name) {
-                    return Verify.ensure(name,
-                                         Verify.Is::present,
-                                         GreetError.invalidName())
-                                 .map(ValidGreetRequest::new);
-                }
-            }
-
-            record GreetResponse(String greeting) {}
-
-            sealed interface GreetError extends Cause {
-                record InvalidName() implements GreetError {
-                    @Override
-                    public String message() {
-                        return "Name cannot be empty";
-                    }
-                }
-
-                static GreetError invalidName() {
-                    return new InvalidName();
-                }
-            }
-
-            Promise<GreetResponse> greet(String name);
-
-            static {{sliceName}} {{factoryMethodName}}() {
-                return name -> ValidGreetRequest.validGreetRequest(name)
-                                                .map(request -> new GreetResponse("Hello, " + request.name() + "!"))
-                                                .async();
-            }
-        }
-        """;
-
-    private static final String SLICE_TEST_TEMPLATE = """
-        package {{slicePackage}};
-
-        import org.junit.jupiter.api.Test;
-
-        import static org.assertj.core.api.Assertions.assertThat;
-        import static org.junit.jupiter.api.Assertions.fail;
-
-        class {{sliceName}}Test {
-
-            private final {{sliceName}} slice = {{sliceName}}.{{factoryMethodName}}();
-
-            @Test
-            void greet_validName_returnsGreeting() {
-                slice.greet("World")
-                     .await()
-                     .onFailure(cause -> fail(cause.message()))
-                     .onSuccess(r -> assertThat(r.greeting()).isEqualTo("Hello, World!"));
-            }
-
-            @Test
-            void greet_emptyName_returnsError() {
-                slice.greet("")
-                     .await()
-                     .onSuccess(r -> fail("Expected failure for empty name"))
-                     .onFailure(cause -> assertThat(cause.message()).isEqualTo("Name cannot be empty"));
-            }
-        }
-        """;
+    // The slice and its test are the project initializer's own templates (#1998): a second copy drifted from the linter
+    // (`jbct add-slice` generated a cause record that `jbct lint` rejects).
+    private static final String SLICE_INTERFACE_TEMPLATE = SliceProjectInitializer.SLICE_INTERFACE_TEMPLATE;
+    private static final String SLICE_TEST_TEMPLATE = SliceProjectInitializer.SLICE_TEST_TEMPLATE;
 
     private static final String ROUTES_TOML_TEMPLATE = """
         prefix = "/api/{{kebabCase}}"

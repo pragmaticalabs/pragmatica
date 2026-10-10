@@ -105,10 +105,29 @@ class LivePlacementMembersWiringTest {
 
         // #1730: a partition with no live in-sync replica has no owner to report, so the controller's block joins it.
         assertThat(code).contains("streamPartitionManager.ownerBlockSource((stream,partition)->ownerActivation.blockOf(stream,partition).orElse(()->streamReplicaSetController.noInSyncReplica(stream,partition)));");
-        assertThat(code).contains("AetherNode::raiseOwnerPromotionBlock,ownerPromotionAlarmWindow(config.timeouts().swim().suspectTimeout()));");
-        assertThat(code).contains("returnsuspectTimeout.plus(suspectTimeout);");
+        // #1431: the alarm also reaches the node's operator-warning sink (an oversized peer event is its own warning); the
+        // window is still the argument after it — `OwnerActivation`'s `unreachableAlarmAfter`. #1873: the gate's constructor then
+        // takes the ring incarnation and the lineage commit (see EpochFetchWiringTest).
+        assertThat(code).contains("ownerPromotionAlarm(operatorWarningSink),ownerPromotionAlarmWindow(config.timeouts().swim().suspectTimeout()),(stream,partition)->");
+        assertThat(code).contains("returnStreamingConfig.ownerPromotionAlarmWindow(suspectTimeout);");
+        assertThat(code).as("#2080: the owner gate is told its escape bound").contains("ownerActivation.promotionEscapeAfter(streamingConfig.promotionEscapeAfter());");
         assertThat(code).as("v1555 F1: the overlap read is the production OwnerPeerReads.ownerRange the gate tests exercise")
-                        .contains("OwnerPeerReads.ownerRange(config.self(),streamPartitionManager,streamTieredReader,streamForwardClient::readRemoteCatchup,STREAM_CATCHUP_BATCH_SIZE),AetherNode::raiseOwnerPromotionBlock");
+                        .contains("OwnerPeerReads.ownerRange(config.self(),streamPartitionManager,streamTieredReader,streamForwardClient::readRemoteCatchup,STREAM_CATCHUP_BATCH_SIZE),ownerPromotionAlarm(operatorWarningSink)");
+    }
+
+    /// #1730 phase 2 (B5-B7): the gate's relaxation reads the candidate's sealed floor and forgets a left-out peer's registry row; a
+    /// replica that has not been compared with the committed owner of the current epoch acknowledges nothing.
+    @Test
+    void epochVerification_isWiredIntoTheGateAndTheReceiveHandler() {
+        var code = assemblyCode();
+
+        assertThat(code).contains("ownerActivation.sealedFloor(streamSegmentIndex::lastSealedOffset);");
+        assertThat(code).contains("ownerActivation.peerRows((stream,partition,peer)->streamReplicaRegistry.updateWatermark(stream,partition,peer,-1L,ReplicationState.SYNCING));");
+        assertThat(code).contains("streamReplicationReceiveHandler.ackGate(streamPartitionManager::replicaVerified);");
+        assertThat(code).contains("streamReplicationManager.ownerEpochs(streamOwnerEpochSource);");
+        assertThat(code).contains("streamPartitionManager.repairReportBound(TimeSpan.timeSpan(STREAM_BACKFILL_REDRIVE_INTERVAL.millis()*12L).millis());");
+        assertThat(code).contains("ownerActivation.peerRingTail((node,stream,partition)->");
+        assertThat(code).contains(":streamForwardClient.ringTailRemote(node,stream,partition).recover(_->Option.<Long>none()));");
     }
 
     @Test
@@ -123,7 +142,15 @@ class LivePlacementMembersWiringTest {
     /// the unbounded factory is for tests only.
     @Test
     void backfillSingleFlight_isBoundedByTheConfiguredIdleBound() {
-        assertThat(assemblyCode()).contains("streamPartitionManager.quarantineView(),Option.some(streamingConfig.backfillFlightIdleBound()));");
+        assertThat(assemblyCode()).contains("streamPartitionManager.quarantineView(),Option.some(streamingConfig.backfillFlightIdleBound()))");
+    }
+
+    /// #2077: the promotion decision's ISR evidence is the RAW committed record read from the store, never the liveness-filtered
+    /// routing view (`streamCommittedOwnerSource`), which hides a dead owner. Binding the routing view here would let a node's own
+    /// membership view vouch for itself.
+    @Test
+    void backfillIsrEvidence_isTheRawCommittedRecord_notTheRoutingView() {
+        assertThat(assemblyCode()).contains(".withCommittedIsr(KvCommittedStreamOwnerSource.kvCommittedStreamOwnerSource(kvStore));");
     }
 
     /// #1339 / #1732: `AetherNodeReplicaSetTriggersTest` drives the trigger helpers through wiring it builds itself, so

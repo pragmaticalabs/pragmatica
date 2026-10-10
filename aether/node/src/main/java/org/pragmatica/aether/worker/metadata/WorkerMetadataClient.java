@@ -57,6 +57,10 @@ public final class WorkerMetadataClient {
     private final Function<List<NodeInfo>, Result<Unit>> directoryReceived;
     private final Consumer<List<NodeInfo>> endpointDirectoryReceived;
     private final Runnable projectionReady;
+    /// Applies the core-derived DHT replication on EVERY projection install (#1777 track 1): a worker never restores
+    /// consensus state, so this is the only path by which its DHT learns — and re-learns, on a live change — the
+    /// cluster's committed factors.
+    private final Consumer<WorkerMetadataMessage.DhtReplication> dhtReplicationReceived;
     private final Consumer<String> report;
     private final WorkerMetadataLimits limits;
     private final Map<String, byte[]> verified = new HashMap<>();
@@ -98,7 +102,8 @@ public final class WorkerMetadataClient {
                                 Consumer<List<NodeInfo>> endpointDirectoryReceived,
                                 Runnable projectionReady,
                                 Consumer<String> report,
-                                WorkerMetadataLimits limits) {
+                                WorkerMetadataLimits limits,
+                                Consumer<WorkerMetadataMessage.DhtReplication> dhtReplicationReceived) {
         this.self = self;
         this.store = store;
         this.codec = codec;
@@ -110,6 +115,7 @@ public final class WorkerMetadataClient {
         this.projectionReady = projectionReady;
         this.report = report;
         this.limits = limits;
+        this.dhtReplicationReceived = dhtReplicationReceived;
     }
 
     public synchronized Unit tick() {
@@ -200,6 +206,7 @@ public final class WorkerMetadataClient {
 
         return names.contains(WorkerMetadataIndex.DIRECTORY)
                && names.contains(WorkerMetadataIndex.ENDPOINT_DIRECTORY)
+               && names.contains(WorkerMetadataIndex.DHT_REPLICATION)
                && names.contains(WorkerMetadataIndex.GLOBAL)
                && names.contains("node:" + self.id());
     }
@@ -316,23 +323,42 @@ public final class WorkerMetadataClient {
         var entries = new HashMap<StructuredKey, Object>();
         var peers = new ArrayList<NodeInfo>();
         var endpoints = new ArrayList<NodeInfo>();
+        var replication = new ArrayList<WorkerMetadataMessage.DhtReplication>();
 
-        return Result.allOf(current.scopes().stream().map(scope -> decodeScope(scope, entries, peers, endpoints))).map(_ -> new Projection(Map.copyOf(entries),
-                                                                                                                                           List.copyOf(peers),
-                                                                                                                                           List.copyOf(endpoints)));
+        return Result.allOf(current.scopes()
+                                   .stream()
+                                   .map(scope -> decodeScope(scope, entries, peers, endpoints, replication))).map(_ -> new Projection(Map.copyOf(entries),
+                                                                                                                                      List.copyOf(peers),
+                                                                                                                                      List.copyOf(endpoints),
+                                                                                                                                      replication.isEmpty()
+                                                                                                                                      ? Option.<WorkerMetadataMessage.DhtReplication> none()
+                                                                                                                                      : Option.some(replication.getFirst())));
     }
 
     private Result<Unit> decodeScope(WorkerMetadataMessage.ScopeContent scope,
                                      Map<StructuredKey, Object> entries,
                                      List<NodeInfo> peers,
-                                     List<NodeInfo> endpoints) {
+                                     List<NodeInfo> endpoints,
+                                     List<WorkerMetadataMessage.DhtReplication> replication) {
         return Result.lift(Causes::fromThrowable,
                            () -> codec.decode(verified.get(scope.hash())))
                      .flatMap(decoded -> switch (scope.scope()) {
             case WorkerMetadataIndex.DIRECTORY -> decodeDirectory(decoded, peers);
             case WorkerMetadataIndex.ENDPOINT_DIRECTORY -> decodeDirectory(decoded, endpoints);
+            case WorkerMetadataIndex.DHT_REPLICATION -> decodeDhtReplication(decoded, replication);
             default -> decodeEntries(decoded, entries);
         });
+    }
+
+    private static Result<Unit> decodeDhtReplication(Object decoded,
+                                                     List<WorkerMetadataMessage.DhtReplication> replication) {
+        if (! (decoded instanceof WorkerMetadataMessage.DhtReplication record)) {
+            return Causes.cause("Invalid metadata DHT replication").result();
+        }
+
+        replication.add(record);
+
+        return Result.success(Unit.unit());
     }
 
     private static Result<Unit> decodeDirectory(Object decoded, List<NodeInfo> peers) {
@@ -384,6 +410,8 @@ public final class WorkerMetadataClient {
                                     .flatMap(_ -> store.restoreSnapshot(bytes))
                                     .onSuccess(_ -> {
                                                    endpointDirectoryReceived.accept(projection.endpoints());
+                                                   projection.dhtReplication()
+                                                             .onPresent(dhtReplicationReceived);
                                                    assignedWorker = projection.entries()
                                                                               .get(new AetherKey.ActivationDirectiveKey(self)) instanceof AetherValue.ActivationDirectiveValue directive && AetherValue.ActivationDirectiveValue.WORKER.equals(directive.role());
                                                    if (assignedWorker) {
@@ -424,5 +452,8 @@ public final class WorkerMetadataClient {
         report.accept(reason);
     }
 
-    private record Projection(Map<StructuredKey, Object> entries, List<NodeInfo> peers, List<NodeInfo> endpoints) {}
+    private record Projection(Map<StructuredKey, Object> entries,
+                              List<NodeInfo> peers,
+                              List<NodeInfo> endpoints,
+                              Option<WorkerMetadataMessage.DhtReplication> dhtReplication) {}
 }

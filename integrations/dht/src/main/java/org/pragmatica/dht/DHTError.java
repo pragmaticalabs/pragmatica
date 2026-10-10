@@ -91,8 +91,8 @@ public sealed interface DHTError extends Cause {
 
     /// A write that did not reach its quorum because owner-epoch fences refused it (#1818, the owner's fence
     /// ruling — the Dynamo stance). It is NOT a definite failure: replicas whose high-water lagged may have
-    /// applied it, and a copy of it can still take effect on keys the new owner never rewrites (until #1777
-    /// track 3). The coordinator rolls back its own accept; callers must treat the outcome as unknown and
+    /// applied it, and a copy of it can still take effect on keys the new owner never rewrites (a documented
+    /// residual: #1777 track 3's tombstones do not close it, owner ruling 2026-10-03 Q8). The coordinator rolls back its own accept; callers must treat the outcome as unknown and
     /// retry — a retry is stamped with the owner epoch as it stands by then.
     static DHTError writeIndeterminate(int required, int achieved, int fenced) {
         return new WriteIndeterminate(required, achieved, fenced);
@@ -105,6 +105,81 @@ public sealed interface DHTError extends Cause {
                  + " acks, got " + achieved
                  + ", " + fenced
                  + " refused by owner-epoch fences; it may have been applied";
+        }
+    }
+
+    /// One replica's refusal of a put stamped with an older replication change than it has applied (#1777, CTO ruling
+    /// R1c). The write as a whole fails [ReplicationChangeStale] if quorum becomes unreachable because of it.
+    static DHTError replicaOnNewerReplication(NodeId replica) {
+        return new ReplicaOnNewerReplication(replica);
+    }
+
+    record ReplicaOnNewerReplication(NodeId replica) implements DHTError, Cause.Transient {
+        @Override
+        public String message() {
+            return "Replica " + replica.id() + " refused the write: it has applied a newer replication change";
+        }
+    }
+
+    /// A put that did not reach its quorum because replicas that applied a newer replication change refused it (#1777,
+    /// CTO ruling R1c). Its quorum was sized under factors the cluster has left; replicas that had not applied the change
+    /// yet may hold it, and the catch-up that follows the change carries those copies, so the outcome is unknown, not a
+    /// failure. Retriable: the retry is stamped, and sized, under the change as this node has applied it by then.
+    static DHTError replicationChangeStale(int required, int achieved, int refused) {
+        return new ReplicationChangeStale(required, achieved, refused);
+    }
+
+    record ReplicationChangeStale(int required, int achieved, int refused) implements DHTError, Cause.Transient {
+        @Override
+        public String message() {
+            return "Write refused by the replication-change fence: required " + required
+                 + " acks, got " + achieved
+                 + ", " + refused
+                 + " replicas have applied a newer replication change; retry once this node has applied it";
+        }
+    }
+
+    /// One replica's refusal of a write because it does not know the committed replication change yet (restarted, before
+    /// its state restore and consensus catch-up; v1882 round 4). Says nothing about the writer.
+    static DHTError replicaFenceUnknown(NodeId replica) {
+        return new ReplicaFenceUnknown(replica);
+    }
+
+    /// One replica's refusal of a write because that replica holds its own write to the same key, applied locally and not yet
+    /// resolved (v1882 round 12): answering "superseded" would let this writer's quorum count a copy that replica may roll back.
+    /// Retriable, and says nothing about the WRITER.
+    static DHTError replicaWritePending(NodeId replica) {
+        return new ReplicaWritePending(replica);
+    }
+
+    record ReplicaWritePending(NodeId replica) implements DHTError, Cause.Transient {
+        @Override
+        public String message() {
+            return "Replica " + replica.id() + " refused the write: its own write to the same key is still pending";
+        }
+    }
+
+    record ReplicaFenceUnknown(NodeId replica) implements DHTError, Cause.Transient {
+        @Override
+        public String message() {
+            return "Replica " + replica.id()
+                 + " refused the write: it does not know the committed replication change yet";
+        }
+    }
+
+    /// A write that did not reach its quorum because replicas that do not know the committed replication change yet
+    /// refused it. Retriable; the writer is not stale.
+    static DHTError replicationFenceUnknown(int required, int achieved, int refused) {
+        return new ReplicationFenceUnknown(required, achieved, refused);
+    }
+
+    record ReplicationFenceUnknown(int required, int achieved, int refused) implements DHTError, Cause.Transient {
+        @Override
+        public String message() {
+            return "Write refused: required " + required
+                 + " acks, got " + achieved
+                 + ", " + refused
+                 + " replicas do not know the committed replication change yet; retry";
         }
     }
 
@@ -133,6 +208,18 @@ public sealed interface DHTError extends Cause {
         @Override
         public String message() {
             return "Replicas not caught up: required " + required + " authoritative answers, got " + authoritative;
+        }
+    }
+
+    /// This node has not yet read the cluster's committed replication factors (#1777 track 1), so it cannot
+    /// place a key or size a quorum: a guess could read fewer replicas than the cluster writes to and answer a
+    /// false "absent". Transient — the node resolves them once its consensus state is restored.
+    DHTError REPLICATION_UNRESOLVED = new ReplicationUnresolved();
+
+    record ReplicationUnresolved() implements DHTError, Cause.Transient {
+        @Override
+        public String message() {
+            return "DHT replication factors not yet resolved from the committed cluster configuration";
         }
     }
 

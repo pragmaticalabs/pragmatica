@@ -10,6 +10,11 @@ on:
 jobs:
   build-and-test:
     runs-on: ubuntu-latest
+    env:
+      # Anonymous Docker Hub pulls from shared runner IPs hit "toomanyrequests: unauthenticated pull rate limit".
+      # Testcontainers prepends this to every Docker Hub image (postgres, mysql, localstack, testcontainers/ryuk); the
+      # trailing slash is required. mirror.gcr.io is Google's auth-free Docker Hub cache. CI only: developer machines pull from Hub.
+      TESTCONTAINERS_HUB_IMAGE_NAME_PREFIX: mirror.gcr.io/
 
     steps:
       - name: Checkout code
@@ -22,6 +27,14 @@ jobs:
         run: |
           python3 -B -m unittest discover -s tools -p test_check_test_ports.py
           python3 -B tools/check-test-ports.py
+
+      # The Ember shard planner (#1643): every Ember test class lands in exactly one shard, for any shard count.
+      - name: Ember shard planner pins
+        run: python3 -B -m unittest discover -s tools -p test_ember_shard.py
+
+      # The heavy-forge nightly's reporting (#2017): what a night reads as (ok, red, unknown) and when the notify job may close the issue.
+      - name: Heavy-forge workflow pins
+        run: python3 -B -m unittest discover -s tools -p test_heavy_forge_workflow.py
 
       - name: Set up Java 25
         uses: actions/setup-java@v5
@@ -39,20 +52,27 @@ jobs:
       # `-pl '!jbct'` mirrors build.sh: the linter depends on core, so jbct self-lints in its own build.
       # #1219: every published module's in-reactor dependencies (compile/runtime) and parent pom must publish too,
       # or the release puts artifacts on Central that no consumer can resolve. Static, so it runs on every PR.
+      # #1988/#1989: publishing is opt-in, and docs/release/maven-central-publish-set.md must say what the poms decide.
       - name: Published-set dependency closure
         run: |
           python3 -B -m unittest discover -s tools -p test_publish_closure.py
           python3 tools/check-publish-closure.py
+          python3 tools/check-publish-closure.py --check-table docs/release/maven-central-publish-set.md
 
       - name: JBCT format + lint gate
         run: mvn org.pragmatica-lite:jbct-maven-plugin:check -B -pl '!jbct'
         timeout-minutes: 15
 
+      # Ember's tests run in the ember-shard-N jobs (#1643): they were 53 of this step's 89 minutes, serial, in one module.
+      # Ember is still compiled and jarred here, because forge-api, forge-core and dead-surface-gate depend on it.
       - name: Build and test all modules
-        run: mvn install -B -pl '!examples'
+        run: mvn install -B -pl '!examples' -Dember.skipTests=true
         # 45 -> 60 (2026-09-28): rc4 alone used 42.5 of 45 min, and #1554's Ember tests pushed it over
         # (timed out mid-suite, not a hang). Structural fix (split or parallelize the job) tracked separately.
-        timeout-minutes: 60
+        # 60 -> 90 (2026-10-05): the last 12 rc4 commits took 57m27s-60m13s; two finished with BUILD SUCCESS
+        # and were still killed at 60 (Ember alone is ~30 min). 90 is headroom, not a fix for the duration.
+        # 90 -> 50 (#1643): without Ember's tests the step measured ~36 min (Ember started at +35.7 of 89), so 50 is ~1.4x.
+        timeout-minutes: 50
 
       - name: Run postgres-async integration tests
         run: mvn test -B -pl integrations/db/postgres-async -Dpostgres-async.skipTests=false
@@ -129,6 +149,63 @@ jobs:
             aether/forge/forge-tests/target/failsafe-reports/*.xml
           retention-days: 7
 
+  # Ember's tests (#1643), split by class across runners. They are serial in one module and took 53 of build-and-test's
+  # 89 minutes. The shard count is the matrix list's length: add an entry to go from 2 shards to 3. The required check
+  # names are ember-shard-1 .. ember-shard-N.
+  ember-shard:
+    name: ember-shard-${{ matrix.shard }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2]
+    env:
+      SHARDS: ${{ strategy.job-total }}
+      SHARD: ${{ matrix.shard }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Set up Java 25
+        uses: actions/setup-java@v5
+        with:
+          java-version: '25'
+          distribution: 'zulu'
+          cache: 'maven'
+
+      - name: Bootstrap annotation processors and Maven plugins
+        run: mvn install -B -DskipTests -pl jbct/jbct-maven-plugin,jbct/slice-processor,aether/pg-tools/pg-codegen -am
+
+      # Prints every shard's predicted total; fails if one is over budget (raise the matrix list) or this shard is empty.
+      - name: Plan this shard
+        id: plan
+        run: |
+          python3 -B -m unittest discover -s tools -p test_ember_shard.py
+          echo "classes=$(python3 -B tools/ember-shard.py --shards "$SHARDS" --index "$SHARD")" >> "$GITHUB_OUTPUT"
+
+      - name: Install Ember's upstream modules
+        run: mvn install -B -DskipTests -pl aether/ember -am
+
+      - name: Run Ember tests (shard ${{ matrix.shard }} of ${{ strategy.job-total }})
+        run: mvn test -B -pl aether/ember -Dtest="${{ steps.plan.outputs.classes }}" -Dsurefire.failIfNoSpecifiedTests=false
+        timeout-minutes: 40
+
+      # The plan-completed gate passes a run with zero tests; this fails one. Every class assigned to this shard must have reported.
+      - name: Verify this shard ran its classes
+        run: python3 -B tools/ember-shard.py --shards "$SHARDS" --index "$SHARD" --verify aether/ember/target/surefire-reports
+
+      - name: Upload Ember test results
+        uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: ember-test-results-${{ matrix.shard }}
+          if-no-files-found: error
+          path: |
+            aether/ember/target/surefire-reports/*.xml
+          retention-days: 7
+
   # The cloud harness stub suites (aether/tests/integration/test/test-*.sh) pin harness decisions such
   # as drain confirmation and reap refusal by stubbing ssh/hcloud/curl. They need no cluster, cloud or
   # docker, and before #1060 nothing ran them. The runner fails a suite that exits non-zero OR whose own
@@ -150,6 +227,12 @@ jobs:
 
       - name: Tools the suites use
         run: bash --version | head -1 && awk --version 2>&1 | head -1 && sed --version | head -1 && command -v mktemp tee perl pgrep mkfifo
+
+      # #2029: run-tests.sh runs lint-tests.sh under `set -euo pipefail`, so a finding that is not in lint-baseline.txt aborts
+      # every integration run before anything is provisioned. CI never ran it, so the PR that introduced the finding merged green.
+      # Waivers are keyed by file + line content, so only a NEW or EDITED finding fails here, not a shifted line.
+      - name: Integration test lint
+        run: bash aether/tests/integration/lint-tests.sh
 
       - name: Run harness stub suites
         env:

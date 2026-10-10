@@ -133,7 +133,7 @@ class SegmentReplayProvenanceTest {
     }
 
     /// N13 through replay: N holds e1 records where the sealer's history says e2 began at 5. Nothing is appended,
-    /// and `MARKED_DIVERGED` is raised.
+    /// and `MARKED_DIVERGED` is raised once the repair is refused.
     @Test
     void replayOverAMismatchingPrefix_appendsNothing_andFlags() {
         LongStream.range(0, 10).forEach(offset -> live(offset, E1));
@@ -142,6 +142,10 @@ class SegmentReplayProvenanceTest {
         replay();
 
         assertThat(node.nextExpectedOffset(STREAM, PARTITION)).isEqualTo(10L);
+        assertThat(raised).as("detection quarantines; the flag waits for a refused repair (#1730 phase 2)").isEmpty();
+
+        node.quarantineView().flagUnrepaired(STREAM, PARTITION);
+
         assertThat(raised).extracting(PartitionRecoveryReason::kind)
                           .containsExactly(PartitionRecoveryReasonKind.MARKED_DIVERGED);
     }

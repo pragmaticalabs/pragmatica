@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.stream;
 
+import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashSet;
 import java.util.List;
@@ -54,28 +55,52 @@ import org.slf4j.LoggerFactory;
 ///      transfer stamp): any later change to the committed record — including a transfer away and back —
 ///      no longer matches it, so the node re-runs the gate before acting again (the owner-side epoch fence).
 ///
-/// **An unreachable live member blocks activation** (it may hold a higher watermark). This is bounded: the
+/// **An unreachable live member blocks activation** (it may hold a higher watermark). This is bounded by detection: the
 /// member set is the live placement projection (`AetherNode.livePlacementMembers`), from which a member leaves
 /// once the membership FSM declares it DEAD, shrinking the probe set and unblocking activation within
 /// failure-detection time. Activation never proceeds while a reachable member holds a higher watermark.
-/// Each probe attempt itself times out (the forward-read timeout) and the next demand retries, but there is no
-/// bound independent of DEAD: **a member that keeps its transport handshaking while answering nothing never
-/// reaches DEAD, and promotion then blocks for as long as it stays in the live set — an outage of that partition
-/// with no recovery but removing the member (#1563: a black-holed peer that re-handshakes; the production form
-/// would be a wedged JVM whose network stack still completes handshakes).**
+/// Each probe attempt itself times out (the forward-read timeout) and the next demand retries. A member that keeps its
+/// transport handshaking while answering nothing never reaches DEAD (#1563: a black-holed peer that re-handshakes; the
+/// production form would be a wedged JVM whose network stack still completes handshakes), so detection alone does not bound
+/// the wait; the bounded escape below does, for the candidates it covers.
 ///
-/// **Overlap verification (#1555 item 7, the KIP-101 interim).** No ring or WAL record carries an owner epoch,
-/// so a returning ex-owner's never-acked tail (the same offsets, written under an older ownership) is
-/// indistinguishable by HEAD from the acked history that replaced it. Before any peer is used as catch-up source,
-/// and for every other responder, the last [#OVERLAP_WINDOW] offsets both hold are compared record by record
-/// (offset, timestamp, payload — the #1505 notion of "the same event"); the catch-up source is also compared
-/// PAIRWISE with every responder above the candidate's head, because the local log covers only offsets up to the candidate's own head
-/// and a candidate lagging two lineages agrees with both. Any disagreement REFUSES activation,
-/// whichever side is higher: without an epoch nothing here can tell which of the two lineages was acknowledged,
-/// so neither is served and neither is pulled. The refusal is reported once through the [BlockAlarm] and on
-/// [#blockOf] (the partition status read); the partition then waits for an operator to pick the source
-/// (#1569's pick-source surface, AD14). The detect-and-flag follow-up over a durable per-log epoch history is
-/// #1596; the cluster never auto-truncates.
+/// **The bounded escape (#2080).** After `promotionEscapeAfter` (`[streaming] promotion_escape_after`, 120 s by default, never below the alarm bound) of continuous probe failure of EACH silent member (the bound is per member: a member that just went silent keeps the partition blocked even when another is past the bound, and an answer resets only that member's clock, including an answer in a round refused for another peer's oversized event; a gap between two rounds longer than `unreachableAlarmAfter` is not counted as silence, so the clock restarts at the later observation. THE GAP THRESHOLD IS A GUESS: the alarm bound is the nearest existing measure of "too long to be one continuous look") a candidate named in the
+/// partition's COMMITTED in-sync set (`isrVersion > 0` and the set contains this node) stops waiting for the silent members:
+/// the responders are caught up from and reconciled exactly as before, and when the activation completes one
+/// `stream-promotion-past-unreachable-peers` operator event (through [BlockAlarm#escaped]) names the partition, the candidate and
+/// the members it went ahead without.
+/// The guarantee, per operation:
+///   - an acknowledged write at `confirmation_factor` >= 2 is on EVERY member of the in-sync set in force (the acknowledgement
+///     waited for all of them), so an in-sync candidate holds every such record whether or not the silent members answer
+///     `[mechanism: DefaultReplicationManager.isrAckSet]`;
+///   - after a full-cluster cold restart the in-sync set is minted from placement, not from what disks hold, so a silent node
+///     whose disk is AHEAD may hold acknowledged records the new lineage lacks. They leave the live stream when that node returns
+///     and is cut back, but the cut first writes them to a recovery segment on its own volume and reports it
+///     (`StreamPartitionManager#repairDivergence`); re-injecting them (follow-up tooling) assigns new offsets, so consumers may see
+///     duplicates or reordering;
+///   - with ephemeral storage there is nothing to retain, and the escape changes nothing there except availability;
+///   - `confirmation_factor` 1 acknowledges at the owner alone and keeps its documented loss window.
+/// A candidate outside the in-sync set, a record with no committed set (`isrVersion` 0) and a first owner with no record at all
+/// keep waiting and raise the unreachable-members block ([ActivationBlock.HoldersUnreachable]) as before.
+///
+/// **Overlap verification (#1555 item 7, #1730 phase 2).** The ownership epoch is recorded in every WAL frame's
+/// attribution (`StreamPartitionManager.attributedWrite`), but this gate compares RECORDS: a returning ex-owner's
+/// never-acked tail (the same offsets, written under an older ownership) is indistinguishable by HEAD from the acked
+/// history that replaced it. Before any peer is used as catch-up source, and for every other responder, the last
+/// [#OVERLAP_WINDOW] offsets both hold are compared record by record (offset, timestamp, payload — the #1505 notion of
+/// "the same event"); the catch-up source is also compared PAIRWISE with every responder above the candidate's head,
+/// because the local log covers only offsets up to the candidate's own head and a candidate lagging two lineages agrees
+/// with both.
+///
+/// **A candidate elected from the committed ISR** (a record with `isrVersion > 0` whose ISR names this node) holds
+/// every acknowledged record, because an acknowledgement waited for every member of the ISR in force. A peer that
+/// disagrees with it within the overlap therefore holds a tail nobody acknowledged: it is LEFT OUT of the catch-up
+/// (never the source, never compared again) and cuts its own tail back when it backfills from this node (Kafka's
+/// KIP-101 truncation). Any other disagreement REFUSES activation, whichever side is higher: for a candidate with no
+/// committed ISR to be elected from (a record minted before #1730), and for two peers that disagree with each other
+/// above the candidate's head, nothing here can tell which of the two lineages was acknowledged, so neither is served
+/// and neither is pulled. The refusal is reported once through the [BlockAlarm] and on [#blockOf] (the partition
+/// status read); the partition then waits for an operator to pick the source (#1569's pick-source surface, AD14).
 ///
 /// **The window is a named constant, not a derived bound.** Nothing caps how far an owner may append beyond its
 /// last acknowledged offset: the pre-append floor (`ReplicationManager.ensureReplicaFloor`) requires in-sync peers
@@ -91,11 +116,14 @@ import org.slf4j.LoggerFactory;
 /// VISIBLE position. So a peer whose ring has evicted the window compares nothing: as the catch-up SOURCE it fails
 /// closed ([ActivationBlock.OverlapUnverifiable]); as a lower peer it is accepted, since nothing is pulled from it.
 ///
-/// **An unreachable member that stays unreachable is reported, not bypassed (#1555 item 8).** After
-/// `unreachableAlarmAfter` of continuous probe failure the partition stays blocked and the block is reported
-/// once through the [BlockAlarm] and on [#blockOf], naming the unreachable members and the responders; the
-/// operator path is #1569's surface. An automatic bound is post-GA (#1579): it needs the ack-time replica set
-/// to be durable, which it is not — replica sets are HRW over live members, recomputed as membership changes.
+/// **An unreachable member that stays unreachable is reported, and bypassed only by the bounded escape (#1555 item 8, #2080).**
+/// After `unreachableAlarmAfter` of continuous probe failure the block is reported once through the [BlockAlarm] and on
+/// [#blockOf], naming the unreachable members and the responders, whoever the candidate is; the operator path is #1569's surface.
+/// A candidate the bounded escape does not cover stays blocked from there on. One it covers goes ahead at `promotionEscapeAfter`
+/// (later than the alarm on purpose: see the guarantee above) and reports the escape; the block it had reported is told as resolved.
+/// #1579's plan for an automatic bound ("it needs the ack-time replica set to be durable") is superseded: the committed in-sync set
+/// is that durable
+/// record, and the cold-restart residual it leaves is retained and reported by the divergent-tail cut.
 ///
 /// **Quorum loss clears every activation** ([#onQuorumStateChange]) and a node without an active consensus engine is
 /// never activated, so an ex-owner that heals back re-runs the whole gate before it serves again.
@@ -110,6 +138,33 @@ public final class OwnerActivation {
     @FunctionalInterface
     public interface OwnershipRecordSource {
         Option<StreamPartitionOwnershipValue> committed(String stream, int partition);
+    }
+
+    /// Which ring serves `(stream, partition)` on this node ([OffHeapRingBuffer#incarnation]): the activation tells a ring
+    /// it has already activated from one that was rebuilt since (#1730 phase 2).
+    @FunctionalInterface
+    public interface RingIncarnation {
+        long of(String stream, int partition);
+        /// For the factories without a partition manager behind them: every partition has the same, unknown, incarnation.
+        RingIncarnation NONE = (_, _) -> - 1L;
+    }
+
+    /// Commits, as the owner, where the current epoch of `(stream, partition)` begins (#1730 phase 2, KIP-320): with
+    /// `restarted` the owner first takes the next ownership term, because its ring was rebuilt and it may assign offsets
+    /// it assigned before. A guarded write of exactly `current`; a refusal (the record moved on) fails the activation, which
+    /// re-runs against the new record. #1976: the refusal is a FAILED promise ([ActivationError#LINEAGE_NOT_COMMITTED]);
+    /// success means THIS write was accepted. A read-back cannot decide it: on a restart the record already names a start,
+    /// so a refused commit would read as landed.
+    @FunctionalInterface
+    public interface LineageCommit {
+        Promise<Unit> commit(String stream,
+                             int partition,
+                             StreamPartitionOwnershipValue current,
+                             long startOffset,
+                             boolean restarted);
+
+        /// Commits nothing: the factories without a consensus applier behind them.
+        LineageCommit NONE = (_, _, _, _, _) -> Promise.success(Unit.unit());
     }
 
     /// Whether this node is the owner of `(stream, partition)` under the current placement.
@@ -131,6 +186,11 @@ public final class OwnerActivation {
         NOT_OWNER("This node is not the owner of the partition after refreshing its committed view"),
         HOLDER_UNREACHABLE("A live placement member did not answer the watermark probe and may hold a higher watermark"),
         CATCH_UP_SHORT("The catch-up did not reach the highest live holder's watermark"),
+        NO_RING("The partition's ring is not materialized here, so there is no offset an epoch could begin at"),
+        /// #1976: no committed leader authorises the write — a quorum condition with its own event, not a refusal of this
+        /// partition's commit, so it is retried but never counted toward the per-partition refusal alarm.
+        NO_COMMITTED_LEADER("No committed leader authorises the owner's lineage commit"),
+        LINEAGE_NOT_COMMITTED("The owner's epoch start was not committed (the guarded write was refused or did not apply)"),
         IN_PROGRESS("An activation of this partition is already running");
         private final String message;
         ActivationError(String message) {
@@ -154,6 +214,54 @@ public final class OwnerActivation {
     @FunctionalInterface
     public interface BlockAlarm {
         Unit raise(ActivationBlock block);
+
+        /// `block` no longer holds the partition's promotion (#1937): its condition ended or this node stopped being the owner.
+        /// Called once per ended block that was raised; the default does nothing.
+        default Unit resolved(ActivationBlock block) {
+            return Unit.unit();
+        }
+
+        /// A promotion went ahead without members that did not answer (#2080), see [PromotionEscape]. Called once per escape.
+        /// The default does nothing: an alarm that does not override it reports no escape, so the production binding must.
+        default Unit escaped(PromotionEscape escape) {
+            return Unit.unit();
+        }
+    }
+
+    /// Which gate let a candidate proceed past unreachable members.
+    public enum EscapeGate {
+        /// The owner activation gate ([OwnerActivation#catchUpToLiveHolders]).
+        OWNER_ACTIVATION,
+        /// The replica promotion contest (`PartitionBackfill#decidePromotionUnquarantined`).
+        REPLICA_CONTEST
+    }
+
+    /// The bounded escape (#2080): `candidate`, named in the partition's committed in-sync set, proceeded past `skipped` after
+    /// they stayed unreachable for `elapsed`, which passed the configured `bound` (`[streaming] promotion_escape_after`). An acknowledged write (confirmation factor >= 2) is on every in-sync member,
+    /// so the candidate holds all of them; the one case that does not hold is a full-cluster cold restart where a skipped node's disk
+    /// is ahead, whose records the new lineage lacks. A returning member is re-gated and cut back (the cut preserves what it removes).
+    public record PromotionEscape(String streamName,
+                                  int partition,
+                                  EscapeGate gate,
+                                  NodeId candidate,
+                                  List<NodeId> skipped,
+                                  TimeSpan bound,
+                                  TimeSpan elapsed) {
+        public String message() {
+            return ("Promotion of %s[%d] on %s proceeded WITHOUT %s (%s): they did not answer for %s, longer than the configured bound %s "
+                   + "(promotion_escape_after), and %s is named in the partition's committed in-sync set, so it holds every acknowledged record unless a full-cluster cold restart left "
+                   + "a skipped node's disk ahead; such records would leave the live stream and are retained in a recovery segment "
+                   + "when the node returns and is cut back").formatted(streamName,
+                                                                        partition,
+                                                                        candidate,
+                                                                        skipped,
+                                                                        gate == EscapeGate.OWNER_ACTIVATION
+                                                                        ? "owner activation"
+                                                                        : "replica promotion contest",
+                                                                        elapsed,
+                                                                        bound,
+                                                                        candidate);
+        }
     }
 
     /// A promotion that cannot complete without an operator: the partition stays un-activated, the gate keeps
@@ -247,6 +355,36 @@ public final class OwnerActivation {
             }
         }
 
+        /// #1431: `peer` ANSWERED the promotion probe, but the event at `offset` alone exceeds its read cap, so its
+        /// watermark cannot be read past it. Not an unreachable peer: the operator raises `maxReadResponseBytes` on
+        /// `peer` above that event (or upgrades a peer whose handler cuts before the first event).
+        record PeerEventExceedsReadCap(String streamName, int partition, NodeId peer, long offset) implements ActivationBlock {
+            @Override
+            public String message() {
+                return ("Owner promotion of %s[%d] refused: %s answered the watermark probe, but its event at offset %d "
+                       + "is larger than its read cap (maxReadResponseBytes), so its log cannot be read past that "
+                       + "event; raise the cap on %s above that event's size").formatted(streamName,
+                                                                                         partition,
+                                                                                         peer,
+                                                                                         offset,
+                                                                                         peer);
+            }
+        }
+
+        /// #1976: the owner's guarded lineage commit was refused `refusals` times in a row (the ownership record keeps moving
+        /// under it, or no committed leader authorises the write), so the partition stays un-activated. It keeps retrying
+        /// with backoff; this is the operator's signal that it has not succeeded. Reported once, cleared on activation.
+        record LineageRefused(String streamName, int partition, int refusals) implements ActivationBlock {
+            @Override
+            public String message() {
+                return ("Owner promotion of %s[%d] has been refused %d times in a row: the guarded commit of its epoch start "
+                       + "is not accepted (the ownership record keeps changing, or no leader authorises it); the owner "
+                       + "retries with backoff and the partition stays un-activated until it lands").formatted(streamName,
+                                                                                                               partition,
+                                                                                                               refusals);
+            }
+        }
+
         /// `unreachable` have not answered the promotion probe for longer than `blockedLongerThan` and may hold a
         /// higher watermark; `responders` answered.
         record HoldersUnreachable(String streamName,
@@ -268,6 +406,8 @@ public final class OwnerActivation {
     public static final int OVERLAP_WINDOW = 1024;
     static final TimeSpan REDRIVE_INITIAL_BACKOFF = TimeSpan.timeSpan(250).millis();
     static final TimeSpan REDRIVE_MAX_BACKOFF = TimeSpan.timeSpan(2).seconds();
+    /// Consecutive refused lineage commits of one partition before the operator is told (#1976).
+    static final int LINEAGE_REFUSAL_ALARM_AFTER = 5;
 
     private record PeerWatermark(NodeId node, long watermark) {}
 
@@ -283,17 +423,95 @@ public final class OwnerActivation {
     private final RecordRange ranges;
     private final BlockAlarm alarm;
     private final TimeSpan unreachableAlarmAfter;
+    private final RingIncarnation ringIncarnation;
+    private final LineageCommit lineage;
+    /// The ring each partition was last activated on, by [RingIncarnation]: an activation on the SAME ring kept its
+    /// offsets, one on another ring (a restart, a re-created stream) may assign them again.
+    private final Map<PartitionKey, Long> activatedIncarnation = new ConcurrentHashMap<>();
+    /// Consecutive refused lineage commits per partition; reset when one lands.
+    private final Map<PartitionKey, Integer> lineageRefusals = new ConcurrentHashMap<>();
 
     /// The committed record each partition was activated for; [Option#none] marks a first-owner activation.
     private final Map<PartitionKey, Option<StreamPartitionOwnershipValue>> activated = new ConcurrentHashMap<>();
+
+    /// The candidate's durable sealed floor, late-bound ([#sealedFloor]); none sealed until wired.
+    private volatile LastSealedOffsetSource sealedFloor = LastSealedOffsetSource.none();
+
+    /// The earliest offset a peer still holds in its RING, or none when that is not known. Late-bound ([#peerRingTail]).
+    @FunctionalInterface
+    public interface PeerRingTail {
+        Promise<Option<Long>> of(NodeId peer, String stream, int partition);
+    }
+
+    private volatile PeerRingTail peerRingTail = (_, _, _) -> Promise.success(Option.none());
+
+    /// Late-bind where a peer's ring begins. The gate's relaxation for a divergent peer applies only to a divergence at an offset
+    /// the peer still holds in its ring: below it the peer's copy was handed to the tier (sealed), where its own repair refuses to
+    /// cut. The compare reads the peer's range through its tier too, so a difference found there is NOT a relaxation case. Unknown
+    /// (the default) fails safe: no relaxation. Set once at wiring.
+    @Contract
+    public void peerRingTail(PeerRingTail tail) {
+        this.peerRingTail = tail;
+    }
+
+    /// Forgets what this node's registry says a peer confirmed. Late-bound ([#peerRows]); the default forgets nothing.
+    @FunctionalInterface
+    public interface PeerRowReset {
+        @Contract
+        void reset(String stream, int partition, NodeId peer);
+    }
+
+    private volatile PeerRowReset peerRows = (_, _, _) -> {};
+
+    /// Late-bind the registry reset used for a peer the gate leaves out as divergent: its row, confirmed under an earlier
+    /// tenure, would otherwise keep seeding this owner's acknowledgements for records the peer holds in another version
+    /// (#1890 class). Set once at wiring.
+    @Contract
+    public void peerRows(PeerRowReset reset) {
+        this.peerRows = reset;
+    }
+
+    /// Late-bind the candidate's durable sealed floor, the bound the gate's relaxation for a divergent peer respects. Set once at
+    /// wiring.
+    @Contract
+    public void sealedFloor(LastSealedOffsetSource source) {
+        this.sealedFloor = source;
+    }
 
     private final Set<PartitionKey> inFlight = ConcurrentHashMap.newKeySet();
     /// Partitions with a re-drive already scheduled.
     private final Set<PartitionKey> redriving = ConcurrentHashMap.newKeySet();
     /// The block currently reported for each partition; the alarm fires when it first appears or changes.
     private final Map<PartitionKey, ActivationBlock> blocks = new ConcurrentHashMap<>();
+    /// The "members did not answer" block, in its OWN slot (#1937): it is a condition independent of every other block, so a
+    /// peer refused for an oversized event ([#blocks]) neither masks it nor is re-raised by it.
+    private final Map<PartitionKey, ActivationBlock> unreachableBlocks = new ConcurrentHashMap<>();
+    /// The refused-lineage-commit block (#1976), in a slot of its own: it is an independent condition, so a block of another
+    /// kind reported for the partition neither replaces it nor ends it.
+    private final Map<PartitionKey, ActivationBlock> lineageBlocks = new ConcurrentHashMap<>();
     /// When the current run of probe failures started (`System.nanoTime`), per partition.
     private final Map<PartitionKey, Long> unreachableSince = new ConcurrentHashMap<>();
+    /// Per silent member, since when it has been continuously unreachable (`System.nanoTime`), per partition (#2080): the escape bound is
+    /// PER MEMBER, so a member that just went silent is never skipped because another one is past the bound. A member that answers (or
+    /// leaves the live set) loses its entry; the whole map goes with the activation and with ownership.
+    private final Map<PartitionKey, Map<NodeId, Silence>> silentSince = new ConcurrentHashMap<>();
+
+    /// A member's current run of silence: when it began and when a round last saw it silent (`System.nanoTime`).
+    private record Silence(long since, long last) {}
+
+    /// How long members must stay unreachable before an ISR-named candidate goes ahead without them (#2080, `[streaming]
+    /// promotion_escape_after`). Never until wired: a gate that is not told its bound does not escape.
+    private volatile TimeSpan promotionEscapeAfter = TimeSpan.timeSpan(Long.MAX_VALUE).nanos();
+
+    /// Late-bind the escape bound (#2080); the configuration validates that it is at least the alarm bound. Set once at wiring.
+    @Contract
+    public void promotionEscapeAfter(TimeSpan bound) {
+        this.promotionEscapeAfter = bound;
+    }
+
+    /// The escape the gate went ahead on, held until the activation COMPLETES (#2080): only then is it reported, so an event never
+    /// describes a promotion that did not happen. A member answering again, or ownership leaving this node, drops it unreported.
+    private final Map<PartitionKey, PromotionEscape> pendingEscapes = new ConcurrentHashMap<>();
 
     private OwnerActivation(NodeId self,
                             OwnershipRecordSource records,
@@ -306,7 +524,9 @@ public final class OwnerActivation {
                             BooleanSupplier consensusActive,
                             RecordRange ranges,
                             BlockAlarm alarm,
-                            TimeSpan unreachableAlarmAfter) {
+                            TimeSpan unreachableAlarmAfter,
+                            RingIncarnation ringIncarnation,
+                            LineageCommit lineage) {
         this.self = self;
         this.records = records;
         this.placementOwner = placementOwner;
@@ -319,6 +539,8 @@ public final class OwnerActivation {
         this.ranges = ranges;
         this.alarm = alarm;
         this.unreachableAlarmAfter = unreachableAlarmAfter;
+        this.ringIncarnation = ringIncarnation;
+        this.lineage = lineage;
     }
 
     public static OwnerActivation ownerActivation(NodeId self,
@@ -333,6 +555,38 @@ public final class OwnerActivation {
                                                   RecordRange ranges,
                                                   BlockAlarm alarm,
                                                   TimeSpan unreachableAlarmAfter) {
+        return ownerActivation(self,
+                               records,
+                               placementOwner,
+                               barrier,
+                               liveMembers,
+                               probe,
+                               selfWatermark,
+                               catchUp,
+                               consensusActive,
+                               ranges,
+                               alarm,
+                               unreachableAlarmAfter,
+                               RingIncarnation.NONE,
+                               LineageCommit.NONE);
+    }
+
+    /// The production factory (#1730 phase 2): the activation also commits where the current epoch begins (see
+    /// [LineageCommit]) before the node is marked activated.
+    public static OwnerActivation ownerActivation(NodeId self,
+                                                  OwnershipRecordSource records,
+                                                  PlacementOwner placementOwner,
+                                                  Option<LinearizableBarrier> barrier,
+                                                  Supplier<List<NodeId>> liveMembers,
+                                                  ReplicaWatermarkProbe probe,
+                                                  SelfWatermark selfWatermark,
+                                                  OwnerCatchUp catchUp,
+                                                  BooleanSupplier consensusActive,
+                                                  RecordRange ranges,
+                                                  BlockAlarm alarm,
+                                                  TimeSpan unreachableAlarmAfter,
+                                                  RingIncarnation ringIncarnation,
+                                                  LineageCommit lineage) {
         return new OwnerActivation(self,
                                    records,
                                    placementOwner,
@@ -344,7 +598,9 @@ public final class OwnerActivation {
                                    consensusActive,
                                    ranges,
                                    alarm,
-                                   unreachableAlarmAfter);
+                                   unreachableAlarmAfter,
+                                   ringIncarnation,
+                                   lineage);
     }
 
     /// Whether this node may act as owner of `(stream, partition)` right now: its consensus engine is active,
@@ -359,7 +615,18 @@ public final class OwnerActivation {
                && claimsOwnership(stream, partition, current)
                && Option.option(activated.get(PartitionKey.partitionKey(stream, partition)))
                         .filter(recorded -> sameOwnership(recorded, current))
-                        .isPresent();
+                        .isPresent()
+               && sameRing(stream, partition);
+    }
+
+    /// #1873: the activation belongs to the ring it committed the lineage for. A ring rebuilt under an unchanged record (a
+    /// re-created stream, a lazy re-materialization) has offsets this activation never saw, so it is NOT activated until the gate
+    /// re-runs and bumps the epoch: the record alone cannot tell the two rings apart. A partition whose lineage was never
+    /// committed on this node (a first owner with no record) has nothing to compare.
+    private boolean sameRing(String stream, int partition) {
+        return Option.option(activatedIncarnation.get(PartitionKey.partitionKey(stream, partition)))
+                     .map(activatedOn -> activatedOn == ringIncarnation.of(stream, partition))
+                     .or(true);
     }
 
     static boolean sameOwnership(Option<StreamPartitionOwnershipValue> left,
@@ -440,17 +707,111 @@ public final class OwnerActivation {
     public void onQuorumStateChange(ClusterStateNotification notification) {
         if (notification.state() == ClusterStateNotification.State.PASSIVE) {
             activated.clear();
+            lineageRefusals.clear();
+            lineageBlocks.keySet().forEach(key -> ended(lineageBlocks.remove(key)));
         }
     }
 
     /// The block reported for `(stream, partition)`, if its promotion currently waits for an operator.
     public Option<ActivationBlock> blockOf(String stream, int partition) {
-        return Option.option(blocks.get(PartitionKey.partitionKey(stream, partition)));
+        var key = PartitionKey.partitionKey(stream, partition);
+
+        return Option.option(blocks.get(key))
+                     .orElse(() -> Option.option(unreachableBlocks.get(key)))
+                     .orElse(() -> Option.option(lineageBlocks.get(key)));
     }
 
     private Promise<Unit> runGate(String stream, int partition, PartitionKey key) {
         return freshView(stream, partition).flatMap(record -> catchUpToLiveHolders(stream, partition).map(_ -> record))
+                        .flatMap(record -> commitLineage(stream, partition, key, record))
                         .map(record -> recordActivation(stream, partition, key, record));
+    }
+
+    /// Step 3 (#1730 phase 2, KIP-320): the owner commits where the current epoch begins, BEFORE it is activated and so
+    /// before it assigns or serves a single offset of it. Three cases, decided by the committed record and this
+    /// process's own memory of the ring it activated:
+    ///   - the record names no start for its epoch: a failover or a first record, the epoch begins at the next offset;
+    ///   - it names the start and this process activated THIS ring for it: the offsets were kept, nothing to commit;
+    ///   - it names the start and the ring is another one (a restart, a re-created stream, a re-materialization): the
+    ///     owner may assign again offsets it assigned before, in the SAME epoch, which no consumer could tell apart. It
+    ///     takes the next ownership term, so the new epoch begins where it resumed.
+    /// A consumer that read the replaced offsets holds the old epoch, and is told so (`EpochValidation`).
+    private Promise<Option<StreamPartitionOwnershipValue>> commitLineage(String stream,
+                                                                         int partition,
+                                                                         PartitionKey key,
+                                                                         Option<StreamPartitionOwnershipValue> record) {
+        return record.fold(() -> Promise.success(record), committed -> commitLineage(stream, partition, key, committed));
+    }
+
+    private Promise<Option<StreamPartitionOwnershipValue>> commitLineage(String stream,
+                                                                         int partition,
+                                                                         PartitionKey key,
+                                                                         StreamPartitionOwnershipValue committed) {
+        var started = committed.lastEpochStart()
+                               .filter(start -> start.epoch()
+                                                     .equals(committed.ownerEpoch()))
+                               .isPresent();
+        var incarnation = ringIncarnation.of(stream, partition);
+
+        if (lineage != LineageCommit.NONE && incarnation < 0L) {
+            return ActivationError.NO_RING.promise();
+        }
+
+        var restarted = started && !Long.valueOf(incarnation).equals(activatedIncarnation.get(key));
+
+        if (lineage == LineageCommit.NONE || started && !restarted) {
+            return Promise.success(Option.some(committed));
+        }
+
+        return lineage.commit(stream,
+                              partition,
+                              committed,
+                              selfWatermark.localWatermark(stream, partition) + 1L,
+                              restarted)
+                      .flatMap(_ -> ownedRecord(stream, partition))
+                      .flatMap(this::requireCommittedStart)
+                      .onSuccess(_ -> landed(key, incarnation))
+                      .onFailure(cause -> refused(stream, partition, key, cause));
+    }
+
+    private Unit landed(PartitionKey key, long incarnation) {
+        activatedIncarnation.put(key, incarnation);
+        lineageRefusals.remove(key);
+
+        return Unit.unit();
+    }
+
+    /// #1976: a refused commit never latches [#activatedIncarnation], so the re-drive runs the commit again; only the
+    /// operator's view needs the count — the Nth refusal in a row is reported once, and [#recordActivation] clears it.
+    private Unit refused(String stream, int partition, PartitionKey key, Cause cause) {
+        if (cause != ActivationError.LINEAGE_NOT_COMMITTED) {
+            return Unit.unit();
+        }
+
+        var count = lineageRefusals.merge(key, 1, Integer::sum);
+
+        if (count != LINEAGE_REFUSAL_ALARM_AFTER) {
+            return Unit.unit();
+        }
+
+        var block = new ActivationBlock.LineageRefused(stream, partition, count);
+
+        lineageBlocks.put(key, block);
+
+        return alarm.raise(block);
+    }
+
+    /// A guarded write that was refused is not a failed promise (the applier answers it with a result): the record is
+    /// re-read, and an epoch that still has no committed start fails the activation, which re-runs against the record as it
+    /// is now. Without this an owner would activate with no start and answer every consumer read `OwnerNotActivated`.
+    private Promise<Option<StreamPartitionOwnershipValue>> requireCommittedStart(Option<StreamPartitionOwnershipValue> record) {
+        return record.filter(value -> value.lastEpochStart()
+                                           .filter(start -> start.epoch()
+                                                                 .equals(value.ownerEpoch()))
+                                           .isPresent())
+                     .isPresent() || record.isEmpty()
+               ? Promise.success(record)
+               : ActivationError.LINEAGE_NOT_COMMITTED.promise();
     }
 
     private Unit recordActivation(String stream,
@@ -458,6 +819,7 @@ public final class OwnerActivation {
                                   PartitionKey key,
                                   Option<StreamPartitionOwnershipValue> record) {
         activated.put(key, record);
+        Option.option(pendingEscapes.get(key)).onPresent(alarm::escaped);
         clearBlock(key);
         log.info("Owner activation of {}[{}] complete at watermark {} for ownership record {}",
                  stream,
@@ -503,9 +865,17 @@ public final class OwnerActivation {
         return ActivationError.NOT_OWNER.promise();
     }
 
+    /// Also ends a refusal episode (#1976): the count restarts, and a reported [ActivationBlock.LineageRefused] is told as
+    /// resolved — the partition activated, or this node stopped claiming it, so the condition no longer holds here. A later
+    /// tenure that gets stuck again therefore raises again.
     private Unit clearBlock(PartitionKey key) {
-        blocks.remove(key);
+        lineageRefusals.remove(key);
+        ended(blocks.remove(key));
+        ended(unreachableBlocks.remove(key));
+        ended(lineageBlocks.remove(key));
         unreachableSince.remove(key);
+        silentSince.remove(key);
+        pendingEscapes.remove(key);
 
         return Unit.unit();
     }
@@ -539,9 +909,98 @@ public final class OwnerActivation {
         var answered = results.stream().flatMap(result -> result.option()
                                                                 .stream()).toList();
 
+        return oversizedAt(peers, results).fold(() -> noLongerOversized(stream, partition, peers, answered),
+                                                oversized -> refuseOversizedKeepingUnreachable(stream,
+                                                                                               partition,
+                                                                                               peers,
+                                                                                               results,
+                                                                                               answered,
+                                                                                               oversized));
+    }
+
+    /// No peer is cut before its first event any more (#1937 F5): an oversized block still standing for this partition describes a
+    /// condition that ended, whether the peers now answer or one went silent, so it ends here and the alarm is told. The
+    /// unreachable wait and the catch-up proceed as before.
+    private Promise<Unit> noLongerOversized(String stream,
+                                            int partition,
+                                            List<NodeId> peers,
+                                            List<PeerWatermark> answered) {
+        var key = PartitionKey.partitionKey(stream, partition);
+
+        Option.option(blocks.get(key))
+              .filter(ActivationBlock.PeerEventExceedsReadCap.class::isInstance)
+              .onPresent(block -> {
+                  if (blocks.remove(key, block)) {
+                  ended(block);
+              }
+              });
+
         return answered.size() < peers.size()
                ? holdersUnreachable(stream, partition, peers, answered)
                : catchUpFromHighest(stream, partition, answered);
+    }
+
+    private record OversizedPeer(NodeId peer, long offset) {}
+
+    /// #1431: the first peer that answered with a page cut before its first event (index-aligned with `results`).
+    private static Option<OversizedPeer> oversizedAt(List<NodeId> peers, List<Result<PeerWatermark>> results) {
+        for (var i = 0; i < peers.size(); i++) {
+            var peer = peers.get(i);
+            var oversized = results.get(i)
+                                   .fold(cause -> cause instanceof OwnerPeerReads.EventExceedsReadCap(var offset)
+                                                  ? Option.some(new OversizedPeer(peer, offset))
+                                                  : Option.<OversizedPeer> none(),
+                                         _ -> Option.<OversizedPeer> none());
+
+            if (oversized.isPresent()) {
+                return oversized;
+            }
+        }
+
+        return Option.none();
+    }
+
+    /// #1937: a peer refused for an oversized event is one condition; a DIFFERENT peer that did not answer is another, with its
+    /// own timer and its own block. The refusal must not return before the unreachable condition is evaluated, or the second
+    /// goes unreported for as long as the first stands. Every peer that neither answered nor was the oversized one is
+    /// unreachable.
+    private Promise<Unit> refuseOversizedKeepingUnreachable(String stream,
+                                                            int partition,
+                                                            List<NodeId> peers,
+                                                            List<Result<PeerWatermark>> results,
+                                                            List<PeerWatermark> answered,
+                                                            OversizedPeer oversized) {
+        var key = PartitionKey.partitionKey(stream, partition);
+        var silent = new java.util.ArrayList<NodeId>();
+
+        for (var i = 0; i < peers.size(); i++) {
+            var failed = results.get(i)
+                                .fold(cause -> !(cause instanceof OwnerPeerReads.EventExceedsReadCap),
+                                      _ -> false);
+
+            if (failed) {
+                silent.add(peers.get(i));
+            }
+        }
+
+        if (silent.isEmpty()) {
+            clearUnreachable(key);
+        } else {
+            // the members that DID answer in this round reset their escape clocks here too (#2084 R1), not only on the unrefused path
+            shortestSilence(key, silent);
+            trackUnreachable(key, stream, partition, silent, answered);
+        }
+
+        return refuseOversized(stream, partition, oversized);
+    }
+
+    /// #1431: its own refusal, reported at once (once per distinct block) — never counted as an unreachable member.
+    private Promise<Unit> refuseOversized(String stream, int partition, OversizedPeer oversized) {
+        var block = new ActivationBlock.PeerEventExceedsReadCap(stream, partition, oversized.peer(), oversized.offset());
+
+        report(PartitionKey.partitionKey(stream, partition), block);
+
+        return block.promise();
     }
 
     /// A member did not answer: refuse, and once the failures have run continuously for longer than
@@ -550,28 +1009,221 @@ public final class OwnerActivation {
                                              int partition,
                                              List<NodeId> peers,
                                              List<PeerWatermark> answered) {
+        var responders = answered.stream().map(PeerWatermark::node).toList();
         var key = PartitionKey.partitionKey(stream, partition);
-        var since = unreachableSince.computeIfAbsent(key, _ -> System.nanoTime());
+        var silent = peers.stream().filter(peer -> !responders.contains(peer)).toList();
 
-        if (System.nanoTime() - since > unreachableAlarmAfter.nanos()) {
-            var responders = answered.stream().map(PeerWatermark::node).toList();
+        unreachableSince.computeIfAbsent(key, _ -> System.nanoTime());
+        var shortest = shortestSilence(key, silent);
 
-            report(key,
-                   new ActivationBlock.HoldersUnreachable(stream,
-                                                          partition,
-                                                          peers.stream()
-                                                               .filter(peer -> !responders.contains(peer))
-                                                               .toList(),
-                                                          responders,
-                                                          unreachableAlarmAfter));
+        if (shortest.map(this::pastBound).or(false) && isrElected(stream, partition)) {
+            return proceedWithout(stream, partition, key, silent, answered, shortest.or(0L));
         }
+
+        trackUnreachable(key, stream, partition, silent, answered);
 
         return ActivationError.HOLDER_UNREACHABLE.promise();
     }
 
+    /// Updates the per-member clocks of the partition to `silent` (a member that answered or left the live set loses its entry, a newly
+    /// silent one starts at now) and returns how long the member that has been silent for the SHORTEST time has been, in nanoseconds:
+    /// the escape may go ahead only when even that member is past the bound. None without a silent member.
+    private Option<Long> shortestSilence(PartitionKey key, List<NodeId> silent) {
+        var clocks = silentSince.computeIfAbsent(key, _ -> new ConcurrentHashMap<>());
+        var now = System.nanoTime();
+
+        clocks.keySet().retainAll(silent);
+        silent.forEach(peer -> clocks.merge(peer, new Silence(now, now), (known, _) -> continued(known, now)));
+
+        return Option.from(clocks.values().stream().map(silence -> now - silence.since()).min(Long::compare));
+    }
+
+    /// Observed continuity (#2084): the gate is demand-driven, so a stretch in which no round looked at the member is not evidence that
+    /// it stayed silent. A member last seen silent more than `unreachableAlarmAfter` ago starts a new run at this observation; rounds
+    /// closer together than that extend the run. THE THRESHOLD IS A GUESS (the alarm bound is the nearest existing "too long to be one
+    /// continuous look" measure; the re-drive backs off to 2 s, so a blocked partition is looked at far more often than 20 s).
+    private Silence continued(Silence known, long now) {
+        return now - known.last() > unreachableAlarmAfter.nanos()
+               ? new Silence(now, now)
+               : new Silence(known.since(), now);
+    }
+
+    private boolean pastBound(long silentNanos) {
+        return silentNanos > promotionEscapeAfter.nanos();
+    }
+
+    /// #2080, the bounded escape. `silent` have not answered for longer than the bound and this node is the candidate named in the
+    /// committed in-sync set (`isrVersion > 0`), so it holds every acknowledged record the set was acknowledging: the responders
+    /// are caught up from and reconciled as always, and the silent members are no longer waited for. The escape is held as pending
+    /// when that step passes and reported when the activation completes ([#recordActivation]): a divergent responder that refuses the
+    /// activation, or a failed epoch-start commit, means nothing went ahead, and the unreachable-members block is ended instead of
+    /// raised. A candidate outside the set, or a record with no set, never gets here: it keeps waiting and reports the block.
+    private Promise<Unit> proceedWithout(String stream,
+                                         int partition,
+                                         PartitionKey key,
+                                         List<NodeId> silent,
+                                         List<PeerWatermark> answered,
+                                         long silentNanos) {
+        var escape = new PromotionEscape(stream,
+                                         partition,
+                                         EscapeGate.OWNER_ACTIVATION,
+                                         self,
+                                         silent,
+                                         promotionEscapeAfter,
+                                         TimeSpan.timeSpan(silentNanos).nanos());
+
+        ended(unreachableBlocks.remove(key));
+
+        return catchUpFromResponders(stream, partition, answered).onSuccessRun(() -> pendingEscapes.put(key, escape));
+    }
+
+    /// The unreachable condition's timer and block, kept apart from every other block (#1937): once the members in `silent`
+    /// have failed continuously for longer than `unreachableAlarmAfter`, the block is reported — once per distinct block.
+    private void trackUnreachable(PartitionKey key,
+                                  String stream,
+                                  int partition,
+                                  List<NodeId> silent,
+                                  List<PeerWatermark> answered) {
+        var since = unreachableSince.computeIfAbsent(key, _ -> System.nanoTime());
+
+        if (System.nanoTime() - since > unreachableAlarmAfter.nanos()) {
+            var block = new ActivationBlock.HoldersUnreachable(stream,
+                                                               partition,
+                                                               silent,
+                                                               answered.stream().map(PeerWatermark::node).toList(),
+                                                               unreachableAlarmAfter);
+            var previous = Option.option(unreachableBlocks.put(key, block));
+
+            previous.filter(block::equals).fold(() -> alarm.raise(block), _ -> Unit.unit());
+        }
+    }
+
     private Promise<Unit> catchUpFromHighest(String stream, int partition, List<PeerWatermark> answered) {
         clearUnreachable(PartitionKey.partitionKey(stream, partition));
+
+        return catchUpFromResponders(stream, partition, answered);
+    }
+
+    private Promise<Unit> catchUpFromResponders(String stream, int partition, List<PeerWatermark> answered) {
         var local = selfWatermark.localWatermark(stream, partition);
+
+        return withoutDivergentPeers(stream, partition, local, answered).flatMap(kept -> catchUpFromKept(stream,
+                                                                                                         partition,
+                                                                                                         local,
+                                                                                                         kept));
+    }
+
+    /// #1730 phase 2 (KIP-101): a candidate ELECTED from the committed ISR holds every acknowledged record, because an
+    /// acknowledgement needed every member of the ISR in force (phase 1). A peer whose records differ from the
+    /// candidate's within the overlap therefore carries a tail nobody acknowledged: an ex-owner that returned, or an ISR
+    /// member that lagged an election. That peer is left out of the catch-up (never the source, never compared again) and
+    /// truncates itself when it backfills from the new owner. Only a candidate with a committed ISR it belongs to is
+    /// exempt; a record minted before #1730 has none, and every other refusal (two peers disagreeing with each other,
+    /// nothing comparable) is unchanged.
+    private Promise<List<PeerWatermark>> withoutDivergentPeers(String stream,
+                                                               int partition,
+                                                               long local,
+                                                               List<PeerWatermark> answered) {
+        if (!isrElected(stream, partition)) {
+            return Promise.success(answered);
+        }
+
+        return Promise.allOf(answered.stream()
+                                     .map(peer -> divergesFromCandidate(stream, partition, local, peer))
+                                     .toList()).map(verdicts -> keepAgreeing(stream, partition, answered, verdicts));
+    }
+
+    private boolean isrElected(String stream, int partition) {
+        return records.committed(stream, partition)
+                      .filter(record -> record.committedIsrNames(self))
+                      .isPresent();
+    }
+
+    /// The first offset, within the overlap, at which `peer` holds a record that differs from the candidate's, or none. A peer
+    /// that cannot be read is not judged here; the existing comparisons report it as they did before.
+    private Promise<Option<Long>> divergesFromCandidate(String stream, int partition, long local, PeerWatermark peer) {
+        var to = Math.min(local, peer.watermark());
+
+        if (to < 0) {
+            return Promise.success(Option.none());
+        }
+
+        var from = Math.max(0L, to - OVERLAP_WINDOW + 1);
+
+        return Promise.all(ranges.read(self, stream, partition, from, to),
+                           ranges.read(peer.node(),
+                                       stream,
+                                       partition,
+                                       from,
+                                       to))
+                      .map(OwnerActivation::firstDifference)
+                      .flatMap(difference -> difference.fold(() -> Promise.success(Option.<Long> none()),
+                                                             offset -> inPeersRing(stream, partition, peer, offset)))
+                      .recover(_ -> Option.none());
+    }
+
+    /// `offset` when the peer holds it in its RING (it is at or above the peer's ring tail); none when it lies below it (sealed
+    /// data) or the tail is not known.
+    private Promise<Option<Long>> inPeersRing(String stream, int partition, PeerWatermark peer, long offset) {
+        return peerRingTail.of(peer.node(),
+                               stream,
+                               partition)
+                           .map(tail -> tail.filter(ringTail -> offset >= ringTail)
+                                            .map(_ -> offset));
+    }
+
+    /// The lowest offset present in both ranges whose records differ.
+    private static Option<Long> firstDifference(List<OffHeapRingBuffer.RawEvent> mine,
+                                                List<OffHeapRingBuffer.RawEvent> theirs) {
+        var theirRecords = new HashSet<>(theirs);
+        var theirOffsets = theirs.stream().map(OffHeapRingBuffer.RawEvent::offset).collect(Collectors.toSet());
+
+        return Option.from(mine.stream()
+                               .filter(event -> theirOffsets.contains(event.offset()))
+                               .filter(event -> !theirRecords.contains(event))
+                               .map(OffHeapRingBuffer.RawEvent::offset)
+                               .min(Long::compare));
+    }
+
+    /// B6 (the design's Q6): the gate relaxes, excluding a divergent peer, ONLY when the candidate is ISR-elected, the peer is a
+    /// replica of the partition, and the divergence lies ABOVE the candidate's durable sealed floor. A divergence at or below it
+    /// is in offsets already sealed into segments, which no truncation will remove (the peer's repair refuses below the floor
+    /// and the partition stays flagged), so there is nothing to discard and activation stays refused as before. The peer's own
+    /// sealed floor is not known here; the candidate's is the bound.
+    private static boolean relaxable(Result<Option<Long>> verdict, long floor) {
+        return verdict.or(Option.none())
+                      .filter(offset -> offset > floor)
+                      .isPresent();
+    }
+
+    private List<PeerWatermark> keepAgreeing(String stream,
+                                             int partition,
+                                             List<PeerWatermark> answered,
+                                             List<Result<Option<Long>>> verdicts) {
+        var kept = new ArrayList<PeerWatermark>();
+        var floor = sealedFloor.lastSealedOffset(stream, partition);
+
+        for (var i = 0; i < answered.size(); i++) {
+            if (relaxable(verdicts.get(i), floor)) {
+                log.warn("Owner activation of {}[{}]: {} holds records that differ from this elected owner's (watermark {}, "
+                        + "local {}); it is left out of the catch-up and truncates its divergent tail when it backfills from this node",
+                         stream,
+                         partition,
+                         answered.get(i).node(),
+                         answered.get(i).watermark(),
+                         selfWatermark.localWatermark(stream, partition));
+                peerRows.reset(stream,
+                               partition,
+                               answered.get(i).node());
+            } else {
+                kept.add(answered.get(i));
+            }
+        }
+
+        return List.copyOf(kept);
+    }
+
+    private Promise<Unit> catchUpFromKept(String stream, int partition, long local, List<PeerWatermark> answered) {
         var source = Option.from(answered.stream()
                                          .filter(peer -> peer.watermark() > local)
                                          .max(Comparator.comparingLong(PeerWatermark::watermark)));
@@ -588,9 +1240,9 @@ public final class OwnerActivation {
     /// Every member answered: the unreachable run is over, and a report of it no longer describes the partition.
     private Unit clearUnreachable(PartitionKey key) {
         unreachableSince.remove(key);
-        Option.option(blocks.get(key))
-              .filter(ActivationBlock.HoldersUnreachable.class::isInstance)
-              .onPresent(block -> blocks.remove(key, block));
+        silentSince.remove(key);
+        pendingEscapes.remove(key);
+        ended(unreachableBlocks.remove(key));
 
         return Unit.unit();
     }
@@ -820,8 +1472,15 @@ public final class OwnerActivation {
 
     /// Record the block and raise the alarm when it first appears or changes, so a partition that stays blocked
     /// across many demands is reported once.
+    /// A block that stood has ended (#1937): the alarm is told, so a recovery reaches whoever was told of the block.
+    private void ended(ActivationBlock block) {
+        Option.option(block).onPresent(alarm::resolved);
+    }
+
     private Unit report(PartitionKey key, ActivationBlock block) {
         var previous = Option.option(blocks.put(key, block));
+
+        previous.filter(last -> last.getClass() != block.getClass()).onPresent(this::ended);
 
         return previous.filter(block::equals)
                        .fold(() -> alarm.raise(block),

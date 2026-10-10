@@ -582,8 +582,20 @@ public interface SystemTags {
         // stream ISR below the confirmation factor / restored (#1883)
         pin(table, 1746, "org.pragmatica.aether.api.ClusterEvent.StreamIsrBelowMinimum");
         pin(table, 1747, "org.pragmatica.aether.api.ClusterEvent.StreamIsrRestored");
+        // stream partition epoch start (#1730 phase 2)
+        pin(table, 1748, "org.pragmatica.aether.slice.kvstore.AetherValue.EpochStart");
+        pin(table, 1749, "org.pragmatica.aether.api.ClusterEvent.StreamLineageRestarted");
         // a committed stream config lowering that is not applied online (#1883)
         pin(table, 1750, "org.pragmatica.aether.api.ClusterEvent.StreamConfigChangeNotApplied");
+        // a scheduled task with an unknown fire outcome / its late resolution (#1723)
+        pin(table, 1751, "org.pragmatica.aether.api.ClusterEvent.ScheduledTaskOutcomeUnknown");
+        pin(table, 1752, "org.pragmatica.aether.api.ClusterEvent.ScheduledTaskOutcomeRestored");
+        // a scheduled fire still in flight while its ticks are skipped / its resolution (#1930)
+        pin(table, 1753, "org.pragmatica.aether.api.ClusterEvent.ScheduledTaskFireHeld");
+        pin(table, 1754, "org.pragmatica.aether.api.ClusterEvent.ScheduledTaskFireReleased");
+        // two artifacts serving one HTTP route / the collision cleared (#1206)
+        pin(table, 1755, "org.pragmatica.aether.api.ClusterEvent.RoutePrefixCollision");
+        pin(table, 1756, "org.pragmatica.aether.api.ClusterEvent.RoutePrefixCollisionCleared");
         pin(table, 2112, "org.pragmatica.aether.slice.kvstore.AetherKey.CommunityPlacementAvailabilityKey");
         pin(table, 2113, "org.pragmatica.aether.slice.kvstore.AetherValue.CommunityPlacementAvailabilityValue");
         // built-in artifact store versions index in consensus (#1778)
@@ -593,7 +605,28 @@ public interface SystemTags {
         // first-committed content digest per artifact file (#1778)
         pin(table, 2117, "org.pragmatica.aether.slice.kvstore.AetherKey.ArtifactContentKey");
         pin(table, 2118, "org.pragmatica.aether.slice.kvstore.AetherValue.ArtifactContentValue");
-        // ---- 2119..16383 RESERVED ----
+        // the DHT replication a worker's projection carries (#1777 track 1) — next free after 2118
+        pin(table, 2119, "org.pragmatica.aether.worker.metadata.WorkerMetadataMessage.DhtReplication");
+        // #1777 R1b: the committed DHT replication change, the members' reports, and the operator events
+        pin(table, 2120, "org.pragmatica.aether.slice.kvstore.AetherKey.DhtReplicationChangeKey");
+        pin(table, 2121, "org.pragmatica.aether.slice.kvstore.AetherValue.DhtReplicationChangeValue");
+        pin(table, 2122, "org.pragmatica.aether.slice.kvstore.AetherKey.DhtReplicationReportKey");
+        pin(table, 2123, "org.pragmatica.aether.slice.kvstore.AetherValue.DhtReplicationReportValue");
+        pin(table, 2124, "org.pragmatica.aether.api.ClusterEvent.DhtReplicationUnsettled");
+        pin(table, 2125, "org.pragmatica.aether.api.ClusterEvent.DhtReplicationSettled");
+        pin(table, 2126, "org.pragmatica.aether.slice.kvstore.AetherValue.DhtReplicationStage");
+        pin(table, 2127, "org.pragmatica.aether.api.ClusterEvent.DhtWriterStale");
+        pin(table, 2128, "org.pragmatica.aether.api.ClusterEvent.DhtWriterStaleResolved");
+        // #1543 part D: the replacement pairing record — next free after 2128
+        pin(table, 2129, "org.pragmatica.aether.slice.kvstore.AetherKey.NodeReplacementKey");
+        pin(table, 2130, "org.pragmatica.aether.slice.kvstore.AetherValue.NodeReplacementValue");
+        pin(table, 2131, "org.pragmatica.aether.slice.kvstore.AetherValue.NodeReplacementPhase");
+        // #1543 part F: the rolling-upgrade run — next free after 2135
+        pin(table, 2136, "org.pragmatica.aether.slice.kvstore.AetherKey.UpgradeRunKey");
+        pin(table, 2137, "org.pragmatica.aether.slice.kvstore.AetherValue.UpgradeRunValue");
+        pin(table, 2134, "org.pragmatica.aether.slice.kvstore.AetherValue.UpgradeRunState");
+        pin(table, 2135, "org.pragmatica.aether.slice.kvstore.AetherValue.UpgradeStop");
+        // ---- 2138..16383 RESERVED ----
         rejectDuplicateTags(table);
 
         return Map.copyOf(table);

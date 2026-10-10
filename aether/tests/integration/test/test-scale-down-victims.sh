@@ -51,6 +51,8 @@ CLOUD_MODE=false; TARGET_HOST=h; APP_PORT=8070
 api_get() { echo x >> "$CALLS"; cat "$STATUS_BODY"; }
 STUB
 for f in _voters_in _cluster_voters _id_set_difference _app_endpoint_for_node log_scale_down_step scale_load_retarget_to_victim slice_hosts_for slice_owner_for; do extract "$f"; done
+# the port-slot arithmetic _app_endpoint_for_node calls (generation-encoded cluster B ids, #1968): the real one, from common.sh
+sed -n "/^b_seed_offset() {/,/^}/p" "$INTEG_DIR/lib/common.sh"
 } > "$WORK/fns.sh"
 BEFORE=$'node-1\nnode-2\nnode-3\nnode-4\nnode-5\nnode-6\nnode-7'; AFTER=$'node-1\nnode-2\nnode-3\nnode-4\nnode-5'
 

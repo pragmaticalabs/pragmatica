@@ -2,16 +2,24 @@
 """Refuse a release whose published artifact set is not closed under its own dependencies (#1219, #1211).
 
 Walks the reactor from the root pom's <modules> (default build, no profiles), and for every module that PUBLISHES
-(the Central publishing plugin's `skipPublishing` is not true, set in the module's <build><plugins> or inherited through
-its parent chain) requires that:
+(the Central publishing plugin is bound for it and its `skipPublishing` is not true) requires that:
   - every dependency that is itself a reactor module, at compile or runtime scope (the declared scope, else the
     managed one) and not optional, also publishes;
   - its reactor parent pom also publishes (a consumer resolves the parent to read the child).
 A published module that depends on an unpublished one is unusable from Central: its consumers get a hard
 resolution failure, while every local build resolves the dependency from a populated local repository and passes.
 
-`maven.deploy.skip` is deliberately NOT read: the Central publishing plugin ignores it. `pg-test-corpus` sets it and is
+A module publishes only by OPT-IN (#1988, #1989). The root skips by default (`skipPublishing=true` in its
+<pluginManagement>, and `maven.deploy.skip=true` for a module the plugin is not bound to), so a new module stays
+unpublished until someone declares the plugin in its own <build><plugins> with `<skipPublishing>false</skipPublishing>`.
+The plugin entry follows Maven's inheritance: a child inherits its parent's entry, and an entry with
+`<inherited>false</inherited>` is not passed on, which is how a parent pom publishes without publishing every child.
+
+`maven.deploy.skip` is deliberately NOT read: the Central publishing plugin ignores it. `pg-test-corpus` set it and is
 on Central at 1.0.0-rc3 regardless; `slice-testkit` sets `skipPublishing` and is not.
+
+`--table` prints the per-module decision table (module, coordinate, packaging, decision) for the release docs;
+`--check-table FILE` fails when FILE's decisions differ from the poms (a module missing, extra, or decided otherwise).
 
 Prints the number of published modules and dependency edges it examined; exits 1 with one line per violation.
 """
@@ -59,9 +67,52 @@ class Module:
     def coordinate(self):
         return (self.group_id, self.artifact_id)
 
-    def skip_publishing(self):
-        """True/False when this pom's <build><plugins> configures the publishing plugin's skip; None otherwise."""
+    def declares_deploy_skip(self):
+        """True when this pom's own <properties> sets `maven.deploy.skip` to true."""
+        return text(self.root, "m:properties/m:maven.deploy.skip") == "true"
+
+    def plugin_entry(self):
+        """The publishing plugin's own <build><plugins> entry as (skipPublishing or None, inherited or None); None if absent.
+
+        `skipPublishing` is True/False when configured; `inherited` is True/False when the entry says so."""
         for plugin in self.root.findall("m:build/m:plugins/m:plugin", NS):
+            if text(plugin, "m:artifactId") == PUBLISHING_PLUGIN:
+                value = text(plugin, "m:configuration/m:skipPublishing")
+                inherited = text(plugin, "m:inherited")
+                return (None if value is None else value == "true", None if inherited is None else inherited == "true")
+        return None
+
+    def plugin_entries(self):
+        """Every publishing-plugin element in this pom's <build> (plugins and pluginManagement), as XML elements."""
+        return [plugin for plugin in self.root.findall("m:build//m:plugin", NS)
+                if text(plugin, "m:artifactId") == PUBLISHING_PLUGIN]
+
+    def raw_dependencies(self):
+        """(unresolved group, artifact, scope, optional) for each <dependencies> entry."""
+        for dependency in self.root.findall("m:dependencies/m:dependency", NS):
+            yield (text(dependency, "m:groupId") or "", text(dependency, "m:artifactId"),
+                   text(dependency, "m:scope"), text(dependency, "m:optional"))
+
+    def managed_keys(self):
+        for dependency in self.root.findall("m:dependencyManagement/m:dependencies/m:dependency", NS):
+            yield (text(dependency, "m:groupId") or "", text(dependency, "m:artifactId"))
+
+    def managed_scopes(self):
+        for dependency in self.root.findall("m:dependencyManagement/m:dependencies/m:dependency", NS):
+            yield (self.resolve(text(dependency, "m:groupId") or ""), text(dependency, "m:artifactId"),
+                   text(dependency, "m:scope"))
+
+    def default_active_profiles(self):
+        """Profiles that are on without -P: activeByDefault, or a jdk activation the gate cannot evaluate."""
+        for profile in self.root.findall("m:profiles/m:profile", NS):
+            activation = profile.find("m:activation", NS)
+            if activation is not None and (text(activation, "m:activeByDefault") == "true"
+                                           or activation.find("m:jdk", NS) is not None):
+                yield profile
+
+    def managed_skip(self):
+        """True/False when this pom's <pluginManagement> configures the plugin's skip (the default for a bound module)."""
+        for plugin in self.root.findall("m:build/m:pluginManagement/m:plugins/m:plugin", NS):
             if text(plugin, "m:artifactId") == PUBLISHING_PLUGIN:
                 value = text(plugin, "m:configuration/m:skipPublishing")
                 if value is not None:
@@ -101,15 +152,49 @@ def reactor(root_pom):
     return modules
 
 
-def publishes(module, modules):
-    """The nearest explicit `skipPublishing` wins, walking up the parent chain; the default is to publish."""
+def parent_of(module, modules):
+    return modules.get(module.parent_pom) if module.parent_pom else None
+
+
+def effective_entry(module, modules):
+    """The publishing plugin entry Maven gives `module`: its own entry merged over what its parent passes on.
+
+    A parent passes on its effective entry unless that entry is `inherited=false`. Merge: the child's explicit
+    `skipPublishing` and `inherited` win; otherwise the parent's are kept. None means the plugin is not bound."""
+    own = module.plugin_entry()
+    parent = parent_of(module, modules)
+    passed = effective_entry(parent, modules) if parent is not None else None
+    if passed is not None and passed[1] is False:
+        passed = None
+    if own is None:
+        return passed
+    if passed is None:
+        return own
+    return (own[0] if own[0] is not None else passed[0], own[1] if own[1] is not None else passed[1])
+
+
+def managed_default(module, modules):
+    """The nearest <pluginManagement> `skipPublishing`, the module's own pom first, then up the parent chain."""
     current = module
     while current is not None:
-        skip = current.skip_publishing()
+        skip = current.managed_skip()
         if skip is not None:
-            return not skip
-        current = modules.get(current.parent_pom) if current.parent_pom else None
-    return True
+            return skip
+        current = parent_of(current, modules)
+    return None
+
+
+def publishes(module, modules):
+    """Opt-in: published only when the plugin is bound for the module and its effective `skipPublishing` is false.
+
+    No bound plugin means nothing publishes it (the root's `maven.deploy.skip=true` skips the default deploy). A bound
+    plugin without an explicit value takes the <pluginManagement> default; with none anywhere the plugin's own default
+    (publish) applies."""
+    entry = effective_entry(module, modules)
+    if entry is None:
+        return False
+    skip = entry[0] if entry[0] is not None else managed_default(module, modules)
+    return skip is not True
 
 
 def managed_entry(module, modules, key):
@@ -124,12 +209,55 @@ def managed_entry(module, modules, key):
     return None, None
 
 
+def reaches(module, modules, root):
+    current = module
+    while current is not None and current.pom != root:
+        current = parent_of(current, modules)
+    return current is not None
+
+
+def unevaluable(module, by_coordinate):
+    """Shapes this gate cannot evaluate, as one message each. The gate fails CLOSED on them (#1997 review): a shape it
+    cannot read would otherwise pass as 'closed' while the real build publishes something else."""
+    found = []
+    where = f"{module.artifact_id} ({module.pom})"
+    declared = [("groupId", text(module.root, "m:groupId")), ("parent groupId", module.parent_group)]
+    declared += [("dependency groupId", group) for group, _, _, _ in module.raw_dependencies()]
+    declared += [("managed dependency groupId", group) for group, _ in module.managed_keys()]
+    for label, value in declared:
+        if value and "${" in value.replace("${project.groupId}", ""):
+            found.append(f"{where}: {label} '{value}' is a property reference the gate cannot resolve")
+    for group, artifact, scope in module.managed_scopes():
+        if scope == "import" and (group, artifact) in by_coordinate:
+            found.append(f"{where}: imports {artifact}, a reactor module, as a BOM; the gate does not read imported management")
+    for plugin in module.plugin_entries():
+        for label, value in (("skipPublishing", text(plugin, "m:configuration/m:skipPublishing")),
+                             ("inherited", text(plugin, "m:inherited"))):
+            if value is not None and value not in ("true", "false"):
+                found.append(f"{where}: {PUBLISHING_PLUGIN} {label} is '{value}', not a literal true/false")
+    for profile in module.default_active_profiles():
+        if (profile.find("m:dependencies", NS) is not None or profile.find("m:dependencyManagement", NS) is not None
+                or any(text(plugin, "m:artifactId") == PUBLISHING_PLUGIN
+                       for plugin in profile.findall(".//m:plugin", NS))):
+            found.append(f"{where}: default-active profile '{text(profile, 'm:id')}' changes dependencies or "
+                         f"{PUBLISHING_PLUGIN}; the gate evaluates the poms without profiles")
+    return found
+
+
 def violations(root_pom):
     modules = reactor(root_pom)
+    root = root_pom.resolve()
     by_coordinate = {module.coordinate(): module for module in modules.values()}
     published = {pom: module for pom, module in modules.items() if publishes(module, modules)}
     found = []
     edges = 0
+    for module in modules.values():
+        found.extend(unevaluable(module, by_coordinate))
+    for pom, module in modules.items():
+        # The root's default (skipPublishing in <pluginManagement>, maven.deploy.skip) reaches a module only through its parent
+        # chain. A parent-less module is unbound, so the default deploy would run and fail the release: it must skip it itself.
+        if pom not in published and not reaches(module, modules, root) and not module.declares_deploy_skip():
+            found.append(f"{module.artifact_id} ({pom}) is not under the root pom and does not set maven.deploy.skip=true")
     for module in published.values():
         parent = modules.get(module.parent_pom) if module.parent_pom else None
         if parent is not None and parent.pom not in published:
@@ -150,8 +278,64 @@ def violations(root_pom):
     return len(published), edges, found
 
 
+def decisions(root_pom):
+    """(relative path, groupId, artifactId, packaging, published) for every reactor module, sorted by path."""
+    root = root_pom.resolve()
+    modules = reactor(root)
+    rows = []
+    for pom, module in modules.items():
+        packaging = text(module.root, "m:packaging") or "jar"
+        relative = pom.parent.relative_to(root.parent).as_posix()
+        rows.append((relative, module.group_id, module.artifact_id, packaging, publishes(module, modules)))
+    return sorted(rows)
+
+
+def table(root_pom):
+    """The decision table for the release docs (the `reason` column is filled in by hand)."""
+    lines = ["| Module | Coordinate | Packaging | Decision |", "|---|---|---|---|"]
+    for relative, group, artifact, packaging, published in decisions(root_pom):
+        lines.append(f"| `{relative}` | `{group}:{artifact}` | {packaging} | {'publish' if published else 'skip'} |")
+    return lines
+
+
+def documented(path):
+    """module path -> decision, from the first two columns after the module path of the docs' table rows."""
+    found = {}
+    for line in Path(path).read_text().splitlines():
+        cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
+        if line.startswith("|") and len(cells) >= 4 and cells[0].startswith("`") and cells[3] in ("publish", "skip"):
+            found[cells[0].strip("`")] = cells[3]
+    return found
+
+
+def table_violations(root_pom, doc):
+    expected = {relative: "publish" if published else "skip" for relative, _, _, _, published in decisions(root_pom)}
+    recorded = documented(doc)
+    found = []
+    for module, decision in expected.items():
+        if module not in recorded:
+            found.append(f"{module}: decided '{decision}' by the poms, absent from the decision table")
+        elif recorded[module] != decision:
+            found.append(f"{module}: the poms decide '{decision}', the table says '{recorded[module]}'")
+    for module in recorded:
+        if module not in expected:
+            found.append(f"{module}: in the decision table, not a reactor module")
+    return found
+
+
 def main():
-    root = Path(sys.argv[1]) if len(sys.argv) > 1 else Path(__file__).resolve().parent.parent / "pom.xml"
+    arguments = sys.argv[1:]
+    default_root = Path(__file__).resolve().parent.parent / "pom.xml"
+    if arguments[:1] == ["--table"]:
+        print("\n".join(table(default_root)))
+        return 0
+    if arguments[:1] == ["--check-table"] and len(arguments) == 2:
+        found = table_violations(default_root, arguments[1])
+        for line in found:
+            print("TABLE DRIFT: " + line, file=sys.stderr)
+        print(f"decision table {arguments[1]}: {len(found)} difference(s) from the poms")
+        return 1 if found else 0
+    root = Path(arguments[0]) if arguments else default_root
     count, edges, found = violations(root)
     if count == 0:
         print("examined no published module; refusing to report a closed set", file=sys.stderr)

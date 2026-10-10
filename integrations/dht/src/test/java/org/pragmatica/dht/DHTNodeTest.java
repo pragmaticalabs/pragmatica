@@ -165,7 +165,7 @@ class DHTNodeTest {
         @Test
         void handlePutRequest_validData_storesAndSendsSuccessResponse() {
             var captured = new AtomicReference<PutResponse>();
-            var request = new PutRequest("req-2", NODE_ID, key("k1"), value("v1"), 0L, 0L, 0L, 0L);
+            var request = new PutRequest("req-2", NODE_ID, key("k1"), value("v1"), 0L, 0L, 0L, 0L, DHTNode.NO_CHANGE);
 
             node.handlePutRequest(request, captured::set);
 
@@ -182,7 +182,7 @@ class DHTNodeTest {
         @Test
         void handlePutRequest_versionedWrite_supersededFalseWhenWritten() {
             var captured = new AtomicReference<PutResponse>();
-            var request = new PutRequest("req-v1", NODE_ID, key("vk1"), value("vv1"), 100L, 0L, 0L, 0L);
+            var request = new PutRequest("req-v1", NODE_ID, key("vk1"), value("vv1"), 100L, 0L, 0L, 0L, DHTNode.NO_CHANGE);
 
             node.handlePutRequest(request, captured::set);
 
@@ -194,10 +194,10 @@ class DHTNodeTest {
         @Test
         void handlePutRequest_staleVersion_supersededTrueWhenRejected() {
             var first = new AtomicReference<PutResponse>();
-            node.handlePutRequest(new PutRequest("req-v2a", NODE_ID, key("vk2"), value("vv2a"), 200L, 0L, 0L, 0L), first::set);
+            node.handlePutRequest(new PutRequest("req-v2a", NODE_ID, key("vk2"), value("vv2a"), 200L, 0L, 0L, 0L, DHTNode.NO_CHANGE), first::set);
 
             var second = new AtomicReference<PutResponse>();
-            node.handlePutRequest(new PutRequest("req-v2b", NODE_ID, key("vk2"), value("vv2b"), 100L, 0L, 0L, 0L), second::set);
+            node.handlePutRequest(new PutRequest("req-v2b", NODE_ID, key("vk2"), value("vv2b"), 100L, 0L, 0L, 0L, DHTNode.NO_CHANGE), second::set);
 
             assertThat(second.get()).isNotNull();
             assertThat(second.get().success()).isTrue();
@@ -209,7 +209,7 @@ class DHTNodeTest {
             node.applyMigrationData(List.of(new KeyValue(key("mk1"), value("migrated"), 50L, 0L, 0L, 0L))).await();
 
             var captured = new AtomicReference<PutResponse>();
-            node.handlePutRequest(new PutRequest("req-m1", NODE_ID, key("mk1"), value("updated"), 100L, 0L, 0L, 0L), captured::set);
+            node.handlePutRequest(new PutRequest("req-m1", NODE_ID, key("mk1"), value("updated"), 100L, 0L, 0L, 0L, DHTNode.NO_CHANGE), captured::set);
 
             assertThat(captured.get()).isNotNull();
             assertThat(captured.get().success()).isTrue();

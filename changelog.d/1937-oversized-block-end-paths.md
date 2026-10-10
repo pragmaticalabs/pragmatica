@@ -1,0 +1,7 @@
+### Fixed (2026-10-07 — #1937 follow-up: an oversized-event alert could stay open, and a late answer could raise a stale one)
+
+- **An oversized peer that goes silent no longer leaves its `STREAM_EVENT_EXCEEDS_READ_CAP` alert open.** The activation gate keeps the unreachable wait in its own slot, so it did not replace the oversized block; the oversized block now ends, and `STREAM_EVENT_EXCEEDS_READ_CAP_RESOLVED` is raised, as soon as no peer is cut before its first event. The partition status read then names the unreachable wait instead of the stale peer.
+  [verified: `ByteCappedPeerGateTest.oversizedPeerGoesSilent_theOversizedBlockIsResolved_andTheUnreachableOneIsRaised`; removing the end reddens it and `oversizedPeerCleared_whenTheGateActivates_reportsTheEnd`]
+- **A timed-out backfill flight can no longer raise or end the oversized report after the current flight settled the partition** (the #1638 late-side-effects rule, as for replica-row writes).
+  [verified: `PartitionBackfillTest...staleFlightLateOversizedAnswer_raisesNothing...`, `...staleFlightLateCleanAnswer_doesNotEndTheCurrentFlightsReport`; ignoring `current` in `oversizedPeer` or `clearOversized` reddens the respective one]
+- **Every way the backfill's oversized report ends is now pinned**: quarantine, this node no longer the owner, a known-ahead survivor, no blind peer left, and a backfill that never reported tells the alarm nothing. Each reddens its own test when its clearing is removed.

@@ -6,7 +6,9 @@
 - **The secret now travels as a `0600` file pushed with scp** (`/opt/aether/config/cluster-secret.env` for
   containers, `/etc/aether/cluster-secret.env` for JVM nodes). The launch command reads it — `docker run
   --env-file` or `cat` into the systemd env file — and removes it in the same command, preserving the
-  launch's exit status. The CLI-host temp copy is created owner-only and deleted after the push.
+  launch's exit status. The launch line keeps the existing already-present refusal inside a subshell, so the
+  staged file is removed on that refusal exit too. The CLI-host temp copy is created owner-only and deleted
+  after the push.
   [verified: `BootstrapPhaseDeployCloudSshRestartTest#deployCloudSource_container_neverPutsTheSecretInAnySshCommand_andPushesItAsA0600File`, `…_jvm_…`, `BootstrapPhaseDeploySshSourceTest#sshSource_launchLineCarriesNoSecretMaterial_itReadsAnEnvFileInstead`]
 - **Same class, same fix: `AETHER_API_KEY` / `AETHER_API_KEYS` forwarded from the operator's host env** rode `-e`
   on the same command line. They are credentials and now ride the pushed file too.
@@ -15,3 +17,6 @@
   container env var; this change removes the argv, `ps` and shell-history exposure only. Neither the file
   push nor the launch was run against a real host.]
 - [unverified: cloud-init user-data, which renders the secret at server creation, is a separate channel and is not changed here.]
+- [unverified: `DockerComputeProvider.propagateEnvVar` (provider-minted replacement nodes) still puts
+  `-e AETHER_CLUSTER_SECRET=<value>` on the local `docker run` argv of the host that mints the node; it is
+  outside `BootstrapPhaseDeploy` and is not changed here.]

@@ -31,6 +31,28 @@ public record BackupConfig(boolean enabled, String path, String remote, RestoreM
         }
     }
 
+    /// This `[backup]` as the `AETHER_BACKUP_*` environment of [ClusterIdentityEnv#BACKUP_VARS] (#1968): what a node without a node
+    /// TOML of its own (a Docker replacement) needs to run the SAME backup. Empty when the backup is disabled or has no path (the
+    /// node does not run it either, `Main.resolveBackup`). The restore mode is rendered the way [RestoreMode#restoreMode] reads it.
+    public java.util.Map<String, String> asEnvironment() {
+        if (!enabled || path.isBlank()) {
+            return java.util.Map.of();
+        }
+
+        var env = new java.util.LinkedHashMap<String, String>();
+
+        env.put(org.pragmatica.aether.environment.ClusterIdentityEnv.BACKUP_ENABLED, "true");
+        env.put(org.pragmatica.aether.environment.ClusterIdentityEnv.BACKUP_PATH, path);
+        if (!remote.isBlank()) {
+            env.put(org.pragmatica.aether.environment.ClusterIdentityEnv.BACKUP_REMOTE, remote);
+        }
+
+        env.put(org.pragmatica.aether.environment.ClusterIdentityEnv.BACKUP_RESTORE,
+                restore.name().toLowerCase(java.util.Locale.ROOT));
+
+        return java.util.Map.copyOf(env);
+    }
+
     public static BackupConfig backupConfig() {
         return new BackupConfig(false, "", "", RestoreMode.AUTO);
     }

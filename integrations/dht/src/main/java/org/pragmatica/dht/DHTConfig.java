@@ -155,17 +155,16 @@ public record DHTConfig(int replicationFactor,
         return Result.success(new DHTConfig(replicationFactor, writeQuorum, readQuorum, operationTimeout, retryPolicy));
     }
 
-    /// Create a config with the given replication factor and majority quorum.
-    /// Use 0 for full replication.
-    /// Returns the pre-defined FULL config for full replication, otherwise calculates majority quorum.
-    public static Result<DHTConfig> withReplication(int replicationFactor) {
-        if (replicationFactor == FULL_REPLICATION) {
-            return Result.success(FULL);
-        }
-
-        int quorum = (replicationFactor / 2) + 1;
-
-        return dhtConfig(replicationFactor, quorum, quorum);
+    /// This config with the replication semantics of streams (#1777 track 1): `replicationFactor` copies, a write
+    /// acked by `confirmationFactor` of them, and a read of `replicationFactor - confirmationFactor + 1`, so
+    /// R + W = RF + 1 > RF and every read meets at least one replica that acked the last write. Timeout and
+    /// retry policy are kept. Validated like any other config: `1 <= confirmationFactor <= replicationFactor`.
+    public Result<DHTConfig> withFactors(int replicationFactor, int confirmationFactor) {
+        return dhtConfig(replicationFactor,
+                         confirmationFactor,
+                         replicationFactor - confirmationFactor + 1,
+                         operationTimeout,
+                         retryPolicy);
     }
 
     /// Check if this is full replication mode (all nodes store everything).

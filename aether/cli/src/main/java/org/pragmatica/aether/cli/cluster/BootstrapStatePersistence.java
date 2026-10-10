@@ -101,6 +101,15 @@ sealed interface BootstrapStatePersistence {
                    .flatMap(BootstrapStatePersistence::saveAppended);
     }
 
+    /// #1543 — records that a node process was started under `nodeId`, through the same read-modify-write
+    /// path as [#appendResource] (never creates a ledger; absent and unreadable stay distinct failures).
+    static Result<Unit> appendStartedNode(ClusterName clusterName, String nodeId) {
+        return read(clusterName).mapError(BootstrapStatePersistence::unreadable)
+                   .flatMap(state -> state.toResult(LEDGER_ABSENT))
+                   .map(state -> state.withStartedNodeId(nodeId))
+                   .flatMap(BootstrapStatePersistence::saveAppended);
+    }
+
     Fn1<Cause, String> LEDGER_UNREADABLE = Causes.forOneValue("the persisted ledger is unreadable: %s");
     Cause LEDGER_ABSENT = Causes.cause("no bootstrap state is persisted for this cluster");
     Fn1<Cause, String> LEDGER_WRITE_FAILED = Causes.forOneValue("the ledger write failed: %s");

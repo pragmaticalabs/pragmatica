@@ -455,7 +455,6 @@ class ConfigLoaderTest {
             [dht.replication]
             cooldown_delay_ms = 5000
             cooldown_rate = 5000
-            target_rf = 5
             """;
 
         ConfigLoader.loadFromString(toml)
@@ -463,7 +462,6 @@ class ConfigLoaderTest {
             .onSuccess(config -> {
                 assertThat(config.dhtReplication().cooldownDelay().millis()).isEqualTo(5000);
                 assertThat(config.dhtReplication().cooldownRate()).isEqualTo(5000);
-                assertThat(config.dhtReplication().targetRf()).isEqualTo(5);
             });
     }
 
@@ -480,28 +478,26 @@ class ConfigLoaderTest {
             .onSuccess(config -> {
                 assertThat(config.dhtReplication().cooldownDelay().millis()).isEqualTo(10_000);
                 assertThat(config.dhtReplication().cooldownRate()).isEqualTo(10_000);
-                assertThat(config.dhtReplication().targetRf()).isEqualTo(3);
             });
     }
 
+    /// #1777 track 1: the DHT's factors come from the cluster's committed `[replication]`; a node-local
+    /// `target_rf` would be a second source of truth, so it is refused, naming where the setting lives now.
     @Test
-    void loadFromString_parsesPartialDhtReplicationConfig() {
+    void loadFromString_targetRf_isRefusedNamingReplication() {
         var toml = """
             [cluster]
             environment = "docker"
             nodes = 3
 
             [dht.replication]
-            target_rf = 0
+            target_rf = 5
             """;
 
-        ConfigLoader.loadFromString(toml)
-            .onFailure(cause -> Assertions.fail(cause.message()))
-            .onSuccess(config -> {
-                assertThat(config.dhtReplication().cooldownDelay().millis()).isEqualTo(10_000);
-                assertThat(config.dhtReplication().cooldownRate()).isEqualTo(10_000);
-                assertThat(config.dhtReplication().targetRf()).isEqualTo(0);
-            });
+        var message = ConfigLoader.loadFromString(toml)
+                                  .fold(cause -> cause.message(), _ -> "loaded");
+
+        assertThat(message).contains("target_rf").contains("[replication]");
     }
 
     @Test
@@ -788,6 +784,68 @@ class ConfigLoaderTest {
             .onSuccess(config -> assertThat(config.streaming().isrLagMax()).isEqualTo(StreamingConfig.DEFAULT_ISR_LAG_MAX));
     }
 
+    /// #2080: the promotion escape bound is configurable, defaults to 120 s (a guess, see the default's doc) and may not be below the
+    /// alarm bounds (two SWIM suspect windows, 20 s; the replica contest's 20 s source wait).
+    @Test
+    void loadFromString_promotionEscapeAfter_parsed_defaultsTo120Seconds_andIsNotAllowedBelowTheAlarm() {
+        var header = """
+            [cluster]
+            environment = "docker"
+            nodes = 3
+
+            [streaming]
+            """;
+
+        ConfigLoader.loadFromString(header + "promotion_escape_after = \"45s\"\n")
+            .onFailure(cause -> Assertions.fail(cause.message()))
+            .onSuccess(config -> assertThat(config.streaming().promotionEscapeAfter().millis()).isEqualTo(45_000L));
+        ConfigLoader.loadFromString(header + "reshuffle_concurrency = 2\n")
+            .onFailure(cause -> Assertions.fail(cause.message()))
+            .onSuccess(config -> assertThat(config.streaming().promotionEscapeAfter()).isEqualTo(StreamingConfig.DEFAULT_PROMOTION_ESCAPE_AFTER));
+        assertThat(StreamingConfig.DEFAULT_PROMOTION_ESCAPE_AFTER.millis()).isEqualTo(120_000L);
+        ConfigLoader.loadFromString(header + "promotion_escape_after = \"19s\"\n")
+            .onSuccess(config -> Assertions.fail("19 s is below the 20 s alarm bound and must be refused"))
+            .onFailure(cause -> assertThat(cause.message()).contains("promotion_escape_after"));
+        ConfigLoader.loadFromString(header + "promotion_escape_after = \"20s\"\n")
+            .onFailure(cause -> Assertions.fail("exactly the alarm bound is allowed: " + cause.message()));
+    }
+
+    /// #2084 F3: the validation floor is the LARGER of two swim suspect windows and the replica contest's source-wait bound; pinned with
+    /// non-default values so neither term, nor a single suspect window, can stand in for the other. Mutations: alarm-only, contest-only and
+    /// one-window floors each turn a case red.
+    @Test
+    void loadFromString_promotionEscapeAfter_floorIsTheLargerOfTheAlarmAndTheContestWait() {
+        var suspect30 = """
+            [cluster]
+            environment = "docker"
+            nodes = 3
+
+            [timeouts.swim]
+            suspect_timeout = "30s"
+
+            [streaming]
+            promotion_escape_after = "%s"
+            """;
+        var readTimeout10 = """
+            [cluster]
+            environment = "docker"
+            nodes = 3
+
+            [streaming]
+            read_forward_timeout = "10s"
+            promotion_escape_after = "%s"
+            """;
+
+        ConfigLoader.loadFromString(suspect30.formatted("59s"))
+            .onSuccess(config -> Assertions.fail("two 30 s suspect windows give a 60 s floor; 59 s must be refused"))
+            .onFailure(cause -> assertThat(cause.message()).contains("promotion_escape_after").contains("60000"));
+        ConfigLoader.loadFromString(suspect30.formatted("60s")).onFailure(cause -> Assertions.fail("exactly the 60 s floor is allowed: " + cause.message()));
+        ConfigLoader.loadFromString(readTimeout10.formatted("99s"))
+            .onSuccess(config -> Assertions.fail("a 10 s read timeout gives a 100 s contest wait; 99 s must be refused"))
+            .onFailure(cause -> assertThat(cause.message()).contains("promotion_escape_after").contains("100000"));
+        ConfigLoader.loadFromString(readTimeout10.formatted("100s")).onFailure(cause -> Assertions.fail("exactly the 100 s floor is allowed: " + cause.message()));
+    }
+
     // SPEC: §8.3 absence of [streaming] section → defaults
     @Test
     void loadFromString_streamingSectionAbsent_defaultsApplied() {
@@ -931,23 +989,19 @@ class ConfigLoaderTest {
                     .onSuccess(config -> assertThat(config.appHttp().tls().isPresent()).isFalse());
     }
 
-    /// #1019 round-1 review, S1 — what a boot-time config validation failure actually DOES.
+    /// #1019 round-1 review S1, corrected by #2052 — what a boot-time config validation failure DOES.
     ///
-    /// Round 1 justified keeping `ConfigValidator`'s floor at 3 by saying that raising it "would refuse
-    /// to start clusters that are running today". That names the wrong enforcer. `Main#loadConfigFile`
-    /// is `ConfigLoader.load(path).onFailure(log::error).option()`, so a validation failure is
-    /// discarded and the node boots with NO CONFIG — it is `ClusterSizeGate`, piped into
-    /// `Main#abortBoot`, that refuses a start.
+    /// It used to be discarded: `Main#loadConfigFile` applied `.option()` and the node booted on defaults, so this test pinned
+    /// "a rejected config yields an EMPTY Option". That was true of the composition and false as a safety property, and it let a
+    /// node boot without its TLS, port and secret settings. Since #2052 `Main#resolveConfig` keeps the failure and
+    /// `Main#refuseConfig` exits 65; the process-level refusal is pinned by `MainConfigGivenBootTest` (a child JVM). What is
+    /// observable from this module, and pinned here, is the half those depend on: a rejected config is a FAILURE result with a cause,
+    /// not an empty value, so nothing downstream can mistake "config rejected" for "no config supplied".
     ///
-    /// The distinction is load-bearing for anyone deciding where a new rule belongs, and a comment
-    /// stating it is an unverified claim. This pins the half that is observable from this module: a
-    /// rejected config yields an EMPTY `Option` through the exact composition `Main` uses, so nothing
-    /// downstream of it can distinguish "config rejected" from "no config supplied".
-    ///
-    /// `nodes = 2` is below the structural floor and would be rejected by any floor this class might
-    /// ever carry, so the test speaks about the discard, not about the value of the floor.
+    /// `nodes = 2` is below the structural floor and would be rejected by any floor this class might ever carry, so the test speaks
+    /// about the failure, not about the value of the floor.
     @Test
-    void load_validationFailure_becomesAnEmptyOptionRatherThanAnAbort() {
+    void load_validationFailure_isAFailureResultWithACause_notAnEmptyValue() {
         var rejected = """
             [cluster]
             environment = "docker"
@@ -957,17 +1011,15 @@ class ConfigLoaderTest {
         var result = ConfigLoader.loadFromString(rejected);
 
         assertThat(result.isFailure()).isTrue();
-        // The `.option()` that `Main#loadConfigFile` applies. A node reaching this branch continues.
-        assertThat(result.option().isEmpty()).isTrue();
+        result.onFailure(cause -> assertThat(cause.message()).isNotBlank());
 
-        // Positive control: the identical composition yields a PRESENT config for an accepted count,
-        // so the emptiness above is the rejection and not an always-empty accessor.
+        // Positive control: an accepted count loads, so the failure above is the rejection and not an always-failing loader.
         var accepted = """
             [cluster]
             environment = "docker"
             nodes = 3
             """;
 
-        assertThat(ConfigLoader.loadFromString(accepted).option().isPresent()).isTrue();
+        assertThat(ConfigLoader.loadFromString(accepted).isSuccess()).isTrue();
     }
 }

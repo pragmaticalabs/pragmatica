@@ -178,6 +178,65 @@ class ClusterInitCommandNonInteractiveTest {
             assertThat(Files.exists(output)).isFalse();
         }
 
+        /// The same cloud args for another provider: no hetzner token env var, `extra` appended.
+        private static String[] argsFor(Path output, String provider, String... extra) {
+            var kept = new java.util.ArrayList<>(java.util.Arrays.asList(without(output, "--credential-env")));
+
+            kept.set(kept.indexOf("--provider") + 1, provider);
+            kept.addAll(java.util.List.of(extra));
+
+            return kept.toArray(new String[0]);
+        }
+
+        /// #2059 — gcp's integration requires a zone and none is derived: a `<region>-a` default names a zone that does not exist
+        /// for some regions, validates, and fails only at VM create.
+        @Test
+        void gcpCloudInit_withoutZone_namesTheFlag(@TempDir Path tmp) {
+            var output = tmp.resolve("cluster-config.toml");
+            var err = runCapturingStderr(argsFor(output, "gcp"));
+
+            assertThat(err).contains("--zone");
+            assertThat(Files.exists(output)).isFalse();
+        }
+
+        @Test
+        void gcpCloudInit_withZone_writesItVerbatim(@TempDir Path tmp) throws Exception {
+            var output = tmp.resolve("cluster-config.toml");
+
+            runCapturingStderr(argsFor(output, "gcp", "--zone", "europe-west1-b"));
+
+            assertThat(Files.readString(output)).contains("zone = \"europe-west1-b\"");
+        }
+
+        @Test
+        void awsCloudInit_withZone_isRefused_ratherThanSilentlyIgnored(@TempDir Path tmp) {
+            var output = tmp.resolve("cluster-config.toml");
+            var err = runCapturingStderr(argsFor(output, "aws", "--zone", "eu-west-1a"));
+
+            assertThat(err).contains("--zone");
+            assertThat(Files.exists(output)).isFalse();
+        }
+
+        /// #2059 — the env var the operator names for a credential key is the one the generated config references.
+        @Test
+        void awsCloudInit_credentialEnvForAKey_reachesTheGeneratedReference(@TempDir Path tmp) throws Exception {
+            var output = tmp.resolve("cluster-config.toml");
+
+            runCapturingStderr(argsFor(output, "aws", "--credential-env", "secret_access_key=MY_AWS_SECRET"));
+
+            assertThat(Files.readString(output)).contains("secret_access_key = \"${env:MY_AWS_SECRET}\"")
+                                                .contains("access_key_id = \"${env:AWS_ACCESS_KEY_ID}\"");
+        }
+
+        @Test
+        void awsCloudInit_credentialEnvForAnUnknownKey_isRefused(@TempDir Path tmp) {
+            var output = tmp.resolve("cluster-config.toml");
+            var err = runCapturingStderr(argsFor(output, "aws", "--credential-env", "api_token=X"));
+
+            assertThat(err).contains("api_token");
+            assertThat(Files.exists(output)).isFalse();
+        }
+
         @Test
         void cloudInit_withoutRegion_namesTheFlagAndTheResidencyReason(@TempDir Path tmp) {
             var output = tmp.resolve("cluster-config.toml");

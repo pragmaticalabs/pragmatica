@@ -13,6 +13,7 @@ import java.util.Arrays;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import com.sun.net.httpserver.HttpServer;
+import org.pragmatica.http.JdkHttpOperations;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -125,6 +126,36 @@ class RemoteRepositoryCacheWiringTest {
         location.onFailure(cause -> assertThat(cause).isInstanceOf(RemoteRepository.RemoteRepositoryError.CachedArtifactChecksumMismatch.class));
         assertThat(jarRequests.get()).as("nothing is fetched over it").isZero();
         assertThat(Files.readAllBytes(cachedJar())).as("M1: the operator's jar is untouched").isEqualTo(local);
+    }
+
+    /// #1097 — each download builds its own JDK `HttpClient`, whose selector thread outlived the download.
+    /// The test holds every client the downloads were given, so a revert leaves them un-terminated
+    /// however much the GC runs. A global thread count could not: an unreachable client's selector also
+    /// exits when it is collected, so a GC during the wait passed the revert.
+    @Test
+    void download_releasesItsHttpClient_soNoSelectorThreadSurvives() throws IOException, InterruptedException {
+        var issued = new java.util.concurrent.CopyOnWriteArrayList<JdkHttpOperations>();
+        var repository = RemoteRepository.remoteRepository("wiring-test",
+                                                           "http://127.0.0.1:" + server.getAddress().getPort(),
+                                                           RemoteRepository.DEFAULT_HTTP_TIMEOUT,
+                                                           () -> {
+                                                               var ops = JdkHttpOperations.jdkHttpOperations();
+                                                               issued.add(ops);
+                                                               return ops;
+                                                           });
+
+        assertThat(repository.locate(artifact()).await(timeSpan(10).seconds()).isSuccess()).isTrue();
+        Files.deleteIfExists(cachedJar());
+        assertThat(repository.locate(artifact()).await(timeSpan(10).seconds()).isSuccess()).isTrue();
+        assertThat(issued).as("instrument check: each download asked for its own client").hasSize(2);
+
+        var deadline = System.nanoTime() + 10_000_000_000L;
+
+        while (!issued.stream().allMatch(ops -> ops.client().isTerminated()) && System.nanoTime() < deadline) {
+            Thread.sleep(50);
+        }
+        assertThat(issued).as("every download's client is terminated once its download settled")
+                          .allMatch(ops -> ops.client().isTerminated());
     }
 
     /// CONTROL — an intact cached jar is a cache hit: no second download.

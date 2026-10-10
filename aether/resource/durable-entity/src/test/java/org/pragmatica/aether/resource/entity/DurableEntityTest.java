@@ -128,19 +128,19 @@ class DurableEntityTest {
     @Nested
     class TimerOperations {
         @Test
-        void scheduleTimer_fails_withTimerNotSupported() {
+        void scheduleTimer_fails_onTheInMemoryBacking() {
             entity().scheduleTimer("a", Duration.ofSeconds(1), new IntOp.Add(1))
                     .await(AWAIT)
-                    .onSuccess(token -> fail("expected TimerNotSupported, got " + token))
-                    .onFailure(cause -> assertThat(cause).isInstanceOf(EntityError.TimerNotSupported.class));
+                    .onSuccess(token -> fail("expected a refusal, got " + token))
+                    .onFailure(cause -> assertThat(cause).isInstanceOfSatisfying(EntityError.StorageFailed.class, failed -> assertThat(failed.message()).contains("timers are not supported")));
         }
 
         @Test
-        void cancelTimer_fails_withTimerNotSupported() {
+        void cancelTimer_fails_onTheInMemoryBacking() {
             entity().cancelTimer("a", new DurableEntity.TimerToken("t1"))
                     .await(AWAIT)
-                    .onSuccess(unit -> fail("expected TimerNotSupported, got " + unit))
-                    .onFailure(cause -> assertThat(cause).isInstanceOf(EntityError.TimerNotSupported.class));
+                    .onSuccess(unit -> fail("expected a refusal, got " + unit))
+                    .onFailure(cause -> assertThat(cause).isInstanceOfSatisfying(EntityError.StorageFailed.class, failed -> assertThat(failed.message()).contains("timers are not supported")));
         }
     }
 

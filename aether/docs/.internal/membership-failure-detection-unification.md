@@ -8,7 +8,7 @@ Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
 **Status:** Living research doc (open). Started 2026-05-24.
 **Branch target:** `release-1.0.0-rc1` and beyond.
 **Owners:** (membership/consensus)
-**Related specs:** the v1 membership-architecture spec (§16 scenario oracle) and the cluster-convergence-reconciler spec — both removed; see git history — plus [`swim-driven-topology-spec.md`](../specs/swim-driven-topology-spec.md), [`quic-transport-spec.md`](../specs/quic-transport-spec.md). **Note:** this analysis predates membership-v2 (derive-from-reality); see [`../specs/membership-architecture-v2-spec.md`](../specs/membership-architecture-v2-spec.md) for the current model.
+**Related specs:** the v1 membership-architecture spec (§16 scenario oracle) and the cluster-convergence-reconciler spec — both removed; see git history — plus [`swim-driven-topology-spec.md`](../specs/archive/swim-driven-topology-spec.md), [`quic-transport-spec.md`](../specs/quic-transport-spec.md). **Note:** this analysis predates membership-v2 (derive-from-reality); see [`../specs/membership-architecture-v2-spec.md`](../specs/archive/membership-architecture-v2-spec.md) for the current model.
 
 > Purpose: track *all* considerations, options, constraints, and decisions for the membership / failure-detection redesign in one place, so we stop rediscovering the same tradeoffs. This is a decision log, not a spec — when a decision lands and stabilizes, fold it into the relevant spec and link back here.
 

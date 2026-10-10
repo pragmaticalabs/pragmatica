@@ -121,6 +121,11 @@ public final class EmberCluster {
     /// exact ProvisionContext identity. Tags survive restart and disappear with the instance.
     private final Map<String, Map<String, String>> instanceTags = new ConcurrentHashMap<>();
     private final AtomicInteger nodeCounter = new AtomicInteger(0);
+    /// TEST SEAM (#1543 F) — the `NodeInfo.LABEL_VERSION` every node booted from now on advertises ("" = none, as before).
+    /// Production stamps it from the binary (`Main.collectNodeLabels`); every in-JVM node runs the same build, so an upgrade
+    /// test sets it to the OLD label before `start` and to the TARGET label before the run, and the nodes the run provisions
+    /// then carry the new one. Harness-scoped.
+    private volatile String versionLabel = "";
     private final Queue<Integer> availableSlots = new ConcurrentLinkedQueue<>();
     private final Map<String, Integer> slotsByNodeId = new ConcurrentHashMap<>();
     /// Slot each node last ran on, retained after the node is killed — lets [#relaunchNode] start a
@@ -235,6 +240,11 @@ public final class EmberCluster {
     /// materialization queue behind another).
     private final AtomicReference<StreamingConfig> streamingConfig = new AtomicReference<>(StreamingConfig.streamingConfig());
 
+    /// The DHT replication every node is created with. FULL by default — every node holds everything, which is
+    /// what the harness has always run — so an Ember green says NOTHING about placement-dependent DHT behaviour;
+    /// [#withDhtReplication] runs the production shape instead (#1777: a non-FULL DHT resolves its factors from
+    /// committed state, and a worker from its projection).
+    private final AtomicReference<DHTConfig> dhtReplication = new AtomicReference<>(DHTConfig.FULL);
     /// #715 — this instance's own cluster QUIC/SWIM identity secret. Defaults to a fresh
     /// `SecureRandom` value so distinct `EmberCluster` instances never share cluster identity and
     /// cannot admit each other's nodes; [#withClusterSecret] is the only sanctioned override.
@@ -464,6 +474,13 @@ public final class EmberCluster {
         raisedSwimTimeouts.set(true);
     }
 
+    /// TEST SEAM (#1777) — the DHT replication EVERY node is created with, in place of FULL. MUST be called before
+    /// [#start]. Harness-scoped; production paths never call this.
+    @Contract
+    public void withDhtReplication(DHTConfig config) {
+        dhtReplication.set(config);
+    }
+
     /// TEST SEAM (#1735 sibling, F1a) — the `[streaming]` section for EVERY node in this cluster. MUST be called
     /// before [#start]. Harness-scoped; production paths never call this.
     @Contract
@@ -683,7 +700,11 @@ public final class EmberCluster {
             var slot = availableSlots.poll();
             var nodeId = nodeId(nodeIdPrefix + "-" + i).unwrap();
             var port = basePort + slot;
-            var info = NodeInfo.nodeInfo(nodeId, nodeAddress("localhost", port).unwrap());
+            var info = versionLabel.isEmpty()
+                       ? NodeInfo.nodeInfo(nodeId, nodeAddress("localhost", port).unwrap())
+                       : NodeInfo.nodeInfo(nodeId,
+                                           nodeAddress("localhost", port).unwrap(),
+                                           Map.of(NodeInfo.LABEL_VERSION, versionLabel));
 
             initialNodes.add(info);
             instanceTags.put(nodeId.id(), harnessInstanceTags(nodeId, Map.of()));
@@ -1154,11 +1175,12 @@ public final class EmberCluster {
         var port = basePort + slot;
         var mgmtPort = baseMgmtPort + slot;
         var appHttpPort = baseAppHttpPort + slot;
-        var info = labels.isEmpty()
+        var advertised = withVersionLabel(labels);
+        var info = advertised.isEmpty()
                    ? NodeInfo.nodeInfo(nodeId, nodeAddress("localhost", port).unwrap())
-                   : NodeInfo.nodeInfo(nodeId, nodeAddress("localhost", port).unwrap(), labels);
+                   : NodeInfo.nodeInfo(nodeId, nodeAddress("localhost", port).unwrap(), advertised);
 
-        log.info("Adding new node {} on port {} labels={}", nodeId.id(), port, labels);
+        log.info("Adding new node {} on port {} labels={}", nodeId.id(), port, advertised);
         slotsByNodeId.put(nodeId.id(), slot);
         lastSlotByNodeId.put(nodeId.id(), slot);
         nodeInfos.put(nodeId.id(), info);
@@ -1171,6 +1193,25 @@ public final class EmberCluster {
                    .map(_ -> nodeId)
                    .onSuccess(_ -> log.info("Node {} joined the cluster",
                                             nodeId.id()));
+    }
+
+    /// TEST SEAM (#1543 F) — see [#versionLabel]. Applies to nodes booted after the call; running nodes keep theirs.
+    public EmberCluster nodeVersion(String version) {
+        versionLabel = version;
+
+        return this;
+    }
+
+    private Map<String, String> withVersionLabel(Map<String, String> labels) {
+        if (versionLabel.isEmpty() || labels.containsKey(NodeInfo.LABEL_VERSION)) {
+            return labels;
+        }
+
+        var versioned = new java.util.HashMap<>(labels);
+
+        versioned.put(NodeInfo.LABEL_VERSION, versionLabel);
+
+        return Map.copyOf(versioned);
     }
 
     /// The core list a new node is configured with: the full current list, or only `mintTimePeers` plus the node
@@ -1428,7 +1469,7 @@ public final class EmberCluster {
                                           SliceActionConfig.sliceActionConfig(),
                                           SliceConfig.sliceConfig(),
                                           mgmtPort,
-                                          DHTConfig.FULL,
+                                          dhtReplication.get(),
                                           DHTConfig.CACHE_DEFAULT,
                                           Option.empty(),
                                           quicTls,

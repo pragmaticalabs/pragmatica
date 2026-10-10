@@ -83,10 +83,42 @@ class ClusterTopologyManagerRenderUserDataTest {
             [source.eu-1]
             type = "cloud"
             provider = "hetzner"
+            credentials = "hcloud-token"
             region = "eu-central"
 
             [source.eu-1.core]
             count = 3
+            """;
+
+    private static final String CLOUD_TOML_WITH_BACKUP = """
+            config_version = "1.0.0"
+
+            [cluster]
+            name = "prod-cluster"
+            version = "1.0.0"
+
+            [operations.ports]
+            cluster = 6000
+            management = 5160
+            app_http = 8070
+
+            [runtime.containers]
+            type = "container"
+
+            [source.eu-1]
+            type = "cloud"
+            provider = "hetzner"
+            credentials = "hcloud-token"
+            region = "eu-central"
+
+            [source.eu-1.core]
+            count = 3
+            runtime = "containers"
+
+            [source.eu-1.node_config.backup]
+            enabled = true
+            path = "/var/aether/backups"
+            remote = "git@backups.example.com:ops/cluster.git"
             """;
 
     private static final String CLOUD_TOML_WITH_AUTHORIZED_KEYS = """
@@ -104,6 +136,7 @@ class ClusterTopologyManagerRenderUserDataTest {
             [source.eu-1]
             type = "cloud"
             provider = "hetzner"
+            credentials = "hcloud-token"
             region = "eu-central"
 
             [source.eu-1.core]
@@ -167,6 +200,22 @@ class ClusterTopologyManagerRenderUserDataTest {
         assertThat(script)
                 .as("user-data must NOT point the replacement at the dead departed peer")
                 .doesNotContain("node-dead");
+    }
+
+    /// #1968: the CTM's own replacement path renders the committed `[backup]` (from the persisted cluster TOML) and the volume it
+    /// needs. A replacement that boots without it, once elected leader, runs no backup.
+    @Test
+    void provisionReplacement_clusterConfigWithBackup_replacementCarriesBackupAndItsVolume() {
+        clusterStore.seedToml(CLOUD_TOML_WITH_BACKUP);
+        ctm.activate();
+
+        var result = ctm.provisionReplacement(nodeId("node-backup").unwrap(), Option.none(), Set.of(SELF, PEER_A, PEER_B), NodeRole.CORE).await();
+
+        assertThat(result.isSuccess()).isTrue();
+        var script = lifecycleManager.lastSpec().userData().or("");
+
+        assertThat(script).contains("[backup]").contains("remote = \"git@backups.example.com:ops/cluster.git\"");
+        assertThat(script).contains("-v /opt/aether/backups:/var/aether/backups");
     }
 
     /// #442 — a replacement can later be elected leader and provision ITS OWN replacements. For that
@@ -425,10 +474,6 @@ class ClusterTopologyManagerRenderUserDataTest {
         }
 
         @Override public Promise<Unit> terminateNode(NodeId nodeId) {
-            return Promise.success(Unit.unit());
-        }
-
-        @Override public Promise<Unit> restartNode(NodeId nodeId) {
             return Promise.success(Unit.unit());
         }
 

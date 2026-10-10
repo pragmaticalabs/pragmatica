@@ -88,36 +88,55 @@ class NotificationConfigBindingTest {
         assertThat(retry.backoffMultiplier()).isEqualTo(RetryConfig.DEFAULT.backoffMultiplier());
     }
 
-    /// Pins the binder-mechanism gap discovered while writing the test above (not part of
-    /// #671's named scope, reported as a follow-up): `SmtpConfig` declares convenience factory
-    /// methods with defaults (`587`/`STARTTLS`/`10s`/`30s`), but the binder only ever calls a
-    /// factory whose parameters match the full constructor — none of `SmtpConfig`'s overloads
-    /// do — so it always falls back to the constructor, which needs every field. Unlike
-    /// `RetryConfig`, `SmtpConfig` has no static `DEFAULT` instance for the binder's per-field
-    /// fallback ([ProviderBasedConfigService#getDefaultComponentValue]) to read from, so omitting
-    /// `connect_timeout`/`command_timeout` does not fail on those fields — it fails the entire
-    /// `Option<SmtpConfig>` bind with a misattributed `NotificationConfig.smtpConfig` "section not
-    /// found" error, even though `[notification.smtp_config]` is present.
+    /// #822 — `port`, `tls_mode`, `connect_timeout` and `command_timeout` have per-field defaults
+    /// (`SmtpConfig.DEFAULT_*`, read by the binder by name), so a section naming only `host` binds. There is
+    /// deliberately no whole-record default: that would also supply a host.
     @Test
-    void config_smtpBackend_omittedTimeoutFields_failsWithMisattributedSectionError() {
+    void config_smtpBackend_omittedDefaultedFields_bindTheirDefaults() {
         var toml = """
             [notification]
             backend = "smtp"
 
             [notification.smtp_config]
             host = "smtp.example.com"
-            port = 587
-            tls_mode = "STARTTLS"
             """;
 
-        var source = TomlConfigSource.tomlConfigSource(toml).unwrap();
-        var provider = ConfigurationProvider.builder().withSource(source).build();
-        var service = ProviderBasedConfigService.providerBasedConfigService(provider);
+        var config = bind(toml).unwrap();
+        var smtp = config.smtpConfig().unwrap();
 
-        var result = service.config("notification", NotificationConfig.class);
+        assertThat(smtp.host()).isEqualTo("smtp.example.com");
+        assertThat(smtp.port()).isEqualTo(587);
+        assertThat(smtp.tlsMode()).isEqualTo(SmtpTlsMode.STARTTLS);
+        assertThat(smtp.connectTimeout().millis()).isEqualTo(10_000L);
+        assertThat(smtp.commandTimeout().millis()).isEqualTo(30_000L);
+        assertThat(smtp.auth().isEmpty()).isTrue();
+    }
+
+    /// The other half: a section that EXISTS but omits the one field with no default is told which field, not
+    /// that the section is missing (it used to read `Config section not found: NotificationConfig.smtpConfig`).
+    @Test
+    void config_smtpBackend_omittedHost_namesTheHost_notTheSection() {
+        var toml = """
+            [notification]
+            backend = "smtp"
+
+            [notification.smtp_config]
+            port = 587
+            """;
+
+        var result = bind(toml);
 
         assertThat(result.isFailure()).isTrue();
-        result.onFailure(cause -> assertThat(cause.message()).contains("NotificationConfig.smtpConfig"));
+        result.onFailure(cause -> assertThat(cause.message()).contains("notification.smtp_config.host")
+                                                              .contains("SmtpConfig.host")
+                                                              .doesNotContain("section not found"));
+    }
+
+    private static org.pragmatica.lang.Result<NotificationConfig> bind(String toml) {
+        var source = TomlConfigSource.tomlConfigSource(toml).unwrap();
+        var provider = ConfigurationProvider.builder().withSource(source).build();
+
+        return ProviderBasedConfigService.providerBasedConfigService(provider).config("notification", NotificationConfig.class);
     }
 
     @Test

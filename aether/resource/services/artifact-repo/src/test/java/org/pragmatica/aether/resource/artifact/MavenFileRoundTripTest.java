@@ -7,6 +7,7 @@ package org.pragmatica.aether.resource.artifact;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.resource.artifact.MavenProtocolHandler.MavenResponse;
 import org.pragmatica.dht.DHTClient;
 import org.pragmatica.dht.Partition;
@@ -35,12 +36,14 @@ class MavenFileRoundTripTest {
 
     private ConcurrentHashMap<String, byte[]> dht;
     private MavenProtocolHandler handler;
+    private ArtifactStore store;
 
     @BeforeEach
     void setup() {
         dht = new ConcurrentHashMap<>();
         var storage = StorageInstance.storageInstance("test-artifacts", List.of(MemoryTier.memoryTier(64 * 1024 * 1024)));
-        handler = MavenProtocolHandler.mavenProtocolHandler(ArtifactStore.artifactStore(mapDht(), storage));
+        store = ArtifactStore.artifactStore(mapDht(), storage);
+        handler = MavenProtocolHandler.mavenProtocolHandler(store);
     }
 
     @Test
@@ -112,6 +115,90 @@ class MavenFileRoundTripTest {
         assertThat(xml).contains("<latest>2.0.0-rc1</latest>");
         assertThat(xml.indexOf("<version>1.0.0-rc4</version>")).isLessThan(xml.indexOf("<version>1.0.0</version>"));
         assertThat(xml.indexOf("<version>1.0.0</version>")).isLessThan(xml.indexOf("<version>2.0.0-rc1</version>"));
+    }
+
+    private static final String METADATA = "/repository/org/example/lib/maven-metadata.xml";
+    private static final java.util.Map<String, String> CHECKSUM_ALGORITHMS = java.util.Map.of(".md5", "MD5",
+                                                                                              ".sha1", "SHA-1",
+                                                                                              ".sha256", "SHA-256",
+                                                                                              ".sha512", "SHA-512");
+
+    /// #1833 — the request sequence of a standard `mvn deploy` followed by a resolving client: the
+    /// artifact files and their sidecars, then the metadata and ITS sidecars (Gradle sends all four
+    /// algorithms, Maven md5 and sha1), then a fetch of the metadata and of each checksum. Every
+    /// metadata sidecar PUT used to be a 400 for sha256/sha512 and every metadata checksum GET a 400.
+    @Test
+    void mavenDeployShapedSequence_metadataChecksumsAreAcceptedAndServed() {
+        put(BASE + ".jar", JAR);
+        put(BASE + ".jar.sha1", "ignored".getBytes(StandardCharsets.UTF_8));
+        put(BASE + ".pom", POM);
+        var metadataPut = put(METADATA, "<metadata/>".getBytes(StandardCharsets.UTF_8));
+
+        assertThat(metadataPut.statusCode()).isLessThan(300);
+        assertThat(body(metadataPut)).as("the metadata PUT says the bytes were not stored")
+                                     .contains("\"status\":\"derived\"")
+                                     .contains("not stored");
+
+        for (var suffix : CHECKSUM_ALGORITHMS.keySet()) {
+            var uploaded = put(METADATA + suffix, "client-side-digest".getBytes(StandardCharsets.UTF_8));
+
+            assertThat(uploaded.statusCode()).as("PUT metadata%s", suffix).isLessThan(300);
+            assertThat(body(uploaded)).as("PUT metadata%s says what happened to the bytes", suffix)
+                                      .contains("\"status\":\"derived\"")
+                                      .contains("not stored");
+        }
+
+        var metadata = get(METADATA);
+
+        assertThat(metadata.statusCode()).isEqualTo(200);
+
+        for (var entry : CHECKSUM_ALGORITHMS.entrySet()) {
+            var checksum = get(METADATA + entry.getKey());
+
+            assertThat(checksum.statusCode()).as("GET metadata%s", entry.getKey()).isEqualTo(200);
+            assertThat(body(checksum)).as("metadata%s is the digest of the exact GET body", entry.getKey())
+                                      .isEqualTo(digest(entry.getValue(), metadata.content()));
+        }
+    }
+
+    /// The metadata and its checksum are two requests. A wall-clock `<lastUpdated>` made the second
+    /// render differ from the first whenever a second boundary fell between them, so the sidecar could
+    /// never be trusted to match; the rendering must be a pure function of the version set.
+    @Test
+    void metadata_isIdenticalAcrossASecondBoundary_soItsChecksumCanBeTrusted() throws InterruptedException {
+        put(BASE + ".jar", JAR);
+
+        var first = get(METADATA).content();
+
+        Thread.sleep(1100);
+
+        assertThat(get(METADATA).content()).isEqualTo(first);
+        assertThat(new String(first, StandardCharsets.UTF_8)).as("<lastUpdated> stays, derived from the stored deploy time")
+                                                             .contains("<lastUpdated>" + lastUpdatedOf("org.example:lib:1.0.0") + "</lastUpdated>");
+        assertThat(body(get(METADATA + ".sha256"))).isEqualTo(digest("SHA-256", first));
+    }
+
+    @Test
+    void metadataChecksums_ofAnArtifactWithNoVersions_are404() {
+        for (var suffix : CHECKSUM_ALGORITHMS.keySet()) {
+            assertThat(get(METADATA + suffix).statusCode()).as("GET metadata%s", suffix).isEqualTo(404);
+        }
+    }
+
+    /// What the store persisted for the version's primary file at deploy time, formatted the way Maven writes it.
+    private String lastUpdatedOf(String coordinates) {
+        var deployedAt = store.metadata(Artifact.artifact(coordinates).unwrap()).await().unwrap().unwrap().deployedAt();
+
+        return java.time.format.DateTimeFormatter.ofPattern("yyyyMMddHHmmss")
+                                                 .format(java.time.Instant.ofEpochMilli(deployedAt).atOffset(java.time.ZoneOffset.UTC));
+    }
+
+    private static String digest(String algorithm, byte[] content) {
+        try {
+            return java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance(algorithm).digest(content));
+        } catch (java.security.NoSuchAlgorithmException e) {
+            throw new AssertionError(e);
+        }
     }
 
     private MavenResponse put(String path, byte[] content) {

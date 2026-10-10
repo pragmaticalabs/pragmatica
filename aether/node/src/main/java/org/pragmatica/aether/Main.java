@@ -19,17 +19,21 @@ import java.util.Map;
 import java.util.function.Consumer;
 import java.util.function.IntConsumer;
 import java.util.regex.Pattern;
+import java.util.stream.Collectors;
 import java.util.stream.IntStream;
+import java.util.stream.Stream;
 import java.util.concurrent.TimeUnit;
 
 import org.pragmatica.aether.config.AlertConfig;
 import org.pragmatica.aether.config.AetherConfig;
 import org.pragmatica.aether.config.ClusterConfig;
 import org.pragmatica.aether.config.ClusterSizeGate;
+import org.pragmatica.aether.environment.CloudConfig;
 import org.pragmatica.aether.environment.ClusterName;
 import org.pragmatica.aether.environment.AutoHealConfig;
 import org.pragmatica.aether.config.AppHttpConfig;
 import org.pragmatica.aether.config.BackupConfig;
+import org.pragmatica.aether.config.cluster.CloudCredentialSchema;
 import org.pragmatica.aether.config.ConfigLoader;
 import org.pragmatica.aether.config.HttpProtocol;
 import org.pragmatica.aether.config.MembershipConfigBinding;
@@ -103,7 +107,6 @@ public record Main(String[] args) {
 
         enforceMinimumClusterSize(staticPeersConfigured(), configuredClusterNodes(aetherConfig), peers.size());
         var sliceConfig = parseSliceConfig(aetherConfig);
-        var dhtConfig = parseDhtConfig(aetherConfig);
 
         logStartupInfo(nodeId, port, managementPort, peers, aetherConfig, sliceConfig);
         var coreMax = parseCoreMax(aetherConfig);
@@ -114,7 +117,9 @@ public record Main(String[] args) {
                                      .coreNodes(peers)
                                      .managementPort(managementPort)
                                      .sliceConfig(sliceConfig)
-                                     .artifactRepo(dhtConfig)
+                                     // #1777 track 1: placeholder only — the DHT's factors come from the committed
+                                     // `[replication]` section once consensus state is restored
+                                     .artifactRepo(org.pragmatica.dht.DHTConfig.DEFAULT)
                                      .coreMax(coreMax)
                                      .appHttp(resolveAppHttp(aetherConfig))
                                      .tls(appHttpTls)
@@ -382,12 +387,70 @@ public record Main(String[] args) {
                       .map(this::buildConfigProvider);
     }
 
+    /// Exit code of a refused cloud integration (#2058): the config HAS a `[cloud]` section and the integration it names cannot be
+    /// created (missing credentials, unknown provider, an invalid provider setting). `EX_UNAVAILABLE` (sysexits.h 69); 65 is the refused
+    /// config file (#2052), 78 the refused identity. A supervisor must not restart with the same configuration: it fails identically
+    /// (`aether/docs/reference/node-operations.md#exit-codes`).
+    static final int CLOUD_INTEGRATION_REFUSED_EXIT_CODE = 69;
+
+    /// The `[cloud.credentials]` keys each provider's factory requires, so the refusal can tell the operator what to add. Derived from
+    /// `CloudCredentialSchema` (pinned against the factories by `CloudCredentialSchemaTest`), the one list the CLI also validates with.
+    static final Map<String, String> REQUIRED_CREDENTIAL_KEYS = Stream.of("hetzner", "aws", "gcp", "azure").collect(Collectors.toUnmodifiableMap(provider -> provider,
+                                                                                                                                                 provider -> String.join(", ",
+                                                                                                                                                                         CloudCredentialSchema.requiredKeys(provider))));
+
+    /// The node's cloud integration (#2058). No `[cloud]` section: none, deliberately (docker compose, forge, bare runs). A `[cloud]`
+    /// section whose integration cannot be created REFUSES the boot: without it the leader cannot provision, replace or scale, and the
+    /// node used to log one line and run without it until the first incident. "Cannot be created" includes a factory THROWING on a
+    /// malformed provider setting (a non-numeric `ssh_key_ids`), lifted into the same refusal rather than an uncaught exception; and a
+    /// docker section can be refused too: its provider rejects a `[backup] path` outside `/data` (the named-volume rule, #1968).
     private Option<EnvironmentIntegration> resolveEnvironment(Option<AetherConfig> aetherConfig) {
-        return aetherConfig.flatMap(AetherConfig::cloud)
-                           .flatMap(cloudConfig -> EnvironmentIntegrationFactory.createFromConfig(cloudConfig)
-                                                                                .onFailure(cause -> log.error("Failed to create cloud environment: {}",
-                                                                                                              cause.message()))
-                                                                                .option());
+        return resolveCloudIntegration(aetherConfig.flatMap(config -> config.cloud()
+                                                                            .map(cloud -> withEffectiveBackup(cloud,
+                                                                                                              config.backup()))),
+                                       EnvironmentIntegrationFactory::createFromConfig).onFailure(this::refuseCloudIntegration)
+                                      .expect("unreachable: refuseCloudIntegration exits");
+    }
+
+    /// Package-private and pure with the factory injected, so the decision is testable per provider without a process.
+    static Result<Option<EnvironmentIntegration>> resolveCloudIntegration(Option<CloudConfig> cloudConfig,
+                                                                          Fn1<Result<EnvironmentIntegration>, CloudConfig> create) {
+        return cloudConfig.fold(() -> Result.success(Option.<EnvironmentIntegration> none()),
+                                cloud -> Result.lift(Causes::fromThrowable,
+                                                     () -> create.apply(cloud))
+                                               .flatMap(created -> created)
+                                               .map(Option::some)
+                                               .mapError(cause -> cloudIntegrationRefusal(cloud.provider(),
+                                                                                          cause)));
+    }
+
+    private static Cause cloudIntegrationRefusal(String provider, Cause cause) {
+        var keys = Option.option(REQUIRED_CREDENTIAL_KEYS.get(provider))
+                         .map(required -> " The provider's [cloud.credentials] TOML keys must provide: " + required
+                                         + " (the bootstrap overlay renders the source's node_config [cloud.credentials], its region/zone/location and, for hetzner, its credentials; add the missing ones under [source.<name>.node_config.cloud.credentials])")
+                         .or("");
+
+        return Causes.cause("the [cloud] section names provider '" + provider
+                           + "' but its integration could not be created: " + cause.message()
+                           + "." + keys);
+    }
+
+    /// The operator signal: FATAL in the log, on stderr, and a distinct exit code (a node that never booted cannot raise a cluster event).
+    @Contract
+    private void refuseCloudIntegration(Cause cause) {
+        var message = "FATAL: refusing to start: " + cause.message();
+
+        log.error(message);
+        System.err.println(message);
+        System.err.flush();
+        System.exit(CLOUD_INTEGRATION_REFUSED_EXIT_CODE);
+    }
+
+    /// #1968: the provider that mints replacements learns this node's EFFECTIVE `[backup]`, from its TOML or its environment alike,
+    /// so a replacement carries the same backup whatever the leader's source of it was. A provider without a node TOML (Docker)
+    /// reads it from the compute map; others ignore the extra entries.
+    static CloudConfig withEffectiveBackup(CloudConfig cloud, BackupConfig backup) {
+        return cloud.withCompute(backup.asEnvironment());
     }
 
     private static HttpProtocol resolveManagementHttpProtocol(Option<AetherConfig> aetherConfig) {
@@ -556,18 +619,66 @@ public record Main(String[] args) {
                            .or(SliceConfig.sliceConfig());
     }
 
-    private org.pragmatica.dht.DHTConfig parseDhtConfig(Option<AetherConfig> aetherConfig) {
-        return aetherConfig.map(AetherConfig::dhtReplication)
-                           .map(dhtRepl -> org.pragmatica.dht.DHTConfig.withReplication(dhtRepl.targetRf()))
-                           .flatMap(Result::option)
-                           .or(org.pragmatica.dht.DHTConfig.DEFAULT);
+    /// Exit code of a refused configuration (#2052): a config file was GIVEN (`--config=`) and is missing, unreadable, malformed or fails
+    /// validation. `EX_DATAERR` (sysexits.h 65): `78` is already scoped to the refused-identity halt, whose supervisor rule differs.
+    /// A supervisor must not restart with the same configuration: it fails identically (documented at
+    /// `aether/docs/reference/node-operations.md#exit-codes`).
+    static final int CONFIG_REFUSED_EXIT_CODE = 65;
+
+    /// The node's configuration (#2052). `--config=<path>` is the ONLY way a config file reaches this process: the image entrypoint, the
+    /// cloud-init unit and `build-and-push.sh` all pass it. NOT given: the node boots on defaults (deliberate: forge, tests and bare
+    /// `java -jar` runs). GIVEN: the file must load and validate, or the node REFUSES to start. It used to log one line and boot on
+    /// defaults, which silently drops the operator's TLS, port, peers and secret settings.
+    private Option<AetherConfig> loadConfig() {
+        return resolveConfig(findArg("--config=")).onFailure(this::refuseConfig)
+                            .expect("unreachable: refuseConfig exits");
     }
 
-    private Option<AetherConfig> loadConfig() {
-        return findArg("--config=").map(Path::of)
-                      .filter(p -> p.toFile()
-                                    .exists())
-                      .flatMap(this::loadConfigFile);
+    /// Package-private and pure so the decision is testable without a process: no argument gives no configuration; an argument that is
+    /// blank, names no regular file, or names a file that does not load and validate gives a failure naming the argument and the cause.
+    static Result<Option<AetherConfig>> resolveConfig(Option<String> givenPath) {
+        return givenPath.fold(() -> Result.success(Option.<AetherConfig> none()), Main::loadGivenConfig);
+    }
+
+    private static Result<Option<AetherConfig>> loadGivenConfig(String raw) {
+        var given = raw.strip();
+
+        if (given.isEmpty()) {
+            return Causes.cause("--config= was given with an empty path; give the path of the node configuration file or omit the argument").result();
+        }
+
+        return Result.lift(Causes::fromThrowable,
+                           () -> Path.of(given))
+                     .mapError(cause -> Causes.cause("--config=" + printable(given)
+                                                    + " is not a valid path: " + cause.message()))
+                     .flatMap(path -> loadExisting(given, path));
+    }
+
+    private static Result<Option<AetherConfig>> loadExisting(String given, Path path) {
+        if (!Files.isRegularFile(path)) {
+            return Causes.cause("config file '" + given + "' (--config=) does not exist or is not a regular file").result();
+        }
+
+        return ConfigLoader.load(path)
+                           .map(Option::some)
+                           .mapError(cause -> Causes.cause("config file '" + given
+                                                          + "' (--config=) could not be loaded or validated: " + cause.message()));
+    }
+
+    private static String printable(String value) {
+        return value.replace("\0", "\\0");
+    }
+
+    /// The refusal reaches the operator beyond a log line: the log (FATAL), stderr (a supervisor or `docker logs` shows it whatever the
+    /// logging setup), and a distinct exit code. A node that never booted cannot raise a cluster event, so these are the whole signal.
+    @Contract
+    private void refuseConfig(Cause cause) {
+        var message = "FATAL: refusing to start: " + cause.message();
+
+        log.error(message);
+        System.err.println(message);
+        System.err.flush();
+        System.exit(CONFIG_REFUSED_EXIT_CODE);
     }
 
     /// #336 — publish the resolved `--config=` path as the `aether.config.path` system property so
@@ -585,13 +696,6 @@ public record Main(String[] args) {
                .map(Path::toAbsolutePath)
                .onPresent(p -> System.setProperty(AetherNode.CONFIG_PATH_PROPERTY,
                                                   p.toString()));
-    }
-
-    private Option<AetherConfig> loadConfigFile(Path path) {
-        return ConfigLoader.load(path)
-                           .onFailure(cause -> log.error("Failed to load config: {}",
-                                                         cause.message()))
-                           .option();
     }
 
     private void logStartupInfo(NodeId nodeId,
@@ -1171,6 +1275,8 @@ public record Main(String[] args) {
         envLookup.apply("AETHER_INSTANCE_TYPE").onPresent(t -> labels.put(NodeInfo.LABEL_INSTANCE_TYPE, t));
         envLookup.apply("AETHER_POOL").onPresent(p -> labels.put(NodeInfo.LABEL_POOL, p));
         envLookup.apply("AETHER_SOURCE").onPresent(s -> labels.put(NodeInfo.LABEL_SOURCE, s));
+        // #1543 part C: the running binary's own version, so an upgrade can see what each node actually runs.
+        labels.put(NodeInfo.LABEL_VERSION, AetherNode.VERSION);
         // #689: the default is deliberate (blank counts as core — the safe failure direction for
         // the core tier) and unchanged; what was missing is the node saying so. A worker started
         // without this label joins the core set on every peer and nothing else reports why.

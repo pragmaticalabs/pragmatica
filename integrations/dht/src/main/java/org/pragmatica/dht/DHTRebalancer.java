@@ -23,6 +23,7 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
+import java.util.function.Supplier;
 
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Contract;
@@ -62,7 +63,9 @@ public final class DHTRebalancer {
 
     private final DHTNode node;
     private final DHTNetwork network;
-    private final DHTConfig config;
+    /// Fixed for [#dhtRebalancer(DHTNode, DHTNetwork, DHTConfig)]; the node's live replication for
+    /// [#dhtRebalancer(DHTNode, DHTNetwork)] (#1777 track 1).
+    private final Supplier<DHTConfig> config;
     /// Pending graceful-departure pushes awaiting a [DHTMessage.MigrationDataAck], keyed by the
     /// push's correlation id. Populated by [#sendAckedPush], drained by [#onMigrationDataAck];
     /// whatever remains when the budget expires is the at-risk set reported to the observer.
@@ -70,7 +73,7 @@ public final class DHTRebalancer {
 
     private record PendingPush(List<DHTMessage.KeyValue> entries, Promise<Unit> ackPromise) {}
 
-    private DHTRebalancer(DHTNode node, DHTNetwork network, DHTConfig config) {
+    private DHTRebalancer(DHTNode node, DHTNetwork network, Supplier<DHTConfig> config) {
         this.node = node;
         this.network = network;
         this.config = config;
@@ -82,7 +85,12 @@ public final class DHTRebalancer {
     /// @param network cluster network for sending migration data
     /// @param config  DHT configuration
     public static DHTRebalancer dhtRebalancer(DHTNode node, DHTNetwork network, DHTConfig config) {
-        return new DHTRebalancer(node, network, config);
+        return new DHTRebalancer(node, network, () -> config);
+    }
+
+    /// Create a rebalancer that follows the node's LIVE replication ([DHTNode#config], #1777 track 1).
+    public static DHTRebalancer dhtRebalancer(DHTNode node, DHTNetwork network) {
+        return new DHTRebalancer(node, network, node::config);
     }
 
     /// Called after a node is removed from the ring.
@@ -90,12 +98,12 @@ public final class DHTRebalancer {
     /// nodes that need copies to restore the replication factor.
     @Contract
     public void onNodeRemoved(NodeId removedNode) {
-        if (config.isFullReplication()) {
+        if (config.get().isFullReplication() || !node.replicationResolved()) {
             return;
         }
 
         log.info("Rebalancing after node {} departed", removedNode.id());
-        var replicationFactor = config.effectiveReplicationFactor(node.ring().nodeCount());
+        var replicationFactor = config.get().effectiveReplicationFactor(node.ring().nodeCount());
 
         for (int p = 0; p < Partition.MAX_PARTITIONS; p++) {
             rebalancePartition(p, replicationFactor);
@@ -131,7 +139,7 @@ public final class DHTRebalancer {
 
     /// Budget-explicit variant of [#pushOnDeparture(Set, DeparturePushObserver)].
     public Promise<Unit> pushOnDeparture(TimeSpan budget, Set<NodeId> coDeparting, DeparturePushObserver observer) {
-        if (config.isFullReplication()) {
+        if (config.get().isFullReplication()) {
             return Promise.success(Unit.unit());
         }
 
@@ -179,7 +187,7 @@ public final class DHTRebalancer {
     /// target receives one push carrying all of its owed chunks.
     private Map<NodeId, List<DHTMessage.KeyValue>> groupByTarget(List<DHTMessage.KeyValue> entries,
                                                                  Set<NodeId> leaving) {
-        var replicationFactor = config.effectiveReplicationFactor(node.ring().nodeCount());
+        var replicationFactor = config.get().effectiveReplicationFactor(node.ring().nodeCount());
 
         return entries.stream()
                       .flatMap(entry -> targetPairs(entry, replicationFactor, leaving))

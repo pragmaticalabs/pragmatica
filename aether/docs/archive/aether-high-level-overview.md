@@ -69,7 +69,7 @@ the runtime manages distributed concerns.
 ### Planned Features 📋
 
 - Multi-cloud deployment abstraction
-- Layered AI integration (SLM → LLM, see [ai-integration.md](ai-integration.md))
+- Layered AI integration (SLM → LLM, see [ai-integration.md](../specs/ai-integration-spec.md))
 - Security manager integration
 - Slice versioning and hot updates
 
@@ -140,7 +140,7 @@ List<LoadedSlice> loadedSlices()
 
 ### Phase 3: AI Integration (Planned)
 
-- Layered autonomy architecture (see [ai-integration.md](ai-integration.md))
+- Layered autonomy architecture (see [ai-integration.md](../specs/ai-integration-spec.md))
 - Layer 1: Decision tree controller (done)
 - Layer 2: SLM integration (planned)
 - Layer 3: LLM integration (planned)

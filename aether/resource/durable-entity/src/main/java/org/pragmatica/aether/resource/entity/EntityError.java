@@ -93,23 +93,6 @@ public sealed interface EntityError extends Cause {
         }
     }
 
-    /// A timer operation reached a backing that has no durable log to hold a pending timer in — the
-    /// HA-only in-memory cut (`InMemoryDurableEntity`, `FencedDurableEntity`, both test-only fixtures in this
-    /// module's test sources since #1270). It declines with this typed
-    /// cause rather than silently no-op'ing, because a timer that is accepted and never fires is worse than
-    /// one that is refused.
-    ///
-    /// **A running node never answers this.** [DurableEntityFactory] provisions only the fenced-log
-    /// [PartitionFencedDurableEntity], where [DurableEntity#scheduleTimer] and
-    /// [DurableEntity#cancelTimer] are ordinary fenced writes (#345 I4). This is the answer of the
-    /// in-memory backings alone, which unit tests and harnesses construct directly.
-    record TimerNotSupported(String key) implements EntityError {
-        @Override
-        public String message() {
-            return "Durable entity timers are not yet supported for key: " + key;
-        }
-    }
-
     /// A due timer could not be applied: its command did not decode, the mutator threw, or the key it was
     /// scheduled on no longer holds state. Carries the TOKEN for the same reason [TimerNotFound] does —
     /// a key may hold several timers and only the token says which one.

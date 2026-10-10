@@ -75,10 +75,107 @@ public sealed interface StreamError extends Cause {
         }
     }
 
+    /// The consumer's cursor belongs to a lineage the partition no longer has (#1730 phase 2 / #1873, KIP-320): an owner
+    /// restart or failover began epoch `ownerEpoch` at `resumeAt` and assigned the offsets above it again. The consumer
+    /// re-reads from `resumeAt` and adopts `ownerEpoch`; reading on from its cursor would skip the new records.
+    ///
+    /// `provenLossFrom` is where the record PROVES a loss to begin, or [#NO_PROVEN_LOSS]: the first start exactly known to be of
+    /// an epoch after the consumer's, below its cursor. `resumeAt` is only a lower bound of every offset an epoch after the
+    /// consumer's may have re-assigned (the consumer re-reads from it: it may redeliver, it never skips), and may be below
+    /// `provenLossFrom` when the record folded the starts in between. Records in `[provenLossFrom, cursor)` are proven gone.
+    record EpochDiverged(Epoch ownerEpoch, long resumeAt, long provenLossFrom) implements StreamError {
+        /// No loss is proven: the record cannot tell a loss from a re-read.
+        public static final long NO_PROVEN_LOSS = -1L;
+
+        /// A divergence at an exact boundary: the loss is proven from `resumeAt`.
+        public EpochDiverged(Epoch ownerEpoch, long resumeAt) {
+            this(ownerEpoch, resumeAt, resumeAt);
+        }
+
+        public boolean lossProven() {
+            return provenLossFrom >= 0L;
+        }
+
+        @Override
+        public String message() {
+            return "Consumer cursor belongs to a replaced lineage: owner epoch %s began at offset %d, resume there".formatted(ownerEpoch,
+                                                                                                                              resumeAt);
+        }
+    }
+
     record CursorExpired(long requestedOffset, long tailOffset) implements StreamError {
         @Override
         public String message() {
             return "Cursor at offset %d has expired, oldest available is %d".formatted(requestedOffset, tailOffset);
+        }
+    }
+
+    /// A repair was refused because this copy's own history cannot vouch for its records (#1730 phase 2): it compares
+    /// unequal with the owner at `offset` only because it holds records and no owner-epoch history, which is no evidence of
+    /// a lineage split. Nothing was cut; the partition stays quarantined.
+    record DivergenceNotEstablished(String streamName, int partition, long offset) implements StreamError {
+        @Override
+        public String message() {
+            return "Divergence of %s[%d] at offset %d is not established: this copy's owner-epoch history cannot vouch for its records".formatted(streamName,
+                                                                                                                                                  partition,
+                                                                                                                                                  offset);
+        }
+    }
+
+    /// A repair was refused because the committed owner no longer authorises it: it is not the owner this copy backfills from,
+    /// it is this node, or its epoch is not later than the epoch of the records about to be cut (#1730 phase 2).
+    record RepairNotAuthorized(String streamName, int partition, long divergedAt) implements StreamError {
+        @Override
+        public String message() {
+            return "Repair of %s[%d] at offset %d is not authorised by the committed owner".formatted(streamName,
+                                                                                                      partition,
+                                                                                                      divergedAt);
+        }
+    }
+
+    /// A repair was refused because the record of what its cut would discard could not be made durable first (#1730 phase 2): the
+    /// copy keeps its records and stays quarantined, and the repair is retried.
+    record RepairWitnessFailed(String streamName, int partition, String reason) implements StreamError, Cause.Transient {
+        @Override
+        public String message() {
+            return "Repair of %s[%d] refused: its truncation witness could not be written (%s)".formatted(streamName,
+                                                                                                          partition,
+                                                                                                          reason);
+        }
+    }
+
+    /// A repair was refused because the records its cut would remove could not be preserved in a recovery segment first (#2080): the
+    /// copy keeps its records and stays quarantined, and the repair is retried. Nothing is removed that was not first made durable.
+    record RepairPreserveFailed(String streamName, int partition, String reason) implements StreamError, Cause.Transient {
+        @Override
+        public String message() {
+            return "Repair of %s[%d] refused: the records its cut would remove could not be preserved in a recovery segment (%s)".formatted(streamName,
+                                                                                                                                            partition,
+                                                                                                                                            reason);
+        }
+    }
+
+    /// This node holds records at or above the start of the committed owner's current epoch that it has not compared with the
+    /// owner (it was demoted, or the epoch advanced while it was away): it serves nothing from there and acknowledges nothing,
+    /// until a backfill has verified it for the epoch (#1730 phase 2). Retriable: the backfill redrive verifies it.
+    record ReplicaNotVerified(String streamName, int partition, long startOffset) implements StreamError, Cause.Transient {
+        @Override
+        public String message() {
+            return "Replica %s[%d] has not been verified against the owner's epoch starting at offset %d".formatted(streamName,
+                                                                                                                    partition,
+                                                                                                                    startOffset);
+        }
+    }
+
+    /// A suffix truncation asked to cut below the ring's retained range (#1730 phase 2): offsets between `keepThrough`
+    /// and `tailOffset` were evicted (and possibly sealed), so the ring cannot say they are gone. Nothing changed.
+    record TruncateBelowRetained(String streamName, int partition, long keepThrough, long tailOffset) implements StreamError {
+        @Override
+        public String message() {
+            return "Cannot truncate %s[%d] back to offset %d: the ring retains only offsets from %d".formatted(streamName,
+                                                                                                               partition,
+                                                                                                               keepThrough,
+                                                                                                               tailOffset);
         }
     }
 
@@ -169,9 +266,18 @@ public sealed interface StreamError extends Cause {
     /// `StreamConfigKey`). Not a capacity shortage, so it does NOT implement
     /// {@link org.pragmatica.aether.slice.ResourceCapacityExhausted}.
     record StreamConfigNotYetVisible(String streamName) implements StreamError, Cause.Transient {
+        /// The text every message of this refusal carries. A forwarded refusal reaches the publisher as a string only
+        /// ([StreamForwardError.RemotePublishRetryable]), so [#describes] recognizes it by this marker, in this one place.
+        public static final String MESSAGE_MARKER = "Stream config not yet visible on this node";
+
         @Override
         public String message() {
-            return "Stream config not yet visible on this node: " + streamName;
+            return MESSAGE_MARKER + ": " + streamName;
+        }
+
+        /// Whether `detail` is the text of this refusal.
+        public static boolean describes(String detail) {
+            return detail.contains(MESSAGE_MARKER);
         }
     }
 
@@ -466,10 +572,20 @@ public sealed interface StreamError extends Cause {
     /// serves reads as owner. Transient: promotion runs on demand and completes within a probe/backfill round,
     /// or stays blocked while a live holder is unreachable until that holder is declared dead.
     record OwnerNotActivated(String streamName, int partition) implements StreamError, Cause.Transient {
+        /// The text every message of this refusal carries. A forwarded refusal reaches the publisher as a string only
+        /// ([StreamForwardError.RemotePublishRetryable]), so [#describes] recognizes it by this marker, in this one place.
+        public static final String MESSAGE_MARKER = "is not yet promoted on this node";
+
         @Override
         public String message() {
-            return "Stream partition %s[%d] is not yet promoted on this node (fresh ownership view and catch-up pending)".formatted(streamName,
-                                                                                                                                    partition);
+            return "Stream partition %s[%d] %s (fresh ownership view and catch-up pending)".formatted(streamName,
+                                                                                                      partition,
+                                                                                                      MESSAGE_MARKER);
+        }
+
+        /// Whether `detail` is the text of this refusal.
+        public static boolean describes(String detail) {
+            return detail.contains(MESSAGE_MARKER);
         }
     }
 

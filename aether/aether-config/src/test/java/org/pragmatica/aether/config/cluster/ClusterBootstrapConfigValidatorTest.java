@@ -63,6 +63,14 @@ class ClusterBootstrapConfigValidatorTest {
                                       infrastructureConfig(NetworkingType.MANUAL), defaultOperationsConfig(), java.util.Map.of());
     }
 
+    /// #2059: an aws source carries its credential keys under `node_config.cloud.credentials` — the scalar
+    /// `credentials` cannot be several keys. Other providers in these fixtures are expected to fail on other rules.
+    private static Option<TomlDocument> awsCredentials(CloudProviderName provider) {
+        return provider == CloudProviderName.AWS
+               ? some(new TomlDocument(Map.of("cloud.credentials", Map.of("access_key_id", "a", "secret_access_key", "s")), Map.of()))
+               : none();
+    }
+
     private static ClusterBootstrapConfig cloudConfigWithFirewall(CloudProviderName provider) {
         var runtime = runtimeProfile("prod", RuntimeType.CONTAINER, some("aether:latest"), none());
         var coreRole = roleSubTable(NodeRole.CORE, some(3), none(), some("cx41"), "prod");
@@ -70,7 +78,7 @@ class ClusterBootstrapConfigValidatorTest {
         var source = sourceProfile(sourceNameOrDefault("cloud-src"), SourceType.CLOUD, some(provider),
                                    some("key"), some("eu-central"), none(), none(), none(), none(),
                                    LoadBalancerMode.EXTERNAL, List.of("10.0.0.1"), none(), Map.of(),
-                                   Map.of(NodeRole.CORE, coreRole), rules);
+                                   Map.of(NodeRole.CORE, coreRole), rules, awsCredentials(provider));
 
         return clusterBootstrapConfig("1.0.0", clusterIdentity("production", "1.0.0").unwrap(),
                                       defaultCoreTopology(), Map.of("cloud-src", source),
@@ -95,6 +103,21 @@ class ClusterBootstrapConfigValidatorTest {
                                       infrastructureConfig(NetworkingType.MANUAL), defaultOperationsConfig(), java.util.Map.of());
     }
 
+    private static ClusterBootstrapConfig cloudConfigWithOverlay(Map<String, Object> appHttp) {
+        var runtime = runtimeProfile("prod", RuntimeType.CONTAINER, some("aether:latest"), none());
+        var coreRole = roleSubTable(NodeRole.CORE, some(3), none(), some("cx41"), "prod");
+        var overlay = new TomlDocument(Map.of("app-http", appHttp));
+        var source = sourceProfile(sourceNameOrDefault("cloud-src"), SourceType.CLOUD, some(CloudProviderName.HETZNER),
+                                   some("key"), some("eu-central"), none(), none(), none(), none(),
+                                   LoadBalancerMode.EXTERNAL, List.of("10.0.0.1"), none(), Map.of(),
+                                   Map.of(NodeRole.CORE, coreRole), List.of(), some(overlay));
+
+        return clusterBootstrapConfig("1.0.0", clusterIdentity("production", "1.0.0").unwrap(),
+                                      defaultCoreTopology(), Map.of("cloud-src", source),
+                                      Map.of("prod", runtime),
+                                      infrastructureConfig(NetworkingType.MANUAL), defaultOperationsConfig(), java.util.Map.of());
+    }
+
     private static ClusterBootstrapConfig cloudConfigWithPublicManagement(String securityMode) {
         return cloudConfigWithManagement(securityMode, "0.0.0.0/0");
     }
@@ -110,7 +133,7 @@ class ClusterBootstrapConfigValidatorTest {
         var source = sourceProfile(sourceNameOrDefault("cloud-src"), SourceType.CLOUD, some(provider),
                                    some("key"), some("eu-central"), none(), none(), none(), none(),
                                    LoadBalancerMode.EXTERNAL, List.of("10.0.0.1"), none(), Map.of(),
-                                   Map.of(NodeRole.CORE, coreRole, NodeRole.SPOT, spotRole), List.of());
+                                   Map.of(NodeRole.CORE, coreRole, NodeRole.SPOT, spotRole), List.of(), awsCredentials(provider));
 
         return clusterBootstrapConfig("1.0.0", clusterIdentity("production", "1.0.0").unwrap(),
                                       defaultCoreTopology(), Map.of("cloud-src", source),
@@ -517,6 +540,117 @@ class ClusterBootstrapConfigValidatorTest {
                 .onSuccess(v -> Assertions.fail("Expected failure"))
                 .onFailure(cause -> assertThat(cause.message()).contains("PF-24")
                                                               .contains("unauthenticated management API"));
+        }
+
+        /// PF-34 (#909): a jwt source with no jwks_url would provision nodes that all refuse to boot.
+        @Test
+        void validate_jwtWithoutJwks_returnsPf34() {
+            validate(cloudConfigWithOverlay(Map.<String, Object>of("security_mode", "jwt", "enabled", "true")))
+                .onSuccess(v -> Assertions.fail("Expected failure"))
+                .onFailure(cause -> assertThat(cause.message()).contains("PF-34").contains("jwks_url"));
+        }
+
+        @Test
+        void validate_jwtWithJwks_succeeds() {
+            validate(cloudConfigWithOverlay(Map.<String, Object>of("security_mode", "jwt", "enabled", "true",
+                                                   "jwks_url", "https://auth.example.com/jwks.json")))
+                .onFailure(cause -> assertThat(cause.message()).doesNotContain("PF-34"));
+        }
+
+        /// Only the jwt mode needs a jwks_url: an enabled app-http under another mode without one is not PF-34.
+        @Test
+        void validate_nonJwtModeWithoutJwks_isNotPf34() {
+            validate(cloudConfigWithOverlay(Map.<String, Object>of("security_mode", "api_key", "enabled", "true")))
+                .onFailure(cause -> assertThat(cause.message()).doesNotContain("PF-34"));
+        }
+
+        /// A blank jwks_url verifies nothing either.
+        @Test
+        void validate_jwtWithBlankJwks_returnsPf34() {
+            validate(cloudConfigWithOverlay(Map.<String, Object>of("security_mode", "jwt", "enabled", "true", "jwks_url", "   ")))
+                .onSuccess(v -> Assertions.fail("Expected failure"))
+                .onFailure(cause -> assertThat(cause.message()).contains("PF-34"));
+        }
+
+        /// F1: the global default sets `[app-http] enabled = true`, so an overlay that only says `security_mode = "jwt"` IS an enabled server. Judged
+        /// on the raw overlay it slipped through.
+        @Test
+        void validate_jwtWithoutJwksOnTheDefaultEnabledShape_isRefused() {
+            validate(cloudConfigWithOverlay(Map.<String, Object>of("security_mode", "jwt")))
+                .onSuccess(v -> Assertions.fail("Expected failure"))
+                .onFailure(cause -> assertThat(cause.message()).contains("PF-34").contains("jwks_url"));
+        }
+
+        @Test
+        void validate_jwtWithoutJwksOnExplicitlyDisabledAppHttp_isNotRefused() {
+            validate(cloudConfigWithOverlay(Map.<String, Object>of("security_mode", "jwt", "enabled", "false")))
+                .onFailure(cause -> assertThat(cause.message()).doesNotContain("PF-34"));
+        }
+
+        /// F3 (P3): an overlay that sets no security_mode is not a jwt server, whatever else it says.
+        @Test
+        void validate_overlayWithoutSecurityMode_isNotPf34() {
+            validate(cloudConfigWithOverlay(Map.<String, Object>of("enabled", "true")))
+                .onFailure(cause -> assertThat(cause.message()).doesNotContain("PF-34"));
+        }
+
+        /// F2: PF-34 applies the same URL predicate config load does.
+        @Test
+        void validate_jwtWithAnUnusableJwksUrl_returnsPf34() {
+            for (var bad : List.of("   ", "/relative/jwks.json", "http://auth.example.com/jwks.json", "ftp://auth.example.com/jwks.json", "https://", "ht tp://x")) {
+                validate(cloudConfigWithOverlay(Map.<String, Object>of("security_mode", "jwt", "jwks_url", bad)))
+                    .onSuccess(v -> Assertions.fail("Expected failure for '" + bad + "'"))
+                    .onFailure(cause -> assertThat(cause.message()).as(bad).contains("PF-34").contains("jwks_url"));
+            }
+        }
+
+        /// C5b: the node does not trim `enabled`, so `" true "` is a DISABLED server there; PF-34 must agree (it used to trim and refuse). The same
+        /// file loaded by the node is accepted, which is the property: bootstrap and node give the same verdict.
+        @Test
+        void validate_paddedEnabled_agreesWithTheNode() {
+            validate(cloudConfigWithOverlay(Map.<String, Object>of("security_mode", "jwt", "enabled", " true ")))
+                .onFailure(cause -> assertThat(cause.message()).doesNotContain("PF-34"));
+            assertThat(org.pragmatica.aether.config.ConfigLoader.loadFromString("[cluster]\nenvironment = \"docker\"\nnodes = 3\n\n[app-http]\nenabled = \" true \"\nsecurity_mode = \"jwt\"\n").isSuccess())
+                .as("the node loads the padded-enabled file as a disabled server").isTrue();
+        }
+
+        /// C5: a padded or odd-cased security_mode is the SAME mode at PF-34 and at the node: both refuse a jwt server with no jwks_url.
+        @Test
+        void validate_paddedAndUpperCasedJwtMode_isRefusedLikeTheNode() {
+            for (var mode : List.of("  jwt ", "JWT")) {
+                validate(cloudConfigWithOverlay(Map.<String, Object>of("security_mode", mode, "enabled", "true")))
+                    .onSuccess(v -> Assertions.fail("Expected failure for '" + mode + "'"))
+                    .onFailure(cause -> assertThat(cause.message()).as(mode).contains("PF-34"));
+                assertThat(org.pragmatica.aether.config.ConfigLoader.loadFromString("[cluster]\nenvironment = \"docker\"\nnodes = 3\n\n[app-http]\nenabled = \"true\"\nsecurity_mode = \"" + mode + "\"\n").isFailure())
+                    .as("the node refuses '" + mode + "' too").isTrue();
+            }
+        }
+
+        /// N1 in PF-34: a padded URL is accepted (the node loads it trimmed).
+        @Test
+        void validate_jwtWithAPaddedJwksUrl_isNotPf34() {
+            validate(cloudConfigWithOverlay(Map.<String, Object>of("security_mode", "jwt", "jwks_url", "  https://auth.example.com/jwks.json ")))
+                .onFailure(cause -> assertThat(cause.message()).doesNotContain("PF-34"));
+        }
+
+        /// C10/A6: the exact operator-facing wording and the URL cause text.
+        @Test
+        void validate_pf34Messages_arePinned() {
+            validate(cloudConfigWithOverlay(Map.<String, Object>of("security_mode", "jwt")))
+                .onFailure(cause -> assertThat(cause.message())
+                    .contains("PF-34: Source 'cloud-src' sets [app-http] security_mode = \"jwt\" but jwks_url is missing. Every node would refuse to start")
+                    .contains("jwks_url is required (issuer/audience optional)"));
+            validate(cloudConfigWithOverlay(Map.<String, Object>of("security_mode", "jwt", "jwks_url", "http://auth.example.com/jwks.json")))
+                .onFailure(cause -> assertThat(cause.message())
+                    .contains("PF-34: Source 'cloud-src' sets [app-http] security_mode = \"jwt\" but jwks_url 'http://auth.example.com/jwks.json' must use https"));
+        }
+
+        @Test
+        void validate_jwtWithHttpsOrLoopbackHttpJwks_isNotPf34() {
+            for (var good : List.of("https://auth.example.com/jwks.json", "http://localhost:8080/jwks.json", "http://127.0.0.1/jwks.json", "http://[::1]:9000/jwks.json")) {
+                validate(cloudConfigWithOverlay(Map.<String, Object>of("security_mode", "jwt", "jwks_url", good)))
+                    .onFailure(cause -> assertThat(cause.message()).as(good).doesNotContain("PF-34"));
+            }
         }
 
         @Test

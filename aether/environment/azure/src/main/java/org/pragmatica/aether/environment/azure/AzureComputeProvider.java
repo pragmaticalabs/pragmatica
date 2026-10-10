@@ -138,11 +138,6 @@ public record AzureComputeProvider(AzureClient client, AzureEnvironmentConfig co
     }
 
     @Override
-    public Promise<Unit> restart(InstanceId id) {
-        return client.restartVm(id.value());
-    }
-
-    @Override
     public Promise<Unit> applyTags(InstanceId id, Map<String, String> tags) {
         return client.updateTags(id.value(),
                                  tags)
