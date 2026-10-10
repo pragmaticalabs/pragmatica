@@ -4,10 +4,11 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.http.adapter;
 
-import ch.qos.logback.classic.Level;
-import ch.qos.logback.classic.Logger;
-import ch.qos.logback.classic.spi.ILoggingEvent;
-import ch.qos.logback.core.read.ListAppender;
+import org.apache.logging.log4j.Level;
+import org.apache.logging.log4j.core.LogEvent;
+import org.apache.logging.log4j.core.LoggerContext;
+import org.apache.logging.log4j.core.appender.AbstractAppender;
+import org.apache.logging.log4j.core.config.Property;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -24,10 +25,10 @@ import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.utils.Causes;
-import org.slf4j.LoggerFactory;
 
 import java.lang.reflect.Proxy;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Stream;
@@ -53,19 +54,34 @@ class SliceRouterCauseChainLeakTest {
         default -> HttpError.httpError(HttpStatus.INTERNAL_SERVER_ERROR, cause);
     };
 
-    private final ListAppender<ILoggingEvent> appender = new ListAppender<>();
-    private final Logger routerLog = (Logger) LoggerFactory.getLogger(SliceRouter.class);
+    private final List<String> events = new ArrayList<>();
+    private final AbstractAppender appender = new AbstractAppender("cause-chain-capture", null, null, true, Property.EMPTY_ARRAY) {
+        @Override
+        public void append(LogEvent event) {
+            if (event.getLoggerName().equals(SliceRouter.class.getName())) {
+                synchronized (events) {
+                    events.add(event.getMessage().getFormattedMessage());
+                }
+            }
+        }
+    };
 
     @BeforeEach
     void attach() {
+        var context = (LoggerContext) org.apache.logging.log4j.LogManager.getContext(false);
+
         appender.start();
-        routerLog.addAppender(appender);
-        routerLog.setLevel(Level.WARN);
+        context.getConfiguration().getRootLogger().addAppender(appender, Level.ALL, null);
+        context.updateLoggers();
     }
 
     @AfterEach
     void detach() {
-        routerLog.detachAppender(appender);
+        var context = (LoggerContext) org.apache.logging.log4j.LogManager.getContext(false);
+
+        context.getConfiguration().getRootLogger().removeAppender(appender.getName());
+        context.updateLoggers();
+        appender.stop();
     }
 
     private static JsonMapper failingSerializer() {
@@ -82,7 +98,10 @@ class SliceRouterCauseChainLeakTest {
     }
 
     private HttpResponseData respond(JsonMapper mapper) {
-        var failure = new Wrapped(TOP, Causes.cause(SENTINEL));
+        return respond(mapper, new Wrapped(TOP, Causes.cause(SENTINEL)));
+    }
+
+    private HttpResponseData respond(JsonMapper mapper, Cause failure) {
         Route<String> route = Route.route(HttpMethod.GET,
                                           "/boom",
                                           ctx -> failure.<String> promise(),
@@ -100,7 +119,9 @@ class SliceRouterCauseChainLeakTest {
     }
 
     private String serverLog() {
-        return appender.list.stream().map(ILoggingEvent::getFormattedMessage).reduce("", (a, b) -> a + "\n" + b);
+        synchronized (events) {
+            return String.join("\n", events);
+        }
     }
 
     @Test
@@ -118,5 +139,35 @@ class SliceRouterCauseChainLeakTest {
 
         assertThat(body(response)).contains(TOP).doesNotContain(SENTINEL);
         assertThat(serverLog()).contains("req_2101").contains(TOP).contains(SENTINEL);
+    }
+
+    /// A chain of three-plus links with an [HttpError] in the middle, each link carrying its own sentinel. The origin
+    /// of the outer error is itself an [HttpError], so a detail built from the origin's `message()` walks the chain.
+    private static HttpError nestedChain() {
+        var plain = Causes.cause("S3-plain-deep");
+        var mid = new Wrapped("S2-mid", plain);
+        var inner = HttpError.httpError(HttpStatus.CONFLICT, new Wrapped("S1-top", mid));
+
+        return HttpError.httpError(HttpStatus.BAD_GATEWAY, inner);
+    }
+
+    @Test
+    void nestedHttpErrorOrigin_control_chainWalkerSeesEverySentinel() {
+        assertThat(nestedChain().message()).contains("S1-top", "S2-mid", "S3-plain-deep");
+    }
+
+    @Test
+    void nestedHttpErrorOrigin_problemBodyKeepsTopCauseOnly() {
+        var response = respond(JsonMapper.defaultJsonMapper(), nestedChain());
+
+        assertThat(response.statusCode()).isEqualTo(502);
+        assertThat(body(response)).contains("S1-top").doesNotContain("S2-mid").doesNotContain("S3-plain-deep");
+    }
+
+    @Test
+    void nestedHttpErrorOrigin_serverLogCarriesEveryLinkInOrder() {
+        respond(JsonMapper.defaultJsonMapper(), nestedChain());
+
+        assertThat(serverLog()).contains("(cause chain: Bad Gateway <- Conflict <- S1-top <- S2-mid <- S3-plain-deep)");
     }
 }

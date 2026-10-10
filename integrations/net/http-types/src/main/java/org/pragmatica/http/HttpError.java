@@ -27,10 +27,12 @@ public interface HttpError extends Cause, HttpStatusAware {
         return status();
     }
 
-    /// The text safe to put in a client-facing body: this error's status and its top cause's message,
-    /// never the origin chain below it. [#message()] walks that chain and is for server-side logs only.
+    /// The text safe to put in a client-facing body: the status text and nothing below it. The default is
+    /// deliberately the narrowest text, so an implementer that carries an origin chain cannot leak it by
+    /// omission; an implementer widens it to its top cause's message on purpose. [#message()] may walk the
+    /// origin chain and is for server-side logs only.
     default String clientMessage() {
-        return message();
+        return status().message();
     }
 
     /// [#clientMessage()] for an [HttpError], the plain message of any other cause.
