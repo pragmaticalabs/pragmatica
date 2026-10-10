@@ -187,6 +187,7 @@ import org.pragmatica.aether.slice.blueprint.OwningBlueprintResolver;
 import org.pragmatica.aether.slice.stream.BlueprintStreamAddresses;
 import org.pragmatica.aether.slice.stream.StreamNamespacesService;
 import org.pragmatica.aether.stream.KvStreamOwnerEpochSource;
+import org.pragmatica.aether.stream.CommittedStreamIsrSource;
 import org.pragmatica.aether.stream.KvCommittedStreamOwnerSource;
 import org.pragmatica.aether.stream.CommittedStreamOwnerSource;
 import org.pragmatica.aether.stream.LinearizableBarrier;
@@ -290,6 +291,7 @@ import org.pragmatica.aether.config.ReadLinearizationMode;
 import org.pragmatica.aether.config.ReplicationDefaultsConfig;
 import org.pragmatica.aether.config.RollbackConfig;
 import org.pragmatica.aether.config.StorageConfig;
+import org.pragmatica.aether.config.StreamingConfig;
 import org.pragmatica.aether.config.StorageEncryptionConfig;
 import org.pragmatica.aether.config.cluster.RollbackPolicyParser;
 import org.pragmatica.cluster.metrics.DeploymentMetricsMessage;
@@ -2026,7 +2028,7 @@ public interface AetherNode extends ManageableNode {
     /// #1555 item 8: how long a promotion may stay blocked on unreachable members before it is reported — two
     /// SWIM suspect windows, so a member that is merely slow to be declared FAULTY does not raise it.
     private static TimeSpan ownerPromotionAlarmWindow(TimeSpan suspectTimeout) {
-        return suspectTimeout.plus(suspectTimeout);
+        return StreamingConfig.ownerPromotionAlarmWindow(suspectTimeout);
     }
 
     /// #1555: a partition whose owner promotion waits for an operator (a divergent peer, or members unreachable
@@ -2048,7 +2050,49 @@ public interface AetherNode extends ManageableNode {
             public Unit resolved(OwnerActivation.ActivationBlock block) {
                 return resolveOwnerPromotionBlock(sink, block);
             }
+
+            @Override
+            public Unit escaped(OwnerActivation.PromotionEscape escape) {
+                return raisePromotionEscape(sink, escape);
+            }
         };
+    }
+
+    /// #2080: a promotion that went ahead without unreachable members is a CRITICAL operator event, one per escape, from both gates.
+    /// The subject carries the gate, the skipped members and the instant, so two escapes of one partition are two events for the event
+    /// layer's per-subject throttle (60 s): none is merged into an earlier one.
+    private static Unit raisePromotionEscape(OperatorWarningSink sink, OwnerActivation.PromotionEscape escape) {
+        return OperatorWarnings.raise(LOG,
+                                      sink,
+                                      OperatorWarningCode.STREAM_PROMOTION_PAST_UNREACHABLE_PEERS,
+                                      escape.streamName()
+                                     + "[" + escape.partition()
+                                     + "]/" + escape.gate()
+                                     + "/without=" + escape.skipped()
+                                                           .stream()
+                                                           .map(NodeId::id)
+                                                           .sorted()
+                                                           .toList()
+                                     + "@" + System.currentTimeMillis(),
+                                      "{}",
+                                      escape.message());
+    }
+
+    /// What the promoted owner's backfill and its cold-start contest need from the node (#1937, #2080): where its blocks and escapes
+    /// are reported, and where it reads whether a node is named in a partition's committed in-sync set. One place, so the production
+    /// wiring is the code the wiring test drives.
+    static Unit bindPromotionAlarm(PartitionBackfill backfill,
+                                   OperatorWarningSink sink,
+                                   KVStore<AetherKey, AetherValue> kvStore,
+                                   TimeSpan promotionEscapeAfter) {
+        var committedIsr = KvCommittedStreamOwnerSource.kvCommittedStreamOwnerSource(kvStore);
+
+        backfill.blockAlarm(ownerPromotionAlarm(sink));
+        backfill.promotionEscapeAfter(promotionEscapeAfter);
+        backfill.committedIsr((stream, partition, node) -> committedIsr.committedIsr(stream, partition)
+                                                                       .contains(node));
+
+        return Unit.unit();
     }
 
     private static String partitionSubject(OwnerActivation.ActivationBlock block) {
@@ -5991,8 +6035,11 @@ public interface AetherNode extends ManageableNode {
         streamPartitionManager.ownershipRecords((stream, partition) -> kvStore.getTyped(StreamPartitionOwnershipKey.streamPartitionOwnershipKey(stream,
                                                                                                                                                 partition),
                                                                                         StreamPartitionOwnershipValue.class));
-        // #1937: the promoted owner's backfill refuses for a peer's oversized event too, and reports it the way the gate does
-        streamPartitionBackfill.blockAlarm(ownerPromotionAlarm(operatorWarningSink));
+        ownerActivation.promotionEscapeAfter(streamingConfig.promotionEscapeAfter());
+        // #1937: the promoted owner's backfill refuses for a peer's oversized event too, and reports it the way the gate does.
+        // #2080: its cold-start contest proceeds past unreachable co-replicas only for a node the COMMITTED in-sync set names, and
+        // reports that escape the way the gate does.
+        bindPromotionAlarm(streamPartitionBackfill, operatorWarningSink, kvStore, streamingConfig.promotionEscapeAfter());
         streamPartitionManager.ownerServeGate(ownerActivation::admit);
         // #1730 phase 2: the gate's relaxation for a divergent peer respects the candidate's durable sealed floor, and a peer it
         // leaves out loses the row this registry kept for it from an earlier tenure.

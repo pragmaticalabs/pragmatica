@@ -169,6 +169,30 @@ public enum OperatorWarningCode {
     /// may have been acknowledged and are lost; the message names them. A stream that confirms with replicas
     /// discards only unacknowledged records on the same cut, and that is only logged.
     STREAM_DIVERGENT_TAIL_TRUNCATED("stream-divergent-tail-truncated", "stream-replication", WarningLevel.WARNING),
+    /// A replica cut its divergent tail back and, BEFORE removing anything, wrote the removed records (offset, timestamp,
+    /// owner epoch, payload) to a recovery segment on its own volume (#2080). Raised for every cut that removed records,
+    /// whatever the confirmation factor: the segment is the only copy of what left the live stream, and is never deleted
+    /// automatically. The message names the stream, the partition, the offset range and the segment file.
+    STREAM_DIVERGENT_TAIL_PRESERVED("stream-divergent-tail-preserved", "stream-replication", WarningLevel.WARNING),
+    /// A replica's divergent-tail cut is REFUSED because what it must do first could not be done (#2084): the records could not be
+    /// written to a recovery segment (`RepairPreserveFailed`) or the truncation witness could not be made durable
+    /// (`RepairWitnessFailed`), typically a full or read-only volume. The copy stays quarantined with nothing removed and the repair is
+    /// retried; raised once per distinct failure episode, naming the partition and the cause. Ended by
+    /// [#STREAM_DIVERGENT_TAIL_CUT_RESUMED].
+    STREAM_DIVERGENT_TAIL_CUT_REFUSED("stream-divergent-tail-cut-refused", "stream-replication", WarningLevel.WARNING),
+    /// The recovery of a [#STREAM_DIVERGENT_TAIL_CUT_REFUSED] (#2084), same subject: the cut went through, its records preserved.
+    STREAM_DIVERGENT_TAIL_CUT_RESUMED("stream-divergent-tail-cut-resumed",
+                                      "stream-replication",
+                                      WarningLevel.INFO,
+                                      STREAM_DIVERGENT_TAIL_CUT_REFUSED),
+    /// A stream partition's promotion proceeded past members that did not answer for longer than the bound (#2080): the
+    /// candidate is named in the partition's committed in-sync set, so it holds every acknowledged record outside the
+    /// full-cluster cold-restart case, where an unreachable node whose disk is ahead may hold acknowledged records the new
+    /// lineage lacks. CRITICAL: a point event, raised once per escape. The message names the partition, the candidate, the
+    /// members it proceeded without and the gate (owner activation or replica promotion contest).
+    STREAM_PROMOTION_PAST_UNREACHABLE_PEERS("stream-promotion-past-unreachable-peers",
+                                            "stream-replication",
+                                            WarningLevel.CRITICAL),
     /// #1730 phase 2: a replica's catch-up has been answered as a consumer read for a minute -- the source does not list it
     /// as a replica of the partition -- so nothing is applied and it stays out of the in-sync set. Subject is
     /// `stream[partition]@source`.

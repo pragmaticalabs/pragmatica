@@ -52,6 +52,18 @@ class KvCommittedStreamOwnerSourceTest {
         assertThat(KvCommittedStreamOwnerSource.kvCommittedStreamOwnerSource(kvStore).committedIsr(STREAM, 1)).as("another partition").isEmpty();
     }
 
+    /// A record minted before #1730 (`isrVersion` 0) carries a synthesized `[owner]` ISR; reading it as committed evidence would let the
+    /// owner vouch for itself. Carried from #2079's review (nit n1). Mutation: dropping the `isrVersion > 0` filter turns this red.
+    @Test
+    void committedIsr_recordWithoutACommittedIsr_isEmpty() {
+        var record = StreamPartitionOwnershipValue.streamPartitionOwnershipValue(XX, Epoch.epoch(1L, 1L, 1L), 1L, HlcTimestamp.ZERO);
+
+        kvStore.process(kvStore.createBatch(List.<KVCommand<AetherKey>>of(new KVCommand.Put<>(StreamPartitionOwnershipKey.streamPartitionOwnershipKey(STREAM, 0), record))));
+
+        assertThat(record.isr()).as("the synthesized ISR is there").containsExactly(XX);
+        assertThat(KvCommittedStreamOwnerSource.kvCommittedStreamOwnerSource(kvStore).committedIsr(STREAM, 0)).isEmpty();
+    }
+
     private static Serializer stubSerializer() {
         return new Serializer() {
             @Override

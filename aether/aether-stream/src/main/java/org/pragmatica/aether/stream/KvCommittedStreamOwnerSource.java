@@ -44,11 +44,14 @@ public final class KvCommittedStreamOwnerSource implements CommittedStreamOwnerS
                       .map(KvCommittedStreamOwnerSource::toCommittedOwner);
     }
 
-    /// The committed record's ISR, read directly from the store: no liveness filter sits between this and the log.
+    /// The committed record's ISR, read directly from the store: no liveness filter sits between this and the log. A record with no
+    /// COMMITTED ISR (`isrVersion` 0, minted before #1730) carries only a synthesized `[owner]`, which is no evidence that the owner
+    /// holds every acknowledged record, so it reports none, as every other reader of the committed ISR does.
     @Override
     public List<NodeId> committedIsr(String stream, int partition) {
         return kvStore.getTyped(StreamPartitionOwnershipKey.streamPartitionOwnershipKey(stream, partition),
                                 StreamPartitionOwnershipValue.class)
+                      .filter(record -> record.isrVersion() > 0)
                       .map(StreamPartitionOwnershipValue::isr)
                       .or(List.of());
     }

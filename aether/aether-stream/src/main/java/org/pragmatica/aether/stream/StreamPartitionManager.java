@@ -242,6 +242,8 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// a copy may hold a lineage the owner never had (an ex-owner's unacknowledged records), so nothing it recovered is
     /// visible to a read served here until [#markVerified] covers it; its own appends do not drag it into view either.
     private final Set<String> unverifiedReplicas = ConcurrentHashMap.newKeySet();
+    /// The cause of the cut refusal last reported per partition (#2084), so a repair retried against the same obstacle reports nothing more.
+    private final Map<PartitionRef, String> refusedCuts = new ConcurrentHashMap<>();
     /// #1730 phase 2: where a replica's divergent-tail truncation is reported to the operator, late-bound
     /// ([#operatorWarnings(OperatorWarningSink)]); log-only until then.
     private volatile OperatorWarningSink operatorWarnings = OperatorWarningSink.logOnly();
@@ -2279,11 +2281,72 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                               keep,
                                                               authority))
                                      .onSuccess(cut -> reportCut(streamName, partition, cut))
-                                     .onFailure(cause -> log.warn("Replica {}[{}] could not cut its divergent tail back to offset {}: {}",
-                                                                  streamName,
-                                                                  partition,
-                                                                  keep,
-                                                                  cause.message()));
+                                     .onSuccess(_ -> cutResumed(streamName, partition, ref))
+                                     .onFailure(cause -> cutRefused(streamName, partition, ref, keep, cause));
+    }
+
+    /// The cut failed. A refusal for what the cut must do FIRST (the recovery segment, the truncation witness: typically a full or
+    /// read-only volume) leaves the copy quarantined and is retried by the next repair; it would otherwise be visible only in the log, so
+    /// it raises `stream-divergent-tail-cut-refused` once per distinct failure episode (partition and cause), and the cut that finally
+    /// goes through raises `stream-divergent-tail-cut-resumed`. Any other failure is logged as before.
+    @Contract
+    private void cutRefused(String streamName, int partition, PartitionRef ref, long keep, Cause cause) {
+        log.warn("Replica {}[{}] could not cut its divergent tail back to offset {}: {}",
+                 streamName,
+                 partition,
+                 keep,
+                 cause.message());
+        if (cause instanceof StreamError.RepairPreserveFailed || cause instanceof StreamError.RepairWitnessFailed) {
+            var previous = refusedCuts.put(ref, cause.message());
+
+            if (!cause.message().equals(previous)) {
+                OperatorWarnings.raise(log,
+                                       operatorWarnings,
+                                       OperatorWarningCode.STREAM_DIVERGENT_TAIL_CUT_REFUSED,
+                                       streamName + "[" + partition + "]",
+                                       "Replica {}[{}] cannot cut its divergent tail back to offset {}: {}. It stays quarantined with its records "
+                                      + "untouched and the repair is retried; check the volume holding its WAL (full or read-only).",
+                                       streamName,
+                                       partition,
+                                       keep,
+                                       cause.message());
+            }
+        }
+    }
+
+    /// The subject of a standing `stream-divergent-tail-cut-refused` is gone from this node (the replica was released, the stream
+    /// destroyed or reaped): the warning is closed with the paired recovery so that no operator warning outlives its subject. The
+    /// quarantine that went with the ring takes the obstacle with it; a node that hosts the partition again starts a new episode.
+    @Contract
+    private void closeRefusedCuts(java.util.function.Predicate<PartitionRef> scope, String reason) {
+        refusedCuts.keySet().stream().filter(scope).toList().forEach(ref -> closeRefusedCut(ref, reason));
+    }
+
+    @Contract
+    private void closeRefusedCut(PartitionRef ref, String reason) {
+        if (refusedCuts.remove(ref) != null) {
+            OperatorWarnings.raise(log,
+                                   operatorWarnings,
+                                   OperatorWarningCode.STREAM_DIVERGENT_TAIL_CUT_RESUMED,
+                                   ref.streamName() + "[" + ref.partition() + "]",
+                                   "Replica {}[{}]: the refused divergent-tail cut no longer stands -- {}.",
+                                   ref.streamName(),
+                                   ref.partition(),
+                                   reason);
+        }
+    }
+
+    @Contract
+    private void cutResumed(String streamName, int partition, PartitionRef ref) {
+        if (refusedCuts.remove(ref) != null) {
+            OperatorWarnings.raise(log,
+                                   operatorWarnings,
+                                   OperatorWarningCode.STREAM_DIVERGENT_TAIL_CUT_RESUMED,
+                                   streamName + "[" + partition + "]",
+                                   "Replica {}[{}] cut its divergent tail back after the refusal that had stopped it; its records are preserved.",
+                                   streamName,
+                                   partition);
+        }
     }
 
     /// A divergence found by comparing owner-epoch provenance is established only when THIS copy's history can vouch for
@@ -2327,6 +2390,7 @@ public final class StreamPartitionManager implements AutoCloseable {
         var epoch = divergentEpoch(streamName, partition, divergedAtOffset);
         var prospective = new TailCut(keep, head - keep, keep + 1, head, epoch);
         var wrote = new java.util.concurrent.atomic.AtomicBoolean(false);
+        var preserved = new java.util.concurrent.atomic.AtomicReference<RecoverySegment.Preserved>();
 
         return ring.truncateSuffix(keep,
                                    () -> authorised(streamName, partition, divergedAtOffset, authority).flatMap(_ -> witnessBeforeCut(streamName,
@@ -2334,6 +2398,12 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                                                                                                       wal,
                                                                                                                                       prospective))
                                                    .onSuccess(_ -> wrote.set(wal.isPresent()))
+                                                   .flatMap(_ -> preserveBeforeCut(streamName,
+                                                                                   partition,
+                                                                                   wal,
+                                                                                   ring,
+                                                                                   prospective,
+                                                                                   preserved))
                                                    .flatMap(_ -> wal.map(appendLog -> appendLog.truncateSuffix(keep))
                                                                     .or(Result.unitResult())),
                                    _ -> forgetCutState(streamName, partition, ref, divergedAtOffset, keep))
@@ -2342,7 +2412,61 @@ public final class StreamPartitionManager implements AutoCloseable {
                        restoreWitness(streamName, partition, wal);
                    }
                    })
+                   .onSuccess(_ -> option(preserved.get()).onPresent(segment -> reportPreserved(streamName,
+                                                                                                partition,
+                                                                                                segment)))
                    .map(removed -> new TailCut(keep, removed, keep + 1, head, epoch));
+    }
+
+    /// #2080, preserve before cut: a WAL copy writes the records this cut will remove to a recovery segment on its own volume BEFORE
+    /// anything is removed, in the same ordered section as the cut (no replicated append lands between the read and the cut),
+    /// right after the witness. A segment that cannot be made durable REFUSES the cut (typed, retriable; the copy stays quarantined
+    /// and untouched, and the witness is restored), so a durable cut never exists without a durable copy of what it removed. A
+    /// persistently failing volume therefore leaves no segment per retry; the one case that leaves a segment for a cut that did
+    /// not happen is the WAL's own truncate failing after it, which keeps the records twice, never zero times. A copy with no WAL is
+    /// ephemeral: nothing is on a volume to retain, and the cut proceeds as before.
+    private Result<Unit> preserveBeforeCut(String streamName,
+                                           int partition,
+                                           Option<AppendLog> wal,
+                                           OffHeapRingBuffer ring,
+                                           TailCut prospective,
+                                           java.util.concurrent.atomic.AtomicReference<RecoverySegment.Preserved> preserved) {
+        return wal.map(appendLog -> RecoverySegment.write(appendLog.path(),
+                                                          streamName,
+                                                          partition,
+                                                          appendLog.epochHistory(),
+                                                          ring::readAppended,
+                                                          prospective.firstRemoved(),
+                                                          prospective.lastRemoved(),
+                                                          System.currentTimeMillis())
+                                                   .onSuccess(preserved::set)
+                                                   .onFailure(cause -> log.warn("Replica {}[{}] could not preserve the records its cut would remove: {}",
+                                                                                streamName,
+                                                                                partition,
+                                                                                cause.message()))
+                                                   .mapError(cause -> (Cause) new StreamError.RepairPreserveFailed(streamName,
+                                                                                                                   partition,
+                                                                                                                   cause.message()))
+                                                   .map(_ -> Unit.unit()))
+                  .or(Result.unitResult());
+    }
+
+    /// The cut is durable and its records are in the recovery segment: the operator is told which stream, partition and offsets
+    /// left the live stream and where they are kept. Raised for every cut that removed records, whatever the confirmation factor.
+    @Contract
+    private void reportPreserved(String streamName, int partition, RecoverySegment.Preserved preserved) {
+        OperatorWarnings.raise(log,
+                               operatorWarnings,
+                               OperatorWarningCode.STREAM_DIVERGENT_TAIL_PRESERVED,
+                               streamName + "[" + partition + "]@" + preserved.first() + "-" + preserved.last(),
+                               "Replica {}[{}] cut offsets [{}, {}] ({} events) that diverged from its owner and kept them in recovery segment {}; "
+                              + "the segment is never deleted automatically",
+                               streamName,
+                               partition,
+                               preserved.first(),
+                               preserved.last(),
+                               preserved.records(),
+                               preserved.file());
     }
 
     /// A WAL copy writes the witness of what this cut will discard BEFORE it discards it, in the same ordered section: if the
@@ -2456,7 +2580,7 @@ public final class StreamPartitionManager implements AutoCloseable {
         return new StreamError.RepairWitnessFailed(streamName, partition, reason).result();
     }
 
-    private static Result<Unit> syncDirectory(Path directory) {
+    static Result<Unit> syncDirectory(Path directory) {
         try (var channel = FileChannel.open(directory, StandardOpenOption.READ)) {
             channel.force(true);
 
@@ -4492,6 +4616,9 @@ public final class StreamPartitionManager implements AutoCloseable {
         evictionListener.onStreamDeleted(entry.config().name());
         forgetHeldBack(entry);
         forgetFootprint(entry.config().name());
+        closeRefusedCuts(ref -> ref.streamName()
+                                   .equals(entry.config().name()),
+                         "the stream is gone from this node");
 
         return success(unit());
     }
@@ -5070,6 +5197,7 @@ public final class StreamPartitionManager implements AutoCloseable {
         mp.close();
         forgetReplicatedWrites(ref.streamName(), ref.partition(), mp.wal());
         releaseCandidacy.remove(ref);
+        closeRefusedCuts(ref::equals, "this node no longer hosts the partition's replica");
         freeReshuffleSlot(ref);
         dropDurableWatermark(ref);
         releasedSinceBoot.incrementAndGet();

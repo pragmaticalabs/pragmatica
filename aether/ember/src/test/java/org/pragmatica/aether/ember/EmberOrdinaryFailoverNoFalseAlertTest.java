@@ -71,6 +71,8 @@ class EmberOrdinaryFailoverNoFalseAlertTest {
     private static final String NAMESPACE = "ember";
     private static final String VERSION = "1.0.0";
     private static final List<String> FORBIDDEN_EVENT_MARKERS = List.of("stream-divergent-tail-truncated",
+                                                                         "stream-divergent-tail-preserved",
+                                                                         "stream-promotion-past-unreachable-peers",
                                                                          "STREAM_PARTITION_FLAGGED",
                                                                          "MARKED_DIVERGED",
                                                                          "stream-catchup-source-not-answering",

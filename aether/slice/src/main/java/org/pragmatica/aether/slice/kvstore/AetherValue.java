@@ -2692,6 +2692,13 @@ public sealed interface AetherValue {
         /// holds at most the replication factor, which never exceeds the core size) and perpetual beyond it.
         public static final int FENCED_MAX = 16;
 
+        /// Whether `node` is named in this record's COMMITTED in-sync set: the set is real (`isrVersion > 0`, a record minted before
+        /// #1730 carries only its owner) and contains `node`. Such a node holds every acknowledged record the set was
+        /// acknowledging, which is what both promotion gates' bounded escape (#2080) and the divergent-peer relaxation rest on.
+        public boolean committedIsrNames(NodeId node) {
+            return isrVersion > 0 && isr.contains(node);
+        }
+
         /// Ownership fence (#345 piece 1a): the owner's `ownerEpoch` is the fencing token, so the Rabia
         /// applier rejects a deposed owner's strictly-older-epoch ownership write for free (it fences
         /// ANY `EpochBearing` value). A stale-owner takeover at the same epoch (bumping only
