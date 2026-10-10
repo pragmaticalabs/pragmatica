@@ -17,6 +17,7 @@ package org.pragmatica.dht;
 
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.BinaryOperator;
 import java.util.function.UnaryOperator;
 
 import org.pragmatica.lang.Cause;
@@ -42,6 +43,9 @@ public final class QuorumCollector<T> {
     private final AtomicInteger fenceUnknown = new AtomicInteger(0);
     private final AtomicReference<T> bestValue = new AtomicReference<>();
     private final UnaryOperator<T> valueMerger;
+    /// Picks the answer kept when two replicas answered: a present value over an absent one, or — for stamped
+    /// entries (#1777 track 3) — the newest by owner epoch then version, so a stale value loses to a tombstone.
+    private final BinaryOperator<T> selector;
     /// Slots refused by a replica still catching up (#1777 track 2). When quorum becomes unreachable and
     /// any slot was such a refusal, the read fails [DHTError.NotCaughtUp] — transient, never "absent".
     private final AtomicInteger refusals = new AtomicInteger(0);
@@ -58,11 +62,16 @@ public final class QuorumCollector<T> {
     private volatile int remoteSlots = Integer.MAX_VALUE;
     private volatile boolean failed;
 
-    private QuorumCollector(int quorum, int total, Promise<T> promise, UnaryOperator<T> valueMerger) {
+    private QuorumCollector(int quorum,
+                            int total,
+                            Promise<T> promise,
+                            UnaryOperator<T> valueMerger,
+                            BinaryOperator<T> selector) {
         this.quorum = quorum;
         this.total = total;
         this.promise = promise;
         this.valueMerger = valueMerger;
+        this.selector = selector;
     }
 
     /// Create a quorum collector that keeps the first value received.
@@ -71,7 +80,16 @@ public final class QuorumCollector<T> {
     /// @param total   total responses expected
     /// @param promise promise to resolve when quorum reached or failed
     public static <T> QuorumCollector<T> quorumCollector(int quorum, int total, Promise<T> promise) {
-        return new QuorumCollector<>(quorum, total, promise, UnaryOperator.identity());
+        return new QuorumCollector<>(quorum, total, promise, UnaryOperator.identity(), QuorumCollector::selectBest);
+    }
+
+    /// Create a collector for stamped entries (#1777 track 3) that keeps the NEWEST answer by owner epoch then
+    /// version: a live value and a tombstone are ordered alike, so a replica that missed a remove loses to one that
+    /// holds its tombstone. An empty answer (no entry) never replaces an entry.
+    public static QuorumCollector<Option<DHTMessage.KeyValue>> newestEntryCollector(int quorum,
+                                                                                    int total,
+                                                                                    Promise<Option<DHTMessage.KeyValue>> promise) {
+        return new QuorumCollector<>(quorum, total, promise, UnaryOperator.identity(), QuorumCollector::newestEntry);
     }
 
     /// Create a quorum collector for Option values that prefers non-empty over empty.
@@ -81,7 +99,7 @@ public final class QuorumCollector<T> {
     /// @param total   total responses expected
     /// @param promise promise to resolve when quorum reached or failed
     public static <V> QuorumCollector<Option<V>> optionCollector(int quorum, int total, Promise<Option<V>> promise) {
-        return new QuorumCollector<>(quorum, total, promise, UnaryOperator.identity());
+        return new QuorumCollector<>(quorum, total, promise, UnaryOperator.identity(), QuorumCollector::selectBest);
     }
 
     /// Record a successful response. Resolves promise when quorum reached.
@@ -142,8 +160,8 @@ public final class QuorumCollector<T> {
     /// is chosen exactly as before.
     @Contract
     public void onSuccess(T value, String source) {
-        bestValue.accumulateAndGet(value, this::selectBest);
-        if (value instanceof Option<?> option && option.isPresent()) {
+        bestValue.accumulateAndGet(value, this::select);
+        if (isLiveValue(value)) {
             valueSource.compareAndSet(null, source);
         }
 
@@ -286,10 +304,28 @@ public final class QuorumCollector<T> {
         return fenced.get();
     }
 
-    private T selectBest(T existing, T incoming) {
-        if (existing == null) {
-            return incoming;
-        }
+    /// `existing` is the accumulator's value, absent until the first answer.
+    private T select(T existing, T incoming) {
+        return Option.option(existing)
+                     .map(held -> selector.apply(held, incoming))
+                     .or(incoming);
+    }
+
+    /// A present value — a tombstone is present as an entry but is no value, so it names no late-value source.
+    private static boolean isLiveValue(Object value) {
+        return value instanceof Option<?> option
+               && option.filter(present -> !(present instanceof DHTMessage.KeyValue kv && kv.tombstone()))
+                        .isPresent();
+    }
+
+    private static Option<DHTMessage.KeyValue> newestEntry(Option<DHTMessage.KeyValue> existing,
+                                                           Option<DHTMessage.KeyValue> incoming) {
+        return existing.fold(() -> incoming,
+                             held -> incoming.filter(candidate -> candidate.compareOrder(held) > 0)
+                                             .orElse(existing));
+    }
+
+    private static <T> T selectBest(T existing, T incoming) {
         // For Option values: prefer present (non-empty) over absent (empty)
         if (existing instanceof Option<?> existingOpt && incoming instanceof Option<?> incomingOpt) {
             return incomingOpt.isPresent() && existingOpt.isEmpty()

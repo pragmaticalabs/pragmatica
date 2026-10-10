@@ -2711,15 +2711,25 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                      nodeRouteCommands.size(),
                      removedNode);
 
-            return ctx.cluster()
-                      .apply(consensusCommands)
-                      .flatMap(_ -> hierarchyWriter().commit(List.of(new KVCommand.Mutation<>(directiveKey,
-                                                                                              previousDirective,
-                                                                                              Option.none())),
-                                                             List.of()))
-                      .onFailure(cause -> log.error("Failed to remove keys for departed node {}: {}",
-                                                    removedNode,
-                                                    cause.message()));
+            return applyFootprintRemoval(consensusCommands).flatMap(_ -> hierarchyWriter().commit(List.of(new KVCommand.Mutation<>(directiveKey,
+                                                                                                                                   previousDirective,
+                                                                                                                                   Option.none())),
+                                                                                                  List.of()))
+                                        .onFailure(cause -> log.error("Failed to remove keys for departed node {}: {}",
+                                                                      removedNode,
+                                                                      cause.message()));
+        }
+
+        /// #1717 — a departed node with no slice footprint yields an EMPTY batch, which consensus rejects with
+        /// "Command batch is empty"; chained as-is that failure skipped the activation-directive removal, so a
+        /// worker that never hosted a slice kept its directive, its roster entry and its COMMUNITY_MEMBER_LEFT.
+        /// Nothing to remove is success, not an error.
+        private Promise<Unit> applyFootprintRemoval(List<KVCommand<AetherKey>> commands) {
+            return commands.isEmpty()
+                   ? Promise.unitPromise()
+                   : ctx.cluster()
+                        .<Object> apply(commands)
+                        .mapToUnit();
         }
 
         private List<NodeArtifactKey> findNodeArtifactKeysForNode(NodeId nodeId) {

@@ -84,6 +84,14 @@ class BootstrapPhaseDeploySshSourceTest {
                                            List<String> coreHosts,
                                            List<String> workerHosts,
                                            String runtimeRef) {
+        return sshSource(name, coreHosts, workerHosts, runtimeRef, Option.empty());
+    }
+
+    private static SourceProfile sshSource(String name,
+                                           List<String> coreHosts,
+                                           List<String> workerHosts,
+                                           String runtimeRef,
+                                           Option<org.pragmatica.config.toml.TomlDocument> nodeConfig) {
         var roles = workerHosts.isEmpty()
                     ? Map.of(NodeRole.CORE,
                              RoleSubTable.roleSubTable(NodeRole.CORE,
@@ -121,7 +129,8 @@ class BootstrapPhaseDeploySshSourceTest {
                                            Option.empty(),
                                            Map.of(),
                                            roles,
-                                           List.of());
+                                           List.of(),
+                                           nodeConfig);
     }
 
     private static BootstrapContext context(Map<String, SourceProfile> sources,
@@ -186,6 +195,55 @@ class BootstrapPhaseDeploySshSourceTest {
         assertThat(cmd).as("the host runs the image the operator bootstrapped, not whatever :latest points at")
                   .contains("aether-node:1.0.0-rc4")
                   .doesNotContain(":latest");
+    }
+
+    /// #1968: an SSH source's first start must give the node the backup volume its `node_config` `[backup]` asks for: the host
+    /// directory is created and bind-mounted at `[backup] path`. Driven through `deploySshSource`, so a call that stops passing the
+    /// composed config's path to the launch line cannot hide behind a correct builder.
+    @Test
+    void sshSource_withBackupInNodeConfig_launchLineMountsTheBackupVolume() {
+        var backup = org.pragmatica.config.toml.TomlParser.parse("[backup]\nenabled = true\npath = \"/var/aether/backups\"\n").unwrap();
+        var ctx = context(Map.of("dc", sshSource("dc", List.of("10.0.0.1"), List.of(), "default", Option.some(backup))),
+                          Map.of(),
+                          List.of(ssh("dc-core-0", "10.0.0.1")));
+        var result = deploy(ctx, "dc");
+
+        assertThat(result.isSuccess()).as(() -> "deploy must succeed: " + result).isTrue();
+        var cmd = startCommands.get("10.0.0.1");
+
+        assertThat(cmd).as("CONTROL: the launch line was captured").contains("docker run");
+        assertThat(cmd).contains("-v /opt/aether/backups:/var/aether/backups")
+                       .contains("install -d -m 0750 -o 1000 -g 1000 /opt/aether/backups");
+        assertThat(cmd.indexOf("install -d -m 0750 -o 1000 -g 1000 /opt/aether/backups")).as("created before docker run")
+                                                                                         .isLessThan(cmd.indexOf("docker run"));
+    }
+
+    @Test
+    void sshSource_withoutBackup_launchLineMountsNothing() {
+        var ctx = context(Map.of("dc", sshSource("dc", List.of("10.0.0.1"), List.of(), "default")),
+                          Map.of(),
+                          List.of(ssh("dc-core-0", "10.0.0.1")));
+        var result = deploy(ctx, "dc");
+
+        assertThat(result.isSuccess()).as(() -> "deploy must succeed: " + result).isTrue();
+        assertThat(startCommands.get("10.0.0.1")).doesNotContain("/opt/aether/backups");
+    }
+
+    /// #1543 part C: `{version}` in the runtime profile's image follows `[cluster] version` on the SSH launch too.
+    @Test
+    void sshSource_imagePlaceholder_isSubstitutedWithTheClusterVersion() {
+        var runtimes = Map.of("tracking",
+                              RuntimeProfile.runtimeProfile("tracking",
+                                                            RuntimeType.CONTAINER,
+                                                            Option.some("registry/aether-node:{version}"),
+                                                            Option.empty()));
+        var ctx = context(Map.of("dc", sshSource("dc", List.of("10.0.0.1"), List.of(), "tracking")),
+                          runtimes,
+                          List.of(ssh("dc-core-0", "10.0.0.1")));
+        var result = deploy(ctx, "dc");
+
+        assertThat(result.isSuccess()).as(() -> "deploy must succeed: " + result).isTrue();
+        assertThat(startCommands.get("10.0.0.1")).contains("registry/aether-node:" + VERSION).doesNotContain("{version}");
     }
 
     /// Review SF-1: the case #1090 was filed on — `[source.x.core] hosts = […]` with no `[runtime.*]`

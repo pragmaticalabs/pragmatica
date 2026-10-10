@@ -50,6 +50,16 @@ class DHTSameEpochSweepTest {
         sweep(false, SLOW_STEP_MS);
     }
 
+    @Test
+    void remove_everySchedule_deliveriesInsideTheEvidenceWait() throws Exception {
+        sweep(true, FAST_STEP_MS);
+    }
+
+    @Test
+    void remove_everySchedule_silenceLongerThanTheEvidenceWait() throws Exception {
+        sweep(true, SLOW_STEP_MS);
+    }
+
     private static void sweep(boolean removeMode, long stepMs) throws Exception {
         var violations = new ArrayList<String>();
         var xAcked = 0;
@@ -97,7 +107,9 @@ class DHTSameEpochSweepTest {
         var x = cluster.clients.get(R).put(KEY, "X".getBytes(StandardCharsets.UTF_8));
         x.onResult(_ -> xDone.set((System.nanoTime() - started) / 1_000_000L));
         Thread.sleep(3);
-        Promise<?> w = cluster.clients.get(A).put(KEY, "W".getBytes(StandardCharsets.UTF_8));
+        Promise<?> w = removeMode
+                       ? cluster.clients.get(A).remove(KEY)
+                       : cluster.clients.get(A).put(KEY, "W".getBytes(StandardCharsets.UTF_8));
         w.onResult(_ -> wDone.set((System.nanoTime() - started) / 1_000_000L));
         cluster.holding = false;
         Thread.sleep(stepMs);
@@ -251,7 +263,7 @@ class DHTSameEpochSweepTest {
 
         String dump() {
             return ALL.stream()
-                      .map(id -> id.id() + "=" + entryOf(id).map(e -> new String(e.value(), StandardCharsets.UTF_8)
+                      .map(id -> id.id() + "=" + entryOf(id).map(e -> (e.tombstone() ? "TOMBSTONE" : new String(e.value(), StandardCharsets.UTF_8))
                                                                       + "@" + e.version())
                                                             .orElse("absent"))
                       .toList()

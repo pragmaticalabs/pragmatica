@@ -336,6 +336,28 @@ class DHTReplicationChangeTest {
         assertThat(cluster.holds(restarted)).isTrue();
     }
 
+    /// v1882 round 4 on track 3: the restart window holds for tombstones too — a restarted replica refuses a remove until
+    /// its fence is known.
+    @Test
+    void restartedReplica_refusesRemoves_untilItHasAdoptedTheCommittedChange() {
+        var cluster = new Cluster(5, shortTimeout(3, 1));
+        var replicas = cluster.replicasOf(KEY, 3);
+        var restarted = replicas.getLast();
+        var fresh = cluster.restart(restarted);
+        var response = new java.util.concurrent.atomic.AtomicReference<DHTMessage.RemoveResponse>();
+
+        fresh.handleRemoveRequest(new DHTMessage.RemoveRequest("r", replicas.getFirst(), KEY, 1L, 0L, 0L, 0L, CHANGE), response::set);
+
+        assertThat(response.get().fenceUnknown()).as("unknown fence: refused").isTrue();
+
+        fresh.resolveReplication(factors(3, 1), CHANGE);
+        fresh.adoptReplicationChange(CHANGE, factors(3, 1));
+        fresh.confirmReplicationFence();
+        fresh.handleRemoveRequest(new DHTMessage.RemoveRequest("r2", replicas.getFirst(), KEY, 2L, 0L, 0L, 0L, CHANGE), response::set);
+
+        assertThat(response.get().fenceUnknown() || response.get().replicationStale()).as("known fence: accepted").isFalse();
+    }
+
     /// v1882 round 5 (`probe-r5-restart-and-stale-record.patch`): two replicas restart; a HEALTHY writer on the current
     /// change is refused by their UNKNOWN fences. That says nothing about the writer, so it records no staleness; once
     /// the replicas know the change its next put succeeds. Red at 3cd00b197: the unknown-fence refusal recorded
@@ -745,6 +767,33 @@ class DHTReplicationChangeTest {
         assertThat(cluster.holds(writer)).as("never applied locally").isFalse();
     }
 
+    /// v1882 probe U, REMOVE twin (F17, #1885): one remote replica refuses as stale, the other is DOWN. The stale refusal is a
+    /// verdict: the remove ends AT ONCE with the typed ReplicationChangeStale and the writer is recorded stale.
+    @Test
+    void v1882r11_probeU_remove_staleRefusalPlusASilentReplica_endsAtOnce_typed_andRecordsTheWriterStale() {
+        var cluster = new Cluster(5, DHTConfig.dhtConfig(3, 1, 3, org.pragmatica.lang.io.TimeSpan.timeSpan(20).seconds()).unwrap());
+        var replicas = cluster.replicasOf(KEY, 3);
+        var writer = replicas.getFirst();
+        var others = cluster.nodes.keySet().stream().filter(id -> !id.equals(writer)).toList();
+
+        others.forEach(id -> cluster.nodes.get(id).resolveReplication(factors(3, 2), CHANGE));
+        cluster.settleOnly(CHANGE, 3, others);
+
+        cluster.holdRemoves = true;
+        var started = System.nanoTime();
+        var remove = cluster.client(writer).remove(KEY);
+        cluster.holdRemoves = false;
+        cluster.deliverHeldRemovesTo(replicas.get(1));
+        var outcome = remove.await(org.pragmatica.lang.io.TimeSpan.timeSpan(25).seconds());
+        var elapsedMillis = (System.nanoTime() - started) / 1_000_000L;
+        boolean stale = outcome.fold(cause -> cause instanceof DHTError.ReplicationChangeStale, _ -> false);
+
+        assertThat(stale).as("refused as stale, typed: " + outcome).isTrue();
+        assertThat(elapsedMillis).as("a stale refusal is a verdict; the remove does not wait out the evidence bound").isLessThan(1_000L);
+        assertThat(settledRecord(cluster, writer)).as("the genuinely stale writer is recorded").isNotEqualTo(Option.none());
+        assertThat(entryOf(cluster, writer)).as("the tombstone was never applied locally").isEqualTo("absent");
+    }
+
     private static String entryOf(Cluster cluster, NodeId id) {
         return cluster.nodes.get(id)
                        .storage()
@@ -759,6 +808,88 @@ class DHTReplicationChangeTest {
                        .orElse("absent");
     }
 
+    /// v1882 r9b probe T (#1885), as restated in r10: the writer's slot holds the ONLY copy of a value and the writer's REMOVE
+    /// is refused as stale. Its local tombstone is never written, so the key is not left absent and there is nothing to undo.
+    @Test
+    void v1882r10_staleRemove_neverTouchesTheWritersOnlyLocalCopy() {
+        var cluster = new Cluster(5, wideBound(3, 1));
+        var replicas = cluster.replicasOf(KEY, 3);
+        var writer = replicas.getFirst();
+        var others = cluster.nodes.keySet().stream().filter(id -> !id.equals(writer)).toList();
+
+        cluster.putReachingOnly(writer, writer);
+        others.forEach(id -> cluster.nodes.get(id).resolveReplication(factors(3, 2), CHANGE));
+        cluster.settleOnly(CHANGE, 3, others);
+        var before = entryOf(cluster, writer);
+
+        var outcome = cluster.client(writer).remove(KEY).await();
+        boolean stale = outcome.fold(cause -> cause instanceof DHTError.ReplicationChangeStale, _ -> false);
+
+        assertThat(before).as("arming: the writer holds a live value").startsWith("v@");
+        assertThat(stale).as("arming: the remove was refused as stale: " + outcome).isTrue();
+        assertThat(entryOf(cluster, writer)).as("the entry is byte- and version-identical").isEqualTo(before);
+    }
+
+    /// v1882 probe S, REMOVE twin (F15, #1885): a current writer's remove X is stamped BEFORE a stale writer-replica's remove W
+    /// but reaches that replica AFTER W's would-be local tombstone. The replica must not answer X with a "superseded" success
+    /// that is later undone: an acknowledged X, or a write that superseded it, is on at least W = 2 replicas.
+    @Test
+    void v1882r10_probeS_remove_staleWriterReplica_neverLeavesAnAckedXBelowItsQuorum() {
+        var cluster = new Cluster(5, wideBound(3, 1));
+        var replicas = cluster.replicasOf(KEY, 3);
+        var stale = replicas.getFirst();
+        var r1 = replicas.get(1);
+        var others = cluster.nodes.keySet().stream().filter(id -> !id.equals(stale)).toList();
+        var current = cluster.nonReplicaOf(replicas);
+
+        cluster.putReachingOnly(stale, stale);
+        others.forEach(id -> cluster.nodes.get(id).resolveReplication(factors(3, 2), CHANGE));
+        cluster.settleOnly(CHANGE, 3, others);
+
+        cluster.holdRemoves = true;
+        var x = cluster.client(current).remove(KEY);
+        var w = cluster.client(stale).remove(KEY);
+        cluster.holdRemoves = false;
+        var xVersion = cluster.heldRemoves.stream()
+                                          .filter(entry -> entry.getValue().sender().equals(current))
+                                          .findFirst()
+                                          .orElseThrow()
+                                          .getValue()
+                                          .version();
+
+        cluster.deliverHeldRemovesTo(stale);
+        cluster.deliverHeldRemovesTo(r1);
+        var xOutcome = x.await();
+        w.await();
+        var atOrAboveX = replicas.stream()
+                                 .filter(id -> !entryOf(cluster, id).equals("absent"))
+                                 .filter(id -> Long.parseLong(entryOf(cluster, id).replaceAll("^[^@]*@([0-9]+)/.*$", "$1")) >= xVersion)
+                                 .toList();
+
+        assertThat(xOutcome.isSuccess()).as("arming: X was acknowledged: " + xOutcome).isTrue();
+        assertThat(atOrAboveX.size()).as("an acknowledged X, or a write that superseded it, is on at least W = 2 replicas: " + atOrAboveX)
+                                     .isGreaterThanOrEqualTo(2);
+    }
+
+    /// v1882 r9b liveness pin (#1885): the writer is a replica, CF = 1, every remote silent: the remove is acknowledged within
+    /// the evidence wait, not after the whole 20 s operation timeout, and sets no stale record.
+    @Test
+    void v1882r9b_remove_allRemotesSilent_acksWithinTheEvidenceWait_notTheOperationTimeout() {
+        var cluster = new Cluster(5,
+                                  DHTConfig.dhtConfig(3, 1, 3, org.pragmatica.lang.io.TimeSpan.timeSpan(20).seconds()).unwrap());
+        var replicas = cluster.replicasOf(KEY, 3);
+        var writer = replicas.getFirst();
+
+        cluster.holdRemoves = true;
+        var started = System.nanoTime();
+        var outcome = cluster.client(writer).remove(KEY).await(org.pragmatica.lang.io.TimeSpan.timeSpan(6).seconds());
+        var elapsedMillis = (System.nanoTime() - started) / 1_000_000L;
+
+        assertThat(outcome.isSuccess()).as("acknowledged on the local slot per the limit: " + outcome).isTrue();
+        assertThat(elapsedMillis).as("well under the 20 s operation timeout").isLessThan(4_000L);
+        assertThat(settledRecord(cluster, writer)).isEqualTo(Option.none());
+    }
+
     /// v1882 r7 F10, order (d): the writer is a replica, every other replica stays silent for the whole operation. With no
     /// evidence either way the put is acknowledged on its own slot — the named limit — and NO stale record is set.
     @Test
@@ -771,6 +902,161 @@ class DHTReplicationChangeTest {
         var outcome = cluster.client(writer).put(KEY, VALUE).await();
 
         assertThat(outcome.isSuccess()).as("acknowledged on the local slot after the silence: " + outcome).isTrue();
+        assertThat(settledRecord(cluster, writer)).isEqualTo(Option.none());
+    }
+
+    /// v1882 r7 F10, REMOVE form of `v1882r6_excludedWriterThatIsAReplica_localSlotAcceptsAtWold` (#1885): the roster-excluded
+    /// writer is itself a replica. Its local tombstone is unfenced and W_old = 1, so without the evidence gate the remove
+    /// is acknowledged on that one copy and clears the genuine stale record.
+    @Test
+    void v1882r7_remove_excludedWriterThatIsAReplica_localSlotAcceptsAtWold() {
+        var cluster = new Cluster(5, wideBound(3, 1));
+        var replicas = cluster.replicasOf(KEY, 3);
+        var writer = replicas.getFirst();
+        var others = cluster.nodes.keySet().stream().filter(id -> !id.equals(writer)).toList();
+
+        others.forEach(id -> cluster.nodes.get(id).resolveReplication(factors(3, 2), CHANGE));
+        cluster.settleOnly(CHANGE, 3, others);
+        cluster.nodes.get(writer).noteStaleRefusal(DHTNode.NO_CHANGE, 1_000L);
+
+        var outcome = cluster.client(writer).remove(KEY).await();
+        boolean stale = outcome.fold(cause -> cause instanceof DHTError.ReplicationChangeStale, _ -> false);
+
+        assertThat(stale).as("a stale writer's remove is refused: " + outcome).isTrue();
+        assertThat(cluster.nodes.get(writer).staleRefusal()).as("the genuine record survives").isNotEqualTo(Option.none());
+    }
+
+    /// v1882 r7 F10, REMOVE, order (a) with the remote replies in flight: the local tombstone alone does not acknowledge.
+    @Test
+    void v1882r7_remove_orderA_localSlotAlone_doesNotAcknowledge_thenRemoteStaleFails() {
+        var cluster = new Cluster(5, wideBound(3, 1));
+        var replicas = cluster.replicasOf(KEY, 3);
+        var writer = replicas.getFirst();
+        var others = cluster.nodes.keySet().stream().filter(id -> !id.equals(writer)).toList();
+
+        others.forEach(id -> cluster.nodes.get(id).resolveReplication(factors(3, 2), CHANGE));
+        cluster.settleOnly(CHANGE, 3, others);
+
+        cluster.holdRemoves = true;
+        var remove = cluster.client(writer).remove(KEY);
+        cluster.holdRemoves = false;
+
+        assertThat(remove.isResolved()).as("the local slot alone does not acknowledge the remove").isFalse();
+
+        others.forEach(cluster::deliverHeldRemovesTo);
+        var outcome = remove.await();
+        boolean stale = outcome.fold(cause -> cause instanceof DHTError.ReplicationChangeStale, _ -> false);
+
+        assertThat(stale).as("refused as stale: " + outcome).isTrue();
+    }
+
+    /// v1882 r7 F10, REMOVE, order (b): two replicas refuse as stale, then a replica that had not applied the change accepts.
+    @Test
+    void v1882r7_remove_orderB_remoteStaleThenRemoteSuccess_fails() {
+        var cluster = new Cluster(5, wideBound(3, 1));
+        var replicas = cluster.replicasOf(KEY, 3);
+        var writer = cluster.nonReplicaOf(replicas);
+        var unaware = replicas.getFirst();
+        var applied = cluster.nodes.keySet().stream().filter(id -> !id.equals(writer) && !id.equals(unaware)).toList();
+
+        applied.forEach(id -> cluster.nodes.get(id).resolveReplication(factors(3, 2), CHANGE));
+        cluster.settleOnly(CHANGE, 3, applied);
+
+        cluster.holdRemoves = true;
+        var remove = cluster.client(writer).remove(KEY);
+        cluster.holdRemoves = false;
+        replicas.stream().filter(id -> !id.equals(unaware)).forEach(cluster::deliverHeldRemovesTo);
+        cluster.deliverHeldRemovesTo(unaware);
+        var outcome = remove.await();
+        boolean stale = outcome.fold(cause -> cause instanceof DHTError.ReplicationChangeStale, _ -> false);
+
+        assertThat(stale).as("refused as stale although one replica accepted: " + outcome).isTrue();
+    }
+
+    /// v1882 r9 probe E, REMOVE form (#1885): the first remote reply is a NON-stale refusal (a restarted replica, fence unknown):
+    /// no evidence, the remove stays pending; the replica on the newer change then refuses as stale and the remove fails.
+    @Test
+    void v1882r9_remove_orderE_nonStaleRefusalFirst_thenStale_failsInsteadOfAckingOnTheNonStaleReply() {
+        var cluster = new Cluster(5, wideBound(3, 1));
+        var replicas = cluster.replicasOf(KEY, 3);
+        var writer = replicas.getFirst();
+        var restarting = replicas.get(1);
+        var applied = replicas.get(2);
+        var others = cluster.nodes.keySet().stream().filter(id -> !id.equals(writer)).toList();
+
+        others.forEach(id -> cluster.nodes.get(id).resolveReplication(factors(3, 2), CHANGE));
+        cluster.settleOnly(CHANGE, 3, others);
+        cluster.restart(restarting);
+
+        cluster.holdRemoves = true;
+        var remove = cluster.client(writer).remove(KEY);
+        cluster.holdRemoves = false;
+        cluster.deliverHeldRemovesTo(restarting);
+
+        assertThat(remove.isResolved()).as("a fence-unknown refusal is not evidence: the remove is not acknowledged yet").isFalse();
+
+        cluster.deliverHeldRemovesTo(applied);
+        var outcome = remove.await();
+        boolean stale = outcome.fold(cause -> cause instanceof DHTError.ReplicationChangeStale, _ -> false);
+
+        assertThat(stale).as("refused as stale: " + outcome).isTrue();
+    }
+
+    /// v1882 r9, REMOVE: a non-stale refusal first, then a success from a replica that had not applied the change: acknowledged.
+    @Test
+    void v1882r9_remove_nonStaleRefusalFirst_thenSuccess_acks() {
+        var cluster = new Cluster(5, wideBound(3, 1));
+        var replicas = cluster.replicasOf(KEY, 3);
+        var writer = replicas.getFirst();
+        var restarting = replicas.get(1);
+        var unaware = replicas.get(2);
+        var others = cluster.nodes.keySet().stream().filter(id -> !id.equals(writer) && !id.equals(unaware)).toList();
+
+        others.forEach(id -> cluster.nodes.get(id).resolveReplication(factors(3, 2), CHANGE));
+        cluster.settleOnly(CHANGE, 3, others);
+        cluster.restart(restarting);
+
+        cluster.holdRemoves = true;
+        var remove = cluster.client(writer).remove(KEY);
+        cluster.holdRemoves = false;
+        cluster.deliverHeldRemovesTo(restarting);
+
+        assertThat(remove.isResolved()).as("arming: the non-stale refusal alone does not release the remove").isFalse();
+
+        cluster.deliverHeldRemovesTo(unaware);
+
+        assertThat(remove.await().isSuccess()).as("acknowledged on a remote success").isTrue();
+    }
+
+    /// v1882 r9, REMOVE: every remote replies and none is a success or a stale refusal: no evidence, acknowledged per the
+    /// named limit before the timeout, and no stale record is set.
+    @Test
+    void v1882r9_remove_allRemoteRepliesNonStale_acksPerTheLimit_andSetsNoStaleRecord() {
+        // a 20 s operation timeout makes the evidence bound 2 s, clearly distinguishable from "immediate" (v1882 F16)
+        var cluster = new Cluster(5, DHTConfig.dhtConfig(3, 1, 3, org.pragmatica.lang.io.TimeSpan.timeSpan(20).seconds()).unwrap());
+        var replicas = cluster.replicasOf(KEY, 3);
+        var writer = replicas.getFirst();
+        var others = cluster.nodes.keySet().stream().filter(id -> !id.equals(writer)).toList();
+
+        others.forEach(id -> cluster.nodes.get(id).resolveReplication(factors(3, 2), CHANGE));
+        cluster.settleOnly(CHANGE, 3, others);
+        cluster.restart(replicas.get(1));
+        cluster.restart(replicas.get(2));
+
+        cluster.holdRemoves = true;
+        var remove = cluster.client(writer).remove(KEY);
+        cluster.holdRemoves = false;
+        cluster.deliverHeldRemovesTo(replicas.get(1));
+
+        assertThat(remove.isResolved()).as("arming: one non-stale reply is not the end of the evidence").isFalse();
+
+        cluster.deliverHeldRemovesTo(replicas.get(2));
+        var started = System.nanoTime();
+        var outcome = remove.await(org.pragmatica.lang.io.TimeSpan.timeSpan(1).seconds());
+        var elapsedMillis = (System.nanoTime() - started) / 1_000_000L;
+
+        assertThat(outcome.isSuccess()).as("acknowledged per the limit once every remote replied: " + outcome).isTrue();
+        assertThat(elapsedMillis).as("well under the 2 s evidence bound").isLessThan(500L);
         assertThat(settledRecord(cluster, writer)).isEqualTo(Option.none());
     }
 
@@ -817,6 +1103,31 @@ class DHTReplicationChangeTest {
         assertThat(cluster.nodes.get(writer).replicationFence()).as("arming: the writer is on the old change").isEqualTo(CHANGE - 2);
         assertThat(cluster.client(writer).put(KEY, VALUE).await().isSuccess()).as("fenced").isFalse();
         assertThat(replicas).noneMatch(cluster::holds);
+    }
+
+    /// #1777 R1c on track 3: a remove writes a tombstone, and a tombstone sized under the old factors is fenced like a put.
+    /// A writer still on the old change has its remove refused (typed, retriable), and the value stays readable; once it
+    /// applies the change, the remove succeeds and the key reads absent.
+    @Test
+    void removeFromAWriterOnTheOldChange_isRefused_untilItAppliesTheChange() {
+        var cluster = new Cluster(5, shortTimeout(3, 1));
+        var replicas = cluster.replicasOf(KEY, 3);
+        var writer = cluster.nonReplicaOf(replicas);
+        var applier = replicas.getFirst();
+
+        replicas.forEach(id -> cluster.nodes.get(id).resolveReplication(factors(3, 2), CHANGE));
+        assertThat(cluster.client(applier).put(KEY, VALUE).await().isSuccess()).as("arming: written under the new change").isTrue();
+
+        var refused = cluster.client(writer).remove(KEY).await();
+        boolean stale = refused.fold(cause -> cause instanceof DHTError.ReplicationChangeStale, _ -> false);
+
+        assertThat(stale).as("typed, retriable refusal: " + refused).isTrue();
+        assertThat(cluster.read(applier)).as("the refused tombstone removed nothing").isEqualTo(Option.some("v"));
+
+        cluster.nodes.get(writer).resolveReplication(factors(3, 2), CHANGE);
+
+        assertThat(cluster.client(writer).remove(KEY).await().isSuccess()).isTrue();
+        assertThat(cluster.read(applier)).isEqualTo(Option.none());
     }
 
     /// Why the fence is keyed on the change a replica has APPLIED, not on the writers-switched stage it has observed.
@@ -899,6 +1210,8 @@ class DHTReplicationChangeTest {
         volatile Set<NodeId> dropPutsTo = Set.of();
         volatile boolean holdPuts;
         final List<Map.Entry<NodeId, DHTMessage.PutRequest>> held = new java.util.ArrayList<>();
+        volatile boolean holdRemoves;
+        final List<Map.Entry<NodeId, DHTMessage.RemoveRequest>> heldRemoves = new java.util.ArrayList<>();
 
         Cluster(int size, DHTConfig config) {
             var ids = IntStream.range(0, size).mapToObj(i -> new NodeId("node-" + i)).toList();
@@ -973,6 +1286,12 @@ class DHTReplicationChangeTest {
             antiEntropies.put(id, dhtAntiEntropy(fresh, this::route, _ -> false));
 
             return fresh;
+        }
+
+        void deliverHeldRemovesTo(NodeId target) {
+            heldRemoves.stream()
+                       .filter(entry -> entry.getKey().equals(target))
+                       .forEach(entry -> nodes.get(target).handleRemoveRequest(entry.getValue(), resp -> route(entry.getValue().sender(), resp)));
         }
 
         void deliverHeldTo(NodeId target) {
@@ -1060,6 +1379,14 @@ class DHTReplicationChangeTest {
                     }
                 }
                 case DHTMessage.PutResponse r -> client.onPutResponse(r);
+                case DHTMessage.RemoveRequest r -> {
+                    if (holdRemoves) {
+                        heldRemoves.add(Map.entry(target, r));
+                    } else {
+                        node.handleRemoveRequest(r, resp -> route(r.sender(), resp));
+                    }
+                }
+                case DHTMessage.RemoveResponse r -> client.onRemoveResponse(r);
                 case DHTMessage.DigestRequest r -> node.handleDigestRequest(r, resp -> route(r.sender(), resp));
                 case DHTMessage.DigestResponse r -> antiEntropy.onDigestResponse(r);
                 case DHTMessage.MigrationDataRequest r -> node.handleMigrationDataRequest(r, resp -> route(r.sender(), resp));

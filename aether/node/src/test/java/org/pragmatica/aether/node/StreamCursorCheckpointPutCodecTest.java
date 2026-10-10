@@ -33,7 +33,7 @@ class StreamCursorCheckpointPutCodecTest {
                                                                       0,
                                                                       "org.example:orders#onPlaced");
         var token = AssignmentToken.assignmentToken(NodeId.nodeId("node-1").unwrap(), Epoch.epoch(0L, 1L, 1L));
-        var value = new StreamCursorCheckpointValue(42L, 1_700_000_000_500L, token, 2L, 3L, 2L, true);
+        var value = new StreamCursorCheckpointValue(42L, 1_700_000_000_500L, token, 2L, 3L, 2L, true, Epoch.epoch(1L, 4L, 5L));
         var put = new KVCommand.Put<AetherKey, AetherValue>(key, value);
         var buf = Unpooled.buffer();
 
@@ -45,5 +45,7 @@ class StreamCursorCheckpointPutCodecTest {
         assertThat(((StreamCursorCheckpointValue) decoded.value()).token()).isEqualTo(token);
         assertThat(((StreamCursorCheckpointValue) decoded.value()).rewindEpoch()).isEqualTo(RewindEpoch.rewindEpoch(2L, 3L,
                                                                                                                     2L));
+        assertThat(((StreamCursorCheckpointValue) decoded.value()).ownerEpoch()).as("#1873: the owner epoch the cursor was read under")
+                                                                                .isEqualTo(Epoch.epoch(1L, 4L, 5L));
     }
 }

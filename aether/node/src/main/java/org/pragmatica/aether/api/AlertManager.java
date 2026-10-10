@@ -160,6 +160,12 @@ public class AlertManager {
         this.alertForwarder = Option.option(forwarder);
     }
 
+    /// Release the bound forwarder's webhook client, if any. Called once from `AetherNode.stop()`.
+    public Promise<Unit> closeForwarder() {
+        return alertForwarder.map(AlertForwarder::close)
+                             .or(Promise.unitPromise());
+    }
+
     /// Construct the forwarder from config and bind it, as ONE production expression.
     ///
     /// This exists so a test can call the same expression production calls instead of re-typing
@@ -1111,6 +1117,68 @@ public class AlertManager {
         announcedDeparture.put(nodeId.id(), System.currentTimeMillis());
     }
 
+    /// How long a node must stay absent from every drain record, while reporting itself READY, before a mark
+    /// the record created is dropped (#2014). The drain set is LEADER-LOCAL (`DrainCommandRegistry`, in memory,
+    /// not committed), so after a leader change the new leader's pings omit a drainee that is still draining.
+    public static final long DRAIN_OMISSION_GRACE_MS = 30_000L;
+
+    /// id → last wall-clock millis a drain record named the node. Only marks CREATED from a drain record are
+    /// tracked here, so a mark from the local FSM edge is never expired by absence.
+    private final Map<String, Long> broadcastDrainSeen = new ConcurrentHashMap<>();
+
+    /// Feed from a DRAIN RECORD: the leader's broadcast drain set on every authoritative ping (empty set
+    /// included), and the leader's own registry on its tick (#2014). The mark keys on that record, never on
+    /// a membership edge or a clock: run 2 showed a SWIM incarnation refutation clearing it mid-drain, and run 3
+    /// showed a 30 s clock expiring it before a follower's DEAD edge, which lags the drainee's halt by ~50 s.
+    ///
+    /// Marks every node in `drainSet` (never `self`). A mark the record created is dropped only on POSITIVE
+    /// evidence that the drain is over: the node is absent from the record for [`#DRAIN_OMISSION_GRACE_MS`]
+    /// AND `nodeReadyAgain` says it reports itself READY (alive, responsive, not draining). A drainee that
+    /// halted reports nothing, so its mark stays until its DEAD edge consumes it or it rejoins; a cancelled
+    /// drain returns the node to READY, so a later real crash of it alerts.
+    @Contract
+    public void observeDrainSet(java.util.Set<NodeId> drainSet,
+                                NodeId self,
+                                long nowMs,
+                                java.util.function.Predicate<NodeId> nodeReadyAgain) {
+        drainSet.stream().filter(id -> !id.equals(self)).forEach(id -> markFromBroadcast(id, nowMs));
+        broadcastDrainSeen.keySet()
+                          .stream()
+                          .filter(id -> drainSet.stream()
+                                                .noneMatch(named -> named.id()
+                                                                         .equals(id)))
+                          .forEach(id -> ageOut(id, nowMs, nodeReadyAgain));
+    }
+
+    private void markFromBroadcast(NodeId id, long nowMs) {
+        noteMembershipTransition(id, "DrainRequested");
+        if (announcedDeparture.containsKey(id.id())) {
+            broadcastDrainSeen.put(id.id(), nowMs);
+        }
+    }
+
+    private void ageOut(String id, long nowMs, java.util.function.Predicate<NodeId> nodeReadyAgain) {
+        var lastSeen = broadcastDrainSeen.get(id);
+
+        if (lastSeen == null) {
+            return;
+        }
+
+        if (nowMs - lastSeen >= DRAIN_OMISSION_GRACE_MS && nodeReadyAgain.test(new NodeId(id))) {
+            announcedDeparture.remove(id);
+            broadcastDrainSeen.remove(id);
+        }
+    }
+
+    /// Whether this node holds an announced-departure mark for `nodeId` (#2014). A NON-consuming read:
+    /// [`#onNodeFailed`] consumes the mark, so the departure notifier asks first and routes the event
+    /// by the answer. The mark is fed by the local FSM's `DrainRequested` edge AND by the leader's
+    /// broadcast drain set, so a follower that never saw `DrainRequested` still holds it.
+    @Contract
+    public boolean hasAnnouncedDeparture(NodeId nodeId) {
+        return announcedDeparture.containsKey(nodeId.id());
+    }
+
     /// Raise a node-health alert for a confirmed member death (#926).
     ///
     /// Invoked from the ungated `MembershipFsm` DEAD edge on EVERY node that confirms the death, so it
@@ -1181,6 +1249,7 @@ public class AlertManager {
     @Contract
     public void clearNodeHealthAlert(NodeId rejoined) {
         announcedDeparture.remove(rejoined.id());
+        broadcastDrainSeen.remove(rejoined.id());
         nodeHealthAlertOrder.remove(AlertEvent.NodeHealthAlert.alertId(rejoined));
         Option.option(activeNodeHealthAlerts.remove(AlertEvent.NodeHealthAlert.alertId(rejoined))).onPresent(cleared -> log.info("Node-health alert resolved for {} — node rejoined (was: {})",
                                                                                                                                  rejoined.id(),

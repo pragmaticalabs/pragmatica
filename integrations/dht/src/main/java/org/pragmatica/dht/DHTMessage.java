@@ -54,8 +54,24 @@ public sealed interface DHTMessage extends ProtocolMessage {
         }
     }
 
-    /// Response to a get request, carrying the answering replica's [Readiness] for the key's partition.
-    record GetResponse(String requestId, NodeId sender, Option<byte[]> value, Readiness readiness) implements DHTMessage {}
+    /// Response to a get request, carrying the answering replica's [Readiness] for the key's partition and the
+    /// STAMP of the entry it holds (#1777 track 3): a reader keeps the newest answer by owner epoch then version,
+    /// so a stale replica's value loses to a newer tombstone. `value` is present for a live entry; `tombstone`
+    /// marks a removed one; neither means this replica holds no entry for the key.
+    record GetResponse(String requestId,
+                       NodeId sender,
+                       Option<byte[]> value,
+                       Readiness readiness,
+                       boolean tombstone,
+                       long version,
+                       long epochIncarnation,
+                       long epochTerm,
+                       long epochCounter) implements DHTMessage {
+        /// An unstamped answer (version and epoch 0): it loses to any stamped entry.
+        public GetResponse(String requestId, NodeId sender, Option<byte[]> value, Readiness readiness) {
+            this(requestId, sender, value, readiness, false, 0L, 0L, 0L, 0L);
+        }
+    }
 
     /// Request to put a value.
     ///
@@ -115,15 +131,50 @@ public sealed interface DHTMessage extends ProtocolMessage {
         }
     }
 
-    /// Request to remove a value.
-    record RemoveRequest(String requestId, NodeId sender, byte[] key) implements DHTMessage {
+    /// Request to remove a value: the replica stores a TOMBSTONE stamped like a put (#1777 track 3), so the remove
+    /// supersedes every older copy of the value wherever anti-entropy, migration or a hand-off carries it, and is
+    /// fenced by the same owner-epoch high-water a put is.
+    record RemoveRequest(String requestId,
+                         NodeId sender,
+                         byte[] key,
+                         long version,
+                         long epochIncarnation,
+                         long epochTerm,
+                         long epochCounter,
+                         long replicationVersion) implements DHTMessage {
         public RemoveRequest {
             key = key.clone();
         }
     }
 
-    /// Response to a remove request.
-    record RemoveResponse(String requestId, NodeId sender, boolean found) implements DHTMessage {}
+    /// Response to a remove request. `found` means a live value was superseded here. `fenced` marks a refusal by
+    /// the owner-epoch fence, exactly as for a [PutResponse]: a remove whose quorum is lost to fences is
+    /// indeterminate. `replicationStale` marks a refusal by the replication-change fence, exactly as for a [PutResponse]
+    /// (#1777, CTO ruling R1c): a tombstone is a write, and one sized under factors the cluster has left is refused too.
+    /// `fenceUnknown` is the replica not knowing the committed change yet, as for a [PutResponse]. `writePending` is the
+    /// replica holding its own unresolved write to the same key, as for a [PutResponse] (v1882 r12).
+    record RemoveResponse(String requestId,
+                          NodeId sender,
+                          boolean found,
+                          boolean fenced,
+                          boolean replicationStale,
+                          boolean fenceUnknown,
+                          boolean writePending) implements DHTMessage {
+        /// An answer that was not fenced.
+        public RemoveResponse(String requestId, NodeId sender, boolean found) {
+            this(requestId, sender, found, false, false, false, false);
+        }
+
+        /// A response that is not a pending-write refusal.
+        public RemoveResponse(String requestId,
+                              NodeId sender,
+                              boolean found,
+                              boolean fenced,
+                              boolean replicationStale,
+                              boolean fenceUnknown) {
+            this(requestId, sender, found, fenced, replicationStale, fenceUnknown, false);
+        }
+    }
 
     /// Request to check if key exists.
     record ExistsRequest(String requestId, NodeId sender, byte[] key) implements DHTMessage {
@@ -132,16 +183,64 @@ public sealed interface DHTMessage extends ProtocolMessage {
         }
     }
 
-    /// Response to exists request, carrying the answering replica's [Readiness] for the key's partition.
-    record ExistsResponse(String requestId, NodeId sender, boolean exists, Readiness readiness) implements DHTMessage {}
+    /// Response to exists request, carrying the answering replica's [Readiness] for the key's partition and the
+    /// stamp of the entry it holds, like [GetResponse] (#1777 track 3).
+    record ExistsResponse(String requestId,
+                          NodeId sender,
+                          boolean exists,
+                          Readiness readiness,
+                          boolean tombstone,
+                          long version,
+                          long epochIncarnation,
+                          long epochTerm,
+                          long epochCounter) implements DHTMessage {
+        /// An unstamped answer (version and epoch 0): it loses to any stamped entry.
+        public ExistsResponse(String requestId, NodeId sender, boolean exists, Readiness readiness) {
+            this(requestId, sender, exists, readiness, false, 0L, 0L, 0L, 0L);
+        }
+    }
 
     /// A key-value pair with version used in migration data transfers. Carries the owner epoch as
     /// three primitive `long`s (`epochIncarnation`, `epochTerm`, `epochCounter`) so migrated entries preserve their
-    /// fencing token across transfer (#345 piece 1c).
-    record KeyValue(byte[] key, byte[] value, long version, long epochIncarnation, long epochTerm, long epochCounter) {
+    /// fencing token across transfer (#345 piece 1c). `tombstone` (#1777 track 3) marks a removed key: its value is
+    /// empty, and it travels through repair, migration and the departure hand-off like any entry, so a stale copy
+    /// of the value can never outlive the remove.
+    record KeyValue(byte[] key,
+                    byte[] value,
+                    long version,
+                    long epochIncarnation,
+                    long epochTerm,
+                    long epochCounter,
+                    boolean tombstone) {
         public KeyValue {
             key = key.clone();
             value = value.clone();
+        }
+
+        /// A live entry.
+        public KeyValue(byte[] key,
+                        byte[] value,
+                        long version,
+                        long epochIncarnation,
+                        long epochTerm,
+                        long epochCounter) {
+            this(key, value, version, epochIncarnation, epochTerm, epochCounter, false);
+        }
+
+        /// The store's per-key order: owner epoch first, then HLC version (#345 piece 1c, #1818). A positive result
+        /// means this entry wins over `other` wherever both meet.
+        public int compareOrder(KeyValue other) {
+            var byIncarnation = Long.compare(epochIncarnation, other.epochIncarnation);
+            var byTerm = Long.compare(epochTerm, other.epochTerm);
+            var byCounter = Long.compare(epochCounter, other.epochCounter);
+
+            return byIncarnation != 0
+                   ? byIncarnation
+                   : byTerm != 0
+                     ? byTerm
+                     : byCounter != 0
+                       ? byCounter
+                       : Long.compare(version, other.version);
         }
     }
 

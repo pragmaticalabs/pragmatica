@@ -190,6 +190,52 @@ class DrainCommandPlumbingTest {
             assertThat(seenByHandler.get()).containsExactlyInAnyOrder(SELF, PEER_A);
         }
 
+        /// #2014: a FOLLOWER (not targeted) must still learn the drain set, so its DEAD edge reads a planned
+        /// departure as one. Deleting the observer call in `handleDrainCommand` turns this red.
+        @Test
+        void onClusterSyncPing_drainSetNotTargetingSelf_stillReachesTheObserver() {
+            var network = new RecordingNetwork();
+            var collector = ClusterSyncCollector.clusterSyncCollector(SELF, network);
+            collector.setMetricsProducerEligibility(_ -> true);
+
+            collector.setPingAuthority(LEADER::equals, LEADER::equals);
+            var seen = new AtomicReference<Set<NodeId>>(Set.of());
+
+            collector.setDrainSetObserver(seen::set);
+            collector.onClusterSyncPing(otherDrainPing());
+            assertThat(seen.get()).isNotEmpty().doesNotContain(SELF);
+        }
+
+        /// #2014: absence is how a cancelled drain is noticed, so an EMPTY authoritative set must reach the
+        /// observer too. Re-adding an `isEmpty()` guard turns this red.
+        @Test
+        void onClusterSyncPing_emptyDrainSet_reachesTheObserver() {
+            var network = new RecordingNetwork();
+            var collector = ClusterSyncCollector.clusterSyncCollector(SELF, network);
+            collector.setMetricsProducerEligibility(_ -> true);
+
+            collector.setPingAuthority(LEADER::equals, LEADER::equals);
+            var seen = new AtomicReference<Set<NodeId>>(null);
+
+            collector.setDrainSetObserver(seen::set);
+            collector.onClusterSyncPing(nonePing());
+            assertThat(seen.get()).isNotNull().isEmpty();
+        }
+
+        @Test
+        void onClusterSyncPing_nonAuthoritativeDrainSet_doesNotReachTheObserver() {
+            var network = new RecordingNetwork();
+            var collector = ClusterSyncCollector.clusterSyncCollector(SELF, network);
+            collector.setMetricsProducerEligibility(_ -> true);
+
+            collector.setPingAuthority(LEADER::equals, LEADER::equals);
+            var calls = new AtomicInteger();
+
+            collector.setDrainSetObserver(_ -> calls.incrementAndGet());
+            collector.onClusterSyncPing(coDrainPing(PEER_B));
+            assertThat(calls.get()).isZero();
+        }
+
         @Test
         void onClusterSyncPing_nonAuthoritativeSender_doesNotRecordTheDrainSet() {
             var network = new RecordingNetwork();

@@ -46,7 +46,6 @@
 
     <properties>
         <!-- Build-instrument module: never published. -->
-        <maven.deploy.skip>true</maven.deploy.skip>
         <gpg.skip>true</gpg.skip>
         <jbct.skip>false</jbct.skip>
     </properties>

@@ -144,19 +144,27 @@ public record TimeoutsConfig(InvocationTimeouts invocation,
     /// has a second floor to clear — pings originate from the leader, so a leader election is a
     /// legitimate ping gap, and a value below worst-case election time dissolves healthy communities
     /// during a routine election.
+    ///
+    /// `offlineBufferCap` (#1996) is the longest ANY frame may be held in a peer's offline buffer while the peer is
+    /// unreachable; nothing is held for ever. A request with a caller deadline (an invocation, a forward, a stream or
+    /// replication request, a command forward) is dropped at the flush once that deadline has passed, and never held longer
+    /// than this; every other frame (consensus, DHT, responses, a fire-and-forget invocation) is bounded by the cap alone.
+    /// A policy default matching the longest caller wait the cluster ships with, not a measured value.
     public record ClusterTimeouts(TimeSpan hello,
                                   TimeSpan reconciliationInterval,
                                   TimeSpan pingInterval,
                                   TimeSpan channelProtection,
                                   TimeSpan coreAbsence,
-                                  TimeSpan communityAbsence) {
+                                  TimeSpan communityAbsence,
+                                  TimeSpan offlineBufferCap) {
         public static ClusterTimeouts clusterTimeouts() {
             return new ClusterTimeouts(timeSpan(5).seconds(),
                                        timeSpan(5).seconds(),
                                        timeSpan(1).seconds(),
                                        timeSpan(15).seconds(),
                                        timeSpan(10).seconds(),
-                                       timeSpan(20).seconds());
+                                       timeSpan(20).seconds(),
+                                       timeSpan(30).seconds());
         }
 
         /// The #590 ordering invariant as a predicate, so the one comparison that matters lives beside

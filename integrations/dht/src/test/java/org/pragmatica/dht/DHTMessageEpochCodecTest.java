@@ -91,6 +91,28 @@ class DHTMessageEpochCodecTest {
         }
     }
 
+    /// v1882 r12: the pending-write refusal crosses the wire on a put and a remove, distinct from every other refusal.
+    @Test
+    void putAndRemoveResponse_roundTrip_preserveTheWritePendingRefusal() {
+        var codec = codec();
+        var buf = Unpooled.buffer();
+
+        try {
+            codec.write(buf, new DHTMessage.PutResponse("req-5", new NodeId("n2"), false, false, false, false, false, true));
+            codec.write(buf, new DHTMessage.RemoveResponse("req-6", new NodeId("n2"), false, false, false, false, true));
+            DHTMessage.PutResponse put = codec.read(buf);
+            DHTMessage.RemoveResponse remove = codec.read(buf);
+
+            assertThat(put.writePending()).isTrue();
+            assertThat(put.superseded()).isFalse();
+            assertThat(put.success()).isFalse();
+            assertThat(remove.writePending()).isTrue();
+            assertThat(remove.fenceUnknown()).isFalse();
+        } finally {
+            buf.release();
+        }
+    }
+
     /// #1818 L1: the departure view the receiver checks placement against crosses the wire. Every in-JVM
     /// departure test hands the record over directly, so only this round trip reaches the codec.
     @Test

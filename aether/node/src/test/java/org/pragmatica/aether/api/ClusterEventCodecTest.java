@@ -15,6 +15,7 @@ import org.pragmatica.aether.api.ClusterEvent.StreamFailoverResolved;
 import org.pragmatica.aether.api.ClusterEvent.StreamIsrBelowMinimum;
 import org.pragmatica.aether.api.ClusterEvent.StreamConfigChangeNotApplied;
 import org.pragmatica.aether.api.ClusterEvent.StreamIsrRestored;
+import org.pragmatica.aether.api.ClusterEvent.StreamLineageRestarted;
 import org.pragmatica.aether.api.ClusterEvent.CommunityMinted;
 import org.pragmatica.aether.api.ClusterEvent.CommunityStateChanged;
 import org.pragmatica.aether.api.ClusterEvent.OperatorWarning;
@@ -381,7 +382,14 @@ class ClusterEventCodecTest {
                        new StreamFailoverResolved(ts, sev, "StreamFailoverResolved", d),
                        new StreamIsrBelowMinimum(ts, sev, "StreamIsrBelowMinimum", d),
                        new StreamIsrRestored(ts, sev, "StreamIsrRestored", d),
-                       new StreamConfigChangeNotApplied(ts, sev, "StreamConfigChangeNotApplied", d));
+                       new StreamLineageRestarted(ts, sev, "StreamLineageRestarted", d),
+                       new StreamConfigChangeNotApplied(ts, sev, "StreamConfigChangeNotApplied", d),
+                       new ClusterEvent.ScheduledTaskOutcomeUnknown(ts, sev, "ScheduledTaskOutcomeUnknown", d),
+                       new ClusterEvent.ScheduledTaskOutcomeRestored(ts, sev, "ScheduledTaskOutcomeRestored", d),
+                       new ClusterEvent.ScheduledTaskFireHeld(ts, sev, "ScheduledTaskFireHeld", d),
+                       new ClusterEvent.ScheduledTaskFireReleased(ts, sev, "ScheduledTaskFireReleased", d),
+                       new ClusterEvent.RoutePrefixCollision(ts, sev, "RoutePrefixCollision", d),
+                       new ClusterEvent.RoutePrefixCollisionCleared(ts, sev, "RoutePrefixCollisionCleared", d));
     }
 
     /// Guards [#allClosedVariants] against silent drift.

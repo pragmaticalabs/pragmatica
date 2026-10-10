@@ -487,7 +487,8 @@ monitor_majority_during_partition() {
         ep=$(_resolve_live_endpoint)
         log_warn "S05: could not derive the leader's (${leader:-?}) management endpoint; reading through ${ep} (it may be a partitioned node)"
     fi
-    local deadline=$((SECONDS + PARTITION_DURATION_S))
+    local deadline
+    deadline=$(deadline_in "$PARTITION_DURATION_S")
     local ok_reads=0 unknown_reads=0 consecutive_unknown=0 sample cur_leader quorate
     local max_unknown="${S05_MAX_CONSECUTIVE_UNKNOWN:-3}" min_ok="${S05_MIN_OK_READS:-3}"
     while [ $SECONDS -lt $deadline ]; do

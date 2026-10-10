@@ -426,21 +426,9 @@ public sealed interface AetherKey extends StructuredKey permits AetherKey.Cluste
         }
 
         private static String normalizePrefix(String path) {
-            if (!Verify.Is.present(path)) {
-                return "/";
-            }
-
-            var normalized = path.strip();
-
-            if (!normalized.startsWith("/")) {
-                normalized = "/" + normalized;
-            }
-
-            if (!normalized.endsWith("/")) {
-                normalized = normalized + "/";
-            }
-
-            return normalized;
+            return Verify.Is.present(path)
+                   ? org.pragmatica.aether.http.handler.RouteIdentity.normalizePrefix(path)
+                   : "/";
         }
     }
 
@@ -1210,6 +1198,25 @@ public sealed interface AetherKey extends StructuredKey permits AetherKey.Cluste
         @Override
         public String asString() {
             return "capacity-reservation/" + nodeId.id();
+        }
+    }
+
+    /// #1543: the pairing of a node being replaced (`original`) with the fresh-id node replacing it. Runtime
+    /// state: an in-flight replacement names nodes a restored cluster no longer has.
+    record NodeReplacementKey(NodeId original) implements RuntimeKey {
+        @Override
+        public String asString() {
+            return "node-replacement/" + original.id();
+        }
+    }
+
+    /// #1543 part F: the one rolling-upgrade run of the cluster. Runtime state: a run names nodes a restored cluster no longer has.
+    record UpgradeRunKey() implements RuntimeKey {
+        public static final UpgradeRunKey INSTANCE = new UpgradeRunKey();
+
+        @Override
+        public String asString() {
+            return "upgrade-run/current";
         }
     }
 

@@ -107,9 +107,10 @@ public enum DatabaseType {
     public static Option<DatabaseType> fromAnyUrl(Option<String> jdbcUrl,
                                                   Option<String> r2dbcUrl,
                                                   Option<String> asyncUrl) {
-        return jdbcUrl.flatMap(DatabaseType::fromJdbcUrl)
-                      .orElse(() -> r2dbcUrl.flatMap(DatabaseType::fromR2dbcUrl))
-                      .orElse(() -> asyncUrl.flatMap(DatabaseType::fromAsyncUrl));
+        // Transport-selection priority (async, r2dbc, jdbc), the same order as the URL-derived values (#784).
+        return asyncUrl.flatMap(DatabaseType::fromAsyncUrl)
+                       .orElse(() -> r2dbcUrl.flatMap(DatabaseType::fromR2dbcUrl))
+                       .orElse(() -> jdbcUrl.flatMap(DatabaseType::fromJdbcUrl));
     }
     private static Option<DatabaseType> matchByProtocol(String url) {
         var urlLower = url.toLowerCase();

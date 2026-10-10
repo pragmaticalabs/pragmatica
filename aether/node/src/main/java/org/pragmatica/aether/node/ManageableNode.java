@@ -68,6 +68,17 @@ import org.pragmatica.net.tcp.security.CertificateRenewalScheduler;
 public interface ManageableNode {
     NodeId self();
 
+    /// #1543 E: begin, inspect and settle node replacements. Only a running node has one; a test double that never
+    /// touches replacement routes need not.
+    default org.pragmatica.aether.deployment.cluster.NodeReplacementService nodeReplacementService() {
+        return org.pragmatica.aether.deployment.cluster.NodeReplacementService.unavailable();
+    }
+
+    /// #1543 F: start, inspect, pause, resume and abort the rolling upgrade. A test double that never touches the upgrade routes need not.
+    default org.pragmatica.aether.deployment.cluster.UpgradeRunService upgradeRunService() {
+        return org.pragmatica.aether.deployment.cluster.UpgradeRunService.unavailable();
+    }
+
     default org.pragmatica.consensus.rabia.VoterReconfigurationStatus voterReconfigurationStatus() {
         return org.pragmatica.consensus.rabia.VoterReconfigurationStatus.unavailable();
     }

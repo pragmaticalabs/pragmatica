@@ -91,8 +91,8 @@ public sealed interface DHTError extends Cause {
 
     /// A write that did not reach its quorum because owner-epoch fences refused it (#1818, the owner's fence
     /// ruling — the Dynamo stance). It is NOT a definite failure: replicas whose high-water lagged may have
-    /// applied it, and a copy of it can still take effect on keys the new owner never rewrites (until #1777
-    /// track 3). The coordinator rolls back its own accept; callers must treat the outcome as unknown and
+    /// applied it, and a copy of it can still take effect on keys the new owner never rewrites (a documented
+    /// residual: #1777 track 3's tombstones do not close it, owner ruling 2026-10-03 Q8). The coordinator rolls back its own accept; callers must treat the outcome as unknown and
     /// retry — a retry is stamped with the owner epoch as it stands by then.
     static DHTError writeIndeterminate(int required, int achieved, int fenced) {
         return new WriteIndeterminate(required, achieved, fenced);

@@ -122,4 +122,19 @@ class ManagementRoutePermissionsTest {
             }
         }
     }
+
+    /// #1543 E2 (v-2042): starting and settling a node replacement are operator operations; listing them is a read.
+    @Nested
+    class NodeReplacement {
+        @Test
+        void replaceAndSettle_areOperator_listIsARead() {
+            assertThat(ManagementRoutePermissions.permissionFor(ManagementRoute.NODE_REPLACE)).isEqualTo(OPERATOR_AND_ABOVE);
+            assertThat(ManagementRoutePermissions.permissionFor(ManagementRoute.NODE_REPLACEMENT_SETTLE)).isEqualTo(OPERATOR_AND_ABOVE);
+            assertThat(ManagementRoutePermissions.permissionFor(ManagementRoute.NODE_REPLACEMENTS)).isEqualTo(ALL_AUTHENTICATED);
+            assertThat(ManagementRoutePermissions.permissionFor(ManagementRoute.UPGRADE_STATUS)).isEqualTo(ALL_AUTHENTICATED);
+            assertThat(ManagementRoutePermissions.permissionFor(ManagementRoute.UPGRADE_PAUSE)).isEqualTo(OPERATOR_AND_ABOVE);
+            assertThat(ManagementRoutePermissions.permissionFor(ManagementRoute.UPGRADE_RESUME)).isEqualTo(OPERATOR_AND_ABOVE);
+            assertThat(ManagementRoutePermissions.permissionFor(ManagementRoute.UPGRADE_ABORT)).isEqualTo(OPERATOR_AND_ABOVE);
+        }
+    }
 }

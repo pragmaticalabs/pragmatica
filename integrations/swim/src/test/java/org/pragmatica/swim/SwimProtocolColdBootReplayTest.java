@@ -23,6 +23,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 import org.junit.jupiter.api.Test;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.swim.SwimMember.MemberState;
 import org.pragmatica.swim.SwimMessage.MembershipUpdate;
 import org.pragmatica.swim.SwimMessage.Ping;
@@ -216,6 +217,118 @@ class SwimProtocolColdBootReplayTest {
             assertThat(departures(observations, GENUINE)).as("the replay goes through the live-transport veto")
                                                          .isEmpty();
             assertThat(faulties(observations, GENUINE)).isEmpty();
+        } finally {
+            protocol.stop();
+        }
+    }
+
+    /// #2077: the transport veto defers a never-HEALTHY peer's FAULTY edge ("re-checked on the next FAULTY edge"),
+    /// but a member already FAULTY gets no next edge: it sat FAULTY until the residency sweep, and the real
+    /// departure waited out the tombstone TTL and a fresh probe cycle (bigboy repro-1: the leader declared the dead
+    /// node at +217 s, the other three survivors at +79 s). When the vetoing link drops, the deferred edge must fire.
+    /// Every window is shorter than the FAULTY residency (3 x 150 ms), so a pass cannot come from the sweep path.
+    @Test
+    void vetoedFaulty_linkDropsWhileStillFaulty_departsWithoutWaitingForSweep() {
+        var linkUp = new AtomicBoolean(true);
+        var observations = new RecordingObservationSink();
+        var protocol = SwimProtocol.swimProtocol(tightConfig(),
+                                                 new RecordingTransport(),
+                                                 new RecordingListener(),
+                                                 SELF_ID,
+                                                 SELF_ADDR,
+                                                 () -> false,
+                                                 peer -> peer.equals(PHANTOM) && linkUp.get())
+                                   .unwrap();
+
+        protocol.addObservationListener(observations);
+        protocol.addSeedMember(PHANTOM, PHANTOM_ADDR);
+        protocol.start();
+        try {
+            await().atMost(Duration.ofSeconds(3))
+                   .until(() -> hasUnknown(observations, PHANTOM));
+            assertThat(departures(observations, PHANTOM)).as("the live link vetoes the departure").isEmpty();
+
+            linkUp.set(false);
+
+            await().atMost(WITHIN_RESIDENCY)
+                   .until(() -> !departures(observations, PHANTOM).isEmpty());
+            assertThat(faulties(observations, PHANTOM)).as("the deferred edge fires the FAULTY pair once").hasSize(1);
+            assertThat(protocol.transportVetoedForTest(PHANTOM)).as("the replay is one-shot: the deferral is spent, not re-run every tick").isFalse();
+        } finally {
+            protocol.stop();
+        }
+    }
+
+    /// A vetoed peer that then proves HEALTHY has no deferred edge left, and when its link later drops it is never departed: the
+    /// replay stands behind both the HEALTHY edge's clear and its own never-HEALTHY filter, so a false DEAD for an established peer
+    /// would need both to fail. The window is shorter than any detection path, so a departure can only come from the replay.
+    @Test
+    void vetoedThenRecoveredHealthy_linkDrops_isNeverDeparted() throws InterruptedException {
+        var linkUp = new AtomicBoolean(true);
+        var observations = new RecordingObservationSink();
+        var protocol = SwimProtocol.swimProtocol(tightConfig(),
+                                                 new RecordingTransport(),
+                                                 new RecordingListener(),
+                                                 SELF_ID,
+                                                 SELF_ADDR,
+                                                 () -> false,
+                                                 peer -> peer.equals(GENUINE) && linkUp.get())
+                                   .unwrap();
+
+        protocol.addObservationListener(observations);
+        protocol.onMessage(GOSSIPER_ADDR,
+                           new Ping(GOSSIPER, 1L, List.of(MembershipUpdate.membershipUpdate(GENUINE, MemberState.FAULTY, 0, GENUINE_ADDR))));
+        protocol.start();
+        try {
+            await().atMost(Duration.ofSeconds(3))
+                   .until(() -> hasUnknown(observations, GENUINE));
+            assertThat(protocol.transportVetoedForTest(GENUINE)).as("the live link deferred the edge").isTrue();
+
+            protocol.onMessage(GENUINE_ADDR,
+                               new Ping(GENUINE, 1L, List.of(MembershipUpdate.membershipUpdate(GENUINE, MemberState.ALIVE, 5, GENUINE_ADDR))));
+            await().atMost(Duration.ofSeconds(1))
+                   .until(() -> protocol.everSeenHealthyForTest(GENUINE));
+            assertThat(protocol.transportVetoedForTest(GENUINE)).as("the HEALTHY edge clears the deferral").isFalse();
+
+            linkUp.set(false);
+            protocol.recordTransportHint(GENUINE,
+                                         new TransportObservation.PeerUnreachable(GENUINE,
+                                                                                  Causes.cause("link closed"),
+                                                                                  TransportObservation.HintOrigin.LINK_LOST));
+            Thread.sleep(60);
+
+            assertThat(departures(observations, GENUINE)).as("an established peer is not departed by a replay").isEmpty();
+        } finally {
+            protocol.stop();
+        }
+    }
+
+    /// The control for the test above: the replay is gated on the link being GONE. A busy-but-alive peer whose link stays up is
+    /// never departed, past the residency and several ticks, so the veto's safety is the one it had.
+    @Test
+    void vetoedFaulty_linkStaysUp_isNeverDeparted() {
+        var observations = new RecordingObservationSink();
+        var protocol = SwimProtocol.swimProtocol(tightConfig(),
+                                                 new RecordingTransport(),
+                                                 new RecordingListener(),
+                                                 SELF_ID,
+                                                 SELF_ADDR,
+                                                 () -> false,
+                                                 PHANTOM::equals)
+                                   .unwrap();
+
+        protocol.addObservationListener(observations);
+        protocol.addSeedMember(PHANTOM, PHANTOM_ADDR);
+        protocol.start();
+        try {
+            await().atMost(Duration.ofSeconds(3))
+                   .until(() -> hasUnknown(observations, PHANTOM));
+            await().pollDelay(PAST_RESIDENCY)
+                   .atMost(PAST_RESIDENCY.plusSeconds(1))
+                   .until(() -> true);
+
+            assertThat(departures(observations, PHANTOM)).as("a live link keeps vetoing the departure").isEmpty();
+            assertThat(faulties(observations, PHANTOM)).isEmpty();
         } finally {
             protocol.stop();
         }

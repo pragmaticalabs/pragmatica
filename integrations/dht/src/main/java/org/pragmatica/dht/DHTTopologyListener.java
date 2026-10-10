@@ -99,12 +99,25 @@ public final class DHTTopologyListener {
     @Contract
     public void onNodeRemoved(MembershipDecision.NodeRemoved event) {
         removeFromRing(event.nodeId());
+        discardIfSelfRemovedWhileRunning(event.nodeId());
     }
 
     /// Handle a node-decommissioned decision identically to node-removed for ring purposes.
     @Contract
     public void onNodeDecommissioned(MembershipDecision.NodeDecommissioned event) {
         removeFromRing(event.nodeId());
+        discardIfSelfRemovedWhileRunning(event.nodeId());
+    }
+
+    /// A committed removal of THIS node while it is not departing — it was cut off (a pause, a partition) rather
+    /// than drained — leaves it holding a store no tombstone issued since has reached (#1777 track 3, owner ruling
+    /// 2026-10-03). The node drops that store, so it rejoins empty, as a restarted node does. A DEPARTING node keeps
+    /// its store: its departure push hands that store off before it halts, and it prunes itself from its own ring
+    /// on the DEPARTING edge (seed-500), so "self left the ring" alone cannot be the trigger.
+    private void discardIfSelfRemovedWhileRunning(NodeId removedNodeId) {
+        if (removedNodeId.equals(node.nodeId()) && !departing.contains(removedNodeId)) {
+            node.discardStoreAfterSelfRemoval();
+        }
     }
 
     /// Prune a node from the ring at the moment it ENTERS the membership `Departing` state

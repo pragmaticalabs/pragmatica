@@ -631,6 +631,11 @@ class BlueprintDeployStatusTest {
         }
 
         @Override
+        public void setOperatorWarningSink(org.pragmatica.utility.warning.OperatorWarningSink sink) {
+            unsupported("setOperatorWarningSink");
+        }
+
+        @Override
         public Option<Integer> boundPort() {
             return unsupported("boundPort");
         }

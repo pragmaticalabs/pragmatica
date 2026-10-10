@@ -97,6 +97,9 @@ public sealed interface ClusterConfigGenerator {
         }
 
         appendBlank(sb);
+        answers.cloud()
+               .filter(cloud -> answers.target() == SourceType.CLOUD)
+               .onPresent(cloud -> appendCloudCredentials(sb, cloud));
     }
 
     private static void appendCloudFields(StringBuilder sb, CloudAnswers cloud) {
@@ -104,7 +107,27 @@ public sealed interface ClusterConfigGenerator {
                  "provider",
                  cloud.provider().value());
         appendKv(sb, "region", cloud.region());
-        appendKv(sb, "credentials", "${env:" + cloud.credentialEnvVar() + "}");
+        if (cloud.provider() == CloudProviderName.HETZNER) {
+            appendKv(sb,
+                     "credentials",
+                     "${env:" + cloud.credentialEnvVars().get("api_token") + "}");
+        }
+
+        if (cloud.provider() == CloudProviderName.GCP) {
+            appendKv(sb, "zone", cloud.zone());
+        }
+    }
+
+    /// #2059: aws, gcp and azure need several credential keys, which one scalar `credentials` cannot carry. They
+    /// go under `node_config.cloud.credentials` as `${env:...}` references to the env vars the operator named.
+    private static void appendCloudCredentials(StringBuilder sb, CloudAnswers cloud) {
+        if (cloud.provider() == CloudProviderName.HETZNER) {
+            return;
+        }
+
+        appendSection(sb, "source." + SOURCE_NAME + ".node_config.cloud.credentials");
+        cloud.credentialEnvVars().forEach((key, envVar) -> appendKv(sb, key, "${env:" + envVar + "}"));
+        appendBlank(sb);
     }
 
     private static void appendSshFields(StringBuilder sb, SshAnswers ssh) {

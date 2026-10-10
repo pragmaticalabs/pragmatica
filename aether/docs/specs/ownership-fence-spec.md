@@ -285,10 +285,17 @@ gives every storage instance a `DhtStorageTier`, so every `StorageInstance` writ
 `git grep StorageInstance` over production code in `aether/` and `integrations/`); only the `ArtifactStore`
 rows are pinned by a test (`ArtifactStoreTest$WriteIndeterminateTests`).]
 
-**What is NOT guaranteed (residual, until #1777 track 3's per-key versions).** A deposed owner's write that
+**What is NOT guaranteed (residual; #1777 track 3 does NOT close it).** A deposed owner's write that
 another *lagging* replica also accepted is not rolled back. Anti-entropy copies bypass the high-water, so it
 can spread and take effect, but only on keys the new owner never rewrites. A key the new owner writes
 again is safe: per-key epoch ordering keeps the newer entry everywhere.
+
+[limit: the deposed-writer residual is open by owner ruling (2026-10-03, #1777 Q8). The earlier note that
+#1777 track 3's per-key versions would close it was wrong: track 3 adds tombstones, which order REMOVES against
+older copies; the residual is a spread VALUE, which no tombstone exists to supersede. Closing it needs a per-key
+acceptance record (a quorum-confirmed commit marker), deferred. Operator signal: `DHTNode.belowHighWaterCopyCount`
+counts copies applied below a node's owner-epoch high-water, each a write the fence would have refused as fresh.
+Recovery: the next write of the key by its current owner supersedes the spread value everywhere.]
 
 ---
 

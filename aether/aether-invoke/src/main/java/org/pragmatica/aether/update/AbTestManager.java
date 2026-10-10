@@ -329,7 +329,7 @@ public interface AbTestManager {
             /// `targetInstances`. `minInstances` is only ever read as a cap on scale-DOWN removals
             /// (`issueScaleDownCommands`) and as a scale-down gate (`DecisionTreeController`), and
             /// teardown bypasses both by issuing unload commands directly. A preserved floor
-            /// therefore cannot hold the canary above one instance, nor pin a variant that has to
+            /// therefore cannot hold the canary above the slice floor, nor pin a variant that has to
             /// be removed.
             private SliceTargetValue variantTarget(SliceTargetKey key, Version version) {
                 return observedTarget(key).map(current -> current.withVersion(version)
@@ -340,9 +340,9 @@ public interface AbTestManager {
             /// The conclusion writes — promote a winner, or restore the baseline on rollback.
             ///
             /// The concluded version takes over the slice, so it must not be left running at the
-            /// canary's single instance while the operator's floor says otherwise: the allocation
+            /// canary's instance count while the operator's floor says otherwise: the allocation
             /// engine drives to `targetInstances`, and nothing climbs from below the floor on its
-            /// own, so `target = 1, min = 5` is a slice permanently parked under its own declared
+            /// own, so `target = 3, min = 5` is a slice permanently parked under its own declared
             /// minimum. `effectiveMinInstances()` is the operator's floor clamped to at least one,
             /// but an operator floor below the slice floor (`min = 1`) must not park the winner under it
             /// (#1721), so the count is clamped to at least [#VARIANT_INSTANCES].

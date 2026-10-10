@@ -133,13 +133,25 @@ public record ClusterCursorStore(ConsumerCursorStore local,
                                          long offset,
                                          Epoch assignmentEpoch,
                                          RewindEpoch rewindEpoch) {
+        return commit(consumerGroup, streamName, partition, offset, assignmentEpoch, rewindEpoch, Epoch.ZERO);
+    }
+
+    @Override
+    public Promise<CommitOutcome> commit(String consumerGroup,
+                                         String streamName,
+                                         int partition,
+                                         long offset,
+                                         Epoch assignmentEpoch,
+                                         RewindEpoch rewindEpoch,
+                                         Epoch ownerEpoch) {
         var token = AssignmentToken.assignmentToken(self, assignmentEpoch);
 
-        return local.commit(consumerGroup, streamName, partition, offset, assignmentEpoch, rewindEpoch)
+        return local.commit(consumerGroup, streamName, partition, offset, assignmentEpoch, rewindEpoch, ownerEpoch)
                     .flatMap(_ -> publishCheckpoint(checkpointKey(consumerGroup, streamName, partition),
                                                     offset,
                                                     token,
-                                                    rewindEpoch));
+                                                    rewindEpoch,
+                                                    ownerEpoch));
     }
 
     @Override
@@ -170,8 +182,9 @@ public record ClusterCursorStore(ConsumerCursorStore local,
     private Promise<CommitOutcome> publishCheckpoint(StreamCursorCheckpointKey key,
                                                      long offset,
                                                      AssignmentToken token,
-                                                     RewindEpoch rewindEpoch) {
-        return commandWriter.apply(List.of(checkpointCommand(key, offset, token, rewindEpoch)))
+                                                     RewindEpoch rewindEpoch,
+                                                     Epoch ownerEpoch) {
+        return commandWriter.apply(List.of(checkpointCommand(key, offset, token, rewindEpoch, ownerEpoch)))
                             .flatMap(_ -> barrierIfForwarding(key))
                             .map(_ -> verdict(key, offset, token, rewindEpoch))
                             .recover(cause -> localOnly(key, cause));
@@ -181,10 +194,19 @@ public record ClusterCursorStore(ConsumerCursorStore local,
                                                          long offset,
                                                          AssignmentToken token,
                                                          RewindEpoch rewindEpoch) {
+        return checkpointCommand(key, offset, token, rewindEpoch, Epoch.ZERO);
+    }
+
+    public static KVCommand<AetherKey> checkpointCommand(StreamCursorCheckpointKey key,
+                                                         long offset,
+                                                         AssignmentToken token,
+                                                         RewindEpoch rewindEpoch,
+                                                         Epoch ownerEpoch) {
         return new KVCommand.Put<AetherKey, AetherValue>(key,
                                                          StreamCursorCheckpointValue.streamCursorCheckpointValue(offset,
                                                                                                                  token,
-                                                                                                                 rewindEpoch));
+                                                                                                                 rewindEpoch,
+                                                                                                                 ownerEpoch));
     }
 
     public static KVCommand<AetherKey> checkpointCommand(String consumerGroup,
@@ -291,7 +313,7 @@ public record ClusterCursorStore(ConsumerCursorStore local,
     }
 
     static Cursor toCursor(StreamCursorCheckpointValue value) {
-        return Cursor.cursor(value.committedOffset(), value.rewindEpoch());
+        return Cursor.cursor(value.committedOffset(), value.rewindEpoch(), value.ownerEpoch());
     }
 
     /// #1333: the fenced resume — later of the two by `(rewind epoch, offset)`.

@@ -147,7 +147,7 @@ class BlueprintServiceTest {
                                                     ? Result.lift(Causes::fromThrowable, () -> sliceJar.toUri().toURL())
                                                             .flatMap(url -> Location.location(artifact, url))
                                                             .async()
-                                                    : Causes.cause("Artifact not present in local repository").promise();
+                                                    : ((org.pragmatica.aether.slice.repository.Repository.Absent) () -> "Artifact not present in local repository").promise();
             var liveService = BlueprintService.blueprintService(liveCluster,
                                                                 liveStore,
                                                                 liveRepository,
@@ -433,7 +433,7 @@ class BlueprintServiceTest {
             var sliceJar = writeRedeploySliceJar();
             liveRepository = artifact -> REDEPLOY_SLICE.equals(artifact)
                                                     ? sliceLocation(sliceJar, artifact)
-                                                    : Causes.cause("Artifact not present in local repository").promise();
+                                                    : ((org.pragmatica.aether.slice.repository.Repository.Absent) () -> "Artifact not present in local repository").promise();
 
             liveService = BlueprintService.blueprintService(liveCluster, liveStore, liveRepository);
         }
@@ -951,7 +951,7 @@ class BlueprintServiceTest {
                                                     ? Result.lift(Causes::fromThrowable, () -> jar.toUri().toURL())
                                                             .flatMap(url -> Location.location(requested, url))
                                                             .async()
-                                                    : Causes.cause("Artifact not present in local repository").promise();
+                                                    : ((org.pragmatica.aether.slice.repository.Repository.Absent) () -> "Artifact not present in local repository").promise();
             var holder = new AtomicReference<Cause>();
 
             BlueprintService.blueprintService(cluster, store, jarRepository)

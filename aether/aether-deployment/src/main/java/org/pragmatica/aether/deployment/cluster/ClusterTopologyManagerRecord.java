@@ -120,6 +120,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                     AtomicReference<Option<CommunityPlacementReconciler>> communityPlacement,
                                     AtomicReference<Supplier<List<NodeId>>> genesisVoters,
                                     AtomicReference<Function<NodeId, Option<String>>> retirementRefusal,
+                                    AtomicReference<NodeReplacementIndex> nodeReplacements,
                                     AtomicReference<HierarchyStateWriter> hierarchyWriter,
                                     ConcurrentHashMap<NodeId, Long> pendingDrains,
                                     org.pragmatica.lang.concurrent.CancellableTask workerTopologyPolling) implements ClusterTopologyManager {
@@ -249,6 +250,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                                 new AtomicReference<>(Option.none()),
                                                 new AtomicReference<>(List::of),
                                                 new AtomicReference<>(_ -> Option.some(NO_RETIREMENT_CHECK)),
+                                                new AtomicReference<>(NodeReplacementIndex.nodeReplacementIndex()),
                                                 new AtomicReference<>(HierarchyStateWriter.unavailable()),
                                                 new ConcurrentHashMap<>(),
                                                 org.pragmatica.lang.concurrent.CancellableTask.cancellableTask());
@@ -271,6 +273,13 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     @Override
     public org.pragmatica.lang.Unit setRetirementRefusal(Function<NodeId, Option<String>> refusal) {
         retirementRefusal.set(refusal);
+
+        return org.pragmatica.lang.Unit.unit();
+    }
+
+    @Override
+    public org.pragmatica.lang.Unit setNodeReplacements(NodeReplacementIndex index) {
+        nodeReplacements.set(index);
 
         return org.pragmatica.lang.Unit.unit();
     }
@@ -765,11 +774,12 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     /// ACTUAL inventory with, so it MUST be the name the desired-topology entry was published
     /// under. The worker path passes `entry.sourceName()` verbatim; the core auto-heal path above
     /// resolves it from the persisted cluster config.
-    private Promise<ProvisionDisposition> provisionReplacement(NodeId newNodeId,
-                                                               Option<NodeId> failedPeer,
-                                                               Set<NodeId> clusterMembers,
-                                                               NodeRole intendedRole,
-                                                               SourceName sourceName) {
+    @Override
+    public Promise<ProvisionDisposition> provisionReplacement(NodeId newNodeId,
+                                                              Option<NodeId> failedPeer,
+                                                              Set<NodeId> clusterMembers,
+                                                              NodeRole intendedRole,
+                                                              SourceName sourceName) {
         if (intendedRole == NodeRole.CORE && (failedPeer.filter(newNodeId::equals).isPresent() || clusterMembers.contains(newNodeId) || genesisVoters.get()
                                                                                                                                                      .get()
                                                                                                                                                      .contains(newNodeId))) {
@@ -1147,6 +1157,11 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     }
 
     @Override
+    public Option<CommunityPlacementReconciler> installedCommunityPlacement() {
+        return communityPlacement.get();
+    }
+
+    @Override
     @Contract
     public synchronized void installCommunityPlacement(CommunityPlacementReconciler reconciler) {
         communityPlacement.set(Option.some(reconciler));
@@ -1399,20 +1414,24 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                             + "-" + ordinal).unwrap();
     }
 
-    /// Newest first (REQ-SCALE-03 ordering by id: minted `-r<base36-clock>` ids sort after
-    /// bootstrap `-<index>` ids, and later mints sort after earlier ones). An instance without a
-    /// node-id label cannot be terminated through the node-id path and is skipped — pre-#579
-    /// orphans are the cloud reaper's job, not the reconciler's.
+    /// An instance without a node-id label cannot be terminated through the node-id path and is
+    /// skipped — pre-#579 orphans are the cloud reaper's job, not the reconciler's.
     private Promise<Unit> terminateSurplusWorkers(AetherValue.TopologyEntry entry,
                                                   List<InstanceInfo> actual,
                                                   int surplus,
                                                   long epoch) {
-        var victims = actual.stream()
-                            .flatMap(instance -> instance.nodeId()
-                                                         .stream())
-                            .sorted(Comparator.<String> naturalOrder().reversed())
-                            .limit(surplus)
-                            .toList();
+        var victims = surplusWorkerVictims(actual.stream().flatMap(instance -> instance.nodeId()
+                                                                                       .stream()).toList(),
+                                           surplus,
+                                           nodeReplacements.get());
+
+        if (victims.size() < surplus) {
+            log.debug("CTM: worker topology {}/{} — {} of the surplus is an in-flight node replacement, not terminated",
+                      entry.sourceName(),
+                      entry.role(),
+                      surplus - victims.size());
+        }
+
         var pass = Promise.unitPromise();
 
         for (var victim : victims) {
@@ -1426,6 +1445,31 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         }
 
         return pass;
+    }
+
+    /// Newest first (REQ-SCALE-03 ordering by id: minted `-r<base36-clock>` ids sort after bootstrap
+    /// `-<index>` ids, and later mints sort after earlier ones). #1543: a live replacement before
+    /// `RETIRING_OLD` is surge, not surplus, so it shrinks the surplus instead of becoming its victim;
+    /// an original due for retirement is taken first; and no node a live pairing protects is chosen.
+    static List<String> surplusWorkerVictims(List<String> nodeIds, int surplus, NodeReplacementIndex replacements) {
+        var surge = ids(replacements.surgeReplacements());
+        var retiring = ids(replacements.retiringOriginals());
+        var protectedIds = ids(replacements.retirementProtected());
+        var counted = surplus - (int) nodeIds.stream().filter(surge::contains).count();
+        var retiringFirst = nodeIds.stream().filter(retiring::contains).sorted();
+        var newestFirst = nodeIds.stream()
+                                 .filter(id -> !retiring.contains(id) && !protectedIds.contains(id))
+                                 .sorted(Comparator.<String> naturalOrder().reversed());
+
+        return Stream.concat(retiringFirst, newestFirst)
+                     .limit(Math.max(0, counted))
+                     .toList();
+    }
+
+    private static Set<String> ids(Set<NodeId> nodes) {
+        return nodes.stream()
+                    .map(NodeId::id)
+                    .collect(Collectors.toUnmodifiableSet());
     }
 
     /// Render the replacement node's cloud-init user-data so a CTM-provisioned (cloud) replacement
@@ -1654,10 +1698,19 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     /// only when [#graceReapVerdict] still allows it (#1050) — AND clears the target from the registry
     /// (`drainCommandClear`). Returns on the enqueue (the drain itself proceeds asynchronously via the
     /// heartbeat + backstop).
+    ///
+    /// #1543: a SURPLUS trim of a node a live replacement pairing protects is refused — the `LeaderReconciler`
+    /// surplus drain picks a fresh ephemeral core first, which is exactly the +1 replacement. Non-surplus
+    /// reasons are not gated by the pairing: a never-joined zombie (`JOIN_GRACE_REAP`) has no other reaper.
     @Override
     public synchronized Promise<Unit> drainNode(NodeId targetNodeId, DrainReason reason) {
         if (!active.get() || retirementRefusal.get().apply(targetNodeId).isPresent()) {
             return org.pragmatica.lang.utils.Causes.cause("Node retirement awaits certified voter handoff")
+                                                   .promise();
+        }
+
+        if (reason.isSurplusTrim() && nodeReplacements.get().retirementProtected().contains(targetNodeId)) {
+            return org.pragmatica.lang.utils.Causes.cause("Node is paired in an in-flight node replacement")
                                                    .promise();
         }
 
@@ -1672,6 +1725,61 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         scheduleGraceTerminate(targetNodeId, reason, epoch);
 
         return Promise.success(unit());
+    }
+
+    @Override
+    public Promise<Boolean> instanceListed(NodeId node, SourceName source) {
+        return lifecycleManager.instancesForNode(node, source)
+                               .map(listed -> !listed.isEmpty())
+                               .mapError(cause -> Causes.cause("instance of " + node.id() + ": " + cause.message()));
+    }
+
+    @Override
+    public Promise<Unit> reapRetired(NodeId node, SourceName source, boolean seenBefore) {
+        if (!active.get()) {
+            return Causes.cause("reap of " + node.id() + " needs the active topology manager").promise();
+        }
+
+        var refusal = retirementRefusal.get().apply(node);
+
+        if (refusal.isPresent()) {
+            return Causes.cause("reap of " + node.id() + " refused: " + refusal.unwrap()).promise();
+        }
+
+        return lifecycleManager.instancesForNode(node, source)
+                               .flatMap(listed -> goneAtProvider(listed)
+                                                  ? confirmedAbsent(node, listed, seenBefore)
+                                                  : lifecycleManager.terminateNode(node, source)
+                                                                    .flatMap(_ -> lifecycleManager.instancesForNode(node,
+                                                                                                                    source))
+                                                                    .flatMap(after -> goneAtProvider(after)
+                                                                                      ? Promise.unitPromise()
+                                                                                      : stillListed(after)))
+                               .mapError(cause -> Causes.cause("instance of " + node.id() + ": " + cause.message()));
+    }
+
+    /// An empty listing is absence only for an instance seen before; listed-and-stopped instances were seen by this very listing.
+    private static Promise<Unit> confirmedAbsent(NodeId node, List<InstanceInfo> listed, boolean seenBefore) {
+        return listed.isEmpty() && !seenBefore
+               ? Causes.cause("the provider lists no instance of " + node.id()
+                             + " and has never listed one (an unlabelled or unattributable VM, or a lagging listing): not confirmed gone").promise()
+               : Promise.unitPromise();
+    }
+
+    /// Nothing listed, or every listed instance stopping or terminated. Any instance provisioning, running or in a status the
+    /// provider could not state is NOT gone.
+    private static boolean goneAtProvider(List<InstanceInfo> instances) {
+        var state = classifyReplacementInstances(instances);
+
+        return state == ReplacementInstanceState.ABSENT || state == ReplacementInstanceState.FAILED;
+    }
+
+    private static Promise<Unit> stillListed(List<InstanceInfo> instances) {
+        return Causes.cause("still listed at the provider after terminate: " + instances.stream()
+                                                                                        .map(instance -> instance.id()
+                                                                                                                 .value()
+                                                                                                        + " " + instance.status())
+                                                                                        .toList()).promise();
     }
 
     /// Backstop reaper: after the grace period, decide the reap (for a surplus trim, through
@@ -2089,7 +2197,11 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     }
 
     private Set<NodeId> unprotectedNodeIds(List<InstanceInfo> instances) {
+        var pairedAndLive = nodeReplacements.get().retirementProtected();
+
         return nodeIdsOf(instances).filter(nodeId -> !nodeId.equals(observer.self().id()))
+                        // #1543 E: a live pairing protects its replacement (possibly still booting on a new leader) and its original
+                        .filter(nodeId -> !pairedAndLive.contains(nodeId))
                         .filter(this::unprotectedOrParked)
                         .collect(Collectors.toSet());
     }

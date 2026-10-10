@@ -35,7 +35,7 @@ public record JwtConfig(String jwksUrl,
                                               String roleClaim,
                                               long cacheTtlSeconds,
                                               long clockSkewSeconds) {
-        return success(new JwtConfig(jwksUrl,
+        return success(new JwtConfig(jwksUrl.trim(),
                                      issuer,
                                      audience,
                                      roleClaim.isBlank()

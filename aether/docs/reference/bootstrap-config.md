@@ -118,7 +118,7 @@ If `[cluster.core]` is absent entirely, `min`/`max` are unset (no bound) and `ma
 |---|---|---|---|---|
 | `type` | string | — | **yes** | `cloud` \| `ssh` \| `forge` \| `docker`. |
 | `provider` | string | — | no | `hetzner` \| `aws` \| `gcp` \| `azure`. **Rejected loudly if unrecognized** — `ClusterBootstrapConfigParser.parseProvider` (`ClusterBootstrapConfigParser.java:242-250`) returns a `ParseFailed` naming the bad value and the valid provider names; parsing aborts rather than silently dropping the field. |
-| `credentials` | string | — | no (required by cloud providers at deploy time) | Supports `${env:VAR}` interpolation. |
+| `credentials` | string | — | no (required by cloud providers at deploy time) | Supports `${env:VAR}` interpolation. Hetzner: the API token (`api_token`). aws, gcp and azure need several keys, which one string cannot carry: write them under `[source.<name>.node_config.cloud.credentials]` (aws `access_key_id`, `secret_access_key`; gcp `project_id`, `service_account_email`, `private_key_pem`; azure `tenant_id`, `client_id`, `client_secret`, `subscription_id`, `resource_group`). `region` (aws), `zone` (gcp) and `region` as azure `location` come from the source's own fields. A missing key is refused at validate time (`PF-28`), naming it. |
 | `region` | string | — | no | Provider-specific. |
 | `zone` | string | — | no | Single zone; mutually informative with `zones`. |
 | `zones` | string list | `[]` | no | Multi-zone spread, e.g. `["fsn1","nbg1","hel1"]`. |
@@ -131,6 +131,12 @@ If `[cluster.core]` is absent entirely, `min`/`max` are unset (no bound) and `ma
 | `replacement_ceiling` | duration string | `"10m"` | no | Cloud sources only (rejected on any other type — PF-26). The longest an auto-heal replacement from this source may stay in flight while the provider still reports it provisioning or running, reports a status it cannot state, or cannot report at all; past it, the leader re-dispatches. A replacement is re-dispatched sooner, after the deficit debounce, when the provider reports it stopped, terminated or failed; when an instance the provider has listed is no longer listed; when an instance the provider has never listed is omitted by twelve consecutive successful listings spanning at least three minutes since its create call resolved; or when the provider's readiness check fails the provision (on a cloud, after 5 minutes still provisioning). A replacement the leader gives up on is not terminated: find it by the `auto-heal PROVISIONED a billable instance` WARN line's `instanceId`, or through the `aether-cluster` label sweep at teardown. Must exceed `5m` (the three-minute first-listing floor plus a two-minute join allowance); a shorter value is refused at load. Read at runtime by the leader from the persisted cluster config (#1049). |
 | `databases.<name> = "url"` (inline) or `[source.<name>.databases]` (subtable) | string map | `{}` | no | Maps to composed **`[database.<name>]`** (nested), never flat `[database]` — see Trap (c). |
 | `[source.<name>.node_config.<section>]` | raw TOML overlay | — | no | Merged verbatim as `[<section>]` into the composed per-node `aether.toml`, prefix-stripped. Escape hatch for any node-level setting not otherwise modeled (used above for `[app-http]`). |
+
+**`[source.<name>.node_config.backup] path` is validated at load (#1968).** It must be an absolute path: it is bind-mounted into the node's container
+or created on its host, and a relative one renders a mount Docker refuses. For a **`docker` source** it must also be `/data` or under `/data/`: the node's
+repository lives on a per-node named volume, Docker creates that volume root-owned for every mount point except under `/data` (where the image's `aether`
+user owns it), and a root-owned repository path cannot be written. A cloud or SSH source accepts any absolute path (its host directory is created and
+owned by uid 1000 by the renderer). A disabled `[backup]` is not validated. The load fails with a message that names the field and the rule.
 | `[source.<name>.firewall] allow_ingress` | table array | `[]` | no | Each entry: `port` (int, required), `protocol` (default `"tcp"`, may be `"tcp+udp"`), `source_cidr` (default `"0.0.0.0/0"`), `description` (optional). **Hetzner only** — see below. |
 
 #### Ingress firewall (`[source.<name>.firewall]`)
@@ -290,12 +296,14 @@ TOML, or a document without this section, gets the built-in defaults below.
 |---|---|---|---|
 | `replication_factor` | int | `3` | RF: copies of each partition, the owner included. At least 3 — a lower RF is declared on the resource itself (with a LOUD warning), never taken from a default. |
 | `confirmation_factor` | int | `2` | CF: copies, the owner included, that hold a write before it is acknowledged. `1 <= confirmation_factor <= replication_factor`. |
+| `tombstone_retention` | duration (`"1h"`, `"90m"`; a bare number is seconds) | `"1h"` | How long the DHT keeps a removed key's tombstone (#1777). At least `"6m30s"`: a node drops its stray copies of a partition it stopped replicating after the retention less 90 s, which must leave catch-up at least five minutes to read them. While a `[replication]` change is unsettled, strays are kept and tombstones wait until it settles (#1777 R1b). A change applies live. |
 | `[replication.cluster_events] confirmation_factor` | int | `1` | CF of the `system:cluster-events` stream (its RF is the desired core count, so the CF may not exceed it). At CF 1 an event is acknowledged on the owner's append, so events acknowledged after the last peer-acked offset are lost when the owner dies. |
 
 ```toml
 [replication]
 replication_factor = 3
 confirmation_factor = 2
+tombstone_retention = "1h"
 
 [replication.cluster_events]
 confirmation_factor = 1
@@ -313,7 +321,8 @@ their own factors.
 **Changing a live stream's factors:** `confirmation_factor` can be raised online; lowering it is not applied to an existing stream online (durability only increases: `StreamPartitionManager#adoptIfMoreDurable` adopts a committed config only when its replication factor or confirmation factor is strictly higher), and a stall caused by a confirmation-factor raise is relieved by restoring replicas or by re-creating the stream, not by lowering the factor. A committed config that is not applied (a lowering, or a different partition count, which an existing stream cannot take) raises `STREAM_CONFIG_CHANGE_NOT_APPLIED`.
 
 Every key is typed and validated when the TOML is applied; a mistyped value, an RF below 3, a CF outside
-`1..RF`, a `cluster_events` CF below 1 or above the desired core count, or an unknown key refuses the apply,
+`1..RF`, a `tombstone_retention` that is not a duration or is below `"6m30s"`, a `cluster_events` CF below 1 or
+above the desired core count, or an unknown key refuses the apply,
 naming the key. A core scale that would drop the desired core count below the `cluster_events` CF is refused
 the same way (`ClusterEventsFactorsRefused`).
 

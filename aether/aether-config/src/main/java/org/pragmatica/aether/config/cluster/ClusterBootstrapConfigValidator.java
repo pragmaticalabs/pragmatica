@@ -14,6 +14,10 @@ import java.util.Set;
 import java.util.regex.Pattern;
 
 import org.pragmatica.aether.config.ConsensusTierBounds;
+import org.pragmatica.aether.config.ConfigLoader;
+import org.pragmatica.aether.config.JwksUrl;
+import org.pragmatica.aether.config.SecurityMode;
+import org.pragmatica.config.toml.TomlDocument;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 
@@ -296,6 +300,7 @@ public final class ClusterBootstrapConfigValidator {
         validateSpotRestriction(name, source, errors);
         validateElectedLbRestriction(name, source, errors);
         validateElectedLbHasNonSpot(name, source, errors);
+        validateCloudCredentials(source, errors);
         validateFirewallRules(name, source, managementPort, errors);
         validateRuntimeTypeCompatibility(name, source, runtimes, errors);
         validatePortConflictsOnSameHost(name, source, errors);
@@ -395,6 +400,12 @@ public final class ClusterBootstrapConfigValidator {
         }
     }
 
+    /// PF-28 (#2059): a cloud source must carry every credential key its provider's integration factory
+    /// requires, so the operator learns the missing key at validate time, before any node is provisioned.
+    private static void validateCloudCredentials(SourceProfile source, List<String> errors) {
+        CloudCredentialSchema.validate(source).onFailure(cause -> errors.add("PF-28: " + cause.message()));
+    }
+
     private static void validateElectedLbHasNonSpot(String name, SourceProfile source, List<String> errors) {
         if (source.loadBalancer() != LoadBalancerMode.ELECTED) {
             return;
@@ -413,6 +424,7 @@ public final class ClusterBootstrapConfigValidator {
                                               List<String> errors) {
         checkIngressProviderSupport(name, source, errors);
         checkPublicManagementWithoutAuth(name, source, managementPort, errors);
+        checkJwtWithoutJwks(name, source, errors);
         source.firewallRules().forEach(rule -> validateSingleFirewallRule(name, rule, errors));
     }
 
@@ -461,6 +473,52 @@ public final class ClusterBootstrapConfigValidator {
                   + " unauthenticated management API on the public internet — anyone who can reach it"
                   + " can deploy, scale and reconfigure the cluster. Scope source_cidr to your operator"
                   + " network, or enable authentication.");
+    }
+
+    /// PF-34 (#909) — a node refuses to boot on `security_mode = "jwt"` with no usable `jwks_url`. Caught here, before any server is
+    /// provisioned, so a cloud bootstrap does not pay for a fleet that will all refuse to start.
+    ///
+    /// Judged on the COMPOSED document (global default + source-type default + the source's `node_config`), the composition a node loads: the
+    /// global default sets `[app-http] enabled = true`, so an overlay that only says `security_mode = "jwt"` IS an enabled server. Reading the
+    /// raw overlay let that shape through. A server the operator disabled explicitly (`enabled = false`) serves nothing and is not refused. The
+    /// URL is judged by [JwksUrl], the predicate config load applies.
+    private static void checkJwtWithoutJwks(String name, SourceProfile source, List<String> errors) {
+        composedAppHttp(source).filter(doc -> isJwtServer(doc))
+                       .flatMap(doc -> jwksProblem(doc))
+                       .onPresent(problem -> errors.add("PF-34: Source '" + name
+                                                       + "' sets [app-http] security_mode = \"jwt\" but " + problem
+                                                       + ". Every node would refuse to start: there is nothing to verify"
+                                                       + " tokens against. jwks_url is required (issuer/audience optional); set it, or change"
+                                                       + " security_mode."));
+    }
+
+    private static Option<TomlDocument> composedAppHttp(SourceProfile source) {
+        return Result.all(DefaultNodeConfig.globalDefault(),
+                          DefaultNodeConfig.sourceTypeDefault(source.type()))
+                     .map((global, typeDefault) -> NodeConfigComposer.compose(global,
+                                                                              typeDefault,
+                                                                              source.nodeConfig(),
+                                                                              TomlDocument.EMPTY))
+                     .option();
+    }
+
+    /// `security_mode` and `enabled` are parsed by the functions the node uses ([SecurityMode#securityMode], [ConfigLoader#toBooleanValue]), so
+    /// the bootstrap check and a booting node cannot disagree about a padded or odd-cased value.
+    private static boolean isJwtServer(TomlDocument doc) {
+        var jwt = doc.getString("app-http", "security_mode")
+                     .flatMap(SecurityMode::securityMode)
+                     .map(mode -> mode == SecurityMode.JWT)
+                     .or(false);
+        var enabled = doc.getString("app-http", "enabled").map(ConfigLoader::toBooleanValue).or(false);
+
+        return jwt && enabled;
+    }
+
+    private static Option<String> jwksProblem(TomlDocument doc) {
+        return doc.getString("app-http", "jwks_url")
+                  .fold(() -> Option.some("jwks_url is missing"),
+                        url -> JwksUrl.jwksUrl(url).fold(cause -> Option.some(cause.message()),
+                                                         _ -> Option.empty()));
     }
 
     private static boolean securityDisabled(SourceProfile source) {

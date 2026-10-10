@@ -20,6 +20,7 @@ import java.util.stream.IntStream;
 import java.util.stream.Stream;
 
 import org.pragmatica.aether.slice.generation.Epoch;
+import org.pragmatica.aether.stream.StreamOwnerEpochSource;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.quic.QuicClusterServer;
 import org.pragmatica.lang.Contract;
@@ -45,10 +46,14 @@ import static org.pragmatica.lang.Unit.unit;
 
 final class DefaultReplicationManager implements ReplicationManager {
     private static final Logger log = LoggerFactory.getLogger(DefaultReplicationManager.class);
-    private static final TimeSpan DEFAULT_ACK_TIMEOUT = TimeSpan.timeSpan(5).seconds();
+    /// How long the owner waits for a replica's ack. Replication does not retransmit on its own: a replica that misses a
+    /// chunk is repaired by catch-up, so this wait is the only deadline a replicate frame has, and the offline buffer
+    /// must not hold the frame past it (#1996).
+    static final TimeSpan DEFAULT_ACK_TIMEOUT = TimeSpan.timeSpan(5).seconds();
     private static final Runnable NO_OP = DefaultReplicationManager::noOp;
 
     private final NodeId governorId;
+    private volatile StreamOwnerEpochSource ownerEpochs = StreamOwnerEpochSource.zero();
     private final ReplicaRegistry registry;
     private final ReplicationTransport transport;
     private final Option<ReplicationBatcher> batcher;
@@ -217,9 +222,25 @@ final class DefaultReplicationManager implements ReplicationManager {
                                  ack.partition(),
                                  ack.replicaId(),
                                  ack.confirmedOffset(),
-                                 promotionState(ack));
+                                 promotionState(ack),
+                                 ack.ownerEpoch());
         notifyObserver(ack);
-        resolvePendingAck(ack.streamName(), ack.partition(), ack.replicaId(), ack.confirmedOffset());
+        if (underCurrentEpoch(ack.streamName(), ack.partition(), ack.ownerEpoch())) {
+            resolvePendingAck(ack.streamName(), ack.partition(), ack.replicaId(), ack.confirmedOffset());
+        }
+    }
+
+    /// B11 (#1730 phase 2): a confirmation counts toward this owner's acknowledgements only while it was made under the owner epoch
+    /// now in force. A row, or an ack, from an earlier tenure describes records the replica held under another lineage, and must
+    /// not resolve an await of a later one.
+    private boolean underCurrentEpoch(String streamName, int partition, Epoch epoch) {
+        return epoch.equals(ownerEpochs.currentOwnerEpoch(streamName, partition));
+    }
+
+    @Contract
+    @Override
+    public void ownerEpochs(StreamOwnerEpochSource source) {
+        this.ownerEpochs = source;
     }
 
     /// Called BEFORE the registry update, so no waiter a registry read could resolve is resolved before the
@@ -425,7 +446,9 @@ final class DefaultReplicationManager implements ReplicationManager {
     private Map<NodeId, Long> withAck(ReplicationMessage.ReplicateAck pending) {
         var byNode = new HashMap<>(confirmedByNode(pending.streamName(), pending.partition()));
 
-        byNode.merge(pending.replicaId(), pending.confirmedOffset(), Math::max);
+        if (underCurrentEpoch(pending.streamName(), pending.partition(), pending.ownerEpoch())) {
+            byNode.merge(pending.replicaId(), pending.confirmedOffset(), Math::max);
+        }
 
         return byNode;
     }
@@ -445,11 +468,20 @@ final class DefaultReplicationManager implements ReplicationManager {
                       .toList();
     }
 
+    /// The confirmed offset of each replica as THIS owner may count it: a peer's row counts only when it was confirmed under the
+    /// owner epoch now in force (B11); a row of another epoch reads as unknown (-1), so the peer must confirm again. The
+    /// owner's own row is its own.
     private Map<NodeId, Long> confirmedByNode(String streamName, int partition) {
+        var current = ownerEpochs.currentOwnerEpoch(streamName, partition);
+
         return registry.replicasFor(streamName, partition)
                        .stream()
                        .collect(Collectors.toMap(ReplicaDescriptor::nodeId,
-                                                 ReplicaDescriptor::confirmedOffset,
+                                                 descriptor -> descriptor.nodeId()
+                                                                         .equals(governorId) || descriptor.epoch()
+                                                                                                          .equals(current)
+                                                               ? descriptor.confirmedOffset()
+                                                               : -1L,
                                                  Math::max));
     }
 
@@ -481,7 +513,7 @@ final class DefaultReplicationManager implements ReplicationManager {
 
     @Contract
     private void sendChunk(List<NodeId> replicas, ReplicationMessage.ReplicateEvents message) {
-        replicas.forEach(replica -> transport.send(replica, message));
+        replicas.forEach(replica -> transport.send(replica, message, DEFAULT_ACK_TIMEOUT));
     }
 
     /// Exclusive end of the chunk starting at `start`: as many events as fit the accounting budget, and at least

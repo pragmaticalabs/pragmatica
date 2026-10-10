@@ -822,7 +822,7 @@ REQ-UPGRADE-02: Node upgrade sequence (rolling):
 3. Update `cluster.version` in KV-Store `ClusterConfigValue`
 
 REQ-UPGRADE-03: For cloud deployments, "update the node" means:
-- Container runtime: `ComputeProvider.restart(instanceId)` with updated user-data containing new image tag
+- Container runtime: ~~`ComputeProvider.restart(instanceId)` with updated user-data containing new image tag~~ — withdrawn (#1543): a node is replaced under a fresh NodeId, never restarted under its old one; `ComputeProvider.restart` was removed. The replacement boots from the new image tag via CTM provisioning.
 - JVM runtime: SSH to node, replace JAR, restart process (Phase 2)
 
 REQ-UPGRADE-04: Upgrade is non-atomic. If it fails mid-way, the cluster is in a mixed-version state. The `status` command shows per-node versions. Re-running `upgrade` retries from where it left off (skipping already-upgraded nodes).
@@ -1789,7 +1789,7 @@ Layers 1-3 can be delivered independently. Layer 4 depends on 1-3. Layers 5-7 de
 - [SecretsProvider SPI](/aether/environment-integration/src/main/java/org/pragmatica/aether/environment/SecretsProvider.java) -- Secret resolution for `${secrets:xxx}`
 - [ClusterTopologyManager](/aether/aether-deployment/src/main/java/org/pragmatica/aether/deployment/cluster/ClusterTopologyManager.java) -- Node count reconciliation state machine
 - [NodeLifecycleManager](/aether/aether-deployment/src/main/java/org/pragmatica/aether/deployment/cluster/NodeLifecycleManager.java) -- Cloud instance lifecycle operations
-- [RollingUpdateManager](/aether/aether-invoke/src/main/java/org/pragmatica/aether/update/RollingUpdateManager.java) -- Two-stage rolling update orchestration
+- RollingUpdateManager -- Two-stage rolling update orchestration
 - [AetherKey](/aether/slice/src/main/java/org/pragmatica/aether/slice/kvstore/AetherKey.java) -- KV-Store key types
 - [AetherValue](/aether/slice/src/main/java/org/pragmatica/aether/slice/kvstore/AetherValue.java) -- KV-Store value types
 - [AetherConfig](/aether/aether-config/src/main/java/org/pragmatica/aether/config/AetherConfig.java) -- Existing runtime configuration

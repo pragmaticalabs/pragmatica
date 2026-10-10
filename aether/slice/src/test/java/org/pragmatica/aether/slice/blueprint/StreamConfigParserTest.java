@@ -309,6 +309,36 @@ class StreamConfigParserTest {
                                new StreamDeclarationError.ValueOutOfRange("orders", "max-event-size", "0KB", 1));
         }
 
+        /// #1937: a `max-event-size` above what one replication or catch-up frame can carry is refused at config validation,
+        /// not at the first oversized event.
+        @Test
+        void rejectsMaxEventSizeThatCannotFitOneFrame() {
+            assertValueRefused("max-event-size = \"40MB\"",
+                               new StreamDeclarationError.ValueAboveMaximum("orders",
+                                                                            "max-event-size",
+                                                                            "40MB",
+                                                                            StreamEventLimits.MAX_EVENT_SIZE_BYTES));
+        }
+
+        @Test
+        void rejectsMaxEventSizeOneByteAboveTheFrameCeiling() {
+            var raw = String.valueOf(StreamEventLimits.MAX_EVENT_SIZE_BYTES + 1);
+
+            assertValueRefused("max-event-size = \"" + raw + "\"",
+                               new StreamDeclarationError.ValueAboveMaximum("orders",
+                                                                            "max-event-size",
+                                                                            raw,
+                                                                            StreamEventLimits.MAX_EVENT_SIZE_BYTES));
+        }
+
+        @Test
+        void acceptsMaxEventSizeExactlyAtTheFrameCeiling() {
+            var raw = String.valueOf(StreamEventLimits.MAX_EVENT_SIZE_BYTES);
+            var result = parseResources("[streams.orders]\nversion = \"1.0.0\"\nmax-event-size = \"" + raw + "\"\n", ReplicationFactors.BUILT_IN);
+
+            assertThat(result.isSuccess()).as("the ceiling itself is accepted: " + result).isTrue();
+        }
+
         @Test
         void rejectsNegativeMaxEventSize() {
             assertValueRefused("max-event-size = \"-1\"",

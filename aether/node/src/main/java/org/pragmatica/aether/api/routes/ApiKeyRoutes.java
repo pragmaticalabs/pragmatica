@@ -11,6 +11,7 @@ import java.util.concurrent.ScheduledFuture;
 import java.util.function.Supplier;
 import java.util.stream.Stream;
 
+import org.pragmatica.aether.api.ManagementServerError;
 import org.pragmatica.aether.config.ApiKeyEntry;
 import org.pragmatica.aether.management.route.ManagementRoute;
 import org.pragmatica.aether.node.ManageableNode;
@@ -20,12 +21,15 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.ApiKeyKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ApiKeyAuditValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ApiKeyValue;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
+import org.pragmatica.http.HttpStatus;
+import org.pragmatica.http.HttpStatusAware;
 import org.pragmatica.http.routing.Route;
 import org.pragmatica.http.routing.RouteSource;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.SharedScheduler;
 
@@ -95,6 +99,26 @@ public final class ApiKeyRoutes implements RouteSource {
 
     @SuppressWarnings("unchecked")
     private Promise<Object> handleCreateKey(CreateKeyRequest request) {
+        return validateCreateRequest(request).async()
+                                    .flatMap(this::createKey);
+    }
+
+    /// #954: a request naming no key id or no key hash used to reach the consensus Put and fail there, answering
+    /// 500 for a body the caller got wrong.
+    private static Result<CreateKeyRequest> validateCreateRequest(CreateKeyRequest request) {
+        if (request.keyId() == null || request.keyId().isBlank()) {
+            return new ManagementServerError.MissingField("keyId").result();
+        }
+
+        if (request.keyHash() == null || request.keyHash().isBlank()) {
+            return new ManagementServerError.MissingField("keyHash").result();
+        }
+
+        return Result.success(request);
+    }
+
+    @SuppressWarnings("unchecked")
+    private Promise<Object> createKey(CreateKeyRequest request) {
         var role = request.authorizationRole() == null || request.authorizationRole().isBlank()
                    ? ApiKeyValue.DEFAULT_ROLE
                    : request.authorizationRole().toUpperCase();
@@ -322,16 +346,26 @@ public final class ApiKeyRoutes implements RouteSource {
 
     record AuditEntry(String keyId, String action, long timestamp, String operatorHint) {}
 
-    record KeyNotFoundError(String keyId) implements Cause {
+    record KeyNotFoundError(String keyId) implements Cause, HttpStatusAware {
         @Override
         public String message() {
             return "API key not found: " + keyId;
+        }
+
+        @Override
+        public HttpStatus httpStatus() {
+            return HttpStatus.NOT_FOUND;
         }
     }
 
     /// Distinct from [KeyNotFoundError] on purpose: the key EXISTS and the node accepts it. Saying
     /// "not found" would tell an operator the credential is gone when it is still live.
-    record ConfigDeclaredKeyError(String keyId) implements Cause {
+    record ConfigDeclaredKeyError(String keyId) implements Cause, HttpStatusAware {
+        @Override
+        public HttpStatus httpStatus() {
+            return HttpStatus.CONFLICT;
+        }
+
         @Override
         public String message() {
             return "API key '" + keyId

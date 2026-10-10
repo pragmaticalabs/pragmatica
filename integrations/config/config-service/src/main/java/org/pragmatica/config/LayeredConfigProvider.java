@@ -169,9 +169,17 @@ public final class LayeredConfigProvider implements ConfigurationProvider {
                 return reloaded;
             }
 
-            reloadedLayers.add((ConfigurationProvider) reloaded.unwrap());
+            reloadedLayers.add(asProvider(reloaded.unwrap()));
         }
 
         return success(new LayeredConfigProvider(reloadedLayers));
+    }
+
+    /// A layer's `reload()` is typed `Result<ConfigSource>`: a source that is not itself a provider is wrapped,
+    /// never cast (a cast threw ClassCastException out of the whole layered reload).
+    private static ConfigurationProvider asProvider(ConfigSource source) {
+        return source instanceof ConfigurationProvider provider
+               ? provider
+               : ConfigurationProvider.configurationProvider(source);
     }
 }

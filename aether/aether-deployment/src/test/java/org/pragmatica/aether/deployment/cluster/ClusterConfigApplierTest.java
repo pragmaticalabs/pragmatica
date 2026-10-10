@@ -146,6 +146,22 @@ class ClusterConfigApplierTest {
                              Arguments.of(new DiffAction.ClusterLevelChange("distribution.strategy", "balanced", "manual")));
         }
 
+        /// #1543 part C: a changed `[cluster] version` is not "unsupported, escalate" — it has one writer, the upgrade
+        /// route, and the refusal names it. Other cluster-level fields keep the generic refusal (pinned in the
+        /// parameterized test above, whose `distribution.strategy` case must NOT become this one).
+        @Test
+        void apply_clusterVersionChange_isRefusedWith409_pointingAtUpgrade() {
+            var result = applier.validate(List.of(new DiffAction.ClusterLevelChange("version", "1.0.0", "1.1.0"))).await();
+
+            assertThat(result.isFailure()).isTrue();
+            result.onFailure(cause -> {
+                assertThat(cause).isInstanceOf(ClusterConfigError.VersionChangeViaApply.class);
+                assertThat(((ClusterConfigError) cause).httpStatus()).isEqualTo(HttpStatus.CONFLICT);
+                assertThat(cause.message()).contains("aether cluster upgrade --version 1.1.0");
+            });
+            assertThat(topologyManager.setDesiredCountCalls()).isEmpty();
+        }
+
         @ParameterizedTest
         @MethodSource("theSevenGenericallyUnsupportedKinds")
         void apply_eachGenericallyUnsupportedKind_failsWithUnsupportedApplyAction_noTopologyWrite(DiffAction action) {
