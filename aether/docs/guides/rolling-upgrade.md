@@ -30,6 +30,8 @@ never replaces two nodes at once, to keep that window to one node at a time.
   image again, so the upgrade is refused with HTTP 409 naming the source (`UpgradeDockerImageUnversioned`) before
   any node is touched
 - The target version's image or jar published where the cluster's runtime profile points
+- JVM runtimes: the auto-derived jar URL of a pre-release version (`1.0.0-rc5`) points at its moving `-candidate` release tag. For a released rc, pin
+  `jar_url = ".../v{version}/aether-node.jar"` in the runtime profile so the upgrade fetches the published jar
 
 ## Procedure
 

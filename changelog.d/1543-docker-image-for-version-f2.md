@@ -21,3 +21,7 @@
 - **`cluster upgrade --wait` survives the replacement of the node it polls** by following the live membership.
 - **The docker provider acts only on its own cluster's containers** (`list` filters on the cluster label; `terminate`
   refuses with a typed `OutOfClusterScope` unless the target carries that cluster's label).
+- **`aether cluster scaffold` emits `AETHER_SOURCE` on every node (`--source`, default `docker`).** A node learns its source only
+  from that variable; without it the label is `default`, which no applied config names, so the first replacement of an upgrade
+  or an auto-heal was refused with "No configured source for replacement default". The refusal's reason is now carried into the
+  replacement record (and so into the operator event and the paused upgrade's message), bounded to 300 characters.

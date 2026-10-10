@@ -51,6 +51,8 @@ public sealed interface NodeUserDataRenderer {
     String JVM_ENV_FILE_PATH = "/etc/aether/node.env";
     String JVM_LAUNCHER_PATH = "/opt/aether/run-node.sh";
 
+    /// A non-`X.Y.Z` version maps to its moving `-candidate` tag (what release.yml publishes while a release is under test); a RELEASED rc is tagged
+    /// without the suffix, so pin `jar_url = ".../v{version}/aether-node.jar"` for it (derivation vs release tagging is filed for rc5).
     static String deriveJarTag(String version) {
         if (!Verify.Is.present(version)) {
             return "vunknown";
