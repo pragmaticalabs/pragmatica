@@ -70,6 +70,8 @@ import org.pragmatica.aether.deployment.cluster.CoreVoterReconciler;
 import org.pragmatica.aether.deployment.cluster.NodeReplacementIndex;
 import org.pragmatica.aether.deployment.cluster.NodeReplacementPlanner;
 import org.pragmatica.aether.deployment.cluster.NodeReplacementService;
+import org.pragmatica.aether.deployment.cluster.UpgradeRunIndex;
+import org.pragmatica.aether.deployment.cluster.UpgradeRunService;
 import org.pragmatica.aether.environment.ProvisionContext;
 import org.pragmatica.aether.deployment.cluster.CommunityRetirementIndex;
 import org.pragmatica.aether.node.backup.BackupGenesis;
@@ -463,6 +465,8 @@ public interface AetherNode extends ManageableNode {
     StreamNamespacesService streamNamespacesService();
     /// #1543 E: begin, inspect and settle node replacements (the leader drives the phases).
     NodeReplacementService nodeReplacementService();
+    /// #1543 F: start, inspect, pause, resume and abort the rolling upgrade (the leader drives it, one replacement at a time).
+    UpgradeRunService upgradeRunService();
     Fn1<Result<NodeId>, TaskGroup> taskGroupOwnerResolver();
     Map<String, StorageFactory.StorageSetup> storageSetups();
     Option<CertificateRenewalScheduler> certRenewalScheduler();
@@ -2522,7 +2526,8 @@ public interface AetherNode extends ManageableNode {
                           // #903: the provider whose shared (unattributed) scope only node shutdown
                           // can close.
                           Option<SpiResourceProvider> spiResourceProvider,
-                          NodeReplacementService nodeReplacementService) implements AetherNode {
+                          NodeReplacementService nodeReplacementService,
+                          UpgradeRunService upgradeRunService) implements AetherNode {
             private static final Logger log = LoggerFactory.getLogger(aetherNode.class);
 
             @Override
@@ -3281,6 +3286,7 @@ public interface AetherNode extends ManageableNode {
         // pong fan + self-state holder are constructed further below.
         var communityRetirements = CommunityRetirementIndex.communityRetirementIndex();
         var nodeReplacements = NodeReplacementIndex.nodeReplacementIndex();
+        var upgradeRuns = UpgradeRunIndex.upgradeRunIndex();
         // Snapshot replay emits only changed KV entries. Leadership must also be refreshed when
         // an unchanged committed LeaderValue survives a voter handoff that cleared local leadership.
         clusterNode.onStateRestored(() -> refreshCommittedLeader(kvStore, clusterNode.leaderManager()));
@@ -3288,6 +3294,8 @@ public interface AetherNode extends ManageableNode {
         restoreRetirementIndex(kvStore, communityRetirements);
         clusterNode.onStateRestored(() -> nodeReplacements.restore(kvStore.snapshot()));
         nodeReplacements.restore(kvStore.snapshot());
+        clusterNode.onStateRestored(() -> upgradeRuns.restore(kvStore.snapshot()));
+        upgradeRuns.restore(kvStore.snapshot());
         // #1777 track 1: restored state is when the committed `[replication]` / `[cache]` factors become readable —
         // or are known to be absent, which means the built-in ones. Later commits re-resolve through the
         // ClusterConfigKey put below.
@@ -4305,6 +4313,11 @@ public interface AetherNode extends ManageableNode {
                                                      .onRemove(AetherKey.NodeReplacementKey.class,
                                                                (ValueRemove<AetherKey.NodeReplacementKey, AetherValue.NodeReplacementValue> remove) -> nodeReplacements.remove(remove.cause()
                                                                                                                                                                                      .key()))
+                                                     .onPut(AetherKey.UpgradeRunKey.class,
+                                                            (ValuePut<AetherKey.UpgradeRunKey, AetherValue.UpgradeRunValue> put) -> upgradeRuns.put(put.cause()
+                                                                                                                                                       .value()))
+                                                     .onRemove(AetherKey.UpgradeRunKey.class,
+                                                               (ValueRemove<AetherKey.UpgradeRunKey, AetherValue.UpgradeRunValue>_) -> upgradeRuns.remove())
                                                      .onPut(AetherKey.NodePlacementKey.class,
                                                             (ValuePut<AetherKey.NodePlacementKey, AetherValue.NodePlacementValue> put) -> retryPlacedWorker(put,
                                                                                                                                                             membershipFsmRef::get,
@@ -5028,6 +5041,28 @@ public interface AetherNode extends ManageableNode {
                                                                                              .reconcile()
                                                                                              .onFailure(cause -> LOG.warn("Node replacement reconciliation: {}",
                                                                                                                           cause.message())),
+                                                                      TimeSpan.timeSpan(1).seconds()));
+        // #1543 F: the rolling-upgrade run rides the replacement service (one replacement at a time, never around it); its events are
+        // raised by the cluster-events owner for the same reason the replacement's are.
+        upgradeRuns.onTransition(UpgradeRunWiring.announcer(clusterEventsOwnerCheck, operatorWarningSink));
+        var upgradeWiring = UpgradeRunWiring.wire(new UpgradeRunWiring.Inputs(config.self(),
+                                                                              isLeaderSupplier,
+                                                                              kvStore,
+                                                                              commands -> clusterNode.apply(commands),
+                                                                              upgradeRuns,
+                                                                              membershipFsmRef::get,
+                                                                              id -> clusterNode.topologyManager()
+                                                                                               .get(id)
+                                                                                               .flatMap(info -> Option.option(info.labels()
+                                                                                                                                  .get(NodeInfo.LABEL_VERSION)))
+                                                                                               .or(""),
+                                                                              replacementWiring.service(),
+                                                                              System::currentTimeMillis));
+
+        periodicTasks.defer(() -> SharedScheduler.scheduleAtFixedRate(() -> upgradeWiring.reconciler()
+                                                                                         .reconcile()
+                                                                                         .onFailure(cause -> LOG.warn("Upgrade run reconciliation: {}",
+                                                                                                                      cause.message())),
                                                                       TimeSpan.timeSpan(1).seconds()));
         swimHealthDetector.addObservationListener(presenceSampler::onSwimObservation);
         // E2 Phase 1.5 — symmetric "surplus appeared" trigger: a SWIM HealthyObserved
@@ -6680,7 +6715,8 @@ public interface AetherNode extends ManageableNode {
                                   streamReplicationShutdown,
                                   backupRestoreCoordinator::onNodeStopping,
                                   resourceProviderSetup.spiProvider(),
-                                  replacementWiring.service());
+                                  replacementWiring.service(),
+                                  upgradeWiring.service());
 
         nodeDeploymentManager.setShutdownCallback(node::stop);
         // #634-4, the periodic half (owner-ruled: on-read + periodic alert). The watch binds the three
@@ -6909,7 +6945,8 @@ public interface AetherNode extends ManageableNode {
                                                                         streamReplicationShutdown,
                                                                         backupRestoreCoordinator::onNodeStopping,
                                                                         resourceProviderSetup.spiProvider(),
-                                                                        replacementWiring.service());
+                                                                        replacementWiring.service(),
+                                                                        upgradeWiring.service());
                                               }
 
                                                   return node;

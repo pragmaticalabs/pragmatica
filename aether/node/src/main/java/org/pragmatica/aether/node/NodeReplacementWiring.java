@@ -132,7 +132,7 @@ public final class NodeReplacementWiring {
                           new Service(in, environment));
     }
 
-    private static boolean alive(Option<String> state) {
+    static boolean alive(Option<String> state) {
         return state.filter(name -> !"Departing".equals(name) && !"Dead".equals(name))
                     .isPresent();
     }
