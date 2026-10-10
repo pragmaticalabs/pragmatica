@@ -48,6 +48,9 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
 import org.pragmatica.aether.slice.repository.Location;
 import org.pragmatica.aether.slice.stream.BlueprintStreamAddresses;
 import org.pragmatica.aether.slice.stream.StreamAddressError;
+import org.pragmatica.aether.slice.stream.SystemStreams;
+import org.pragmatica.aether.slice.StreamConfig;
+import org.pragmatica.aether.stream.StreamPartitionManager;
 import org.pragmatica.aether.slice.repository.Repository;
 import org.pragmatica.cluster.node.ClusterNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
@@ -958,6 +961,45 @@ class BlueprintPublishOwnershipTest {
                                                                          .extracting(Cause::message)
                                                                          .asString()
                                                                          .contains("undeclared-events"));
+        }
+
+        /// #1338 — a blueprint `External` source in the `system` namespace must resolve to the name the system
+        /// stream is created under. The created name is `SystemStreams.CLUSTER_EVENTS.asString()` (the exact
+        /// expression `AetherNode` hands `StreamPartitionManager.createStream`), materialized here in a real
+        /// manager; the resolved name is what a consumer slice polls (`BlueprintStreamAddresses.engineKeyFor`).
+        @Test
+        void publish_externalSystemSource_resolvesToTheNameTheSystemStreamIsCreatedUnder() {
+            var systemSource = """
+                    [streams.order-events]
+                    partitions = 1
+
+                    [streams.cluster-events]
+                    source = "system:cluster-events:1.0.0"
+                    role = "consumer"
+                    """;
+            var repository = sliceRepository(Map.of(PUBLISHER_SLICE, sliceJar(PUBLISHER_SLICE, systemSource),
+                                                    CONSUMER_SLICE, sliceJar(CONSUMER_SLICE, systemSource)));
+
+            publishBody(repository).onFailure(BlueprintPublishOwnershipTest::failOnUnexpectedFailure);
+            seedOwnedSliceTarget(CONSUMER_SLICE);
+
+            var manager = StreamPartitionManager.streamPartitionManager(Long.MAX_VALUE);
+
+            try {
+                manager.createStream(StreamConfig.streamConfig(SystemStreams.CLUSTER_EVENTS.asString()))
+                       .onFailure(cause -> Assertions.fail("instrument check: the system stream must be creatable: " + cause.message()));
+
+                var resolved = BlueprintStreamAddresses.engineKeyFor(store, CONSUMER_SLICE, "cluster-events")
+                                                       .onFailure(cause -> Assertions.fail("the External system alias must resolve: " + cause.message()));
+
+                resolved.onSuccess(key -> assertThat(manager.streamInfo(key).isPresent())
+                        .as("the External system source resolved to '%s', but the system stream exists only as '%s'",
+                            key,
+                            SystemStreams.CLUSTER_EVENTS.asString())
+                        .isTrue());
+            } finally {
+                manager.close();
+            }
         }
 
         @Test
