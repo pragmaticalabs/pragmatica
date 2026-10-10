@@ -35,11 +35,11 @@ class DockerProvisioningForwardsImageTest {
             version = "1.1.0"
 
             [runtime.coreapp]
-            type = "container"
+            type = "docker"
             image = "registry/aether-node:{version}"
 
             [runtime.workerapp]
-            type = "container"
+            type = "docker"
             image = "registry/aether-worker:{version}"
 
             [source.local]

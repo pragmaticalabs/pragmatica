@@ -25,7 +25,7 @@ never replaces two nodes at once, to keep that window to one node at a time.
   with HTTP 409 naming the profile. Write the pin as `image = "registry/aether-node:{version}"` or
   `jar_url = ".../v{version}/aether-node.jar"` in the config the cluster was bootstrapped with
 - For a `docker` source, every role's runtime profile pins an `image` that carries `{version}`
-  (`[runtime.app] type = "container"`, `image = "registry/aether-node:{version}"`, `runtime = "app"` on the role).
+  (`[runtime.app] type = "docker"`, `image = "registry/aether-node:{version}"`, `runtime = "app"` on the role).
   A docker replacement boots that image at the committed version; without it the provider would start the same
   image again, so the upgrade is refused with HTTP 409 naming the source (`UpgradeDockerImageUnversioned`) before
   any node is touched

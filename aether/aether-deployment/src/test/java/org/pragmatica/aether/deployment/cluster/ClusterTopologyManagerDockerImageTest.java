@@ -71,7 +71,7 @@ class ClusterTopologyManagerDockerImageTest {
             version = "1.1.0"
 
             [runtime.app]
-            type = "container"
+            type = "docker"
             image = "registry/aether-node:{version}"
 
             [source.dock]

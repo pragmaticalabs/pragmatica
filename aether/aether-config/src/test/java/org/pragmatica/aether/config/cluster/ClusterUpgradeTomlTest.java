@@ -178,19 +178,19 @@ class ClusterUpgradeTomlTest {
 
     @Test
     void dockerSourcesWithoutVersionedImage_namesTheDockerSourceWhoseProfilePinsNoImage() {
-        assertThat(unversionedDocker(dockerToml("[runtime.app]\ntype = \"container\"", "runtime = \"app\""))).containsExactly("dock");
+        assertThat(unversionedDocker(dockerToml("[runtime.app]\ntype = \"docker\"", "runtime = \"app\""))).containsExactly("dock");
     }
 
     @Test
     void dockerSourcesWithoutVersionedImage_namesTheDockerSourceWhoseImageIsALiteral() {
-        var runtime = "[runtime.app]\ntype = \"container\"\nimage = \"registry/aether-node:1.0.0\"";
+        var runtime = "[runtime.app]\ntype = \"docker\"\nimage = \"registry/aether-node:1.0.0\"";
 
         assertThat(unversionedDocker(dockerToml(runtime, "runtime = \"app\""))).containsExactly("dock");
     }
 
     @Test
     void dockerSourcesWithoutVersionedImage_acceptsAnImageCarryingThePlaceholder() {
-        var runtime = "[runtime.app]\ntype = \"container\"\nimage = \"registry/aether-node:{version}\"";
+        var runtime = "[runtime.app]\ntype = \"docker\"\nimage = \"registry/aether-node:{version}\"";
 
         assertThat(unversionedDocker(dockerToml(runtime, "runtime = \"app\""))).isEmpty();
     }
@@ -202,7 +202,7 @@ class ClusterUpgradeTomlTest {
 
     @Test
     void pinnedImageFor_resolvesThePlaceholderAtTheClusterVersion() {
-        var runtime = "[runtime.app]\ntype = \"container\"\nimage = \"registry/aether-node:{version}\"";
+        var runtime = "[runtime.app]\ntype = \"docker\"\nimage = \"registry/aether-node:{version}\"";
         var config = ClusterBootstrapConfigParser.parse(dockerToml(runtime, "runtime = \"app\"")).unwrap();
 
         assertThat(NodeUserDataRenderer.pinnedImageFor(config, config.sources().get("dock"), NodeRole.CORE).or("<none>"))

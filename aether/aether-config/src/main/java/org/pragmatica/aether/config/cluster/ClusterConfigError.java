@@ -357,7 +357,7 @@ public sealed interface ClusterConfigError extends Cause, HttpStatusAware {
                  + ": docker source(s) " + sources
                  + " have a role whose runtime profile pins no image carrying {version}, so replacements would boot the same image and the "
                  + "upgrade would change nothing. Declare the image with the placeholder in the config the cluster was bootstrapped with "
-                 + "(runtime = \"app\" on the role, [runtime.app] type = \"container\", image = \"registry/aether-node:{version}\"). "
+                 + "(runtime = \"app\" on the role, [runtime.app] type = \"docker\", image = \"registry/aether-node:{version}\"). "
                  + "'aether cluster apply' does not currently change runtime-profile content";
         }
 
