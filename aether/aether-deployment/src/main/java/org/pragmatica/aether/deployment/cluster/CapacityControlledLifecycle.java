@@ -162,8 +162,7 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
                                  var after = new CapacityReservationValue(before.sourceName(),
                                                                           before.sourceBinding(),
                                                                           before.intendedRole(),
-                                                                          CapacityReservationPhase.RELEASED,
-                                                                          before.admissions());
+                                                                          CapacityReservationPhase.RELEASED);
                                  var mutation = new KVCommand.Mutation<AetherKey, AetherValue>(key,
                                                                                                Option.some(before),
                                                                                                Option.some(after));
@@ -350,9 +349,7 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
                                                                                             binding,
                                                                                             existing.map(CapacityReservationValue::intendedRole)
                                                                                                     .or(""),
-                                                                                            CapacityReservationPhase.OBSERVED,
-                                                                                            existing.map(CapacityReservationValue::admissions)
-                                                                                                    .or(0L)))));
+                                                                                            CapacityReservationPhase.OBSERVED))));
         }
 
         if (mutations.isEmpty()) {
