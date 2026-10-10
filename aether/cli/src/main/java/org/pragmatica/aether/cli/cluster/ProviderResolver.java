@@ -293,8 +293,22 @@ public final class ProviderResolver {
     /// `AETHER_BACKUP_*` entries of the compute map, the way a running leader hands its effective backup to the provider that mints
     /// replacements, so the nodes it starts carry the same backup (a Docker node has no node TOML of its own).
     public static Result<ComputeProvider> resolveDockerCompute(SourceProfile source) {
-        return lookupFactory("docker").flatMap(factory -> factory.create(dockerCloudConfig(backupEnvironment(source))))
+        return resolveDockerCompute(source, Option.empty());
+    }
+
+    /// The same provider booting `image` when the role's runtime profile pins one (#1543 F2), as `image_name` of the compute map:
+    /// without it every node the provider starts boots the one default image, whatever the profile and the cluster version say.
+    public static Result<ComputeProvider> resolveDockerCompute(SourceProfile source, Option<String> image) {
+        return lookupFactory("docker").flatMap(factory -> factory.create(dockerCloudConfig(dockerCompute(source, image))))
                             .flatMap(ProviderResolver::extractCompute);
+    }
+
+    private static Map<String, String> dockerCompute(SourceProfile source, Option<String> image) {
+        var compute = new HashMap<>(backupEnvironment(source));
+
+        image.onPresent(name -> compute.put("image_name", name));
+
+        return Map.copyOf(compute);
     }
 
     /// The source's `[backup]` as `AETHER_BACKUP_*`; empty when the source has none, it is disabled, or it has no path.

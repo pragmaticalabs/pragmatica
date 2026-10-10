@@ -12,6 +12,7 @@ import org.pragmatica.aether.config.cluster.ClusterBootstrapConfig;
 import org.pragmatica.aether.config.cluster.DiffAction;
 import org.pragmatica.aether.config.cluster.DiffPlan;
 import org.pragmatica.aether.config.cluster.NodeRole;
+import org.pragmatica.aether.config.cluster.NodeUserDataRenderer;
 import org.pragmatica.aether.config.cluster.RoleSubTable;
 import org.pragmatica.aether.config.cluster.SourceProfile;
 import org.pragmatica.aether.config.cluster.SourceType;
@@ -154,11 +155,7 @@ public final class WaveExecutor {
                                                                ClusterBootstrapConfig desired) {
         return switch (source.type()) {
             case CLOUD -> resolveCloudAndProvision(source, role, count, desired);
-            case DOCKER -> resolveDockerAndProvision(sourceName,
-                                                     role,
-                                                     count,
-                                                     source,
-                                                     desired.cluster().name());
+            case DOCKER -> resolveDockerAndProvision(sourceName, role, count, source, desired);
             case FORGE -> forgeProvisionPlaceholder(sourceName, role, count);
             case SSH -> sshProvisionPlaceholder(sourceName, role, source);
         };
@@ -203,13 +200,16 @@ public final class WaveExecutor {
                                                                            NodeRole role,
                                                                            int count,
                                                                            SourceProfile source,
-                                                                           ClusterName clusterName) {
-        return ProviderResolver.resolveDockerCompute(source).flatMap(compute -> provisionViaCompute(compute,
-                                                                                                    sourceName,
-                                                                                                    role,
-                                                                                                    count,
-                                                                                                    source,
-                                                                                                    clusterName));
+                                                                           ClusterBootstrapConfig desired) {
+        var image = NodeUserDataRenderer.pinnedImageFor(desired, source, role);
+
+        return ProviderResolver.resolveDockerCompute(source, image).flatMap(compute -> provisionViaCompute(compute,
+                                                                                                           sourceName,
+                                                                                                           role,
+                                                                                                           count,
+                                                                                                           source,
+                                                                                                           desired.cluster()
+                                                                                                                  .name()));
     }
 
     @SuppressWarnings("JBCT-EX-01")

@@ -16,6 +16,7 @@ import org.pragmatica.aether.cli.cluster.ClusterBootstrapOrchestrator.BootstrapE
 import org.pragmatica.aether.config.cluster.CloudProviderName;
 import org.pragmatica.aether.config.cluster.ClusterBootstrapConfigParser;
 import org.pragmatica.aether.config.cluster.NodeRole;
+import org.pragmatica.aether.config.cluster.NodeUserDataRenderer;
 import org.pragmatica.aether.config.cluster.RoleSubTable;
 import org.pragmatica.aether.config.cluster.SourceProfile;
 import org.pragmatica.aether.config.cluster.SourceType;
@@ -33,6 +34,7 @@ import org.pragmatica.aether.environment.SourceName;
 import org.pragmatica.config.toml.TomlDocument;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 
@@ -401,7 +403,7 @@ sealed interface BootstrapPhaseProvision {
                                                          ClusterName clusterName) {
         return switch (source.type()) {
             case CLOUD -> provisionCloudSource(ctx, sourceName, source, clusterName);
-            case DOCKER -> provisionDockerSource(sourceName, source, clusterName);
+            case DOCKER -> provisionDockerSource(ctx, sourceName, source, clusterName);
             case SSH -> provisionSshSource(sourceName, source);
             case FORGE -> provisionForgeSource(sourceName, source, managementPort);
         };
@@ -425,18 +427,24 @@ sealed interface BootstrapPhaseProvision {
                                                                                                                                                   clusterName));
     }
 
+    /// #1543 F2: each role's containers boot the image its runtime profile pins at the bootstrap version, so the cluster starts on the
+    /// image an upgrade later replaces; a role pinning none boots the provider's default image, as before.
     @SuppressWarnings("JBCT-PAT-01")
-    private static Result<List<ProvisionedNode>> provisionDockerSource(SourceName sourceName,
+    private static Result<List<ProvisionedNode>> provisionDockerSource(BootstrapContext ctx,
+                                                                       SourceName sourceName,
                                                                        SourceProfile source,
                                                                        ClusterName clusterName) {
-        return ProviderResolver.resolveDockerCompute(source).flatMap(compute -> provisionWithCompute(compute,
-                                                                                                     sourceName,
-                                                                                                     source,
-                                                                                                     clusterName));
+        return provisionWithCompute(role -> ProviderResolver.resolveDockerCompute(source,
+                                                                                  NodeUserDataRenderer.pinnedImageFor(ctx.config(),
+                                                                                                                      source,
+                                                                                                                      role)),
+                                    sourceName,
+                                    source,
+                                    clusterName);
     }
 
     @SuppressWarnings({"JBCT-PAT-01", "JBCT-EX-01"})
-    private static Result<List<ProvisionedNode>> provisionWithCompute(ComputeProvider compute,
+    private static Result<List<ProvisionedNode>> provisionWithCompute(Fn1<Result<ComputeProvider>, NodeRole> computeFor,
                                                                       SourceName sourceName,
                                                                       SourceProfile source,
                                                                       ClusterName clusterName) {
@@ -446,7 +454,13 @@ sealed interface BootstrapPhaseProvision {
         for (var role : roleOrder) {
             var roleTable = option(source.roles().get(role));
             var result = roleTable.flatMap(rt -> rt.count())
-                                  .map(count -> provisionRoleGroup(compute, sourceName, role, count, source, clusterName));
+                                  .map(count -> computeFor.apply(role)
+                                                          .flatMap(compute -> provisionRoleGroup(compute,
+                                                                                                 sourceName,
+                                                                                                 role,
+                                                                                                 count,
+                                                                                                 source,
+                                                                                                 clusterName)));
 
             if (result.isPresent()) {
                 var provisionResult = result.unwrap();
