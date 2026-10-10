@@ -338,8 +338,8 @@ public final class ForgeServer {
     /// Package-visible with the exit injected so the call site of the sibling-config refusal is pinnable (#909).
     void applyApiVersioning(EmberCluster clusterInstance, IntConsumer exit) {
         siblingAppConfig(exit).map(AetherConfig::appHttp)
-                             .onPresent(appHttp -> clusterInstance.withApiVersioningDetection(appHttp.apiVersioningDetection(),
-                                                                                              appHttp.apiVersionHeaderName()));
+                        .onPresent(appHttp -> clusterInstance.withApiVersioningDetection(appHttp.apiVersioningDetection(),
+                                                                                         appHttp.apiVersionHeaderName()));
     }
 
     /// The sibling `aether.toml`, or none when there is no such file. One that exists and does not load is refused (#909): the cause is logged
@@ -377,13 +377,13 @@ public final class ForgeServer {
     /// Package-visible with the exit injected (see [#applyApiVersioning]).
     void applyAppHttpSecurity(EmberCluster clusterInstance, IntConsumer exit) {
         siblingAppConfig(exit).map(AetherConfig::appHttp)
-                             .filter(appHttp -> !appHttp.apiKeys()
-                                                        .isEmpty())
-                             .onPresent(appHttp -> {
-                                            clusterInstance.withAppHttpSecurity(appHttp.securityMode(),
-                                                                                appHttp.apiKeys());
-                                            operatorApiKey.set(adminCapableKey(appHttp));
-                                        });
+                        .filter(appHttp -> !appHttp.apiKeys()
+                                                   .isEmpty())
+                        .onPresent(appHttp -> {
+                                       clusterInstance.withAppHttpSecurity(appHttp.securityMode(),
+                                                                           appHttp.apiKeys());
+                                       operatorApiKey.set(adminCapableKey(appHttp));
+                                   });
     }
 
     /// Pick the credential Forge itself will present. An ADMIN-roled key is preferred because the
