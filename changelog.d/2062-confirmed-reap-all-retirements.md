@@ -36,7 +36,7 @@
   reservation against an empty ledger is refused as inconsistent, as the release of a provider reservation is, instead of clamping at zero. The replacement wiring's own "already reaped" memory is dropped when the node is seen up again. A rejoin that drops
   an open mark closes its warning cluster-wide with `instance-termination-rejoined`, never with a confirmation: nothing was terminated.
 - **An EXTERNAL release and a rejoin are correct in both commit orders.** A node that joins while its EXTERNAL reservation is present bumps an admission marker
-  (`CapacityAdmissionKey`/`Value`, wire tags 2134/2135, runtime state) in a transaction guarded on the reservation being unchanged; the release is committed only against
+  (`CapacityAdmissionKey`/`Value`, wire tags 2138/2139, runtime state) in a transaction guarded on the reservation being unchanged; the release is committed only against
   the marker value it read. If the rejoin commits first, the stale release fails and deletes nothing. If the release commits first, the rejoin's guarded transaction fails
   on the absent reservation and the node is admitted again as a new admission (an expected-absent reservation and, when counted, its slot), so the ledger keeps counting the
   live reservations. If the ledger cannot count the slot again the node is refused and evicted with `external-rejoin-unreconciled`; any other failure of the reconciliation

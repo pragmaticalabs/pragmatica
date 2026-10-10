@@ -531,7 +531,7 @@ TAG  org.pragmatica.aether.slice.kvstore.AetherKey$ArtifactVersionsKey 2114
 TAG  org.pragmatica.aether.slice.kvstore.AetherKey$AutoHealStateKey 1674
 TAG  org.pragmatica.aether.slice.kvstore.AetherKey$BackupRestoreKey 1718
 TAG  org.pragmatica.aether.slice.kvstore.AetherKey$BlueprintStreamBindingsKey 1095
-TAG  org.pragmatica.aether.slice.kvstore.AetherKey$CapacityAdmissionKey 2134
+TAG  org.pragmatica.aether.slice.kvstore.AetherKey$CapacityAdmissionKey 2138
 TAG  org.pragmatica.aether.slice.kvstore.AetherKey$CapacityLedgerKey 1688
 TAG  org.pragmatica.aether.slice.kvstore.AetherKey$CapacityReservationKey 1689
 TAG  org.pragmatica.aether.slice.kvstore.AetherKey$ClusterConfigKey 1097
@@ -597,7 +597,7 @@ TAG  org.pragmatica.aether.slice.kvstore.AetherValue$BackupRestoreOutcome 1720
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$BackupRestoreValue 1719
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$BlueprintStreamBindingsValue 1607
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$BlueprintStreamBindingsValue$NamedAddress 1608
-TAG  org.pragmatica.aether.slice.kvstore.AetherValue$CapacityAdmissionValue 2135
+TAG  org.pragmatica.aether.slice.kvstore.AetherValue$CapacityAdmissionValue 2139
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$CapacityLedgerValue 1690
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$CapacityReservationPhase 1692
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$CapacityReservationValue 1691
