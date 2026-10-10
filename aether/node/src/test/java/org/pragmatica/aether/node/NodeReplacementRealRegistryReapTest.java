@@ -1003,6 +1003,37 @@ class NodeReplacementRealRegistryReapTest {
         manager.deactivate();
     }
 
+    /// The LAST attempt of a zombie chain is in flight when the node joins again. Its failure ends the chain with the operator event for the
+    /// incarnation it began under; that event is not raised for the new incarnation.
+    @Test
+    void aRejoinDuringTheLastZombieAttempt_doesNotMarkTheNewIncarnation() throws Exception {
+        ctmUnderTest.deactivate();
+        var manager = newManager(lifecycle, false, 600L, warnings);
+
+        put(AetherKey.CapacityLedgerKey.INSTANCE, new CapacityLedgerValue(3, 1, true));
+        states.put(OLD, "Member");
+        listing.set(EnvironmentError.operationNotSupported("provider API down").promise());
+        manager.drainNode(OLD, DRAIN).await();
+        Promise<List<InstanceInfo>> lastAttempt = Promise.promise();
+
+        org.awaitility.Awaitility.await().pollInterval(java.time.Duration.ofMillis(5)).atMost(java.time.Duration.ofSeconds(30)).until(() -> {
+            if (lists.get() >= 12) {
+                listing.set(lastAttempt);
+                return true;
+            }
+            return false;
+        });
+        within(10, () -> assertThat(lists.get()).as("the 13th and last attempt is in flight").isEqualTo(13));
+
+        manager.onMembershipDecision(MembershipDecision.nodeJoined(OLD, List.of(CORE, OLD)));
+        lastAttempt.fail(EnvironmentError.operationNotSupported("provider API down"));
+        Thread.sleep(800);
+
+        assertThat(warnings).as("the old chain's end does not mark the new incarnation").noneMatch(w -> w.startsWith("instance-termination-unconfirmed:"));
+        assertThat(persistedMark(OLD).isEmpty()).isTrue();
+        manager.deactivate();
+    }
+
     /// A reap that began under the previous incarnation and completes after the rejoin does not vouch for the new one: it must not enter the
     /// confirmed-reap memory, or a later reap of the new incarnation would be skipped.
     @Test

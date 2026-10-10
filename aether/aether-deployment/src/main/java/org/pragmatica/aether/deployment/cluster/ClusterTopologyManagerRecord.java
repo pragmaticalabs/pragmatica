@@ -2170,6 +2170,9 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     /// A node that shows life while the chain runs is never terminated by it: the chain stops and parks the reap for the next SWIM FAULTY,
     /// exactly as [#reapUnlessLive] abandons (the first attempt was checked by it; the retries, up to two minutes later, are checked here).
     ///
+    /// `generation` is the incarnation the chain began under: [#reapRetired] drops its effects, and [#reapUnconfirmed] and [#retryConfirmedReap] drop the
+    /// chain, once the node has joined again. (The `terminateNode(nodeId)` branch below has no inner guard; see the next paragraph.)
+    ///
     /// The `terminateNode(nodeId)` branch is unreachable with the production lifecycle, whose [NodeLifecycleManager#sourceOf] is total; it serves a
     /// lifecycle on the interface default (a test double), which cannot name a source.
     @Contract
@@ -2181,17 +2184,10 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
             return;
         }
 
-        if (!sameIncarnation(nodeId, generation)) {
-            log.debug("CTM: confirmed reap of {} dropped — the node joined again since the chain began; a new incarnation is never terminated by it",
-                      nodeId);
-
-            return;
-        }
-
         lifecycleManager.sourceOf(nodeId)
                         .fold(() -> lifecycleManager.terminateNode(nodeId),
                               source -> reapRetired(nodeId, source, false))
-                        .onSuccess(_ -> reapConfirmedIfSame(nodeId, generation))
+                        .onSuccess(_ -> reapConfirmed(nodeId))
                         .onFailure(cause -> reapUnconfirmed(nodeId, epoch, generation, retriesLeft, cause));
     }
 
@@ -2377,12 +2373,6 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                                                   nodeId.id(),
                                                                   "Termination of the instance of retired node {} is now confirmed",
                                                                   nodeId.id());
-        }
-    }
-
-    private void reapConfirmedIfSame(NodeId nodeId, long generation) {
-        if (sameIncarnation(nodeId, generation)) {
-            reapConfirmed(nodeId);
         }
     }
 
