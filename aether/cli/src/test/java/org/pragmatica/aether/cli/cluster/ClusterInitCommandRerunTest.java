@@ -203,8 +203,10 @@ class ClusterInitCommandRerunTest {
         assertThat(init(output, "0")).isEqualTo(0);
         var first = read(output);
 
+        // The docker scaffold lost its four commented "uncomment to enable TLS" lines (#2089: docker cannot serve TLS, so the section is now
+        // a live explicit `auto_generate = false`); the control only needs to show the scaffold carries many comments, 28 do.
         assertThat(commentLines(first)).as("positive control: the generated scaffold carries its commented templates")
-                  .isGreaterThan(30);
+                  .isGreaterThan(20);
 
         for (int run = 2; run <= 4; run++) {
             assertThat(init(output, "0")).as("re-run " + run + " with the same answers is not an error: " + stderr())

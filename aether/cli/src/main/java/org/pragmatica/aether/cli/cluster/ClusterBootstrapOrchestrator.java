@@ -724,6 +724,20 @@ public sealed interface ClusterBootstrapOrchestrator permits ClusterBootstrapOrc
             }
         }
 
+        /// A DOCKER source with management TLS declared (`[operations.tls] auto_generate = true`, the default) (#2089).
+        /// A docker node is created by `docker run` from the image's baked configuration, which serves the management API over plain
+        /// HTTP (`[cluster] tls = false`) and has no channel to receive TLS material, so the declared setting could not be honoured. Bootstrap
+        /// refuses before any container exists instead of quietly speaking HTTP to a cluster the config says is TLS.
+        record DockerSourceDeclaresTls(String sourceName) implements BootstrapError {
+            @Override
+            public String message() {
+                return "Source '" + sourceName
+                     + "' is a docker source, but the config declares management TLS ([operations.tls] auto_generate"
+                     + " is true, the default). Docker nodes serve the management API over plain HTTP and cannot honour it. Set"
+                     + " `[operations.tls] auto_generate = false` explicitly to bootstrap a docker cluster over HTTP.";
+            }
+        }
+
         record AddressCollectionFailed(String sourceName, String detail) implements BootstrapError {
             @Override
             public String message() {

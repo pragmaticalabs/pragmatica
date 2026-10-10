@@ -8,8 +8,10 @@ import java.time.Instant;
 import java.util.List;
 
 import org.pragmatica.aether.cli.cluster.ClusterBootstrapOrchestrator.BootstrapContext;
+import org.pragmatica.aether.cli.cluster.ClusterBootstrapOrchestrator.BootstrapError;
 import org.pragmatica.aether.config.cluster.ClusterBootstrapConfig;
 import org.pragmatica.aether.config.cluster.ClusterBootstrapConfigValidator;
+import org.pragmatica.aether.config.cluster.SourceType;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Result;
 
@@ -28,9 +30,29 @@ sealed interface BootstrapPhaseValidate {
         ClusterBootstrapOrchestrator.logPhase(VALIDATE, "Validating bootstrap configuration");
 
         return ClusterBootstrapConfigValidator.validate(config)
+                                              .flatMap(BootstrapPhaseValidate::refuseDockerWithDeclaredTls)
                                               .map(BootstrapPhaseValidate::emitWarnings)
                                               .flatMap(validated -> runPreflightChecks(validated, fullCheck))
                                               .map(BootstrapPhaseValidate::buildContext);
+    }
+
+    /// #2089: HTTP is used only when the config explicitly disables TLS, never inferred from the source type. A docker source cannot serve
+    /// the TLS a default config declares, so that combination is refused here, before provisioning.
+    static Result<ClusterBootstrapConfig> refuseDockerWithDeclaredTls(ClusterBootstrapConfig config) {
+        if (!config.operations().tls().autoGenerate()) {
+            return Result.success(config);
+        }
+
+        return config.sources()
+                     .entrySet()
+                     .stream()
+                     .filter(entry -> entry.getValue()
+                                           .type() == SourceType.DOCKER)
+                     .map(entry -> entry.getKey())
+                     .sorted()
+                     .findFirst()
+                     .<Result<ClusterBootstrapConfig>> map(name -> new BootstrapError.DockerSourceDeclaresTls(name).result())
+                     .orElseGet(() -> Result.success(config));
     }
 
     private static ClusterBootstrapConfig emitWarnings(ClusterBootstrapConfig validated) {
