@@ -18,6 +18,7 @@ import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.PrintStream;
 import java.nio.charset.StandardCharsets;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
@@ -108,7 +109,7 @@ class ClusterConfigWizardTest {
                           assertThat(cloud.provider()).isEqualTo(CloudProviderName.HETZNER);
                           assertThat(cloud.region()).isEqualTo("hel1");
                           assertThat(cloud.instanceType()).isEqualTo("cpx32");
-                          assertThat(cloud.credentialEnvVar()).isEqualTo("HCLOUD_TOKEN");
+                          assertThat(cloud.credentialEnvVars()).containsEntry("api_token", "HCLOUD_TOKEN");
                           assertThat(cloud.sshPublicKeyPath()).isEqualTo("~/.ssh/id_ed25519.pub");
                       });
                       assertThat(answers.adminCidr()).isEqualTo(Option.some("203.0.113.0/24"));
@@ -158,7 +159,7 @@ class ClusterConfigWizardTest {
                   .onFailure(c -> fail("Expected success but got " + c.message()))
                   .onSuccess(answers -> answers.cloud().onPresent(cloud -> {
                       assertThat(cloud.instanceType()).isEqualTo("cpx32");
-                      assertThat(cloud.credentialEnvVar()).isEqualTo("HCLOUD_TOKEN");
+                      assertThat(cloud.credentialEnvVars()).containsEntry("api_token", "HCLOUD_TOKEN");
                   }));
         }
 
@@ -474,6 +475,37 @@ class ClusterConfigWizardTest {
                    .onSuccess(answers -> assertThat(answers.topology().core()).isEqualTo(9));
 
             assertThat(countOf(session.promptText(), "Worker node count")).isEqualTo(1);
+        }
+    }
+
+    /// #2059 — aws, gcp and azure need several credential keys: the wizard asks for the env var of each, and what the operator types
+    /// reaches the answers (it used to ask one question and drop the answer). gcp's zone has no default.
+    @Nested
+    class MultiKeyProviders {
+        @Test
+        void run_aws_asksEachCredentialKey_andKeepsTheAnswers() {
+            var input = "prod-eu\n1\n2\neu-west-1\nt3.medium\nMY_AWS_ID\nMY_AWS_SECRET\n~/.ssh/id_ed25519.pub\n5\n0\nn\n\n203.0.113.0/24\n\n\n\n";
+
+            wizardFor(input).run()
+                            .onFailure(c -> fail("Expected success but got " + c.message()))
+                            .onSuccess(answers -> answers.cloud().onPresent(cloud -> {
+                                assertThat(cloud.provider()).isEqualTo(CloudProviderName.AWS);
+                                assertThat(cloud.credentialEnvVars()).containsOnly(Map.entry("access_key_id", "MY_AWS_ID"),
+                                                                                   Map.entry("secret_access_key", "MY_AWS_SECRET"));
+                            }));
+        }
+
+        @Test
+        void run_gcp_emptyZone_reprompts_andAcceptsTheNextAnswer() {
+            var input = "prod-eu\n1\n3\neurope-west1\n\neurope-west1-b\nn2-standard-4\n\n\n\n~/.ssh/id_ed25519.pub\n5\n0\nn\n\n203.0.113.0/24\n\n\n\n";
+
+            wizardFor(input).run()
+                            .onFailure(c -> fail("Expected success but got " + c.message()))
+                            .onSuccess(answers -> answers.cloud().onPresent(cloud -> {
+                                assertThat(cloud.zone()).isEqualTo("europe-west1-b");
+                                assertThat(cloud.instanceType()).isEqualTo("n2-standard-4");
+                                assertThat(cloud.credentialEnvVars()).containsEntry("private_key_pem", "GCP_PRIVATE_KEY_PEM");
+                            }));
         }
     }
 

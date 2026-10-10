@@ -67,7 +67,7 @@ class WorkerMetadataColdRestartTest {
                                                                          _ -> {},
                                                                          () -> {},
                                                                          _ -> {},
-                                                                         LIMITS);
+                                                                         LIMITS, _ -> {});
 
     @Test
     void survivingWorker_installsTheRestoredRunsManifest_afterACoreColdRestart() {
@@ -184,7 +184,7 @@ class WorkerMetadataColdRestartTest {
                                               _ -> List.of(),
                                               LIMITS,
                                               (_, _) -> {},
-                                              () -> clusterIncarnation);
+                                              () -> clusterIncarnation, () -> org.pragmatica.lang.Result.success(new WorkerMetadataMessage.DhtReplication(3, 2, 1, 1, 1, -1, 0, 0, true)));
         }
 
         void seed(long revision, String value) {

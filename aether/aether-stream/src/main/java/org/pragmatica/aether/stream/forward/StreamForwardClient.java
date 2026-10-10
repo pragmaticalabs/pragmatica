@@ -13,6 +13,8 @@ import org.pragmatica.aether.stream.forward.StreamForwardMessage.ReadForward;
 import org.pragmatica.aether.stream.forward.StreamForwardMessage.ReadForwardResponse;
 import org.pragmatica.aether.slice.PublishOutcomeUnknown;
 import org.pragmatica.aether.slice.ReadPreference;
+import org.pragmatica.aether.slice.generation.Epoch;
+import org.pragmatica.aether.stream.StreamError;
 import org.pragmatica.aether.stream.VisibleBounds;
 import org.pragmatica.aether.stream.provenance.ProvenanceEntry;
 import org.pragmatica.consensus.NodeId;
@@ -32,6 +34,7 @@ import static org.pragmatica.aether.stream.forward.StreamForwardError.General.RE
 import static org.pragmatica.aether.stream.forward.StreamForwardError.General.STREAM_FORWARD_UNAVAILABLE;
 import static org.pragmatica.aether.stream.forward.StreamForwardMessage.PublishForward.publishForward;
 import static org.pragmatica.aether.stream.forward.StreamForwardMessage.ReadForward.readForward;
+import static org.pragmatica.aether.stream.forward.StreamForwardMessage.ReadForward.validatedReadForward;
 import static org.pragmatica.lang.Option.option;
 
 
@@ -56,6 +59,19 @@ public interface StreamForwardClient {
                                                   int maxEvents,
                                                   ReadPreference preference) {
         return readRemote(replicaId, streamName, partition, fromOffset, maxEvents);
+    }
+
+    /// #1730 phase 2 / #1873 (KIP-320): forward a CONSUMER read carrying the owner epoch the consumer last read under. The
+    /// owner checks the cursor against its committed epoch starts and answers either the events and the epoch they were
+    /// served under, or a typed [StreamError.EpochDiverged]. The default forwards plainly and reports no epoch; only the
+    /// production transport ([DefaultStreamForwardClient]) stamps the epoch into the [ReadForward].
+    default Promise<ReadForwardResult> readRemoteValidated(NodeId ownerId,
+                                                           String streamName,
+                                                           int partition,
+                                                           long fromOffset,
+                                                           int maxEvents,
+                                                           Epoch consumerEpoch) {
+        return readRemote(ownerId, streamName, partition, fromOffset, maxEvents);
     }
 
     /// #1235: forward a REPLICATION read — a replica catching up, or a new owner pulling from a survivor —
@@ -117,17 +133,38 @@ public interface StreamForwardClient {
     /// `bounds` (#1333): the serving node's visible span of the partition at answer time; none when it held
     /// no ring, or from a client that does not carry it.
     /// `history` (#1596): the serving node's owner-epoch history on a replica catch-up read, empty otherwise.
+    /// `historyVouched`: the source answered as a replica catch-up, so an empty `history` means it keeps none
+    /// ([ReadForwardResponse#historyVouched]). The shorter constructors model a source that does.
+    /// `ownerEpoch` (#1730 phase 2 / #1873): the owner epoch a validated consumer read was served under, [Epoch#ZERO] on any
+    /// other answer.
     record ReadForwardResult(List<RawEventDto> events,
                              boolean truncated,
                              Option<VisibleBounds> bounds,
-                             List<ProvenanceEntry> history) {
+                             List<ProvenanceEntry> history,
+                             boolean historyVouched,
+                             Epoch ownerEpoch) {
         public ReadForwardResult {
             events = List.copyOf(events);
             history = List.copyOf(history);
         }
 
+        public ReadForwardResult(List<RawEventDto> events,
+                                 boolean truncated,
+                                 Option<VisibleBounds> bounds,
+                                 List<ProvenanceEntry> history) {
+            this(events, truncated, bounds, history, true, Epoch.ZERO);
+        }
+
+        public ReadForwardResult(List<RawEventDto> events,
+                                 boolean truncated,
+                                 Option<VisibleBounds> bounds,
+                                 List<ProvenanceEntry> history,
+                                 boolean historyVouched) {
+            this(events, truncated, bounds, history, historyVouched, Epoch.ZERO);
+        }
+
         public ReadForwardResult(List<RawEventDto> events, boolean truncated) {
-            this(events, truncated, Option.none(), List.of());
+            this(events, truncated, Option.none(), List.of(), true, Epoch.ZERO);
         }
 
         public static ReadForwardResult readForwardResult(List<RawEventDto> events, boolean truncated) {
@@ -145,6 +182,15 @@ public interface StreamForwardClient {
                                                                                                                                                        + "[" + partition
                                                                                                                                                        + "]"))
                                                                                                      .async());
+    }
+
+    /// Where a peer's RING begins, over the CATCH-UP read class (#1730 phase 2): a read from beyond any head asking for no events, so
+    /// it reveals no data and is not subject to the consumer-read verification gate (a peer that has not been compared with the
+    /// committed owner still answers it). None when the peer holds no ring or reports none.
+    default Promise<Option<Long>> ringTailRemote(NodeId peerId, String streamName, int partition) {
+        return readRemoteCatchup(peerId, streamName, partition, Long.MAX_VALUE, 0).map(result -> result.bounds()
+                                                                                                       .filter(known -> known.earliestRetained() >= 0L)
+                                                                                                       .map(VisibleBounds::earliestRetained));
     }
 
     private static StreamForwardClient noOpClient() {
@@ -216,11 +262,13 @@ final class DefaultStreamForwardClient implements StreamForwardClient {
         // The wait for the ack — not the write itself — is capped by the ambient request budget:
         // a client-driven publish stops waiting when its caller stops waiting, while background
         // callers (no bound scope) keep the configured timeout unchanged.
-        SharedScheduler.schedule(() -> timeoutRequest(correlationId),
-                                 Deadline.current().bounded(publishTimeout));
-        var message = publishForward(selfNodeId, correlationId, streamName, partition, payload, timestamp);
+        var publishWait = Deadline.current().bounded(publishTimeout);
 
-        transport.send(governorId, message);
+        SharedScheduler.schedule(() -> timeoutRequest(correlationId), publishWait);
+        var message = publishForward(selfNodeId, correlationId, streamName, partition, payload, timestamp);
+        // The frame must not outlive the wait that just started (#1996): delivered later it would publish an event
+        // whose caller was already told the outcome is unknown.
+        transport.send(governorId, message, publishWait);
         log.trace("Sent PublishForward to {} for {}[{}] correlationId={}",
                   governorId,
                   streamName,
@@ -258,6 +306,24 @@ final class DefaultStreamForwardClient implements StreamForwardClient {
     }
 
     @Override
+    public Promise<ReadForwardResult> readRemoteValidated(NodeId ownerId,
+                                                          String streamName,
+                                                          int partition,
+                                                          long fromOffset,
+                                                          int maxEvents,
+                                                          Epoch consumerEpoch) {
+        return sendRead(ownerId,
+                        validatedReadForward(selfNodeId,
+                                             UUID.randomUUID().toString(),
+                                             streamName,
+                                             partition,
+                                             fromOffset,
+                                             maxEvents,
+                                             consumerEpoch),
+                        "VALIDATED");
+    }
+
+    @Override
     public Promise<ReadForwardResult> readRemoteCatchup(NodeId sourceId,
                                                         String streamName,
                                                         int partition,
@@ -280,9 +346,10 @@ final class DefaultStreamForwardClient implements StreamForwardClient {
         Promise<ReadForwardResult> promise = Promise.promise();
 
         pendingReads.put(message.correlationId(), promise);
-        SharedScheduler.schedule(() -> timeoutRead(message.correlationId()),
-                                 Deadline.current().bounded(readTimeout));
-        transport.send(target, message);
+        var readWait = Deadline.current().bounded(readTimeout);
+
+        SharedScheduler.schedule(() -> timeoutRead(message.correlationId()), readWait);
+        transport.send(target, message, readWait);
         log.trace("Sent ReadForward to {} for {}[{}] fromOffset={} maxEvents={} correlationId={} preference={}",
                   target,
                   message.streamName(),
@@ -332,15 +399,27 @@ final class DefaultStreamForwardClient implements StreamForwardClient {
                : new StreamForwardError.RemotePublishFailed(response.errorMessage());
     }
 
+    /// The typed divergence of a validated read survives the wire as itself (#1730 phase 2 / #1873): the consumer re-seeks
+    /// on it, so it is never rebuilt from a message.
+    private static Cause readFailureCause(ReadForwardResponse response) {
+        return response.epochDiverged()
+               ? new StreamError.EpochDiverged(response.ownerEpoch(),
+                                               response.divergenceResumeAt(),
+                                               response.divergenceLossFrom())
+               : new StreamForwardError.ReadForwardFailed(response.errorMessage());
+    }
+
     private void resolveFromReadResponse(Promise<ReadForwardResult> promise, ReadForwardResponse response) {
         if (response.success()) {
             metrics.recordSuccess();
             promise.succeed(new ReadForwardResult(response.events(),
                                                   response.truncated(),
                                                   response.bounds(),
-                                                  response.history()));
+                                                  response.history(),
+                                                  response.historyVouched(),
+                                                  response.ownerEpoch()));
         } else {
-            promise.resolve(new StreamForwardError.ReadForwardFailed(response.errorMessage()).result());
+            promise.resolve(readFailureCause(response).result());
         }
     }
 

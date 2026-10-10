@@ -191,7 +191,8 @@ class DHTMigrationEpochFenceTest {
                                                           100L,
                                                           0L,
                                                           PRE_REWRITE_TERM,
-                                                          PRE_REWRITE_COUNTER),
+                                                          PRE_REWRITE_COUNTER,
+                                                          DHTNode.NO_CHANGE),
                                 response::set);
 
         assertThat(response.get().success()).as("a deposed owner's new write is still fenced").isFalse();

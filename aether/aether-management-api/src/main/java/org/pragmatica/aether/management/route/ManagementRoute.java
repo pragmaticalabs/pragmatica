@@ -148,6 +148,10 @@ public enum ManagementRoute {
     NODE_LIFECYCLE_GET(GET, "/nodes/lifecycle", List.of("id"), LEADER),
     NODE_DRAIN(POST, "/nodes/drain", List.of("id"), taskGroup(DEPLOYMENT)),
     NODE_SHUTDOWN(POST, "/nodes/shutdown", List.of("id"), taskGroup(DEPLOYMENT)),
+    // #1543 E2: replacement-based upgrade. All three run on the leader (the leader drives the phases and commits the records).
+    NODE_REPLACE(POST, "/nodes/replace", List.of("id"), LEADER),
+    NODE_REPLACEMENTS(GET, "/nodes/replacements", List.of(), LEADER),
+    NODE_REPLACEMENT_SETTLE(POST, "/nodes/replacements/settle", List.of("id"), LEADER),
     NODE_PROMOTE(POST, "/nodes/promote", List.of("id"), LEADER),
     NODE_INFLIGHT(GET, "/nodes/inflight", List.of(), LOCAL),
     NODE_INFLIGHT_GET(GET, "/nodes/inflight", List.of("id"), RouteTarget.nodeIdParam(0)),
@@ -361,7 +365,7 @@ public enum ManagementRoute {
     // above for "hydration"/"declarative-consumers": a real namespace literally named "namespaces" would
     // be shadowed by these two routes ahead of STREAMS_VERSIONS_LIST's `{namespace}` branch.
     STREAM_NAMESPACES_LIST(GET, "/streams/namespaces", List.of(), LOCAL),
-    STREAM_NAMESPACES_GET(GET, "/streams/namespaces", List.of("namespace"), LOCAL),
+    STREAM_NAMESPACES_GET(GET, "/streams/namespaces", List.of("address"), LOCAL),
     SCHEDULED_TASKS_LIST(GET, "/scheduled-tasks", List.of(), LEADER),
     SCHEDULED_TASKS_BY_SECTION(GET, "/scheduled-tasks", List.of("section"), LEADER),
     SCHEDULED_TASK_STATE(GET, "/scheduled-tasks/state", List.of("section", "artifact", "methodName"), LEADER),

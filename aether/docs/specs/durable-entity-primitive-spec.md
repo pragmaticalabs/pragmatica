@@ -443,8 +443,6 @@ public sealed interface EntityError extends Cause {
     record TimerTokenMismatch(String key, TimerToken token, String appliedToken) implements EntityError { ... }
     /** A forwarded schedule arrived with a negative delay; refused, never clamped. */
     record TimerDelayInvalid(String key, long delayMillis) implements EntityError { ... }
-    /** Answer of the test-only in-memory backings; a running node never returns it (#351 shipped). */
-    record TimerNotSupported(String key) implements EntityError { ... }
     /** A due timer could not be applied; logged and the timer CONSUMED. Never reaches a caller. */
     record TimerFireFailed(String key, TimerToken token, Cause cause) implements EntityError { ... }
     /** Fenced write rejected: the presented owner epoch is stale. Transient — re-resolve and retry. */
@@ -463,6 +461,12 @@ public sealed interface EntityError extends Cause {
     record LinearizableUnavailable(String key) implements EntityError, Cause.Transient { ... }
 }
 ```
+
+Forwarding a command to a remote committed owner adds two further transient causes (`EntityOwnerForward`, #1973), both answered 503 at an
+app route and told apart by their message: `ForwardNotSent` (the transport refused the send, or the budget was already spent: **never sent, nothing
+applied, safe to retry**) and `ForwardTimedOut` (the command was sent and no answer came in time: **outcome unknown, the owner may have applied it,
+retry only an idempotent operation**). The owner refusing an arrived-expired command without touching the entity (`ForwardBudgetExhausted` over the
+wire) crosses back as `ForwardNotSent`.
 
 `NotCurrentOwner` vs `OwnershipNotYetCommitted` is the load-bearing distinction: the first is stable
 and means *go elsewhere*, the second is transient and means *retry here*. Collapsing them into one
@@ -2424,7 +2428,7 @@ it the other way where the shipped names were the weaker ones, so the CODE moved
 | `TimerNotFound(key)` | `TimerNotFound(key, TimerToken)` | a caller holding several timers cannot act on "a timer was not found" |
 
 **Deliberately NOT renamed:** `NotCurrentOwner`, `StaleEpochRead`, `OwnershipNotYetCommitted`,
-`LinearizableUnavailable`, `StorageFailed`, `TimerNotSupported`. The line drawn: the same name for the
+`LinearizableUnavailable`, `StorageFailed`. (`TimerNotSupported` was retired in #1381: a running node never answered it, and the test-only in-memory backings now refuse a timer with `StorageFailed`.) The line drawn: the same name for the
 same CONCEPT across subsystems is a feature — `StreamError.NotCurrentOwner` and
 `EntityError.NotCurrentOwner` mean exactly the same thing about a partition owner. The same name for
 DIFFERENT concepts is the defect, which is what `KeyNotFound` was.

@@ -12,6 +12,11 @@ import java.util.Deque;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.io.IOException;
+import java.nio.channels.FileChannel;
+import java.nio.file.Files;
+import java.nio.file.StandardCopyOption;
+import java.nio.file.StandardOpenOption;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedDeque;
 import java.util.concurrent.Semaphore;
@@ -59,6 +64,9 @@ import org.pragmatica.aether.stream.provenance.ProvenanceEpoch;
 import org.pragmatica.aether.stream.replication.AlignedRecovery;
 import org.pragmatica.storage.AppendLog;
 import org.pragmatica.storage.AppendLog.WalRecord;
+import org.pragmatica.utility.warning.OperatorWarningCode;
+import org.pragmatica.utility.warning.OperatorWarningSink;
+import org.pragmatica.utility.warning.OperatorWarnings;
 import org.pragmatica.cluster.node.ClusterNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
@@ -73,6 +81,8 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.TerminalOperation;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.utils.Causes;
+import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.messaging.MessageReceiver;
 
@@ -201,7 +211,7 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// Source of THIS node's current owner epoch for stamping a LOCAL publish (`publishLocal`). The
     /// floor source ([StreamOwnerEpochSource#zero]) leaves non-fenced callers stamping [Epoch#ZERO],
     /// which a fresh high-water never rejects and which never advances it.
-    private final StreamOwnerEpochSource ownerEpochSource;
+    private volatile StreamOwnerEpochSource ownerEpochSource;
     /// Per-partition crash-durable write-ahead log opener (streaming-persistence W3/W6; since #1567 the
     /// storage instance's [org.pragmatica.storage.StorageInstance#openLog]). [Option#none]
     /// = no WAL ⇒ exactly the pre-WAL behavior (Forge/unit/legacy factories). When present, each
@@ -228,10 +238,57 @@ public final class StreamPartitionManager implements AutoCloseable {
     private final Object quarantineLock = new Object();
     /// #1596: the durable partition flag, late-bound ([#partitionFlags(PartitionFlags)]).
     private volatile Option<PartitionFlags> partitionFlags = none();
+    /// #1730 phase 2: replica partitions whose recovered tail has not been verified against the committed owner yet. Such
+    /// a copy may hold a lineage the owner never had (an ex-owner's unacknowledged records), so nothing it recovered is
+    /// visible to a read served here until [#markVerified] covers it; its own appends do not drag it into view either.
+    private final Set<String> unverifiedReplicas = ConcurrentHashMap.newKeySet();
+    /// The cause of the cut refusal last reported per partition (#2084), so a repair retried against the same obstacle reports nothing more.
+    private final Map<PartitionRef, String> refusedCuts = new ConcurrentHashMap<>();
+    /// #1730 phase 2: where a replica's divergent-tail truncation is reported to the operator, late-bound
+    /// ([#operatorWarnings(OperatorWarningSink)]); log-only until then.
+    private volatile OperatorWarningSink operatorWarnings = OperatorWarningSink.logOnly();
+    /// #1730 phase 2 / #1873: the committed ownership records a validated consumer read is checked against, late-bound
+    /// ([#ownershipRecords(OwnerActivation.OwnershipRecordSource)]); none until wired.
+    private volatile OwnerActivation.OwnershipRecordSource ownershipRecords = (_, _) -> Option.none();
     /// #1596: the reasons this process has already raised, `stream#partition#kind#evidence`, so a condition met on
     /// every append raises one transaction, not one per append. A raise that fails is forgotten and retried at the
     /// next occurrence.
     private final Set<String> raisedLocally = ConcurrentHashMap.newKeySet();
+    /// Per partition: the committed owner epoch this copy last judged itself against, and whether it may serve and
+    /// acknowledge at and above that epoch's start ([#unverifiedFrom]).
+    private final ConcurrentHashMap<String, EpochTrust> epochTrust = new ConcurrentHashMap<>();
+    /// Where a committed epoch began, when the cluster records it (the epoch-validated fetch does, #1873). Until then every
+    /// offset counts as at or above the start: a copy that holds anything is doubted until it has been compared.
+    private volatile EpochStartSource epochStarts = (_, _, _) -> none();
+
+    private record EpochTrust(Epoch epoch, boolean verified) {}
+
+    /// The offset the owner of `epoch` began writing at.
+    @FunctionalInterface
+    public interface EpochStartSource {
+        Option<Long> startOf(String streamName, int partition, Epoch epoch);
+    }
+
+    /// The offsets at which a PROVENANCE comparison found this copy divergent (N13), while the partition stays quarantined for
+    /// it. The durable flag is raised only if the divergence is not repaired ([#flagUnrepaired]): a repair removes the entry.
+    private final ConcurrentHashMap<PartitionRef, Long> provenanceMismatchAt = new ConcurrentHashMap<>();
+    /// What the repair in progress of a partition has discarded so far; reported once when it settles ([#settleRepair]).
+    private final ConcurrentHashMap<PartitionRef, TailCut> pendingCuts = new ConcurrentHashMap<>();
+    /// The range already reported while its repair was unsettled ([#repairReportBound]); the settled report follows only if the
+    /// range grew.
+    private final ConcurrentHashMap<PartitionRef, TailCut> reportedUnsettled = new ConcurrentHashMap<>();
+    private volatile Option<TimeSpan> repairReportBound = Option.none();
+    /// The repair a pending cut belongs to: bumped when a partition's first cut of a repair is made, so a timer scheduled for an
+    /// earlier repair, which settled, never reports a newer one.
+    private final ConcurrentHashMap<PartitionRef, Long> repairGenerationOf = new ConcurrentHashMap<>();
+
+    private final java.util.concurrent.atomic.AtomicLong repairGeneration = new java.util.concurrent.atomic.AtomicLong();
+
+    /// Reports of repairs a previous process left unsettled that were found before the operator-warning sink was wired; made
+    /// when it is.
+    private final java.util.concurrent.CopyOnWriteArrayList<Runnable> deferredReports = new java.util.concurrent.CopyOnWriteArrayList<>();
+
+    private volatile boolean operatorWarningsBound = false;
     /// #1638 F1: the catch-up installs recorded but not yet settled, per partition ([#installProvenance]). Each
     /// partition's list is also that partition's lock serialising recording an install against trimming one, so a trim
     /// never drops an entry a pending install has just recorded or skipped; partitions never wait on each other's
@@ -838,7 +895,129 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                                 int partition,
                                                                 long fromOffset,
                                                                 int maxEvents) {
-        return ownerRoleGate(streamName, partition).flatMap(_ -> readLocal(streamName, partition, fromOffset, maxEvents));
+        return ownerRoleGate(streamName, partition).flatMap(_ -> readLocal(streamName, partition, fromOffset, maxEvents))
+                            .flatMap(events -> servedIfVerified(streamName, partition, fromOffset, events));
+    }
+
+    /// Replace the committed-epoch source after construction (a test seam; production passes it to the factory).
+    @Contract
+    public void ownerEpochSource(StreamOwnerEpochSource source) {
+        this.ownerEpochSource = source;
+    }
+
+    /// Late-bind where committed epochs began ([EpochStartSource]). Set once at wiring.
+    @Contract
+    public void epochStarts(EpochStartSource source) {
+        this.epochStarts = source;
+    }
+
+    /// B5 (#1730 phase 2): a copy that is not the owner serves what it holds at and above the start of the committed epoch only
+    /// once it has been compared with that epoch's owner. A demoted owner still holding its old tail, or a replica whose epoch
+    /// advanced while it was away, would otherwise answer a consumer correctly diverged to the new epoch's start with the OLD
+    /// records at those offsets, labelled with the new epoch. Below the start nothing is held back.
+    private Result<List<OffHeapRingBuffer.RawEvent>> servedIfVerified(String streamName,
+                                                                      int partition,
+                                                                      long fromOffset,
+                                                                      List<OffHeapRingBuffer.RawEvent> events) {
+        return unverifiedFrom(streamName, partition).fold(() -> success(events),
+                                                          start -> fromOffset >= start
+                                                                   ? new StreamError.ReplicaNotVerified(streamName,
+                                                                                                        partition,
+                                                                                                        start).<List<OffHeapRingBuffer.RawEvent>> result()
+                                                                   : success(events.stream()
+                                                                                   .filter(event -> event.offset() < start)
+                                                                                   .toList()));
+    }
+
+    /// The offset from which this node must neither serve nor acknowledge, or none when it may: it is not the owner, there is a
+    /// committed epoch, and this copy holds records at or above that epoch's start that it has not compared with its owner.
+    /// Evaluated lazily at the first call after the committed epoch advances: a copy whose head is still below the start then
+    /// holds nothing from the old lineage at or above it, and stays trusted; a head that reached the start by then is doubted
+    /// (conservative: its backfill compare clears it). The owner itself is never doubted here.
+    public Option<Long> unverifiedFrom(String streamName, int partition) {
+        var epoch = ownerEpochSource.currentOwnerEpoch(streamName, partition);
+
+        if (epoch.equals(Epoch.ZERO) || placementRoleSupplier.roleFor(streamName, partition) == Role.OWNER) {
+            return none();
+        }
+
+        var start = epochStarts.startOf(streamName, partition, epoch).or(0L);
+
+        return trusted(streamName, partition, epoch, start)
+               ? none()
+               : some(start);
+    }
+
+    private boolean trusted(String streamName, int partition, Epoch epoch, long start) {
+        var head = resolvePartitionBuffer(streamName, partition).map(OffHeapRingBuffer::headOffset).or(-1L);
+
+        return epochTrust.compute(partitionKeyOf(streamName, partition),
+                                  (_, known) -> known != null && known.epoch()
+                                                                      .equals(epoch)
+                                                ? known
+                                                : new EpochTrust(epoch, head < start))
+                         .verified();
+    }
+
+    /// Whether this node may acknowledge to the owner what it holds ([#unverifiedFrom]).
+    public boolean replicaVerified(String streamName, int partition) {
+        return unverifiedFrom(streamName, partition).isEmpty();
+    }
+
+    /// A backfill compared this copy with the committed owner of `epoch` (captured BEFORE the compare, so an epoch that advanced
+    /// meanwhile is not verified by a compare against the earlier one).
+    @Contract
+    public void markVerifiedForEpoch(String streamName, int partition, Epoch epoch) {
+        epochTrust.compute(partitionKeyOf(streamName, partition),
+                           (_, known) -> known != null && known.epoch()
+                                                               .isStrictlyAfter(epoch)
+                                         ? known
+                                         : new EpochTrust(epoch, true));
+    }
+
+    /// What a validated consumer read returns: the events and the owner epoch they were served under (#1730 phase 2 /
+    /// #1873), which the consumer adopts.
+    public record EpochRead(List<OffHeapRingBuffer.RawEvent> events, Epoch ownerEpoch) {}
+
+    /// [#readServing(String, int, long, int)] for a CONSUMER that last read under `consumerEpoch` (#1730 phase 2 / #1873,
+    /// KIP-320): after the owner gate, the cursor is checked against the committed epoch starts, and a cursor that belongs
+    /// to a replaced lineage is refused with the typed [StreamError.EpochDiverged] naming where the new lineage began,
+    /// instead of reading on from offsets the consumer's lineage no longer owns. Partitions with no committed ownership
+    /// record (legacy, unit, a first owner before the leader minted one) are served unvalidated, as before.
+    /// A copy that is not the owner and has not been compared with its owner (B5, [#servedIfVerified]) holds back what it
+    /// has at and above the committed epoch's start on this path as on the unvalidated one: the epoch check says where a
+    /// lineage began, not that this copy holds the lineage that followed.
+    public Result<EpochRead> readServing(String streamName,
+                                         int partition,
+                                         long fromOffset,
+                                         int maxEvents,
+                                         Epoch consumerEpoch) {
+        return ownerRoleGate(streamName, partition).flatMap(_ -> admitted(streamName,
+                                                                          partition,
+                                                                          fromOffset,
+                                                                          consumerEpoch))
+                            .flatMap(epoch -> readLocal(streamName, partition, fromOffset, maxEvents).flatMap(events -> servedIfVerified(streamName,
+                                                                                                                                         partition,
+                                                                                                                                         fromOffset,
+                                                                                                                                         events))
+                                                       .map(events -> new EpochRead(events, epoch)));
+    }
+
+    private Result<Epoch> admitted(String streamName, int partition, long fromOffset, Epoch consumerEpoch) {
+        return ownershipRecords.committed(streamName, partition)
+                               .fold(() -> Result.success(Epoch.ZERO),
+                                     record -> EpochValidation.admit(streamName,
+                                                                     partition,
+                                                                     record,
+                                                                     consumerEpoch,
+                                                                     fromOffset));
+    }
+
+    /// Late-bind the committed ownership records (#1730 phase 2 / #1873): `AetherNode` wires the node's applied KV state.
+    /// Until then a validated read finds no record and is served unvalidated. Set once at wiring.
+    @Contract
+    public void ownershipRecords(OwnerActivation.OwnershipRecordSource source) {
+        this.ownershipRecords = source;
     }
 
     private Result<Unit> ownerRoleGate(String streamName, int partition) {
@@ -864,6 +1043,16 @@ public final class StreamPartitionManager implements AutoCloseable {
     @Contract
     public void partitionFlags(PartitionFlags flags) {
         this.partitionFlags = some(flags);
+    }
+
+    /// Late-bind the operator-warning sink (#1730 phase 2). `AetherNode` wires the cluster one; unit and Forge managers
+    /// keep the log-only default. Set once at wiring.
+    @Contract
+    public void operatorWarnings(OperatorWarningSink sink) {
+        this.operatorWarnings = sink;
+        operatorWarningsBound = true;
+        deferredReports.forEach(Runnable::run);
+        deferredReports.clear();
     }
 
     /// Atomically reserve `bytes` against the shared pool. Returns true iff the reservation fit under
@@ -1872,7 +2061,7 @@ public final class StreamPartitionManager implements AutoCloseable {
     @Contract
     private void restoreVisible(StreamConfig config, int partition, OffHeapRingBuffer ring) {
         switch (placementRoleSupplier.roleFor(config.name(), partition)) {
-            case REPLICA -> ring.advanceVisible(ring.durableOffset());
+            case REPLICA -> holdRecoveredTailUntilVerified(config.name(), partition, ring);
             case OWNER, NONE -> ring.advanceVisible(Math.min(ring.durableOffset(),
                                                              replicationManager.replicatedThrough(config.name(),
                                                                                                   partition,
@@ -1880,12 +2069,46 @@ public final class StreamPartitionManager implements AutoCloseable {
         }
     }
 
+    /// A REPLICA that recovered a tail keeps it invisible until [#markVerified] (#1730 phase 2): before, "its OWN
+    /// durability" made the whole recovered tail visible at once, including the unacknowledged records of an ex-owner.
+    /// A copy that recovered nothing has nothing to verify.
+    @Contract
+    private void holdRecoveredTailUntilVerified(String streamName, int partition, OffHeapRingBuffer ring) {
+        if (ring.durableOffset() >= 0) {
+            unverifiedReplicas.add(partitionKeyOf(streamName, partition));
+        }
+    }
+
+    /// This copy has been compared with its committed owner through `offset` (#1730 phase 2): that prefix, as far as it
+    /// is durable here, becomes visible. When `offset` reaches the head everything held is verified and later appends
+    /// extend visibility as they always did; below the head the copy stays unverified and its own appends do not
+    /// extend it.
+    @Contract
+    public void markVerified(String streamName, int partition, long offset) {
+        resolvePartitionBuffer(streamName, partition).onSuccess(ring -> exposeVerified(streamName,
+                                                                                       partition,
+                                                                                       ring,
+                                                                                       offset));
+    }
+
+    private void exposeVerified(String streamName, int partition, OffHeapRingBuffer ring, long offset) {
+        ring.advanceVisible(Math.min(offset, ring.durableOffset()));
+        if (offset >= ring.headOffset()) {
+            unverifiedReplicas.remove(partitionKeyOf(streamName, partition));
+        }
+    }
+
     @Contract
     private void restoreVisible(StreamConfig config, StreamEntry entry) {
         entry.materialized()
-             .forEach((partition, materialized) -> restoreVisible(config,
-                                                                  partition,
-                                                                  materialized.ring()));
+             .forEach((partition, materialized) -> {
+                          restoreVisible(config,
+                                         partition,
+                                         materialized.ring());
+                          reportInterruptedRepair(config.name(),
+                                                  partition,
+                                                  materialized.wal());
+                      });
     }
 
     /// visible = min(durable, the highest offset `confirmationFactor - 1` distinct peers have acknowledged).
@@ -1988,10 +2211,587 @@ public final class StreamPartitionManager implements AutoCloseable {
         return option(divergedAt.get(new PartitionRef(streamName, partition)));
     }
 
+    /// The incarnation of the ring serving `(streamName, partition)` on this node, or [Option#none] when none is built
+    /// (#1730 phase 2): an owner that re-activates with the SAME incarnation kept its offsets, one with another rebuilt
+    /// them and may assign again what it assigned before.
+    public Option<Long> ringIncarnation(String streamName, int partition) {
+        return partitionBuffer(streamName, partition).map(OffHeapRingBuffer::incarnation);
+    }
+
     /// This manager's quarantine record as the backfill orchestrator consumes it (#1505 F2/R3). Its promotion guard
     /// runs under [#quarantineLock], the same lock that records a divergence.
     public QuarantineView quarantineView() {
         return new ManagerQuarantineView();
+    }
+
+    /// What a repair of a quarantined replica removed: everything above `keptThrough`, which is `removed` events
+    /// spanning `[firstRemoved, lastRemoved]`.
+    public record TailCut(long keptThrough, long removed, long firstRemoved, long lastRemoved, Option<Epoch> epoch) {
+        /// This cut and a LATER one of the same repair (a window step further back): one range `[firstRemoved, lastRemoved]`.
+        TailCut then(TailCut next) {
+            return new TailCut(Math.min(keptThrough, next.keptThrough),
+                               removed + next.removed,
+                               Math.min(firstRemoved, next.firstRemoved),
+                               Math.max(lastRemoved, next.lastRemoved),
+                               epoch.orElse(() -> next.epoch));
+        }
+    }
+
+    /// Repairs a quarantined REPLICA copy by cutting its tail back to the last offset it shares with its sender
+    /// (#1730 phase 2, KIP-101): the divergent entry sits at `quarantinedAt`, so every offset below it is kept and
+    /// everything from it up is removed from the WAL, then the epoch history, then the ring, inside the ring's ordered
+    /// section so no replicated append lands between. The quarantine is lifted in the same section (only if it is still
+    /// the one this repair read, so a divergence recorded meanwhile at a lower offset is kept; a quarantine is always at
+    /// an offset the ring holds, so a repair always removes at least that one). Nothing is quarantined: `none`. The CALLER decides that the sender is the committed owner of a later epoch and that this node is not
+    /// the owner; this method never does.
+    ///
+    /// Refused, leaving the partition quarantined, when the cut lies below the ring's retained range
+    /// ([StreamError.TruncateBelowRetained]): those offsets were evicted and possibly sealed, so the ring cannot
+    /// vouch that they are gone.
+    @Contract
+    public Result<Option<TailCut>> repairDivergence(String streamName,
+                                                    int partition,
+                                                    QuarantineView.RepairAuthority authority) {
+        var ref = new PartitionRef(streamName, partition);
+
+        return quarantinedAt(streamName, partition).fold(() -> success(none()),
+                                                         divergedAtOffset -> cutDivergentTail(streamName,
+                                                                                              partition,
+                                                                                              ref,
+                                                                                              divergedAtOffset,
+                                                                                              authority).map(Option::some));
+    }
+
+    private Result<TailCut> cutDivergentTail(String streamName,
+                                             int partition,
+                                             PartitionRef ref,
+                                             long divergedAtOffset,
+                                             QuarantineView.RepairAuthority authority) {
+        var keep = divergedAtOffset - 1;
+
+        return requireVouchingHistory(streamName, partition, divergedAtOffset).flatMap(_ -> requireAboveSealedFloor(streamName,
+                                                                                                                    partition,
+                                                                                                                    keep))
+                                     .flatMap(_ -> resolvePartitionBuffer(streamName, partition))
+                                     .flatMap(ring -> cutRing(streamName,
+                                                              partition,
+                                                              ref,
+                                                              ring,
+                                                              divergedAtOffset,
+                                                              keep,
+                                                              authority))
+                                     .onSuccess(cut -> reportCut(streamName, partition, cut))
+                                     .onSuccess(_ -> cutResumed(streamName, partition, ref))
+                                     .onFailure(cause -> cutRefused(streamName, partition, ref, keep, cause));
+    }
+
+    /// The cut failed. A refusal for what the cut must do FIRST (the recovery segment, the truncation witness: typically a full or
+    /// read-only volume) leaves the copy quarantined and is retried by the next repair; it would otherwise be visible only in the log, so
+    /// it raises `stream-divergent-tail-cut-refused` once per distinct failure episode (partition and cause), and the cut that finally
+    /// goes through raises `stream-divergent-tail-cut-resumed`. Any other failure is logged as before.
+    @Contract
+    private void cutRefused(String streamName, int partition, PartitionRef ref, long keep, Cause cause) {
+        log.warn("Replica {}[{}] could not cut its divergent tail back to offset {}: {}",
+                 streamName,
+                 partition,
+                 keep,
+                 cause.message());
+        if (cause instanceof StreamError.RepairPreserveFailed || cause instanceof StreamError.RepairWitnessFailed) {
+            var previous = refusedCuts.put(ref, cause.message());
+
+            if (!cause.message().equals(previous)) {
+                OperatorWarnings.raise(log,
+                                       operatorWarnings,
+                                       OperatorWarningCode.STREAM_DIVERGENT_TAIL_CUT_REFUSED,
+                                       streamName + "[" + partition + "]",
+                                       "Replica {}[{}] cannot cut its divergent tail back to offset {}: {}. It stays quarantined with its records "
+                                      + "untouched and the repair is retried; check the volume holding its WAL (full or read-only).",
+                                       streamName,
+                                       partition,
+                                       keep,
+                                       cause.message());
+            }
+        }
+    }
+
+    /// The subject of a standing `stream-divergent-tail-cut-refused` is gone from this node (the replica was released, the stream
+    /// destroyed or reaped): the warning is closed with the paired recovery so that no operator warning outlives its subject. The
+    /// quarantine that went with the ring takes the obstacle with it; a node that hosts the partition again starts a new episode.
+    @Contract
+    private void closeRefusedCuts(java.util.function.Predicate<PartitionRef> scope, String reason) {
+        refusedCuts.keySet().stream().filter(scope).toList().forEach(ref -> closeRefusedCut(ref, reason));
+    }
+
+    @Contract
+    private void closeRefusedCut(PartitionRef ref, String reason) {
+        if (refusedCuts.remove(ref) != null) {
+            OperatorWarnings.raise(log,
+                                   operatorWarnings,
+                                   OperatorWarningCode.STREAM_DIVERGENT_TAIL_CUT_RESUMED,
+                                   ref.streamName() + "[" + ref.partition() + "]",
+                                   "Replica {}[{}]: the refused divergent-tail cut no longer stands -- {}.",
+                                   ref.streamName(),
+                                   ref.partition(),
+                                   reason);
+        }
+    }
+
+    @Contract
+    private void cutResumed(String streamName, int partition, PartitionRef ref) {
+        if (refusedCuts.remove(ref) != null) {
+            OperatorWarnings.raise(log,
+                                   operatorWarnings,
+                                   OperatorWarningCode.STREAM_DIVERGENT_TAIL_CUT_RESUMED,
+                                   streamName + "[" + partition + "]",
+                                   "Replica {}[{}] cut its divergent tail back after the refusal that had stopped it; its records are preserved.",
+                                   streamName,
+                                   partition);
+        }
+    }
+
+    /// A divergence found by comparing owner-epoch provenance is established only when THIS copy's history can vouch for
+    /// its records: a copy that holds records and no history (or a history that does not start at its base) compares
+    /// unequal with every owner at offset 0, which is the absence of evidence, not a lineage split. Such a copy is not
+    /// cut (it keeps the quarantine and the durable flag it always had); a copy without a WAL has no provenance and is
+    /// judged by the records alone.
+    private Result<Unit> requireVouchingHistory(String streamName, int partition, long divergedAtOffset) {
+        return walFor(streamName, partition).map(_ -> provenanceOf(streamName, partition).flatMap(local -> vouches(local,
+                                                                                                                   streamName,
+                                                                                                                   partition,
+                                                                                                                   divergedAtOffset)))
+                     .or(Result.unitResult());
+    }
+
+    private static Result<Unit> vouches(LogProvenance local, String streamName, int partition, long divergedAtOffset) {
+        return ProvenanceComparison.incompleteness(local).isPresent()
+               ? new StreamError.DivergenceNotEstablished(streamName, partition, divergedAtOffset).<Unit> result()
+               : Result.unitResult();
+    }
+
+    /// Offsets at or below the last sealed offset were durably sealed into segments: what this copy holds there is not a tail
+    /// it may discard, so a divergence at or below the sealed floor is refused (the quarantine and the flag stand).
+    private Result<Unit> requireAboveSealedFloor(String streamName, int partition, long keep) {
+        var floor = lastSealedOffset.lastSealedOffset(streamName, partition);
+
+        return keep < floor
+               ? new StreamError.TruncateBelowRetained(streamName, partition, keep, floor + 1L).<Unit> result()
+               : Result.unitResult();
+    }
+
+    private Result<TailCut> cutRing(String streamName,
+                                    int partition,
+                                    PartitionRef ref,
+                                    OffHeapRingBuffer ring,
+                                    long divergedAtOffset,
+                                    long keep,
+                                    QuarantineView.RepairAuthority authority) {
+        var wal = walFor(streamName, partition);
+        var epoch = divergentEpoch(streamName, partition, divergedAtOffset);
+        var wrote = new java.util.concurrent.atomic.AtomicBoolean(false);
+        var preserved = new java.util.concurrent.atomic.AtomicReference<RecoverySegment.Preserved>();
+
+        cutWindowHook.run();
+
+        return ring.truncateSuffix(keep,
+                                   () -> cutInsideSection(streamName,
+                                                          partition,
+                                                          divergedAtOffset,
+                                                          keep,
+                                                          authority,
+                                                          wal,
+                                                          ring,
+                                                          epoch,
+                                                          wrote,
+                                                          preserved),
+                                   _ -> forgetCutState(streamName, partition, ref, divergedAtOffset, keep))
+                   .onFailure(_ -> {
+                       if (wrote.get()) {
+                       restoreWitness(streamName, partition, wal);
+                   }
+                   })
+                   .onSuccess(_ -> option(preserved.get()).onPresent(segment -> reportPreserved(streamName,
+                                                                                                partition,
+                                                                                                segment)))
+                   .map(removed -> new TailCut(keep, removed, keep + 1, keep + removed, epoch));
+    }
+
+    /// Test seam (#2086): runs just before the ring's ordered section is entered, i.e. at the point where the cut used to have read the
+    /// head. The quarantine fence for replicated appends is enforced inside the ring's lock, so a replicated append cannot land here; only an append that
+    /// does not pass that fence (an owner-local append) could. Even then the segment and the witness cover it, because the head is read INSIDE the section.
+    private volatile Runnable cutWindowHook = () -> {};
+
+    @Contract
+    void cutWindowHook(Runnable hook) {
+        this.cutWindowHook = hook;
+    }
+
+    /// What the cut does under the ring's append lock, in order: the authority check, the witness, the recovery segment, the WAL cut.
+    /// The head is read HERE (#2086), under the lock, so an append that arrived between the repair's start and the lock (only an owner-local
+    /// one can: the quarantine fence for replicated appends is enforced inside the lock) is in the witness and in the segment as it is in the cut.
+    private Result<Unit> cutInsideSection(String streamName,
+                                          int partition,
+                                          long divergedAtOffset,
+                                          long keep,
+                                          QuarantineView.RepairAuthority authority,
+                                          Option<AppendLog> wal,
+                                          OffHeapRingBuffer ring,
+                                          Option<Epoch> epoch,
+                                          java.util.concurrent.atomic.AtomicBoolean wrote,
+                                          java.util.concurrent.atomic.AtomicReference<RecoverySegment.Preserved> preserved) {
+        var head = ring.headOffset();
+        var prospective = new TailCut(keep, head - keep, keep + 1, head, epoch);
+
+        return authorised(streamName, partition, divergedAtOffset, authority).flatMap(_ -> witnessBeforeCut(streamName,
+                                                                                                            partition,
+                                                                                                            wal,
+                                                                                                            prospective))
+                         .onSuccess(_ -> wrote.set(wal.isPresent()))
+                         .flatMap(_ -> preserveBeforeCut(streamName, partition, wal, ring, prospective, preserved))
+                         .flatMap(_ -> wal.map(appendLog -> appendLog.truncateSuffix(keep))
+                                          .or(Result.unitResult()));
+    }
+
+    /// #2080, preserve before cut: a WAL copy writes the records this cut will remove to a recovery segment on its own volume BEFORE
+    /// anything is removed, in the same ordered section as the cut (no replicated append lands between the read and the cut),
+    /// right after the witness. A segment that cannot be made durable REFUSES the cut (typed, retriable; the copy stays quarantined
+    /// and untouched, and the witness is restored), so a durable cut never exists without a durable copy of what it removed. A
+    /// persistently failing volume therefore leaves no segment per retry; the one case that leaves a segment for a cut that did
+    /// not happen is the WAL's own truncate failing after it, which keeps the records twice, never zero times. A copy with no WAL is
+    /// ephemeral: nothing is on a volume to retain, and the cut proceeds as before.
+    private Result<Unit> preserveBeforeCut(String streamName,
+                                           int partition,
+                                           Option<AppendLog> wal,
+                                           OffHeapRingBuffer ring,
+                                           TailCut prospective,
+                                           java.util.concurrent.atomic.AtomicReference<RecoverySegment.Preserved> preserved) {
+        return wal.map(appendLog -> RecoverySegment.write(appendLog.path(),
+                                                          streamName,
+                                                          partition,
+                                                          appendLog.epochHistory(),
+                                                          ring::readAppended,
+                                                          prospective.firstRemoved(),
+                                                          prospective.lastRemoved(),
+                                                          System.currentTimeMillis())
+                                                   .onSuccess(preserved::set)
+                                                   .onFailure(cause -> log.warn("Replica {}[{}] could not preserve the records its cut would remove: {}",
+                                                                                streamName,
+                                                                                partition,
+                                                                                cause.message()))
+                                                   .mapError(cause -> (Cause) new StreamError.RepairPreserveFailed(streamName,
+                                                                                                                   partition,
+                                                                                                                   cause.message()))
+                                                   .map(_ -> Unit.unit()))
+                  .or(Result.unitResult());
+    }
+
+    /// The cut is durable and its records are in the recovery segment: the operator is told which stream, partition and offsets
+    /// left the live stream and where they are kept. Raised for every cut that removed records, whatever the confirmation factor.
+    @Contract
+    private void reportPreserved(String streamName, int partition, RecoverySegment.Preserved preserved) {
+        OperatorWarnings.raise(log,
+                               operatorWarnings,
+                               OperatorWarningCode.STREAM_DIVERGENT_TAIL_PRESERVED,
+                               streamName + "[" + partition + "]@" + preserved.first() + "-" + preserved.last(),
+                               "Replica {}[{}] cut offsets [{}, {}] ({} events) that diverged from its owner and kept them in recovery segment {}; "
+                              + "the segment is never deleted automatically",
+                               streamName,
+                               partition,
+                               preserved.first(),
+                               preserved.last(),
+                               preserved.records(),
+                               preserved.file());
+    }
+
+    /// A WAL copy writes the witness of what this cut will discard BEFORE it discards it, in the same ordered section: if the
+    /// witness cannot be made durable the cut is refused (typed, retriable; the copy stays quarantined), so a durable cut never
+    /// exists without the only record of what it lost. The witness is the cut combined with those of the same repair so far.
+    private Result<Unit> witnessBeforeCut(String streamName,
+                                          int partition,
+                                          Option<AppendLog> wal,
+                                          TailCut prospective) {
+        return wal.map(appendLog -> writeWitness(streamName,
+                                                 partition,
+                                                 appendLog,
+                                                 option(pendingCuts.get(new PartitionRef(streamName, partition))).map(earlier -> earlier.then(prospective))
+                                                       .or(prospective)))
+                  .or(Result.unitResult());
+    }
+
+    /// The cut did not happen after its witness was written: the witness returns to what it was (the pending cuts of this repair so
+    /// far, or nothing), so a restart never reports a loss that did not occur.
+    @Contract
+    private void restoreWitness(String streamName, int partition, Option<AppendLog> wal) {
+        wal.onPresent(appendLog -> option(pendingCuts.get(new PartitionRef(streamName, partition))).onPresent(earlier -> writeWitness(streamName,
+                                                                                                                                      partition,
+                                                                                                                                      appendLog,
+                                                                                                                                      earlier))
+                                         .onEmpty(() -> deletePendingCut(pendingCutFile(appendLog))));
+    }
+
+    /// Evaluated inside the cut's ordered section, immediately before the first thing it removes: the committed owner that
+    /// authorises the cut must still be the committed owner of a later epoch than the records about to go.
+    private Result<Unit> authorised(String streamName,
+                                    int partition,
+                                    long divergedAtOffset,
+                                    QuarantineView.RepairAuthority authority) {
+        return authority.holds(divergentEpoch(streamName, partition, divergedAtOffset))
+               ? Result.unitResult()
+               : new StreamError.RepairNotAuthorized(streamName, partition, divergedAtOffset).<Unit> result();
+    }
+
+    /// Runs inside the ring's ordered section, after the ring shrank: the quarantine this repair read is lifted, and
+    /// the replicated write the durability barrier remembers is forgotten when it was above the cut -- a barrier that
+    /// still pointed at it would expose, as durable and visible, offsets the cut removed.
+    @Contract
+    private void forgetCutState(String streamName, int partition, PartitionRef ref, long divergedAtOffset, long keep) {
+        synchronized (quarantineLock) {
+            divergedAt.remove(ref, divergedAtOffset);
+            provenanceMismatchAt.remove(ref);
+        }
+        // What remains is the prefix this copy shares with its sender: verified by construction.
+        unverifiedReplicas.remove(partitionKeyOf(streamName, partition));
+        lastReplicatedWalWrite.computeIfPresent(partitionKeyOf(streamName, partition),
+                                                (_, write) -> write.offset() > keep
+                                                              ? null
+                                                              : write);
+    }
+
+    /// A cut is routine for a stream that confirms with replicas (what it removed was never acknowledged: an
+    /// acknowledgement needs every in-sync member, and the committed owner is one). With `confirmation_factor` 1 the
+    /// acknowledgement was the old owner's alone, so the removed records may have been acknowledged and are lost: that
+    /// is the stated acks=1 window, and the operator is told exactly which offsets.
+    @Contract
+    private void reportCut(String streamName, int partition, TailCut cut) {
+        if (cut.removed() > 0) {
+            var ref = new PartitionRef(streamName, partition);
+            var first = !pendingCuts.containsKey(ref);
+
+            pendingCuts.merge(ref, cut, TailCut::then);
+            if (first) {
+                scheduleUnsettledReport(streamName, partition, repairGeneration.incrementAndGet(), ref);
+            }
+        }
+    }
+
+    /// The witness of a cut: one small file beside the WAL, written atomically (temp file, fsync, rename, directory fsync) and
+    /// removed when the report is made. A copy that restarts between the durable cut and the report finds it and reports at
+    /// reopen; without it the loss would have no witness at all.
+    private Result<Unit> writeWitness(String streamName, int partition, AppendLog wal, TailCut cut) {
+        var epoch = cut.epoch().map(e -> e.incarnation() + " " + e.rabiaTerm() + " " + e.localCounter()).or("-");
+        var file = pendingCutFile(wal);
+        var temporary = file.resolveSibling(file.getFileName() + ".tmp");
+
+        try {
+            Files.writeString(temporary,
+                              cut.keptThrough()
+                             + " " + cut.removed()
+                             + " " + cut.firstRemoved()
+                             + " " + cut.lastRemoved()
+                             + " " + epoch,
+                              StandardOpenOption.CREATE,
+                              StandardOpenOption.TRUNCATE_EXISTING,
+                              StandardOpenOption.WRITE,
+                              StandardOpenOption.SYNC);
+            Files.move(temporary, file, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+
+            return syncDirectory(file.getParent()).fold(cause -> witnessFailed(streamName,
+                                                                               partition,
+                                                                               wal,
+                                                                               cause.message()),
+                                                        _ -> Result.unitResult());
+        } catch (IOException | RuntimeException e) {
+            return witnessFailed(streamName,
+                                 partition,
+                                 wal,
+                                 String.valueOf(e.getMessage()));
+        }
+    }
+
+    private Result<Unit> witnessFailed(String streamName, int partition, AppendLog wal, String reason) {
+        log.warn("Could not record the truncation witness beside {}: {}", wal.path(), reason);
+
+        return new StreamError.RepairWitnessFailed(streamName, partition, reason).result();
+    }
+
+    static Result<Unit> syncDirectory(Path directory) {
+        try (var channel = FileChannel.open(directory, StandardOpenOption.READ)) {
+            channel.force(true);
+
+            return Result.unitResult();
+        } catch (IOException | RuntimeException e) {
+            return Causes.cause("directory fsync failed: " + e.getMessage()).result();
+        }
+    }
+
+    private static Path pendingCutFile(AppendLog wal) {
+        return wal.path()
+                  .resolveSibling(wal.path().getFileName() + ".pending-cut");
+    }
+
+    /// A partition reopened with a pending truncation record: the repair that made the cut never settled (the process died first).
+    /// What it discarded is reported now, once, and the record removed.
+    @Contract
+    private void reportInterruptedRepair(String streamName, int partition, Option<AppendLog> wal) {
+        wal.onPresent(appendLog -> readPendingCut(pendingCutFile(appendLog)).onPresent(cut -> {
+            Runnable report = () -> {
+                reportCut(streamName, partition, cut, confirmationFactorFor(streamName), false);
+                deletePendingCut(pendingCutFile(appendLog));
+            };
+
+            if (operatorWarningsBound) {
+                report.run();
+            } else {
+                deferredReports.add(report);
+            }
+        }));
+    }
+
+    private static Option<TailCut> readPendingCut(Path file) {
+        if (!Files.exists(file)) {
+            return Option.none();
+        }
+
+        try {
+            var parts = Files.readString(file).trim().split(" ");
+            var epoch = parts.length >= 7
+                        ? Option.some(Epoch.epoch(Long.parseLong(parts[4]),
+                                                  Long.parseLong(parts[5]),
+                                                  Long.parseLong(parts[6])))
+                        : Option.<Epoch> none();
+
+            return Option.some(new TailCut(Long.parseLong(parts[0]),
+                                           Long.parseLong(parts[1]),
+                                           Long.parseLong(parts[2]),
+                                           Long.parseLong(parts[3]),
+                                           epoch));
+        } catch (IOException | RuntimeException e) {
+            return Option.some(new TailCut(-1L, 0L, -1L, -1L, Option.none()));
+        }
+    }
+
+    @Contract
+    private static void deletePendingCut(Path file) {
+        try {
+            Files.deleteIfExists(file);
+        } catch (IOException e) {
+            log.warn("Could not remove the pending truncation record {}: {}", file, e.getMessage());
+        }
+    }
+
+    /// The repair of `(streamName, partition)` is over: ONE report for everything it discarded, however many window steps it
+    /// took (a divergence older than the compared window is cut back one window per run), carrying the final range
+    /// `[cut + 1, localHead]`, the epoch of the discarded records when the copy's history names it, and that the writer's
+    /// acknowledgement was the old owner's alone (`confirmation_factor` 1). With a factor of 2 or more nothing was acknowledged
+    /// by the old owner alone and it is only logged.
+    @Contract
+    private void settleRepair(String streamName, int partition) {
+        var ref = new PartitionRef(streamName, partition);
+
+        repairGenerationOf.remove(ref);
+        option(pendingCuts.remove(ref)).onPresent(cut -> {
+            var earlier = reportedUnsettled.remove(ref);
+
+            if (earlier == null || cut.removed() > earlier.removed()) {
+                reportCut(streamName, partition, cut, confirmationFactorFor(streamName), true);
+            }
+
+            walFor(streamName, partition).onPresent(wal -> deletePendingCut(pendingCutFile(wal)));
+        });
+    }
+
+    /// The bound after which a durable cut whose repair has not settled is reported anyway, with the range known so far and
+    /// `repairSettled=false`: the loss is real from the moment the cut is durable, and a repair that stalls (the owner unreachable,
+    /// a window step refused) must not hide it. Late-bound; `AetherNode` derives it from the backfill redrive interval
+    /// (`STREAM_BACKFILL_REDRIVE_INTERVAL`, 5 s) times 12, i.e. twelve redrive ticks, which is room for a stepped-back repair of
+    /// several 1,024-record windows. None (the default for unit managers) reports only on settle or reopen.
+    @Contract
+    public void repairReportBound(TimeSpan bound) {
+        this.repairReportBound = Option.some(bound);
+    }
+
+    @Contract
+    private void scheduleUnsettledReport(String streamName, int partition, long generation, PartitionRef ref) {
+        repairGenerationOf.put(ref, generation);
+        repairReportBound.onPresent(bound -> SharedScheduler.schedule(() -> reportUnsettled(streamName,
+                                                                                            partition,
+                                                                                            generation),
+                                                                      bound));
+    }
+
+    @Contract
+    private void reportUnsettled(String streamName, int partition, long generation) {
+        var ref = new PartitionRef(streamName, partition);
+
+        option(pendingCuts.get(ref)).filter(_ -> Long.valueOf(generation).equals(repairGenerationOf.get(ref)))
+              .filter(_ -> !reportedUnsettled.containsKey(ref))
+              .onPresent(cut -> {
+                             reportedUnsettled.put(ref, cut);
+                             reportCut(streamName,
+                                       partition,
+                                       cut,
+                                       confirmationFactorFor(streamName),
+                                       false);
+                         });
+    }
+
+    private void reportCut(String streamName, int partition, TailCut cut, int confirmationFactor, boolean settled) {
+        if (confirmationFactor <= 1) {
+            var epoch = cut.epoch().map(Epoch::toString).or("unknown");
+            var range = cut.firstRemoved() < 0
+                        ? "an unknown range (the witness of the cut could not be read)"
+                        : "[" + cut.firstRemoved() + ", " + cut.lastRemoved() + "] (" + cut.removed() + " events)";
+            // The subject is the event identity: (partition, epoch, first cut offset, settled flag), so an unsettled report and the
+            // settled one that follows it are two distinct events, at most two per truncation.
+            OperatorWarnings.raise(log,
+                                   operatorWarnings,
+                                   OperatorWarningCode.STREAM_DIVERGENT_TAIL_TRUNCATED,
+                                   streamName
+                                  + "[" + partition
+                                  + "]@" + epoch
+                                  + "@" + cut.firstRemoved()
+                                  + "#settled=" + settled,
+                                   "Replica {}[{}] discarded offsets {} (epoch {}) that diverged from its owner; "
+                                  + "ackedAtOwner=true: confirmation_factor is 1, so they may have been acknowledged by their writer "
+                                  + "and are lost; repairSettled={}",
+                                   streamName,
+                                   partition,
+                                   range,
+                                   epoch,
+                                   settled);
+
+            return;
+        }
+
+        log.info("Replica {}[{}] cut its tail back to offset {}: {} unacknowledged events [{}, {}] diverged from its owner",
+                 streamName,
+                 partition,
+                 cut.keptThrough(),
+                 cut.removed(),
+                 cut.firstRemoved(),
+                 cut.lastRemoved());
+    }
+
+    /// The divergence found by provenance could not be repaired: it stays quarantined, so the durable flag says so. A divergence
+    /// the repair resolves never gets here, so an ordinary failover raises no flag and blocks nothing.
+    @Contract
+    private void flagUnrepaired(String streamName, int partition) {
+        option(provenanceMismatchAt.get(new PartitionRef(streamName, partition))).onPresent(offset -> raiseOnce(streamName,
+                                                                                                                partition,
+                                                                                                                PartitionRecoveryReasonKind.MARKED_DIVERGED,
+                                                                                                                "N13: this copy's owner-epoch provenance differs from its catch-up source's at offset " + offset
+                                                                                                               + " and the divergence could not be repaired"));
+    }
+
+    /// The epoch the records at and above `offset` on this copy were written under, from its owner-epoch history; none for a
+    /// copy that keeps no log (and so no history) or whose history does not reach the offset.
+    private Option<Epoch> divergentEpoch(String streamName, int partition, long offset) {
+        return walFor(streamName, partition).flatMap(_ -> provenanceOf(streamName, partition).option())
+                     .flatMap(local -> Option.from(local.history()
+                                                        .stream()
+                                                        .filter(entry -> entry.startOffset() <= offset)
+                                                        .reduce((_, later) -> later)))
+                     .map(entry -> entry.epoch()
+                                        .rank());
     }
 
     private final class ManagerQuarantineView implements QuarantineView {
@@ -2006,6 +2806,45 @@ public final class StreamPartitionManager implements AutoCloseable {
                 return quarantinedAt(streamName, partition).fold(() -> some(promotion.get()), _ -> none());
             }
         }
+
+        @Contract
+        @Override
+        public void verified(String streamName, int partition, long offset) {
+            markVerified(streamName, partition, offset);
+        }
+
+        @Override
+        public Result<Option<Long>> repair(String streamName, int partition, RepairAuthority authority) {
+            return repairDivergence(streamName, partition, authority).map(cut -> cut.map(TailCut::keptThrough));
+        }
+
+        @Contract
+        @Override
+        public void verifiedForEpoch(String streamName, int partition, Epoch epoch) {
+            markVerifiedForEpoch(streamName, partition, epoch);
+        }
+
+        @Override
+        public Epoch committedEpoch(String streamName, int partition) {
+            return ownerEpochSource.currentOwnerEpoch(streamName, partition);
+        }
+
+        @Override
+        public boolean verifiedForCurrentEpoch(String streamName, int partition) {
+            return replicaVerified(streamName, partition);
+        }
+
+        @Contract
+        @Override
+        public void repairSettled(String streamName, int partition) {
+            settleRepair(streamName, partition);
+        }
+
+        @Contract
+        @Override
+        public void flagUnrepaired(String streamName, int partition) {
+            StreamPartitionManager.this.flagUnrepaired(streamName, partition);
+        }
     }
 
     /// Owner admission first, then the replica floor: the floor is evaluated only for an admitted write.
@@ -2013,9 +2852,23 @@ public final class StreamPartitionManager implements AutoCloseable {
         return ownerWriteAdmission.remoteCommittedOwner(streamName, partition)
                                   .map(owner -> new StreamError.NotOwnerAppend(streamName, partition, owner).<Unit> result())
                                   .or(Result::unitResult)
+                                  .flatMap(_ -> ensureOwnerRing(streamName, partition))
                                   .flatMap(_ -> ownerServeGate.admit(streamName, partition))
                                   .flatMap(_ -> ensureReplicaFloor(streamName, partition, minAcks))
                                   .flatMap(_ -> ensureSegmentTierRoom());
+    }
+
+    /// The ring an owner write enters exists BEFORE the owner gate runs (#1873): the gate commits where the epoch begins, which is
+    /// an offset of that ring, so it refuses a partition with no ring ([OwnerActivation.ActivationError#NO_RING]). The append
+    /// path's own lazy materialization runs only after admission, so without this a write that raced ahead of the
+    /// reconcile tick would be refused until the tick built the ring. Only the placement OWNER builds it here, exactly as the
+    /// append's safety valve does.
+    private Result<Unit> ensureOwnerRing(String streamName, int partition) {
+        return option(streams.get(streamName)).toResult(new StreamError.StreamNotFound(streamName))
+                     .flatMap(entry -> entry.ringFor(partition)
+                                            .isPresent() || placementRoleSupplier.roleFor(streamName, partition) != Role.OWNER
+                                       ? Result.unitResult()
+                                       : resolveAppendTarget(streamName, partition, entry).mapToUnit());
     }
 
     /// #1604: refuse an owner write while the durable segment tier is at or above
@@ -2522,13 +3375,17 @@ public final class StreamPartitionManager implements AutoCloseable {
 
     @Contract
     private void replicaDurable(String streamName, int partition, long offset) {
-        resolvePartitionBuffer(streamName, partition).onSuccess(ring -> replicaDurable(ring, offset));
+        var verified = !unverifiedReplicas.contains(partitionKeyOf(streamName, partition));
+
+        resolvePartitionBuffer(streamName, partition).onSuccess(ring -> replicaDurable(ring, offset, verified));
     }
 
     @Contract
-    private static void replicaDurable(OffHeapRingBuffer ring, long offset) {
+    private static void replicaDurable(OffHeapRingBuffer ring, long offset, boolean verified) {
         ring.markDurable(offset);
-        ring.advanceVisible(offset);
+        if (verified) {
+            ring.advanceVisible(offset);
+        }
     }
 
     /// The replica append shares the owner's ordered section (#1231): it and any concurrent local append
@@ -2613,10 +3470,12 @@ public final class StreamPartitionManager implements AutoCloseable {
                 quarantinedPartitionsSinceBoot.incrementAndGet();
                 log.error("Replica partition {}[{}] QUARANTINED: offset {} holds an event that differs from the one its sender "
                          + "offered. Nothing at or past it is acked, and this node never promotes the partition CAUGHT_UP. "
-                         + "Clearing it needs a truncate-and-refetch repair that does not exist yet (#1514)",
+                         + "A replica whose owner is known repairs itself by cutting its tail back to offset {} and refetching "
+                         + "(#1730 phase 2); the owner's own copy stays quarantined",
                           ref.streamName(),
                           ref.partition(),
-                          offset);
+                          offset,
+                          offset - 1);
 
                 return;
             }
@@ -3033,10 +3892,7 @@ public final class StreamPartitionManager implements AutoCloseable {
 
     private Result<Unit> quarantineMismatch(String streamName, int partition, long offset) {
         new PartitionQuarantine(streamName, partition).recordDivergence(offset);
-        raiseOnce(streamName,
-                  partition,
-                  PartitionRecoveryReasonKind.MARKED_DIVERGED,
-                  "N13: this copy's owner-epoch provenance differs from its catch-up source's at offset " + offset);
+        provenanceMismatchAt.merge(new PartitionRef(streamName, partition), offset, Math::min);
 
         return new StreamError.ProvenanceMismatch(streamName, partition, offset).result();
     }
@@ -3793,6 +4649,9 @@ public final class StreamPartitionManager implements AutoCloseable {
         evictionListener.onStreamDeleted(entry.config().name());
         forgetHeldBack(entry);
         forgetFootprint(entry.config().name());
+        closeRefusedCuts(ref -> ref.streamName()
+                                   .equals(entry.config().name()),
+                         "the stream is gone from this node");
 
         return success(unit());
     }
@@ -4020,6 +4879,9 @@ public final class StreamPartitionManager implements AutoCloseable {
                           .onSuccess(candidate -> restoreVisible(config,
                                                                  partition,
                                                                  candidate.ring()))
+                          .onSuccess(candidate -> reportInterruptedRepair(config.name(),
+                                                                          partition,
+                                                                          candidate.wal()))
                           .map(candidate -> installOrRelease(entry, partition, candidate, floorBytes));
     }
 
@@ -4368,6 +5230,7 @@ public final class StreamPartitionManager implements AutoCloseable {
         mp.close();
         forgetReplicatedWrites(ref.streamName(), ref.partition(), mp.wal());
         releaseCandidacy.remove(ref);
+        closeRefusedCuts(ref::equals, "this node no longer hosts the partition's replica");
         freeReshuffleSlot(ref);
         dropDurableWatermark(ref);
         releasedSinceBoot.incrementAndGet();

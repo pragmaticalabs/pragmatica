@@ -76,6 +76,21 @@ final class CatchUpState {
                       Pending::merge);
     }
 
+    /// Mark `partition` catching up in a NEW pending spell (#1777 R1b), adding `previousHolders` to the sources already
+    /// recorded: a round started before this call belongs to the old spell and cannot complete it, so the partition
+    /// serves again only after a round that began now.
+    @Contract
+    void markCatchingUpAfresh(Partition partition, Collection<NodeId> previousHolders) {
+        var fresh = new Pending(Set.copyOf(previousHolders), 0, false, generations.incrementAndGet());
+
+        pending.merge(partition.value(),
+                      fresh,
+                      (existing, next) -> new Pending(union(existing.previousHolders, next.previousHolders),
+                                                      existing.rounds,
+                                                      existing.sinceBoot,
+                                                      next.generation));
+    }
+
     /// Mark `partition` catching up since boot: no previous holders are recorded, they are walked live.
     @Contract
     void markCatchingUpSinceBoot(Partition partition) {
@@ -130,6 +145,11 @@ final class CatchUpState {
                             .stream()
                             .filter(entry -> entry.rounds() >= rounds)
                             .count();
+    }
+
+    /// Whether no partition is pending — cheap enough for every quorum read (#1777 R1).
+    boolean nonePending() {
+        return pending.isEmpty();
     }
 
     List<Partition> pendingPartitions() {

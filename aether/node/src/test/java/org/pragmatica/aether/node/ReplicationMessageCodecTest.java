@@ -61,7 +61,7 @@ class ReplicationMessageCodecTest {
 
     @Test
     void replicateAck_roundTrips() {
-        var original = new ReplicateAck(REPLICA, "app:orders:2.1.0", 0, 7L);
+        var original = new ReplicateAck(REPLICA, "app:orders:2.1.0", 0, 7L, org.pragmatica.aether.slice.generation.Epoch.epoch(1L, 2L, 3L));
 
         ReplicationMessage decoded = CODEC.decode(CODEC.encode(original));
 

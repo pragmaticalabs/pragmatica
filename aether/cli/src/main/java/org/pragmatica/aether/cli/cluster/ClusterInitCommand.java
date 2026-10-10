@@ -8,7 +8,9 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Arrays;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.Callable;
 
 import org.pragmatica.aether.cli.ExitCode;
@@ -81,11 +83,15 @@ class ClusterInitCommand implements Callable<Integer> {
     @Option(names = "--region", description = "Cloud region (cloud target only)")
     private String region;
 
+    @Option(names = "--zone", description = "Cloud zone (gcp only; required, no default)")
+    private String zone;
+
     @Option(names = "--instance-type", description = "Cloud instance type (cloud target only)")
     private String instanceType;
 
-    @Option(names = "--credential-env", description = "Env var name carrying provider credentials")
-    private String credentialEnv;
+    @Option(names = "--credential-env", description = "Env var carrying provider credentials. hetzner: the token's env var name. aws, gcp, azure: repeat "
+                                                    + "as <key>=<ENV_VAR> (e.g. secret_access_key=MY_SECRET); keys not named use <PROVIDER>_<KEY>", split = ",")
+    private List<String> credentialEnv;
 
     @Option(names = "--hosts", description = "SSH hosts (ssh target only), comma-separated", split = ",")
     private List<String> hosts;
@@ -205,8 +211,6 @@ class ClusterInitCommand implements Callable<Integer> {
 
         if (!Verify.Is.present(instanceType)) return new ClusterInitError.InstanceTypeRequired(provider).result();
 
-        if (credentialEnv == null) return new ClusterInitError.MissingField("--credential-env").result();
-
         if (!Verify.Is.present(sshPublicKey)) return new ClusterInitError.SshPublicKeyRequired().result();
         // A flag that cannot affect a cloud target is refused, not silently swallowed: --ssh-key is
         // the PRIVATE key for reaching existing hosts and was accepted-and-ignored here.
@@ -216,15 +220,64 @@ class ClusterInitCommand implements Callable<Integer> {
                                                           "cloud VMs are provisioned with a PUBLIC key — use --ssh-public-key").result();
         }
 
-        return parseCloudProvider(provider).flatMap(p -> InputValidators.validateEnvVarName(credentialEnv).flatMap(envOk -> requestedSplit().flatMap(split -> assembleAnswers(clusterName,
-                                                                                                                                                                              SourceType.CLOUD,
-                                                                                                                                                                              org.pragmatica.lang.Option.some(new CloudAnswers(p,
-                                                                                                                                                                                                                               region,
-                                                                                                                                                                                                                               instanceType,
-                                                                                                                                                                                                                               envOk,
-                                                                                                                                                                                                                               sshPublicKey.trim())),
-                                                                                                                                                                              org.pragmatica.lang.Option.none(),
-                                                                                                                                                                              split))));
+        return parseCloudProvider(provider).flatMap(p -> cloudAnswersFor(p).flatMap(cloud -> requestedSplit().flatMap(split -> assembleAnswers(clusterName,
+                                                                                                                                               SourceType.CLOUD,
+                                                                                                                                               org.pragmatica.lang.Option.some(cloud),
+                                                                                                                                               org.pragmatica.lang.Option.none(),
+                                                                                                                                               split))));
+    }
+
+    private Result<CloudAnswers> cloudAnswersFor(CloudProviderName p) {
+        if (p == CloudProviderName.GCP && !Verify.Is.present(zone)) return new ClusterInitError.ZoneRequired(provider).result();
+
+        if (p != CloudProviderName.GCP && Verify.Is.present(zone)) {
+            return new ClusterInitError.FlagNotApplicable("--zone", p.value() + " cloud", "only gcp takes a zone").result();
+        }
+
+        return credentialEnvVarsFor(p).map(envVars -> new CloudAnswers(p,
+                                                                       region,
+                                                                       Verify.Is.present(zone)
+                                                                       ? zone.trim()
+                                                                       : "",
+                                                                       instanceType,
+                                                                       envVars,
+                                                                       sshPublicKey.trim()));
+    }
+
+    /// hetzner: the single `--credential-env` value is the token's env var (required). Others: `<key>=<ENV_VAR>` entries override the
+    /// conventional `<PROVIDER>_<KEY>` default of the named key; a key the provider does not take, or a bare value, is refused.
+    private Result<Map<String, String>> credentialEnvVarsFor(CloudProviderName p) {
+        var envVars = new LinkedHashMap<>(CloudAnswers.defaultEnvVars(p));
+        var given = credentialEnv == null
+                    ? List.<String> of()
+                    : credentialEnv;
+
+        if (p == CloudProviderName.HETZNER) {
+            return given.size() == 1
+                   ? InputValidators.validateEnvVarName(given.getFirst()).map(name -> Map.of("api_token", name))
+                   : new ClusterInitError.MissingField("--credential-env").result();
+        }
+
+        for (var entry : given) {
+            var eq = entry.indexOf('=');
+            var key = eq < 0
+                      ? ""
+                      : entry.substring(0, eq).trim();
+
+            if (!envVars.containsKey(key)) {
+                return new ClusterInitError.FlagNotApplicable("--credential-env " + entry,
+                                                              p.value() + " cloud",
+                                                              "use <key>=<ENV_VAR> with a key from " + envVars.keySet()).result();
+            }
+
+            var validated = InputValidators.validateEnvVarName(entry.substring(eq + 1).trim());
+
+            if (validated.isFailure()) return validated.map(_ -> envVars);
+
+            envVars.put(key, validated.unwrap());
+        }
+
+        return Result.success(envVars);
     }
 
     private Result<ClusterConfigAnswers> buildSshAnswers(String clusterName) {

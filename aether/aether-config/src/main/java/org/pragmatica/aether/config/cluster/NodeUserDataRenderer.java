@@ -43,7 +43,7 @@ public sealed interface NodeUserDataRenderer {
     Pattern PLAIN_SEMVER = Pattern.compile("^[0-9]+\\.[0-9]+\\.[0-9]+$");
     String JAR_REPO_PATH = "pragmaticalabs/pragmatica";
     /// #1021 — the JVM-mode launch surface. Shared with `BootstrapPhaseDeploy`, whose finalized-PEERS
-    /// re-launch rewrites [#JVM_ENV_FILE_PATH] and restarts [#JVM_UNIT_NAME] rather than pattern-matching
+    /// start rewrites [#JVM_ENV_FILE_PATH] and starts [#JVM_UNIT_NAME] rather than pattern-matching
     /// the process with `pkill -f`.
     String JVM_UNIT_NAME = "aether-node.service";
     String JVM_UNIT_PATH = "/etc/systemd/system/aether-node.service";
@@ -63,8 +63,22 @@ public sealed interface NodeUserDataRenderer {
         return "v" + version + "-candidate";
     }
 
+    /// Placeholder a runtime profile's `image` / `jar_url` may carry to follow `[cluster] version` (#1543 part C).
+    String VERSION_PLACEHOLDER = "{version}";
+
+    static String withVersion(String pin, String clusterVersion) {
+        return pin.replace(VERSION_PLACEHOLDER, clusterVersion);
+    }
+
+    /// The profile's `image` with [#VERSION_PLACEHOLDER] replaced by the cluster version.
+    static Option<String> pinnedImage(RuntimeProfile profile, String clusterVersion) {
+        return profile.image()
+                      .map(image -> withVersion(image, clusterVersion));
+    }
+
     static String resolveJarUrl(Option<RuntimeProfile> profile, String version) {
-        return profile.flatMap(RuntimeProfile::jarUrl)
+        return profile.flatMap(p -> p.jarUrl()
+                                     .map(url -> withVersion(url, version)))
                       .or("https://github.com/" + JAR_REPO_PATH
                          + "/releases/download/" + deriveJarTag(version)
                          + "/aether-node.jar");
@@ -100,10 +114,40 @@ public sealed interface NodeUserDataRenderer {
                          TomlDocument composedConfig,
                          List<String> sshAuthorizedKeys,
                          List<String> peers) {
+        return render(config,
+                      source,
+                      role,
+                      nodeId,
+                      nodeIndex,
+                      clusterSecret,
+                      clusterName,
+                      composedConfig,
+                      sshAuthorizedKeys,
+                      peers,
+                      true);
+    }
+
+    /// #1543 — `startNode == false` renders an INSTALL-ONLY script: docker/JVM, image or jar, composed
+    /// config, env file and unit are all laid down, but the node process is not started. The CLI
+    /// bootstrap uses it when cores span several sources: PEERS are not final at create time, so the
+    /// finalized-PEERS SSH push performs the node's one and only start instead of re-launching a node
+    /// that already ran under the same id.
+    static String render(ClusterBootstrapConfig config,
+                         SourceProfile source,
+                         NodeRole role,
+                         String nodeId,
+                         int nodeIndex,
+                         String clusterSecret,
+                         ClusterName clusterName,
+                         TomlDocument composedConfig,
+                         List<String> sshAuthorizedKeys,
+                         List<String> peers,
+                         boolean startNode) {
         var ports = config.operations().ports();
         var runtimeProfile = resolveRuntimeProfile(config, source, role);
         var isContainer = isContainerRuntime(runtimeProfile);
-        var image = runtimeProfile.flatMap(RuntimeProfile::image)
+        var image = runtimeProfile.flatMap(p -> pinnedImage(p,
+                                                            config.cluster().version()))
                                   .or("ghcr.io/pragmaticalabs/aether-node:" + config.cluster().version());
         var peersValue = String.join(",", peers);
         var sb = new StringBuilder();
@@ -119,23 +163,32 @@ public sealed interface NodeUserDataRenderer {
                         peersValue);
         appendSshAuthorizedKeys(sb, sshAuthorizedKeys);
         appendAdvertiseHostResolution(sb);
+        var backupPath = backupPath(composedConfig);
+
         if (isContainer) {
             appendDockerInstall(sb);
             appendComposedConfig(sb, composedConfig);
-            appendContainerRun(sb, clusterName, nodeId, role, source);
+            appendBackupDirectory(sb, backupPath, true);
+            if (startNode) {
+                appendContainerRun(sb, clusterName, nodeId, role, source, backupPath);
+            } else {
+                appendContainerPullOnly(sb);
+            }
         } else {
             appendJvmInstall(sb,
                              resolveJarUrl(runtimeProfile,
                                            config.cluster().version()));
             appendComposedConfig(sb, composedConfig);
+            appendBackupDirectory(sb, backupPath, false);
             appendJvmRun(sb,
                          clusterName,
                          role,
                          source,
-                         runtimeProfile.flatMap(RuntimeProfile::jvmArgs).or(""));
+                         runtimeProfile.flatMap(RuntimeProfile::jvmArgs).or(""),
+                         startNode);
         }
 
-        appendReadinessSignal(sb, nodeId, ports.cluster(), ports.management());
+        appendReadinessSignal(sb, nodeId, ports.cluster(), ports.management(), startNode);
 
         return sb.toString();
     }
@@ -202,7 +255,7 @@ public sealed interface NodeUserDataRenderer {
     }
 
     private static boolean isContainerRuntime(Option<RuntimeProfile> profile) {
-        return profile.map(p -> p.type() == RuntimeType.CONTAINER || p.type() == RuntimeType.DOCKER || p.type() == RuntimeType.MANAGED_CONTAINER)
+        return profile.map(RuntimeProfile::isContainer)
                       .or(true);
     }
 
@@ -240,6 +293,35 @@ public sealed interface NodeUserDataRenderer {
         sb.append("fi\n\n");
     }
 
+    /// Host directory that holds the `[backup]` repository `<path>/kv-backup` of a container node (#1968).
+    String BACKUP_HOST_DIRECTORY = "/opt/aether/backups";
+
+    /// The `[backup] path` of the composed config when the backup is enabled and has a path, else empty. A node whose composed
+    /// config carries `[backup]` (the operator's `node_config`, the same for every seed and replacement of the source) needs
+    /// that path to exist and be writable on the host it boots on, which the TOML alone does not give it.
+    static Option<String> backupPath(TomlDocument composedConfig) {
+        var enabled = composedConfig.getString("backup", "enabled")
+                                    .map(value -> Boolean.parseBoolean(value.strip()))
+                                    .or(false);
+
+        return enabled
+               ? composedConfig.getString("backup", "path")
+                               .filter(path -> !path.isBlank())
+               : Option.none();
+    }
+
+    /// Creates the backup directory before the node starts. A container node gets it as a host directory owned by the
+    /// in-container `aether` user (uid 1000), bind-mounted at the configured path by [#appendContainerRun], so the repository
+    /// survives the container; a JVM node runs on the host as the unit's user and only needs the directory to exist.
+    private static void appendBackupDirectory(StringBuilder sb, Option<String> backupPath, boolean container) {
+        backupPath.onPresent(path -> {
+            sb.append("# --- Backup repository directory ([backup] path, #1968) ---\n");
+            sb.append(container
+                      ? "install -d -m 0750 -o 1000 -g 1000 " + BACKUP_HOST_DIRECTORY + "\n\n"
+                      : "install -d -m 0750 " + path + "\n\n");
+        });
+    }
+
     private static void appendComposedConfig(StringBuilder sb, TomlDocument composedConfig) {
         sb.append("# --- Write Aether config (composed: defaults + source-type + operator + CLI overlay) ---\n");
         sb.append("mkdir -p /opt/aether/config\n");
@@ -254,11 +336,19 @@ public sealed interface NodeUserDataRenderer {
         sb.append("chmod 600 /opt/aether/config/aether.toml\n\n");
     }
 
+    private static void appendContainerPullOnly(StringBuilder sb) {
+        sb.append("# --- Pull only: the CLI's finalized-PEERS push starts the node (#1543) ---\n");
+        sb.append("if ! docker image inspect \"${AETHER_IMAGE}\" >/dev/null 2>&1; then\n");
+        sb.append("    docker pull \"${AETHER_IMAGE}\"\n");
+        sb.append("fi\n\n");
+    }
+
     private static void appendContainerRun(StringBuilder sb,
                                            ClusterName clusterName,
                                            String nodeId,
                                            NodeRole role,
-                                           SourceProfile source) {
+                                           SourceProfile source,
+                                           Option<String> backupPath) {
         sb.append("# --- Pull and run ---\n");
         sb.append("if ! docker image inspect \"${AETHER_IMAGE}\" >/dev/null 2>&1; then\n");
         sb.append("    docker pull \"${AETHER_IMAGE}\"\n");
@@ -277,6 +367,11 @@ public sealed interface NodeUserDataRenderer {
         sb.append("    -l aether-node-id=").append(nodeId).append(" \\\n");
         sb.append("    -l aether-role=").append(role.value()).append(" \\\n");
         sb.append("    -v /opt/aether/config/aether.toml:/app/aether.toml:ro \\\n");
+        backupPath.onPresent(path -> sb.append("    -v ")
+                                       .append(BACKUP_HOST_DIRECTORY)
+                                       .append(':')
+                                       .append(path)
+                                       .append(" \\\n"));
         sb.append("    -e NODE_ID=\"${AETHER_NODE_ID}\" \\\n");
         sb.append("    -e CLUSTER_PORT=\"${AETHER_CLUSTER_PORT}\" \\\n");
         sb.append("    -e MANAGEMENT_PORT=\"${AETHER_MANAGEMENT_PORT}\" \\\n");
@@ -319,17 +414,17 @@ public sealed interface NodeUserDataRenderer {
     }
 
     /// Single source of truth for the cluster-identity env allow-list emission, shared by the
-    /// cloud-init user-data start ([#appendEnv]) and the finalized-PEERS SSH re-launch
-    /// (`BootstrapPhaseDeploy#buildRestartCommand` / `buildJvmRestartCommand`). Without this the
-    /// re-launch dropped AETHER_INSECURE_DEV_MODE and the rest of the allow-list that the initial
-    /// start set, so the actually-running (re-launched) container lost its cluster identity and
+    /// cloud-init user-data start ([#appendEnv]) and the finalized-PEERS SSH start
+    /// (`BootstrapPhaseDeploy#buildStartCommand` / `buildJvmStartCommand`). Without this the
+    /// old re-launch dropped AETHER_INSECURE_DEV_MODE and the rest of the allow-list that the initial
+    /// start set, so the actually-running (relaunched) container lost its cluster identity and
     /// dev-mode posture — the C2 security gate then refused to serve the management API and the
     /// health poll never succeeded.
     ///
     /// `clusterSecretRef` controls whether AETHER_CLUSTER_SECRET is emitted from this pass:
     /// `some(ref)` emits it (cloud-init uses the `${AETHER_CLUSTER_SECRET}` shell ref);
-    /// `none()` excludes it so the re-launch can emit the finalized secret explicitly without a
-    /// duplicate `-e AETHER_CLUSTER_SECRET`. `envLookup` is injectable so the re-launch can be
+    /// `none()` excludes it so the SSH start can emit the finalized secret explicitly without a
+    /// duplicate `-e AETHER_CLUSTER_SECRET`. `envLookup` is injectable so the SSH start can be
     /// unit-tested without mutating the real process env (mirrors `buildCloudSshConfig`).
     ///
     /// AETHER_INSECURE_DEV_MODE is ISOLATED — it rides a standalone block, never the identity
@@ -377,7 +472,7 @@ public sealed interface NodeUserDataRenderer {
             case "AETHER_SOURCE" -> Option.some(source.value());
             case "AETHER_ZONE" -> zone;
             // Sourced from the supplied ref (cloud-init: the script's own
-            // ${AETHER_CLUSTER_SECRET} shell var); none() for the re-launch which emits the
+            // ${AETHER_CLUSTER_SECRET} shell var); none() for the SSH start which emits the
             // finalized secret explicitly to avoid a duplicate -e AETHER_CLUSTER_SECRET.
             case "AETHER_CLUSTER_SECRET" -> clusterSecretRef;
             default -> lookupNonEmpty(name, envLookup);
@@ -416,6 +511,11 @@ public sealed interface NodeUserDataRenderer {
         sb.append("    apt-get update -qq\n");
         sb.append("    apt-get install -y -qq temurin-25-jre\n");
         sb.append("fi\n");
+        sb.append("# [backup] shells out to git (#2007): a host without it cannot back up or restore, and the node refuses to boot.\n");
+        sb.append("if ! command -v git &> /dev/null; then\n");
+        sb.append("    apt-get update -qq\n");
+        sb.append("    apt-get install -y -qq --no-install-recommends git\n");
+        sb.append("fi\n");
         sb.append("mkdir -p /opt/aether\n");
         sb.append("if [ ! -s /opt/aether/aether-node.jar ]; then\n");
         sb.append("    curl -fsSL -o /opt/aether/aether-node.jar \\\n");
@@ -444,10 +544,11 @@ public sealed interface NodeUserDataRenderer {
                                      ClusterName clusterName,
                                      NodeRole role,
                                      SourceProfile source,
-                                     String jvmArgs) {
+                                     String jvmArgs,
+                                     boolean startNode) {
         appendJvmEnvFile(sb, clusterName, role, source);
         appendJvmLauncher(sb, jvmArgs);
-        appendJvmUnit(sb);
+        appendJvmUnit(sb, startNode);
     }
 
     /// The env file systemd reads. Two heredocs on purpose:
@@ -459,7 +560,7 @@ public sealed interface NodeUserDataRenderer {
     ///    [#appendAdvertiseHostResolution].
     ///
     /// AETHER_CLUSTER_SECRET rides the expanding block via the `none()` ref to [#emitIdentityEnv] —
-    /// the same seam `BootstrapPhaseDeploy`'s re-launch uses to avoid emitting the secret twice — so
+    /// the same seam `BootstrapPhaseDeploy`'s start uses to avoid emitting the secret twice — so
     /// it is written once, from the script's own shell var.
     ///
     /// AETHER_ADVERTISE_HOST is written only when non-empty, preserving the old launch's runtime test:
@@ -531,8 +632,10 @@ public sealed interface NodeUserDataRenderer {
     /// unit must not start on boot while the id is fixed (`aether/docs/operators/deployment-recovery.md` §2.3 and
     /// §4.4). The container path already runs
     /// `docker run --restart no` for the same reason.
-    private static void appendJvmUnit(StringBuilder sb) {
-        sb.append("# --- Install and start the aether-node systemd unit ---\n");
+    private static void appendJvmUnit(StringBuilder sb, boolean startNode) {
+        sb.append(startNode
+                  ? "# --- Install and start the aether-node systemd unit ---\n"
+                  : "# --- Install the aether-node systemd unit (the CLI push starts it, #1543) ---\n");
         sb.append("# Restart=no is deliberate: Aether uses terminal-removal membership and CTM auto-heal\n");
         sb.append("# owns recovery. The unit exists so a dead node is VISIBLE (systemctl status /\n");
         sb.append("# journalctl -u aether-node), not so it comes back. See docs/operators/deployment-recovery.md.\n");
@@ -540,7 +643,11 @@ public sealed interface NodeUserDataRenderer {
         sb.append(SystemdUnitTemplate.generateDefault());
         sb.append("AETHER_UNIT\n");
         sb.append("systemctl daemon-reload\n");
-        sb.append("systemctl start ").append(JVM_UNIT_NAME).append("\n\n");
+        if (startNode) {
+            sb.append("systemctl start ").append(JVM_UNIT_NAME).append("\n");
+        }
+
+        sb.append("\n");
     }
 
     private static Unit appendEnvFileLine(StringBuilder sb, String name, String value) {
@@ -549,11 +656,17 @@ public sealed interface NodeUserDataRenderer {
         return Unit.unit();
     }
 
-    private static void appendReadinessSignal(StringBuilder sb, String nodeId, int clusterPort, int managementPort) {
+    private static void appendReadinessSignal(StringBuilder sb,
+                                              String nodeId,
+                                              int clusterPort,
+                                              int managementPort,
+                                              boolean startNode) {
         sb.append("# --- Signal readiness ---\n");
         sb.append("echo \"Aether node ")
           .append(nodeId)
-          .append(" starting on ports: cluster=")
+          .append(startNode
+                  ? " starting on ports: cluster="
+                  : " installed, awaiting start on ports: cluster=")
           .append(clusterPort)
           .append(", mgmt=")
           .append(managementPort)

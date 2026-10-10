@@ -1285,11 +1285,16 @@ aether nodes lifecycle --state READY+SYNCING
 aether nodes lifecycle <nodeId>
 
 # Drain a node (READY → DRAINING via the membership-v2 DRAIN-command heartbeat;
-# the target self-drains, finishing in-flight requests, respecting disruption budget)
+# the target self-drains, finishing in-flight requests, respecting the disruption budget
+# and every hosted slice's minAvailable floor: a drain that would take a slice below it
+# is refused with 409 naming the slice)
 aether nodes drain <nodeId>
 
+# Override the slice minAvailable floor (the cluster raises an operator warning)
+aether nodes drain <nodeId> --override-floor
+
 # Shut down a node (self-drain then halt via the DRAIN-command heartbeat; CTM
-# grace-terminate backstop reaps the container)
+# grace-terminate backstop reaps the container). Same floor, same --override-floor.
 aether nodes shutdown <nodeId>
 
 # Check an already matching immutable role (CORE, WORKER or SPOT).
@@ -1366,6 +1371,8 @@ aether scheduled-tasks inject \
 # Surface per-node execution attribution for a scheduled task (P-NEW-H)
 aether scheduled-tasks executions-by-node <configSection> <artifact> <method>
 ```
+
+The task entries printed by `list` and `get` carry `lastOutcome` (`SUCCESS`, `FAILURE`, `UNKNOWN`, or empty) and `completionTimeouts` and `lateResolutions` (monotonic counters): `UNKNOWN` is a remote fire whose response did not arrive within the scheduler's 10-minute completion bound, counted neither as an execution nor as a failure (see the scheduled-tasks state API in the management API reference).
 
 Example:
 ```bash
@@ -1979,7 +1986,8 @@ aether cluster init --non-interactive --name test-cluster --core-nodes 5 --outpu
 | `--worker-nodes` | Worker tier size (default 0). Not bounded by the consensus-tier maximum. For an `ssh` target it is the remainder of `--hosts` after `--core-nodes` and must not be given |
 | `--hosts` | SSH hosts (ssh target only), comma-separated |
 | `--ssh-user`, `--ssh-key`, `--ssh-port` | SSH credentials (ssh target only) |
-| `--provider`, `--region`, `--instance-type`, `--credential-env` | Cloud target only |
+| `--provider`, `--region`, `--instance-type`, `--credential-env` | Cloud target only. `--credential-env`: hetzner takes the token's env var name; aws, gcp and azure take repeated `<key>=<ENV_VAR>` (e.g. `secret_access_key=MY_SECRET`), keys not named default to `<PROVIDER>_<KEY>` |
+| `--zone` | gcp only; required, no default (a zone derived from the region can name one that does not exist) |
 | `--db-host`, `--db-port`, `--db-name`, `--db-user`, `--db-password-env` | Optional Postgres backing store |
 | `--firewall` | Firewall preset: `standard`, `restrictive`, `open`, `custom` |
 | `--admin-cidr`, `--internal-cidr` | Restrictive firewall preset only |
@@ -2514,11 +2522,15 @@ See [`cluster-generation-spec.md`](../specs/cluster-generation-spec.md) §14.
 
 ### `aether cluster upgrade`
 
-Initiate a cluster version upgrade.
+Change the version the cluster provisions. The command rewrites `[cluster] version` in the committed TOML (the version replacements and scale-ups boot) and stores the same version beside it; it does not restart or replace any running node.
 
 ```bash
 aether cluster upgrade --version <X.Y.Z>
 ```
+
+The upgrade is refused (HTTP 409) when a runtime profile used by a source role pins `image` (container) or `jar_url` (JVM) literally: the pin would win over the version, so nothing would change. Write the pin with `{version}` (`image = "registry/aether-node:{version}"`) and it follows the upgrade; the placeholder has to be in the config the cluster was bootstrapped with, since `aether cluster apply` does not currently change runtime-profile content. A version change inside a file given to `aether cluster apply` is likewise refused, with a pointer back to this command — `cluster upgrade` is the only way to change the version.
+
+`GET /api/v1/nodes/lifecycle` shows the `version` each node advertises.
 
 | Option | Description |
 |--------|-------------|
@@ -2592,6 +2604,8 @@ aether cluster destroy --cluster=my-cluster --yes
 | `--yes` | Skip the interactive confirmation prompt |
 | `--keep-resources` | Skip cloud resource termination — remove the registry entry only |
 | `-q`, `--no-color`, `-o <format>`, `--field <field>` | Standard output controls |
+
+Destroy takes every slice below its `minAvailable` floor by definition (it drains and shuts down every node without undeploying), so it sends `force=true` on every drain and shutdown request. The operator-drain slice floor (`aether nodes drain`, #1720) therefore never refuses it, and each node's breach is reported as a `slice-floor-breached-by-force` operator warning.
 
 > **Cleanup failure is loud (#521).** If cloud resource termination fails, `destroy` exits
 > non-zero (`ExitCode.CLEANUP_FAILED`) and deliberately **keeps** the registry entry — the

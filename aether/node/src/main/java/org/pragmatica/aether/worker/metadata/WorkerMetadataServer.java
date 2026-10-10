@@ -58,6 +58,10 @@ public final class WorkerMetadataServer {
     private final WorkerMetadataLimits limits;
     private final BiConsumer<NodeId, String> reportRejection;
     private final LongSupplier clusterIncarnation;
+    /// The DHT replication every projection carries, derived from this core's committed cluster configuration at
+    /// capture time (#1777 track 1): read under the same store monitor as the rest of the cut, so a committed change
+    /// is in the very next manifest.
+    private final Supplier<Result<WorkerMetadataMessage.DhtReplication>> dhtReplication;
     private final String incarnation = UUID.randomUUID().toString();
     private final WorkerMetadataIndex index = WorkerMetadataIndex.workerMetadataIndex();
     private final Map<String, byte[]> blobs = new LinkedHashMap<>();
@@ -82,7 +86,8 @@ public final class WorkerMetadataServer {
                                 Function<Set<NodeId>, List<NodeInfo>> directory,
                                 WorkerMetadataLimits limits,
                                 BiConsumer<NodeId, String> reportRejection,
-                                LongSupplier clusterIncarnation) {
+                                LongSupplier clusterIncarnation,
+                                Supplier<Result<WorkerMetadataMessage.DhtReplication>> dhtReplication) {
         this.self = self;
         this.store = store;
         this.codec = codec;
@@ -93,6 +98,7 @@ public final class WorkerMetadataServer {
         this.limits = limits;
         this.reportRejection = reportRejection;
         this.clusterIncarnation = clusterIncarnation;
+        this.dhtReplication = dhtReplication;
     }
 
     public Unit put(StructuredKey key, Object value) {
@@ -170,7 +176,8 @@ public final class WorkerMetadataServer {
     private record CapturedCut(long revision,
                                List<CapturedScope> scopes,
                                List<NodeInfo> peers,
-                               List<NodeInfo> endpoints) {}
+                               List<NodeInfo> endpoints,
+                               WorkerMetadataMessage.DhtReplication dhtReplication) {}
 
     private record EncodedCut(long revision, List<WorkerMetadataMessage.ScopeContent> contents) {}
 
@@ -188,14 +195,17 @@ public final class WorkerMetadataServer {
             cachedScopes.keySet().removeIf(scope -> !index.hasScope(scope));
             var selected = index.scopesForWorker(worker);
 
-            if (selected.size() + 2 > limits.scopesPerWorker()) {
+            if (selected.size() + 3 > limits.scopesPerWorker()) {
                 return Causes.cause("Worker metadata scope count exceeds configured limit").result();
             }
 
-            return Result.success(new CapturedCut(store.committedRevision(),
-                                                  selected.stream().map(this::captureScope).toList(),
-                                                  directory.apply(index.peersForWorker(worker, cores.get())),
-                                                  directory.apply(index.endpointPeersForWorker(worker))));
+            return dhtReplication.get()
+                                 .map(replication -> new CapturedCut(store.committedRevision(),
+                                                                     selected.stream().map(this::captureScope).toList(),
+                                                                     directory.apply(index.peersForWorker(worker,
+                                                                                                          cores.get())),
+                                                                     directory.apply(index.endpointPeersForWorker(worker)),
+                                                                     replication));
         }
     }
 
@@ -219,6 +229,8 @@ public final class WorkerMetadataServer {
                                                  cut.peers()).map(peers -> append(contents, peers)))
                      .flatMap(contents -> encode(WorkerMetadataIndex.ENDPOINT_DIRECTORY,
                                                  cut.endpoints()).map(peers -> append(contents, peers)))
+                     .flatMap(contents -> encode(WorkerMetadataIndex.DHT_REPLICATION,
+                                                 cut.dhtReplication()).map(replication -> append(contents, replication)))
                      .flatMap(this::checkManifestSize);
     }
 

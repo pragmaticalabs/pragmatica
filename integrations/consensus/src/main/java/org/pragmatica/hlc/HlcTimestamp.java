@@ -38,6 +38,12 @@ public record HlcTimestamp(long packed, NodeId nodeId) implements Comparable<Hlc
 
     /// Extracts the physical milliseconds component from the packed value.
     public long physicalMillis() {
+        return physicalMillis(packed);
+    }
+
+    /// The physical milliseconds component of a packed value, for callers that carry only the packed long (the DHT
+    /// stores its versions that way, #1777).
+    public static long physicalMillis(long packed) {
         return packed >>> COUNTER_BITS;
     }
 

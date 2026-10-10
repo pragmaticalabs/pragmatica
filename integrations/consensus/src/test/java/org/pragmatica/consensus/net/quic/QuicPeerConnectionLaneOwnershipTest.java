@@ -132,7 +132,8 @@ class QuicPeerConnectionLaneOwnershipTest {
     }
 
     private static boolean isFin(Object message) {
-        return message instanceof QuicStreamFrame frame && frame.hasFin() && frame.content().readableBytes() == 0;
+        return message instanceof QuicStreamFrame frame && frame.hasFin() && frame.content().readableBytes() == 4
+               && frame.content().getInt(frame.content().readerIndex()) == 0;
     }
 
     private static QuicPeerConnection connection() {

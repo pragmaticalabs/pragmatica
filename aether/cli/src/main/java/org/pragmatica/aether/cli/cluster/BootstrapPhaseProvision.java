@@ -394,11 +394,11 @@ sealed interface BootstrapPhaseProvision {
     }
 
     @SuppressWarnings("JBCT-PAT-01")
-    private static Result<List<ProvisionedNode>> provisionSource(BootstrapContext ctx,
-                                                                 SourceName sourceName,
-                                                                 SourceProfile source,
-                                                                 int managementPort,
-                                                                 ClusterName clusterName) {
+    static Result<List<ProvisionedNode>> provisionSource(BootstrapContext ctx,
+                                                         SourceName sourceName,
+                                                         SourceProfile source,
+                                                         int managementPort,
+                                                         ClusterName clusterName) {
         return switch (source.type()) {
             case CLOUD -> provisionCloudSource(ctx, sourceName, source, clusterName);
             case DOCKER -> provisionDockerSource(sourceName, source, clusterName);
@@ -429,10 +429,10 @@ sealed interface BootstrapPhaseProvision {
     private static Result<List<ProvisionedNode>> provisionDockerSource(SourceName sourceName,
                                                                        SourceProfile source,
                                                                        ClusterName clusterName) {
-        return ProviderResolver.resolveDockerCompute().flatMap(compute -> provisionWithCompute(compute,
-                                                                                               sourceName,
-                                                                                               source,
-                                                                                               clusterName));
+        return ProviderResolver.resolveDockerCompute(source).flatMap(compute -> provisionWithCompute(compute,
+                                                                                                     sourceName,
+                                                                                                     source,
+                                                                                                     clusterName));
     }
 
     @SuppressWarnings({"JBCT-PAT-01", "JBCT-EX-01"})
@@ -767,7 +767,8 @@ sealed interface BootstrapPhaseProvision {
                                        clusterName,
                                        composedConfig,
                                        ctx.sshPublicKeys(),
-                                       List.of());
+                                       List.of(),
+                                       BootstrapPhaseDeploy.discoveryAssembly(ctx.config()));
     }
 
     /// Applies a single candidate zone to a built spec as a placement hint. An empty or

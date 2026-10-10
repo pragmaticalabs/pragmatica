@@ -29,6 +29,9 @@ public interface FactorySlice {
     // Path only, request record declares NO factory and its constructor throws on bad input (#1573 R2-2)
     Promise<ShortResponse> strict(StrictRequest request);
 
+    // POST bound ENTIRELY from the path: no body parameter exists, so none may be demanded (#1214)
+    Promise<ShortResponse> openCode(LookupRequest request);
+
     static FactorySlice factorySlice() {
         return new FactorySlice() {
             @Override
@@ -53,6 +56,11 @@ public interface FactorySlice {
 
             @Override
             public Promise<ShortResponse> strict(StrictRequest request) {
+                return Promise.success(new ShortResponse(request.code()));
+            }
+
+            @Override
+            public Promise<ShortResponse> openCode(LookupRequest request) {
                 return Promise.success(new ShortResponse(request.code()));
             }
         };

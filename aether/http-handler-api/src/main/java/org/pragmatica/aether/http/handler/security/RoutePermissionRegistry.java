@@ -32,6 +32,7 @@ public sealed interface RoutePermissionRegistry {
                                                   "/api/v1/observability/depth");
 
         static final List<String> OPERATOR = List.of("/api/v1/nodes/drain",
+                                                     "/api/v1/nodes/replace",
                                                      "/api/v1/nodes/activate",
                                                      "/api/v1/schema",
                                                      "/api/v1/canary",

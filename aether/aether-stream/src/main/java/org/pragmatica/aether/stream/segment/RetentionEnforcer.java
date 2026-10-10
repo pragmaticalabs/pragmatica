@@ -499,19 +499,77 @@ public final class RetentionEnforcer implements AutoCloseable {
                     .filter(pending -> !unreadableAges.contains(pending.id()));
     }
 
+    /// A LOOP over batches of [#AGE_READ_CONCURRENCY], not a `flatMap` per batch (the #1392 / #1395 shape). A batch
+    /// whose reads are already settled (a memory tier answers synchronously) used to run the next batch inline, so a
+    /// pass over k batches nested k frame groups, measured at 6 frames per batch: after a restart every segment is
+    /// unknown-aged and the sealer makes one segment per evicted record, so 25,000 pending segments is about 3,100
+    /// batches and about 19,000 frames, past a 1 MB stack. A settled batch is consumed in place; only a pending one
+    /// suspends the loop, which resumes on the thread that settles it.
     private Promise<Unit> learnInBatches(SegmentReader reader, List<PendingAge> pending, int from) {
-        if (from >= pending.size()) {
-            return Promise.unitPromise();
+        var output = Promise.<Unit> promise();
+
+        learnLoop(reader, pending, from, output);
+
+        return output;
+    }
+
+    @Contract
+    private void learnLoop(SegmentReader reader, List<PendingAge> pending, int from, Promise<Unit> output) {
+        var start = from;
+
+        while (start < pending.size()) {
+            var end = Math.min(start + AGE_READ_CONCURRENCY, pending.size());
+            var batch = learnBatch(reader, pending.subList(start, end));
+
+            if (!batch.isResolved()) {
+                batch.onResult(result -> resumeLearn(result, reader, pending, end, output));
+
+                return;
+            }
+
+            if (settledResult(batch) instanceof Result.Failure<Unit>(var cause)) {
+                output.fail(cause);
+
+                return;
+            }
+
+            start = end;
         }
 
-        var batch = pending.subList(from,
-                                    Math.min(from + AGE_READ_CONCURRENCY,
-                                             pending.size()))
-                           .stream()
-                           .map(age -> learnAge(reader, age))
-                           .toList();
+        output.succeed(unit());
+    }
 
-        return Promise.allOf(batch).flatMap(_ -> learnInBatches(reader, pending, from + AGE_READ_CONCURRENCY));
+    /// Continues the loop after a batch that settled off-thread; a failed batch ends the pass.
+    @Contract
+    private void resumeLearn(Result<Unit> result,
+                             SegmentReader reader,
+                             List<PendingAge> pending,
+                             int next,
+                             Promise<Unit> output) {
+        if (result instanceof Result.Failure<Unit>(var cause)) {
+            output.fail(cause);
+        } else {
+            learnLoop(reader, pending, next, output);
+        }
+    }
+
+    /// The result of a promise the caller has checked is resolved: `Promise.onResult` runs its consumer inline on a
+    /// settled promise, so the holder is filled before this returns. Not `await()`: that is the blocking join.
+    private static <T> Result<T> settledResult(Promise<T> resolved) {
+        var holder = new AtomicReference<Result<T>>();
+
+        resolved.onResult(holder::set);
+
+        return holder.get();
+    }
+
+    /// One batch of age reads. A read that fails or throws is already recovered per segment ([#learnAge]); what is left
+    /// is a synchronous throw while STARTING a read, which fails the batch and so the pass, exactly once.
+    private Promise<Unit> learnBatch(SegmentReader reader, List<PendingAge> batch) {
+        return Result.lift(() -> batch.stream()
+                                      .map(age -> learnAge(reader, age))
+                                      .toList()).fold(Cause::promise,
+                                                      promises -> Promise.allOf(promises).map(_ -> unit()));
     }
 
     private Promise<Unit> learnAge(SegmentReader reader, PendingAge pending) {

@@ -28,6 +28,7 @@ import io.r2dbc.spi.ConnectionFactory;
 import org.jooq.DSLContext;
 import org.jooq.SQLDialect;
 import org.jooq.impl.DSL;
+import org.reactivestreams.Publisher;
 
 
 /// Transaction aspect for JOOQ R2DBC operations.
@@ -77,10 +78,25 @@ public interface JooqR2dbcTransactional {
                                                         SQLDialect dialect,
                                                         Fn1<R2dbcError, Throwable> errorMapper,
                                                         Fn2<Promise<R>, DSLContext, Connection> operation) {
-        return beginTransaction(conn, errorMapper).flatMap(_ -> executeOperation(conn, dialect, operation))
-                               .flatMap(result -> commitAndReturn(conn, errorMapper, result))
-                               .onFailure(_ -> rollbackTransaction(conn))
-                               .onResult(_ -> closeConnection(conn));
+        var attempt = beginTransaction(conn, errorMapper).flatMap(_ -> executeOperation(conn, dialect, operation))
+                                      .flatMap(result -> commitAndReturn(conn, errorMapper, result));
+
+        return releaseAfterSettlement(attempt, conn);
+    }
+
+    /// Rollback (on failure) and close are steps of the returned Promise, in that order, and the result is
+    /// handed on only after both have completed (#1313). They used to be independent `onFailure` / `onResult`
+    /// observers that each blocked on `await()`, so nothing ordered the close after the rollback and the
+    /// returned Promise settled without waiting for either. The primary failure is preserved: a failing
+    /// rollback or close is logged and never replaces it, and close is attempted whatever the rollback did.
+    private static <R> Promise<R> releaseAfterSettlement(Promise<R> attempt, Connection conn) {
+        var settled = Promise.<R> promise();
+
+        attempt.onResult(result -> rollbackWhenFailed(conn,
+                                                      result.isFailure()).flatMap(_ -> closeConnection(conn))
+                                                     .onResult(_ -> settled.resolve(result)));
+
+        return settled;
     }
 
     private static <R> Promise<R> executeOperation(Connection conn,
@@ -95,19 +111,45 @@ public interface JooqR2dbcTransactional {
         return commitTransaction(conn, errorMapper).map(_ -> result);
     }
 
+    /// Lifted, so a driver that throws instead of returning a failing publisher is a failed step: the attempt
+    /// then exists and its settlement releases the connection. Unlifted, a throw from `begin` escaped before
+    /// the attempt was built and the connection was never closed.
     private static Promise<Unit> beginTransaction(Connection conn, Fn1<R2dbcError, Throwable> errorMapper) {
-        return ReactiveOperations.fromVoidPublisher(conn.beginTransaction(), errorMapper);
+        return lifted(errorMapper, conn::beginTransaction);
     }
 
     private static Promise<Unit> commitTransaction(Connection conn, Fn1<R2dbcError, Throwable> errorMapper) {
-        return ReactiveOperations.fromVoidPublisher(conn.commitTransaction(), errorMapper);
+        return lifted(errorMapper, conn::commitTransaction);
     }
 
-    private static void rollbackTransaction(Connection conn) {
-        ReactiveOperations.fromVoidPublisher(conn.rollbackTransaction()).await();
+    private static Promise<Unit> lifted(Fn1<R2dbcError, Throwable> errorMapper,
+                                        java.util.function.Supplier<Publisher<Void>> publisher) {
+        return Promise.<Publisher<Void>> lift(errorMapper, publisher::get).flatMap(created -> ReactiveOperations.fromVoidPublisher(created,
+                                                                                                                                   errorMapper));
     }
 
-    private static void closeConnection(Connection conn) {
-        ReactiveOperations.fromVoidPublisher(conn.close()).await();
+    private static Promise<Unit> rollbackWhenFailed(Connection conn, boolean failed) {
+        return failed
+               ? loggingFailure("rollback", step(conn::rollbackTransaction))
+               : Promise.success(Unit.unit());
+    }
+
+    private static Promise<Unit> closeConnection(Connection conn) {
+        return loggingFailure("close", step(conn::close));
+    }
+
+    /// A driver may refuse a cleanup step by throwing instead of returning a failing publisher (a connection
+    /// already closed underneath). Lifted, the throw is a failed step that is logged like any other; unlifted it
+    /// escaped the callback that settles the returned Promise, which then never settled and never closed.
+    private static Promise<Unit> step(java.util.function.Supplier<Publisher<Void>> publisher) {
+        return Promise.<Publisher<Void>> lift(R2dbcError::fromException, publisher::get).flatMap(ReactiveOperations::fromVoidPublisher);
+    }
+
+    private static Promise<Unit> loggingFailure(String step, Promise<Unit> stepResult) {
+        return stepResult.fold(outcome -> {
+            outcome.onFailure(cause -> TransactionCleanupLog.warnStepFailed(step, cause));
+
+            return Promise.success(Unit.unit());
+        });
     }
 }

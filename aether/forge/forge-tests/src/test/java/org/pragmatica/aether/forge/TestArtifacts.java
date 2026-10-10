@@ -68,7 +68,7 @@ final class TestArtifacts {
     /// failure by its cause type (`EntityAlreadyExists`, `EntityNotFound`) — so [DurableEntityForgeTest]
     /// asserts on the entity's real behavior rather than on the absence of an exception. Timers are real
     /// on a node: `DurableEntityFactory` provisions only the fenced-log backing, which schedules them as
-    /// ordinary fenced writes, so `TimerNotSupported` — the in-memory backings' answer — never appears
+    /// ordinary fenced writes, so the in-memory fixtures' refusal never appears
     /// here. It also COUNTS timer fires in
     /// `OrderState.expiries`, which is what lets [DurableEntityTimerDurabilityTest] hold a durable
     /// timer to exactly-once across an owner handover and a full-cluster restart. Mirrors the

@@ -52,8 +52,8 @@ import org.pragmatica.aether.api.routes.ManagementRouter;
 import org.pragmatica.aether.api.routes.MavenProtocolRoutes;
 import org.pragmatica.aether.api.routes.MetricsRoutes;
 import org.pragmatica.aether.api.routes.NodeLifecycleRoutes;
+import org.pragmatica.aether.api.routes.NodeReplacementRoutes;
 import org.pragmatica.aether.api.routes.ObservabilityRoutes;
-import org.pragmatica.aether.api.routes.RepositoryRoutes;
 import org.pragmatica.aether.api.routes.AbTestRoutes;
 import org.pragmatica.aether.api.routes.RouteHandler;
 import org.pragmatica.aether.api.routes.ScheduledTaskRoutes;
@@ -106,12 +106,16 @@ import org.pragmatica.http.HttpMethod;
 import org.pragmatica.http.HttpStatus;
 import org.pragmatica.aether.api.routes.EntityCheckpointRoutes;
 import org.pragmatica.aether.resource.entity.EntityCheckpointDriver;
+import org.pragmatica.dht.DHTAntiEntropy;
 import org.pragmatica.dht.DHTNode;
 import org.pragmatica.http.routing.RouteSource;
 import org.pragmatica.http.server.HttpServer;
+import org.pragmatica.http.server.HttpServerError;
 import org.pragmatica.http.server.HttpServerConfig;
 import org.pragmatica.http.HttpRequest;
 import org.pragmatica.http.server.ResponseWriter;
+import org.pragmatica.aether.http.TlsRotation;
+import org.pragmatica.utility.warning.OperatorWarningSink;
 import org.pragmatica.net.tcp.ClientAuthPolicy;
 import org.pragmatica.net.tcp.QuicSslContextFactory;
 import org.pragmatica.http.websocket.WebSocketEndpoint;
@@ -138,10 +142,26 @@ public interface ManagementServer {
     Promise<Unit> start();
     Promise<Unit> stop();
     Promise<Unit> rotateCertificate(org.pragmatica.net.tcp.security.CertificateBundle newBundle);
+
+    /// Binds the operator-event sink for certificate-rotation refusals (and their recovery).
+    @Contract
+    void setOperatorWarningSink(OperatorWarningSink sink);
+
     /// The real (Prometheus-backed) meter registry this server publishes `/metrics` from.
     /// Exposed so resource provisioning (#278) can inject the node's actual `MeterRegistry` into
     /// slice-facing interceptors instead of each factory fabricating its own disconnected one.
     MeterRegistry meterRegistry();
+
+    /// A member's departure was confirmed on this node (the FSM's DEAD edge). Lets the operator-drain routes close the
+    /// slice-floor refusal they raised for it (#1720): a refused target that departs gets its recovery on the
+    /// transition, not at the next floor check of some other target.
+    @SuppressWarnings("JBCT-RET-01")
+    void onMemberDeparted(NodeId node);
+
+    /// #1543 E: drain `node` for a replacement through the operator admission (never forced).
+    Promise<Unit> admitReplacementDrain(NodeId node);
+    /// Whether a drain of `node` is already commanded or reported by the node itself (#1543).
+    boolean replacementDrainUnderWay(NodeId node);
 
     @SuppressWarnings("JBCT-RET-01")
     void onHttpForwardRequest(HttpForwardRequest request);
@@ -173,7 +193,8 @@ public interface ManagementServer {
                                              Option<Serializer> serializer,
                                              Option<Deserializer> deserializer,
                                              Consumer<NodeId> drainCommandSink,
-                                             Supplier<Set<NodeId>> pendingDrainsSupplier) {
+                                             Supplier<Set<NodeId>> pendingDrainsSupplier,
+                                             NodeLifecycleRoutes.SliceFloor sliceFloor) {
         return new ManagementServerImpl(port,
                                         nodeSupplier,
                                         entityCheckpointDriver,
@@ -198,7 +219,8 @@ public interface ManagementServer {
                                         serializer,
                                         deserializer,
                                         drainCommandSink,
-                                        pendingDrainsSupplier);
+                                        pendingDrainsSupplier,
+                                        sliceFloor);
     }
 }
 
@@ -206,6 +228,7 @@ class ManagementServerImpl implements ManagementServer {
     private static final Logger log = LoggerFactory.getLogger(ManagementServerImpl.class);
     private static final int MAX_CONTENT_LENGTH = 64 * 1024 * 1024;
 
+    private final TlsRotation tlsRotation = TlsRotation.tlsRotation("management");
     private final int port;
     private final Supplier<ManageableNode> nodeSupplier;
     private final AlertManager alertManager;
@@ -241,6 +264,8 @@ class ManagementServerImpl implements ManagementServer {
 
     private final Consumer<NodeId> drainCommandSink;
     private final Supplier<Set<NodeId>> pendingDrainsSupplier;
+    private final NodeLifecycleRoutes.SliceFloor sliceFloor;
+    private final NodeLifecycleRoutes nodeLifecycleRoutes;
 
     private final AtomicReference<Option<HttpForwarder>> mgmtForwarderRef = new AtomicReference<>(Option.empty());
 
@@ -290,7 +315,9 @@ class ManagementServerImpl implements ManagementServer {
                          Option<org.pragmatica.serialization.Serializer> serializer,
                          Option<org.pragmatica.serialization.Deserializer> deserializer,
                          Consumer<NodeId> drainCommandSink,
-                         Supplier<Set<NodeId>> pendingDrainsSupplier) {
+                         Supplier<Set<NodeId>> pendingDrainsSupplier,
+                         NodeLifecycleRoutes.SliceFloor sliceFloor) {
+        this.sliceFloor = sliceFloor;
         this.port = port;
         this.nodeSupplier = nodeSupplier;
         this.alertManager = alertManager;
@@ -343,8 +370,12 @@ class ManagementServerImpl implements ManagementServer {
         routeSources.add(MetricsRoutes.metricsRoutes(nodeSupplier, observability));
         routeSources.add(DeployRoutes.deployRoutes(nodeSupplier));
         routeSources.add(AbTestRoutes.abTestRoutes(nodeSupplier));
-        routeSources.add(NodeLifecycleRoutes.nodeLifecycleRoutes(nodeSupplier, drainCommandSink, pendingDrainsSupplier));
-        routeSources.add(RepositoryRoutes.repositoryRoutes(nodeSupplier));
+        this.nodeLifecycleRoutes = NodeLifecycleRoutes.nodeLifecycleRoutes(nodeSupplier,
+                                                                           drainCommandSink,
+                                                                           pendingDrainsSupplier,
+                                                                           sliceFloor);
+        routeSources.add(nodeLifecycleRoutes);
+        routeSources.add(NodeReplacementRoutes.nodeReplacementRoutes(nodeSupplier));
         routeSources.add(ScheduledTaskRoutes.scheduledTaskRoutes(scheduledTaskRegistry,
                                                                  scheduledTaskManager,
                                                                  nodeSupplier,
@@ -404,6 +435,12 @@ class ManagementServerImpl implements ManagementServer {
         installVersioningMetricsSink(nodeSupplier, observability);
     }
 
+    /// Package-visible so a test can ask the router this server actually assembled which handler each declared route resolves to
+    /// (#1921). Not a second assembly: the same instance `dispatchManagementRequest` calls.
+    ManagementRouter router() {
+        return router;
+    }
+
     /// #198 §11.1: install the AetherMetrics-backed versioning sink into the node's
     /// `HttpRoutePublisher` so versioned-request / deprecated / missing-header counters reach the
     /// Micrometer registry owned here. No-op when the app HTTP server has no publisher.
@@ -455,11 +492,17 @@ class ManagementServerImpl implements ManagementServer {
     private Promise<Unit> startH3Server() {
         var quicTls = tls.map(cfg -> QuicSslContextFactory.createServer(cfg, ClientAuthPolicy.NOT_REQUESTED))
                          .or(QuicSslContextFactory.createSelfSignedServer());
+        // A QUIC context that cannot be built refuses the start: an HTTP/3 listener configured for TLS must not
+        // silently not exist (nor, in BOTH mode, leave the node reporting a start that bound only some listeners).
+        return quicTls.fold(cause -> quicTlsRefused("management-h3", cause), this::startH3WithSslContext);
+    }
 
-        return quicTls.onFailure(cause -> log.error("Failed to create QUIC SSL context for management server: {}",
-                                                    cause.message()))
-                      .map(this::startH3WithSslContext)
-                      .or(Promise.success(unit()));
+    private Promise<Unit> quicTlsRefused(String serverName, Cause cause) {
+        var failure = new HttpServerError.TlsFailed(serverName, port, cause);
+
+        log.error("HTTP server '{}' will not start: {}", serverName, failure.message());
+
+        return failure.promise();
     }
 
     private Promise<Unit> startH3WithSslContext(io.netty.handler.codec.quic.QuicSslContext quicSslContext) {
@@ -570,8 +613,21 @@ class ManagementServerImpl implements ManagementServer {
     @Override
     public Promise<Unit> rotateCertificate(org.pragmatica.net.tcp.security.CertificateBundle newBundle) {
         log.info("Rotating management server TLS certificate");
+        // The new TLS material is built before the running listeners are touched: a bundle that does not build is
+        // refused and the current certificate keeps serving, instead of stopping the listeners and restarting them
+        // without TLS.
+        return tlsRotation.validate(newBundle,
+                                    httpProtocol.includesH1(),
+                                    httpProtocol.includesH3())
+                          .fold(tlsRotation::<Unit> refuse,
+                                _ -> stopHttpServers().flatMap(_ -> restartWithNewBundle(newBundle))
+                                                    .onSuccessRun(tlsRotation::applied));
+    }
 
-        return stopHttpServers().flatMap(_ -> restartWithNewBundle(newBundle));
+    @Contract
+    @Override
+    public void setOperatorWarningSink(OperatorWarningSink sink) {
+        tlsRotation.useSink(sink);
     }
 
     /// Certificate rotation empties the slots with `take()` rather than `close()`: the listeners are
@@ -699,6 +755,28 @@ class ManagementServerImpl implements ManagementServer {
                                                    .or(0);
 
         observability.gauge("aether.dht.catchup.stuck.partitions", stuck);
+        registerDhtTombstoneMetrics();
+    }
+
+    /// #1777 track 3: tombstones held and collected, stray partitions dropped, and partitions without a recent full
+    /// agreement round — non-zero means a co-replica is silent, diverged or catching up, so that partition's expired
+    /// tombstones cannot be collected yet (memory, not data, is what that costs).
+    private void registerDhtTombstoneMetrics() {
+        var agreementWindow = org.pragmatica.lang.io.TimeSpan.timeSpan(3 * DHTAntiEntropy.DEFAULT_ANTI_ENTROPY_INTERVAL.millis())
+                                                             .millis();
+
+        observability.gauge("aether.dht.tombstones", dhtGauge(DHTNode::tombstoneCount));
+        observability.gauge("aether.dht.tombstones.collected", dhtGauge(DHTNode::collectedTombstoneCount));
+        observability.gauge("aether.dht.strays.purged.partitions", dhtGauge(DHTNode::purgedStrayPartitionCount));
+        observability.gauge("aether.dht.gc.unagreed.partitions",
+                            dhtGauge(node -> node.unagreedPartitions(agreementWindow)));
+    }
+
+    private Supplier<Number> dhtGauge(org.pragmatica.lang.Functions.Fn1<Number, DHTNode> reading) {
+        return () -> nodeSupplier.get()
+                                 .dhtNode()
+                                 .map(reading)
+                                 .or(0);
     }
 
     private static double computeStreamMemoryRatio(StreamPartitionManager spm) {
@@ -989,6 +1067,10 @@ class ManagementServerImpl implements ManagementServer {
         var matchedRoute = matched.unwrap();
         var target = matchedRoute.route().target();
 
+        if (refuseMalformedForwardParams(ctx, response, methodName, startTime, matchedRoute)) {
+            return true;
+        }
+
         return switch (target) {
             case RouteTarget.LocalNode __ -> false;
             case RouteTarget.AnyCoreNode __ -> tryForwardIfNotCore(ctx, response, methodName, startTime);
@@ -1011,6 +1093,68 @@ class ManagementServerImpl implements ManagementServer {
                                                                                                       matchedRoute,
                                                                                                       partitionParamIndex);
         };
+    }
+
+    /// #1921: a forwarded route is validated BEFORE it leaves this node. A node id, partition or stream address the caller got
+    /// wrong resolves no target, and the forwarder reports that as "owner unresolved" or "invalid node id", which
+    /// `sendForwardError` surfaces as 503: the cluster is unavailable, when the request was malformed. FORM only: a well-formed id
+    /// that names no connected node is still the forwarder's 503, because that is a statement about the cluster.
+    private boolean refuseMalformedForwardParams(HttpRequest ctx,
+                                                 InstrumentedResponseWriter response,
+                                                 String methodName,
+                                                 long startTime,
+                                                 MatchedRoute matched) {
+        return malformedForwardParam(matched).fold(() -> false,
+                                                   cause -> {
+                                                       ProblemResponses.writeProblem(response,
+                                                                                     cause,
+                                                                                     ctx.path(),
+                                                                                     ctx.requestId());
+                                                       recordRequestMetrics(methodName, ctx.path(), response, startTime);
+
+                                                       return true;
+                                                   });
+    }
+
+    /// Package-visible pure decision behind [#refuseMalformedForwardParams], like [#answersPartitionLocally].
+    static Option<Cause> malformedForwardParam(MatchedRoute matched) {
+        return switch (matched.route()
+                              .target()) {
+            case RouteTarget.NodeIdParam(var paramIndex) -> paramAt(matched, paramIndex).flatMap(id -> NodeId.nodeId(id).fold(cause -> Option.some(new ManagementServerError.InvalidRequest("Invalid node id '" + id
+                                                                                                                                                                                           + "': " + cause.message())),
+                                                                                                                              _ -> Option.none()));
+            case RouteTarget.PartitionOwner(var partitionParamIndex) -> malformedPartitionOwnerParam(matched,
+                                                                                                     partitionParamIndex);
+            default -> Option.none();
+        };
+    }
+
+    private static Option<Cause> malformedPartitionOwnerParam(MatchedRoute matched, int partitionParamIndex) {
+        var partition = paramAt(matched, partitionParamIndex).flatMap(raw -> Result.lift(Causes::fromThrowable,
+                                                                                         () -> Integer.valueOf(raw))
+                                                                                   .fold(_ -> Option.some(new ManagementServerError.InvalidRequest("Invalid partition '" + raw
+                                                                                                                                                  + "': not an integer")),
+                                                                                         _ -> Option.none()));
+
+        return partition.isPresent()
+               ? partition.map(cause -> (Cause) cause)
+               : malformedStreamAddress(matched);
+    }
+
+    private static Option<Cause> malformedStreamAddress(MatchedRoute matched) {
+        return Option.all(matched.param("namespace"),
+                          matched.param("stream"),
+                          matched.param("version"))
+                     .flatMap((ns, stream, version) -> ResourceAddress.resourceAddress(ns, stream, version).fold(cause -> Option.some(new ManagementServerError.InvalidRequest(cause.message())),
+                                                                                                                 _ -> Option.none()));
+    }
+
+    private static Option<String> paramAt(MatchedRoute matched, int index) {
+        var names = matched.route().paramNames();
+
+        return index < 0 || index >= names.size()
+               ? Option.none()
+               : matched.param(names.get(index));
     }
 
     private boolean tryForwardIfNotLeader(HttpRequest ctx,
@@ -1362,6 +1506,22 @@ class ManagementServerImpl implements ManagementServer {
         ensureMgmtForwarder().onPresent(fwd -> fwd.onHttpForwardResponse(response));
     }
 
+    @Override
+    public Promise<Unit> admitReplacementDrain(NodeId node) {
+        return nodeLifecycleRoutes.admitReplacementDrain(node);
+    }
+
+    @Override
+    public boolean replacementDrainUnderWay(NodeId node) {
+        return nodeLifecycleRoutes.drainUnderWay(node);
+    }
+
+    @Override
+    @SuppressWarnings("JBCT-RET-01")
+    public void onMemberDeparted(NodeId node) {
+        nodeLifecycleRoutes.onMemberDeparted(node);
+    }
+
     @SuppressWarnings({"JBCT-RET-01", "JBCT-PAT-01"})
     @Override
     public void onHttpForwardRequest(HttpForwardRequest request) {
@@ -1428,7 +1588,9 @@ class ManagementServerImpl implements ManagementServer {
                 return;
             }
 
-            if (validateManagementSecurity(serverCtx, responseCapture, context.path(), method.unwrap()).isFailure()) {
+            var validated = validateManagementSecurity(serverCtx, responseCapture, context.path(), method.unwrap());
+
+            if (validated.isFailure()) {
                 responseCapture.completion()
                                .onSuccess(responseData -> sendManagementForwardSuccess(network,
                                                                                        request,
@@ -1440,7 +1602,31 @@ class ManagementServerImpl implements ManagementServer {
 
                 return;
             }
+            // #1983: the context this owner just validated is bound for the dispatch, exactly as the node that took the
+            // client call binds it (handleRequest), so a handler reading the principal or its role sees the caller whether
+            // the request arrived locally or forwarded. Discarding it left every reader on ANONYMOUS.
+            validated.onSuccess(sc -> ScopedValue.where(SecurityContextHolder.scopedValue(),
+                                                        sc)
+                                                 .run(() -> dispatchValidatedManagementForward(context,
+                                                                                               request,
+                                                                                               network,
+                                                                                               ser,
+                                                                                               serverCtx,
+                                                                                               responseCapture)));
+
+            return;
         }
+
+        dispatchValidatedManagementForward(context, request, network, ser, serverCtx, responseCapture);
+    }
+
+    @SuppressWarnings("JBCT-PAT-01")
+    private void dispatchValidatedManagementForward(HttpRequestContext context,
+                                                    HttpForwardRequest request,
+                                                    ClusterNetwork network,
+                                                    Serializer ser,
+                                                    ForwardedRequestContext serverCtx,
+                                                    ForwardedResponseWriter responseCapture) {
         // #1039 receive-side owner guard. A forwarded request is dispatched by `router.handle` right
         // below and never re-enters `dispatchManagementRequest`, so `tryForwardIfNotPartitionOwner`
         // does NOT run on this node — without this check a receiver that disagrees with the sender

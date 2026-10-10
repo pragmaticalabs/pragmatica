@@ -11,6 +11,7 @@ import java.util.function.Supplier;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
+import org.pragmatica.aether.api.ManagementServerError;
 import org.pragmatica.aether.artifact.ArtifactBase;
 import org.pragmatica.aether.artifact.Version;
 import org.pragmatica.aether.management.route.ManagementRoute;
@@ -19,6 +20,7 @@ import org.pragmatica.aether.update.AbTestDeployment;
 import org.pragmatica.aether.update.AbTestMetrics;
 import org.pragmatica.aether.update.SplitRule;
 import org.pragmatica.aether.http.security.AuditLog;
+import org.pragmatica.consensus.NodeId;
 import org.pragmatica.http.routing.Route;
 import org.pragmatica.http.routing.RouteSource;
 import org.pragmatica.lang.Cause;
@@ -34,10 +36,11 @@ import static org.pragmatica.http.routing.PathParameter.aString;
 
 
 public final class AbTestRoutes implements RouteSource {
-    private static final Cause MISSING_ARTIFACT_BASE = Causes.cause("Missing artifactBase");
-    private static final Cause MISSING_VARIANTS = Causes.cause("Missing or empty variants");
-    private static final Cause NOT_LEADER = Causes.cause("This operation requires the leader node");
-    private static final Cause TEST_NOT_FOUND = Causes.cause("A/B test not found");
+    private static final Cause MISSING_ARTIFACT_BASE = new ManagementServerError.InvalidRequest("Missing artifactBase");
+
+    private static final Cause MISSING_VARIANTS = new ManagementServerError.InvalidRequest("Missing or empty variants");
+
+    private static final Cause TEST_NOT_FOUND = new ManagementServerError.NotFound("A/B test not found");
 
     private final Supplier<ManageableNode> nodeSupplier;
 
@@ -107,9 +110,7 @@ public final class AbTestRoutes implements RouteSource {
         var node = nodeSupplier.get();
 
         if (!node.isLeader()) {
-            var leaderInfo = node.leader().map(id -> " Current leader: " + id.id()).or("");
-
-            return Causes.cause(NOT_LEADER.message() + leaderInfo).promise();
+            return new ManagementServerError.NotLeader(node.leader().map(NodeId::id).or("")).promise();
         }
 
         return Promise.unitPromise();
@@ -129,6 +130,7 @@ public final class AbTestRoutes implements RouteSource {
         }
 
         return ArtifactBase.artifactBase(request.artifactBase())
+                           .mapError(cause -> new ManagementServerError.InvalidRequest(cause.message()))
                            .async()
                            .flatMap(artifactBase -> parseVariants(request.variants()).async()
                                                                  .map(variants -> new ParsedAbTestRequest(artifactBase,
@@ -143,7 +145,8 @@ public final class AbTestRoutes implements RouteSource {
             var result = Version.version(entry.getValue());
 
             if (result.isFailure()) {
-                return Causes.cause("Invalid version for variant " + entry.getKey() + ": " + entry.getValue()).result();
+                return new ManagementServerError.InvalidRequest("Invalid version for variant " + entry.getKey()
+                                                               + ": " + entry.getValue()).result();
             }
 
             result.onSuccess(v -> parsed.put(entry.getKey(), v));

@@ -61,10 +61,10 @@ final class JdkHttpClient implements HttpClient, AsyncCloseable {
     }
 
     /// Test seam: a client over operations the CALLER supplies, so a test can observe whether
-    /// [#close()] reaches them. The two backends' operations either own nothing observable (JDK)
-    /// or own a Netty event loop whose shutdown is only measurable from outside the module (#895),
-    /// which is why the close tests could not go red on a no-op close without this (review of
-    /// #900, SF-3). Package-private; production goes through the config-driven factories above.
+    /// [#close()] reaches them. Both backends' operations own releasable state (the JDK one a selector
+    /// thread, #1097; the Netty one an event loop whose shutdown is only measurable from outside the
+    /// module, #895), but neither exposes a close COUNT, which is why the close tests could not go red on
+    /// a no-op close without this (review of #900, SF-3). Package-private; production goes through the config-driven factories above.
     static JdkHttpClient jdkHttpClient(HttpClientConfig config, HttpOperations operations) {
         return new JdkHttpClient(config, operations);
     }
@@ -92,8 +92,9 @@ final class JdkHttpClient implements HttpClient, AsyncCloseable {
 
     /// Close the backing operations when they own releasable state.
     ///
-    /// The JDK backend's operations hold nothing that needs releasing and implement no close
-    /// convention, so they take the success branch; the Netty backend's do, and are awaited.
+    /// Both backends' operations are [AsyncCloseable]: the JDK one shuts its `HttpClient` down (#1097),
+    /// the Netty one its event loop, and either is awaited. Operations that implement no close convention
+    /// (a test double) take the success branch.
     @Override
     public Promise<Unit> close() {
         return operations instanceof AsyncCloseable closeable

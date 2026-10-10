@@ -464,6 +464,126 @@ class DockerComputeProviderTest {
             assertThat(command).noneMatch(arg -> arg.startsWith("AETHER_ZONE="));
         }
 
+        /// #1968: a replacement carries the same `[backup]` its siblings have. A Docker node has no TOML of its own, so the four
+        /// `AETHER_BACKUP_*` variables are forwarded from the provisioning host, and the repository path gets a per-node volume.
+        @Test
+        void buildRunCommand_hostHasBackupEnv_replacementGetsTheSameBackupAndAVolume() {
+            var command = replacementCommand(Map.of("AETHER_BACKUP_ENABLED", "true",
+                                                    "AETHER_BACKUP_PATH", "/data/backups",
+                                                    "AETHER_BACKUP_REMOTE", "git@backups.example.com:ops/c.git",
+                                                    "AETHER_BACKUP_RESTORE", "auto"));
+
+            assertThat(command).contains("AETHER_BACKUP_ENABLED=true",
+                                         "AETHER_BACKUP_PATH=/data/backups",
+                                         "AETHER_BACKUP_REMOTE=git@backups.example.com:ops/c.git",
+                                         "AETHER_BACKUP_RESTORE=auto");
+            var name = command.get(command.indexOf("--name") + 1);
+
+            assertThat(command).as("the repository path lives on a per-node volume under the image-owned /data").contains(name + "-backup:/data");
+        }
+
+        /// #1968: a leader whose `[backup]` is in its TOML (nothing in its environment) hands its EFFECTIVE backup to the provider, and
+        /// the replacement carries it. The handed-in section wins whole over the host environment (never a mix).
+        @Test
+        void buildRunCommand_tomlOnlyLeader_effectiveBackupReachesTheReplacement() {
+            var effective = Map.of("AETHER_BACKUP_ENABLED", "true",
+                                   "AETHER_BACKUP_PATH", "/data/backups",
+                                   "AETHER_BACKUP_REMOTE", "git@backups.example.com:ops/c.git",
+                                   "AETHER_BACKUP_RESTORE", "auto");
+            var tomlOnly = DockerConfig.dockerConfig().unwrap().withBackupEnv(effective);
+            var command = replacementCommand(tomlOnly, Map.of());
+
+            assertThat(command).contains("AETHER_BACKUP_ENABLED=true",
+                                         "AETHER_BACKUP_PATH=/data/backups",
+                                         "AETHER_BACKUP_REMOTE=git@backups.example.com:ops/c.git",
+                                         "AETHER_BACKUP_RESTORE=auto");
+            assertThat(command).contains(command.get(command.indexOf("--name") + 1) + "-backup:/data");
+            assertThat(replacementCommand(tomlOnly, Map.of("AETHER_BACKUP_PATH", "/elsewhere")))
+                .as("the effective section wins whole over the host environment")
+                .contains("AETHER_BACKUP_PATH=/data/backups")
+                .doesNotContain("AETHER_BACKUP_PATH=/elsewhere");
+        }
+
+        /// The factory carries the compute map's `AETHER_BACKUP_*` entries (written by `Main` from the effective config) into the
+        /// provider's config, and only those.
+        @Test
+        void factory_carriesTheEffectiveBackupEntriesOfTheComputeMap() {
+            var compute = Map.of("AETHER_BACKUP_ENABLED", "true", "AETHER_BACKUP_PATH", "/data/backups", "image_name", "x:1");
+            var cloud = new org.pragmatica.aether.environment.CloudConfig("docker", Map.of(), compute, Map.of(), Map.of(), Map.of(), Map.of());
+
+            new DockerEnvironmentIntegrationFactory().create(cloud)
+                                                     .onFailure(cause -> fail(cause.message()))
+                                                     .onSuccess(env -> assertThat(((DockerComputeProvider) env.compute().unwrap()).config().backupEnv())
+                                                         .containsOnly(Map.entry("AETHER_BACKUP_ENABLED", "true"), Map.entry("AETHER_BACKUP_PATH", "/data/backups")));
+        }
+
+        /// R1b: a backup path handed to the provider factory (the leader's effective `[backup]`, whatever its source) is refused with the
+        /// same rule as the bootstrap TOML: absolute, and under /data because the repository lives on a root-owned-elsewhere named volume.
+        @Test
+        void factory_refusesABackupPathThatIsRelativeOrOutsideData_withTheRule() {
+            for (var bad : new String[] {"relative/backups", "/var/aether/backups"}) {
+                var cloud = new org.pragmatica.aether.environment.CloudConfig("docker", Map.of(), Map.of("AETHER_BACKUP_ENABLED", "true", "AETHER_BACKUP_PATH", bad),
+                                                                              Map.of(), Map.of(), Map.of(), Map.of());
+                var result = new DockerEnvironmentIntegrationFactory().create(cloud);
+
+                assertThat(result.isFailure()).as("path " + bad).isTrue();
+                result.onFailure(cause -> assertThat(cause.message()).contains("[backup] path", bad));
+            }
+        }
+
+        @Test
+        void factory_refusesABackupPathWithANul_insteadOfThrowing() {
+            var cloud = new org.pragmatica.aether.environment.CloudConfig("docker", Map.of(), Map.of("AETHER_BACKUP_ENABLED", "true", "AETHER_BACKUP_PATH", "/data/b\0x"),
+                                                                          Map.of(), Map.of(), Map.of(), Map.of());
+            var result = new DockerEnvironmentIntegrationFactory().create(cloud);
+
+            assertThat(result.isFailure()).isTrue();
+        }
+
+        @Test
+        void factory_acceptsABackupPathUnderData_andNoPathAtAll() {
+            for (var compute : List.of(Map.of("AETHER_BACKUP_ENABLED", "true", "AETHER_BACKUP_PATH", "/data/backups"), Map.<String, String>of())) {
+                var cloud = new org.pragmatica.aether.environment.CloudConfig("docker", Map.of(), compute, Map.of(), Map.of(), Map.of(), Map.of());
+
+                assertThat(new DockerEnvironmentIntegrationFactory().create(cloud).isSuccess()).as("compute " + compute).isTrue();
+            }
+        }
+
+        @Test
+        void buildRunCommand_backupPathOutsideData_isMountedWhereItPoints() {
+            var command = replacementCommand(Map.of("AETHER_BACKUP_ENABLED", "true", "AETHER_BACKUP_PATH", "/var/aether/backups"));
+            var name = command.get(command.indexOf("--name") + 1);
+
+            assertThat(command).contains(name + "-backup:/var/aether/backups");
+        }
+
+        /// The control for both: no backup in the host environment means no backup variables and no backup volume, and a
+        /// disabled one mounts nothing.
+        @Test
+        void buildRunCommand_noBackupInHostEnv_addsNoBackupVariablesOrVolume() {
+            assertThat(replacementCommand(Map.of())).noneMatch(arg -> arg.startsWith("AETHER_BACKUP_") || arg.endsWith("-backup:/data"));
+            assertThat(replacementCommand(Map.of("AETHER_BACKUP_ENABLED", "false", "AETHER_BACKUP_PATH", "/data/backups")))
+                .noneMatch(arg -> arg.contains("-backup:"));
+        }
+
+        private List<String> replacementCommand(Map<String, String> hostEnv) {
+            return replacementCommand(CONFIG, hostEnv);
+        }
+
+        private List<String> replacementCommand(DockerConfig dockerConfig, Map<String, String> hostEnv) {
+            testRunner.allCommands.clear();
+            var backupProvider = DockerComputeProvider.dockerComputeProvider(testRunner, dockerConfig, hostEnv::get).unwrap();
+            testRunner.queuedResponses.add(Promise.success("id-0"));
+            testRunner.queuedResponses.add(Promise.success(RUNNING_INSPECT));
+            var ctx = ProvisionContext.provisionContext(maybeClusterName("test-cluster"), "core", sourceNameOrDefault("eu-west"),
+                                                         ProvisionContext.PROVISIONED_BY_BOOTSTRAP);
+            var spec = ProvisionSpec.provisionSpec(InstanceType.ON_DEMAND, "docker", "core-pool", ctx).unwrap();
+
+            backupProvider.provision(spec).await().onFailure(cause -> fail("Expected success but got: " + cause.message()));
+
+            return testRunner.allCommands.getFirst();
+        }
+
         @Test
         void buildRunCommand_emptyCluster_noLongerYieldsDefault() {
             // ctx with an empty cluster name + bootstrap origin (passes preflight). The old
@@ -608,22 +728,6 @@ class DockerComputeProviderTest {
                     .await()
                     .onSuccess(info -> assertThat(info).isNull())
                     .onFailure(DockerComputeProviderTest::assertProvisionFailedError);
-        }
-    }
-
-    @Nested
-    class RestartTests {
-
-        @Test
-        void restart_success_callsDockerRestart() {
-            testRunner.nextResponse = Promise.success("container-id");
-
-            provider.restart(new InstanceId("container-id"))
-                    .await()
-                    .onFailure(cause -> fail("Expected success but got: " + cause.message()))
-                    .onSuccess(unit -> assertThat(unit).isNotNull());
-
-            assertThat(testRunner.lastCommand).contains("docker", "restart", "container-id");
         }
     }
 

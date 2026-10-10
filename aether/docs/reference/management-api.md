@@ -54,6 +54,7 @@ Roles are hierarchical: ADMIN has all OPERATOR permissions, and OPERATOR has all
 | Blueprint deploy (from artifact) | OPERATOR | `POST /api/v1/blueprints/deploy` |
 | Blueprint validate | ADMIN | `POST /api/v1/blueprints/validate` |
 | Node drain | OPERATOR | `POST /api/v1/nodes/drain/{id}` |
+| Node replacement | OPERATOR | `POST /api/v1/nodes/replace/{id}`, `POST /api/v1/nodes/replacements/settle/{id}` |
 | Scaling | OPERATOR | `POST /api/v1/scale` |
 | Schema operations | OPERATOR | `POST /api/v1/schema/*` |
 | Deployment strategies | OPERATOR | `POST /api/v1/deploy`, `POST /api/v1/deploy/promote/*`, `POST /api/v1/deploy/rollback/*`, `POST /api/v1/deploy/complete/*`, `POST /api/v1/ab-tests/*` |
@@ -440,10 +441,16 @@ curl "http://localhost:8080/api/v1/events?sinceEpoch=3&sinceSeq=42"
 - `THRESHOLD_CLEARED` -- a breached metric fell below its hysteresis-adjusted clear point (owner-gated; `details` carries `metric`, `nodeId`, `value`, `clearedFrom`, `clearPoint`). Severity INFO.
 - `COMMUNITY_MINTED` -- the leader minted a worker community: its committed `CommunityValue` appeared (`details`: `communityId`, `state`, `targetSize`, `role`). Severity INFO.
 - `COMMUNITY_STATE_CHANGED` -- a community's committed lifecycle state changed; one event per edge (`details`: `communityId`, `from`, `to`, `targetSize`). `FORMING -> ACTIVE` is "formed", `ACTIVE -> DEGRADED` (severity WARNING, the only non-INFO edge) is live membership falling below the viability floor, `DEGRADED -> ACTIVE` is recovery, `-> DISSOLVED` is retirement by placement policy. Severity INFO otherwise.
-- `COMMUNITY_MEMBER_JOINED` / `COMMUNITY_MEMBER_LEFT` -- a node was added to / removed from a community's committed roster (`details`: `communityId`, `nodeId`, `governorId`, `memberCount`). The roster is assignment, not liveness: a member that stops answering stays on it and shows up as the `ACTIVE -> DEGRADED` edge instead. Severity INFO. A force-killed worker did not produce `COMMUNITY_MEMBER_LEFT` within 180 s of the kill (one Ember run, #1652; the core raised no worker leave, #1717). From the source, not measured: the roster shrinks only when the core deletes the member's activation directive (a worker leave, a decommission or a self-shutdown) and the governor's next authority write commits the smaller roster. [unverified: no live trigger of `COMMUNITY_MEMBER_LEFT` is demonstrated yet; the roster diff that emits it is pinned at unit level]
+- `COMMUNITY_MEMBER_JOINED` / `COMMUNITY_MEMBER_LEFT` -- a node was added to / removed from a community's committed roster (`details`: `communityId`, `nodeId`, `governorId`, `memberCount`). The roster is assignment, not liveness: a member that stops answering stays on it and shows up as the `ACTIVE -> DEGRADED` edge instead. Severity INFO. A force-killed worker is declared DEAD by the core once a death signal (SWIM-FAULTY or a transport disconnect) has held for `splitTimeout` (15 s by default) with no positive evidence NEWER than the signal. The governor keeps reporting a dead worker alive for up to `communityAbsence` after its last pong; such a stale report is ignored, a fresh pong, an admission or a SWIM-healthy edge vetoes, and a re-established link vetoes the transport signal. The DEAD edge raises the worker leave, which removes the activation directive; the governor's next authority write then commits the smaller roster and `COMMUNITY_MEMBER_LEFT` follows, and a replacement worker brings the community back to ACTIVE (`COMMUNITY_STATE_CHANGED` DEGRADED -> ACTIVE, `COMMUNITY_MEMBER_JOINED`). A worker evicted while merely partitioned is refused when it heals (DEAD is terminal for a NodeId) and must rejoin under a new id. [verified: `aether/forge/forge-tests/src/test/java/org/pragmatica/aether/forge/CommunityObservabilityForgeTest.java`, 2/2 green on bigboy at 5f2c189ff] [verified: `aether/aether-deployment/src/test/java/org/pragmatica/aether/deployment/membership/fsm/MembershipWorkerDeathTest.java`]
+- `DHT_REPLICATION_UNSETTLED` / `DHT_REPLICATION_SETTLED` -- a live change of the DHT's `[replication]` factors has stayed unsettled for longer than 5 minutes, so every node still reads and writes at the stricter transitional quorums; and its complement, when it settles or a newer change replaces it (#1777). `details`: `changeVersion`, `replicationFactor`, `confirmationFactor`, `since`, `reason`, and `stage` on the first. Severity WARNING / INFO. Both events come from the committed change record and go through the cluster-events owner gate, so each is published at most once per transition: it is missed if the owner cannot publish at that moment. The usual cause is a member the leader's membership view still counts that is not reporting, or a core whose catch-up cannot complete. [unverified: the 5-minute edge is pinned at unit level only; no live run has held a change unsettled that long]
+- `DHT_WRITER_STALE` / `DHT_WRITER_STALE_RESOLVED` -- this node's DHT writes have been refused for over 5 minutes by the replication-change fence, because they are stamped under an older `[replication]` change than the replicas have applied, and the node has not adopted the newer change; and its complement, once it has (#1777). Typically a live writer that the settle roster dropped: the leader's membership view held it `Dead`, or never tracked it. Raised by the refused node itself, which is the only emitter. It is a per-node fact, so it bypasses the owner gate. Published at most once per episode: it is missed if the node cannot publish at that moment. `details`: `nodeId`, `fence` (the change version its writes carry), `since`. Severity WARNING / INFO. Recovery: the node adopts the change when it next receives the committed record (a core through consensus, a worker through its projection); restarting it forces that.
 - `STREAM_FAILOVER_REFUSED` / `STREAM_FAILOVER_RESOLVED` -- a stream partition's owner is dead and no in-sync replica is live, so failover elected nobody (CRITICAL); then an owner was elected or the owner returned (INFO). `details`: `stream`, `partition`, `owner`, `isr`, `live`, `reason`. Raised once per committed transition, never per reconcile: the leader commits the refusal into the partition's ownership record with a guarded write, every node derives the event from that committed change, and only the cluster-events partition owner publishes it; see the failure almanac. At most once if no node owns the cluster-events partition at that moment (bootstrap, quorum loss): every node then drops it with a WARN and a counter, and the committed `failoverRefused` flag and the `NoInSyncReplica` partition status remain the record. The event carries a deterministic `details.eventId` (partition, ownership epoch and term, ISR version, refusal count) so two copies published by two nodes during a membership change read as one; the id includes the refusal count committed with the flag, so a recurring refusal is a new event.
 - `STREAM_CONFIG_CHANGE_NOT_APPLIED` -- a committed config for a running stream does not take effect over what the node enforces (WARNING): it lowers `confirmation_factor` or `replication_factor` (durability only increases online) or it has a different partition count (never re-shaped onto the existing rings). `details`: `stream`, `requestedConfirmationFactor`, `effectiveConfirmationFactor`, `reason` (the actual cause), `eventId`. Raised once per such committed config, compared with the enforced one, never for an adopted change (including a lowering that came with a replication-factor raise), a new life or a replayed Put; a point event, a later raise does not resolve it.
 - `STREAM_ISR_BELOW_MINIMUM` / `STREAM_ISR_RESTORED` -- a stream partition's committed in-sync set fell below its `confirmation_factor`, so acknowledged publishes to it are refused with `NOT_ENOUGH_REPLICAS` (WARNING); then it reached the factor again (INFO). `details`: `stream`, `partition`, `owner`, `isr`, `fenced`, `confirmationFactor`. Raised once per transition across the factor, never per ISR change (a committed config change that moves the enforced factor across the ISR size raises it too, with no ISR commit): every node derives it from the committed ownership record and only the cluster-events partition owner publishes it; `details.eventId` is derived from the committed record, so two copies published by two nodes during a membership change read as one. See the failure almanac.
+- `STREAM_LINEAGE_RESTARTED` -- a stream partition's owner began a new epoch WITHOUT a change of owner: its ring was rebuilt (a restart without a WAL, a lazy re-materialize, a re-created stream), so consumers that read the old epoch past `details.startOffset` re-read from it. Severity INFO: the commit proves a ring restarted, not that records were lost (activation may have pulled every record back from replicas); the loss witness is the per-node `OPERATOR_WARNING` `stream-consumer-rewound`. `details`: `stream`, `partition`, `owner`, `oldEpoch`, `newEpoch`, `startOffset`. Derived on every node from the committed ownership record and published once by the cluster-events owner; an owner change is `STREAM_FAILOVER_*`, not this event.
+- `ROUTE_PREFIX_COLLISION` / `ROUTE_PREFIX_COLLISION_CLEARED` -- two slices of different artifacts are serving the same HTTP route in the committed route table, so one of them serves nothing (the lexically smaller coordinate wins) (WARNING; `details`: `method`, `prefix`, `artifacts` (the claiming artifact bases, comma separated), `eventId`); then only one artifact claims it (INFO). Blueprint publish REFUSES an identical-route collision it can see, naming both slices and the route: a collision between two slices of the blueprint being published is a 400, one with an already-stored blueprint is a 409 naming that blueprint and slice, so this event is for what admission cannot see: a slice jar unavailable at admission, racing publishes, a slice deployed another way. Derived on every node from the committed route table and published once by the cluster-events owner; `eventId` is the route, the claimants and the newest `registeredAt`.
+- `SCHEDULED_TASK_FIRE_HELD` / `SCHEDULED_TASK_FIRE_RELEASED` -- a scheduled task's previous fire is still in flight when its next tick arrives, so the task is not firing (up to the completion bound) (WARNING; `details`: `task`, `node`, `fireAt` (when that fire started), `inFlightMs` (at the first skipped tick), `eventId`); then that fire resolved (INFO; `outcome` is `executed`, `failed`, `unknown` (the bound passed with no response) or `completed` (a manual trigger's claim), `inFlightMs` in all). Raised ONCE per in-flight fire (the per-tick log line is DEBUG), by the node whose scheduler holds the fire and published from there (a per-node fact, not owner-gated); throttled per task and node to one event per 60 s, a hold the window held back is announced after it only if the fire is still in flight, and a release is never announced without its hold.
+- `SCHEDULED_TASK_OUTCOME_UNKNOWN` / `SCHEDULED_TASK_OUTCOME_RESTORED` -- a scheduled task's newest fire has an unknown outcome (WARNING; `details`: `task` as `section/artifact/method`, `node` for an ALL-mode task, `fireAt` (when the newest fire started), `eventId`); then it does not (INFO): `reason` is `later-fire` (a later fire completed), `late-answer` (the newest fire's late response arrived; `late` is `true`) `task-removed` (the task was removed while unknown) or `node-departed` (the node that fired a per-node row left the cluster for good while it was unknown; the leader closes the row, whose `lastOutcome` then reads `NODE_DEPARTED`); `outcome` is `executed`, `failed` or `unknown` (task-removed, node-departed), and `fireAt` is that of the UNKNOWN it closes. Derived on every node from the committed task state, published once by the cluster-events owner, and throttled to one event per task per 60 s: an UNKNOWN held back by the window is announced after it only if the task is still unknown, and a RESTORED is never announced without its UNKNOWN. A fire whose response never arrives cannot hold the condition: the next fire that completes ends it. A task that stops firing while unknown stays unknown.
 - `OPERATOR_WARNING` -- a condition an operator needs to see, raised by the node that observed it (per-node fact, NOT leader-gated; see below). Severity WARNING or CRITICAL, fixed per code.
 
 The four community events are derived from committed records, so every node observes them and only the cluster-events owner publishes
@@ -465,7 +472,7 @@ changes surface as `LEADER_ELECTED`/`LEADER_LOST`; the current epoch is read on 
 
 `DEPARTURE_PUSH_INCOMPLETE` (severity `WARNING`, issue #427) is emitted by a gracefully-departing node when its bounded departure-push (which forwards every locally-held DHT chunk to its new replicas before the node halts) could not confirm all chunks reached a surviving replica within the drain grace window. Like `SELF_DRAIN_INITIATED` it is NOT leader-gated — the leaving node is the only source of truth for its own unpushed chunks. `details` carries `nodeId`, `keysAtRisk` (count of unconfirmed chunks), and `sampleKeys` (a bounded, comma-joined hex sample of the at-risk keys, for operator follow-up). Best-effort: the keys are named rather than silently lost, but if the publish does not land before `Runtime.halt(2)`, the event is lost.
 
-`OPERATOR_WARNING` (issue #1574) is one generic event for many conditions. Use `details.code` to identify the warning: it is a stable kebab-case identifier from the `OperatorWarningCode` catalogue, never renamed once shipped. Neither this endpoint nor `aether events` can filter on it (or on severity) yet, so fetch the feed and match `details.code` yourself. `details` also carries `subsystem`, `subject` (the peer, `stream[partition]` or `core` the warning is about), `nodeId` (the reporting node) and `suppressedSince`. `summary` is the exact message the node logged, and the node's log line carries the same text prefixed with `[code]`. Emission is throttled to one event per `(code, subject)` per 60 s per node; `suppressedSince` counts the occurrences held back since the previous event for that key, and the log line is written for every occurrence. A full window is consumed only by an event that is published: after a failed publish (bootstrap, replay) the key waits a 5 s retry window, then the next occurrence goes through and counts the lost one. A key whose publishes keep failing is attempted at most once per 5 s; the first success restores the 60 s window. A key idle for 120 s is evicted; if it still held occurrences back, one aggregate WARN log line reports their total. The node hands each warning to a bounded queue (256), so raising one never waits for the event log; a burst beyond that drops events (never log lines) and the next accepted warning logs how many were dropped. Current codes: `swim-kill-gate-held` (WARNING — SWIM is holding the death of a long-healthy peer that only this node accused), `core-absence-fence` (CRITICAL — a worker lost the core and is dissolving locally), `replica-fsync-failed` (WARNING — a replica withheld its ack because fsync failed; the owner does not count that copy), `node-never-joined` (WARNING — a configured core member died on this node's view without this node ever observing it reachable; it never joined, so no `NODE_FAILED` event or CRITICAL node-health alert is raised for it, issue #1835). Best-effort like every per-node event: during a partition or bootstrap the publish can be dropped, and the log line is then the only record.
+`OPERATOR_WARNING` (issue #1574) is one generic event for many conditions. Use `details.code` to identify the warning: it is a stable kebab-case identifier from the `OperatorWarningCode` catalogue, never renamed once shipped. Neither this endpoint nor `aether events` can filter on it (or on severity) yet, so fetch the feed and match `details.code` yourself. `details` also carries `subsystem`, `subject` (the peer, `stream[partition]` or `core` the warning is about), `nodeId` (the reporting node) and `suppressedSince`. `summary` is the exact message the node logged, and the node's log line carries the same text prefixed with `[code]`. Emission is throttled to one event per `(code, subject)` per 60 s per node, except an INFO recovery code, which follows the warning it closes (see `stream-consumer-state-repaired`); `suppressedSince` counts the occurrences held back since the previous event for that key, and the log line is written for every occurrence. A full window is consumed only by an event that is published: after a failed publish (bootstrap, replay) the key waits a 5 s retry window, then the next occurrence goes through and counts the lost one. A key whose publishes keep failing is attempted at most once per 5 s; the first success restores the 60 s window. A key idle for 120 s is evicted; if it still held occurrences back, one aggregate WARN log line reports their total. The node hands each warning to a bounded queue (256), so raising one never waits for the event log; a burst beyond that drops events (never log lines) and the next accepted warning logs how many were dropped. Current codes: `swim-kill-gate-held` (WARNING — SWIM is holding the death of a long-healthy peer that only this node accused), `core-absence-fence` (CRITICAL — a worker lost the core and is dissolving locally), `replica-fsync-failed` (WARNING — a replica withheld its ack because fsync failed; the owner does not count that copy), `node-never-joined` (WARNING — a configured core member died on this node's view without this node ever observing it reachable; it never joined, so no `NODE_FAILED` event or CRITICAL node-health alert is raised for it, issue #1835), `stream-event-exceeds-read-cap` (CRITICAL — a partition's owner promotion is refused because a peer answered its watermark probe with a page cut before its first event, which alone exceeds that peer's `maxReadResponseBytes`; raise the cap on that peer; `subject` is `stream[partition]`, issue #1431), `stream-consumer-state-diverged` (WARNING — a declarative stream consumer this node held as attached had no subscription in its consumer runtime, so that partition was not consumed while reported attached; a reconcile pass forgets and re-attaches it, issue #752; `subject` is `group:stream[partition]`), `stream-consumer-detach-found-nothing` (WARNING — a detach or abandon found no subscription in the consumer runtime: delivery had already stopped and no final cursor flush was made; a point event, state already reconciled, with no recovery event, and independent of `stream-consumer-state-diverged` for throttling; same `subject`, issue #752), `stream-consumer-state-repaired` (INFO — the recovery of a `stream-consumer-state-diverged` that a reconcile pass found, same `subject`: the consumer is attached again and resumes from the group's last committed cursor, or the pass no longer wants it on this node; raised by the pass that finds it repaired, normally the same pass. A detach-found divergence is the separate point-event code above and has no recovery event. A recovery is published only for a subject whose `diverged` event is in the event log and not yet closed, once per such event, and is not throttled on its own: so you do not see a `repaired` without its `diverged` except in one case: if the `diverged` publish reported an unknown outcome (it may have landed) and redelivery then gave up, the held `repaired` is released, because an alarm left open forever is worse than a `repaired` whose `diverged` may be missing, and a `diverged` you saw is not left open by a throttled `repaired`. If the `diverged` event is still being redelivered when the recovery is raised, the recovery waits for it and is dropped if redelivery gives up on it. Publishing a recovery also ends the `diverged` throttle window for that subject, so a divergence that recurs right after a repair is shown again: a subject that flaps produces one `diverged`/`repaired` pair per flap, at most one per reconcile pass. The pairing state is in memory: after a node restart, a `diverged` published before it has no matching `repaired` (the open condition is re-evaluated on the next pass, but only a new `diverged`/`repaired` cycle closes it in the feed), so treat a `diverged` older than the node's last start as unconfirmed. The log line is always written, at INFO), `stream-consumer-not-registered` (CRITICAL — a slice's declared stream consumer could not be registered at activation; the slice activated but that consumer receives nothing until the cause, usually the stream section, is fixed and the slice re-activated; `subject` is `<slice>.<method>[<section>]`, issue #1935), `stream-consumer-registered-again` (INFO — the resolved counterpart: a consumer raised as `stream-consumer-not-registered` now registers; raised only for that same `subject`, never for a consumer that always registered, and not when the slice is removed in between. Like `stream-consumer-state-repaired` it is published only after a published `stream-consumer-not-registered` event for the same subject, once per such event, and is not throttled on its own), `stream-consumer-drain-failing` (WARNING — a stream consumer's delivery pass has thrown on 5 consecutive attempts, so the consumer delivers nothing; subject `stream[partition]/group`, the message names what was thrown and its top frames; the consumer keeps retrying with a backoff that doubles from 50 ms to 10 s, issue #1934), `stream-consumer-drain-restored` (INFO — the end of a `stream-consumer-drain-failing` run: a pass read the partition again, or the consumer was cancelled while the alert stood (message says which); published only after a published `stream-consumer-drain-failing` for the same subject, once per such event, like `stream-consumer-state-repaired`). Best-effort like every per-node event: during a partition or bootstrap the publish can be dropped, and the log line is then the only record.
 
 `DEPLOYMENT_FAILED` is emitted **once per (artifact, node) pair** whose deployment attempt failed — `ClusterEventAggregator.handleDeploymentFailed` fires on each node-artifact KV transition to `FAILED`, so a blueprint spread across N nodes that fails deterministically on all of them produces N separate events, each with its own `nodeId` in `details.nodeId` and the failure text in `details.reason`. Because `cluster-events` is a single replicated stream, all N events are visible from `GET /api/v1/events` on **any** node, not only the one that failed.
 
@@ -1401,6 +1408,10 @@ that belongs to a different (dead or retired) process:
   evidence and QUIC Hello together);
 - `quic_boot_token_drops_total` — inbound messages dropped because their connection peer or protocol
   sender is a retired NodeId;
+- `quic_superseded_closes_total` and `quic_superseded_lane_streams_at_risk_total` — connections closed at once
+  because a fresh handshake superseded them, and the lane streams (writes not yet accepted by quiche, or
+  written within the last 2 s) that close put at risk of discarding writes; unacked writes themselves are not
+  observable. An INFO line names the peer and the shape (same-direction re-dial or dual-dial loser);
 - `membership_process_evidence_refusals_total` — governor/worker-admission evidence the membership
   FSM refused (different token, or a DEAD/DEPARTING identity).
 
@@ -3595,16 +3606,22 @@ Disable CTM auto-heal. Writes `AutoHealStateValue(enabled=false, reason)` throug
 
 ### POST /api/v1/cluster/upgrade
 
-Initiate a cluster version upgrade. Phase 1 updates the version in the KV-Store config. Full rolling upgrade orchestration uses existing RollingUpdateManager infrastructure.
+Change the version the cluster provisions (#1543 part C). The upgrade rewrites the `[cluster] version` line of the committed TOML — the one replacements render their image tag and jar URL from — and stores the same version beside it, under the `expectedVersion` fence. After it, every node a replacement or scale-up provisions boots the target version, and a later `POST /api/v1/cluster/config` built from the committed TOML does not put the old version back. It does **not** restart or replace any running node.
 
 **RBAC:** ADMIN
 
 **Request:**
 ```json
 {
-  "targetVersion": "0.26.0"
+  "targetVersion": "0.26.0",
+  "expectedVersion": 7
 }
 ```
+
+| Field | Description |
+|-------|-------------|
+| `targetVersion` | Version to upgrade to. |
+| `expectedVersion` | Config version read from `GET /api/v1/cluster/config`; the request is rejected if it no longer matches (#1424, the same fence as `POST /api/v1/cluster/config` and `/cluster/scale`). Required: an omitted or `null` field is refused at decode time (HTTP 400, `Type mismatch: expected long`). An explicit `0` is not a wildcard: against a stored config it is refused as an unfenced overwrite. `aether cluster upgrade` reads the version from the same `GET /api/v1/cluster/config` that supplies the current version and sends it. **Breaking change for a client that omitted the field.** |
 
 **Response:**
 ```json
@@ -3621,6 +3638,16 @@ Initiate a cluster version upgrade. Phase 1 updates the version in the KV-Store 
   "error": "Cluster is already at version 0.26.0"
 }
 ```
+
+**Conflicts (HTTP 409, #1424).** `expectedVersion` no longer matches the stored config version
+(`VersionConflict`), or is an explicit `0` against a stored config (`UnfencedOverwrite`). A request for the
+version the cluster is already at answers "already at version" regardless of `expectedVersion`. Recovery:
+re-read `GET /api/v1/cluster/config` and re-issue with the fresh `expectedVersion`. The store-level
+RFC-0018 successor fence still rejects a write built on a stale read.
+
+**Conflicts (HTTP 409, #1543 part C — `UpgradeVersionPinned`).** A runtime profile referenced by a source role pins the launch artifact LITERALLY: `image` on a container runtime, or `jar_url` on a JVM runtime. Replacements would keep booting the pinned artifact and ignore the version, so the upgrade is refused before any write and the message names the profile(s). A pin written with the `{version}` placeholder (`image = "registry/aether-node:{version}"`, `jar_url = ".../v{version}/aether-node.jar"`) follows `[cluster] version` at render time and is not refused. The placeholder must already be in the committed config: `POST /api/v1/cluster/config` does not currently change runtime-profile content. A config whose `[cluster] version` is not a plain `version = "..."` line, or that uses CRLF line endings, is refused with a typed parse failure rather than half-rewritten.
+
+**Version changes through apply (HTTP 409, #1543 part C — `VersionChangeViaApply`).** `POST /api/v1/cluster/config` refuses a TOML whose `[cluster] version` differs from the committed one (previously a generic 501 "escalate"); the message points at this route.
 
 **Conflicts (HTTP 409, changed 2026-09-04, #837).** No cluster config is stored yet (e.g. right
 after a `docker compose down -v` volume wipe and fresh bootstrap). An upgrade request cannot create
@@ -4199,6 +4226,7 @@ subcommand was removed in #525.
 ## A/B Testing
 
 All A/B test mutation endpoints require the requesting node to be the cluster leader.
+A mutation reaching a node that is not the leader answers `409 Conflict` (`This operation requires the leader node.`, with the current leader named when known), not `500` (#833). Create answers `400` when `artifactBase` or `variants` is missing or empty, or when an artifact base or a variant version cannot be parsed.
 
 ### GET /api/v1/ab-tests
 
@@ -4433,6 +4461,9 @@ separate, still in-flight consolidation effort (spec §3.2–§3.3) owns that su
 | GET | `/api/v1/nodes/lifecycle/{id}` | Node Lifecycle |
 | POST | `/api/v1/nodes/drain/{id}` | Node Lifecycle |
 | POST | `/api/v1/nodes/shutdown/{id}` | Node Lifecycle |
+| POST | `/api/v1/nodes/replace/{id}` | Node Lifecycle |
+| GET | `/api/v1/nodes/replacements` | Node Lifecycle |
+| POST | `/api/v1/nodes/replacements/settle/{id}` | Node Lifecycle |
 | GET | `/api/v1/scheduled-tasks` | Scheduled Tasks |
 | GET | `/api/v1/scheduled-tasks/{section}` | Scheduled Tasks |
 | POST | `/api/v1/scheduled-tasks/pause/{section}/{artifact}/{methodName}` | Scheduled Tasks |
@@ -4482,15 +4513,19 @@ The `state` value is node-authoritative and heartbeat-reported (`NodeReportedSta
   {
     "nodeId": "node-1",
     "state": "READY",
-    "updatedAt": 0
+    "updatedAt": 0,
+    "version": "1.0.0"
   },
   {
     "nodeId": "node-2",
     "state": "DRAINING",
-    "updatedAt": 0
+    "updatedAt": 0,
+    "version": "1.0.0"
   }
 ]
 ```
+
+`version` (#1543 part C) is the software version the node advertises in its `version` label, so an upgrade can be checked against what nodes actually run. It is empty when the answering node holds no label for that peer: the label rides the SWIM ANNOUNCE and the QUIC Hello, not the steady-state gossip, so a peer learned only from gossip, or a node built before the label existed, shows `""`. Empty means unknown, not "old".
 
 ### GET /api/v1/nodes/lifecycle/{id}
 
@@ -4501,7 +4536,8 @@ Get membership + readiness for a specific node.
 {
   "nodeId": "node-1",
   "state": "READY",
-  "updatedAt": 0
+  "updatedAt": 0,
+  "version": "1.0.0"
 }
 ```
 
@@ -4516,7 +4552,19 @@ Which guard applied — and why — is always visible in `message`, both on succ
 - `"...core-guard skipped (role=worker)"` — the target is a worker; the guard did not run.
 - `"...core-guard applied (role=core, available=<n>, min=<m>)"` — the target is core; the guard ran and passed.
 
-**Recovery when a core drain is rejected:** wait for an in-flight core drain to finish departing (it stops counting once membership no longer reports it), or grow core capacity, then retry. There is no override flag — the guard cannot be forced past for a core target.
+**Recovery when a core drain is rejected:** wait for an in-flight core drain to finish departing (it stops counting once membership no longer reports it), or grow core capacity, then retry. There is no override flag for this guard — `force` (below) overrides only the slice floor.
+
+**Slice `minAvailable` floor (#1720).** Independently of the budget above, and for workers as well as cores (slices run on workers), a drain is refused with `409 Conflict` when it would leave a slice the target hosts below its `minAvailable` ACTIVE instances on the remaining nodes. The remaining nodes are the cluster's counted members minus the leader's pending drains minus the target, the same rule the automatic drain (leader reconciler) applies. The refusal names every such slice and its counts. Admission is serialised against concurrent operator drains, so two requests cannot both pass against one pending-drains snapshot. Add the query parameter `force=true` (`aether nodes drain <id> --override-floor`) to override: the drain is admitted and an `OPERATOR_WARNING` event with code `slice-floor-breached-by-force` (subject: the node, message: each breached slice and its counts) is raised, so a forced breach is never silent. A REFUSED drain raises `slice-floor-drain-refused` once per target (on entering refusal), and the next admission of that target raises its recovery event `slice-floor-drain-admitted` (severity `INFO`). `aether cluster destroy` passes `force` on every drain and shutdown, because destroying a cluster takes every slice below its floor by definition.
+
+**Response (slice floor, 409 Conflict):**
+```json
+{
+  "type": "about:blank",
+  "title": "Conflict",
+  "status": 409,
+  "detail": "Cannot drain node node-2: it would leave org.example:orders:1.0.0 with 1 ACTIVE instance(s), below its minAvailable 2. Re-run with force=true to override, which takes the slice below its floor."
+}
+```
 
 **Response (success):**
 ```json
@@ -4550,7 +4598,7 @@ Which guard applied — and why — is always visible in `message`, both on succ
 
 ### POST /api/v1/nodes/shutdown/{id}
 
-Enqueue a graceful shutdown for a node via the membership-v2 DRAIN-command channel. The leader's cluster-sync heartbeat carries `NodePingCommand.DRAIN` to the target, which self-drains (finishes in-flight requests) via its `DrainProcedure` and then halts; the CTM grace-terminate backstop reaps the container if it never self-exits. No direct lifecycle KV write happens on this path.
+Enqueue a graceful shutdown for a node via the membership-v2 DRAIN-command channel. The same admission as drain applies, including the slice `minAvailable` floor and the `force=true` override described there (#1720); a refused shutdown answers `409` with `Cannot shutdown node <id>: ...`. The leader's cluster-sync heartbeat carries `NodePingCommand.DRAIN` to the target, which self-drains (finishes in-flight requests) via its `DrainProcedure` and then halts; the CTM grace-terminate backstop reaps the container if it never self-exits. No direct lifecycle KV write happens on this path.
 
 **Response:**
 ```json
@@ -4561,6 +4609,44 @@ Enqueue a graceful shutdown for a node via the membership-v2 DRAIN-command chann
   "message": "Shutdown command enqueued; target will self-drain then halt via heartbeat DRAIN command"
 }
 ```
+
+### POST /api/v1/nodes/replace/{id}
+
+Start replacing a node with a fresh-id node (#1543): the replacement joins, the old node's seat (core) is swapped to it, a
+canary confirms it, then the old node drains and retires. The old node is never restarted under its own id. Route target is
+`LEADER`, authorization OPERATOR; one replacement runs at a time.
+
+Body: `{"replacement": "<fresh node id>", "targetVersion": "<version>"}`. Both fields are optional. Without `replacement` the
+leader provisions the new node (CTM mode); with it the operator starts that id itself (EXTERNAL mode) and the leader commits
+its admission together with the replacement record. `targetVersion` is the version the replacement must run before it is kept.
+Cores and workers are supported; a worker replacement swaps no voter seat.
+
+**Response:** the committed record: `original`, `replacement`, `role`, `phase`, `mode`, `source`, `targetVersion`, `attempt`,
+`reason`, `phaseDeadlineMs`, `epoch`.
+
+Statuses, from `NodeReplacementRoutes.asManagementError`: `404` unknown node. `400` the node or replacement id does not parse,
+or the node's role is not supported (`RoleNotSupported`). `401`/`403` the caller is not authorized (OPERATOR required). Every
+other refusal is `409`, never `500`:
+- another replacement is already in progress for the node, or the record changed concurrently;
+- the chosen replacement id is already a member, paired or reserved (`ReplacementIdInUse`);
+- a core replacement whose chosen id was a voter at genesis (`FormerVoterIdentity`: a core needs a fresh voter identity; restore the
+  original WAL for a same-identity restart);
+- an externally started replacement whose node has no provisioning source while the capacity ledger counts (`SourceRequired`), or that
+  would exceed the fleet node limit (`FleetFull`);
+- the node that received the request is not the leader any more (`NotLeader`; retry, the route targets the leader);
+- replacement is not available on the node (`Unavailable`, a node built without the replacement service).
+
+### GET /api/v1/nodes/replacements
+
+Every replacement record, ordered by original node id, with the fields above. `phase` is one of `PROVISIONING`, `JOINING`,
+`SWAPPING`, `CANARY`, `DRAINING_OLD`, `RETIRING_OLD`, `DONE`, `REVERTING`, `ROLLED_BACK`, `FAILED_KEPT_BOTH`.
+
+### POST /api/v1/nodes/replacements/settle/{id}
+
+Settle a replacement that stopped in `FAILED_KEPT_BOTH` (both nodes kept). Body `{"outcome": "keep-new"}` finishes retiring the
+old node; `{"outcome": "roll-back"}` gives the new node up. `400` for any other outcome or an id that does not parse; `409` when the node has no replacement in `FAILED_KEPT_BOTH`
+(`NothingToSettle`; an unknown node reads the same way), the record changed concurrently, or the node is not
+the leader (`NotLeader`); `401`/`403` when the caller is not authorized.
 
 ### POST /api/v1/nodes/promote/{id}
 
@@ -4596,6 +4682,9 @@ List all registered scheduled tasks with active timer count and execution state.
       "nextFireAt": 1710345900000,
       "consecutiveFailures": 0,
       "totalExecutions": 42,
+      "lastOutcome": "SUCCESS",
+      "completionTimeouts": 0,
+      "lateResolutions": 0,
       "skippedOverlaps": 0
     }
   ],
@@ -4682,9 +4771,14 @@ Get detailed execution state for a specific scheduled task.
   "totalExecutions": 42,
   "skippedOverlaps": 0,
   "lastFailureMessage": "",
-  "updatedAt": 1710345600000
+  "updatedAt": 1710345600000,
+  "lastOutcome": "SUCCESS",
+  "completionTimeouts": 0,
+  "lateResolutions": 0
 }
 ```
+
+`lastOutcome` is the outcome of the most recent fire: `SUCCESS` (the callee completed it), `FAILURE` (a failure response, or the callee's node departed), `UNKNOWN` (a REMOTE fire, from a leader that does not host the slice, whose response did not arrive within the scheduler's completion bound (10 minutes; the leader holds the in-flight claim that long. The guarantee is exactly this: a SINGLE-mode fire is not started while this leader still has the previous fire in flight, up to the completion bound (10 minutes, a marked guess); past the bound the next fire runs; a leader change mid-fire can overlap (in-flight state is per node); `/inject` takes no claim; `/inject` also still records UNKNOWN at the invocation timeout, not at the bound): the callee may have run it, completed it or not, and nothing can say which), or empty (no fire recorded yet). An `UNKNOWN` fire is neither an execution nor a failure: it is not counted in `totalExecutions`, it neither extends nor resets `consecutiveFailures`, and `lastFailureMessage` keeps describing the last real failure. `completionTimeouts` and `lateResolutions` are monotonic counters: every fire that timed out, and every timed-out fire whose response arrived late. Their difference approximates the fires whose outcome was never learned (an estimate: it also holds fires still waiting for their answer and answers a leader change lost). There is deliberately no gauge of unanswered fires, because a gauge only a live process can lower sticks once that process is gone. A late response resolves its own fire into the execution (`totalExecutions` + 1) or the failure it was, but never overwrites the `lastOutcome` of a NEWER fire. The invoker retains at most 1024 timed-out fires, each for at most about 1 hour; a fire it no longer retains, or whose callee's node departed, stays unknown and is never converted to a failure. The log line for entering `UNKNOWN` is written once per transition, not per fire. The task is unknown while its NEWEST fire's outcome is `UNKNOWN`; a later fire that completes ends that, as does the late answer of the newest fire and the removal of the task, and each transition raises the cluster events `SCHEDULED_TASK_OUTCOME_UNKNOWN` / `SCHEDULED_TASK_OUTCOME_RESTORED` (#1723). A task hosted on the firing node is awaited without a timeout and never records `UNKNOWN`.
 
 Same ALL-mode aggregation as the tasks-list summary above: for an `execution_mode = "all"` task every field is combined across each node's own row rather than read from a single shared entry. `lastFailureMessage`/`updatedAt` are not summable across nodes, so they are taken together from whichever per-node row has the higher `updatedAt`
 [mechanism: `ScheduledTaskRoutes.buildStateResponse` branches on `ExecutionMode.ALL` into `aggregateAllModeState`/`combineNodeStates`; pinned by `ScheduledTaskRoutesAllModeAggregationTest.java#SingleTaskState` — component-level against a real `KVStore`, not a live multi-node run].
@@ -4783,6 +4877,34 @@ Cause → status resolution: a cause implementing `HttpStatusAware` surfaces its
 including serialization failures and unmapped domain causes (#308) — falls back to HTTP `500`
 but STILL returns the structured `problem+json` body above, never a bare/empty 500. A scripted
 client can therefore always parse `status` and `detail`.
+
+A management `POST` whose body omits a required field, or carries one that cannot be parsed, answers `400`
+and names the field in `detail`; `500` is reserved for genuine server faults (#954). This holds for
+`/api/v1/deploy`, `/api/v1/scale`, `/api/v1/config`, `/api/v1/logging/levels`, `/api/v1/cluster/keys` and
+`/api/v1/cluster/keys/revoke/{id}` (an unknown key is `404`; a key declared in node configuration is `409`),
+`/api/v1/ab-tests/create`, `/api/v1/blueprints/deploy` and `/api/v1/blueprints/publish`.
+
+The same applies to the read and operate routes' own refusals: an unknown A/B test, blueprint or unloaded slice
+is `404`; scaling a slice that belongs to no active blueprint, and applying a cluster config while the committed core leader
+is another node, are `409` (with no leader committed yet, an election in progress, the config route answers `503`); a missing stream name on a consumer-group join or leave, an unknown `layer` on
+`/api/v1/cluster/journal`, and a missing or malformed `epoch` or `timeout` on `/api/v1/cluster/await-quiesced`
+are `400`; the cluster-topology routes answer `503` while the topology manager is not on the node, and the stream tail route answers `501` (deferred) (#954).
+
+A caller-supplied id that cannot be parsed (a blueprint id, an artifact coordinate, a version, a node id) is `400` on every management route, and a refusal that several typed failures funnel into answers their common status when they agree (#1921).
+A malformed integer path or query parameter (`partition=abc`, `max=abc`) and a malformed percent-escape in a topic group name are `400`; an unknown stream or consumer group on the stream routes, and an unknown topic or consumer group on the topic routes, is `404` (read from the answering node's own view: the committed stream config in its KV view or the stream in its engine, so a stream or topic created moments ago elsewhere can read as unknown until its commit applies; a known group whose projection is not hosted on the node stays `409`); a malformed node id, partition or stream address on a route that is forwarded to another node is `400` before anything is forwarded, while a well-formed node id naming no connected node is `503` (#1921).
+
+**Stream engine refusals on the stream read routes** (`STREAM_PARTITION`, `STREAM_READ`, `STREAMS_EVENTS`, `STREAM_CONSUMERS`) answer the status of their class, decided in one exhaustive mapper (`StreamErrorStatus`; a new engine error type does not compile until it is classified) (#1921):
+
+| Status | Class | Engine refusals |
+|---|---|---|
+| `400` | the request is wrong | `PartitionOutOfRange`, `EventTooLarge`, `EVENT_DROPPED`, `AHSE_REQUIRED_FOR_STRONG`, `PartitionCeilingExceeded`, `RetentionCountUnindexable`, `RetentionBoundInvalid`, `PartitionCapExceeded` |
+| `404` | unknown to this node's engine | `StreamNotFound`, `CONSUMER_NOT_FOUND` |
+| `409` | conflicts with what exists | `STREAM_ALREADY_EXISTS`, `CONSUMER_ALREADY_SUBSCRIBED`, `ReplicationRefused`, `EpochDiverged` (a cursor from a replaced owner lineage) |
+| `410` | the cursor's offset was reclaimed by retention (a judgement call: the offset was valid) | `CursorExpired` |
+| `503` | retry later or elsewhere | `PARTITION_NOT_LOCAL`, `PartitionHeldNotMaterialized`, `MaterializeBudgetExceeded`, `ReshufflePaced`, `STREAM_MEMORY_EXCEEDED`, `SEGMENT_TIER_FULL`, `SEALING_BEHIND`, `BUFFER_FULL`, `StreamConfigNotYetVisible`, the ownership and epoch refusals (`NotOwnerAppend`, `OwnerNotActivated`, `NotCurrentOwner`, `StaleEpochAppend`, `StaleEpochRead`, `OwnerCatchupPending`, `LinearizableRoundTimeout`, `ReplicaQuarantined`, `ReplicaNotVerified`, `RepairNotAuthorized`, `RepairWitnessFailed`), the closed and stalled signals, `CONSENSUS_PATH_UNAVAILABLE` |
+| `500` | engine integrity or an internal signal | `WalReplayMismatch`, `WalHeadLost`, `STREAM_CONFIG_COMMIT_FAILED`, `RingIndexCorrupted`, `EventProcessingFailed`, `SeedRejected`, `ProvenanceRegression`, `ProvenanceMismatch`, `ReplicaOffsetGap`, `ReplicaEntryConflict`, `UNREADABLE_CONSISTENCY_MODE`, `BUFFER_EMPTY`, `RUN_DOES_NOT_FIT`, `DivergenceNotEstablished`, `TruncateBelowRetained` |
+
+The publish routes keep their own refusals (#524). A refusal that travels from a remote owner as its message only arrives as an untyped cause and stays `500`.
 
 The `aether` CLI honors `--format json` on error paths: with `--format json` a failure is
 emitted to stderr as a structured `{"error":"<message>"}` object; otherwise the human-readable
@@ -5499,13 +5621,13 @@ What this node knows about declarative `[streams.X]` consumers — slice methods
 
 `eventTypePublishable` is absent when this node cannot know: the probe needs the slice's own codec registry, which only a node hosting the slice has, so reporting `false` there would fabricate a value. A deployment still activating produces the same empty candidate set as a slice that is nowhere, so the two are reported differently — "not being consumed YET" (normal, logged at INFO) versus the `unassignedPartitions` gap (logged at ERROR).
 
-**Guarantee.** At-least-once delivery per partition, conditional on the slice being `ACTIVE` on at least one live node. Duplicates arise from redelivery after a handler failure under `RETRY`, from the reconcile-tick window during an ownership or placement change (old and new assignee may both deliver), and from resuming at the last checkpoint (≤1000 events or ≤30s of progress) rather than the last delivered offset after an ungraceful move — a graceful detach flushes the exact cursor. Not effectively-once: there is no fencing token on delivery, and two transiently-divergent assignment views can both deliver and both write the cursor, last write winning.
+**Guarantee.** At-least-once delivery per partition, conditional on the slice being `ACTIVE` on at least one live node. Duplicates arise from redelivery after a handler failure under `RETRY`, from the reconcile-tick window during an ownership or placement change (old and new assignee may both deliver), and from resuming at the last checkpoint (≤1000 events or ≤30s of progress) rather than the last delivered offset after an ungraceful move — a graceful detach flushes the exact cursor, including past a delivery in flight at the detach: the flush waits up to 1 s for that delivery's handler and cursor advance, and only an event whose handler has not completed within that bound is redelivered, with a WARNING naming its offset (#1403) `[verified: aether/aether-stream/src/test/java/org/pragmatica/aether/stream/DetachAwaitsInFlightAdvanceTest.java, in-process]`. Not effectively-once: there is no fencing token on delivery, and two transiently-divergent assignment views can both deliver and both write the cursor, last write winning.
 
 **Redelivery contract on cursor commit failure (#654).** A cursor commit is a consensus write and can fail, or simply not settle before a graceful detach needs to proceed — detach bounds the final flush to 5 seconds and treats a commit that has not settled within that bound as failed for the shutdown, even if it later succeeds. On the consumer's next attach it resumes from its LAST COMMITTED offset [mechanism: `loadCursorAndStart` unconditionally fetches and applies the last committed offset before starting delivery] and redelivers every event since — consumers must be idempotent. On failover to another node the consumer resumes from the last CONSENSUS-PUBLISHED checkpoint, not the failed-over-from node's local one — that local cursor is unreadable from any other node, so a lost publish means redelivery from that older, cluster-visible point, at least once (#488, #654 round 2). Every such failure — the local commit itself failing, or the local commit succeeding while the consensus checkpoint publish is the one that fails or does not settle — is counted in `cursorCommitFailureCount` and, while the consumer stays attached, the detail is visible on that partition's `lastCursorCommitFailure`, prefixed `local commit:` or `checkpoint publish:` so an operator never mistakes one for the other. Operator recovery: none needed for an isolated failure at one shutdown — that is ordinary at-least-once behavior; a sustained rise in `cursorCommitFailureCount` across restarts, rather than an isolated one, is the signal worth investigating (consensus write path health) [design intent — unverified].
 
 **Cross-artifact group collision (#545).** `SubscriptionKey`/`ConsumerKey` are `(stream, partition, consumer group)` — deliberately WITHOUT the artifact, because that is the correct identity for "which physical consumer serializes reads for this group." Two DIFFERENT artifacts declaring the same `(stream, consumer group)` therefore collide at that key: sharing one group across different artifacts is not supported in this release, and neither declaration consumes until the collision is resolved (rename the group, or remove one of the conflicting declarations). `diagnostic` on BOTH colliding entries names every artifact involved, the stream, and the group — this endpoint is the only place that names it. Two VERSIONS of the SAME artifact sharing a group is NOT this case — that is the intended blue-green upgrade collapse, and consumption continues uninterrupted through it. **`GET /api/v1/blueprints/status/{id}` carries no hint of this collision**: a slice can be fully `DEPLOYED` while its declarative consumer sits idle on one, since the collision is a stream-registration fact, not a slice-instance fact.
 
-**Assigned here, consumable nowhere (#1389).** A node can be the COMMITTED assignee for partitions while the declaring slice is not loaded on it. Nothing there can consume them, so the group's only observable used to be growing lag. Two things now report it. `attachSkippedNoLocalSliceCount` counts entries into that state, and `diagnostic` on the affected consumer names the group, stream, partitions, this node and the missing slice; the same text is logged once at `WARN` per transition. It is a `WARN` and not an `ERROR` because the COMMON cause is a descale that the leader repairs — but it is not always transient, see below: every node-side unload path that transitions the deployment away from `ACTIVE` (`handleUnloading`, `performDeactivation`) makes this node stop being a candidate, and the leader rewrites the record on its next pass. The report is deliberately suppressed for that in-flight case — it fires only while this node is STILL the computed assignee, which is the state no leader pass will repair. **This state can be PERMANENT, and that is the case worth paging on.** The repair above is conditional on the deployment leaving `ACTIVE`. `handleReactivationFailure` and the quorum-loss `suspendSlice` path both unregister the slice from invocation WITHOUT transitioning the deployment, so the map keeps reporting `ACTIVE` here, this node stays the computed assignee, and **no leader pass will ever reassign the partition**. Nothing clears it on its own. **Operator recovery:** confirm the slice's deployment state on this node; where the map says `ACTIVE` while nothing is loaded, redeploy or unload the slice here so the leader's candidate set drops this node. A count that keeps rising while `attachedSubscriptions` stays flat is the durable-group liveness gap [design intent — unverified: pinned by `StreamConsumerManagerTest$ParkedAssignment` at unit level; not reproduced on a live cluster].
+**Assigned here, consumable nowhere (#1389).** A node can be the COMMITTED assignee for partitions while the declaring slice is not loaded on it. Nothing there can consume them, so the group's only observable used to be growing lag. Two things now report it. `attachSkippedNoLocalSliceCount` counts entries into that state, and `diagnostic` on the affected consumer names the group, stream, partitions, this node and the missing slice; the same text is logged once at `WARN` per transition. It is a `WARN` and not an `ERROR` because the COMMON cause is a descale that the leader repairs — but it is not always transient, see below: every node-side unload path that transitions the deployment away from `ACTIVE` (`handleUnloading`, `performDeactivation`) makes this node stop being a candidate, and the leader rewrites the record on its next pass. The report is deliberately suppressed for that in-flight case — it fires only while this node is STILL the computed assignee, which is the state no leader pass will repair. **This state can be PERMANENT, and that is the case worth paging on.** The repair above is conditional on the deployment leaving `ACTIVE`. The quorum-loss `suspendSlice` path unregisters the slice from invocation WITHOUT transitioning the deployment, because no write can commit without quorum, so the map keeps reporting `ACTIVE` here, this node stays the computed assignee, and **no leader pass will reassign the partition** while that lasts. The quorum's return ends it: the reactivation either restores the slice or, since #1660, commits `FAILED`, which the leader unloads and redeploys. If that `FAILED` write fails on all of its retries while the quorum holds, the node logs `CRITICAL: Failed to write FAILED state` and the state persists; nothing clears it on its own. **Operator recovery:** confirm the slice's deployment state on this node; where the map says `ACTIVE` while nothing is loaded, redeploy or unload the slice here so the leader's candidate set drops this node. A count that keeps rising while `attachedSubscriptions` stays flat is the durable-group liveness gap [design intent — unverified: pinned by `StreamConsumerManagerTest$ParkedAssignment` at unit level; not reproduced on a live cluster].
 
 **Response:**
 ```json
@@ -5953,8 +6075,13 @@ partition's owner and on a non-owner that forwards the publish: the owner answer
 forwarder bounded-retries and then answers 503 too. The batch form reports the item `OUTCOME_UNKNOWN` with the cause —
 conservative, since nothing was written, but a batch item does not distinguish a refusal before the append from an
 unknown outcome after it; a retry with the same message ID is safe either way.
+The same `503` answers the other owner-side refusals that precede any append (#1944): the node has not applied the
+stream's committed config yet (`Stream config not yet visible on this node: <stream>`, typically a freshly started or
+replaced node), the owner has not finished promotion, or this node is not the committed owner. All three clear within
+seconds; retry. The mapping is an allow-list of pre-append refusals, not every transient cause: a timeout can follow a
+write and keeps its own status. No `Retry-After` header is set on this path.
 `[mechanism: ManagementServerError.PublishRetryable, StreamForwardHandler retryable floor refusal; pinned by
-StreamApiRoutesPublishPartitionTest, StreamForwardHandlerTest]`
+StreamApiRoutesPublishPartitionTest, StreamForwardHandlerTest, #1944 pins in StreamApiRoutesPublishPartitionTest]`
 
 When the stream's partition count cannot be determined — the auto-create guard could not
 materialize the stream locally (capacity exhausted, or `STRONG` consistency requiring AHSE
@@ -6255,7 +6382,7 @@ security_mode = "none"
 
 | Field | Required | Default | Description |
 |-------|----------|---------|-------------|
-| `jwks_url` | Yes | -- | JWKS endpoint URL for public key fetching. With `security_mode = "jwt"` and an enabled app-http server, a missing `jwks_url` is refused at config load and the node does not start (#909); cluster bootstrap rejects it as PF-28 |
+| `jwks_url` | Yes | -- | JWKS endpoint URL for public key fetching. With `security_mode = "jwt"` and an enabled app-http server, a missing `jwks_url` fails config validation, so the node refuses to start with exit code 65 (#909, #2052); cluster bootstrap rejects it as PF-28 |
 | `issuer` | No | _(skip validation)_ | Expected `iss` claim value |
 | `audience` | No | _(skip validation)_ | Expected `aud` claim value |
 | `role_claim` | No | `"role"` | JWT claim name for role extraction |

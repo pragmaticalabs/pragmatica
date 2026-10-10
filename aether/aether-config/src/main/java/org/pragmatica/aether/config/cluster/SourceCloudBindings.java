@@ -29,19 +29,17 @@ public interface SourceCloudBindings {
         var provider = source.type() == SourceType.DOCKER
                        ? "docker"
                        : source.provider().map(CloudProviderName::value).or("");
-        var credentials = section(source, "cloud.credentials");
+        var credentials = CloudCredentialSchema.credentials(source, provider);
         var compute = section(source, "cloud.compute");
 
-        source.credentials().onPresent(value -> scalarCredential(credentials, value));
         source.region().onPresent(value -> compute.put("region", value));
         source.zone().onPresent(value -> compute.put("zone", value));
-        applyLocation(credentials, source, provider);
         var discovery = section(source, "cloud.discovery");
 
         discovery.put("cluster_name", clusterName);
 
         return new CloudConfig(provider,
-                               Map.copyOf(credentials),
+                               credentials,
                                Map.copyOf(compute),
                                Map.of(),
                                Map.copyOf(discovery),
@@ -262,20 +260,5 @@ public interface SourceCloudBindings {
 
     private static Map<String, String> section(SourceProfile source, String name) {
         return new HashMap<>(source.nodeConfig().map(config -> config.getSection(name)).or(Map.of()));
-    }
-
-    private static void scalarCredential(Map<String, String> credentials, String value) {
-        credentials.put("api_token", value);
-        credentials.put("access_key", value);
-        credentials.put("credentials_file", value);
-    }
-
-    private static void applyLocation(Map<String, String> credentials, SourceProfile source, String provider) {
-        switch (provider) {
-            case "aws" -> source.region().onPresent(value -> credentials.put("region", value));
-            case "gcp" -> source.zone().onPresent(value -> credentials.put("zone", value));
-            case "azure" -> source.region().onPresent(value -> credentials.put("location", value));
-            default -> {}
-        }
     }
 }
