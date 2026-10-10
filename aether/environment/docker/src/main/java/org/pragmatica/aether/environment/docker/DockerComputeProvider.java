@@ -70,9 +70,8 @@ public record DockerComputeProvider(DockerCommandRunner runner, DockerConfig con
         return ProviderDefaults.providerDefaults("docker", "", "", "", Option.empty(), false);
     }
 
-    /// Docker is a single-image, unsized provider: it ignores the resolved instanceSize/image/zone
-    /// (there is no sizing or image-selection knob on `docker run` beyond the configured image) and
-    /// builds the container from the request context alone. A SPOT request is rejected loud —
+    /// Docker is an unsized provider: it ignores the resolved instanceSize/zone and builds the container from the request
+    /// context, booting the resolved image when the request carries one (#1543 F2) and the configured image otherwise. A SPOT request is rejected loud —
     /// Docker has no spot/preemptible concept and must never silently downgrade.
     @Override
     public Promise<InstanceInfo> createFrom(ProvisionRequest request) {
@@ -383,9 +382,18 @@ public record DockerComputeProvider(DockerCommandRunner runner, DockerConfig con
 
         addSpecLabels(command, ctx.extraTags());
         addPlacementLabels(command, request.zone());
-        command.add(config.imageName());
+        command.add(imageFor(request));
 
         return List.copyOf(command);
+    }
+
+    /// #1543 F2: the image the request resolved (a docker source's runtime profile pin at the committed version) wins over the single
+    /// configured image, which stays the answer for every request that carries none (bootstrap seed, no committed TOML).
+    private String imageFor(ProvisionRequest request) {
+        return request.image()
+                      .isBlank()
+               ? config.imageName()
+               : request.image();
     }
 
     /// A per-node named volume for the backup repository, only when the backup is enabled with a path in the environment

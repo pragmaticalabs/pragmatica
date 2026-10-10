@@ -995,6 +995,18 @@ public final class ClusterConfigRoutes implements RouteSource {
     }
 
     private static Result<Unit> pinnedRefusal(ClusterBootstrapConfig config, String targetVersion) {
+        return dockerImageRefusal(config, targetVersion).flatMap(_ -> literalPinRefusal(config, targetVersion));
+    }
+
+    private static Result<Unit> dockerImageRefusal(ClusterBootstrapConfig config, String targetVersion) {
+        var unversioned = ClusterUpgradeToml.dockerSourcesWithoutVersionedImage(config);
+
+        return unversioned.isEmpty()
+               ? Result.unitResult()
+               : new ClusterConfigError.UpgradeDockerImageUnversioned(targetVersion, unversioned).result();
+    }
+
+    private static Result<Unit> literalPinRefusal(ClusterBootstrapConfig config, String targetVersion) {
         var pinned = ClusterUpgradeToml.pinnedRuntimeProfiles(config);
 
         return pinned.isEmpty()

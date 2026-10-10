@@ -73,6 +73,42 @@ class DockerComputeProviderTest {
     }
 
     @Nested
+    class ImageTests {
+
+        @Test
+        void provision_specCarriesAnImage_runsThatImageNotTheConfiguredOne() {
+            testRunner.queuedResponses.add(Promise.success("container-id-img"));
+            testRunner.queuedResponses.add(Promise.success(RUNNING_INSPECT));
+
+            provider.provision(specWith(Option.some("registry/aether-node:1.1.0")))
+                    .await()
+                    .onFailure(cause -> fail("Expected success but got: " + cause.message()));
+
+            assertThat(testRunner.allCommands.getFirst().getLast()).isEqualTo("registry/aether-node:1.1.0");
+        }
+
+        @Test
+        void provision_specCarriesNoImage_runsTheConfiguredImage() {
+            testRunner.queuedResponses.add(Promise.success("container-id-img"));
+            testRunner.queuedResponses.add(Promise.success(RUNNING_INSPECT));
+
+            provider.provision(specWith(Option.empty()))
+                    .await()
+                    .onFailure(cause -> fail("Expected success but got: " + cause.message()));
+
+            assertThat(testRunner.allCommands.getFirst().getLast()).isEqualTo(CONFIG.imageName());
+        }
+
+        private ProvisionSpec specWith(Option<String> image) {
+            var ctx = ProvisionContext.provisionContext(maybeClusterName("test-cluster"), "core", sourceNameOrDefault("default"),
+                                                         ProvisionContext.PROVISIONED_BY_BOOTSTRAP);
+            var spec = ProvisionSpec.provisionSpec(InstanceType.ON_DEMAND, "docker", "default", ctx).unwrap();
+
+            return image.fold(() -> spec, spec::withImage);
+        }
+    }
+
+    @Nested
     class BuildRunCommandTests {
 
         @Test

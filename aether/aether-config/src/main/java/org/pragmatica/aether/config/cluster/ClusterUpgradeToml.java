@@ -56,6 +56,31 @@ public sealed interface ClusterUpgradeToml {
                                     .toList();
     }
 
+    /// Names (sorted) of the DOCKER sources with a role whose image does not follow the cluster version: the role's runtime profile
+    /// is missing, pins no image, or pins one without [NodeUserDataRenderer#VERSION_PLACEHOLDER]. A replacement of such a role boots
+    /// the provider's one configured image, so the upgrade would roll nodes onto the SAME image; it is refused instead (#1543 F2).
+    static List<String> dockerSourcesWithoutVersionedImage(ClusterBootstrapConfig config) {
+        return config.sources()
+                     .values()
+                     .stream()
+                     .filter(source -> source.type() == SourceType.DOCKER)
+                     .filter(source -> source.roles()
+                                             .values()
+                                             .stream()
+                                             .anyMatch(role -> !followsVersion(config, role)))
+                     .map(source -> source.name()
+                                          .value())
+                     .sorted()
+                     .toList();
+    }
+
+    private static boolean followsVersion(ClusterBootstrapConfig config, RoleSubTable role) {
+        return Option.option(config.runtimes().get(role.runtimeRef()))
+                     .flatMap(RuntimeProfile::image)
+                     .filter(image -> image.contains(NodeUserDataRenderer.VERSION_PLACEHOLDER))
+                     .isPresent();
+    }
+
     private static Set<String> referencedRuntimeRefs(ClusterBootstrapConfig config) {
         return config.sources()
                      .values()

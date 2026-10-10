@@ -179,6 +179,55 @@ class ClusterConfigRoutesUpgradeTomlTest {
         assertUnchanged(store, JAR_PINNED);
     }
 
+    private static final String DOCKER_SOURCE = """
+
+            [source.dock]
+            type = "docker"
+
+            [source.dock.core]
+            count = 3
+            runtime = "node"
+            """;
+
+    /// #1543 F2 (ruling 7f2f9d772): a docker replacement boots the image its profile pins, so a docker role pinning no image, or one
+    /// without `{version}`, would replace every node with the SAME image. Refused at the start, typed 409, before any write.
+    @Test
+    void upgrade_whenADockerSourceRolePinsNoImage_isRefusedWith409NamingTheSource_andWritesNothing() {
+        var toml = UNPINNED.substring(0, UNPINNED.indexOf("[source.hetzner]")) + DOCKER_SOURCE.stripLeading();
+        var store = storeWith(committed(toml, 1));
+
+        assertRefusedAsDockerUnversioned(upgrade(store, "1.1.0", 1), "dock");
+        assertUnchanged(store, toml);
+    }
+
+    @Test
+    void upgrade_whenADockerSourceRolePinsALiteralImage_isRefusedWith409NamingTheSource_andWritesNothing() {
+        var toml = IMAGE_PINNED.substring(0, IMAGE_PINNED.indexOf("[source.hetzner]")) + DOCKER_SOURCE.stripLeading();
+        var store = storeWith(committed(toml, 1));
+
+        assertRefusedAsDockerUnversioned(upgrade(store, "1.1.0", 1), "dock");
+        assertUnchanged(store, toml);
+    }
+
+    @Test
+    void upgrade_whenTheDockerSourceImageCarriesThePlaceholder_succeeds_andTheCommittedTomlCarriesTheTarget() {
+        var toml = IMAGE_PINNED.substring(0, IMAGE_PINNED.indexOf("[source.hetzner]")).replace("aether-node:1.0.0", "aether-node:{version}")
+                   + DOCKER_SOURCE.stripLeading();
+        var store = storeWith(committed(toml, 1));
+
+        assertThat(upgrade(store, "1.1.0", 1).isSuccess()).isTrue();
+        assertThat(tomlVersion(committed(store))).isEqualTo("1.1.0");
+    }
+
+    private static void assertRefusedAsDockerUnversioned(org.pragmatica.lang.Result<?> result, String source) {
+        assertThat(result.isFailure()).as("a docker upgrade that would replace nodes with the same image must be refused, got: " + result).isTrue();
+        result.onFailure(cause -> {
+            assertThat(cause).isInstanceOf(ClusterConfigError.UpgradeDockerImageUnversioned.class);
+            assertThat(((HttpStatusAware) cause).httpStatus()).isEqualTo(HttpStatus.CONFLICT);
+            assertThat(cause.message()).contains(source).contains("{version}");
+        });
+    }
+
     /// A seed carries no TOML and renders no replacement user data, so only the stored version moves (the behaviour
     /// the fence tests rely on).
     @Test

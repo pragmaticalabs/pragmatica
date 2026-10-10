@@ -831,20 +831,18 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                                    contextSeeded)
                                     .unwrap();
 
-        return renderReplacementUserData(contextSeeded, intendedRole).map(userData -> userData.map(baseSpec::withUserData)
-                                                                                              .or(baseSpec))
-                                        .async()
-                                        .flatMap(renderedSpec -> provisionWithZoneRotation(renderedSpec,
-                                                                                           replacementZones(intendedRole,
-                                                                                                            sourceName),
-                                                                                           sourceName))
-                                        .onFailure(this::recordProvisioningFailure)
-                                        .onSuccess(instance -> recordProvisionedReplacement(instance,
-                                                                                            newNodeId,
-                                                                                            intendedRole,
-                                                                                            sourceName))
-                                        .onSuccess(_ -> provisionedRoleIntents.put(newNodeId, intendedRole))
-                                        .map(ClusterTopologyManagerRecord::asDispatched);
+        return renderReplacementSpec(baseSpec, contextSeeded, intendedRole).async()
+                                    .flatMap(renderedSpec -> provisionWithZoneRotation(renderedSpec,
+                                                                                       replacementZones(intendedRole,
+                                                                                                        sourceName),
+                                                                                       sourceName))
+                                    .onFailure(this::recordProvisioningFailure)
+                                    .onSuccess(instance -> recordProvisionedReplacement(instance,
+                                                                                        newNodeId,
+                                                                                        intendedRole,
+                                                                                        sourceName))
+                                    .onSuccess(_ -> provisionedRoleIntents.put(newNodeId, intendedRole))
+                                    .map(ClusterTopologyManagerRecord::asDispatched);
     }
 
     /// #1022 — the leader has just created a BILLABLE server, and until this line it dropped the
@@ -1207,8 +1205,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                            roleInstanceType(NodeRole.WORKER, source),
                                            NodeRole.WORKER.value(),
                                            context)
-                            .flatMap(spec -> renderReplacementUserData(context, NodeRole.WORKER).map(userData -> userData.map(spec::withUserData)
-                                                                                                                         .or(spec)))
+                            .flatMap(spec -> renderReplacementSpec(spec, context, NodeRole.WORKER))
                             .map(rendered -> operation.targetZone()
                                                       .map(zone -> rendered.withPlacement(PlacementHint.zoneHint(zone)))
                                                       .or(rendered))
@@ -1470,6 +1467,30 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         return nodes.stream()
                     .map(NodeId::id)
                     .collect(Collectors.toUnmodifiableSet());
+    }
+
+    /// The replacement's spec with its rendered user-data (cloud sources) and its pinned image (docker sources) attached.
+    private Result<ProvisionSpec> renderReplacementSpec(ProvisionSpec spec,
+                                                        ProvisionContext context,
+                                                        NodeRole intendedRole) {
+        return renderReplacementUserData(context, intendedRole).map(userData -> userData.map(spec::withUserData)
+                                                                                        .or(spec))
+                                        .map(rendered -> pinnedDockerImage(context, intendedRole).map(rendered::withImage)
+                                                                          .or(rendered));
+    }
+
+    /// #1543 F2 (ruling 7f2f9d772): a DOCKER source's replacement boots the image its runtime profile pins at the committed
+    /// `[cluster] version` (`repo:{version}`), so an upgrade replaces a container with one of the TARGET image instead of the
+    /// provider's single configured image. Empty (the provider keeps its configured image) when there is no committed TOML, the
+    /// source is not DOCKER or the role pins no image; the upgrade is refused at its start for a docker source that pins none.
+    private Option<String> pinnedDockerImage(ProvisionContext context, NodeRole intendedRole) {
+        return committedToml().flatMap(ClusterTopologyManagerRecord::parseConfig)
+                            .flatMap(config -> sourceFor(config,
+                                                         context.sourceName(),
+                                                         intendedRole).filter(source -> source.type() == SourceType.DOCKER)
+                                                        .flatMap(source -> NodeUserDataRenderer.pinnedImageFor(config,
+                                                                                                               source,
+                                                                                                               intendedRole)));
     }
 
     /// Render the replacement node's cloud-init user-data so a CTM-provisioned (cloud) replacement

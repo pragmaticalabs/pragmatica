@@ -24,6 +24,11 @@ never replaces two nodes at once, to keep that window to one node at a time.
   (JVM) written without the `{version}` placeholder wins over the version and the upgrade is refused
   with HTTP 409 naming the profile. Write the pin as `image = "registry/aether-node:{version}"` or
   `jar_url = ".../v{version}/aether-node.jar"` in the config the cluster was bootstrapped with
+- For a `docker` source, every role's runtime profile pins an `image` that carries `{version}`
+  (`[runtime.app] type = "container"`, `image = "registry/aether-node:{version}"`, `runtime = "app"` on the role).
+  A docker replacement boots that image at the committed version; without it the provider would start the same
+  image again, so the upgrade is refused with HTTP 409 naming the source (`UpgradeDockerImageUnversioned`) before
+  any node is touched
 - The target version's image or jar published where the cluster's runtime profile points
 
 ## Procedure
@@ -113,7 +118,7 @@ should be resolved.
 |-----------|-------------------|------------|
 | Replacement rolled back (`ROLLED_BACK`) | Pauses, reason names the node | Read the `node-replacement-*` events and the new node's logs, fix the cause (image or jar unreachable, config, capacity), then `aether cluster upgrade-resume` |
 | Replacement kept both nodes (`FAILED_KEPT_BOTH`) | Pauses, reason names the node | Settle the pair: `POST /api/v1/nodes/replacements/settle/{id}` with `{"outcome": "keep-new"}` (finish retiring the old node) or `{"outcome": "roll-back"}` (give the new node up); then `aether cluster upgrade-resume`. Resuming before settling pauses the run again |
-| Refusal when starting (for example a literal `image` or `jar_url` pin) | Not started, HTTP 409 | Fix the config as described in the prerequisites and re-issue the command |
+| Refusal when starting (for example a literal `image` or `jar_url` pin, or a docker source whose image has no `{version}`) | Not started, HTTP 409 | Fix the config as described in the prerequisites and re-issue the command |
 | `--wait` exits `2` | Run continues | Follow with `aether cluster upgrade-status`; nothing needs undoing |
 | Need to stop | Applied after the in-flight replacement | `aether cluster upgrade-pause` (resumable) or `aether cluster upgrade-abort` (final) |
 

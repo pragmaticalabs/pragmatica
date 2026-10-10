@@ -346,6 +346,27 @@ public sealed interface ClusterConfigError extends Cause, HttpStatusAware {
         }
     }
 
+    /// #1543 F2 (ruling 7f2f9d772): a DOCKER source replaces a node with a container of the image its runtime profile pins at the
+    /// committed version. A docker role whose profile pins no image, or one without `{version}`, would be replaced by the provider's one
+    /// configured image, so a rolling upgrade would replace every node with the SAME image. Refused at the upgrade start, before any
+    /// node is touched, naming the sources and the fix; never rolled back node by node.
+    record UpgradeDockerImageUnversioned(String targetVersion, List<String> sources) implements ClusterConfigError {
+        @Override
+        public String message() {
+            return "Refusing to upgrade to " + targetVersion
+                 + ": docker source(s) " + sources
+                 + " have a role whose runtime profile pins no image carrying {version}, so replacements would boot the same image and the "
+                 + "upgrade would change nothing. Declare the image with the placeholder in the config the cluster was bootstrapped with "
+                 + "(runtime = \"app\" on the role, [runtime.app] type = \"container\", image = \"registry/aether-node:{version}\"). "
+                 + "'aether cluster apply' does not currently change runtime-profile content";
+        }
+
+        @Override
+        public HttpStatus httpStatus() {
+            return HttpStatus.CONFLICT;
+        }
+    }
+
     /// #1543 part C: a changed `[cluster] version` on `apply` used to be answered 501 "escalate rather than retry"
     /// (the generic unsupported-action refusal) while the CLI merely logged it. The version is the one replacements
     /// provision, so it has exactly one writer — the upgrade route, which rewrites the committed TOML and refuses a

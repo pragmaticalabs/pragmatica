@@ -76,6 +76,13 @@ public sealed interface NodeUserDataRenderer {
                       .map(image -> withVersion(image, clusterVersion));
     }
 
+    /// The image a node of `role` in `source` boots from, taken from the role's runtime profile pin with [#VERSION_PLACEHOLDER]
+    /// replaced by the cluster version (#1543 F2); empty when the role names no profile or the profile pins no image.
+    static Option<String> pinnedImageFor(ClusterBootstrapConfig config, SourceProfile source, NodeRole role) {
+        return resolveRuntimeProfile(config, source, role).flatMap(profile -> pinnedImage(profile,
+                                                                                          config.cluster().version()));
+    }
+
     static String resolveJarUrl(Option<RuntimeProfile> profile, String version) {
         return profile.flatMap(p -> p.jarUrl()
                                      .map(url -> withVersion(url, version)))

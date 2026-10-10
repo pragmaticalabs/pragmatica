@@ -150,6 +150,76 @@ class ClusterUpgradeTomlTest {
         result.onFailure(cause -> assertThat(cause.message()).contains("CRLF"));
     }
 
+    private static final String DOCKER_BASE = """
+            config_version = "1.0.0"
+
+            [cluster]
+            name = "prod-cluster"
+            version = "1.0.0"
+
+            %s
+
+            [source.dock]
+            type = "docker"
+
+            [source.dock.core]
+            count = 3
+            %s
+            """;
+
+    private static String dockerToml(String runtimeTable, String coreRuntimeRef) {
+        return DOCKER_BASE.formatted(runtimeTable, coreRuntimeRef);
+    }
+
+    @Test
+    void dockerSourcesWithoutVersionedImage_namesTheDockerSourceWhoseProfileDeclaresNoRuntime() {
+        assertThat(unversionedDocker(dockerToml("", ""))).containsExactly("dock");
+    }
+
+    @Test
+    void dockerSourcesWithoutVersionedImage_namesTheDockerSourceWhoseProfilePinsNoImage() {
+        assertThat(unversionedDocker(dockerToml("[runtime.app]\ntype = \"container\"", "runtime = \"app\""))).containsExactly("dock");
+    }
+
+    @Test
+    void dockerSourcesWithoutVersionedImage_namesTheDockerSourceWhoseImageIsALiteral() {
+        var runtime = "[runtime.app]\ntype = \"container\"\nimage = \"registry/aether-node:1.0.0\"";
+
+        assertThat(unversionedDocker(dockerToml(runtime, "runtime = \"app\""))).containsExactly("dock");
+    }
+
+    @Test
+    void dockerSourcesWithoutVersionedImage_acceptsAnImageCarryingThePlaceholder() {
+        var runtime = "[runtime.app]\ntype = \"container\"\nimage = \"registry/aether-node:{version}\"";
+
+        assertThat(unversionedDocker(dockerToml(runtime, "runtime = \"app\""))).isEmpty();
+    }
+
+    @Test
+    void dockerSourcesWithoutVersionedImage_ignoresACloudSourceWithNoPin() {
+        assertThat(unversionedDocker(toml("", ""))).isEmpty();
+    }
+
+    @Test
+    void pinnedImageFor_resolvesThePlaceholderAtTheClusterVersion() {
+        var runtime = "[runtime.app]\ntype = \"container\"\nimage = \"registry/aether-node:{version}\"";
+        var config = ClusterBootstrapConfigParser.parse(dockerToml(runtime, "runtime = \"app\"")).unwrap();
+
+        assertThat(NodeUserDataRenderer.pinnedImageFor(config, config.sources().get("dock"), NodeRole.CORE).or("<none>"))
+                .isEqualTo("registry/aether-node:1.0.0");
+    }
+
+    @Test
+    void pinnedImageFor_isEmptyWhenTheRoleNamesNoProfile() {
+        var config = ClusterBootstrapConfigParser.parse(dockerToml("", "")).unwrap();
+
+        assertThat(NodeUserDataRenderer.pinnedImageFor(config, config.sources().get("dock"), NodeRole.CORE).isEmpty()).isTrue();
+    }
+
+    private static List<String> unversionedDocker(String toml) {
+        return ClusterUpgradeToml.dockerSourcesWithoutVersionedImage(ClusterBootstrapConfigParser.parse(toml).unwrap());
+    }
+
     private static List<String> pinned(String toml) {
         return ClusterUpgradeToml.pinnedRuntimeProfiles(ClusterBootstrapConfigParser.parse(toml).unwrap());
     }
