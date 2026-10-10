@@ -66,11 +66,17 @@ class NodeReplacementEnvTest {
 
     NodeReplacementEnvTest() {
         states.put(OLD, "Member");
+        commitSourceConfig();
         when(ctm.provisionReplacement(any(), any(), any(), any(), any())).thenReturn(Promise.success(ProvisionDisposition.dispatched()));
         when(ctm.drainNode(any(), any())).thenAnswer(call -> Promise.unitPromise());
         when(ctm.reapRetired(any(), any(), anyBoolean())).thenAnswer(call -> Promise.unitPromise());
         when(ctm.instanceListed(any(), any())).thenAnswer(call -> Promise.success(true));
         wiring = NodeReplacementWiring.wire(inputs(NodeReplacementPlanner.Timings.parse("60000,60000,60000,60000,0,60000,60000")));
+    }
+
+    private void commitSourceConfig() {
+        stored.put(AetherKey.ClusterConfigKey.CURRENT,
+                   new AetherValue.ClusterConfigValue(Option.none(), "test", "1.0.0", List.of(), 3, 3, "", 1L, 0L));
     }
 
     @SuppressWarnings("unchecked")
@@ -217,11 +223,66 @@ class NodeReplacementEnvTest {
 
         commands.clear();
         stored.clear();
+        commitSourceConfig();
         index.remove(new AetherKey.NodeReplacementKey(OLD));
         record(NodeReplacementPhase.PROVISIONING, 999_999L);
         wiring.reconciler().reconcile().await();
 
         verify(ctm).provisionReplacement(any(), any(), any(), any(), any());
+    }
+
+    // ---- #2098: a startup ordering is not a refusal ---------------------------------------------------------------------
+
+    /// The replacement starts before the bootstrap source configuration is committed: the fleet inventory cannot be initialized yet, which
+    /// is a wait, not a refusal. The provision is deferred (nothing is dispatched, nothing is rolled back), and DONE once the configuration
+    /// is committed. Red at rc4: the CTM refusal ("Committed source configuration required for fleet inventory") became ROLLED_BACK.
+    @Test
+    void provisioningBeforeTheSourceConfigIsCommitted_isDeferred_thenDispatchedOnceItIs() {
+        stored.remove(AetherKey.ClusterConfigKey.CURRENT);
+        record(NodeReplacementPhase.PROVISIONING, 999_999L);
+        wiring.reconciler().reconcile().await();
+
+        verify(ctm, never()).provisionReplacement(any(), any(), any(), any(), any());
+        assertThat(commands).as("deferred: no phase committed, in particular no roll back").isEmpty();
+
+        commitSourceConfig();
+        wiring.reconciler().reconcile().await();
+
+        verify(ctm).provisionReplacement(any(), any(), any(), any(), any());
+        assertThat(committedRecord().phase()).isEqualTo(NodeReplacementPhase.JOINING);
+    }
+
+    /// Bounded by the provisioning deadline: a configuration that never appears ends the replacement, and its cause names the missing
+    /// committed configuration instead of a bare deadline.
+    @Test
+    void aSourceConfigThatNeverAppears_endsAtTheDeadline_namingTheMissingConfig() {
+        stored.remove(AetherKey.ClusterConfigKey.CURRENT);
+        record(NodeReplacementPhase.PROVISIONING, 500L);
+        now = 2_000L;
+        wiring.reconciler().reconcile().await();
+
+        var committed = committedRecord();
+
+        assertThat(committed.phase()).isEqualTo(NodeReplacementPhase.ROLLED_BACK);
+        assertThat(committed.reason()).contains("provisioning deadline").contains("committed source configuration is missing");
+    }
+
+    /// Control: a counting ledger needs no configuration, and a deadline with a committed configuration keeps its bare cause.
+    @Test
+    void theBlocker_isAbsentWhenTheLedgerCountsOrTheConfigIsCommitted() {
+        assertThat(NodeReplacementWiring.inventoryBlocker(storeOver(Map.of())).isPresent()).isTrue();
+        assertThat(NodeReplacementWiring.inventoryBlocker(storeOver(Map.of(AetherKey.CapacityLedgerKey.INSTANCE, new CapacityLedgerValue(5, 1, true)))).isPresent()).isFalse();
+        assertThat(NodeReplacementWiring.inventoryBlocker(storeOver(Map.of(AetherKey.CapacityLedgerKey.INSTANCE, new CapacityLedgerValue(5, 1, false)))).isPresent()).isTrue();
+        assertThat(NodeReplacementWiring.inventoryBlocker(storeOver(Map.of(AetherKey.ClusterConfigKey.CURRENT, stored.get(AetherKey.ClusterConfigKey.CURRENT)))).isPresent()).isFalse();
+    }
+
+    @SuppressWarnings("unchecked")
+    private static KVStore<AetherKey, AetherValue> storeOver(Map<AetherKey, AetherValue> content) {
+        var store = mock(KVStore.class);
+
+        when(store.getTyped(any(), any())).thenAnswer(call -> Option.option(content.get(call.getArgument(0))));
+
+        return store;
     }
 
     // ---- #1543: DONE only after the provider's instance is confirmed gone ----------------------------------------------

@@ -155,6 +155,20 @@ public final class NodeReplacementWiring {
         return ledger.filter(AetherValue.CapacityLedgerValue::inventoryComplete);
     }
 
+    /// #2098: why the fleet inventory cannot be initialized yet, when it cannot. CTM builds the inventory from the committed source
+    /// configuration on the first provision; a replacement that starts before the bootstrap configuration is committed would be refused
+    /// for a startup ordering, not for a cause of its own, and rolled back. `none()` when the ledger already counts or the configuration is
+    /// committed, so the first provision can initialize the inventory.
+    static Option<String> inventoryBlocker(KVStore<AetherKey, AetherValue> store) {
+        if (countable(store.getTyped(AetherKey.CapacityLedgerKey.INSTANCE, AetherValue.CapacityLedgerValue.class)).isPresent()) {
+            return Option.none();
+        }
+
+        return store.getTyped(AetherKey.ClusterConfigKey.CURRENT, AetherValue.ClusterConfigValue.class).isPresent()
+               ? Option.none()
+               : Option.some("committed source configuration is missing, so the fleet inventory cannot be initialized");
+    }
+
     /// What is committed in the same transaction as an EXTERNAL replacement's record: the admission intent the operator-started node
     /// is admitted by, a capacity reservation for its role (core admission and `AetherNode.workerAdmissionAllowed` both admit on
     /// it; the same reservation the leader writes when it provisions a node itself), so there is no window with a pairing and no
@@ -381,7 +395,8 @@ public final class NodeReplacementWiring {
                                    drainRefused.getOrDefault(original, ""),
                                    reaped.contains(original),
                                    reapFailure.getOrDefault(original,
-                                                            reapFailure.getOrDefault(record.replacement(), "")));
+                                                            reapFailure.getOrDefault(record.replacement(), "")),
+                                   inventoryBlocker(in.kvStore()).or(""));
         }
 
         private DrainState drainState(NodeId original, boolean oldAlive) {
@@ -419,6 +434,12 @@ public final class NodeReplacementWiring {
                                                   .isPresent()
                                        ? new EffectResult.Failed("the capacity reservation for the replacement was refused")
                                        : new EffectResult.Done());
+            }
+
+            var blocker = inventoryBlocker(in.kvStore());
+
+            if (blocker.isPresent()) {
+                return Promise.success(new EffectResult.Deferred("provisioning deferred: " + blocker.unwrap()));
             }
 
             var members = Option.option(in.membership().get()).map(fsm -> fsm.memberStates()
