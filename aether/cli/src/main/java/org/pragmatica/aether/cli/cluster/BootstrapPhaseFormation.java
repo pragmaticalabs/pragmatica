@@ -67,8 +67,13 @@ sealed interface BootstrapPhaseFormation {
                             .flatMap(_ -> finalizeClusterFormation(ctx, apiKey));
     }
 
-    static String managementScheme(BootstrapContext ctx) {
-        return BootstrapScheme.of(ctx.config());
+    private static String managementScheme(BootstrapContext ctx) {
+        return ctx.config()
+                  .operations()
+                  .tls()
+                  .autoGenerate()
+               ? "https"
+               : "http";
     }
 
     private static Result<BootstrapContext> finalizeClusterFormation(BootstrapContext ctx, String apiKey) {
@@ -399,10 +404,12 @@ sealed interface BootstrapPhaseFormation {
         return result.fold(cause -> cause.message(), _ -> "");
     }
 
-    static String buildManagementEndpoint(BootstrapContext ctx) {
+    private static String buildManagementEndpoint(BootstrapContext ctx) {
         var port = ctx.config().operations().ports().management();
         var ip = ctx.addresses().getFirst().publicIp();
-        var scheme = BootstrapScheme.of(ctx.config());
+        var scheme = ctx.config().operations().tls().autoGenerate()
+                     ? "https"
+                     : "http";
 
         return scheme + "://" + ip + ":" + port;
     }
