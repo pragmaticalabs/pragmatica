@@ -5,7 +5,7 @@ Status: Draft
 Superseded-By:
 Author: Sergiy Yevtushenko
 Created: 2026-10-09
-Updated: 2026-10-09
+Updated: 2026-10-10
 Affects: [aether, jbct, examples]
 ---
 
@@ -37,8 +37,8 @@ Failures are therefore concentrated, not uniform. Because the figures count atte
 
 ### Boundaries
 
-- **Simulator slice** (new module, home to be decided; see Open questions). Owns the API subset, the state machine, the outcome and fault model, idempotency, webhook delivery and the control API. It contains no runtime-specific code.
-- **Runtimes.** Terra (single instance), an Aether cluster, and Forge run the slice unchanged. Each runtime's storage and scheduling guarantees decide the simulator's guarantees; see Guarantees.
+- **Simulator slice.** It lives in a dedicated private repository under the Apache license, created when work on #2082 starts and made public later. It is a test tool first: no compatibility promise until it is promoted. Owns the API subset, the state machine, the outcome and fault model, idempotency, webhook delivery and the control API. It contains no runtime-specific code.
+- **Runtimes.** Terra (single instance), an Aether cluster, and Forge run the same slice unchanged. The slice reaches storage and timers only through resource interfaces that every runtime supplies. A slice provides no storage or timing guarantee by itself: each resource states its guarantee per runtime, the guarantees differ between runtimes, and that is intended. The slice declares the minimum it requires of each resource (for example, an atomic per-key insert), and a runtime that cannot meet that floor refuses the slice at load time. See Guarantees.
 - **Load generator / scenario** (k6 or Forge scenarios). Owns *client* behaviour: request mix, merchant population, and retry policy, including deliberately misbehaving clients. The simulator does not fake client behaviour. It *detects* it (hard-decline retry flagging).
 - **System under test.** Configured with the simulator's base URL and webhook secret, exactly as it would be configured for the real provider.
 
@@ -66,7 +66,7 @@ Non-goals: Customers beyond what PaymentIntents need, Subscriptions, Connect, Ch
 
 - **Merchant = API key.** A key `sk_test_<merchant>_<suffix>` selects the merchant. Each merchant is assigned an outcome profile. The default population is a healthy majority plus configurable outlier merchants.
 - **Per-attempt draw.** Each confirm draws an outcome from the merchant's profile: success, soft decline (`insufficient_funds`, `card_velocity_exceeded`: a retry may succeed), hard decline (`expired_card`, `do_not_honor`, `lost_card`: a retry is a client defect), or 3-D Secure required. A 3-D Secure attempt then resolves as completed, failed, or **abandoned**: it stays in `requires_action` until the merchant cancels it or it expires.
-- **Default profile "field-2026-10":** 94% success, 4% decline, ~2% 3-D Secure that is abandoned. The soft/hard decline split defaults to 50/50, and that value is a **guess**; it is settled by data the source did not give. Every value is configurable. The profile carries its provenance (per attempt, 10 days, one issuer-side source), so nobody mistakes it for a universal truth.
+- **Default profile "field-2026-10":** 94% success, 4% decline, ~2% 3-D Secure that is abandoned. The source is per attempt, over 10 days, from one issuer-side source in **Ukraine** (outside the EU's PSD2 strong-customer-authentication regime; local central-bank rules apply), so other markets need their own 3-D Secure share. The soft/hard split matters little in practice, because cardholders retry even expired cards. What matters is the **success rate of a retry**, which is a configurable parameter per decline class. Every value is configurable, and the profile carries its provenance so nobody mistakes it for a universal truth.
 - **Deterministic overrides.** The provider's documented test card numbers and `pm_card_*` tokens force their documented outcome, whatever the profile says. This keeps existing client test suites deterministic.
 - **Hard-decline retry detection.** A repeated attempt with the same payment method after a hard decline, inside a configurable window, is counted per merchant. Optionally it raises a simulator event naming the merchant. This turns the retry-inflated concentration in the field data into a checkable property of the client.
 - **Reproducibility.** All draws come from a seeded PRNG keyed by (seed, merchant, intent id, attempt number), so a scenario replays the same outcomes whatever the request interleaving.
@@ -97,6 +97,8 @@ All faults are configurable per merchant and per endpoint, and can be changed at
 - Validation failures and `429` responses are not stored, matching the provider's documented behaviour.
 
 ### Guarantees (per operation, with the mechanism)
+
+Guarantees are stated at two levels. Each **resource** states what it guarantees on each runtime. The simulator's operations state what they **derive** from that: given that the resource provides X, the operation provides Y. The table below is the derived level.
 
 | Operation | Single Terra instance | Own Aether cluster |
 |---|---|---|
@@ -140,12 +142,16 @@ The simulator must not be the bottleneck. Before it is used in any measurement, 
 
 Not applicable (new component).
 
+## Decided (owner, 2026-10-10)
+
+- **Product status and home:** a dedicated private repository, Apache-licensed, made public later. The repository is created when work starts.
+- **Runtimes:** the same slice runs unchanged everywhere. Guarantees are per resource and per runtime; the slice's own guarantees are conditional on them.
+- **Field data:** the market is Ukraine. The decline split is replaced by a configurable retry success rate.
+
 ## Open questions
 
-1. Is this an internal test tool or a product feature (a Forge capability with docs and versioning)? The answer decides where it is documented and supported.
-2. Where does the module live (in the monorepo beside the examples, or in a separate repository)?
-3. What does the field data say about the soft/hard decline split, the duration of 3-D Secure abandonment, and the market (strong-customer-authentication regimes raise the 3-D Secure share)?
-4. Is the HTTP surface complete? Bracket-nested form parameters and arbitrary request headers in `@Http` routes: `application/x-www-form-urlencoded` is recognised by the app HTTP server, but nested-parameter parsing is [unverified].
+1. The 3-D Secure intervals (challenge timeout, abandonment, session expiry) are likely fixed by the EMV 3-D Secure specification and by the market's regulation. Research them before the defaults are set, with sources.
+2. Is the HTTP surface complete? Bracket-nested form parameters and arbitrary request headers in `@Http` routes: `application/x-www-form-urlencoded` is recognised by the app HTTP server, but nested-parameter parsing is [unverified].
 
 ## References
 
