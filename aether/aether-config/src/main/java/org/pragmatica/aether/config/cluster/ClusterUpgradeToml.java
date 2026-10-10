@@ -37,7 +37,9 @@ public sealed interface ClusterUpgradeToml {
 
     /// Whether `version` is a version an upgrade may target: SemVer 2.0 with an optional pre-release, no build metadata.
     static boolean isUpgradeVersion(String version) {
-        return version != null && UPGRADE_VERSION.matcher(version).matches();
+        return Option.option(version)
+                     .filter(candidate -> UPGRADE_VERSION.matcher(candidate).matches())
+                     .isPresent();
     }
 
     /// Rewrites the `version` line of the `[cluster]` table. The result is re-parsed and must read back
