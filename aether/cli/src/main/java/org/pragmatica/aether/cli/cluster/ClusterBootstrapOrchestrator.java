@@ -745,17 +745,17 @@ public sealed interface ClusterBootstrapOrchestrator permits ClusterBootstrapOrc
             }
         }
 
-        /// A docker source holding cores beside a non-docker source holding cores (#2089). Docker cores name each other by container
-        /// name on the docker network; cloud and ssh cores by address. The two kinds cannot share one reachable peer list, and a list per
-        /// kind would silently form two clusters, so bootstrap refuses the config.
+        /// A docker source of any role beside a non-docker source holding cores (#2089). Docker nodes name each other by container
+        /// name on the docker network; cloud and ssh cores by address. The two kinds cannot share one reachable peer list, a list per
+        /// kind would silently form two clusters, and docker workers would boot with an empty core list, so bootstrap refuses the config.
         record DockerCoresMixedWithOtherCores(String dockerSource, String otherSource) implements BootstrapError {
             @Override
             public String message() {
                 return "Docker source '" + dockerSource
-                     + "' and source '" + otherSource
-                     + "' both hold cores. Docker cores reach each other by"
-                     + " container name and the others by address, so they cannot share one cluster peer list. Put all cores in one"
-                     + " docker source (or several docker sources), or none in the docker source.";
+                     + "' cannot be combined with source '" + otherSource
+                     + "', which holds cores. Docker nodes reach each other by"
+                     + " container name and the others by address, so they cannot share one cluster peer list. Put the whole cluster in"
+                     + " docker sources, or use no docker source.";
             }
         }
 

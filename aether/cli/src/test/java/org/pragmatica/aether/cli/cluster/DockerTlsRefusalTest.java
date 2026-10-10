@@ -172,6 +172,29 @@ class DockerTlsRefusalTest {
         assertThat(BootstrapPhaseValidate.refuseDockerCoresBesideOtherCores(parse(SSH)).isSuccess()).as("ssh alone").isTrue();
     }
 
+    private static final String DOCKER_WORKERS_ONLY = """
+
+            [source.dw]
+            type = "docker"
+
+            [source.dw.worker]
+            count = 2
+            """;
+
+    private static final String SSH_THREE_CORES = SSH_TWO_CORES.replace("\"10.0.0.2\"]", "\"10.0.0.2\", \"10.0.0.3\"]");
+
+    /// A docker source holding ONLY workers beside ssh cores used to pass validation and its workers booted with an empty core list.
+    @Test
+    void validate_dockerWorkersOnlyBesideSshCores_isRefused_withTheSameTypedError() {
+        var result = BootstrapPhaseValidate.execute(parse(DOCKER_WORKERS_ONLY, SSH_THREE_CORES, TLS_FALSE));
+
+        assertThat(result.isFailure()).isTrue();
+        result.onFailure(cause -> {
+            assertThat(cause).isInstanceOf(BootstrapError.DockerCoresMixedWithOtherCores.class);
+            assertThat(cause.message()).contains("'dw'").contains("'s'");
+        });
+    }
+
     @Test
     void validatePhase_dockerCoresBesideSshCores_failsBeforeAnyProviderIsResolved() {
         var result = BootstrapPhaseValidate.execute(parse(DOCKER, SSH_TWO_CORES, TLS_FALSE));
