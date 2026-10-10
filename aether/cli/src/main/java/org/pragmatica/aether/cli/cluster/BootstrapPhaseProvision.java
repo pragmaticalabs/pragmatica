@@ -10,6 +10,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.function.Consumer;
 import java.util.regex.Pattern;
+import java.util.stream.Collectors;
+import java.util.stream.IntStream;
 
 import org.pragmatica.aether.cli.cluster.ClusterBootstrapOrchestrator.BootstrapContext;
 import org.pragmatica.aether.cli.cluster.ClusterBootstrapOrchestrator.BootstrapError;
@@ -24,7 +26,6 @@ import org.pragmatica.aether.environment.CloudProviderSupport;
 import org.pragmatica.aether.environment.ComputeProvider;
 import org.pragmatica.aether.environment.EnvironmentError;
 import org.pragmatica.aether.environment.InstanceType;
-import org.pragmatica.aether.environment.NodeGroupConfig;
 import org.pragmatica.aether.environment.PlacementHint;
 import org.pragmatica.aether.environment.ProvisionContext;
 import org.pragmatica.aether.environment.ProvisionSpec;
@@ -35,6 +36,7 @@ import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
+import org.pragmatica.utility.IdGenerator;
 
 import static org.pragmatica.aether.cli.cluster.BootstrapPhase.PROVISION;
 import static org.pragmatica.aether.environment.SourceName.sourceNameOrDefault;
@@ -435,18 +437,37 @@ sealed interface BootstrapPhaseProvision {
                                                                                                      clusterName));
     }
 
+    /// The cluster port every Docker node listens on: `DockerConfig`'s default, which bootstrap never overrides (#2089). A test
+    /// pins the two together.
+    static final int DOCKER_CLUSTER_PORT = 6000;
+
+    /// Package-visible so a test can drive the real call site with a recording provider (#2089).
+    ///
+    /// A Docker node boots from its `PEERS` list and aborts when its own id is not in it. The core ids are therefore minted HERE,
+    /// before any container exists, and every node of the source is created with the same full `id:host:port` list of them: the
+    /// provider can only echo `ctx.peers()`, and nothing pushes peers afterwards for Docker. A container's host is its name, which
+    /// is its node id (same Docker network).
     @SuppressWarnings({"JBCT-PAT-01", "JBCT-EX-01"})
-    private static Result<List<ProvisionedNode>> provisionWithCompute(ComputeProvider compute,
-                                                                      SourceName sourceName,
-                                                                      SourceProfile source,
-                                                                      ClusterName clusterName) {
+    static Result<List<ProvisionedNode>> provisionWithCompute(ComputeProvider compute,
+                                                              SourceName sourceName,
+                                                              SourceProfile source,
+                                                              ClusterName clusterName) {
         var allNodes = new ArrayList<ProvisionedNode>();
         var roleOrder = List.of(NodeRole.CORE, NodeRole.WORKER, NodeRole.SPOT);
+        var coreIds = mintCoreNodeIds(source, clusterName);
+        var peers = corePeers(coreIds);
 
         for (var role : roleOrder) {
             var roleTable = option(source.roles().get(role));
             var result = roleTable.flatMap(rt -> rt.count())
-                                  .map(count -> provisionRoleGroup(compute, sourceName, role, count, source, clusterName));
+                                  .map(count -> provisionRoleGroup(compute,
+                                                                   sourceName,
+                                                                   role,
+                                                                   count,
+                                                                   source,
+                                                                   clusterName,
+                                                                   coreIds,
+                                                                   peers));
 
             if (result.isPresent()) {
                 var provisionResult = result.unwrap();
@@ -504,27 +525,69 @@ sealed interface BootstrapPhaseProvision {
         return success(List.copyOf(allNodes));
     }
 
+    static List<String> mintCoreNodeIds(SourceProfile source, ClusterName clusterName) {
+        var prefix = ProvisionContext.coreNodeNamePrefix(Option.some(clusterName));
+        var count = option(source.roles().get(NodeRole.CORE)).flatMap(RoleSubTable::count).or(0);
+
+        return IntStream.range(0, count)
+                        .mapToObj(_ -> IdGenerator.generate(prefix))
+                        .toList();
+    }
+
+    static String corePeers(List<String> coreIds) {
+        return coreIds.stream()
+                      .map(id -> id + ":" + id + ":" + DOCKER_CLUSTER_PORT)
+                      .collect(Collectors.joining(","));
+    }
+
     @SuppressWarnings("JBCT-EX-01")
     private static Result<List<ProvisionedNode>> provisionRoleGroup(ComputeProvider compute,
                                                                     SourceName sourceName,
                                                                     NodeRole role,
                                                                     int count,
                                                                     SourceProfile source,
-                                                                    ClusterName clusterName) {
+                                                                    ClusterName clusterName,
+                                                                    List<String> coreIds,
+                                                                    String peers) {
         logProvisionRole(sourceName, source.type(), role, Option.some(count));
         var instanceType = source.roles().containsKey(role)
                            ? source.roles().get(role).instanceType().or("default")
                            : "default";
         var zone = source.zone().or("default");
-        var labels = Map.of("aether-cluster",
-                            clusterName.value(),
-                            "aether-source",
-                            sourceName.value(),
-                            "aether-role",
-                            role.value());
-        var group = NodeGroupConfig.nodeGroupConfig(sourceName, role.value(), count, instanceType, zone, labels);
+        var nodes = new ArrayList<ProvisionedNode>();
 
-        return CloudProviderSupport.provisionVia(compute, group).await();
+        for (var i = 0; i < count; i++) {
+            var minted = role == NodeRole.CORE
+                         ? Option.some(coreIds.get(i))
+                         : Option.<String> none();
+            var context = ProvisionContext.provisionContext(Option.some(clusterName),
+                                                            role.value(),
+                                                            sourceName,
+                                                            minted,
+                                                            Option.some(peers),
+                                                            ProvisionContext.DEFAULT_CORE_MAX,
+                                                            ProvisionContext.PROVISIONED_BY_BOOTSTRAP,
+                                                            Map.of());
+            var provisioned = ProvisionSpec.provisionSpec(InstanceType.ON_DEMAND,
+                                                          instanceType,
+                                                          role.value(),
+                                                          context)
+                                           .map(spec -> applyZone(spec, zone))
+                                           .flatMap(spec -> CloudProviderSupport.provisionOne(compute,
+                                                                                              sourceName.value()
+                                                                                             + "-" + role.value()
+                                                                                             + "-" + nodes.size(),
+                                                                                              spec)
+                                                                                .await());
+
+            if (provisioned.isFailure()) {
+                return provisioned.map(_ -> List.<ProvisionedNode> of());
+            }
+
+            var _ = provisioned.onSuccess(nodes::add);
+        }
+
+        return success(List.copyOf(nodes));
     }
 
     /// #994 verification finding SF-2 — package-visible so a test can drive **the real call site**, not
