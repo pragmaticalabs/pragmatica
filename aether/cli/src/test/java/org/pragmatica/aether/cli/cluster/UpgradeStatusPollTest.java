@@ -119,7 +119,9 @@ class UpgradeStatusPollTest {
                                                        inForce::set,
                                                        notes::add);
 
-        var outcome = UpgradeRunWait.await(poll, () -> 0L, _ -> {}, 60_000L, 1L, _ -> {});
+        var clock = new java.util.concurrent.atomic.AtomicLong();
+        // a clock that advances on every read, so a poll that never completes ends TimedOut instead of looping
+        var outcome = UpgradeRunWait.await(poll, () -> clock.addAndGet(1_000L), _ -> {}, 60_000L, 1L, _ -> {});
 
         assertThat(outcome).isInstanceOf(UpgradeRunWait.Completed.class);
     }
