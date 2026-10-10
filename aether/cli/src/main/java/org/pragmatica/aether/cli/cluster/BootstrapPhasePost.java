@@ -122,13 +122,8 @@ sealed interface BootstrapPhasePost {
                        .use(name);
     }
 
-    private static String managementScheme(BootstrapContext ctx) {
-        return ctx.config()
-                  .operations()
-                  .tls()
-                  .autoGenerate()
-               ? "https"
-               : "http";
+    static String managementScheme(BootstrapContext ctx) {
+        return BootstrapScheme.of(ctx.config());
     }
 
     /// #998 — ONE construction of the management endpoint, read by BOTH the persisted registry entry and
