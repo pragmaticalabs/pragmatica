@@ -203,20 +203,27 @@ public sealed interface ClusterBootstrapOrchestrator permits ClusterBootstrapOrc
 
         var nodes = IntStream.range(0,
                                     ids.size())
-                             .mapToObj(i -> ProvisionedNode.provisionedNode(ids.get(i),
-                                                                            serverTag(ctx.config(),
-                                                                                      ids.get(i)),
-                                                                            ips.get(i)))
+                             .mapToObj(i -> provisionedFromPersisted(ctx,
+                                                                     ids.get(i),
+                                                                     ips.get(i)))
                              .toList();
         var addresses = IntStream.range(0,
                                         ids.size())
-                                 .mapToObj(i -> NodeAddress.nodeAddress(ids.get(i),
-                                                                        ips.get(i),
-                                                                        none()))
+                                 .mapToObj(i -> NodeAddress.fromPersisted(ids.get(i),
+                                                                          ips.get(i)))
                                  .toList();
 
         return ctx.withNodes(nodes)
                   .withAddresses(addresses);
+    }
+
+    private static ProvisionedNode provisionedFromPersisted(BootstrapContext ctx, String nodeId, String persisted) {
+        var address = NodeAddress.fromPersisted(nodeId, persisted);
+
+        return ProvisionedNode.provisionedNode(nodeId,
+                                               serverTag(ctx.config(), nodeId),
+                                               address.publicIp(),
+                                               address.managementPort());
     }
 
     private static String serverTag(ClusterBootstrapConfig config, String nodeId) {
@@ -735,6 +742,20 @@ public sealed interface ClusterBootstrapOrchestrator permits ClusterBootstrapOrc
                      + "' is a docker source, but the config declares management TLS ([operations.tls] auto_generate"
                      + " is true, the default). Docker nodes serve the management API over plain HTTP and cannot honour it. Set"
                      + " `[operations.tls] auto_generate = false` explicitly to bootstrap a docker cluster over HTTP.";
+            }
+        }
+
+        /// A docker source holding cores beside a non-docker source holding cores (#2089). Docker cores name each other by container
+        /// name on the docker network; cloud and ssh cores by address. The two kinds cannot share one reachable peer list, and a list per
+        /// kind would silently form two clusters, so bootstrap refuses the config.
+        record DockerCoresMixedWithOtherCores(String dockerSource, String otherSource) implements BootstrapError {
+            @Override
+            public String message() {
+                return "Docker source '" + dockerSource
+                     + "' and source '" + otherSource
+                     + "' both hold cores. Docker cores reach each other by"
+                     + " container name and the others by address, so they cannot share one cluster peer list. Put all cores in one"
+                     + " docker source (or several docker sources), or none in the docker source.";
             }
         }
 

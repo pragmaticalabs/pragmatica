@@ -10,8 +10,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.function.Consumer;
 import java.util.regex.Pattern;
-import java.util.stream.Collectors;
-import java.util.stream.IntStream;
 
 import org.pragmatica.aether.cli.cluster.ClusterBootstrapOrchestrator.BootstrapContext;
 import org.pragmatica.aether.cli.cluster.ClusterBootstrapOrchestrator.BootstrapError;
@@ -36,7 +34,6 @@ import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
-import org.pragmatica.utility.IdGenerator;
 
 import static org.pragmatica.aether.cli.cluster.BootstrapPhase.PROVISION;
 import static org.pragmatica.aether.environment.SourceName.sourceNameOrDefault;
@@ -55,13 +52,15 @@ sealed interface BootstrapPhaseProvision {
         var allNodes = new ArrayList<ProvisionedNode>();
         var clusterName = ctx.config().cluster().name();
         var mgmtPort = ctx.config().operations().ports().management();
+        var dockerCores = DockerCores.mint(ctx.config().sources(),
+                                           clusterName);
 
         for (var entry : ctx.config().sources().entrySet()) {
             var sourceName = sourceNameOrDefault(entry.getKey());
             var source = entry.getValue();
 
             persistCleanupHandle(ctx, sourceName, source);
-            var result = provisionSource(ctx, sourceName, source, mgmtPort, clusterName);
+            var result = provisionSource(ctx, sourceName, source, mgmtPort, clusterName, dockerCores);
 
             if (result.isFailure()) {
                 return result.map(_ -> ctx);
@@ -401,9 +400,25 @@ sealed interface BootstrapPhaseProvision {
                                                          SourceProfile source,
                                                          int managementPort,
                                                          ClusterName clusterName) {
+        return provisionSource(ctx,
+                               sourceName,
+                               source,
+                               managementPort,
+                               clusterName,
+                               DockerCores.mint(ctx.config().sources(),
+                                                clusterName));
+    }
+
+    @SuppressWarnings("JBCT-PAT-01")
+    static Result<List<ProvisionedNode>> provisionSource(BootstrapContext ctx,
+                                                         SourceName sourceName,
+                                                         SourceProfile source,
+                                                         int managementPort,
+                                                         ClusterName clusterName,
+                                                         DockerCores dockerCores) {
         return switch (source.type()) {
             case CLOUD -> provisionCloudSource(ctx, sourceName, source, clusterName);
-            case DOCKER -> provisionDockerSource(sourceName, source, clusterName);
+            case DOCKER -> provisionDockerSource(sourceName, source, clusterName, dockerCores);
             case SSH -> provisionSshSource(sourceName, source);
             case FORGE -> provisionForgeSource(sourceName, source, managementPort);
         };
@@ -430,16 +445,14 @@ sealed interface BootstrapPhaseProvision {
     @SuppressWarnings("JBCT-PAT-01")
     private static Result<List<ProvisionedNode>> provisionDockerSource(SourceName sourceName,
                                                                        SourceProfile source,
-                                                                       ClusterName clusterName) {
+                                                                       ClusterName clusterName,
+                                                                       DockerCores dockerCores) {
         return ProviderResolver.resolveDockerCompute(source).flatMap(compute -> provisionWithCompute(compute,
                                                                                                      sourceName,
                                                                                                      source,
-                                                                                                     clusterName));
+                                                                                                     clusterName,
+                                                                                                     dockerCores));
     }
-
-    /// The cluster port every Docker node listens on: `DockerConfig`'s default, which bootstrap never overrides (#2089). A test
-    /// pins the two together.
-    static final int DOCKER_CLUSTER_PORT = 6000;
 
     /// Package-visible so a test can drive the real call site with a recording provider (#2089).
     ///
@@ -447,15 +460,28 @@ sealed interface BootstrapPhaseProvision {
     /// before any container exists, and every node of the source is created with the same full `id:host:port` list of them: the
     /// provider can only echo `ctx.peers()`, and nothing pushes peers afterwards for Docker. A container's host is its name, which
     /// is its node id (same Docker network).
-    @SuppressWarnings({"JBCT-PAT-01", "JBCT-EX-01"})
     static Result<List<ProvisionedNode>> provisionWithCompute(ComputeProvider compute,
                                                               SourceName sourceName,
                                                               SourceProfile source,
                                                               ClusterName clusterName) {
+        return provisionWithCompute(compute,
+                                    sourceName,
+                                    source,
+                                    clusterName,
+                                    DockerCores.mint(Map.of(sourceName.value(), source),
+                                                     clusterName));
+    }
+
+    @SuppressWarnings({"JBCT-PAT-01", "JBCT-EX-01"})
+    static Result<List<ProvisionedNode>> provisionWithCompute(ComputeProvider compute,
+                                                              SourceName sourceName,
+                                                              SourceProfile source,
+                                                              ClusterName clusterName,
+                                                              DockerCores dockerCores) {
         var allNodes = new ArrayList<ProvisionedNode>();
         var roleOrder = List.of(NodeRole.CORE, NodeRole.WORKER, NodeRole.SPOT);
-        var coreIds = mintCoreNodeIds(source, clusterName);
-        var peers = corePeers(coreIds);
+        var coreIds = dockerCores.idsFor(sourceName.value());
+        var peers = dockerCores.peers();
 
         for (var role : roleOrder) {
             var roleTable = option(source.roles().get(role));
@@ -525,20 +551,16 @@ sealed interface BootstrapPhaseProvision {
         return success(List.copyOf(allNodes));
     }
 
-    static List<String> mintCoreNodeIds(SourceProfile source, ClusterName clusterName) {
-        var prefix = ProvisionContext.coreNodeNamePrefix(Option.some(clusterName));
-        var count = option(source.roles().get(NodeRole.CORE)).flatMap(RoleSubTable::count).or(0);
-
-        return IntStream.range(0, count)
-                        .mapToObj(_ -> IdGenerator.generate(prefix))
-                        .toList();
+    /// A docker node is reached from the operator's host through its published management port, not by container name (#2089): the
+    /// node's address becomes `127.0.0.1` plus its own mapped port, which `docker port` reports for the container.
+    static Result<ProvisionedNode> withPublishedManagementPort(ProvisionedNode node) {
+        return DockerHostPorts.managementPort(node.serverId()).map(port -> ProvisionedNode.provisionedNode(node.nodeId(),
+                                                                                                           node.serverId(),
+                                                                                                           DOCKER_HOST_ADDRESS,
+                                                                                                           Option.some(port)));
     }
 
-    static String corePeers(List<String> coreIds) {
-        return coreIds.stream()
-                      .map(id -> id + ":" + id + ":" + DOCKER_CLUSTER_PORT)
-                      .collect(Collectors.joining(","));
-    }
+    static final String DOCKER_HOST_ADDRESS = "127.0.0.1";
 
     @SuppressWarnings("JBCT-EX-01")
     private static Result<List<ProvisionedNode>> provisionRoleGroup(ComputeProvider compute,
@@ -578,7 +600,8 @@ sealed interface BootstrapPhaseProvision {
                                                                                              + "-" + role.value()
                                                                                              + "-" + nodes.size(),
                                                                                               spec)
-                                                                                .await());
+                                                                                .await())
+                                           .flatMap(BootstrapPhaseProvision::withPublishedManagementPort);
 
             if (provisioned.isFailure()) {
                 return provisioned.map(_ -> List.<ProvisionedNode> of());

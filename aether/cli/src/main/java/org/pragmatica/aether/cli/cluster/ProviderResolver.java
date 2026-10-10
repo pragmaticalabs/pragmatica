@@ -318,8 +318,18 @@ public final class ProviderResolver {
         return dockerCloudConfig(Map.of());
     }
 
+    /// The provider is told the cluster port bootstrap writes into every node's `PEERS` (#2089), so the two cannot drift apart.
+    static final String DOCKER_CLUSTER_PORT_KEY = "cluster_port";
+    static final String DOCKER_EXPOSE_HOST_PORTS_KEY = "expose_host_ports";
+
     private static CloudConfig dockerCloudConfig(Map<String, String> compute) {
-        return new CloudConfig("docker", Map.of(), Map.copyOf(compute), Map.of(), Map.of(), Map.of(), Map.of());
+        var withPort = new java.util.HashMap<>(compute);
+
+        withPort.put(DOCKER_CLUSTER_PORT_KEY, String.valueOf(DockerCores.CLUSTER_PORT));
+        // The CLI runs outside the docker network: it reaches a node through its published management port (#2089).
+        withPort.put(DOCKER_EXPOSE_HOST_PORTS_KEY, "true");
+
+        return new CloudConfig("docker", Map.of(), Map.copyOf(withPort), Map.of(), Map.of(), Map.of(), Map.of());
     }
 
     private static BootstrapError.ProvisionFailed factoryNotFound(String providerName) {

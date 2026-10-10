@@ -11,8 +11,12 @@ import org.pragmatica.aether.cli.cluster.ClusterBootstrapOrchestrator.BootstrapC
 import org.pragmatica.aether.cli.cluster.ClusterBootstrapOrchestrator.BootstrapError;
 import org.pragmatica.aether.config.cluster.ClusterBootstrapConfig;
 import org.pragmatica.aether.config.cluster.ClusterBootstrapConfigValidator;
+import org.pragmatica.aether.config.cluster.NodeRole;
+import org.pragmatica.aether.config.cluster.RoleSubTable;
+import org.pragmatica.aether.config.cluster.SourceProfile;
 import org.pragmatica.aether.config.cluster.SourceType;
 import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 
 import static org.pragmatica.aether.cli.cluster.BootstrapPhase.VALIDATE;
@@ -31,6 +35,7 @@ sealed interface BootstrapPhaseValidate {
 
         return ClusterBootstrapConfigValidator.validate(config)
                                               .flatMap(BootstrapPhaseValidate::refuseDockerWithDeclaredTls)
+                                              .flatMap(validated -> refuseDockerCoresBesideOtherCores(validated))
                                               .map(BootstrapPhaseValidate::emitWarnings)
                                               .flatMap(validated -> runPreflightChecks(validated, fullCheck))
                                               .map(BootstrapPhaseValidate::buildContext);
@@ -53,6 +58,37 @@ sealed interface BootstrapPhaseValidate {
                      .findFirst()
                      .<Result<ClusterBootstrapConfig>> map(name -> new BootstrapError.DockerSourceDeclaresTls(name).result())
                      .orElseGet(() -> Result.success(config));
+    }
+
+    /// #2089: docker cores and non-docker cores cannot share one reachable peer list, so a config with both is refused, never split.
+    static Result<ClusterBootstrapConfig> refuseDockerCoresBesideOtherCores(ClusterBootstrapConfig config) {
+        var dockerCores = coreSources(config, true);
+        var otherCores = coreSources(config, false);
+
+        return dockerCores.isEmpty() || otherCores.isEmpty()
+               ? Result.success(config)
+               : new BootstrapError.DockerCoresMixedWithOtherCores(dockerCores.getFirst(), otherCores.getFirst()).<ClusterBootstrapConfig> result();
+    }
+
+    private static List<String> coreSources(ClusterBootstrapConfig config, boolean docker) {
+        return config.sources()
+                     .entrySet()
+                     .stream()
+                     .filter(entry -> (entry.getValue()
+                                            .type() == SourceType.DOCKER) == docker)
+                     .filter(entry -> hasCores(entry.getValue()))
+                     .map(entry -> entry.getKey())
+                     .sorted()
+                     .toList();
+    }
+
+    private static boolean hasCores(SourceProfile source) {
+        return Option.option(source.roles().get(NodeRole.CORE))
+                     .flatMap(RoleSubTable::count)
+                     .or(0) > 0 || Option.option(source.roles().get(NodeRole.CORE))
+                                         .flatMap(RoleSubTable::hosts)
+                                         .map(hosts -> !hosts.isEmpty())
+                                         .or(false);
     }
 
     private static ClusterBootstrapConfig emitWarnings(ClusterBootstrapConfig validated) {

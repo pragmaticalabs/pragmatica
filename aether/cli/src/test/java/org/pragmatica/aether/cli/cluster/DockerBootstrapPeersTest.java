@@ -81,6 +81,16 @@ class DockerBootstrapPeersTest {
         }
     };
 
+    @org.junit.jupiter.api.BeforeEach
+    void publishedPorts() {
+        DockerHostPorts.override = containerId -> org.pragmatica.lang.Result.success(40_000 + Math.floorMod(containerId.hashCode(), 20_000));
+    }
+
+    @org.junit.jupiter.api.AfterEach
+    void unpublishPorts() {
+        DockerHostPorts.override = null;
+    }
+
     private SourceProfile source() {
         return ClusterBootstrapConfigParser.parse(THREE_CORES_ONE_WORKER).unwrap().sources().get("local");
     }
@@ -99,7 +109,7 @@ class DockerBootstrapPeersTest {
         assertThat(coreIds).as("every core carries a pre-minted id").allMatch(id -> id.startsWith("aether-dock-node-"));
         assertThat(coreIds).doesNotHaveDuplicates();
 
-        var expectedEntries = coreIds.stream().map(id -> id + ":" + id + ":" + BootstrapPhaseProvision.DOCKER_CLUSTER_PORT).toList();
+        var expectedEntries = coreIds.stream().map(id -> id + ":" + id + ":" + DockerCores.CLUSTER_PORT).toList();
 
         for (var core : cores) {
             var peers = core.context().peers().or("");
@@ -117,12 +127,36 @@ class DockerBootstrapPeersTest {
         var coreRequest = requests.stream().filter(r -> "core".equals(r.context().role())).findFirst().orElseThrow();
         var worker = requests.stream().filter(r -> "worker".equals(r.context().role())).findFirst().orElseThrow();
 
+        assertThat(worker.context().peers().or("")).as("a non-empty core list, not two empty ones").isNotEmpty();
         assertThat(worker.context().peers().or("")).isEqualTo(coreRequest.context().peers().or(""));
         assertThat(worker.context().nodeId().isEmpty()).as("the provider mints a worker's id").isTrue();
     }
 
+    /// The port in every node's PEERS and the port the provider makes the node listen on are one value: bootstrap tells the provider.
     @Test
-    void dockerClusterPort_isTheDockerProvidersDefault() {
-        assertThat(BootstrapPhaseProvision.DOCKER_CLUSTER_PORT).isEqualTo(org.pragmatica.aether.environment.docker.DockerConfig.dockerConfig().unwrap().clusterPort());
+    void dockerClusterPort_isHandedToTheProvider_notLeftToItsDefault() {
+        var seen = new java.util.ArrayList<org.pragmatica.aether.environment.CloudConfig>();
+
+        ProviderResolver.dockerFactoryOverride = new org.pragmatica.aether.environment.EnvironmentIntegrationFactory() {
+            @Override
+            public String providerName() {
+                return "docker";
+            }
+
+            @Override
+            public org.pragmatica.lang.Result<org.pragmatica.aether.environment.EnvironmentIntegration> create(org.pragmatica.aether.environment.CloudConfig config) {
+                seen.add(config);
+                return org.pragmatica.lang.utils.Causes.cause("recorded").result();
+            }
+        };
+        try {
+            ProviderResolver.resolveDockerCompute(source());
+        } finally {
+            ProviderResolver.dockerFactoryOverride = null;
+        }
+
+        assertThat(seen).hasSize(1);
+        assertThat(seen.getFirst().compute()).containsEntry(ProviderResolver.DOCKER_CLUSTER_PORT_KEY, String.valueOf(DockerCores.CLUSTER_PORT));
+        assertThat(DockerCores.CLUSTER_PORT).isEqualTo(org.pragmatica.aether.environment.docker.DockerConfig.dockerConfig().unwrap().clusterPort());
     }
 }

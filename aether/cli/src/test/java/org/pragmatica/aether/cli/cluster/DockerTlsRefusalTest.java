@@ -130,4 +130,54 @@ class DockerTlsRefusalTest {
         result.onFailure(cause -> assertThat(cause).isInstanceOf(BootstrapError.DockerSourceDeclaresTls.class));
         assertThat(providerResolutions).as("the docker provider was never created").isEmpty();
     }
+
+    private static final String SSH_TWO_CORES = """
+
+            [runtime.default]
+            type = "container"
+            image = "aether-node:1.0.0"
+
+            [source.s]
+            type = "ssh"
+
+            [source.s.core]
+            hosts = ["10.0.0.1", "10.0.0.2"]
+            """;
+    private static final String SSH_WORKERS_ONLY = """
+
+            [source.sw]
+            type = "ssh"
+
+            [source.sw.worker]
+            hosts = ["10.0.1.1"]
+            """;
+
+    /// Docker cores reach each other by container name and ssh cores by address: no single peer list is reachable by both, and a list per
+    /// kind would be two clusters. Refused, never split.
+    @Test
+    void validate_dockerCoresBesideSshCores_isRefused_withATypedError() {
+        var result = BootstrapPhaseValidate.refuseDockerCoresBesideOtherCores(parse(DOCKER, SSH_TWO_CORES, TLS_FALSE));
+
+        assertThat(result.isFailure()).isTrue();
+        result.onFailure(cause -> {
+            assertThat(cause).isInstanceOf(BootstrapError.DockerCoresMixedWithOtherCores.class);
+            assertThat(cause.message()).contains("'d'").contains("'s'");
+        });
+    }
+
+    @Test
+    void validate_dockerCoresBesideNonCoreSources_orAlone_isNotRefused() {
+        assertThat(BootstrapPhaseValidate.refuseDockerCoresBesideOtherCores(parse(DOCKER, SSH_WORKERS_ONLY, TLS_FALSE)).isSuccess()).as("ssh workers only").isTrue();
+        assertThat(BootstrapPhaseValidate.refuseDockerCoresBesideOtherCores(parse(DOCKER, TLS_FALSE)).isSuccess()).as("docker alone").isTrue();
+        assertThat(BootstrapPhaseValidate.refuseDockerCoresBesideOtherCores(parse(SSH)).isSuccess()).as("ssh alone").isTrue();
+    }
+
+    @Test
+    void validatePhase_dockerCoresBesideSshCores_failsBeforeAnyProviderIsResolved() {
+        var result = BootstrapPhaseValidate.execute(parse(DOCKER, SSH_TWO_CORES, TLS_FALSE));
+
+        assertThat(result.isFailure()).isTrue();
+        result.onFailure(cause -> assertThat(cause).isInstanceOf(BootstrapError.DockerCoresMixedWithOtherCores.class));
+        assertThat(providerResolutions).isEmpty();
+    }
 }
