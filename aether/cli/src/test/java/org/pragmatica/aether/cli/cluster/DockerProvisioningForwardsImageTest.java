@@ -134,6 +134,16 @@ class DockerProvisioningForwardsImageTest {
         assertThat(seen.getFirst().compute()).doesNotContainKey("image_name");
     }
 
+    /// #1543 F2: the provider that tears nodes down is scoped to the cluster being torn down; the Docker socket reaches every container
+    /// on the host.
+    @Test
+    void teardownProvider_isScopedToTheClusterBeingTornDown() {
+        ProviderResolver.resolveDockerComputeWithoutBackup(org.pragmatica.aether.environment.ClusterName.clusterName("dock").unwrap());
+
+        assertThat(seen).as("CONTROL: the provider factory was reached").hasSize(1);
+        assertThat(seen.getFirst().compute()).containsEntry("cluster_name", "dock");
+    }
+
     private static String removeCoreRole(String toml) {
         var without = toml.replace("[source.local.core]\ncount = 1\nruntime = \"coreapp\"\n", "");
 

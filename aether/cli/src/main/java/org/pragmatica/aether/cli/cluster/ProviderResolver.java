@@ -158,10 +158,12 @@ public final class ProviderResolver {
                                               Map.of()));
     }
 
-    /// The Docker provider for tearing nodes down: it starts nothing, so it has no use for the source's `[backup]`. Provisioning
+    /// The Docker provider for tearing nodes down: it starts nothing, so it has no use for the source's `[backup]`. It is scoped to `cluster` (#1543 F2):
+    /// the Docker socket reaches every container on the host, and the provider terminates only this cluster's. Provisioning
     /// uses [#resolveDockerCompute(SourceProfile)], which hands the provider that backup.
-    public static Result<ComputeProvider> resolveDockerComputeWithoutBackup() {
-        return lookupFactory("docker").flatMap(factory -> factory.create(dockerCloudConfig()))
+    public static Result<ComputeProvider> resolveDockerComputeWithoutBackup(ClusterName cluster) {
+        return lookupFactory("docker").flatMap(factory -> factory.create(dockerCloudConfig(Map.of("cluster_name",
+                                                                                                  cluster.value()))))
                             .flatMap(ProviderResolver::extractCompute);
     }
 

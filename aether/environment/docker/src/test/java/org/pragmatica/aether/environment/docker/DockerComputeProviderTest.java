@@ -671,32 +671,149 @@ class DockerComputeProviderTest {
         }
     }
 
+    /// #1543 F2: the Docker socket reaches every container on the host, so the provider acts only on its OWN cluster's.
     @Nested
-    class TerminateTests {
+    class ClusterScopeTests {
+        private static final String INSPECT = "inspect";
 
-        @Test
-        void terminate_success_returnsUnit() {
-            testRunner.nextResponse = Promise.success("container-id");
+        private DockerComputeProvider scoped() {
+            return DockerComputeProvider.dockerComputeProvider(testRunner, CONFIG.withClusterName("prod"), _ -> null).unwrap();
+        }
 
-            provider.terminate(new InstanceId("container-id"))
-                    .await()
-                    .onFailure(cause -> fail("Expected success but got: " + cause.message()))
-                    .onSuccess(unit -> assertThat(unit).isNotNull());
+        private DockerComputeProvider unscoped() {
+            return DockerComputeProvider.dockerComputeProvider(testRunner, CONFIG, _ -> null).unwrap();
+        }
+
+        private void assertRefusal(org.pragmatica.lang.Cause cause, String... parts) {
+            assertThat(cause).isInstanceOf(EnvironmentError.OutOfClusterScope.class);
+            for (var part : parts) {
+                assertThat(cause.message()).contains(part);
+            }
+        }
+
+        private List<String> verbs() {
+            return testRunner.allCommands.stream().map(command -> command.get(1)).toList();
         }
 
         @Test
-        void terminate_failure_mapsToEnvironmentError() {
-            testRunner.nextResponse = new DockerError.CommandExecutionFailed(new RuntimeException("no such container")).promise();
+        void terminate_ownClusterContainer_inspectsItsLabelThenStopsAndRemoves() {
+            testRunner.queuedResponses.add(Promise.success("prod\n"));
+            testRunner.queuedResponses.add(Promise.success("container-id"));
+            testRunner.queuedResponses.add(Promise.success("container-id"));
 
-            provider.terminate(new InstanceId("nonexistent"))
+            scoped().terminate(new InstanceId("container-id"))
+                    .await()
+                    .onFailure(cause -> fail("Expected success but got: " + cause.message()));
+
+            assertThat(verbs()).containsExactly(INSPECT, "stop", "rm");
+        }
+
+        @Test
+        void terminate_anotherClustersContainer_isRefused_andNothingIsStoppedOrRemoved() {
+            testRunner.queuedResponses.add(Promise.success("other\n"));
+
+            scoped().terminate(new InstanceId("their-node"))
+                    .await()
+                    .onSuccess(unit -> fail("a container of another cluster must not be terminated"))
+                    .onFailure(cause -> assertRefusal(cause, "'other'", "'prod'"));
+
+            assertThat(verbs()).as("only the label read ran: no stop, no rm").containsExactly(INSPECT);
+        }
+
+        @Test
+        void terminate_unlabelledContainer_isRefused_andNothingIsStoppedOrRemoved() {
+            testRunner.queuedResponses.add(Promise.success(""));
+
+            scoped().terminate(new InstanceId("ticketing-cleanroom"))
+                    .await()
+                    .onSuccess(unit -> fail("a container with no aether.cluster label must not be terminated"))
+                    .onFailure(cause -> assertRefusal(cause, "no aether cluster", "'prod'"));
+
+            assertThat(verbs()).containsExactly(INSPECT);
+        }
+
+        @Test
+        void terminate_unknownContainer_inspectFailure_mapsToTerminateFailed() {
+            testRunner.queuedResponses.add(new DockerError.CommandExecutionFailed(new RuntimeException("no such object")).promise());
+
+            scoped().terminate(new InstanceId("nonexistent"))
                     .await()
                     .onSuccess(unit -> assertThat(unit).isNull())
                     .onFailure(DockerComputeProviderTest::assertTerminateFailedError);
+
+            assertThat(verbs()).containsExactly(INSPECT);
+        }
+
+        @Test
+        void terminate_stopFailure_afterTheScopeCheck_mapsToTerminateFailed() {
+            testRunner.queuedResponses.add(Promise.success("prod"));
+            testRunner.queuedResponses.add(new DockerError.CommandExecutionFailed(new RuntimeException("cannot stop")).promise());
+
+            scoped().terminate(new InstanceId("container-id"))
+                    .await()
+                    .onSuccess(unit -> assertThat(unit).isNull())
+                    .onFailure(DockerComputeProviderTest::assertTerminateFailedError);
+        }
+
+        @Test
+        void terminate_noClusterKnown_refusesWithoutRunningAnyDockerCommand() {
+            unscoped().terminate(new InstanceId("container-id"))
+                      .await()
+                      .onSuccess(unit -> fail("an unscoped provider must not terminate"))
+                      .onFailure(DockerComputeProviderTest::assertTerminateFailedError);
+
+            assertThat(testRunner.allCommands).isEmpty();
+        }
+
+        @Test
+        void terminate_scopeFromTheHostEnvironment_whenTheConfigNamesNone() {
+            var fromEnv = DockerComputeProvider.dockerComputeProvider(testRunner, CONFIG, name -> "AETHER_CLUSTER_NAME".equals(name) ? "prod" : null).unwrap();
+            testRunner.queuedResponses.add(Promise.success("other"));
+
+            fromEnv.terminate(new InstanceId("their-node"))
+                   .await()
+                   .onFailure(cause -> assertThat(cause).isInstanceOf(EnvironmentError.OutOfClusterScope.class));
+
+            assertThat(verbs()).containsExactly(INSPECT);
+        }
+
+        @Test
+        void listInstances_alwaysFiltersOnTheOwnClustersLabel() {
+            testRunner.nextResponse = Promise.success("");
+
+            scoped().listInstances().await().onFailure(cause -> fail(cause.message()));
+
+            assertThat(testRunner.lastCommand).containsSequence("--filter", "label=aether.cluster=prod");
+            assertThat(testRunner.lastCommand).doesNotContain("label=aether.cluster");
+        }
+
+        @Test
+        void listInstances_excludesContainersOfOtherClusters_evenIfTheDaemonReturnsThem() {
+            testRunner.nextResponse = Promise.success("a1\tmine\trunning\tprod\tcore\tn1\nb2\ttheirs\trunning\tother\tcore\tn2\nc3\tstray\trunning\t\t\t");
+
+            scoped().listInstances()
+                    .await()
+                    .onFailure(cause -> fail(cause.message()))
+                    .onSuccess(instances -> assertThat(instances).extracting(info -> info.id().value()).containsExactly("a1"));
+        }
+
+        @Test
+        void listInstances_noClusterKnown_failsWithoutRunningAnyDockerCommand() {
+            unscoped().listInstances()
+                      .await()
+                      .onSuccess(list -> fail("an unscoped provider must not list the host's containers"))
+                      .onFailure(DockerComputeProviderTest::assertListInstancesFailedError);
+
+            assertThat(testRunner.allCommands).isEmpty();
         }
     }
 
     @Nested
     class ListInstancesTests {
+
+        private DockerComputeProvider scoped() {
+            return DockerComputeProvider.dockerComputeProvider(testRunner, CONFIG.withClusterName("default"), _ -> null).unwrap();
+        }
 
         @Test
         void listInstances_success_returnsMappedList() {
@@ -704,7 +821,7 @@ class DockerComputeProviderTest {
                 "abc123\taether-default-node-0\trunning\tdefault\tcore\tnode-0\n" +
                 "def456\taether-default-node-1\texited\tdefault\tworker\tnode-1");
 
-            provider.listInstances()
+            scoped().listInstances()
                     .await()
                     .onFailure(cause -> fail("Expected success but got: " + cause.message()))
                     .onSuccess(DockerComputeProviderTest::assertTwoInstanceList);
@@ -714,7 +831,7 @@ class DockerComputeProviderTest {
         void listInstances_empty_returnsEmptyList() {
             testRunner.nextResponse = Promise.success("");
 
-            provider.listInstances()
+            scoped().listInstances()
                     .await()
                     .onFailure(cause -> fail("Expected success but got: " + cause.message()))
                     .onSuccess(instances -> assertThat(instances).isEmpty());
@@ -724,22 +841,22 @@ class DockerComputeProviderTest {
         void listInstances_failure_mapsToEnvironmentError() {
             testRunner.nextResponse = new DockerError.CommandExecutionFailed(new RuntimeException("daemon not running")).promise();
 
-            provider.listInstances()
+            scoped().listInstances()
                     .await()
                     .onSuccess(list -> assertThat(list).isNull())
                     .onFailure(DockerComputeProviderTest::assertListInstancesFailedError);
         }
 
         @Test
-        void listInstances_withTagFilter_usesFilterArgs() {
-            testRunner.nextResponse = Promise.success("abc123\taether-node-0\trunning\tprod\tcore\tnode-0");
+        void listInstances_withTagFilter_addsItsFilterArgsToTheClusterScope() {
+            testRunner.nextResponse = Promise.success("abc123\taether-node-0\trunning\tdefault\tcore\tnode-0");
 
-            provider.listInstances(Map.of("aether.cluster", "prod"))
+            scoped().listInstances(Map.of("aether.role", "core"))
                     .await()
                     .onFailure(cause -> fail("Expected success but got: " + cause.message()))
                     .onSuccess(instances -> assertThat(instances).hasSize(1));
 
-            assertThat(testRunner.lastCommand).contains("--filter", "label=aether.cluster=prod");
+            assertThat(testRunner.lastCommand).containsSequence("--filter", "label=aether.cluster=default", "--filter", "label=aether.role=core");
         }
     }
 

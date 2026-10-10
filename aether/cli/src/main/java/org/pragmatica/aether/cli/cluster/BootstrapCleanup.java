@@ -841,7 +841,7 @@ sealed interface BootstrapCleanup {
                                                                                reapedSoFar,
                                                                                sweep);
             case CreatedResource.FloatingIpAssignment ip -> detachFloatingIp(ip);
-            case CreatedResource.DockerContainer container -> removeContainer(container);
+            case CreatedResource.DockerContainer container -> removeContainer(state.clusterName(), container);
             case CreatedResource.SshDeployedConfig config -> removeRemoteConfig(config);
             case CreatedResource.SshKeyResource key -> deleteSshKey(state, key, resolvers);
         };
@@ -1204,11 +1204,11 @@ sealed interface BootstrapCleanup {
     }
 
     @SuppressWarnings("JBCT-EX-01")
-    private static Result<Unit> removeContainer(CreatedResource.DockerContainer container) {
+    private static Result<Unit> removeContainer(ClusterName cluster, CreatedResource.DockerContainer container) {
         System.out.printf("  Removing container %s...%n", container.containerId());
 
-        return ProviderResolver.resolveDockerComputeWithoutBackup().flatMap(compute -> terminateInstance(compute,
-                                                                                                         container.containerId()));
+        return ProviderResolver.resolveDockerComputeWithoutBackup(cluster).flatMap(compute -> terminateInstance(compute,
+                                                                                                                container.containerId()));
     }
 
     private static Result<Unit> removeRemoteConfig(CreatedResource.SshDeployedConfig config) {

@@ -516,10 +516,14 @@ public final class WaveExecutor {
                                                        int managementPort) {
         return lookupSource(sourceName, stored.sources()).flatMap(source -> destroyAllRoles(sourceName,
                                                                                             source,
+                                                                                            stored.cluster().name(),
                                                                                             managementPort));
     }
 
-    private static Result<Integer> destroyAllRoles(SourceName sourceName, SourceProfile source, int managementPort) {
+    private static Result<Integer> destroyAllRoles(SourceName sourceName,
+                                                   SourceProfile source,
+                                                   ClusterName cluster,
+                                                   int managementPort) {
         var totalDestroyed = 0;
 
         for (var entry : source.roles().entrySet()) {
@@ -529,7 +533,7 @@ public final class WaveExecutor {
                 continue;
             }
 
-            var result = dispatchDestroy(sourceName, source, entry.getKey(), count, managementPort);
+            var result = dispatchDestroy(sourceName, source, cluster, entry.getKey(), count, managementPort);
 
             if (result.isFailure()) {
                 return result.map(_ -> 0);
@@ -551,6 +555,7 @@ public final class WaveExecutor {
         return lookupSource(sourceName,
                             stored.sources()).flatMap(source -> dispatchDestroy(sourceName,
                                                                                 source,
+                                                                                stored.cluster().name(),
                                                                                 role,
                                                                                 count,
                                                                                 managementPort))
@@ -570,6 +575,7 @@ public final class WaveExecutor {
         return lookupSource(sourceName,
                             stored.sources()).flatMap(source -> dispatchDestroy(sourceName,
                                                                                 source,
+                                                                                stored.cluster().name(),
                                                                                 role,
                                                                                 excess,
                                                                                 managementPort))
@@ -583,12 +589,13 @@ public final class WaveExecutor {
 
     private static Result<Unit> dispatchDestroy(SourceName sourceName,
                                                 SourceProfile source,
+                                                ClusterName cluster,
                                                 NodeRole role,
                                                 int count,
                                                 int managementPort) {
         return switch (source.type()) {
             case CLOUD -> resolveCloudAndDestroy(source, sourceName, role, count);
-            case DOCKER -> resolveDockerAndDestroy(sourceName, role, count);
+            case DOCKER -> resolveDockerAndDestroy(cluster, sourceName, role, count);
             case FORGE -> forgeDestroyPlaceholder(sourceName, role, count);
             case SSH -> drainAndStopSshNodes(sourceName, role, count, source, managementPort);
         };
@@ -604,11 +611,14 @@ public final class WaveExecutor {
                                                                                                  count));
     }
 
-    private static Result<Unit> resolveDockerAndDestroy(SourceName sourceName, NodeRole role, int count) {
-        return ProviderResolver.resolveDockerComputeWithoutBackup().flatMap(compute -> destroyViaCompute(compute,
-                                                                                                         sourceName,
-                                                                                                         role,
-                                                                                                         count));
+    private static Result<Unit> resolveDockerAndDestroy(ClusterName cluster,
+                                                        SourceName sourceName,
+                                                        NodeRole role,
+                                                        int count) {
+        return ProviderResolver.resolveDockerComputeWithoutBackup(cluster).flatMap(compute -> destroyViaCompute(compute,
+                                                                                                                sourceName,
+                                                                                                                role,
+                                                                                                                count));
     }
 
     @SuppressWarnings("JBCT-EX-01")

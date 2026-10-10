@@ -82,6 +82,25 @@ public sealed interface EnvironmentError extends Cause {
         }
     }
 
+    /// A provider scoped to ONE cluster was asked to act on an instance that does not carry that cluster's label (another
+    /// cluster's, or none: an unrelated container on a shared host). Nothing was done to the instance. `found` is the label the
+    /// instance carries, empty when it carries none. #1543 F2.
+    record OutOfClusterScope(InstanceId instanceId, String cluster, String found) implements EnvironmentError {
+        public static Result<OutOfClusterScope> outOfClusterScope(InstanceId instanceId, String cluster, String found) {
+            return success(new OutOfClusterScope(instanceId, cluster, found));
+        }
+
+        @Override
+        public String message() {
+            return "Refusing to act on '" + instanceId.value()
+                 + "': it belongs to " + (found.isBlank()
+                                          ? "no aether cluster"
+                                          : "cluster '" + found + "'")
+                 + ", this provider acts only on cluster '" + cluster
+                 + "'. Nothing was changed.";
+        }
+    }
+
     record InstanceNotFound(InstanceId instanceId) implements EnvironmentError {
         public static Result<InstanceNotFound> instanceNotFound(InstanceId instanceId) {
             return success(new InstanceNotFound(instanceId));
@@ -247,6 +266,10 @@ public sealed interface EnvironmentError extends Cause {
 
     static EnvironmentError terminateFailed(InstanceId instanceId, Throwable cause) {
         return TerminateFailed.terminateFailed(instanceId, cause).unwrap();
+    }
+
+    static EnvironmentError outOfClusterScope(InstanceId instanceId, String cluster, String found) {
+        return OutOfClusterScope.outOfClusterScope(instanceId, cluster, found).unwrap();
     }
 
     static EnvironmentError instanceNotFound(InstanceId instanceId) {

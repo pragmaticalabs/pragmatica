@@ -28,7 +28,7 @@ public record DockerEnvironmentIntegrationFactory() implements EnvironmentIntegr
                                 .map(EnvironmentIntegration.class::cast);
     }
 
-    private static Result<DockerConfig> buildDockerConfig(CloudConfig config) {
+    static Result<DockerConfig> buildDockerConfig(CloudConfig config) {
         var compute = config.compute();
         var envNetwork = System.getenv("AETHER_DOCKER_NETWORK");
         var networkName = envNetwork != null && !envNetwork.isBlank()
@@ -51,7 +51,17 @@ public record DockerEnvironmentIntegrationFactory() implements EnvironmentIntegr
                             compute.getOrDefault("socket_path", "/var/run/docker.sock"),
                             compute.getOrDefault("api_key", ""),
                             compute.getOrDefault("docker_gid", ""),
-                            parseBoolOrDefault(compute.getOrDefault("expose_host_ports", ""), false)).map(docker -> docker.withBackupEnv(backupEnvOf(compute)));
+                            parseBoolOrDefault(compute.getOrDefault("expose_host_ports", ""), false)).map(docker -> docker.withBackupEnv(backupEnvOf(compute))
+                                                                                                                          .withClusterName(clusterNameOf(compute)));
+    }
+
+    /// The cluster the provider is scoped to: `cluster_name` of the compute map (the CLI hands it in), else the host's
+    /// `AETHER_CLUSTER_NAME` (a node always has it); blank when neither is set.
+    private static String clusterNameOf(Map<String, String> compute) {
+        return Option.option(compute.get("cluster_name"))
+                     .filter(name -> !name.isBlank())
+                     .orElse(() -> Option.option(System.getenv("AETHER_CLUSTER_NAME")).filter(name -> !name.isBlank()))
+                     .or("");
     }
 
     /// The leader's effective `[backup]`, handed in as `AETHER_BACKUP_*` entries of the compute map (`Main` writes them).

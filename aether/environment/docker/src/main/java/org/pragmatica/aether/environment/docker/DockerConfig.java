@@ -20,7 +20,8 @@ public record DockerConfig(String imageName,
                            String apiKey,
                            String dockerGid,
                            boolean exposeHostPorts,
-                           Map<String, String> backupEnv) {
+                           Map<String, String> backupEnv,
+                           String clusterName) {
     /// `backupEnv` (#1968): the leader's EFFECTIVE `[backup]` as `AETHER_BACKUP_*` variables, whatever its source (TOML or
     /// environment). A Docker replacement has no node TOML, so this is what carries the backup to it; empty falls back to the
     /// provisioning host's own `AETHER_BACKUP_*` environment.
@@ -75,7 +76,8 @@ public record DockerConfig(String imageName,
                                         apiKey,
                                         dockerGid,
                                         exposeHostPorts,
-                                        Map.of()));
+                                        Map.of(),
+                                        ""));
     }
 
     public DockerConfig withBackupEnv(Map<String, String> backupEnv) {
@@ -88,7 +90,25 @@ public record DockerConfig(String imageName,
                                 apiKey,
                                 dockerGid,
                                 exposeHostPorts,
-                                backupEnv);
+                                backupEnv,
+                                clusterName);
+    }
+
+    /// The ONE cluster this provider acts on (#1543 F2): `list` and `terminate` touch only containers labelled `aether.cluster=<name>`,
+    /// because the Docker socket reaches every container on the host. Blank = unscoped here; the provider then falls back to the
+    /// host's `AETHER_CLUSTER_NAME` and refuses to list or terminate when that is blank too.
+    public DockerConfig withClusterName(String clusterName) {
+        return new DockerConfig(imageName,
+                                networkName,
+                                managementPortBase,
+                                appPortBase,
+                                clusterPort,
+                                socketPath,
+                                apiKey,
+                                dockerGid,
+                                exposeHostPorts,
+                                backupEnv,
+                                clusterName);
     }
 
     public static Result<DockerConfig> dockerConfig() {
