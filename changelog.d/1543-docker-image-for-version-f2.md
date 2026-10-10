@@ -25,3 +25,8 @@
   from that variable; without it the label is `default`, which no applied config names, so the first replacement of an upgrade
   or an auto-heal was refused with "No configured source for replacement default". The refusal's reason is now carried into the
   replacement record (and so into the operator event and the paused upgrade's message), bounded to 300 characters.
+- **A replacement of a node that has no source label derives its source from the committed config.** A cluster bootstrapped from
+  static PEERS (compose, cloud-init) is known to its peers without source labels, so every node's replacement record carried a
+  blank source, which was passed on as the source "default" and refused: the first replacement of a freshly bootstrapped cluster
+  never started. A blank source now asks the topology manager to derive it (the cloud source declaring the role, else the sole
+  source of any type declaring it; several declaring it are not guessed).
