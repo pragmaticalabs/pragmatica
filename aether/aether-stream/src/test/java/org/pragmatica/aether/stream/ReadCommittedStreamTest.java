@@ -149,6 +149,19 @@ class ReadCommittedStreamTest {
             assertThat(readLocal(manager)).containsExactly("r0", "r1", "r2", "r3");
         }
 
+        /// A repeat or a delayed message under the SAME epoch with a lower value must not pull the recorded position down: the
+        /// next record to land would otherwise be held back although the owner has already reported it visible.
+        @Test
+        void sameEpochLowerReport_isIgnored() {
+            manager = replicaWithRecords(1);
+            manager.commitAdvanced(STREAM, PARTITION, 1L, EPOCH_1);
+            manager.commitAdvanced(STREAM, PARTITION, 0L, EPOCH_1);
+
+            manager.appendRecovered(STREAM, PARTITION, "r1".getBytes(UTF_8), 2L).onFailure(cause -> fail(cause.message()));
+
+            assertThat(readLocal(manager)).as("r1 was already reported visible under this epoch").containsExactly("r0", "r1");
+        }
+
         /// A node that is the owner takes no position from anyone: it is the authority.
         @Test
         void ownerIgnoresAReportedPosition() {
@@ -243,6 +256,20 @@ class ReadCommittedStreamTest {
 
             assertThat(readLocal(manager)).containsExactly("c0");
         }
+    }
+
+    @Test
+    void markVerifiedOnANodeThatIsNoLongerAReplica_doesNotOutrunThePeerAcknowledgements() {
+        var replication = replicationManager(SELF, registryWithPeers());
+
+        manager = streamPartitionManager(Long.MAX_VALUE, EvictionListener.NOOP, replication);
+        createStream(manager, 3, 3);
+        manager.appendRecovered(STREAM, PARTITION, "c0".getBytes(UTF_8), 1L).onFailure(cause -> fail(cause.message()));
+        manager.appendRecovered(STREAM, PARTITION, "c1".getBytes(UTF_8), 2L).onFailure(cause -> fail(cause.message()));
+
+        manager.markVerified(STREAM, PARTITION, 1L);
+
+        assertThat(readLocal(manager)).as("compared with the owner is not acknowledged by the peers").isEmpty();
     }
 
     @Nested

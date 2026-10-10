@@ -16,6 +16,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.stream.Collectors;
 
 import org.junit.jupiter.api.AfterEach;
@@ -27,6 +28,7 @@ import org.pragmatica.aether.slice.ReadPreference;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.StreamPartitionOwnershipValue;
 import org.pragmatica.aether.stream.OffHeapRingBuffer.RawEvent;
+import org.pragmatica.aether.stream.replication.ReplicationMessage;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
@@ -71,6 +73,7 @@ class EmberReadCommittedFailoverTest {
     private static final long ISR_BUDGET_MS = 60_000L;
     private static final long REPLICA_VISIBLE_BUDGET_MS = 30_000L;
     private static final long FAILOVER_BUDGET_MS = 180_000L;
+    private static final Duration REPAIR_BOUND = Duration.ofSeconds(5);
     private static final int ACKED = 3;
     private static final int UNACKED = 2;
     private static final int PARTITION = 0;
@@ -112,13 +115,28 @@ class EmberReadCommittedFailoverTest {
         var near = cluster.getNode(record.isr().stream().filter(member -> !member.equals(record.owner())).findFirst().orElseThrow().id()).unwrap();
         var far = record.isr().stream().filter(member -> !member.equals(record.owner()) && !member.id().equals(near.self().id())).findFirst().orElseThrow();
 
+        // Every announcement of the owner's position to `near` is lost until the flag is cleared: a lost message delays
+        // the replica, never advances it, and the owner's tick repairs it within one tick interval.
+        var announcementsLost = new AtomicBoolean(true);
+
+        near.setInboundFaultFilter((_, message) -> !(announcementsLost.get() && message instanceof ReplicationMessage.CommitAdvance));
         for (var i = 0; i < ACKED; i++) {
             var control = publishAcked(owner, "acked-" + i);
 
             assertThat(control.acked()).as("control: acknowledged with the whole in-sync set reachable: %s", control.body()).isTrue();
         }
 
+        awaitHolds(near, ACKED);
+        sleepQuietly(2_500L);
+        assertThat(payloads(near, "near, announcements lost")).as("the replica holds the acknowledged records and serves none while the owner's position is lost")
+                                                              .isEmpty();
+
+        var healedAt = System.nanoTime();
+
+        announcementsLost.set(false);
         awaitServes(near, ACKED);
+        assertThat(Duration.ofNanos(System.nanoTime() - healedAt)).as("staleness bound: the owner's tick repairs a lost announcement")
+                                                                   .isLessThan(REPAIR_BOUND);
         assertThat(payloads(near, "near, acknowledged")).as("control: the replica serves the acknowledged records, and the owner's position reached it")
                                                        .containsExactly("acked-0", "acked-1", "acked-2");
 
