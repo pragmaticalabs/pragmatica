@@ -15,6 +15,8 @@
   absolute URL with a host and the `https` scheme; plain `http` is accepted only to a loopback host (`localhost`,
   `127.0.0.1`, `::1`) for local development. A blank, relative, unparseable or remote-`http` URL is refused. This rule
   (https, loopback-http exception) is a stated default, not an owner ruling; say if it should differ.
+- **A padded `jwks_url` is stored trimmed** (`JwtConfig` trims), so the string the predicate judged is the string the node fetches.
+- **The jwt check has its own bootstrap id, PF-34.** `PF-28` is #2059's cloud-credentials check; no open branch or spec table held PF-34.
 - **The message says what is required:** `jwks_url is required (issuer/audience optional)`.
 - **Forge no longer drops an unloadable `aether.toml` silently.** A sibling `aether.toml` that exists and fails to
   load or validate used to be discarded, so Forge ran with security `NONE` for a user who had configured `jwt`. It is
