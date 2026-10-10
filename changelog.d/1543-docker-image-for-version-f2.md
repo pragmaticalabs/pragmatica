@@ -25,14 +25,12 @@
   from that variable; without it the label is `default`, which no applied config names, so the first replacement of an upgrade
   or an auto-heal was refused with "No configured source for replacement default". The refusal's reason is now carried into the
   replacement record (and so into the operator event and the paused upgrade's message), bounded to 300 characters.
-- **A replacement of a node that has no source label derives its source from the committed config, or is refused.** A cluster
-  bootstrapped from static PEERS (compose, cloud-init) is known to its peers without source labels, so every node's replacement
-  record carried a blank source, passed on as the source "default" and refused: the first replacement of a freshly bootstrapped
-  cluster never started. A blank source now takes the source only when exactly ONE source, of any type, declares the role (no
-  preference between types: a docker node is never replaced by a cloud VM); zero or several declaring it are a typed refusal
-  naming the role and the candidate sources, which reaches the paused upgrade's message. Without any committed config (bootstrap
-  seed, forge) there is nothing to derive from and the replacement proceeds as before.
-- **The retirement and the provider listing of such a node use the same rule.** They asked the provider for the source "default"
-  too ("Unknown compute source: default"), so the old node of a freshly bootstrapped cluster could not be reaped and the upgrade
-  paused after the swap with both nodes kept. They now use the config's sole declaring source; ambiguity is the typed refusal
-  and the node is not read as gone.
+- **A replacement record with no source gets one resolved ONCE and committed into the record.** A cluster bootstrapped from static
+  PEERS (compose, cloud-init) is known to its peers without source labels, so a replacement record carried a blank source, which every
+  effect (provision, retirement, provider listing) read as the source "default": the first replacement never started, and after the
+  provisioning was fixed the old node could not be reaped ("Unknown compute source: default"). The reconciler now resolves a blank
+  source before any effect (the sole source, of any type, declaring the role; no preference between types, so a docker node is never
+  replaced by a cloud VM), commits it into the record with a compare-and-set, and every effect and every later leader reads the
+  committed source. Zero or several declaring sources are a typed refusal naming the role and the candidates: a replacement that has
+  not begun ends with it in its reason, one that has begun is held with it. No effect converts a blank to "default". Without any
+  committed config (bootstrap seed, forge) the source resolves to "default" as before.
