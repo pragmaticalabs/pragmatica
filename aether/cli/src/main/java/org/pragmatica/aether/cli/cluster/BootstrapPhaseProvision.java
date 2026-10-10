@@ -418,7 +418,7 @@ sealed interface BootstrapPhaseProvision {
                                                          DockerCores dockerCores) {
         return switch (source.type()) {
             case CLOUD -> provisionCloudSource(ctx, sourceName, source, clusterName);
-            case DOCKER -> provisionDockerSource(sourceName, source, clusterName, dockerCores);
+            case DOCKER -> provisionDockerSource(sourceName, source, clusterName, dockerCores, ctx.clusterSecret());
             case SSH -> provisionSshSource(sourceName, source);
             case FORGE -> provisionForgeSource(sourceName, source, managementPort);
         };
@@ -446,12 +446,13 @@ sealed interface BootstrapPhaseProvision {
     private static Result<List<ProvisionedNode>> provisionDockerSource(SourceName sourceName,
                                                                        SourceProfile source,
                                                                        ClusterName clusterName,
-                                                                       DockerCores dockerCores) {
-        return ProviderResolver.resolveDockerCompute(source).flatMap(compute -> provisionWithCompute(compute,
-                                                                                                     sourceName,
-                                                                                                     source,
-                                                                                                     clusterName,
-                                                                                                     dockerCores));
+                                                                       DockerCores dockerCores,
+                                                                       String clusterSecret) {
+        return ProviderResolver.resolveDockerCompute(source, clusterSecret).flatMap(compute -> provisionWithCompute(compute,
+                                                                                                                    sourceName,
+                                                                                                                    source,
+                                                                                                                    clusterName,
+                                                                                                                    dockerCores));
     }
 
     /// Package-visible so a test can drive the real call site with a recording provider (#2089).
