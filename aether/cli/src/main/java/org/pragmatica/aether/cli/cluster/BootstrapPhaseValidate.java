@@ -60,16 +60,27 @@ sealed interface BootstrapPhaseValidate {
                      .orElseGet(() -> Result.success(config));
     }
 
-    /// #2089: a docker source beside non-docker cores cannot reach them, and they cannot reach it. Docker nodes name each other by
-    /// container name, the others by address, so no single peer list serves both: cores would split into two clusters, and a docker source
-    /// holding only workers would boot them with an empty core list. Any docker source beside non-docker cores is refused, never split.
+    /// #2089: a cluster with ANY docker source must have ALL its sources docker. Docker nodes name each other by container name and the others
+    /// by address, so no single peer list serves both: cores would split into two clusters, and workers of either kind would boot with a core
+    /// list they cannot reach. Any mix is refused, never split.
     static Result<ClusterBootstrapConfig> refuseDockerCoresBesideOtherCores(ClusterBootstrapConfig config) {
         var dockerSources = dockerSources(config);
-        var otherCores = coreSources(config, false);
+        var otherSources = nonDockerSources(config);
 
-        return dockerSources.isEmpty() || otherCores.isEmpty()
+        return dockerSources.isEmpty() || otherSources.isEmpty()
                ? Result.success(config)
-               : new BootstrapError.DockerCoresMixedWithOtherCores(dockerSources.getFirst(), otherCores.getFirst()).<ClusterBootstrapConfig> result();
+               : new BootstrapError.DockerCoresMixedWithOtherCores(dockerSources.getFirst(), otherSources.getFirst()).<ClusterBootstrapConfig> result();
+    }
+
+    private static List<String> nonDockerSources(ClusterBootstrapConfig config) {
+        return config.sources()
+                     .entrySet()
+                     .stream()
+                     .filter(entry -> entry.getValue()
+                                           .type() != SourceType.DOCKER)
+                     .map(entry -> entry.getKey())
+                     .sorted()
+                     .toList();
     }
 
     private static List<String> dockerSources(ClusterBootstrapConfig config) {
@@ -81,27 +92,6 @@ sealed interface BootstrapPhaseValidate {
                      .map(entry -> entry.getKey())
                      .sorted()
                      .toList();
-    }
-
-    private static List<String> coreSources(ClusterBootstrapConfig config, boolean docker) {
-        return config.sources()
-                     .entrySet()
-                     .stream()
-                     .filter(entry -> (entry.getValue()
-                                            .type() == SourceType.DOCKER) == docker)
-                     .filter(entry -> hasCores(entry.getValue()))
-                     .map(entry -> entry.getKey())
-                     .sorted()
-                     .toList();
-    }
-
-    private static boolean hasCores(SourceProfile source) {
-        return Option.option(source.roles().get(NodeRole.CORE))
-                     .flatMap(RoleSubTable::count)
-                     .or(0) > 0 || Option.option(source.roles().get(NodeRole.CORE))
-                                         .flatMap(RoleSubTable::hosts)
-                                         .map(hosts -> !hosts.isEmpty())
-                                         .or(false);
     }
 
     private static ClusterBootstrapConfig emitWarnings(ClusterBootstrapConfig validated) {

@@ -377,4 +377,34 @@ class DockerDestroyTest {
         assertThat(stdout()).contains("1 node(s) recorded in the bootstrap ledger were not listed by the cluster");
         assertThat(stdout()).contains("accounted 3 of 3");
     }
+
+    /// E3: a NON-docker cluster has a recorded ledger too (its VMs); that ledger must not open the docker gate on a loopback endpoint.
+    @Test
+    void destroy_nonDockerClusterWithARecordedLedger_keepsTheDockerGateClosed() {
+        DockerHostPorts.override = container -> {
+            throw new AssertionError("a non-docker cluster must not run docker port: " + container);
+        };
+        var cloud = BootstrapState.initialState(CLUSTER, "h", "now")
+                                  .withResource(CreatedResource.ProvisionedVm.provisionedVm("hetzner", "vm-1", "primary", "core"));
+        ClusterDestroyCommand.stateLoader = name -> Result.success(Option.some(cloud));
+        ClusterHttpClient.HTTP_OPS_REF.set(new ScriptedDrainHttp(drainAccepted(A), notFound(A), notFound(B))
+                                               .withTransportAddress(A, "cloud-a:6000")
+                                               .withTransportAddress(B, "cloud-b:6000"));
+        ClusterHttpClient.setEndpointOverride("http://127.0.0.1:38911");
+
+        new ClusterDestroyCommand().destroyEnumerated(registry(), CLUSTER, List.of(A, B));
+
+        assertThat(ClusterDestroyCommand.isDockerCluster(Option.some(cloud))).isFalse();
+    }
+
+    /// E9: an IPv6 endpoint host with NO port (`http://[::1]`): the sibling address is bracketed too, and no port is invented.
+    @Test
+    void siblingEndpoints_ipv6EndpointWithoutAPort_bracketsTheSibling_andInventsNoPort() {
+        var state = BootstrapState.initialState(CLUSTER, "h", "now")
+                                  .withCollectedAddresses(List.of("2001:db8::2"));
+
+        var siblings = ClusterDestroyCommand.siblingEndpoints(Result.success("http://[::1]"), Option.some(state));
+
+        assertThat(siblings).containsExactly("http://[2001:db8::2]");
+    }
 }

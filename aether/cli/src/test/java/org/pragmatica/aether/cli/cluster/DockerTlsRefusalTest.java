@@ -165,9 +165,21 @@ class DockerTlsRefusalTest {
         });
     }
 
+    /// F5: docker cores plus an ssh WORKER source passed validation and the worker's peers came out as garbage (`d-core-N:127.0.0.1:8090`). Any
+    /// docker source requires all sources docker.
     @Test
-    void validate_dockerCoresBesideNonCoreSources_orAlone_isNotRefused() {
-        assertThat(BootstrapPhaseValidate.refuseDockerCoresBesideOtherCores(parse(DOCKER, SSH_WORKERS_ONLY, TLS_FALSE)).isSuccess()).as("ssh workers only").isTrue();
+    void validate_dockerCoresBesideAnSshWorkerSource_isRefused() {
+        var result = BootstrapPhaseValidate.refuseDockerCoresBesideOtherCores(parse(DOCKER, SSH_WORKERS_ONLY, TLS_FALSE));
+
+        assertThat(result.isFailure()).isTrue();
+        result.onFailure(cause -> {
+            assertThat(cause).isInstanceOf(BootstrapError.DockerCoresMixedWithOtherCores.class);
+            assertThat(cause.message()).contains("'d'").contains("'sw'");
+        });
+    }
+
+    @Test
+    void validate_dockerAlone_orNonDockerAlone_isNotRefused() {
         assertThat(BootstrapPhaseValidate.refuseDockerCoresBesideOtherCores(parse(DOCKER, TLS_FALSE)).isSuccess()).as("docker alone").isTrue();
         assertThat(BootstrapPhaseValidate.refuseDockerCoresBesideOtherCores(parse(SSH)).isSuccess()).as("ssh alone").isTrue();
     }
