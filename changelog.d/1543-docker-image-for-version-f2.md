@@ -32,3 +32,7 @@
   preference between types: a docker node is never replaced by a cloud VM); zero or several declaring it are a typed refusal
   naming the role and the candidate sources, which reaches the paused upgrade's message. Without any committed config (bootstrap
   seed, forge) there is nothing to derive from and the replacement proceeds as before.
+- **The retirement and the provider listing of such a node use the same rule.** They asked the provider for the source "default"
+  too ("Unknown compute source: default"), so the old node of a freshly bootstrapped cluster could not be reaped and the upgrade
+  paused after the swap with both nodes kept. They now use the config's sole declaring source; ambiguity is the typed refusal
+  and the node is not read as gone.
