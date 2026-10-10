@@ -49,6 +49,7 @@ class DockerDestroyTest {
     private PrintStream originalOut;
     private PrintStream originalErr;
     private ByteArrayOutputStream err;
+    private ByteArrayOutputStream out;
     private BiFunction<ClusterRegistry, ClusterName, Result<ClusterRegistry>> originalRemover;
     private Function<ClusterName, Result<Option<BootstrapState>>> originalLoader;
     private final List<String> removerCalls = new ArrayList<>();
@@ -60,7 +61,8 @@ class DockerDestroyTest {
         originalOut = System.out;
         originalErr = System.err;
         err = new ByteArrayOutputStream();
-        System.setOut(new PrintStream(new ByteArrayOutputStream(), true, StandardCharsets.UTF_8));
+        out = new ByteArrayOutputStream();
+        System.setOut(new PrintStream(out, true, StandardCharsets.UTF_8));
         System.setErr(new PrintStream(err, true, StandardCharsets.UTF_8));
         originalRemover = ClusterDestroyCommand.registryRemover;
         originalLoader = ClusterDestroyCommand.stateLoader;
@@ -263,5 +265,64 @@ class DockerDestroyTest {
         var siblings = ClusterDestroyCommand.siblingEndpoints(Result.success("http://127.0.0.1:38911"), Option.some(state));
 
         assertThat(siblings).containsExactly("http://[::1]:38915", "http://[2001:db8::1]:38911");
+    }
+
+    private String stdout() {
+        return out.toString(StandardCharsets.UTF_8);
+    }
+
+    private Result<Integer> destroyWith(ScriptedDrainHttp http, List<String> nodes) {
+        ClusterHttpClient.HTTP_OPS_REF.set(http);
+        ClusterHttpClient.setEndpointOverride("http://127.0.0.1:49999");
+        ClusterDestroyCommand.stateLoader = name -> Result.success(Option.some(BootstrapState.initialState(CLUSTER, "h", "now")));
+
+        return new ClusterDestroyCommand().destroyEnumerated(registry(), CLUSTER, nodes);
+    }
+
+    private static int code(Result<Integer> result) {
+        return result.<Integer> fold(cause -> -1, value -> value);
+    }
+
+    /// A healthy 3-core destroy: the disruption budget (voters/2+1) admits the first core and refuses the second, forever. That refusal is
+    /// EXPECTED, not a failure: exit 0, counted and named as held for quorum, no refusal, and the held node is not sent a shutdown.
+    @Test
+    void destroy_aCoreRefusedByTheDisruptionBudget_isHeldForQuorum_andDoesNotRefuse() {
+        var http = new ScriptedDrainHttp(drainAccepted(A), notFound(A)).withDrainSequence(drainAccepted(A), ScriptedDrainHttp.budgetRefused(B));
+
+        var result = destroyWith(http, List.of(A, B));
+
+        assertThat(code(result)).isEqualTo(ExitCode.SUCCESS);
+        assertThat(removerCalls).as("the teardown went ahead").containsExactly(CLUSTER.value());
+        assertThat(stderr()).doesNotContain("REFUSING");
+        assertThat(stdout()).contains("Outcome: drained 1, held for quorum 1 (" + B + "), failed 0");
+        assertThat(http.requests()).as("a held core is not sent a shutdown").noneMatch(r -> r.equals("POST /api/v1/nodes/shutdown/" + B));
+    }
+
+    @Test
+    void destroy_aNonBudgetConflict_stillRefuses() {
+        var http = new ScriptedDrainHttp(drainAccepted(A), notFound(A)).withDrainSequence(drainAccepted(A), ScriptedDrainHttp.otherConflict(B));
+
+        assertThat(code(destroyWith(http, List.of(A, B)))).isEqualTo(ExitCode.ERROR);
+        assertThat(removerCalls).isEmpty();
+        assertThat(stderr()).contains("REFUSING").contains(B);
+    }
+
+    @Test
+    void destroy_aServerError_stillRefuses() {
+        var http = new ScriptedDrainHttp(drainAccepted(A), notFound(A)).withDrainSequence(drainAccepted(A), ScriptedDrainHttp.serverError());
+
+        assertThat(code(destroyWith(http, List.of(A, B)))).isEqualTo(ExitCode.ERROR);
+        assertThat(removerCalls).isEmpty();
+    }
+
+    /// The exact refusal text: no stray separator after the failure list.
+    @Test
+    void refusalMessage_hasNoStraySeparator() {
+        var http = new ScriptedDrainHttp(connectionRefused(), notFound(A));
+
+        destroyWith(http, List.of(A));
+
+        assertThat(stderr()).contains("REFUSING to delete the VMs of 'dock': 1 of 1 drain operations failed (" + A
+                                      + ": error: Connection failed: Connection refused). NOTHING has been deleted and the registry entry is kept.");
     }
 }

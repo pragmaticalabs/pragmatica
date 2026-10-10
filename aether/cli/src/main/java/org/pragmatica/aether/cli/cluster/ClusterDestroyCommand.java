@@ -308,8 +308,8 @@ class ClusterDestroyCommand implements Callable<Integer> {
 
     private static boolean hasFailures(List<NodeResult> drainResults, List<NodeResult> shutdownResults) {
         return drainResults.stream()
-                           .anyMatch(result -> !result.success()) || shutdownResults.stream()
-                                                                                    .anyMatch(result -> !result.success());
+                           .anyMatch(NodeResult::failure) || shutdownResults.stream()
+                                                                            .anyMatch(NodeResult::failure);
     }
 
     /// A drain or shutdown that failed is not a teardown that succeeded (#2089): reporting "destroyed successfully" with exit 0 over
@@ -329,18 +329,21 @@ class ClusterDestroyCommand implements Callable<Integer> {
     }
 
     private static String failureSummary(List<NodeResult> drainResults, List<NodeResult> shutdownResults) {
-        return failedList("drain", drainResults) + failedList("shutdown", shutdownResults);
+        return java.util.stream.Stream.of(failedList("drain", drainResults),
+                                          failedList("shutdown", shutdownResults))
+                                      .filter(part -> !part.isEmpty())
+                                      .collect(java.util.stream.Collectors.joining("; "));
     }
 
     private static String failedList(String operation, List<NodeResult> results) {
         var failed = results.stream()
-                            .filter(result -> !result.success())
+                            .filter(NodeResult::failure)
                             .map(result -> result.nodeId() + ": " + result.reason())
                             .toList();
 
         return failed.isEmpty()
                ? ""
-               : String.format("%d of %d %s operations failed (%s); ",
+               : String.format("%d of %d %s operations failed (%s)",
                                failed.size(),
                                results.size(),
                                operation,
@@ -889,7 +892,8 @@ class ClusterDestroyCommand implements Callable<Integer> {
         var ordered = servingNodeLast(nodeIds, servingNode);
         var drainResults = drainAllNodes(ordered, servingNode);
 
-        return new DrainShutdownOutcome(drainResults, shutdownAllNodes(ordered, departedNodes(drainResults)));
+        return new DrainShutdownOutcome(drainResults,
+                                        shutdownAllNodes(ordered, departedNodes(drainResults), heldNodes(drainResults)));
     }
 
     /// With several nodes and no host match, the node relaying these requests may be drained mid-list, and every later
@@ -906,6 +910,13 @@ class ClusterDestroyCommand implements Callable<Integer> {
                               + " still deletes the VMs. Verify the cluster is gone, or re-run with --cluster pointing at"
                               + " an endpoint whose host matches a node's transport host.");
         }
+    }
+
+    private static java.util.Set<String> heldNodes(List<NodeResult> drainResults) {
+        return drainResults.stream()
+                           .filter(NodeResult::heldForQuorum)
+                           .map(NodeResult::nodeId)
+                           .collect(java.util.stream.Collectors.toSet());
     }
 
     private static java.util.Set<String> departedNodes(List<NodeResult> drainResults) {
@@ -1046,9 +1057,7 @@ class ClusterDestroyCommand implements Callable<Integer> {
         if (drainResult.isFailure()) {
             var cause = drainResult.fold(c -> c, _ -> null);
 
-            System.err.printf("  Failed to drain %s: %s%n", nodeId, cause.message());
-
-            return NodeResult.failed(nodeId, refusalReason(cause));
+            return classifyRefusal(nodeId, "drain", cause);
         }
 
         var success = servingNode.filter(nodeId::equals).isPresent()
@@ -1071,6 +1080,31 @@ class ClusterDestroyCommand implements Callable<Integer> {
     /// status (a 409 is the cluster's disruption budget or a non-READY node, a 401/403 the credential),
     /// anything else its cause text — the transcript above has the full body, the one-line summary
     /// has enough to tell "refused" from "unreachable".
+    /// The disruption budget's refusal carries no structured code: it is an HTTP 409 whose problem document `detail` begins
+    /// `Conflict: Disruption budget exceeded: draining` (`NodeLifecycleRoutes#budgetExceededError`). So it is recognised by status 409 plus that
+    /// exact phrase; any other 409, any 5xx, a timeout or an unreachable node is a failure.
+    static boolean isDisruptionBudgetRefusal(Cause cause) {
+        return cause instanceof ClusterHttpClient.HttpError.ApiError apiError
+               && apiError.statusCode() == 409
+               && apiError.body()
+                          .contains("Disruption budget exceeded: draining");
+    }
+
+    private static NodeResult classifyRefusal(String nodeId, String operation, Cause cause) {
+        if (isDisruptionBudgetRefusal(cause)) {
+            System.out.printf("  Node %s held for quorum: the %s was refused by the disruption budget, which a destroy can never satisfy for a majority of the cores."
+                             + " It is not shut down; its VM is deleted below.%n",
+                              nodeId,
+                              operation);
+
+            return NodeResult.held(nodeId, "held for quorum (disruption budget)");
+        }
+
+        System.err.printf("  Failed to %s %s: %s%n", operation, nodeId, cause.message());
+
+        return NodeResult.failed(nodeId, refusalReason(cause));
+    }
+
     private static String refusalReason(Cause cause) {
         return cause instanceof ClusterHttpClient.HttpError.ApiError apiError
                ? "refused with HTTP " + apiError.statusCode()
@@ -1095,12 +1129,18 @@ class ClusterDestroyCommand implements Callable<Integer> {
     }
 
     List<NodeResult> shutdownAllNodes(List<String> nodeIds) {
-        return shutdownAllNodes(nodeIds, java.util.Set.of());
+        return shutdownAllNodes(nodeIds, java.util.Set.of(), java.util.Set.of());
+    }
+
+    List<NodeResult> shutdownAllNodes(List<String> nodeIds, java.util.Set<String> alreadyDeparted) {
+        return shutdownAllNodes(nodeIds, alreadyDeparted, java.util.Set.of());
     }
 
     /// A node whose departure the drain wait observed has halted: there is nothing left to shut down, and the
     /// request would go to an endpoint that may itself be that halted node.
-    List<NodeResult> shutdownAllNodes(List<String> nodeIds, java.util.Set<String> alreadyDeparted) {
+    List<NodeResult> shutdownAllNodes(List<String> nodeIds,
+                                      java.util.Set<String> alreadyDeparted,
+                                      java.util.Set<String> held) {
         logPhase(DestroyPhase.SHUTDOWN_NODES,
                  nodeIds.isEmpty()
                  ? "Nothing to shut down — the node list is empty"
@@ -1114,11 +1154,16 @@ class ClusterDestroyCommand implements Callable<Integer> {
                 continue;
             }
 
+            if (held.contains(nodeId)) {
+                System.out.printf("Node %s is held for quorum; not shut down, its VM is deleted below.%n", nodeId);
+                results.add(NodeResult.held(nodeId, "held for quorum (disruption budget)"));
+                continue;
+            }
+
             System.out.printf("Shutting down node %s...%n", nodeId);
             var result = ClusterHttpClient.post(NODE_SHUTDOWN, List.of(nodeId), ClusterHttpClient.forceQuery(true), "{}");
 
-            result.onFailure(cause -> System.err.printf("  Failed to shutdown %s: %s%n", nodeId, cause.message()));
-            results.add(result.fold(cause -> NodeResult.failed(nodeId, refusalReason(cause)),
+            results.add(result.fold(cause -> classifyRefusal(nodeId, "shutdown", cause),
                                     _ -> NodeResult.succeeded(nodeId)));
         }
 
@@ -1160,6 +1205,11 @@ class ClusterDestroyCommand implements Callable<Integer> {
                           countSuccesses(shutdownResults),
                           shutdownResults.size(),
                           skippedNote(nodeIds));
+        System.out.printf("  Outcome: drained %d, held for quorum %d%s, failed %d%n",
+                          countSuccesses(drainResults),
+                          heldNames(drainResults).size(),
+                          heldSuffix(heldNames(drainResults)),
+                          failureCount(drainResults) + failureCount(shutdownResults));
         System.out.printf("  Cloud resource cleanup: %s%n",
                           cleanupSucceeded
                           ? "ok"
@@ -1206,7 +1256,7 @@ class ClusterDestroyCommand implements Callable<Integer> {
     /// code — a script that retried on it would be retrying a cluster that no longer exists.
     private static void warnIncomplete(String operation, List<NodeResult> results) {
         var failed = results.stream()
-                            .filter(result -> !result.success())
+                            .filter(NodeResult::failure)
                             .map(result -> result.nodeId() + ": " + result.reason())
                             .toList();
 
@@ -1232,6 +1282,25 @@ class ClusterDestroyCommand implements Callable<Integer> {
                : "";
     }
 
+    private static List<String> heldNames(List<NodeResult> results) {
+        return results.stream()
+                      .filter(NodeResult::heldForQuorum)
+                      .map(NodeResult::nodeId)
+                      .toList();
+    }
+
+    private static String heldSuffix(List<String> held) {
+        return held.isEmpty()
+               ? ""
+               : " (" + String.join(", ", held) + ")";
+    }
+
+    private static long failureCount(List<NodeResult> results) {
+        return results.stream()
+                      .filter(NodeResult::failure)
+                      .count();
+    }
+
     private static long countSuccesses(List<NodeResult> results) {
         return results.stream()
                       .filter(NodeResult::success)
@@ -1255,17 +1324,31 @@ class ClusterDestroyCommand implements Callable<Integer> {
 
     /// `reason` is empty for a success and names why otherwise (refused with a status, timed out,
     /// error) — it travels into the summary warning so the one-line outcome says more than a count.
-    record NodeResult(String nodeId, boolean success, String reason) {
+    record NodeResult(String nodeId, boolean success, String reason, boolean heldForQuorum) {
         NodeResult(String nodeId, boolean success) {
-            this(nodeId, success, "");
+            this(nodeId, success, "", false);
+        }
+
+        NodeResult(String nodeId, boolean success, String reason) {
+            this(nodeId, success, reason, false);
         }
 
         static NodeResult succeeded(String nodeId) {
-            return new NodeResult(nodeId, true, "");
+            return new NodeResult(nodeId, true, "", false);
         }
 
         static NodeResult failed(String nodeId, String reason) {
-            return new NodeResult(nodeId, false, reason);
+            return new NodeResult(nodeId, false, reason, false);
+        }
+
+        /// Refused by the cluster's disruption budget: a destroy can never drain a majority of the cores, so this is EXPECTED, not a failure.
+        /// The node is not shut down; the VM deletion that follows removes it.
+        static NodeResult held(String nodeId, String reason) {
+            return new NodeResult(nodeId, false, reason, true);
+        }
+
+        boolean failure() {
+            return ! success && !heldForQuorum;
         }
     }
 

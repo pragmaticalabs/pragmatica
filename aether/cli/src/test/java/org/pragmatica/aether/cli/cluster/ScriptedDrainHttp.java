@@ -168,6 +168,25 @@ final class ScriptedDrainHttp implements HttpOperations {
                               + " the slice below its floor.\",\"instance\":\"/api/v1/nodes/drain/" + nodeId + "\",\"requestId\":\"r-1\"}");
     }
 
+    /// The 409 the core disruption budget answers (`NodeLifecycleRoutes#budgetExceededError`), as the management server renders it.
+    static Step budgetRefused(String nodeId) {
+        return new Step.Reply(409,
+                              "{\"type\":\"about:blank\",\"title\":\"Conflict\",\"status\":409,"
+                              + "\"detail\":\"Conflict: Disruption budget exceeded: draining " + nodeId
+                              + " would leave 1 core-scoped operational nodes, minimum is 2 (role=core; worker drains bypass this guard)\","
+                              + "\"instance\":\"/api/v1/nodes/drain/" + nodeId + "\",\"requestId\":\"r-1\"}");
+    }
+
+    static Step otherConflict(String nodeId) {
+        return new Step.Reply(409,
+                              "{\"type\":\"about:blank\",\"title\":\"Conflict\",\"status\":409,"
+                              + "\"detail\":\"Conflict: node " + nodeId + " is not READY\",\"instance\":\"/api/v1/nodes/drain/" + nodeId + "\"}");
+    }
+
+    static Step serverError() {
+        return new Step.Reply(500, "{\"status\":500,\"detail\":\"internal error\"}");
+    }
+
     private Step endpointStep(String nodeId) {
         var address = transportAddresses.get(nodeId);
 

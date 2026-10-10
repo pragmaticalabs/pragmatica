@@ -18,8 +18,10 @@ import org.pragmatica.aether.config.cluster.ClusterBootstrapConfig;
 import org.pragmatica.aether.config.cluster.ClusterBootstrapConfigParser;
 import org.pragmatica.aether.config.cluster.ClusterConfigError;
 import org.pragmatica.aether.config.cluster.NodeRole;
+import org.pragmatica.aether.config.cluster.OperationsConfig;
 import org.pragmatica.aether.config.cluster.RoleSubTable;
 import org.pragmatica.aether.config.cluster.SourceProfile;
+import org.pragmatica.aether.config.cluster.TimeoutsConfig;
 import org.pragmatica.aether.management.route.ManagementRoute;
 import org.pragmatica.json.JsonMapper;
 import org.pragmatica.lang.Cause;
@@ -59,8 +61,13 @@ class ClusterBootstrapCommand implements Callable<Integer> {
     @CommandLine.Option(names = "--wait", description = "Wait for cluster to become healthy after bootstrap")
     private boolean waitForCompletion;
 
-    @CommandLine.Option(names = "--timeout", description = "Timeout in seconds when waiting", defaultValue = "300")
+    @CommandLine.Option(names = "--timeout", description = "Timeout in seconds for EACH wait stage of --wait: node health, quorum formation and the final cluster"
+                                                         + " status. When omitted, node health and quorum formation use [operations.timeouts] from the config"
+                                                         + " and the final status wait uses 300.", defaultValue = "300")
     private int timeoutSeconds;
+
+    @CommandLine.Spec
+    private CommandLine.Model.CommandSpec spec;
 
     /// Raw picocli-bound text, deliberately NOT a [ClusterName]: picocli assigns it before any Aether
     /// code runs, and `ClusterBootstrapConfig.withClusterName` re-parses it through `ClusterIdentity`.
@@ -153,12 +160,51 @@ class ClusterBootstrapCommand implements Callable<Integer> {
             return AbortedError.INSTANCE.result();
         }
 
-        return SshKeyResolver.resolveOrFailIfCloud(config, option(sshPublicKeyPath)).flatMap(keys -> ClusterBootstrapOrchestrator.bootstrap(config,
-                                                                                                                                            resume,
-                                                                                                                                            fullCheck,
-                                                                                                                                            keys,
-                                                                                                                                            keepOnFailure,
-                                                                                                                                            parsed.rawToml()));
+        var bounded = timeoutGiven()
+                      ? boundedBy(config, timeoutSeconds)
+                      : config;
+
+        return SshKeyResolver.resolveOrFailIfCloud(bounded, option(sshPublicKeyPath)).flatMap(keys -> ClusterBootstrapOrchestrator.bootstrap(bounded,
+                                                                                                                                             resume,
+                                                                                                                                             fullCheck,
+                                                                                                                                             keys,
+                                                                                                                                             keepOnFailure,
+                                                                                                                                             parsed.rawToml()));
+    }
+
+    /// `--timeout` given explicitly on a `--wait` bootstrap bounds the formation waits too, not only the final status poll: an operator reads
+    /// `--wait --timeout 60` as "give up after 60 seconds", and the formation waits otherwise ran on the config's own 300 s / 600 s.
+    boolean timeoutGiven() {
+        return waitForCompletion
+               && spec != null
+               && spec.commandLine()
+                      .getParseResult()
+                      .hasMatchedOption("--timeout");
+    }
+
+    /// Each formation wait is capped at `seconds`, never raised above what the config already allows.
+    static ClusterBootstrapConfig boundedBy(ClusterBootstrapConfig config, int seconds) {
+        var operations = config.operations();
+        var timeouts = operations.timeouts();
+        var capped = new TimeoutsConfig(cappedAt(timeouts.healthCheck(), seconds),
+                                        cappedAt(timeouts.quorumFormation(), seconds),
+                                        timeouts.drain());
+
+        return new ClusterBootstrapConfig(config.configVersion(),
+                                          config.cluster(),
+                                          config.coreTopology(),
+                                          config.sources(),
+                                          config.runtimes(),
+                                          config.infrastructure(),
+                                          new OperationsConfig(operations.autoHeal(),
+                                                               operations.tls(),
+                                                               capped,
+                                                               operations.ports()),
+                                          config.communities());
+    }
+
+    private static String cappedAt(String duration, int seconds) {
+        return Math.min(ClusterBootstrapOrchestrator.parseDurationMs(duration), seconds * 1000L) / 1000 + "s";
     }
 
     record ParsedConfig(ClusterBootstrapConfig config, String rawToml) {}
