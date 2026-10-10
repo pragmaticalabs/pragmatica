@@ -307,8 +307,8 @@ public final class NodeReplacementWiring {
 
     /// A node of a cluster bootstrapped from static PEERS is known to its peers with no source label (a descriptor learns labels only
     /// from a node's own handshake), so its record carries a blank source. The replacement then asks the topology manager to derive
-    /// the source from the committed config, as an auto-heal does; passing the blank on as "default" named a source no config has,
-    /// and the first replacement of a freshly bootstrapped cluster was refused (#1543 F2).
+    /// the source from the committed config -- the sole source declaring the role, else a typed refusal; passing the blank on as "default"
+    /// named a source no config has, and the first replacement of a freshly bootstrapped cluster was refused (#1543 F2).
     static Promise<ProvisionDisposition> provisionFor(ClusterTopologyManager ctm,
                                                       NodeReplacementValue record,
                                                       Set<NodeId> members) {
@@ -316,7 +316,7 @@ public final class NodeReplacementWiring {
 
         return record.source()
                      .isBlank()
-               ? ctm.provisionReplacement(record.replacement(), Option.none(), members, role)
+               ? ctm.provisionReplacementWithoutSource(record.replacement(), members, role)
                : ctm.provisionReplacement(record.replacement(),
                                           Option.none(),
                                           members,

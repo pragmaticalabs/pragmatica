@@ -67,8 +67,8 @@ class NodeReplacementEnvTest {
     NodeReplacementEnvTest() {
         states.put(OLD, "Member");
         when(ctm.provisionReplacement(any(), any(), any(), any(), any())).thenReturn(Promise.success(ProvisionDisposition.dispatched()));
-        // these records carry no source (a freshly bootstrapped node's), so the replacement asks for the source to be derived: the 4-arg form
-        when(ctm.provisionReplacement(any(), any(), any(), any())).thenReturn(Promise.success(ProvisionDisposition.dispatched()));
+        // these records carry no source (a freshly bootstrapped node's), so the replacement asks for the source to be derived: the without-source form
+        when(ctm.provisionReplacementWithoutSource(any(), any(), any())).thenReturn(Promise.success(ProvisionDisposition.dispatched()));
         when(ctm.drainNode(any(), any())).thenAnswer(call -> Promise.unitPromise());
         when(ctm.reapRetired(any(), any(), anyBoolean())).thenAnswer(call -> Promise.unitPromise());
         when(ctm.instanceListed(any(), any())).thenAnswer(call -> Promise.success(true));
@@ -204,7 +204,7 @@ class NodeReplacementEnvTest {
         record(NodeReplacementPhase.PROVISIONING, 999_999L);
         wiring.reconciler().reconcile().await();
 
-        verify(ctm, never()).provisionReplacement(any(), any(), any(), any());
+        verify(ctm, never()).provisionReplacementWithoutSource(any(), any(), any());
         verify(ctm, never()).provisionReplacement(any(), any(), any(), any(), any());
         assertThat(committedRecord().phase()).as("it takes the dispatched reservation as the provision having happened").isEqualTo(NodeReplacementPhase.JOINING);
     }
@@ -215,7 +215,7 @@ class NodeReplacementEnvTest {
         record(NodeReplacementPhase.PROVISIONING, 999_999L);
         wiring.reconciler().reconcile().await();
 
-        verify(ctm, never()).provisionReplacement(any(), any(), any(), any());
+        verify(ctm, never()).provisionReplacementWithoutSource(any(), any(), any());
         verify(ctm, never()).provisionReplacement(any(), any(), any(), any(), any());
         assertThat(committedRecord().phase()).as("a refused reservation is a refused provision").isEqualTo(NodeReplacementPhase.ROLLED_BACK);
 
@@ -225,7 +225,7 @@ class NodeReplacementEnvTest {
         record(NodeReplacementPhase.PROVISIONING, 999_999L);
         wiring.reconciler().reconcile().await();
 
-        verify(ctm).provisionReplacement(any(), any(), any(), any());
+        verify(ctm).provisionReplacementWithoutSource(any(), any(), any());
     }
 
     // ---- #1543: DONE only after the provider's instance is confirmed gone ----------------------------------------------

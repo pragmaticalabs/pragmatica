@@ -151,6 +151,14 @@ public interface ClusterTopologyManager extends TopologyManager {
                                                        Set<NodeId> clusterMembers,
                                                        NodeRole intendedRole);
 
+    /// The replacement of a node whose record carries no source. Implementations that know the committed config derive it or refuse (see
+    /// [ReplacementSourceUnresolved]); the default is the source-less form.
+    default Promise<ProvisionDisposition> provisionReplacementWithoutSource(NodeId newNodeId,
+                                                                            Set<NodeId> clusterMembers,
+                                                                            NodeRole intendedRole) {
+        return provisionReplacement(newNodeId, Option.none(), clusterMembers, intendedRole);
+    }
+
     /// The source-explicit form: the replacement is stamped with `sourceName`, the source the node it replaces came from
     /// (#1543 worker replacement). Implementations that do not distinguish sources ignore it.
     default Promise<ProvisionDisposition> provisionReplacement(NodeId newNodeId,

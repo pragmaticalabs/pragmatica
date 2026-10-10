@@ -29,13 +29,15 @@ class NodeReplacementWiringProvisionSourceTest {
     private ClusterTopologyManager recordingCtm() {
         return (ClusterTopologyManager) Proxy.newProxyInstance(ClusterTopologyManager.class.getClassLoader(),
                                                                new Class[]{ClusterTopologyManager.class},
-                                                               (_, method, args) -> record(method.getParameterCount(), args));
+                                                               (_, method, args) -> record(method.getName(), method.getParameterCount(), args));
     }
 
-    private Object record(int parameterCount, Object[] args) {
+    private Object record(String name, int parameterCount, Object[] args) {
         calls.add(parameterCount == 5
                   ? "explicit:" + args[4]
-                  : "derived");
+                  : name.equals("provisionReplacementWithoutSource")
+                    ? "without-source"
+                    : "other:" + name);
 
         return Promise.success(ProvisionDisposition.deferred(ProvisionDisposition.DeferralReason.CIRCUIT_OPEN));
     }
@@ -45,10 +47,10 @@ class NodeReplacementWiringProvisionSourceTest {
     }
 
     @Test
-    void provisionFor_blankSource_asksTheTopologyManagerToDeriveIt() {
+    void provisionFor_blankSource_asksTheTopologyManagerToDeriveIt_notTheAutoHealForm() {
         NodeReplacementWiring.provisionFor(recordingCtm(), recordWithSource(""), Set.of()).await();
 
-        assertThat(calls).containsExactly("derived");
+        assertThat(calls).containsExactly("without-source");
     }
 
     @Test

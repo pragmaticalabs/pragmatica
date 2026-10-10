@@ -1090,21 +1090,48 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     /// (`cloudSourceFor` returns the FIRST cloud source declaring the role).
     private SourceName replacementSourceName(NodeRole intendedRole) {
         return committedToml().flatMap(ClusterTopologyManagerRecord::parseConfig)
-                            .flatMap(config -> cloudSourceFor(config, intendedRole).orElse(() -> soleSourceFor(config,
-                                                                                                               intendedRole)))
+                            .flatMap(config -> cloudSourceFor(config, intendedRole))
                             .map(SourceProfile::name)
                             .or(ProvisionContext.DEFAULT_SOURCE_NAME);
     }
 
-    /// The only source of ANY type that declares `role`: a docker or ssh cluster has no cloud source, and "default" names no source its
-    /// config has. Empty when none or several declare it (then the caller cannot tell which, and says so rather than guessing).
-    private static Option<SourceProfile> soleSourceFor(ClusterBootstrapConfig config, NodeRole role) {
-        var declaring = config.sources().values().stream().filter(source -> source.roles()
-                                                                                  .containsKey(role)).toList();
+    /// #1543 F2 -- the replacement of a node whose record carries NO source (a cluster bootstrapped from static PEERS: its peers' descriptors
+    /// hold no labels). The source is derived only when exactly ONE source, of any type, declares the role: there is no preference between
+    /// types, because replacing a docker node must never provision a cloud VM. Zero or several declaring sources are a typed refusal naming
+    /// the role and the candidates, never the source "default". Without any committed config (the bootstrap seed, forge) there is nothing to
+    /// derive from and the replacement proceeds as an auto-heal's does.
+    @Override
+    public Promise<ProvisionDisposition> provisionReplacementWithoutSource(NodeId newNodeId,
+                                                                           Set<NodeId> clusterMembers,
+                                                                           NodeRole intendedRole) {
+        return committedToml().flatMap(ClusterTopologyManagerRecord::parseConfig)
+                            .fold(() -> provisionReplacement(newNodeId,
+                                                             Option.none(),
+                                                             clusterMembers,
+                                                             intendedRole),
+                                  config -> soleSourceDeclaring(config, intendedRole).async()
+                                                               .flatMap(source -> provisionReplacement(newNodeId,
+                                                                                                       Option.none(),
+                                                                                                       clusterMembers,
+                                                                                                       intendedRole,
+                                                                                                       source.name())));
+    }
+
+    private static Result<SourceProfile> soleSourceDeclaring(ClusterBootstrapConfig config, NodeRole role) {
+        var declaring = config.sources()
+                              .values()
+                              .stream()
+                              .filter(source -> source.roles()
+                                                      .containsKey(role))
+                              .sorted(java.util.Comparator.comparing(source -> source.name()
+                                                                                     .value()))
+                              .toList();
 
         return declaring.size() == 1
-               ? Option.some(declaring.getFirst())
-               : Option.none();
+               ? Result.success(declaring.getFirst())
+               : new ReplacementSourceUnresolved(role.value(),
+                                                 declaring.stream().map(source -> source.name()
+                                                                                        .value()).toList()).result();
     }
 
     /// RFC-0017 stage 5 — reconcile ACTUAL worker/spot cloud inventory toward the desired

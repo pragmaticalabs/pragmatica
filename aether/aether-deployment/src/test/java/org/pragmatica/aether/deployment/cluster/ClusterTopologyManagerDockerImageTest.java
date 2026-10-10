@@ -153,31 +153,79 @@ class ClusterTopologyManagerDockerImageTest {
         assertThat(lifecycleManager.lastSpec().imageId().isEmpty()).isTrue();
     }
 
-    /// A node of a cluster bootstrapped from static PEERS has no source label, so an upgrade's replacement asks without a source name: the
-    /// sole docker source of the config is the answer, and its pin the image. Before, it asked for "default" and was refused.
+    /// A node of a cluster bootstrapped from static PEERS has no source label, so its replacement is asked for without a source name: the
+    /// sole source declaring the role is the answer, and its pin the image. Before, it asked for "default" and was refused.
     @Test
-    void provisionReplacement_withoutASourceName_resolvesTheSoleDockerSource_andItsPinnedImage() {
+    void replacementWithoutSource_soleDeclaringSource_isDerived_andItsPinnedImageUsed() {
         clusterStore.seedToml(DOCKER_TOML);
         ctm.activate();
 
-        var result = ctm.provisionReplacement(nodeId("node-replacement").unwrap(), Option.none(), Set.of(SELF, PEER_A, PEER_B), NodeRole.CORE).await();
+        var result = withoutSource();
 
         assertThat(result.isSuccess()).as(String.valueOf(result)).isTrue();
         assertThat(lifecycleManager.lastSpec().context().sourceName().value()).isEqualTo("dock");
         assertThat(lifecycleManager.lastSpec().imageId().or("<none>")).isEqualTo("registry/aether-node:1.1.0");
     }
 
-    /// Several sources declare the role: the source is not guessed ("default" is named, and the render refuses it) -- the explicit form is
-    /// what a replacement of a node with a known source uses.
+    /// Several sources declare the role: a typed refusal naming role and candidates, nothing provisioned, never the source "default".
     @Test
-    void provisionReplacement_withoutASourceName_whenSeveralSourcesDeclareTheRole_doesNotGuess() {
+    void replacementWithoutSource_severalDeclaringSources_isRefusedNamingThem_andProvisionsNothing() {
         clusterStore.seedToml(DOCKER_TOML + "\n[source.dock2]\ntype = \"docker\"\n\n[source.dock2.core]\ncount = 3\nruntime = \"app\"\n");
         ctm.activate();
 
-        var result = ctm.provisionReplacement(nodeId("node-replacement").unwrap(), Option.none(), Set.of(SELF, PEER_A, PEER_B), NodeRole.CORE).await();
+        assertRefusedUnresolved(withoutSource(), "[dock, dock2]");
+    }
 
-        assertThat(result.isFailure()).as("an ambiguous source is refused, not guessed: " + result).isTrue();
-        assertThat(lifecycleManager.lastSpec()).isNull();
+    /// A cloud source and a docker source both declare the role: no preference between types. Replacing a docker node must not provision a
+    /// cloud VM.
+    @Test
+    void replacementWithoutSource_cloudAndDockerBothDeclareTheRole_isRefused_andNoCloudVmIsProvisioned() {
+        clusterStore.seedToml(DOCKER_TOML + """
+
+                [source.eu-1]
+                type = "cloud"
+                provider = "hetzner"
+                credentials = "hcloud-token"
+                region = "eu-central"
+
+                [source.eu-1.core]
+                count = 3
+                runtime = "app"
+                """);
+        ctm.activate();
+
+        assertRefusedUnresolved(withoutSource(), "[dock, eu-1]");
+    }
+
+    @Test
+    void replacementWithoutSource_noSourceDeclaresTheRole_isRefusedNamingTheRole() {
+        clusterStore.seedToml(DOCKER_TOML.replace("[source.dock.core]", "[source.dock.worker]"));
+        ctm.activate();
+
+        assertRefusedUnresolved(withoutSource(), "no source of the committed config declares role core");
+    }
+
+    /// No committed config (the bootstrap seed, forge): nothing to derive from, so the replacement proceeds as an auto-heal's does.
+    @Test
+    void replacementWithoutSource_noCommittedConfig_proceedsAsAnAutoHealDoes() {
+        clusterStore.seedBootstrapSeed();
+        ctm.activate();
+
+        assertThat(withoutSource().isSuccess()).isTrue();
+        assertThat(lifecycleManager.lastSpec()).isNotNull();
+    }
+
+    private org.pragmatica.lang.Result<ProvisionDisposition> withoutSource() {
+        return ctm.provisionReplacementWithoutSource(nodeId("node-replacement").unwrap(), Set.of(SELF, PEER_A, PEER_B), NodeRole.CORE).await();
+    }
+
+    private void assertRefusedUnresolved(org.pragmatica.lang.Result<ProvisionDisposition> result, String mention) {
+        assertThat(result.isFailure()).as(String.valueOf(result)).isTrue();
+        result.onFailure(cause -> {
+            assertThat(cause).isInstanceOf(ReplacementSourceUnresolved.class);
+            assertThat(cause.message()).contains(mention).contains("core").doesNotContain("default");
+        });
+        assertThat(lifecycleManager.lastSpec()).as("nothing was provisioned").isNull();
     }
 
     @Test
