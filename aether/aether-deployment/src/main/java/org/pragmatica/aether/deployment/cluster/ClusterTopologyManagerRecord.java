@@ -1805,15 +1805,10 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
             // An operator started this node: there is no provider instance of ours to list or terminate, on ANY path. It is confirmed by its
             // departure from the membership, and its capacity is then returned. Asked BEFORE the confirmed-reap memory: a committed EXTERNAL
             // reservation is a new incarnation of the id (an earlier one's was released), whatever [#confirmedReaps] remembers.
-            var externalGeneration = incarnation(node);
-
             return liveness.demonstrablyLive(node)
                    ? Causes.cause("external node " + node.id() + " has not left the membership yet").promise()
                    : lifecycleManager.releaseExternal(node)
-                                     .flatMap(_ -> sameIncarnation(node, externalGeneration)
-                                                   ? confirmedByIncarnation(node)
-                                                   : Causes.cause("release of " + node.id()
-                                                                 + " abandoned: the node joined again while it was releasing").<Unit> promise());
+                                     .flatMap(_ -> confirmedByIncarnation(node));
         }
 
         if (confirmedReaps.contains(node)) {

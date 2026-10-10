@@ -1003,6 +1003,32 @@ class NodeReplacementRealRegistryReapTest {
         manager.deactivate();
     }
 
+    /// The old reap passed its listing and its terminate is in flight when the node joins again. When it completes, it must not enter the
+    /// confirmed-reap memory of the new incarnation.
+    @Test
+    void aReapWhoseTerminateWasInFlightAtARejoin_doesNotVouchForTheNewIncarnation() throws Exception {
+        put(AetherKey.CapacityLedgerKey.INSTANCE, new CapacityLedgerValue(3, 1, true));
+        listing.set(Promise.success(List.of(instance(OLD, "i-1", InstanceStatus.RUNNING))));
+        var gate = Promise.<Unit> promise();
+
+        terminateGate.set(gate);
+        var reap = ctmUnderTest.reapRetired(OLD, WEST, false);
+        within(10, () -> assertThat(terminates.get()).as("the terminate is in flight").isEqualTo(1));
+
+        joins(OLD);
+        terminateGate.set(null);
+        listing.set(Promise.success(List.of()));
+        gate.succeed(Unit.unit());
+
+        assertThat(reap.await().isFailure()).as("the old reap is abandoned, not confirmed").isTrue();
+
+        listing.set(Promise.success(List.of(instance(OLD, "i-2", InstanceStatus.RUNNING))));
+        var again = ctmUnderTest.reapRetired(OLD, WEST, false).await();
+
+        assertThat(again.isSuccess()).isTrue();
+        assertThat(terminates.get()).as("the new incarnation's instance is terminated, not skipped as already confirmed").isEqualTo(2);
+    }
+
     /// The LAST attempt of a zombie chain is in flight when the node joins again. Its failure ends the chain with the operator event for the
     /// incarnation it began under; that event is not raised for the new incarnation.
     @Test
@@ -1050,6 +1076,7 @@ class NodeReplacementRealRegistryReapTest {
         reap.await();
         var terminatesBefore = terminates.get();
 
+        assertThat(terminatesBefore).as("the old reap's listing completed after the rejoin: it terminates nothing").isZero();
         listing.set(Promise.success(List.of(instance(OLD, "i-2", InstanceStatus.RUNNING))));
         var again = ctmUnderTest.reapRetired(OLD, WEST, false).await();
 
