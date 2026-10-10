@@ -23,6 +23,7 @@ import java.util.List;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Set;
+import java.util.TreeMap;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ThreadLocalRandom;
@@ -123,6 +124,9 @@ public class QuicClusterNetwork implements ClusterNetwork {
     private final Deserializer deserializer;
     private final TopologyObserver topologyManager;
     private final MessageRouter router;
+    /// Longest an offline-buffered request frame may be held (#1996). A policy default replaced at boot from the
+    /// cluster timeout configuration; 30s matches the longest caller wait the cluster ships with.
+    private volatile TimeSpan offlineBufferCap = TimeSpan.timeSpan(30).seconds();
     private volatile QuicSslContext serverSslContext;
     private volatile QuicSslContext clientSslContext;
     private final Map<NodeId, PeerState> peers = new ConcurrentHashMap<>();
@@ -1029,6 +1033,41 @@ public class QuicClusterNetwork implements ClusterNetwork {
     }
 
     @Override
+    public <M extends ProtocolMessage> Unit send(NodeId peerId, M message, TimeSpan offlineTtl) {
+        if (blackholed) {
+            return unit();
+        }
+
+        dispatchPayload(peerId, message, expiryWithin(offlineTtl));
+
+        return unit();
+    }
+
+    @Override
+    public Unit setOfflineBufferCap(TimeSpan cap) {
+        offlineBufferCap = cap;
+
+        return unit();
+    }
+
+    /// The instant a frame with NO caller deadline (state-convergence traffic, responses, fire-and-forget calls) buffered now
+    /// must be dropped by: the cluster-wide cap. Nothing this transport buffers is held unbounded (#1996).
+    private PeerState.Expiry capExpiry() {
+        return PeerState.Expiry.after(offlineBufferCap, System.nanoTime());
+    }
+
+    /// The instant a frame buffered now must be dropped by, for a caller that waits `ttl`: never later than the
+    /// cluster-wide cap, so no request frame outlives the longest wait the cluster permits (#1996).
+    private PeerState.Expiry expiryWithin(TimeSpan ttl) {
+        var cap = offlineBufferCap;
+
+        return PeerState.Expiry.after(ttl.compareTo(cap) < 0
+                                      ? ttl
+                                      : cap,
+                                      System.nanoTime());
+    }
+
+    @Override
     public <M extends ProtocolMessage> Promise<WriteOutcome> sendOutcome(NodeId peerId, M message) {
         if (blackholed) {
             return Promise.success(new WriteOutcome.Sent(peerId));
@@ -1825,17 +1864,42 @@ public class QuicClusterNetwork implements ClusterNetwork {
     /// be lost and Rabia consensus would stall until the stall detector re-broadcasts.
     @SuppressWarnings("JBCT-PAT-01")  // Best-effort drain loop
     private void drainOfflineBufferInto(PeerState state, QuicPeerConnection connection) {
-        var drained = state.drainOfflineBuffer();
+        var drained = state.drainOfflineBuffer(System.nanoTime());
 
-        if (drained.isEmpty()) {
+        reportExpiredFrames(state.peerId(), drained.expired());
+        if (drained.live().isEmpty()) {
             return;
         }
 
-        for (var message : drained) {
-            var _ = writeToStream(state.peerId(), message, connection);
+        for (var entry : drained.live()) {
+            var _ = writeToStream(state.peerId(), entry.message(), connection, entry.expiry());
         }
 
-        log.debug("Drained {} offline messages to newly-connected peer {}", drained.size(), state.peerId());
+        log.debug("Drained {} offline messages to newly-connected peer {}",
+                  drained.live().size(),
+                  state.peerId());
+    }
+
+    /// Request frames that were still buffered when their caller gave up are DROPPED at the flush, never delivered
+    /// (#1996): the receiver would execute work whose answer nobody collects. The drop is operator-visible — a counter,
+    /// a WARN, and a [NetworkServiceMessage.OfflineFramesExpired] routed up to the event stream — carrying how many
+    /// frames and of which message types (the path), since one reattach can flush several paths at once.
+    private void reportExpiredFrames(NodeId peerId, List<Message.Wired> expired) {
+        if (expired.isEmpty()) {
+            return;
+        }
+
+        var byPath = new TreeMap<String, Integer>();
+
+        expired.forEach(frame -> byPath.merge(frame.getClass().getSimpleName(),
+                                              1,
+                                              Integer::sum));
+        quicMetrics.onOfflineExpired(expired.size());
+        log.warn("Dropped {} buffered request frame(s) for reattached peer {}: their callers had already given up {}",
+                 expired.size(),
+                 peerId,
+                 byPath);
+        router.route(new NetworkServiceMessage.OfflineFramesExpired(peerId, expired.size(), Map.copyOf(byPath)));
     }
 
     // --- Internal: message send ---
@@ -1844,6 +1908,12 @@ public class QuicClusterNetwork implements ClusterNetwork {
     /// The lane is resolved once here (from the message's `streamType()`); the message object is
     /// never threaded past this point.
     private void dispatchPayload(NodeId peerId, Message.Wired message) {
+        dispatchPayload(peerId, message, capExpiry());
+    }
+
+    /// As [#dispatchPayload(NodeId, Message.Wired)], for a request frame whose caller stops waiting at `expiry`: held in
+    /// the offline buffer past that instant it is dropped at the flush, not delivered (#1996).
+    private void dispatchPayload(NodeId peerId, Message.Wired message, PeerState.Expiry expiry) {
         if (peerId.equals(self.id())) {
             var _ = loopbackToSelf(message);
 
@@ -1853,12 +1923,12 @@ public class QuicClusterNetwork implements ClusterNetwork {
         var state = peers.get(peerId);
 
         if (state == null) {
-            var _ = dispatchToAbsentPeer(peerId, message);
+            var _ = dispatchToAbsentPeer(peerId, message, expiry);
 
             return;
         }
 
-        var _ = dispatchToPeer(state, message);
+        var _ = dispatchToPeer(state, message, expiry);
     }
 
     /// Outcome-tracking variant used by `sendOutcome` callers (DHT quorum path). Same
@@ -1888,13 +1958,17 @@ public class QuicClusterNetwork implements ClusterNetwork {
     /// metric, unchanged. Only the previously-dropping branch pays this — the connected-peer hot path is
     /// untouched.
     private WriteOutcome dispatchToAbsentPeer(NodeId peerId, Message.Wired message) {
+        return dispatchToAbsentPeer(peerId, message, capExpiry());
+    }
+
+    private WriteOutcome dispatchToAbsentPeer(NodeId peerId, Message.Wired message, PeerState.Expiry expiry) {
         if (!swimMembershipAllows(peerId)) {
             warnDroppedToUnknownPeer(peerId);
 
             return new WriteOutcome.NoPeerState(peerId);
         }
 
-        return dispatchToPeer(getOrCreatePeer(peerId), message);
+        return dispatchToPeer(getOrCreatePeer(peerId), message, expiry);
     }
 
     /// #487 self-loopback: deliver a send-to-self to the local handler on the SAME dispatch path real
@@ -1980,14 +2054,19 @@ public class QuicClusterNetwork implements ClusterNetwork {
         return membershipView.contains(state.peerId());
     }
 
-    @SuppressWarnings("JBCT-PAT-01")  // Outcome dispatch with metrics + write
     private WriteOutcome dispatchToPeer(PeerState state, Message.Wired message) {
-        var outcome = state.offerOutbound(message);
+        return dispatchToPeer(state, message, capExpiry());
+    }
+
+    @SuppressWarnings("JBCT-PAT-01")  // Outcome dispatch with metrics + write
+    private WriteOutcome dispatchToPeer(PeerState state, Message.Wired message, PeerState.Expiry expiry) {
+        var outcome = state.offerOutbound(message, expiry);
 
         return switch (outcome) {
             case PeerState.OfferOutcome.SendNow(QuicPeerConnection connection) -> writeToStream(state.peerId(),
                                                                                                 message,
-                                                                                                connection);
+                                                                                                connection,
+                                                                                                expiry);
             case PeerState.OfferOutcome.Queued(boolean oldestEvicted) -> {
                 recordQueued(state, oldestEvicted);
                 // Queued in the offline buffer — the message has been accepted for eventual
@@ -2022,9 +2101,14 @@ public class QuicClusterNetwork implements ClusterNetwork {
     /// connection (the stale capture lost a race), the frame is written there and the outcome is that write's, because
     /// reporting ConnectionDead for a frame that was written would tell a caller "not sent" about a command that was.
     /// Buffered (an ordinary frame) or dropped (a [NoOfflineBuffering] one, a REMOVED peer) it stays ConnectionDead.
-    private WriteOutcome redispatchAfterDeadConnection(PeerState state, Message.Wired message) {
-        return switch (state.offerOutbound(message)) {
-            case PeerState.OfferOutcome.SendNow(QuicPeerConnection live) -> writeToStream(state.peerId(), message, live);
+    private WriteOutcome redispatchAfterDeadConnection(PeerState state,
+                                                       Message.Wired message,
+                                                       PeerState.Expiry expiry) {
+        return switch (state.offerOutbound(message, expiry)) {
+            case PeerState.OfferOutcome.SendNow(QuicPeerConnection live) -> writeToStream(state.peerId(),
+                                                                                          message,
+                                                                                          live,
+                                                                                          expiry);
             case PeerState.OfferOutcome.Queued(boolean oldestEvicted) -> {
                 recordQueued(state, oldestEvicted);
                 yield new WriteOutcome.ConnectionDead(state.peerId());
@@ -2034,8 +2118,17 @@ public class QuicClusterNetwork implements ClusterNetwork {
         };
     }
 
-    @SuppressWarnings("JBCT-PAT-01")  // Stream selection, lazy serialize, write
     private WriteOutcome writeToStream(NodeId peerId, Message.Wired message, QuicPeerConnection connection) {
+        return writeToStream(peerId, message, connection, capExpiry());
+    }
+
+    /// `expiry` follows the frame through the dead-connection re-dispatch: a frame that loses its connection mid-write
+    /// goes back into the offline buffer with the SAME instant its caller stops waiting, never a fresh one (#1996).
+    @SuppressWarnings("JBCT-PAT-01")  // Stream selection, lazy serialize, write
+    private WriteOutcome writeToStream(NodeId peerId,
+                                       Message.Wired message,
+                                       QuicPeerConnection connection,
+                                       PeerState.Expiry expiry) {
         if (!connection.isActive()) {
             // Connection went dead between offerOutbound capture and write. Evict and re-dispatch
             // so the message lands in the offline buffer for the next attach.
@@ -2045,7 +2138,7 @@ public class QuicClusterNetwork implements ClusterNetwork {
             // (#1973): held for the reattach it would be delivered after the caller was told ConnectionDead means not sent.
             return state == null
                    ? new WriteOutcome.ConnectionDead(peerId)
-                   : redispatchAfterDeadConnection(state, message);
+                   : redispatchAfterDeadConnection(state, message, expiry);
         }
 
         var lane = message.streamType();
@@ -3168,6 +3261,13 @@ public class QuicClusterNetwork implements ClusterNetwork {
     /// an attempt in a chosen stage (e.g. past its QUIC handshake, Hello unanswered).
     void abandonPendingDialForTests(NodeId peerId) {
         abandonPendingDial(peerId);
+    }
+
+    /// Package-private test seam — runs the reattach flush (`drainOfflineBufferInto`) against `connection` without a
+    /// QUIC handshake, so the #1996 tests can assert which buffered frames are delivered and which are dropped.
+    @Contract
+    void drainOfflineBufferForTests(PeerState state, QuicPeerConnection connection) {
+        drainOfflineBufferInto(state, connection);
     }
 
     /// Package-private test seam — the offline-buffer occupancy of a peer's PeerState (0 when the peer has

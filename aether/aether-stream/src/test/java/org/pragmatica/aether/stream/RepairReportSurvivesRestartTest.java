@@ -75,7 +75,12 @@ class RepairReportSurvivesRestartTest {
 
         manager.createStream(StreamConfig.streamConfig(STREAM).withReplication(ReplicationFactors.replicationFactors(1, 1).unwrap()))
                .onFailure(cause -> fail(cause.message()));
-        manager.operatorWarnings(OperatorWarningSink.handingOffTo(warnings::add));
+        manager.operatorWarnings(OperatorWarningSink.handingOffTo(warning -> {
+            // #2080: the preserved-records event is pinned in StreamPartitionManagerDivergentTailTest; these tests pin the LOSS warning
+            if (warning.code() != org.pragmatica.utility.warning.OperatorWarningCode.STREAM_DIVERGENT_TAIL_PRESERVED) {
+                warnings.add(warning);
+            }
+        }));
 
         return manager;
     }

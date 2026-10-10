@@ -22,7 +22,13 @@ public record SliceTopology(String sliceName,
         subscribes = List.copyOf(subscribes);
     }
 
-    public record Route(String method, String path, String handler) {}
+    /// `version` is the API version the route was declared under (`0`: unversioned). A versioned route's `path` is composed
+    /// `{apiPrefix}/v{version}{template}`, the form it has when mounted in path mode.
+    public record Route(String method, String path, String handler, int version) {
+        public Route(String method, String path, String handler) {
+            this(method, path, handler, 0);
+        }
+    }
 
     public record SliceDep(String interfaceName, String artifact) {}
 

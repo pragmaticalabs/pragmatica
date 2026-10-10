@@ -47,6 +47,29 @@ class OperatorWarningWiringTest {
         assertThat(assemblyCode()).contains("nodeDeploymentManager.setOperatorWarningSink(operatorWarningSink);");
     }
 
+    /// #1996: request frames the transport drops at an offline-buffer flush reach the event stream only if the assembly routes
+    /// the transport's notification to this node's aggregator, and the transport honours the operator's cap only if the assembly
+    /// hands it over. The aggregator and transport tests call their halves directly, so un-binding either left them green.
+    @Test
+    void assembly_routesDroppedOfflineFramesToTheEventAggregator() {
+        assertThat(assemblyCode()).contains("MessageRouter.Entry.route(NetworkServiceMessage.OfflineFramesExpired.class,eventAggregator::onOfflineFramesExpired)");
+    }
+
+    @Test
+    void assembly_givesTheTransportTheClusterOfflineBufferCap() {
+        assertThat(assemblyCode()).contains("clusterNode.network().setOfflineBufferCap(config.timeouts().cluster().offlineBufferCap());");
+    }
+
+    /// The stream-forward and replication transports are adapters assembled here; each must pass the caller's wait on to the
+    /// network, or the per-path tests (which hand the client a recording transport) stay green while the frame goes plain.
+    @Test
+    void assembly_streamForwardAndReplicationAdaptersPassTheCallersWaitToTheNetwork() {
+        var code = assemblyCode();
+
+        assertThat(code).contains("network.send(target,message,callerWait);");
+        assertThat(code).contains("replicationNetwork.send(target,message,callerWait);");
+    }
+
     /// A certificate rotation the HTTP listeners refuse is an operator event; un-binding the sink here would leave the
     /// listener tests (which hand in their own sink) green while the node reported nothing.
     @Test
@@ -64,7 +87,9 @@ class OperatorWarningWiringTest {
         var code = assemblyCode();
 
         assertThat(code).contains("spi.registerExtension(OperatorWarningSink.class,operatorWarningSink);");
-        assertThat(code).contains("BlueprintService.blueprintService(clusterNode,kvStore,repository,artifactStore,resourceProviderSetup.nodeComposite(),operatorWarningSink);");
+        // The node's operator-warning sink is the sixth argument; what follows it (the HEADER-mode flag admission needs, #1206) is pinned on its own.
+        assertThat(code).contains("BlueprintService.blueprintService(clusterNode,kvStore,repository,artifactStore,resourceProviderSetup.nodeComposite(),operatorWarningSink,");
+        assertThat(code).contains("operatorWarningSink,config.appHttp().apiVersioningDetection().isHeaderMode());");
         assertThat(code).contains("cause->raiseClusterEventsRefusal(operatorWarningSink,alertManager,cause)");
         // v1680 N-r3-1: the refusal is also a REST-visible alert, resolved when a corrected config commits the stream.
         assertThat(code).contains("()->alertManager.clearInjected(OperatorWarningCode.CLUSTER_EVENTS_REGISTRATION_REFUSED.code())");
@@ -104,7 +129,11 @@ class OperatorWarningWiringTest {
     /// without the wiring: the backfill's alarm stays the no-op default and the refusal is only a log line.
     @Test
     void assembly_givesTheSinkToTheBackfillBlockAlarm() {
-        assertThat(assemblyCode()).contains("streamPartitionBackfill.blockAlarm(ownerPromotionAlarm(operatorWarningSink));");
+        // #2080: both bindings (the alarm and the escape's reader and bound) live in one helper the wiring test drives; the assembly
+        // must call it with this node's sink.
+        assertThat(assemblyCode()).contains("backfill.blockAlarm(ownerPromotionAlarm(sink));")
+                                  .contains("bindPromotionAlarm(streamPartitionBackfill,operatorWarningSink,")
+                                  .contains("streamingConfig.promotionEscapeAfter());");
     }
 
     /// `AetherNode.java` with line comments removed and all whitespace stripped. An unreadable file fails loudly,

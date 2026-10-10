@@ -215,6 +215,10 @@ public final class ConfigLoader {
                                                 "segment_disk_max_bytes",
                                                 defaults.segmentDiskMaxBytes());
         var isrLagMax = parseTimeSpan(doc, "streaming", "isr_lag_max", defaults.isrLagMax());
+        var promotionEscapeAfter = parseTimeSpan(doc,
+                                                 "streaming",
+                                                 "promotion_escape_after",
+                                                 defaults.promotionEscapeAfter());
 
         builder.streaming(StreamingConfig.streamingConfig(publishTimeout,
                                                           readTimeout,
@@ -223,7 +227,8 @@ public final class ConfigLoader {
                                                           reshuffleConcurrency,
                                                           caughtUpMaxLagOffsets)
                                          .withSegmentDiskMaxBytes(segmentDiskMaxBytes)
-                                         .withIsrLagMax(isrLagMax));
+                                         .withIsrLagMax(isrLagMax)
+                                         .withPromotionEscapeAfter(promotionEscapeAfter));
     }
 
     private static long parseDataSize(TomlDocument doc, String section, String key, long defaultValue) {
@@ -953,7 +958,11 @@ public final class ConfigLoader {
                                                   parseTimeSpan(doc,
                                                                 "timeouts.cluster",
                                                                 "community_absence",
-                                                                d.communityAbsence()));
+                                                                d.communityAbsence()),
+                                                  parseTimeSpan(doc,
+                                                                "timeouts.cluster",
+                                                                "offline_buffer_cap",
+                                                                d.offlineBufferCap()));
     }
 
     private static TimeoutsConfig.ConsensusTimeouts parseConsensusTimeouts(TomlDocument doc,
