@@ -305,6 +305,25 @@ public final class NodeReplacementWiring {
         return Unit.unit();
     }
 
+    /// A node of a cluster bootstrapped from static PEERS is known to its peers with no source label (a descriptor learns labels only
+    /// from a node's own handshake), so its record carries a blank source. The replacement then asks the topology manager to derive
+    /// the source from the committed config, as an auto-heal does; passing the blank on as "default" named a source no config has,
+    /// and the first replacement of a freshly bootstrapped cluster was refused (#1543 F2).
+    static Promise<ProvisionDisposition> provisionFor(ClusterTopologyManager ctm,
+                                                      NodeReplacementValue record,
+                                                      Set<NodeId> members) {
+        var role = NodeRole.nodeRole(record.role()).or(NodeRole.CORE);
+
+        return record.source()
+                     .isBlank()
+               ? ctm.provisionReplacement(record.replacement(), Option.none(), members, role)
+               : ctm.provisionReplacement(record.replacement(),
+                                          Option.none(),
+                                          members,
+                                          role,
+                                          SourceName.sourceNameOrDefault(record.source()));
+    }
+
     private static final class Env implements NodeReplacementReconciler.Environment {
         private final Inputs in;
         private final Set<NodeId> drainRequested = ConcurrentHashMap.newKeySet();
@@ -424,17 +443,14 @@ public final class NodeReplacementWiring {
             var members = Option.option(in.membership().get()).map(fsm -> fsm.memberStates()
                                                                              .keySet()).or(Set.of());
 
-            return in.ctm()
-                     .provisionReplacement(record.replacement(),
-                                           Option.none(),
-                                           Set.copyOf(members),
-                                           NodeRole.nodeRole(record.role()).or(NodeRole.CORE),
-                                           SourceName.sourceNameOrDefault(record.source()))
-                     .<EffectResult> map(disposition -> switch (disposition) {
+            return NodeReplacementWiring.provisionFor(in.ctm(),
+                                                      record,
+                                                      Set.copyOf(members))
+                                        .<EffectResult> map(disposition -> switch (disposition) {
                 case ProvisionDisposition.Dispatched _ -> new EffectResult.Done();
                 case ProvisionDisposition.Deferred deferred -> new EffectResult.Deferred("provisioning deferred: " + deferred.reason());
             })
-                     .recover(cause -> new EffectResult.Failed(cause.message()));
+                                        .recover(cause -> new EffectResult.Failed(cause.message()));
         }
 
         /// Done only when the provider's own listing, taken after the terminate, shows the instance gone. A refusal, a listing that

@@ -1090,9 +1090,21 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     /// (`cloudSourceFor` returns the FIRST cloud source declaring the role).
     private SourceName replacementSourceName(NodeRole intendedRole) {
         return committedToml().flatMap(ClusterTopologyManagerRecord::parseConfig)
-                            .flatMap(config -> cloudSourceFor(config, intendedRole))
+                            .flatMap(config -> cloudSourceFor(config, intendedRole).orElse(() -> soleSourceFor(config,
+                                                                                                               intendedRole)))
                             .map(SourceProfile::name)
                             .or(ProvisionContext.DEFAULT_SOURCE_NAME);
+    }
+
+    /// The only source of ANY type that declares `role`: a docker or ssh cluster has no cloud source, and "default" names no source its
+    /// config has. Empty when none or several declare it (then the caller cannot tell which, and says so rather than guessing).
+    private static Option<SourceProfile> soleSourceFor(ClusterBootstrapConfig config, NodeRole role) {
+        var declaring = config.sources().values().stream().filter(source -> source.roles()
+                                                                                  .containsKey(role)).toList();
+
+        return declaring.size() == 1
+               ? Option.some(declaring.getFirst())
+               : Option.none();
     }
 
     /// RFC-0017 stage 5 — reconcile ACTUAL worker/spot cloud inventory toward the desired

@@ -153,6 +153,33 @@ class ClusterTopologyManagerDockerImageTest {
         assertThat(lifecycleManager.lastSpec().imageId().isEmpty()).isTrue();
     }
 
+    /// A node of a cluster bootstrapped from static PEERS has no source label, so an upgrade's replacement asks without a source name: the
+    /// sole docker source of the config is the answer, and its pin the image. Before, it asked for "default" and was refused.
+    @Test
+    void provisionReplacement_withoutASourceName_resolvesTheSoleDockerSource_andItsPinnedImage() {
+        clusterStore.seedToml(DOCKER_TOML);
+        ctm.activate();
+
+        var result = ctm.provisionReplacement(nodeId("node-replacement").unwrap(), Option.none(), Set.of(SELF, PEER_A, PEER_B), NodeRole.CORE).await();
+
+        assertThat(result.isSuccess()).as(String.valueOf(result)).isTrue();
+        assertThat(lifecycleManager.lastSpec().context().sourceName().value()).isEqualTo("dock");
+        assertThat(lifecycleManager.lastSpec().imageId().or("<none>")).isEqualTo("registry/aether-node:1.1.0");
+    }
+
+    /// Several sources declare the role: the source is not guessed ("default" is named, and the render refuses it) -- the explicit form is
+    /// what a replacement of a node with a known source uses.
+    @Test
+    void provisionReplacement_withoutASourceName_whenSeveralSourcesDeclareTheRole_doesNotGuess() {
+        clusterStore.seedToml(DOCKER_TOML + "\n[source.dock2]\ntype = \"docker\"\n\n[source.dock2.core]\ncount = 3\nruntime = \"app\"\n");
+        ctm.activate();
+
+        var result = ctm.provisionReplacement(nodeId("node-replacement").unwrap(), Option.none(), Set.of(SELF, PEER_A, PEER_B), NodeRole.CORE).await();
+
+        assertThat(result.isFailure()).as("an ambiguous source is refused, not guessed: " + result).isTrue();
+        assertThat(lifecycleManager.lastSpec()).isNull();
+    }
+
     @Test
     void provisionReplacement_cloudSource_neverUsesTheContainerPinAsTheVmImage() {
         clusterStore.seedToml(CLOUD_TOML);
