@@ -14,7 +14,9 @@ import java.util.Set;
 import java.util.regex.Pattern;
 
 import org.pragmatica.aether.config.ConsensusTierBounds;
+import org.pragmatica.aether.config.ConfigLoader;
 import org.pragmatica.aether.config.JwksUrl;
+import org.pragmatica.aether.config.SecurityMode;
 import org.pragmatica.config.toml.TomlDocument;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
@@ -500,10 +502,15 @@ public final class ClusterBootstrapConfigValidator {
                      .option();
     }
 
+    /// `security_mode` and `enabled` are parsed by the functions the node uses ([SecurityMode#securityMode], [ConfigLoader#toBooleanValue]), so
+    /// the bootstrap check and a booting node cannot disagree about a padded or odd-cased value.
     private static boolean isJwtServer(TomlDocument doc) {
-        var jwt = doc.getString("app-http", "security_mode").map(mode -> "jwt".equalsIgnoreCase(mode.trim())).or(false);
+        var jwt = doc.getString("app-http", "security_mode")
+                     .flatMap(SecurityMode::securityMode)
+                     .map(mode -> mode == SecurityMode.JWT)
+                     .or(false);
         var enabled = doc.getString("app-http", "enabled")
-                         .map(value -> "true".equalsIgnoreCase(value.trim()))
+                         .map(ConfigLoader::toBooleanValue)
                          .or(false);
 
         return jwt && enabled;

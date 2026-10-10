@@ -604,6 +604,28 @@ class ClusterBootstrapConfigValidatorTest {
             }
         }
 
+        /// C5b: the node does not trim `enabled`, so `" true "` is a DISABLED server there; PF-34 must agree (it used to trim and refuse). The same
+        /// file loaded by the node is accepted, which is the property: bootstrap and node give the same verdict.
+        @Test
+        void validate_paddedEnabled_agreesWithTheNode() {
+            validate(cloudConfigWithOverlay(Map.<String, Object>of("security_mode", "jwt", "enabled", " true ")))
+                .onFailure(cause -> assertThat(cause.message()).doesNotContain("PF-34"));
+            assertThat(org.pragmatica.aether.config.ConfigLoader.loadFromString("[cluster]\nenvironment = \"docker\"\nnodes = 3\n\n[app-http]\nenabled = \" true \"\nsecurity_mode = \"jwt\"\n").isSuccess())
+                .as("the node loads the padded-enabled file as a disabled server").isTrue();
+        }
+
+        /// C5: a padded or odd-cased security_mode is the SAME mode at PF-34 and at the node: both refuse a jwt server with no jwks_url.
+        @Test
+        void validate_paddedAndUpperCasedJwtMode_isRefusedLikeTheNode() {
+            for (var mode : List.of("  jwt ", "JWT")) {
+                validate(cloudConfigWithOverlay(Map.<String, Object>of("security_mode", mode, "enabled", "true")))
+                    .onSuccess(v -> Assertions.fail("Expected failure for '" + mode + "'"))
+                    .onFailure(cause -> assertThat(cause.message()).as(mode).contains("PF-34"));
+                assertThat(org.pragmatica.aether.config.ConfigLoader.loadFromString("[cluster]\nenvironment = \"docker\"\nnodes = 3\n\n[app-http]\nenabled = \"true\"\nsecurity_mode = \"" + mode + "\"\n").isFailure())
+                    .as("the node refuses '" + mode + "' too").isTrue();
+            }
+        }
+
         /// N1 in PF-34: a padded URL is accepted (the node loads it trimmed).
         @Test
         void validate_jwtWithAPaddedJwksUrl_isNotPf34() {
@@ -616,7 +638,8 @@ class ClusterBootstrapConfigValidatorTest {
         void validate_pf34Messages_arePinned() {
             validate(cloudConfigWithOverlay(Map.<String, Object>of("security_mode", "jwt")))
                 .onFailure(cause -> assertThat(cause.message())
-                    .contains("PF-34: Source 'cloud-src' sets [app-http] security_mode = \"jwt\" but jwks_url is missing. Every node would refuse to start"));
+                    .contains("PF-34: Source 'cloud-src' sets [app-http] security_mode = \"jwt\" but jwks_url is missing. Every node would refuse to start")
+                    .contains("jwks_url is required (issuer/audience optional)"));
             validate(cloudConfigWithOverlay(Map.<String, Object>of("security_mode", "jwt", "jwks_url", "http://auth.example.com/jwks.json")))
                 .onFailure(cause -> assertThat(cause.message())
                     .contains("PF-34: Source 'cloud-src' sets [app-http] security_mode = \"jwt\" but jwks_url 'http://auth.example.com/jwks.json' must use https"));
