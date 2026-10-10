@@ -44,14 +44,14 @@ sealed interface BootstrapPhaseFormation {
                           ClusterBootstrapOrchestrator.API_KEY_BYTES);
         var managementPort = ctx.config().operations().ports().management();
         var scheme = managementScheme(ctx);
-        var healthTimeoutMs = ClusterBootstrapOrchestrator.parseDurationMs(ctx.config()
-                                                                              .operations()
-                                                                              .timeouts()
-                                                                              .healthCheck());
-        var quorumTimeoutMs = ClusterBootstrapOrchestrator.parseDurationMs(ctx.config()
-                                                                              .operations()
-                                                                              .timeouts()
-                                                                              .quorumFormation());
+        var healthTimeoutMs = BootstrapWaitCap.cappedMs(ClusterBootstrapOrchestrator.parseDurationMs(ctx.config()
+                                                                                                        .operations()
+                                                                                                        .timeouts()
+                                                                                                        .healthCheck()));
+        var quorumTimeoutMs = BootstrapWaitCap.cappedMs(ClusterBootstrapOrchestrator.parseDurationMs(ctx.config()
+                                                                                                        .operations()
+                                                                                                        .timeouts()
+                                                                                                        .quorumFormation()));
         var requiredCores = ctx.config().derivedCoreCount();
         var managementKey = resolveManagementKey(ctx);
 

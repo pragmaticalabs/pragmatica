@@ -407,4 +407,28 @@ class DockerDestroyTest {
 
         assertThat(siblings).containsExactly("http://[2001:db8::2]");
     }
+
+    /// G13: a SHUTDOWN answered with the disruption-budget 409 is held for quorum, not a failure; any other refusal of a shutdown is a failure.
+    /// (The drain is refused first by a non-budget conflict so the node is still there to be sent a shutdown.)
+    @Test
+    void shutdown_answeredWithTheBudget409_isHeld_andANonBudgetRefusal_isFailed() {
+        var budget = new ScriptedDrainHttp(ScriptedDrainHttp.otherConflict(A), notFound(A))
+            .withShutdownResponse(ScriptedDrainHttp.budgetRefused(A));
+        ClusterHttpClient.HTTP_OPS_REF.set(budget);
+        ClusterHttpClient.setEndpointOverride("http://127.0.0.1:49999");
+
+        var held = new ClusterDestroyCommand().drainAndShutdown(List.of(A), false).shutdowns().getFirst();
+
+        assertThat(held.heldForQuorum()).as("budget 409 on shutdown").isTrue();
+        assertThat(held.failure()).isFalse();
+
+        var other = new ScriptedDrainHttp(ScriptedDrainHttp.otherConflict(A), notFound(A))
+            .withShutdownResponse(ScriptedDrainHttp.otherConflict(A));
+        ClusterHttpClient.HTTP_OPS_REF.set(other);
+
+        var failed = new ClusterDestroyCommand().drainAndShutdown(List.of(A), false).shutdowns().getFirst();
+
+        assertThat(failed.failure()).as("non-budget refusal on shutdown").isTrue();
+        assertThat(failed.heldForQuorum()).isFalse();
+    }
 }

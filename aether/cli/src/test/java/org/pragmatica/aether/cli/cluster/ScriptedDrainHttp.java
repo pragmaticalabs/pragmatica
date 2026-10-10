@@ -138,10 +138,19 @@ final class ScriptedDrainHttp implements HttpOperations {
         return respond(step);
     }
 
+    private Step shutdownResponse = new Step.Reply(200, "{\"success\":true,\"message\":\"ok\"}");
+
+    /// The answer to every `POST /api/v1/nodes/shutdown/{id}`; success unless set.
+    ScriptedDrainHttp withShutdownResponse(Step step) {
+        shutdownResponse = step;
+
+        return this;
+    }
+
     private Step postStep(String path) {
         return path.startsWith("/api/v1/nodes/drain/")
                ? nextDrainStep()
-               : new Step.Reply(200, "{\"success\":true,\"message\":\"ok\"}");
+               : shutdownResponse;
     }
 
     /// Successive answers to the drain POST; the last one repeats. Without a sequence every POST gets `drainResponse`.

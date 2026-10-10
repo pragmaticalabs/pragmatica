@@ -4,7 +4,25 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.cli.cluster;
 
+import org.pragmatica.aether.cli.cluster.ClusterBootstrapOrchestrator.BootstrapContext;
 import org.pragmatica.aether.config.cluster.ClusterBootstrapConfigParser;
+import org.pragmatica.aether.environment.ClusterName;
+import org.pragmatica.aether.environment.NodeAddress;
+import org.pragmatica.lang.Option;
+import org.pragmatica.lang.utils.Causes;
+
+import java.io.ByteArrayOutputStream;
+import java.io.PrintStream;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.TimeUnit;
+
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Timeout;
+import org.junit.jupiter.api.io.TempDir;
 
 import org.junit.jupiter.api.Test;
 import picocli.CommandLine;
@@ -40,20 +58,69 @@ class BootstrapTimeoutBoundTest {
         return ClusterBootstrapConfigParser.parse(CONFIG).unwrap();
     }
 
-    @Test
-    void boundedBy_capsBothFormationWaits_atTheGivenSeconds() {
-        var bounded = ClusterBootstrapCommand.boundedBy(config(), 60);
-
-        assertThat(bounded.operations().timeouts().healthCheck()).isEqualTo("60s");
-        assertThat(bounded.operations().timeouts().quorumFormation()).isEqualTo("60s");
+    @AfterEach
+    void reset() {
+        BootstrapWaitCap.seconds = Option.none();
+        ClusterBootstrapCommand.bootstrapInvoker = ClusterBootstrapOrchestrator::bootstrap;
     }
 
     @Test
-    void boundedBy_neverRaisesAWaitAboveTheConfig() {
-        var bounded = ClusterBootstrapCommand.boundedBy(config(), 5000);
+    void cap_lowersAWait_neverRaisesOne_andIsAbsentByDefault() {
+        assertThat(BootstrapWaitCap.cappedMs(300_000L)).as("no cap").isEqualTo(300_000L);
+        BootstrapWaitCap.seconds = Option.some(60);
+        assertThat(BootstrapWaitCap.cappedMs(300_000L)).isEqualTo(60_000L);
+        assertThat(BootstrapWaitCap.cappedMs(10_000L)).as("a config wait below the cap is kept").isEqualTo(10_000L);
+    }
 
-        assertThat(bounded.operations().timeouts().healthCheck()).isEqualTo("300s");
-        assertThat(bounded.operations().timeouts().quorumFormation()).isEqualTo("600s");
+    /// F6: `--timeout` is a RUNTIME cap. It must never reach the config the orchestrator hashes, or a timed-out bootstrap resumed with a longer
+    /// `--timeout` (or none) is refused as "Config has changed".
+    @Test
+    void timeout_neverEntersTheHashedConfig_soAResumeWithAnotherTimeoutMatches(@TempDir Path dir) throws Exception {
+        var toml = dir.resolve("cluster.toml");
+        Files.writeString(toml, CONFIG);
+        var hashes = new ArrayList<String>();
+        var caps = new ArrayList<Option<Integer>>();
+
+        ClusterBootstrapCommand.bootstrapInvoker = (config, resume, fullCheck, keys, keepOnFailure, raw) -> {
+            hashes.add(ClusterBootstrapOrchestrator.computeConfigHash(config));
+            caps.add(BootstrapWaitCap.seconds);
+
+            return Causes.cause("stub").result();
+        };
+        for (var extra : List.of(List.of("--timeout", "60"), List.of("--timeout", "600"), List.<String> of())) {
+            var args = new ArrayList<>(List.of("--wait", "--yes", toml.toString()));
+
+            args.addAll(extra);
+            new CommandLine(new ClusterBootstrapCommand()).execute(args.toArray(String[]::new));
+        }
+
+        assertThat(hashes).hasSize(3);
+        assertThat(hashes).as("the hashed config is identical whatever --timeout says").containsOnly(hashes.getFirst());
+        assertThat(caps).containsExactly(Option.some(60), Option.some(600), Option.none());
+        assertThat(BootstrapWaitCap.seconds.isPresent()).as("the cap does not outlive the call").isFalse();
+    }
+
+    /// G6: the cap is applied where the waits are computed. A formation against a node that never answers ends at the cap, not the config's 300 s.
+    @Test
+    @Timeout(value = 60, unit = TimeUnit.SECONDS)
+    void formation_appliesTheCap_toTheHealthWait() {
+        BootstrapWaitCap.seconds = Option.some(1);
+        var out = new ByteArrayOutputStream();
+        var original = System.out;
+
+        System.setOut(new PrintStream(out, true, StandardCharsets.UTF_8));
+        try {
+            var ctx = BootstrapContext.bootstrapContext(config(),
+                                                        BootstrapState.initialState(ClusterName.clusterName("dock").unwrap(), "h", "now"),
+                                                        List.of(),
+                                                        List.of(NodeAddress.nodeAddress("n", "127.0.0.1", Option.none(), Option.some(1))));
+
+            BootstrapPhaseFormation.execute(ctx);
+        } finally {
+            System.setOut(original);
+        }
+
+        assertThat(out.toString(StandardCharsets.UTF_8)).contains("(timeout: 1s)");
     }
 
     @Test
