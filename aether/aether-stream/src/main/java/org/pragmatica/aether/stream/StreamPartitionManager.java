@@ -2416,7 +2416,8 @@ public final class StreamPartitionManager implements AutoCloseable {
     }
 
     /// Test seam (#2086): runs just before the ring's ordered section is entered, i.e. at the point where the cut used to have read the
-    /// head. A replicated append that lands here must be covered by the segment and the witness, because the head is read INSIDE the section.
+    /// head. The quarantine fence for replicated appends is enforced inside the ring's lock, so a replicated append cannot land here; only an append that
+    /// does not pass that fence (an owner-local append) could. Even then the segment and the witness cover it, because the head is read INSIDE the section.
     private volatile Runnable cutWindowHook = () -> {};
 
     @Contract
@@ -2425,8 +2426,8 @@ public final class StreamPartitionManager implements AutoCloseable {
     }
 
     /// What the cut does under the ring's append lock, in order: the authority check, the witness, the recovery segment, the WAL cut.
-    /// The head is read HERE (#2086), under the lock, so a replicated append that arrived between the repair's start and the lock is in the
-    /// witness and in the segment as it is in the cut.
+    /// The head is read HERE (#2086), under the lock, so an append that arrived between the repair's start and the lock (only an owner-local
+    /// one can: the quarantine fence for replicated appends is enforced inside the lock) is in the witness and in the segment as it is in the cut.
     private Result<Unit> cutInsideSection(String streamName,
                                           int partition,
                                           long divergedAtOffset,

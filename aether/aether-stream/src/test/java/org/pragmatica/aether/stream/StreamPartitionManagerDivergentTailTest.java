@@ -678,8 +678,8 @@ class StreamPartitionManagerDivergentTailTest {
         assertThat(refusals).isEmpty();
     }
 
-    /// #2086: the cut reads the head INSIDE the ordered section. A replicated append that lands after the repair started and before the
-    /// section is entered is removed by the cut, so it must be in the recovery segment and the truncation witness, and in the reported
+    /// #2086: the cut reads the head INSIDE the ordered section. An append that lands after the repair started and before the
+    /// section is entered (the quarantine fence for replicated appends is enforced inside the lock, so only an owner-local append can) is removed by the cut, so it must be in the recovery segment and the truncation witness, and in the reported
     /// range. The hook runs at the point where the head used to be read, and appends offset 10. Red before the fix (segment and witness
     /// end at 9 while the cut removed 10), green after; mutation: reading the head outside the section again turns it red.
     @Test
@@ -696,8 +696,8 @@ class StreamPartitionManagerDivergentTailTest {
         one.syncReplicated("single", PARTITION).await();
         one.appendRecovered("single", PARTITION, 5, "different".getBytes(UTF_8), 1005L, epoch);
         assertThat(one.quarantinedAt("single", PARTITION).or(-1L)).isEqualTo(5L);
-        // A quarantined partition refuses new replicated appends at the door, so the hook models one that had already passed that check: it is
-        // appended straight to the ring, which is where the cut's head matters.
+        // The quarantine fence refuses replicated appends inside the lock, so none can land here; the hook models an owner-local append, which
+        // does not pass that fence, by appending straight to the ring, which is where the cut's head matters.
         one.cutWindowHook(() -> one.partitionBuffer("single", PARTITION).unwrap().append("r10".getBytes(UTF_8), 1010L).unwrap());
 
         var cut = one.repairDivergence("single", PARTITION, _ -> true).unwrap().unwrap();
