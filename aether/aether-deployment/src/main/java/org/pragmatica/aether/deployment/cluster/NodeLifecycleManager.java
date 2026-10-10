@@ -89,6 +89,13 @@ public interface NodeLifecycleManager {
         return Promise.unitPromise();
     }
 
+    /// A node that joins again while its EXTERNAL reservation is still present is a new incarnation: the reservation is re-stamped (its admission marker is
+    /// incremented), so that a [#releaseExternal] of the previous incarnation that read the reservation earlier fails its compare-and-set on the exact value
+    /// instead of deleting what the new incarnation holds. A node with no EXTERNAL reservation succeeds. Never a provider call.
+    default Promise<Unit> restampExternal(NodeId nodeId) {
+        return Promise.unitPromise();
+    }
+
     default Result<String> sourceBinding(SourceName source) {
         return EnvironmentError.operationNotSupported("Source identity binding unavailable").result();
     }

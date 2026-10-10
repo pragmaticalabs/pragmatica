@@ -162,7 +162,8 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
                                  var after = new CapacityReservationValue(before.sourceName(),
                                                                           before.sourceBinding(),
                                                                           before.intendedRole(),
-                                                                          CapacityReservationPhase.RELEASED);
+                                                                          CapacityReservationPhase.RELEASED,
+                                                                          before.admissions());
                                  var mutation = new KVCommand.Mutation<AetherKey, AetherValue>(key,
                                                                                                Option.some(before),
                                                                                                Option.some(after));
@@ -349,7 +350,9 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
                                                                                             binding,
                                                                                             existing.map(CapacityReservationValue::intendedRole)
                                                                                                     .or(""),
-                                                                                            CapacityReservationPhase.OBSERVED))));
+                                                                                            CapacityReservationPhase.OBSERVED,
+                                                                                            existing.map(CapacityReservationValue::admissions)
+                                                                                                    .or(0L)))));
         }
 
         if (mutations.isEmpty()) {
@@ -516,6 +519,31 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
     @Override
     public Option<SourceName> sourceOf(NodeId node) {
         return source(node).orElse(() -> delegate.sourceOf(node));
+    }
+
+    @Override
+    public Promise<Unit> restampExternal(NodeId node) {
+        var key = new AetherKey.CapacityReservationKey(node);
+
+        return store.getTyped(key, CapacityReservationValue.class)
+                    .filter(value -> isExternalBinding(value.sourceBinding()))
+                    .fold(Promise::unitPromise,
+                          reservation -> restamp(key, reservation));
+    }
+
+    private Promise<Unit> restamp(AetherKey.CapacityReservationKey key, CapacityReservationValue reservation) {
+        var stamped = new CapacityReservationValue(reservation.sourceName(),
+                                                   reservation.sourceBinding(),
+                                                   reservation.intendedRole(),
+                                                   reservation.phase(),
+                                                   reservation.admissions() + 1);
+        var change = new KVCommand.Mutation<AetherKey, AetherValue>(key, Option.some(reservation), Option.some(stamped));
+
+        return transact(key, List.of(change)).flatMap(done -> done
+                                                              ? Promise.unitPromise()
+                                                              : Causes.cause("The re-stamp of the reservation of " + key.nodeId()
+                                                                                                                        .id()
+                                                                            + " conflicted").promise());
     }
 
     @Override

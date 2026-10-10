@@ -2321,11 +2321,32 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                  TimeSpan.timeSpan(1).millis());
     }
 
+    /// A drain was issued to the previous incarnation: it does not apply to the one that has just joined. The pending entry is removed, so the grace expiry
+    /// finds nothing to reap, the DRAIN command is cleared, and the operator is told to re-issue it if it is still intended.
+    private void cancelPendingDrain(NodeId nodeId) {
+        if (Option.option(pendingDrains.remove(nodeId)).isEmpty()) {
+            return;
+        }
+
+        drainCommandClear.accept(nodeId);
+        org.pragmatica.utility.warning.OperatorWarnings.raise(log,
+                                                              warningSink.get(),
+                                                              org.pragmatica.utility.warning.OperatorWarningCode.NODE_DRAIN_CANCELLED_REJOINED,
+                                                              nodeId.id(),
+                                                              "The pending drain of node {} was cancelled: the node joined the cluster again, a new incarnation; re-issue the drain if it is still intended",
+                                                              nodeId.id());
+    }
+
     /// A node that has joined (or been re-admitted) is a new incarnation of its id: what was remembered of the previous one - that its reap was
     /// confirmed, that its instance was seen, that its termination was unconfirmed - does not describe it, and is dropped. Without this a reused
     /// id would be "confirmed gone" while it is a member, and its instance and slot would leak.
     private void forgetIncarnation(NodeId nodeId) {
         incarnations.merge(nodeId, 1L, Long::sum);
+        cancelPendingDrain(nodeId);
+        lifecycleManager.restampExternal(nodeId)
+                        .onFailure(cause -> log.warn("CTM: the reservation of {} was not re-stamped on its rejoin: {}",
+                                                     nodeId,
+                                                     cause.message()));
         confirmedReaps.remove(nodeId);
         seenInstances.remove(nodeId);
         listedAbsent.remove(nodeId);

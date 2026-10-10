@@ -128,6 +128,9 @@ public enum OperatorWarningCode {
                                   WarningLevel.INFO,
                                   INSTANCE_TERMINATION_UNCONFIRMED,
                                   true),
+    /// A node that had a pending operator drain joined the cluster again (#2062): a new incarnation, so the pending drain was cancelled and its grace will
+    /// not terminate it. The subject is the node. Re-issue the drain if it is still intended.
+    NODE_DRAIN_CANCELLED_REJOINED("node-drain-cancelled-rejoined", "deployment", WarningLevel.WARNING),
     /// A node replacement (#1543) was committed: a fresh-id node is taking over from the subject (the ORIGINAL node). Raised once,
     /// when the record is first committed. Closed by [#NODE_REPLACEMENT_COMPLETED] or [#NODE_REPLACEMENT_ROLLED_BACK].
     NODE_REPLACEMENT_STARTED("node-replacement-started", "replacement", WarningLevel.INFO),

@@ -108,6 +108,10 @@ class NodeReplacementRealRegistryReapTest {
     private final java.util.concurrent.atomic.AtomicBoolean stuck = new java.util.concurrent.atomic.AtomicBoolean();
     /// When set, a terminate answers with this promise (an attempt in flight) after counting itself.
     private final AtomicReference<Promise<Unit>> terminateGate = new AtomicReference<>();
+    /// When set, the NEXT KV commit through the manager's writer is held until this promise resolves (one commit in flight).
+    private final AtomicReference<Promise<Unit>> processGate = new AtomicReference<>();
+    /// The DRAIN commands the managers cleared.
+    private final java.util.List<NodeId> clearedDrains = new java.util.concurrent.CopyOnWriteArrayList<>();
     private final AtomicInteger lists = new AtomicInteger();
     private final AtomicInteger terminates = new AtomicInteger();
     private final AtomicReference<Promise<List<InstanceInfo>>> listing = new AtomicReference<>(Promise.success(List.of()));
@@ -161,7 +165,11 @@ class NodeReplacementRealRegistryReapTest {
 
     @SuppressWarnings({"rawtypes", "unchecked"})
     private Promise<List<Object>> process(List<KVCommand<AetherKey>> commands) {
-        return Promise.success(store.process(store.createBatch(commands)));
+        var gate = processGate.getAndSet(null);
+
+        return gate == null
+               ? Promise.success(store.process(store.createBatch(commands)))
+               : gate.flatMap(_ -> Promise.success(store.process(store.createBatch(commands))));
     }
 
     @SuppressWarnings({"rawtypes", "unchecked"})
@@ -207,7 +215,7 @@ class NodeReplacementRealRegistryReapTest {
                                                                 commands -> Promise.success(List.<Object> of()),
                                                                 () -> AetherValue.ClusterPhase.NORMAL,
                                                                 _ -> {},
-                                                                _ -> {},
+                                                                clearedDrains::add,
                                                                 Option::none,
                                                                 MembershipLiveness.membershipLiveness(() -> replayCapable ? Set.of(CORE, new NodeId("c-2"), new NodeId("c-3")) : Set.of(),
                                                                                                       Set::of,
@@ -1000,6 +1008,100 @@ class NodeReplacementRealRegistryReapTest {
 
         assertThat(warnings).as("the new incarnation is not marked").noneMatch(w -> w.contains(OLD.id()));
         assertThat(terminates.get()).isZero();
+        manager.deactivate();
+    }
+
+    private CapacityLedgerValue ledger() {
+        return store.getTyped(AetherKey.CapacityLedgerKey.INSTANCE, CapacityLedgerValue.class).unwrap();
+    }
+
+    /// An EXTERNAL node is retired (it has left): its release reads the reservation and the ledger, and its commit is held in flight.
+    private org.pragmatica.lang.Promise<Unit> externalReleaseInFlight(Promise<Unit> gate) throws Exception {
+        put(AetherKey.CapacityLedgerKey.INSTANCE, new CapacityLedgerValue(5, 1, true));
+        put(new AetherKey.CapacityReservationKey(OLD), new CapacityReservationValue("west", "", "core", CapacityReservationPhase.OBSERVED));
+        processGate.set(gate);
+        var reap = ctmUnderTest.reapRetired(OLD, WEST, false);
+
+        Thread.sleep(300);
+        assertThat(reservation(OLD).isPresent()).as("the release is in flight, not committed").isTrue();
+
+        return reap;
+    }
+
+    /// Round 6, N9 (v-2068): the operator's node comes back under its still-present reservation and joins - a new incarnation - while the release of
+    /// the previous one is in flight. The join re-stamps the reservation, so the stale commit's compare-and-set on the exact value fails: the new incarnation
+    /// keeps its reservation and its slot, and nothing is confirmed.
+    @Test
+    void anExternalReleaseInFlightAtARejoin_leavesTheNewIncarnationsReservationAndSlot() throws Exception {
+        var gate = Promise.<Unit> promise();
+        var reap = externalReleaseInFlight(gate);
+
+        states.put(OLD, "Member");
+        joins(OLD);
+        gate.succeed(Unit.unit());
+        var result = reap.await();
+        Thread.sleep(300);
+
+        assertThat(result.isFailure()).as("the stale release does not succeed").isTrue();
+        assertThat(reservation(OLD).isPresent()).as("the new incarnation keeps its reservation").isTrue();
+        assertThat(ledger().allocated()).as("and its slot").isEqualTo(5);
+        assertThat(reservation(OLD).unwrap().admissions()).as("re-stamped by the join").isEqualTo(1L);
+        assertThat(raised("instance-termination-confirmed")).isFalse();
+    }
+
+    /// N9b: afterwards the new incarnation leaves and is retired: a real release (one slot taken, one returned) with no provider call (598476d86).
+    @Test
+    void afterAStaleExternalRelease_theNewIncarnationsRetirement_makesNoProviderCallAndReturnsItsSlot() throws Exception {
+        var gate = Promise.<Unit> promise();
+        var reap = externalReleaseInFlight(gate);
+
+        states.put(OLD, "Member");
+        joins(OLD);
+        gate.succeed(Unit.unit());
+        reap.await();
+
+        states.remove(OLD);
+        var second = ctmUnderTest.reapRetired(OLD, WEST, false).await();
+
+        assertThat(second.isSuccess()).as("the new incarnation's own retirement releases it").isTrue();
+        assertThat(reservation(OLD).isEmpty()).isTrue();
+        assertThat(ledger().allocated()).as("one slot taken, one returned").isEqualTo(4);
+        assertThat(lists.get() + terminates.get()).as("never a provider call for an operator's node").isZero();
+    }
+
+    /// Control: with no rejoin the very same release commits - it deletes the reservation and returns the slot.
+    @Test
+    void anExternalReleaseWithNoRejoin_stillDeletesAndReturnsTheSlot() throws Exception {
+        var gate = Promise.<Unit> promise();
+        var reap = externalReleaseInFlight(gate);
+
+        gate.succeed(Unit.unit());
+
+        assertThat(reap.await().isSuccess()).isTrue();
+        assertThat(reservation(OLD).isEmpty()).isTrue();
+        assertThat(ledger().allocated()).isEqualTo(4);
+    }
+
+    /// Round 6, N10: an operator-drained node restarts under its id and joins within the grace. The pending drain belonged to the previous
+    /// incarnation: the join cancels it, the operator is told once, and the grace never terminates the new incarnation.
+    @Test
+    void aRejoinCancelsAPendingDrain_andTheGraceNeverTerminatesTheNewIncarnation() throws Exception {
+        ctmUnderTest.deactivate();
+        var manager = newManager(lifecycle, false, 1_500L, warnings);
+
+        put(AetherKey.CapacityLedgerKey.INSTANCE, new CapacityLedgerValue(3, 1, true));
+        listing.set(Promise.success(List.of(instance(OLD, "i-1", InstanceStatus.RUNNING))));
+        manager.drainNode(OLD, DRAIN).await();
+        Thread.sleep(300);
+        states.put(OLD, "Member");
+        manager.onMembershipDecision(MembershipDecision.nodeJoined(OLD, List.of(CORE, OLD)));
+        listing.set(Promise.success(List.of(instance(OLD, "i-2", InstanceStatus.RUNNING))));
+
+        Thread.sleep(3000);
+
+        assertThat(terminates.get()).as("the rejoined incarnation is not terminated by a drain issued to its predecessor").isZero();
+        assertThat(warnings.stream().filter(w -> w.startsWith("node-drain-cancelled-rejoined:" + OLD.id())).count()).as("the operator is told once").isEqualTo(1);
+        assertThat(clearedDrains).as("and the DRAIN command is cleared").contains(OLD);
         manager.deactivate();
     }
 

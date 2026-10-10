@@ -3017,10 +3017,21 @@ public sealed interface AetherValue {
         }
     }
 
+    /// `admissions` is the admission marker (#2062): a node that joins while its reservation is still present re-stamps the reservation (the marker is
+    /// incremented), so that a release of the previous incarnation that read the reservation before the join cannot commit - its compare-and-set on
+    /// the exact value fails - and the new incarnation keeps its reservation and its slot.
     record CapacityReservationValue(String sourceName,
                                     String sourceBinding,
                                     String intendedRole,
-                                    CapacityReservationPhase phase) implements AetherValue, org.pragmatica.cluster.state.kvstore.LeaderAuthorized {}
+                                    CapacityReservationPhase phase,
+                                    long admissions) implements AetherValue, org.pragmatica.cluster.state.kvstore.LeaderAuthorized {
+        public CapacityReservationValue(String sourceName,
+                                        String sourceBinding,
+                                        String intendedRole,
+                                        CapacityReservationPhase phase) {
+            this(sourceName, sourceBinding, intendedRole, phase, 0L);
+        }
+    }
 
     @Codec
     enum CapacityReservationPhase {
