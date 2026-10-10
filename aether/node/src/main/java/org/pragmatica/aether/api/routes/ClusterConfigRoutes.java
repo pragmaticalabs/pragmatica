@@ -39,6 +39,8 @@ import org.pragmatica.aether.config.cluster.DiffPlan;
 import org.pragmatica.aether.deployment.cluster.ClusterConfigApplier;
 import org.pragmatica.aether.deployment.cluster.ClusterReplication;
 import org.pragmatica.aether.deployment.cluster.ClusterTopologyManager;
+import org.pragmatica.aether.deployment.cluster.UpgradeRunService;
+import org.pragmatica.aether.slice.kvstore.AetherValue.UpgradeRunValue;
 import org.pragmatica.aether.deployment.membership.view.MembershipView;
 import org.pragmatica.aether.metrics.NodeReportedState;
 import org.pragmatica.aether.management.route.ManagementRoute;
@@ -851,9 +853,22 @@ public final class ClusterConfigRoutes implements RouteSource {
     private Promise<UpgradeResponse> initiateUpgrade(ClusterConfigValue stored, UpgradeRequest request) {
         var currentVersion = stored.version();
         var targetVersion = request.targetVersion();
+        var runs = nodeSupplier.get().upgradeRunService();
 
         if (currentVersion.equals(targetVersion)) {
-            return new UpgradeError.AlreadyAtVersion(targetVersion).promise();
+            // A re-issued upgrade: the version is already stored, so the only thing left to do is the run, if one is still owed.
+            return runs.start(targetVersion)
+                       .map(_ -> new UpgradeResponse("INITIATED", currentVersion, targetVersion))
+                       .mapError(cause -> nothingOwed(cause)
+                                          ? new UpgradeError.AlreadyAtVersion(targetVersion)
+                                          : cause);
+        }
+
+        if (runs.status().filter(UpgradeRunValue::live).isPresent()) {
+            return new ManagementServerError.Conflict("An upgrade run to " + runs.status()
+                                                                                 .unwrap()
+                                                                                 .targetVersion()
+                                                     + " is still live; pause/resume/abort it (GET /api/v1/upgrade/status), or wait for it to end").promise();
         }
 
         return checkVersionAsync(stored.configVersion(),
@@ -865,10 +880,29 @@ public final class ClusterConfigRoutes implements RouteSource {
                                                       currentVersion,
                                                       targetVersion);
 
-                                             return storeUpgradedVersion(stored, toml, targetVersion).map(_ -> new UpgradeResponse("INITIATED",
-                                                                                                                                   currentVersion,
-                                                                                                                                   targetVersion));
+                                             return storeUpgradedVersion(stored, toml, targetVersion).flatMap(_ -> startRun(runs,
+                                                                                                                            targetVersion))
+                                                                        .map(_ -> new UpgradeResponse("INITIATED",
+                                                                                                      currentVersion,
+                                                                                                      targetVersion));
                                          });
+    }
+
+    /// Nothing to start: every node already reports the version, a run towards it is already live, or this node has no run service. Any other
+    /// refusal (not the leader, a concurrent change) is a real answer and is surfaced.
+    private static boolean nothingOwed(Cause cause) {
+        return cause instanceof UpgradeRunService.Refusal.NothingToReplace || cause instanceof UpgradeRunService.Refusal.AlreadyRunning || cause instanceof UpgradeRunService.Refusal.Unavailable;
+    }
+
+    /// #1543 F: the version is stored, so the rolling replacement of the running nodes follows. Nothing to replace (every node already
+    /// reports it) and a node without the service leave the stored version as the whole effect, as before; any other refusal is surfaced.
+    private static Promise<Unit> startRun(UpgradeRunService runs, String targetVersion) {
+        return runs.start(targetVersion)
+                   .map(_ -> Option.<Cause> none())
+                   .recover(Option::some)
+                   .flatMap(failure -> failure.filter(cause -> !(cause instanceof UpgradeRunService.Refusal.NothingToReplace || cause instanceof UpgradeRunService.Refusal.Unavailable))
+                                              .fold(Promise::unitPromise,
+                                                    cause -> cause.<Unit> promise()));
     }
 
     /// #1424: the client-side fence on the upgrade path, the third mutating cluster-config route to carry it
