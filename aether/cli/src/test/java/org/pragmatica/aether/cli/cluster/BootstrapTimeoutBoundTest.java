@@ -92,12 +92,12 @@ class BootstrapTimeoutBoundTest {
 
             args.addAll(extra);
             new CommandLine(new ClusterBootstrapCommand()).execute(args.toArray(String[]::new));
+            assertThat(BootstrapWaitCap.seconds.isPresent()).as("the cap does not outlive a call made with " + extra).isFalse();
         }
 
         assertThat(hashes).hasSize(3);
         assertThat(hashes).as("the hashed config is identical whatever --timeout says").containsOnly(hashes.getFirst());
         assertThat(caps).containsExactly(Option.some(60), Option.some(600), Option.none());
-        assertThat(BootstrapWaitCap.seconds.isPresent()).as("the cap does not outlive the call").isFalse();
     }
 
     /// G6: the cap is applied where the waits are computed. A formation against a node that never answers ends at the cap, not the config's 300 s.
@@ -121,6 +121,40 @@ class BootstrapTimeoutBoundTest {
         }
 
         assertThat(out.toString(StandardCharsets.UTF_8)).contains("(timeout: 1s)");
+    }
+
+    /// H4: the QUORUM wait is capped where it is computed too, not only the health wait. Health answers at once, quorum never forms.
+    @Test
+    @Timeout(value = 60, unit = TimeUnit.SECONDS)
+    void formation_appliesTheCap_toTheQuorumWait() throws Exception {
+        var server = com.sun.net.httpserver.HttpServer.create(new java.net.InetSocketAddress("127.0.0.1", 0), 0);
+
+        server.createContext("/", exchange -> {
+            var body = "{\"quorum\":false,\"nodeCount\":1,\"status\":\"healthy\"}".getBytes(StandardCharsets.UTF_8);
+
+            exchange.sendResponseHeaders(200, body.length);
+            exchange.getResponseBody().write(body);
+            exchange.close();
+        });
+        server.start();
+        BootstrapWaitCap.seconds = Option.some(1);
+        var out = new ByteArrayOutputStream();
+        var original = System.out;
+
+        System.setOut(new PrintStream(out, true, StandardCharsets.UTF_8));
+        try {
+            var ctx = BootstrapContext.bootstrapContext(config(),
+                                                        BootstrapState.initialState(ClusterName.clusterName("dock").unwrap(), "h", "now"),
+                                                        List.of(),
+                                                        List.of(NodeAddress.nodeAddress("n", "127.0.0.1", Option.none(), Option.some(server.getAddress().getPort()))));
+
+            BootstrapPhaseFormation.execute(ctx);
+        } finally {
+            System.setOut(original);
+            server.stop(0);
+        }
+
+        assertThat(out.toString(StandardCharsets.UTF_8)).contains("Waiting for quorum").contains("timeout: 1s)");
     }
 
     @Test

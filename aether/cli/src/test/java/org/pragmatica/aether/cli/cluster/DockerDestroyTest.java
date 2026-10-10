@@ -431,4 +431,14 @@ class DockerDestroyTest {
         assertThat(failed.failure()).as("non-budget refusal on shutdown").isTrue();
         assertThat(failed.heldForQuorum()).isFalse();
     }
+
+    /// E12b: every drain succeeded and one SHUTDOWN failed (non-budget): that is a failure and the destroy must refuse. A held shutdown is not.
+    @Test
+    void hasFailures_seesAFailedShutdown_evenWhenEveryDrainSucceeded() {
+        var drained = List.of(ClusterDestroyCommand.NodeResult.succeeded(A), ClusterDestroyCommand.NodeResult.succeeded(B));
+
+        assertThat(ClusterDestroyCommand.hasFailures(drained, List.of(ClusterDestroyCommand.NodeResult.failed(A, "refused with HTTP 500")))).isTrue();
+        assertThat(ClusterDestroyCommand.hasFailures(drained, List.of(ClusterDestroyCommand.NodeResult.held(A, "held")))).isFalse();
+        assertThat(ClusterDestroyCommand.hasFailures(drained, List.of(ClusterDestroyCommand.NodeResult.succeeded(A)))).isFalse();
+    }
 }

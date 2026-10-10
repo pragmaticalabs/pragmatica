@@ -311,7 +311,7 @@ class ClusterDestroyCommand implements Callable<Integer> {
                     .or(false);
     }
 
-    private static boolean hasFailures(List<NodeResult> drainResults, List<NodeResult> shutdownResults) {
+    static boolean hasFailures(List<NodeResult> drainResults, List<NodeResult> shutdownResults) {
         return drainResults.stream()
                            .anyMatch(NodeResult::failure) || shutdownResults.stream()
                                                                             .anyMatch(NodeResult::failure);
