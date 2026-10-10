@@ -678,6 +678,90 @@ class StreamPartitionManagerDivergentTailTest {
         assertThat(refusals).isEmpty();
     }
 
+    /// #2086: the cut reads the head INSIDE the ordered section. A replicated append that lands after the repair started and before the
+    /// section is entered is removed by the cut, so it must be in the recovery segment and the truncation witness, and in the reported
+    /// range. The hook runs at the point where the head used to be read, and appends offset 10. Red before the fix (segment and witness
+    /// end at 9 while the cut removed 10), green after; mutation: reading the head outside the section again turns it red.
+    @Test
+    void repairDivergence_anAppendBeforeTheSection_isInTheSegmentTheWitnessAndTheReportedRange() throws Exception {
+        var path = walDir.resolve("race");
+        var one = streamPartitionManager(Long.MAX_VALUE, Option.some(path));
+        var epoch = org.pragmatica.aether.slice.generation.Epoch.epoch(1L, 2L, 3L);
+
+        one.createStream(StreamConfig.streamConfig("single")).onFailure(cause -> fail(cause.message()));
+        one.operatorWarnings(lossWarningsOnly());
+        for (var i = 0; i < 10; i++) {
+            one.appendRecovered("single", PARTITION, i, ("r" + i).getBytes(UTF_8), 1000L + i, epoch).unwrap();
+        }
+        one.syncReplicated("single", PARTITION).await();
+        one.appendRecovered("single", PARTITION, 5, "different".getBytes(UTF_8), 1005L, epoch);
+        assertThat(one.quarantinedAt("single", PARTITION).or(-1L)).isEqualTo(5L);
+        // A quarantined partition refuses new replicated appends at the door, so the hook models one that had already passed that check: it is
+        // appended straight to the ring, which is where the cut's head matters.
+        one.cutWindowHook(() -> one.partitionBuffer("single", PARTITION).unwrap().append("r10".getBytes(UTF_8), 1010L).unwrap());
+
+        var cut = one.repairDivergence("single", PARTITION, _ -> true).unwrap().unwrap();
+        var contents = RecoverySegment.read(segmentsUnder(path).getFirst()).unwrap();
+        var witness = java.nio.file.Files.readString(filesUnder(path, ".pending-cut").getFirst()).trim().split(" ");
+
+        assertThat(cut.removed()).isEqualTo(6L);
+        assertThat(cut.lastRemoved()).isEqualTo(10L);
+        assertThat(contents.last()).as("the segment covers the appended offset").isEqualTo(10L);
+        assertThat(contents.entries()).extracting(RecoverySegment.Entry::offset).containsExactly(5L, 6L, 7L, 8L, 9L, 10L);
+        assertThat(witness[1]).as("the witness counts the removed records").isEqualTo("6");
+        assertThat(witness[3]).as("the witness ends at the last removed offset").isEqualTo("10");
+        awaitPreserved(1);
+        assertThat(preserved).singleElement().satisfies(event -> assertThat(event.message()).contains("[5, 10]").contains("6 events"));
+        assertThat(one.readAppended("single", PARTITION, 0, 100).unwrap()).hasSize(5);
+        one.close();
+    }
+
+    /// #2086 (V5): destroying stream A closes A's standing refusal only. Stream B's stays open: no recovery for B is raised, and B's own
+    /// recovery still comes when its cut goes through. Mutation: dropping the stream-name filter of the destroy-path close turns this red.
+    @Test
+    void destroyingOneStream_leavesAnotherStreamsStandingRefusalOpen() throws Exception {
+        var path = walDir.resolve("two-streams");
+        var one = streamPartitionManager(Long.MAX_VALUE, Option.some(path));
+        var epoch = org.pragmatica.aether.slice.generation.Epoch.epoch(1L, 2L, 3L);
+
+        one.operatorWarnings(lossWarningsOnly());
+        for (var name : List.of("alpha", "beta")) {
+            one.createStream(StreamConfig.streamConfig(name)).onFailure(cause -> fail(cause.message()));
+            for (var i = 0; i < 8; i++) {
+                one.appendRecovered(name, PARTITION, i, ("r" + i).getBytes(UTF_8), 1000L + i, epoch).unwrap();
+            }
+            one.syncReplicated(name, PARTITION).await();
+            one.appendRecovered(name, PARTITION, 3, "different".getBytes(UTF_8), 1003L, epoch);
+        }
+        var obstacles = blockRecoverySegments(path);
+
+        assertThat(one.repairDivergence("alpha", PARTITION, _ -> true).isFailure()).isTrue();
+        assertThat(one.repairDivergence("beta", PARTITION, _ -> true).isFailure()).isTrue();
+        awaitRefusals(2);
+        one.destroyStream("alpha");
+        awaitRefusals(3);
+
+        assertThat(refusals).extracting(OperatorWarning::code)
+                            .containsExactlyInAnyOrder(OperatorWarningCode.STREAM_DIVERGENT_TAIL_CUT_REFUSED,
+                                                       OperatorWarningCode.STREAM_DIVERGENT_TAIL_CUT_REFUSED,
+                                                       OperatorWarningCode.STREAM_DIVERGENT_TAIL_CUT_RESUMED);
+        assertThat(refusals.stream().filter(event -> event.code() == OperatorWarningCode.STREAM_DIVERGENT_TAIL_CUT_RESUMED).map(OperatorWarning::subject))
+            .as("only alpha's refusal was closed").containsExactly("alpha[0]");
+        for (var obstacle : obstacles) {
+            if (java.nio.file.Files.exists(obstacle)) {
+                java.nio.file.Files.delete(obstacle);
+            }
+        }
+
+        assertThat(one.repairDivergence("beta", PARTITION, _ -> true).unwrap().isPresent()).isTrue();
+        awaitRefusals(4);
+        assertThat(refusals.getLast()).satisfies(event -> {
+            assertThat(event.code()).isEqualTo(OperatorWarningCode.STREAM_DIVERGENT_TAIL_CUT_RESUMED);
+            assertThat(event.subject()).as("beta's own recovery, because its refusal was still standing").isEqualTo("beta[0]");
+        });
+        one.close();
+    }
+
     /// #2084 F5, the witness: a cut refused because its truncation witness cannot be made durable raises the same episode event.
     @Test
     void repairDivergence_keepsFailingToWriteTheWitness_raisesOneEventForTheEpisode() throws Exception {
