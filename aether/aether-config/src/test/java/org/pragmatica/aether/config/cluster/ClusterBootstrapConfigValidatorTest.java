@@ -557,6 +557,21 @@ class ClusterBootstrapConfigValidatorTest {
                 .onFailure(cause -> assertThat(cause.message()).doesNotContain("PF-28"));
         }
 
+        /// Only the jwt mode needs a jwks_url: an enabled app-http under another mode without one is not PF-28.
+        @Test
+        void validate_nonJwtModeWithoutJwks_isNotPf28() {
+            validate(cloudConfigWithOverlay(Map.<String, Object>of("security_mode", "api_key", "enabled", "true")))
+                .onFailure(cause -> assertThat(cause.message()).doesNotContain("PF-28"));
+        }
+
+        /// A blank jwks_url verifies nothing either.
+        @Test
+        void validate_jwtWithBlankJwks_returnsPf28() {
+            validate(cloudConfigWithOverlay(Map.<String, Object>of("security_mode", "jwt", "enabled", "true", "jwks_url", "   ")))
+                .onSuccess(v -> Assertions.fail("Expected failure"))
+                .onFailure(cause -> assertThat(cause.message()).contains("PF-28"));
+        }
+
         @Test
         void validate_jwtWithoutJwksOnDisabledAppHttp_isNotRefused() {
             validate(cloudConfigWithOverlay(Map.<String, Object>of("security_mode", "jwt")))
