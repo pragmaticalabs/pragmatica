@@ -89,12 +89,16 @@ public interface NodeLifecycleManager {
         return Promise.unitPromise();
     }
 
-    /// A node that joins again while its EXTERNAL reservation is still present is a new incarnation: the reservation is re-stamped (its admission marker is
-    /// incremented), so that a [#releaseExternal] of the previous incarnation that read the reservation earlier fails its compare-and-set on the exact value
-    /// instead of deleting what the new incarnation holds. A node with no EXTERNAL reservation succeeds. Never a provider call.
-    default Promise<Unit> restampExternal(NodeId nodeId) {
+    /// A node that joins again while its EXTERNAL reservation is present is a new incarnation: its admission marker is bumped, so a [#releaseExternal] of
+    /// the previous incarnation that read the marker earlier cannot commit and delete what the new incarnation holds. If that release committed first, the
+    /// reservation is gone and the node is admitted again, as a new admission (an expected-absent reservation and, when counted, its slot); a node the
+    /// ledger cannot count again fails with [ReadmissionRefused]. A node with no EXTERNAL reservation succeeds. Never a provider call.
+    default Promise<Unit> readmitExternal(NodeId nodeId) {
         return Promise.unitPromise();
     }
+
+    /// The re-admission of a node that joined again was refused (the ledger cannot count its slot): the node is not admitted and is to be evicted.
+    record ReadmissionRefused(String message) implements org.pragmatica.lang.Cause {}
 
     default Result<String> sourceBinding(SourceName source) {
         return EnvironmentError.operationNotSupported("Source identity binding unavailable").result();

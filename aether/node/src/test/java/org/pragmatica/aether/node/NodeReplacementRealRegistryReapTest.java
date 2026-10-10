@@ -108,6 +108,11 @@ class NodeReplacementRealRegistryReapTest {
     private final java.util.concurrent.atomic.AtomicBoolean stuck = new java.util.concurrent.atomic.AtomicBoolean();
     /// When set, a terminate answers with this promise (an attempt in flight) after counting itself.
     private final AtomicReference<Promise<Unit>> terminateGate = new AtomicReference<>();
+    /// When set, EVERY KV commit through the manager's writer is held behind this promise and applied in SUBMISSION order when it resolves (a consensus log
+    /// ordering the commands of one leader).
+    private final AtomicReference<Promise<Unit>> fifoGate = new AtomicReference<>();
+    /// The DRAIN commands the managers issued.
+    private final java.util.List<NodeId> requestedDrains = new java.util.concurrent.CopyOnWriteArrayList<>();
     /// When set, the NEXT KV commit through the manager's writer is held until this promise resolves (one commit in flight).
     private final AtomicReference<Promise<Unit>> processGate = new AtomicReference<>();
     /// The DRAIN commands the managers cleared.
@@ -165,6 +170,12 @@ class NodeReplacementRealRegistryReapTest {
 
     @SuppressWarnings({"rawtypes", "unchecked"})
     private Promise<List<Object>> process(List<KVCommand<AetherKey>> commands) {
+        var fifo = fifoGate.get();
+
+        if (fifo != null) {
+            return fifo.flatMap(_ -> Promise.success(store.process(store.createBatch(commands))));
+        }
+
         var gate = processGate.getAndSet(null);
 
         return gate == null
@@ -214,7 +225,7 @@ class NodeReplacementRealRegistryReapTest {
                                                                       : Option.<ClusterConfigValue> none(),
                                                                 commands -> Promise.success(List.<Object> of()),
                                                                 () -> AetherValue.ClusterPhase.NORMAL,
-                                                                _ -> {},
+                                                                requestedDrains::add,
                                                                 clearedDrains::add,
                                                                 Option::none,
                                                                 MembershipLiveness.membershipLiveness(() -> replayCapable ? Set.of(CORE, new NodeId("c-2"), new NodeId("c-3")) : Set.of(),
@@ -1045,8 +1056,67 @@ class NodeReplacementRealRegistryReapTest {
         assertThat(result.isFailure()).as("the stale release does not succeed").isTrue();
         assertThat(reservation(OLD).isPresent()).as("the new incarnation keeps its reservation").isTrue();
         assertThat(ledger().allocated()).as("and its slot").isEqualTo(5);
-        assertThat(reservation(OLD).unwrap().admissions()).as("re-stamped by the join").isEqualTo(1L);
+        assertThat(store.getTyped(new AetherKey.CapacityAdmissionKey(OLD), AetherValue.CapacityAdmissionValue.class).map(AetherValue.CapacityAdmissionValue::admissions).or(0L))
+            .as("the join bumped the admission marker").isEqualTo(1L);
         assertThat(raised("instance-termination-confirmed")).isFalse();
+    }
+
+    /// F5 (v-2068 N9fifo): consensus does not order the rejoin against an in-flight release. Here the release is ordered FIRST: it commits, and the rejoin's
+    /// guarded marker bump then fails because the reservation is gone. The rejoin is a FRESH admission: the node ends with a reservation and a slot, and
+    /// the ledger counts the live reservations.
+    @Test
+    void aReleaseOrderedBeforeTheRejoin_leavesTheNewIncarnationAFreshReservationAndSlot() throws Exception {
+        var gate = Promise.<Unit> promise();
+
+        put(AetherKey.CapacityLedgerKey.INSTANCE, new CapacityLedgerValue(5, 1, true));
+        put(new AetherKey.CapacityReservationKey(OLD), new CapacityReservationValue("west", "", "core", CapacityReservationPhase.OBSERVED));
+        fifoGate.set(gate);
+        var reap = ctmUnderTest.reapRetired(OLD, WEST, false);
+        Thread.sleep(300);
+        assertThat(reservation(OLD).isPresent()).as("the release is in flight, not committed").isTrue();
+
+        states.put(OLD, "Member");
+        joins(OLD);
+        Thread.sleep(200);
+        fifoGate.set(null);
+        gate.succeed(Unit.unit());
+        var result = reap.await();
+
+        within(10, () -> assertThat(reservation(OLD).isPresent()).as("the new incarnation was admitted again").isTrue());
+        assertThat(result.isSuccess()).as("the release itself committed first").isTrue();
+        assertThat(ledger().allocated()).as("one slot returned by the release, one taken by the re-admission: the ledger counts the live reservation").isEqualTo(5);
+        assertThat(reservation(OLD).unwrap().sourceBinding()).as("still an EXTERNAL reservation").isEmpty();
+        assertThat(warnings).as("nothing to refuse").noneMatch(w -> w.startsWith("external-rejoin-unreconciled:"));
+
+        states.remove(OLD);
+        assertThat(ctmUnderTest.reapRetired(OLD, WEST, false).await().isSuccess()).as("its own retirement releases it again, with no provider call").isTrue();
+        assertThat(ledger().allocated()).isEqualTo(4);
+        assertThat(lists.get() + terminates.get()).isZero();
+    }
+
+    /// F5: the release was ordered first and the ledger cannot count the slot again (its inventory is incomplete): the re-admission is REFUSED. The operator is
+    /// told (never log-only), the node is evicted (a DRAIN command, no reap), and nothing is half-written.
+    @Test
+    void aRejoinWhoseReadmissionIsRefused_isEvictedWithAnOperatorEvent() throws Exception {
+        var gate = Promise.<Unit> promise();
+
+        put(AetherKey.CapacityLedgerKey.INSTANCE, new CapacityLedgerValue(5, 1, false));
+        put(new AetherKey.CapacityReservationKey(OLD), new CapacityReservationValue("west", "", "core", CapacityReservationPhase.OBSERVED));
+        fifoGate.set(gate);
+        var reap = ctmUnderTest.reapRetired(OLD, WEST, false);
+        Thread.sleep(300);
+
+        states.put(OLD, "Member");
+        joins(OLD);
+        Thread.sleep(200);
+        fifoGate.set(null);
+        gate.succeed(Unit.unit());
+        reap.await();
+
+        within(10, () -> assertThat(warnings).as("the refusal is an operator event").anyMatch(w -> w.startsWith("external-rejoin-unreconciled:" + OLD.id()) && w.contains("refused")));
+        assertThat(requestedDrains).as("and the node is evicted").contains(OLD);
+        assertThat(reservation(OLD).isEmpty()).as("no reservation was written for a refused node").isTrue();
+        assertThat(ledger().allocated()).as("and the slot the release returned stays returned").isEqualTo(4);
     }
 
     /// N9b: afterwards the new incarnation leaves and is retired: a real release (one slot taken, one returned) with no provider call (598476d86).

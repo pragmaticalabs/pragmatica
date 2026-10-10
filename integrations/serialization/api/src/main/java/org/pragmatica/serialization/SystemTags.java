@@ -624,7 +624,10 @@ public interface SystemTags {
         // #2062: the persisted "termination not confirmed" mark — next free after 2131
         pin(table, 2132, "org.pragmatica.aether.slice.kvstore.AetherKey.UnconfirmedTerminationKey");
         pin(table, 2133, "org.pragmatica.aether.slice.kvstore.AetherValue.UnconfirmedTerminationValue");
-        // ---- 2134..16383 RESERVED ----
+        // #2062: the admission marker of an EXTERNAL capacity reservation — next free after 2133
+        pin(table, 2134, "org.pragmatica.aether.slice.kvstore.AetherKey.CapacityAdmissionKey");
+        pin(table, 2135, "org.pragmatica.aether.slice.kvstore.AetherValue.CapacityAdmissionValue");
+        // ---- 2136..16383 RESERVED ----
         rejectDuplicateTags(table);
 
         return Map.copyOf(table);

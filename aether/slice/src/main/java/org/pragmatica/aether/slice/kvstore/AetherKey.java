@@ -1201,6 +1201,14 @@ public sealed interface AetherKey extends StructuredKey permits AetherKey.Cluste
         }
     }
 
+    /// #2062: the admission marker of a node's EXTERNAL capacity reservation (see `AetherValue.CapacityAdmissionValue`). Runtime state.
+    record CapacityAdmissionKey(NodeId nodeId) implements RuntimeKey {
+        @Override
+        public String asString() {
+            return "capacity-admission/" + nodeId.id();
+        }
+    }
+
     /// #1543: the pairing of a node being replaced (`original`) with the fresh-id node replacing it. Runtime
     /// state: an in-flight replacement names nodes a restored cluster no longer has.
     record NodeReplacementKey(NodeId original) implements RuntimeKey {

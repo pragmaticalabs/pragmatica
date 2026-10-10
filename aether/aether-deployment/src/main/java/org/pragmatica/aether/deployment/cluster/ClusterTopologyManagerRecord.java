@@ -2321,6 +2321,27 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                  TimeSpan.timeSpan(1).millis());
     }
 
+    /// The rejoin of an EXTERNAL node could not be reconciled with its capacity reservation: never log-only. The operator is told; a node the ledger cannot count
+    /// again is refused and evicted (the DRAIN command, with no reap - it is the operator's node), any other failure leaves it a member whose reservation is not
+    /// known to be in step with the ledger.
+    private void rejoinNotReconciled(NodeId nodeId, org.pragmatica.lang.Cause cause) {
+        var refused = cause instanceof NodeLifecycleManager.ReadmissionRefused;
+
+        if (refused) {
+            drainCommandSink.accept(nodeId);
+        }
+
+        org.pragmatica.utility.warning.OperatorWarnings.raise(log,
+                                                              warningSink.get(),
+                                                              org.pragmatica.utility.warning.OperatorWarningCode.EXTERNAL_REJOIN_UNRECONCILED,
+                                                              nodeId.id(),
+                                                              refused
+                                                              ? "External node {} joined again but its capacity reservation had been released meanwhile and cannot be admitted again ({}): the node is refused and is being drained; admit it again once capacity allows"
+                                                              : "External node {} joined again but its capacity reservation could not be reconciled with the ledger ({}): check the reservation and the ledger",
+                                                              nodeId.id(),
+                                                              cause.message());
+    }
+
     /// A drain was issued to the previous incarnation: it does not apply to the one that has just joined. The pending entry is removed, so the grace expiry
     /// finds nothing to reap, the DRAIN command is cleared, and the operator is told to re-issue it if it is still intended.
     private void cancelPendingDrain(NodeId nodeId) {
@@ -2343,10 +2364,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     private void forgetIncarnation(NodeId nodeId) {
         incarnations.merge(nodeId, 1L, Long::sum);
         cancelPendingDrain(nodeId);
-        lifecycleManager.restampExternal(nodeId)
-                        .onFailure(cause -> log.warn("CTM: the reservation of {} was not re-stamped on its rejoin: {}",
-                                                     nodeId,
-                                                     cause.message()));
+        lifecycleManager.readmitExternal(nodeId).onFailure(cause -> rejoinNotReconciled(nodeId, cause));
         confirmedReaps.remove(nodeId);
         seenInstances.remove(nodeId);
         listedAbsent.remove(nodeId);

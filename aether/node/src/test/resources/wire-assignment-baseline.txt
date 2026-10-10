@@ -154,6 +154,7 @@ SHAPE org.pragmatica.aether.slice.kvstore.AetherKey$ArtifactVersionsKey (artifac
 SHAPE org.pragmatica.aether.slice.kvstore.AetherKey$AutoHealStateKey ()
 SHAPE org.pragmatica.aether.slice.kvstore.AetherKey$BackupRestoreKey ()
 SHAPE org.pragmatica.aether.slice.kvstore.AetherKey$BlueprintStreamBindingsKey (blueprintId:org.pragmatica.aether.slice.blueprint.BlueprintId)
+SHAPE org.pragmatica.aether.slice.kvstore.AetherKey$CapacityAdmissionKey (nodeId:org.pragmatica.consensus.NodeId)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherKey$CapacityLedgerKey ()
 SHAPE org.pragmatica.aether.slice.kvstore.AetherKey$CapacityReservationKey (nodeId:org.pragmatica.consensus.NodeId)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherKey$ClusterConfigKey (configVersion:long)
@@ -218,8 +219,9 @@ SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$AutoHealStateValue (enable
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$BackupRestoreValue (outcome:org.pragmatica.aether.slice.kvstore.AetherValue$BackupRestoreOutcome,lineageId:java.lang.String,incarnation:long,revision:long,commit:java.lang.String)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$BlueprintStreamBindingsValue (bindings:java.util.List<org.pragmatica.aether.slice.kvstore.AetherValue$BlueprintStreamBindingsValue$NamedAddress>)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$BlueprintStreamBindingsValue$NamedAddress (alias:java.lang.String,address:org.pragmatica.aether.slice.resource.ResourceAddress)
+SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$CapacityAdmissionValue (admissions:long)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$CapacityLedgerValue (allocated:int,version:long,inventoryComplete:boolean)
-SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$CapacityReservationValue (sourceName:java.lang.String,sourceBinding:java.lang.String,intendedRole:java.lang.String,phase:org.pragmatica.aether.slice.kvstore.AetherValue$CapacityReservationPhase,admissions:long)
+SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$CapacityReservationValue (sourceName:java.lang.String,sourceBinding:java.lang.String,intendedRole:java.lang.String,phase:org.pragmatica.aether.slice.kvstore.AetherValue$CapacityReservationPhase)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$ClusterConfigValue (tomlContent:org.pragmatica.lang.Option<java.lang.String>,clusterName:java.lang.String,version:java.lang.String,desiredTopology:java.util.List<org.pragmatica.aether.slice.kvstore.AetherValue$TopologyEntry>,coreMin:int,coreMax:int,deploymentType:java.lang.String,configVersion:long,updatedAt:long)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$ClusterIncarnationValue (lineageId:java.lang.String,incarnation:long,incarnationId:java.lang.String)
 SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$ClusterPhaseValue (phase:org.pragmatica.aether.slice.kvstore.AetherValue$ClusterPhase,updatedAt:long)
@@ -529,6 +531,7 @@ TAG  org.pragmatica.aether.slice.kvstore.AetherKey$ArtifactVersionsKey 2114
 TAG  org.pragmatica.aether.slice.kvstore.AetherKey$AutoHealStateKey 1674
 TAG  org.pragmatica.aether.slice.kvstore.AetherKey$BackupRestoreKey 1718
 TAG  org.pragmatica.aether.slice.kvstore.AetherKey$BlueprintStreamBindingsKey 1095
+TAG  org.pragmatica.aether.slice.kvstore.AetherKey$CapacityAdmissionKey 2134
 TAG  org.pragmatica.aether.slice.kvstore.AetherKey$CapacityLedgerKey 1688
 TAG  org.pragmatica.aether.slice.kvstore.AetherKey$CapacityReservationKey 1689
 TAG  org.pragmatica.aether.slice.kvstore.AetherKey$ClusterConfigKey 1097
@@ -594,6 +597,7 @@ TAG  org.pragmatica.aether.slice.kvstore.AetherValue$BackupRestoreOutcome 1720
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$BackupRestoreValue 1719
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$BlueprintStreamBindingsValue 1607
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$BlueprintStreamBindingsValue$NamedAddress 1608
+TAG  org.pragmatica.aether.slice.kvstore.AetherValue$CapacityAdmissionValue 2135
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$CapacityLedgerValue 1690
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$CapacityReservationPhase 1692
 TAG  org.pragmatica.aether.slice.kvstore.AetherValue$CapacityReservationValue 1691

@@ -228,8 +228,7 @@ public final class NodeReplacementWiring {
                                                                                   value.intendedRole(),
                                                                                   phase == NodeReplacementPhase.DONE
                                                                                   ? AetherValue.CapacityReservationPhase.OBSERVED
-                                                                                  : AetherValue.CapacityReservationPhase.RELEASED,
-                                                                                  value.admissions()));
+                                                                                  : AetherValue.CapacityReservationPhase.RELEASED));
     }
 
     /// Hands the pairings to the two reconcilers that must treat them as capacity on purpose. One call, so that what each receives is
