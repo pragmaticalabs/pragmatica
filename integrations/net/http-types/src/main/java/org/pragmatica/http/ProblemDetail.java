@@ -66,7 +66,7 @@ public record ProblemDetail(String type,
         return new ProblemDetail(DEFAULT_TYPE,
                                  HttpStatus.INTERNAL_SERVER_ERROR.message(),
                                  HttpStatus.INTERNAL_SERVER_ERROR.code(),
-                                 Option.option(cause.message()),
+                                 Option.option(HttpError.clientMessage(cause)),
                                  Option.option(instance),
                                  requestId);
     }
@@ -109,9 +109,9 @@ public record ProblemDetail(String type,
     }
 
     private static String extractDetail(HttpError error) {
-        // Get the origin cause message, not the full chain
+        // The origin's client-safe message, never the chain below it (an origin may itself be an HttpError)
         return error.source()
-                    .map(Cause::message)
+                    .map(HttpError::clientMessage)
                     .or(error.status().message());
     }
 }
