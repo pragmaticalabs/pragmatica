@@ -278,7 +278,11 @@ class ClusterDestroyCommand implements Callable<Integer> {
     }
 
     Result<Integer> destroyEnumerated(ClusterRegistry registry, ClusterName clusterName, List<String> nodeIds) {
-        var outcome = drainAndShutdown(nodeIds, isDockerCluster(recordedState(clusterName)));
+        var state = recordedState(clusterName);
+        var accounting = reconcile(nodeIds, state);
+
+        reportUnlisted(accounting);
+        var outcome = drainAndShutdown(nodeIds, isDockerCluster(state));
         var drainResults = outcome.drains();
         var shutdownResults = outcome.shutdowns();
 
@@ -294,7 +298,8 @@ class ClusterDestroyCommand implements Callable<Integer> {
                                    nodeIds,
                                    drainResults,
                                    shutdownResults,
-                                   forceUndrained);
+                                   forceUndrained,
+                                   accounting);
     }
 
     /// `docker port` runs only for a cluster the bootstrap ledger records as docker containers: a loopback endpoint alone proves nothing (a
@@ -442,6 +447,24 @@ class ClusterDestroyCommand implements Callable<Integer> {
                                                List<NodeResult> drainResults,
                                                List<NodeResult> shutdownResults,
                                                boolean undrainedAccepted) {
+        return finalizeDestruction(registry,
+                                   clusterName,
+                                   cleanupOk,
+                                   nodeIds,
+                                   drainResults,
+                                   shutdownResults,
+                                   undrainedAccepted,
+                                   Accounting.NONE);
+    }
+
+    static Result<Integer> finalizeDestruction(ClusterRegistry registry,
+                                               ClusterName clusterName,
+                                               boolean cleanupOk,
+                                               List<String> nodeIds,
+                                               List<NodeResult> drainResults,
+                                               List<NodeResult> shutdownResults,
+                                               boolean undrainedAccepted,
+                                               Accounting accounting) {
         if (!cleanupOk) {
             logPhase(DestroyPhase.REGISTRY,
                      "Keeping the registry entry — cloud cleanup failed, and the entry is the operator's"
@@ -453,7 +476,8 @@ class ClusterDestroyCommand implements Callable<Integer> {
                                                shutdownResults,
                                                false,
                                                false,
-                                               undrainedAccepted));
+                                               undrainedAccepted,
+                                               accounting));
         }
 
         logPhase(DestroyPhase.REGISTRY, "Removing the registry entry for '" + clusterName + "'");
@@ -465,7 +489,8 @@ class ClusterDestroyCommand implements Callable<Integer> {
                                                      shutdownResults,
                                                      true,
                                                      true,
-                                                     undrainedAccepted));
+                                                     undrainedAccepted,
+                                                     accounting));
     }
 
     boolean cleanupCloudResources(ClusterName clusterName) {
@@ -1193,7 +1218,8 @@ class ClusterDestroyCommand implements Callable<Integer> {
                                     List<NodeResult> shutdownResults,
                                     boolean cleanupSucceeded,
                                     boolean registryEntryRemoved,
-                                    boolean undrainedAccepted) {
+                                    boolean undrainedAccepted,
+                                    Accounting accounting) {
         System.out.println();
         System.out.printf("Cluster '%s' destruction summary:%n", clusterName);
         System.out.printf("  Nodes processed: %d%n", nodeIds.size());
@@ -1205,11 +1231,12 @@ class ClusterDestroyCommand implements Callable<Integer> {
                           countSuccesses(shutdownResults),
                           shutdownResults.size(),
                           skippedNote(nodeIds));
-        System.out.printf("  Outcome: drained %d, held for quorum %d%s, failed %d%n",
+        System.out.printf("  Outcome: drained %d, held for quorum %d%s, failed %d%s%n",
                           countSuccesses(drainResults),
                           heldNames(drainResults).size(),
                           heldSuffix(heldNames(drainResults)),
-                          failureCount(drainResults) + failureCount(shutdownResults));
+                          failureCount(drainResults),
+                          accounting.summaryTail(nodeIds.size()));
         System.out.printf("  Cloud resource cleanup: %s%n",
                           cleanupSucceeded
                           ? "ok"
@@ -1280,6 +1307,77 @@ class ClusterDestroyCommand implements Callable<Integer> {
         return nodeIds.isEmpty()
                ? "  (SKIPPED — no nodes were enumerated, so nothing was drained or shut down)"
                : "";
+    }
+
+    /// Every node the bootstrap ledger recorded is accounted for (#2089): the lifecycle list is the leader's view of its peers and can omit a
+    /// node (run8 listed 2 of 3), and a node it omits is deleted with the VMs without ever being drained. Those nodes are named, never omitted.
+    /// `ledgerNodes` is 0 when the ledger records none (nothing to reconcile); `unlisted` holds the names that could be recovered.
+    record Accounting(int ledgerNodes, int unlistedCount, List<String> unlisted, List<String> ledgerLabels) {
+        static final Accounting NONE = new Accounting(0, 0, List.of(), List.of());
+
+        String summaryTail(int listed) {
+            if (ledgerNodes == 0) {
+                return "";
+            }
+
+            return String.format(", not listed by the cluster %d; accounted %d of %d recorded in the bootstrap ledger%s",
+                                 unlistedCount,
+                                 listed + unlistedCount,
+                                 ledgerNodes,
+                                 listed > ledgerNodes
+                                 ? " (the cluster listed " + (listed - ledgerNodes) + " node(s) beyond the ledger)"
+                                 : "");
+        }
+    }
+
+    static Accounting reconcile(List<String> listedIds, org.pragmatica.lang.Option<BootstrapState> state) {
+        return state.map(value -> reconcile(listedIds, value))
+                    .or(Accounting.NONE);
+    }
+
+    private static Accounting reconcile(List<String> listedIds, BootstrapState state) {
+        var vms = state.createdResources()
+                       .stream()
+                       .filter(CreatedResource.ProvisionedVm.class::isInstance)
+                       .map(CreatedResource.ProvisionedVm.class::cast)
+                       .toList();
+        var ledgerNodes = state.provisionedNodeIds().isEmpty()
+                          ? vms.size()
+                          : state.provisionedNodeIds().size();
+        var unlistedCount = Math.max(0, ledgerNodes - listedIds.size());
+        var named = vms.stream()
+                       .filter(vm -> "docker".equals(vm.provider()))
+                       .flatMap(vm -> DockerHostPorts.containerName(vm.resourceId()).fold(_ -> java.util.stream.Stream.<String> empty(),
+                                                                                          java.util.stream.Stream::of))
+                       .filter(name -> !listedIds.contains(name))
+                       .toList();
+
+        return new Accounting(ledgerNodes,
+                              unlistedCount,
+                              named.size() == unlistedCount
+                              ? named
+                              : List.of(),
+                              state.provisionedNodeIds());
+    }
+
+    @Contract
+    private static void reportUnlisted(Accounting accounting) {
+        if (accounting.unlistedCount() == 0) {
+            return;
+        }
+
+        if (!accounting.unlisted().isEmpty()) {
+            accounting.unlisted()
+                      .forEach(name -> System.out.printf("  Not listed by the cluster: %s — removed without drain.%n",
+                                                         name));
+
+            return;
+        }
+
+        System.out.printf("  %d node(s) recorded in the bootstrap ledger were not listed by the cluster — removed without drain (names not recoverable;"
+                         + " the ledger records %s).%n",
+                          accounting.unlistedCount(),
+                          String.join(", ", accounting.ledgerLabels()));
     }
 
     private static List<String> heldNames(List<NodeResult> results) {

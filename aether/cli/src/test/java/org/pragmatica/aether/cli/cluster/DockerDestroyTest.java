@@ -20,6 +20,7 @@ import org.pragmatica.aether.environment.NodeAddress;
 import org.pragmatica.http.HttpOperations;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.utils.Causes;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -48,6 +49,8 @@ class DockerDestroyTest {
     private String originalEndpoint;
     private PrintStream originalOut;
     private PrintStream originalErr;
+    private java.util.function.Function<BootstrapState, Result<org.pragmatica.lang.Unit>> originalResourceCleaner;
+    private BiFunction<BootstrapState, ClusterName, Result<org.pragmatica.lang.Unit>> originalSshKeySweeper;
     private ByteArrayOutputStream err;
     private ByteArrayOutputStream out;
     private BiFunction<ClusterRegistry, ClusterName, Result<ClusterRegistry>> originalRemover;
@@ -72,6 +75,10 @@ class DockerDestroyTest {
             return Result.success(registry);
         };
         ClusterDestroyCommand.stateLoader = name -> Result.success(Option.none());
+        originalResourceCleaner = ClusterDestroyCommand.resourceCleaner;
+        originalSshKeySweeper = ClusterDestroyCommand.sshKeySweeper;
+        ClusterDestroyCommand.resourceCleaner = state -> Result.unitResult();
+        ClusterDestroyCommand.sshKeySweeper = (state, name) -> Result.unitResult();
         DockerHostPorts.override = container -> Result.success(switch (container) {
             case A -> 38911;
             case B -> 38913;
@@ -87,7 +94,10 @@ class DockerDestroyTest {
         ClusterHttpClient.ENDPOINT_OVERRIDE.set(originalEndpoint);
         ClusterDestroyCommand.registryRemover = originalRemover;
         ClusterDestroyCommand.stateLoader = originalLoader;
+        ClusterDestroyCommand.resourceCleaner = originalResourceCleaner;
+        ClusterDestroyCommand.sshKeySweeper = originalSshKeySweeper;
         DockerHostPorts.override = null;
+        DockerHostPorts.nameOverride = null;
     }
 
     private String stderr() {
@@ -324,5 +334,47 @@ class DockerDestroyTest {
 
         assertThat(stderr()).contains("REFUSING to delete the VMs of 'dock': 1 of 1 drain operations failed (" + A
                                       + ": error: Connection failed: Connection refused). NOTHING has been deleted and the registry entry is kept.");
+    }
+
+    private static BootstrapState threeNodeLedger() {
+        return BootstrapState.initialState(CLUSTER, "h", "now")
+                             .withResource(CreatedResource.ProvisionedVm.provisionedVm("docker", "id-a", "primary", "core"))
+                             .withResource(CreatedResource.ProvisionedVm.provisionedVm("docker", "id-b", "primary", "core"))
+                             .withResource(CreatedResource.ProvisionedVm.provisionedVm("docker", "id-c", "primary", "core"));
+    }
+
+    /// The lifecycle list is the leader's view of its peers and can omit a node (run8 listed 2 of 3). That node is deleted with the VMs without
+    /// a drain, so it is named and counted, never silently omitted; the counts sum to the ledger.
+    @Test
+    void destroy_aLedgerNodeMissingFromTheLifecycleList_isNamed_andTheCountsSumToTheLedger() {
+        DockerHostPorts.nameOverride = id -> Result.success(switch (id) {
+            case "id-a" -> A;
+            case "id-b" -> B;
+            default -> C;
+        });
+        var ledger = threeNodeLedger();
+        ClusterHttpClient.HTTP_OPS_REF.set(new ScriptedDrainHttp(drainAccepted(A), notFound(A)));
+        ClusterHttpClient.setEndpointOverride("http://127.0.0.1:49999");
+        ClusterDestroyCommand.stateLoader = name -> Result.success(Option.some(ledger));
+
+        var result = new ClusterDestroyCommand().destroyEnumerated(registry(), CLUSTER, List.of(A, B));
+
+        assertThat(code(result)).as("an unlisted node alone does not refuse").isEqualTo(ExitCode.SUCCESS);
+        assertThat(stdout()).contains("Not listed by the cluster: " + C + " — removed without drain.");
+        assertThat(stdout()).contains("drained 2, held for quorum 0, failed 0, not listed by the cluster 1; accounted 3 of 3 recorded in the bootstrap ledger");
+    }
+
+    @Test
+    void destroy_anUnlistedNodeWhoseNameCannotBeRecovered_isStillCounted() {
+        DockerHostPorts.nameOverride = id -> Causes.cause("docker unavailable").result();
+        var ledger = threeNodeLedger();
+        ClusterHttpClient.HTTP_OPS_REF.set(new ScriptedDrainHttp(drainAccepted(A), notFound(A)));
+        ClusterHttpClient.setEndpointOverride("http://127.0.0.1:49999");
+        ClusterDestroyCommand.stateLoader = name -> Result.success(Option.some(ledger));
+
+        new ClusterDestroyCommand().destroyEnumerated(registry(), CLUSTER, List.of(A, B));
+
+        assertThat(stdout()).contains("1 node(s) recorded in the bootstrap ledger were not listed by the cluster");
+        assertThat(stdout()).contains("accounted 3 of 3");
     }
 }

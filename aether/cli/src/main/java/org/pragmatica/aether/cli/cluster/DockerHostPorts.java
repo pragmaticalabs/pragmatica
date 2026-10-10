@@ -24,8 +24,50 @@ final class DockerHostPorts {
     private static final long DOCKER_PORT_TIMEOUT_SECONDS = 20L;
     /// Test seam: replaces the `docker port` call. Null in production.
     static volatile Function<String, Result<Integer>> override;
+    /// Test seam: replaces the `docker inspect` name lookup. Null in production.
+    static volatile Function<String, Result<String>> nameOverride;
 
     private DockerHostPorts() {}
+
+    /// The container's name, which is the cluster node id the cluster knows it by: lets destroy name a ledger container the cluster did not list.
+    static Result<String> containerName(String containerId) {
+        var override = DockerHostPorts.nameOverride;
+
+        return override != null
+               ? override.apply(containerId)
+               : dockerName(containerId);
+    }
+
+    @SuppressWarnings("JBCT-EX-01")
+    private static Result<String> dockerName(String containerId) {
+        try {
+            var process = new ProcessBuilder("docker", "inspect", "--format", "{{.Name}}", containerId).redirectErrorStream(true)
+                                                                                                       .start();
+            var finished = process.waitFor(DOCKER_PORT_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+            var output = new String(process.getInputStream().readAllBytes(),
+                                    StandardCharsets.UTF_8).strip();
+
+            if (!finished) {
+                process.destroyForcibly();
+
+                return Causes.cause("`docker inspect " + containerId
+                                   + "` did not answer within " + DOCKER_PORT_TIMEOUT_SECONDS
+                                   + "s").result();
+            }
+
+            return process.exitValue() == 0 && !output.isEmpty()
+                   ? Result.success(output.startsWith("/")
+                                    ? output.substring(1)
+                                    : output)
+                   : Causes.cause("`docker inspect " + containerId + "` failed: " + output).result();
+        } catch (IOException e) {
+            return Causes.cause("could not run docker inspect: " + e.getMessage()).result();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+
+            return Causes.cause("interrupted running docker inspect").result();
+        }
+    }
 
     static Result<Integer> managementPort(String containerId) {
         var override = DockerHostPorts.override;
