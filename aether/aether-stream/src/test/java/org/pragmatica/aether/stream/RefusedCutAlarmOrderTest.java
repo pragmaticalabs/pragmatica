@@ -199,11 +199,10 @@ class RefusedCutAlarmOrderTest {
         assertThat(delivered.stream().filter(w -> w.code() == OperatorWarningCode.STREAM_DIVERGENT_TAIL_CUT_REFUSED).count()).as("the race raised refusals").isPositive();
     }
 
-    /// Manager-level lock order (#2004, from v-2096's CutsDeadlock probe): the refused-cut monitor against the manager's own locks. Workers drive
-    /// the real paths on one manager: a refused repair (monitor, ring section), a repair that goes through (`forgetCutState` under the ring's append
-    /// section, then `quarantineLock`), a divergence record (`quarantineLock`) and the destroy (monitor), so a monitor nested with either lock in
-    /// either order is a cycle the detector finds. Mutation (shown in the round-2 result): nesting `quarantineLock` inside the monitor in
-    /// `cutRefused` and the monitor inside `quarantineLock` in `forgetCutState` turns this red.
+    /// Smoke test of the real paths: workers drive a refused repair (monitor, ring section), a repair that goes through (`forgetCutState`
+    /// under the ring's append section, then `quarantineLock`), a divergence record and the destroy on one manager. It fails only on a deadlock
+    /// or a hang. It does NOT pin the monitor/`quarantineLock` cycle: the window between two acquisitions is too narrow for these paths, and
+    /// the injected nesting stays green here. `cutsAndForgetCutState_inTightLoops_neverDeadlock` is the test that pins that cycle.
     @Test
     void managerLocksAndTheRefusedCutMonitor_neverDeadlock() throws Exception {
         var manager = streamPartitionManager(Long.MAX_VALUE, Option.some(walDir));
