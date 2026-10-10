@@ -44,14 +44,9 @@ sealed interface BootstrapPhaseFormation {
                           ClusterBootstrapOrchestrator.API_KEY_BYTES);
         var managementPort = ctx.config().operations().ports().management();
         var scheme = managementScheme(ctx);
-        var healthTimeoutMs = BootstrapWaitCap.cappedMs(ClusterBootstrapOrchestrator.parseDurationMs(ctx.config()
-                                                                                                        .operations()
-                                                                                                        .timeouts()
-                                                                                                        .healthCheck()));
-        var quorumTimeoutMs = BootstrapWaitCap.cappedMs(ClusterBootstrapOrchestrator.parseDurationMs(ctx.config()
-                                                                                                        .operations()
-                                                                                                        .timeouts()
-                                                                                                        .quorumFormation()));
+        var waits = formationWaits(ctx.config());
+        var healthTimeoutMs = waits.healthMs();
+        var quorumTimeoutMs = waits.quorumMs();
         var requiredCores = ctx.config().derivedCoreCount();
         var managementKey = resolveManagementKey(ctx);
 
@@ -65,6 +60,17 @@ sealed interface BootstrapPhaseFormation {
                                                                 scheme,
                                                                 managementKey))
                             .flatMap(_ -> finalizeClusterFormation(ctx, apiKey));
+    }
+
+    /// The node-health and quorum-formation waits in force: the config's `[operations.timeouts]`, capped by a `--timeout` given on the command
+    /// ([BootstrapWaitCap]). One place, so a test can assert both without waiting them out.
+    record FormationWaits(long healthMs, long quorumMs) {}
+
+    static FormationWaits formationWaits(ClusterBootstrapConfig config) {
+        var timeouts = config.operations().timeouts();
+
+        return new FormationWaits(BootstrapWaitCap.cappedMs(ClusterBootstrapOrchestrator.parseDurationMs(timeouts.healthCheck())),
+                                  BootstrapWaitCap.cappedMs(ClusterBootstrapOrchestrator.parseDurationMs(timeouts.quorumFormation())));
     }
 
     private static String managementScheme(BootstrapContext ctx) {

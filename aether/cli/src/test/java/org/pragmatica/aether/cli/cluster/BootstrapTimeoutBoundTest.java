@@ -102,7 +102,7 @@ class BootstrapTimeoutBoundTest {
 
     /// G6: the cap is applied where the waits are computed. A formation against a node that never answers ends at the cap, not the config's 300 s.
     @Test
-    @Timeout(value = 60, unit = TimeUnit.SECONDS)
+    @Timeout(value = 45, unit = TimeUnit.SECONDS, threadMode = Timeout.ThreadMode.SEPARATE_THREAD)
     void formation_appliesTheCap_toTheHealthWait() {
         BootstrapWaitCap.seconds = Option.some(1);
         var out = new ByteArrayOutputStream();
@@ -125,7 +125,7 @@ class BootstrapTimeoutBoundTest {
 
     /// H4: the QUORUM wait is capped where it is computed too, not only the health wait. Health answers at once, quorum never forms.
     @Test
-    @Timeout(value = 60, unit = TimeUnit.SECONDS)
+    @Timeout(value = 45, unit = TimeUnit.SECONDS, threadMode = Timeout.ThreadMode.SEPARATE_THREAD)
     void formation_appliesTheCap_toTheQuorumWait() throws Exception {
         var server = com.sun.net.httpserver.HttpServer.create(new java.net.InetSocketAddress("127.0.0.1", 0), 0);
 
@@ -155,6 +155,50 @@ class BootstrapTimeoutBoundTest {
         }
 
         assertThat(out.toString(StandardCharsets.UTF_8)).contains("Waiting for quorum").contains("timeout: 1s)");
+    }
+
+    /// H4/G6 without waiting anything out: BOTH formation waits are capped where they are computed, so an uncapped one is an assertion failure and
+    /// not a 10-minute hang. (The two tests above still drive the real poll loops; their timeout runs on a separate thread so a hang is a failure too.)
+    @Test
+    void formationWaits_areBothCapped_andBothUncappedWithoutACap() {
+        var defaults = BootstrapPhaseFormation.formationWaits(config());
+
+        assertThat(defaults.healthMs()).as("no cap: the config's health wait").isEqualTo(300_000L);
+        assertThat(defaults.quorumMs()).as("no cap: the config's quorum wait").isEqualTo(600_000L);
+        BootstrapWaitCap.seconds = Option.some(7);
+        var capped = BootstrapPhaseFormation.formationWaits(config());
+
+        assertThat(capped.healthMs()).isEqualTo(7_000L);
+        assertThat(capped.quorumMs()).isEqualTo(7_000L);
+    }
+
+    /// G6: the REAL command wiring. `--wait --timeout 1` runs the command, whose call-site sets the cap, and the stand-in orchestrator then runs the
+    /// REAL formation against a node that never answers. With the cap applied it fails in about a second; without it the health wait is 300 s and the
+    /// separate-thread timeout fails the test.
+    @Test
+    @Timeout(value = 30, unit = TimeUnit.SECONDS, threadMode = Timeout.ThreadMode.SEPARATE_THREAD)
+    void aTimeoutOnTheCommand_reachesTheRealFormationWaits(@TempDir Path dir) throws Exception {
+        var toml = dir.resolve("cluster.toml");
+        var out = new ByteArrayOutputStream();
+        var original = System.out;
+
+        Files.writeString(toml, CONFIG);
+        ClusterBootstrapCommand.bootstrapInvoker = (config, resume, fullCheck, keys, keepOnFailure, raw) -> {
+            var ctx = BootstrapContext.bootstrapContext(config,
+                                                        BootstrapState.initialState(ClusterName.clusterName("dock").unwrap(), "h", "now"),
+                                                        List.of(),
+                                                        List.of(NodeAddress.nodeAddress("n", "127.0.0.1", Option.none(), Option.some(1))));
+
+            return BootstrapPhaseFormation.execute(ctx).map(_ -> null);
+        };
+        System.setOut(new PrintStream(out, true, StandardCharsets.UTF_8));
+        try {
+            new CommandLine(new ClusterBootstrapCommand()).execute("--wait", "--yes", "--timeout", "1", toml.toString());
+        } finally {
+            System.setOut(original);
+        }
+
+        assertThat(out.toString(StandardCharsets.UTF_8)).contains("(timeout: 1s)");
     }
 
     @Test
