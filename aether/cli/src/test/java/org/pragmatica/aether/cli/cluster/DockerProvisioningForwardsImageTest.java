@@ -113,6 +113,17 @@ class DockerProvisioningForwardsImageTest {
         assertThat(seen.getFirst().compute()).containsEntry("image_name", "registry/aether-worker:1.1.0");
     }
 
+    /// Resolved per role, not per source: a source with only a worker role hands the provider the WORKER's pin.
+    @Test
+    void bootstrapProvisioning_workerOnlySource_handsTheProviderTheWorkersPin() {
+        var config = ClusterBootstrapConfigParser.parse(PINNED.replace("[source.local.core]\n            count = 1\n            runtime = \"coreapp\"\n", "")).unwrap();
+
+        bootstrap(config);
+
+        assertThat(seen).as("CONTROL: the worker group reached the provider factory").isNotEmpty();
+        assertThat(seen.getFirst().compute()).containsEntry("image_name", "registry/aether-worker:1.1.0");
+    }
+
     @Test
     void bootstrapProvisioning_roleWithoutAPin_handsTheProviderNoImage() {
         var config = ClusterBootstrapConfigParser.parse(UNPINNED).unwrap();
