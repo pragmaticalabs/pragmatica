@@ -12,7 +12,7 @@
   drain-grace backstop both reap the same one; a node that joins again is a new incarnation, and what was remembered of the previous one is dropped), and a provider whose listing lags its delete is confirmed by the retry.
 - **EXTERNAL nodes make no provider call on any path.** A node whose reservation carries no provider binding (an operator started it) is confirmed by
   leaving the membership; its capacity is returned and terminating it through the lifecycle is a no-op.
-- [verified: real `SourceComputeRegistry` + real `CapacityControlledLifecycle` + real topology manager, `NodeReplacementRealRegistryReapTest` (67
+- [verified: real `SourceComputeRegistry` + real `CapacityControlledLifecycle` + real topology manager, `NodeReplacementRealRegistryReapTest` (72
   tests): scale-down of an unlisted bootstrap node, listing error retried, event and its recovery only on a real confirmation, stopped instance
   terminated, lagging listing, second reap of a confirmed and of an external node, refused chain ends in the event; `ClusterTopologyManagerReapRetiredTest`;
   the operator-warning sink wiring is pinned by a boot test.] [verified: Ember class x2, 0 refusals per run.] [unverified: a real cloud run.]
@@ -37,8 +37,8 @@
   an open mark closes its warning cluster-wide with `instance-termination-rejoined`, never with a confirmation: nothing was terminated.
 - **An EXTERNAL release and a rejoin are correct in both commit orders.** A node that joins while its EXTERNAL reservation is present bumps an admission marker
   (`CapacityAdmissionKey`/`Value`, wire tags 2138/2139, runtime state) in a transaction guarded on the reservation being unchanged; the release is committed only against
-  the marker value it read. If the rejoin commits first, the stale release fails and deletes nothing. If the release commits first, the rejoin's guarded transaction fails
-  on the absent reservation and the node is admitted again as a new admission (an expected-absent reservation and, when counted, its slot), so the ledger keeps counting the
+  the marker value it read. If the rejoin commits first, the stale release fails and deletes nothing. If the release commits first - before the rejoin is processed, or during it - the release has
+  remembered the reservation it deleted in the marker, and the rejoin admits the node again from it as a new admission (bumping the marker) (an expected-absent reservation and, when counted, its slot), so the ledger keeps counting the
   live reservations. If the ledger cannot count the slot again the node is refused and evicted with `external-rejoin-unreconciled`; any other failure of the reconciliation
   raises the same event. `CapacityReservationValue` keeps its wire shape (a field added to a positional codec would make an older writer's bytes unreadable in a mixed-version
   rolling upgrade), pinned by a test of its rc4 bytes. A rejoin also cancels a pending operator drain of the node (`node-drain-cancelled-rejoined`),
