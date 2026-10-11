@@ -5,6 +5,7 @@ package org.pragmatica.aether.environment.docker;
 
 import java.util.List;
 
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 
 
@@ -63,6 +64,10 @@ public interface DockerNetwork {
     }
 
     /// Removes exactly the network named, only if it carries `clusterName`'s label and no container is attached. Never forces.
+    ///
+    /// ABSENT means the network really is not there (the inspect failed). A `docker network rm` that fails is NOT absent: it comes back as a failed
+    /// promise carrying docker's own cause, so the caller reports it and counts the cleanup as unclean instead of believing a network that is
+    /// still there has gone.
     static Promise<Removal> removeIfOwnedAndEmpty(DockerCommandRunner runner, String name, String clusterName) {
         return runner.execute(List.of("docker",
                                       "network",
@@ -70,11 +75,10 @@ public interface DockerNetwork {
                                       "--format",
                                       "{{index .Labels \"" + OWNER_LABEL + "\"}}|{{len .Containers}}",
                                       name))
-                     .flatMap(facts -> removeWhenOwnedAndEmpty(runner,
-                                                               name,
-                                                               clusterName,
-                                                               facts.strip()))
-                     .orElse(() -> Promise.success(Removal.ABSENT));
+                     .map(Option::some)
+                     .orElse(() -> Promise.success(Option.<String> none()))
+                     .flatMap(facts -> facts.fold(() -> Promise.success(Removal.ABSENT),
+                                                  present -> removeWhenOwnedAndEmpty(runner, name, clusterName, present.strip())));
     }
 
     private static Promise<Removal> removeWhenOwnedAndEmpty(DockerCommandRunner runner,

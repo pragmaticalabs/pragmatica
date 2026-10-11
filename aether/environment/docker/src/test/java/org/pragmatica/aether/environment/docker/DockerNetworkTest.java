@@ -23,6 +23,7 @@ class DockerNetworkTest {
         final Map<String, String> labels = new HashMap<>();
         final Map<String, Integer> attached = new HashMap<>();
         boolean createFails;
+        boolean rmFails;
 
         @Override
         public Promise<String> execute(List<String> command) {
@@ -33,6 +34,10 @@ class DockerNetworkTest {
                 case "inspect" -> inspect(command, name);
                 case "create" -> create(command, name);
                 case "rm" -> {
+                    if (rmFails) {
+                        yield Causes.cause("Docker command failed (exit 1): error while removing network: network has active endpoints").promise();
+                    }
+
                     labels.remove(name);
                     yield Promise.success(name);
                 }
@@ -168,5 +173,20 @@ class DockerNetworkTest {
     @Test
     void aNetworkThatIsAlreadyGone_isNotAnError() {
         assertThat(DockerNetwork.removeIfOwnedAndEmpty(new Docker(), "net", "c1").await().unwrap()).isEqualTo(DockerNetwork.Removal.ABSENT);
+    }
+
+    /// A failed `docker network rm` is NOT "absent": the network is still there. It comes back as a failure carrying docker's own text.
+    @Test
+    void aFailedRm_isReportedWithDockersCause_notSwallowedAsAbsent() {
+        var docker = new Docker();
+
+        docker.labels.put("net", "c1");
+        docker.rmFails = true;
+
+        var result = DockerNetwork.removeIfOwnedAndEmpty(docker, "net", "c1").await();
+
+        assertThat(result.isFailure()).as("not reported as ABSENT").isTrue();
+        result.onFailure(cause -> assertThat(cause.message()).contains("network has active endpoints"));
+        assertThat(docker.labels).as("the network is genuinely still there").containsKey("net");
     }
 }

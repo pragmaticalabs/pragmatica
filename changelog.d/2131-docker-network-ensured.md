@@ -8,5 +8,9 @@
   cluster's own label (an earlier run left it in place) is owned again, so a re-run does not leak it.
 - `aether cluster destroy` removes exactly the recorded network name (never the provider's current one), only if it still carries the cluster's label and
   no container is attached, after the containers are gone. A network with members is left in place and reported. A user-provided network is never removed.
+- A `docker network rm` that fails is reported (docker's own cause) and counted as an unclean cleanup; it is no longer swallowed as "absent". Absent means the
+  network really does not exist.
+- Label contract: any network carrying `aether.created-by-cluster=<this cluster>` is treated as owned (recorded and, when empty, removed); putting our label on
+  your own network hands it to us.
 - Known limit: two clusters sharing one network leave it in place when the creating cluster is destroyed first; leaking is the safe direction.
 - [verified: `DockerNetworkTest`, `DockerNetworkBootstrapTest`]

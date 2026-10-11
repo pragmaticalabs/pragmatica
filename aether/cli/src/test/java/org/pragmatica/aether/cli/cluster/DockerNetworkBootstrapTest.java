@@ -73,6 +73,7 @@ class DockerNetworkBootstrapTest {
         final Map<String, String> labels = new HashMap<>();
         final Map<String, Integer> attached = new HashMap<>();
         int containers;
+        boolean rmFails;
 
         @Override
         public Promise<String> execute(List<String> command) {
@@ -100,6 +101,10 @@ class DockerNetworkBootstrapTest {
                     yield Promise.success("net-id");
                 }
                 default -> {
+                    if (rmFails) {
+                        yield Causes.cause("Docker command failed (exit 1): error while removing network: network has active endpoints").promise();
+                    }
+
                     labels.remove(name);
                     yield Promise.success(name);
                 }
@@ -264,6 +269,28 @@ class DockerNetworkBootstrapTest {
         assertThat(result.isSuccess()).isTrue();
         assertThat(docker.networkCommands()).contains("docker network rm foo-net").doesNotContain("docker network rm aether-network");
         assertThat(docker.labels).as("the provider's current network is untouched").containsKey("aether-network");
+    }
+
+    /// A `docker network rm` that fails is an unclean cleanup, printed with docker's cause - never "success" over a network that is still there.
+    @Test
+    void aFailedNetworkRm_isReported_andTheCleanupIsNotClean() {
+        docker.labels.put("aether-network", CLUSTER);
+        docker.rmFails = true;
+        var err = new java.io.ByteArrayOutputStream();
+        var originalErr = System.err;
+
+        System.setErr(new java.io.PrintStream(err, true, java.nio.charset.StandardCharsets.UTF_8));
+        try {
+            var result = BootstrapCleanup.cleanup(ledgerRecording("aether-network"));
+
+            assertThat(result.isFailure()).as("cleanup is not clean").isTrue();
+            result.onFailure(cause -> assertThat(cause.message()).contains("aether-network"));
+        } finally {
+            System.setErr(originalErr);
+        }
+
+        assertThat(err.toString(java.nio.charset.StandardCharsets.UTF_8)).contains("Failed to cleanup").contains("network has active endpoints");
+        assertThat(docker.labels).as("the network is still there").containsKey("aether-network");
     }
 
     @Test
