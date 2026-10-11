@@ -41,6 +41,29 @@ class StreamConfigParserReservedSourceTest {
         assertParses("io.acme.inventory:stock-updates:2.0.0");
     }
 
+    /// #1338: a `system` source is read-only, so a role that writes is refused at validation with its own named cause.
+    @Test
+    void externalSystemSource_producerOrBothRole_isRefusedWithTheNamedCause() {
+        for (var role : new String[]{"producer", "both", " Producer "}) {
+            var result = StreamConfigParser.parseResources("[streams.inbox]\nsource = \"system:cluster-events:1.0.0\"\nrole = \"" + role + "\"\n",
+                                                           ReplicationFactors.BUILT_IN);
+
+            assertThat(result.isFailure()).as("role '%s' must be refused", role).isTrue();
+            result.onFailure(cause -> assertThat(cause).isInstanceOf(StreamSourceError.SystemSourceNotConsumer.class)
+                                                       .satisfies(c -> assertThat(c.message()).contains("system:cluster-events:1.0.0").contains("read-only")));
+        }
+    }
+
+    /// The same writing role on a non-system External source stays legal (this rule is about system streams only), and a
+    /// system source with no role or a consumer role still parses.
+    @Test
+    void externalSource_writingRoleOnANonSystemNamespace_andNoRoleOnSystem_stillParse() {
+        StreamConfigParser.parseResources("[streams.inbox]\nsource = \"io.acme.inventory:stock-updates:2.0.0\"\nrole = \"producer\"\n", ReplicationFactors.BUILT_IN)
+                          .onFailure(cause -> fail("non-system source with a producer role must parse: " + cause.message()));
+        StreamConfigParser.parseResources("[streams.inbox]\nsource = \"system:cluster-events:1.0.0\"\n", ReplicationFactors.BUILT_IN)
+                          .onFailure(cause -> fail("system source with no role must parse: " + cause.message()));
+    }
+
     private static void assertRefused(String source, String prefix) {
         StreamConfigParser.parseResources(toml(source), ReplicationFactors.BUILT_IN)
                           .onSuccess(_ -> fail("External source '" + source + "' must be refused"))

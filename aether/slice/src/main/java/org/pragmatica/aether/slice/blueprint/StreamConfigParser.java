@@ -293,7 +293,8 @@ public interface StreamConfigParser {
         if (sourceOpt.isPresent()) {
             return refuseUnknownKeys(StreamSection.tomlSection(doc, section, streamName)).flatMap(_ -> sourceOpt.fold(() -> missingStreamResource(streamName),
                                                                                                                       source -> parseExternalResource(streamName,
-                                                                                                                                                      source)));
+                                                                                                                                                      source,
+                                                                                                                                                      effectiveRoleOpt)));
         }
         // Spec §11.1.1: shortcut form — when `version` is omitted, default per role.
         // Producer (explicit, inferred from manifest, or absent → producer-assumed) → "1.0.0".
@@ -317,9 +318,10 @@ public interface StreamConfigParser {
                                    + "' must specify either 'version' (owned) or 'source' (external)").result();
     }
 
-    private static Result<StreamResource> parseExternalResource(String streamName, String source) {
+    private static Result<StreamResource> parseExternalResource(String streamName, String source, Option<String> roleOpt) {
         return ResourceAddress.resourceAddress(source)
                               .flatMap(addr -> refuseReservedKind(streamName, source, addr))
+                              .flatMap(addr -> refuseWritingRole(streamName, source, addr, roleOpt))
                               .map(addr -> StreamResource.external(streamName, addr));
     }
 
@@ -332,6 +334,23 @@ public interface StreamConfigParser {
                      .flatMap(a -> StreamEngineKey.reservedKindPrefixOf(StreamEngineKey.engineKey(a)))
                      .map(prefix -> StreamSourceError.ReservedKindSource.FACTORY.apply(streamName, source, prefix).<ResourceAddress> result())
                      .or(() -> success(addr));
+    }
+
+    /// #1338: a `system` source is a READ-ONLY reference, so a role that writes (`producer`, `both`) is refused here with
+    /// [StreamSourceError.SystemSourceNotConsumer] instead of at the first publish. An absent role is accepted: the gate at
+    /// the stream layer refuses the write whatever the declaration says.
+    private static Result<ResourceAddress> refuseWritingRole(String streamName,
+                                                             String source,
+                                                             ResourceAddress addr,
+                                                             Option<String> roleOpt) {
+        return Option.some(addr).filter(ResourceAddress::isSystem)
+                     .flatMap(_ -> roleOpt.map(String::trim).map(String::toLowerCase).filter(StreamConfigParser::writes))
+                     .map(role -> StreamSourceError.SystemSourceNotConsumer.FACTORY.apply(streamName, source, role).<ResourceAddress> result())
+                     .or(() -> success(addr));
+    }
+
+    private static boolean writes(String role) {
+        return ROLE_PRODUCER.equals(role) || ROLE_BOTH.equals(role);
     }
 
     private static Result<StreamResource> parseOwnedResource(TomlDocument doc,
