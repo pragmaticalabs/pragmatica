@@ -1,7 +1,6 @@
-<!--
-SPDX-License-Identifier: BUSL-1.1
-Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
--->
+<!-- SPDX-License-Identifier: Apache-2.0 -->
+<!-- Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko -->
+<!-- Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms. -->
 
 # Session Handover — 2026-05-29b — Membership-v2 finale landed + first Docker validation exposed a bug cascade → membership-unification redesign STARTED (P1+P2-consensus done)
 

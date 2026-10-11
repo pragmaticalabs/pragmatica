@@ -13,13 +13,6 @@
     <name>Aether Resource: Notification</name>
     <description>Email notification sender with SMTP and HTTP vendor backends.</description>
 
-    <licenses>
-        <license>
-            <name>Business Source License 1.1</name>
-            <url>https://mariadb.com/bsl11/</url>
-            <comments>Converts to Apache License 2.0 on January 1, 2030</comments>
-        </license>
-    </licenses>
 
     <dependencies>
         <dependency>
