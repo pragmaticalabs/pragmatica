@@ -321,7 +321,10 @@ class BootstrapPhaseDeploySshSourceTest {
         assertThat(startCommands.get("10.0.0.1")).as("#828: a credential-class identity var rides the secret file, not argv")
                   .doesNotContain("k1,k2")
                   .contains("-e AETHER_PROVISIONED_BY=\"ops\"")
-                  .doesNotContain("NOT_ON_THE_LIST");
+                  .doesNotContain("NOT_ON_THE_LIST")
+                  .contains("-e AETHER_API_KEYS_FILE=\"/run/secrets/aether-api-keys\"")
+                  .doesNotContain("--env-file");
+        assertThat(scpTargets).as("positive control: the keys were pushed to their staged file").contains("10.0.0.1:" + BootstrapPhaseDeploy.stagedPath("AETHER_API_KEYS", false));
     }
 
     /// #828: the SSH source's launch line used to inline the cluster secret as `-e AETHER_CLUSTER_SECRET`.

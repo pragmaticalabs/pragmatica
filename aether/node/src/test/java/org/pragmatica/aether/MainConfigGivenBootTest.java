@@ -136,6 +136,22 @@ class MainConfigGivenBootTest {
         assertRefused(boot(dir, java.util.Map.of("AETHER_CLUSTER_SECRET_FILE", missing.toString())), missing.toString());
     }
 
+    /// #828 — the API-key variables follow the same refusal rules as the cluster secret: a broken file (unreadable, or conflicting
+    /// with the plain variable) stops the boot with exit 65 instead of booting with no keys.
+    @Test
+    void anApiKeysFileThatIsUnreadableOrConflicting_refusesToStart_withExit65_namingNoValue(@TempDir Path dir) throws Exception {
+        var file = write(dir, "keys", "file-keys-1a2b:ops:ADMIN");
+        var missing = dir.resolve("no-such-keys");
+
+        assertRefused(boot(dir, java.util.Map.of("AETHER_API_KEYS_FILE", missing.toString())), missing.toString());
+        var conflict = boot(dir, java.util.Map.of("AETHER_API_KEYS_FILE", file.toString(), "AETHER_API_KEYS", "plain-keys-3c4d:x:ADMIN"));
+
+        assertRefused(conflict, "AETHER_API_KEYS_FILE");
+        assertThat(conflict.out() + conflict.err()).doesNotContain("file-keys-1a2b").doesNotContain("plain-keys-3c4d");
+        assertRefused(boot(dir, java.util.Map.of("AETHER_API_KEY_FILE", missing.toString())), missing.toString());
+        assertPastConfigStage(boot(dir, java.util.Map.of("AETHER_API_KEYS_FILE", file.toString())));
+    }
+
     @Test
     void aSecretFileAlone_andAnEqualPair_getPastTheConfigStage(@TempDir Path dir) throws Exception {
         var file = write(dir, "secret", "file-sentinel-1a2b\n");

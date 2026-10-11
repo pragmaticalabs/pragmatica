@@ -160,7 +160,7 @@ sealed interface BootstrapPhaseDeploy {
                                           SourceName sourceName,
                                           Fn1<Result<String>, String> healthCheck) {
         Fn3<Result<String>, String, String, SshConfig> noopSsh = (host, command, config) -> Result.success("");
-        Fn1<String, String> noopEnv = name -> "/dev/null";
+        Fn1<String, String> noopEnv = name -> SshKeyResolver.AETHER_SSH_KEY_ENV.equals(name) ? "/dev/null" : null;
 
         return deployCloudSource(ctx, source, sourceName, healthCheck, noopSsh, noopEnv);
     }
@@ -427,18 +427,7 @@ sealed interface BootstrapPhaseDeploy {
             }
 
             var role = roleResult.unwrap();
-            var secretPush = pushClusterSecret(node.nodeId(),
-                                               node.publicIp(),
-                                               isJvm
-                                               ? JVM_SECRET_STAGED
-                                               : CONTAINER_SECRET_STAGED,
-                                               isJvm
-                                               ? JVM_CREDENTIALS_ENV_FILE
-                                               : CONTAINER_CREDENTIALS_ENV_FILE,
-                                               clusterSecret,
-                                               envLookup,
-                                               sshConfig,
-                                               scpExec);
+            var secretPush = pushClusterSecret(node.nodeId(), node.publicIp(), isJvm, clusterSecret, envLookup, sshConfig, scpExec);
 
             if (secretPush.isFailure()) {
                 return new BootstrapError.DeploymentFailed(node.publicIp(),
@@ -710,8 +699,7 @@ sealed interface BootstrapPhaseDeploy {
              + " >&2; exit " + ALREADY_PRESENT_EXIT
              + "; fi" + backupPath.map(_ -> " && install -d -m 0750 -o 1000 -g 1000 " + NodeUserDataRenderer.BACKUP_HOST_DIRECTORY)
                                   .or("")
-             + " && install -m 0400 -o 1000 -g 1000 " + CONTAINER_SECRET_STAGED
-             + " " + NodeUserDataRenderer.CONTAINER_SECRET_HOST_FILE
+             + containerInstalls(envLookup)
              + " && docker run -d --name aether-node --restart no --network host"
              + " -l aether-cluster=" + clusterName.value()
              + " -l aether-node-id=" + nodeId
@@ -727,17 +715,10 @@ sealed interface BootstrapPhaseDeploy {
              + "\""
              + " -e PEERS=\"" + peers
              + "\""
-             + " --mount type=bind,src=" + NodeUserDataRenderer.CONTAINER_SECRET_HOST_FILE
-             + ",dst=" + NodeUserDataRenderer.CONTAINER_SECRET_MOUNT
-             + ",readonly"
-             + " -e " + ClusterSecretSource.SECRET_FILE_ENV
-             + "=\"" + NodeUserDataRenderer.CONTAINER_SECRET_MOUNT
-             + "\"" + (hasCredentials(envLookup)
-                       ? " --env-file " + CONTAINER_CREDENTIALS_ENV_FILE
-                       : "") + identityEnvFlags(clusterName, role, source, zone, envLookup)
+             + containerMounts(envLookup)
+             + identityEnvFlags(clusterName, role, source, zone, envLookup)
              + " " + image
-             + " ); rc=$?; rm -f " + CONTAINER_SECRET_STAGED
-             + " " + CONTAINER_CREDENTIALS_ENV_FILE
+             + " ); rc=$?; rm -f " + stagedFiles()
              + "; exit $rc";
     }
 
@@ -764,10 +745,6 @@ sealed interface BootstrapPhaseDeploy {
     }
 
     private static Unit appendRestartEnvFlag(StringBuilder sb, String name, String value) {
-        if (SECRET_IDENTITY_VARS.contains(name)) {
-            return Unit.unit();
-        }
-
         sb.append(" -e ").append(name).append("=\"").append(value).append("\"");
 
         return Unit.unit();
@@ -778,21 +755,67 @@ sealed interface BootstrapPhaseDeploy {
     /// guard passes, so a refused start never overwrites the secret of the node already running there. The staged copy is
     /// removed by the same line on every exit; the installed file is KEPT (a container start re-resolves the bind source).
     /// The secret therefore appears in no ssh command line (remote `ps`, shell history) and not in `docker inspect`.
-    static String CONTAINER_SECRET_STAGED = "/opt/aether/config/cluster-secret.staged";
-    static String JVM_SECRET_STAGED = NodeUserDataRenderer.JVM_ENV_DIR + "/cluster-secret.staged";
-    /// Credential-class identity vars (below) have no `_FILE` reader on the node, so they still reach it as environment: a
-    /// transient env file, `--env-file` for containers or appended to the unit's env file for JVMs. Pushed only when the
-    /// operator's environment sets one, removed by the launch line. [unverified residual: they show in `docker inspect`.]
-    static String CONTAINER_CREDENTIALS_ENV_FILE = "/opt/aether/config/credentials.env";
-    static String JVM_CREDENTIALS_ENV_FILE = NodeUserDataRenderer.JVM_ENV_DIR + "/credentials.env";
-    /// #828 — the identity allow-list members that are CREDENTIALS (the same class as the cluster
-    /// secret): they ride the pushed credentials file instead of `-e` / printf operands.
-    static List<String> SECRET_IDENTITY_VARS = List.of("AETHER_API_KEY", "AETHER_API_KEYS");
+    static String CONTAINER_SECRET_STAGED = stagedPath(ClusterSecretSource.SECRET_ENV, false);
+    static String JVM_SECRET_STAGED = stagedPath(ClusterSecretSource.SECRET_ENV, true);
 
-    private static boolean hasCredentials(Fn1<String, String> envLookup) {
-        return SECRET_IDENTITY_VARS.stream().anyMatch(name -> Option.option(envLookup.apply(name))
-                                                                    .filter(value -> !value.isBlank())
-                                                                    .isPresent());
+    /// Where a credential's pushed copy waits until the launch line installs it (#828): next to its final path.
+    static String stagedPath(String plainVar, boolean jvm) {
+        return (jvm
+                ? ClusterSecretSource.jvmFile(plainVar)
+                : ClusterSecretSource.hostFile(plainVar)) + ".staged";
+    }
+
+    /// The variables the launch delivers by file: the cluster secret, and each credential the operator's environment sets (as a
+    /// value or as a `_FILE`). The API keys have the same exposure as the secret (a container env var shows in `docker inspect`),
+    /// so they take the same route. Decided from the lookup alone, so the builder (pure) and the push (which can fail) agree.
+    static List<String> deliveredFiles(Fn1<String, String> envLookup) {
+        var all = new ArrayList<String>();
+
+        all.add(ClusterSecretSource.SECRET_ENV);
+        ClusterSecretSource.CREDENTIAL_ENVS.stream()
+                           .filter(name -> isSet(envLookup, name) || isSet(envLookup, ClusterSecretSource.fileVar(name)))
+                           .forEach(all::add);
+
+        return all;
+    }
+
+    private static boolean isSet(Fn1<String, String> envLookup, String name) {
+        return Option.option(envLookup.apply(name))
+                     .filter(value -> !value.isBlank())
+                     .isPresent();
+    }
+
+    private static String containerInstalls(Fn1<String, String> envLookup) {
+        return deliveredFiles(envLookup).stream()
+                                        .map(name -> " && install -m 0400 -o 1000 -g 1000 " + stagedPath(name, false) + " " + ClusterSecretSource.hostFile(name))
+                                        .collect(java.util.stream.Collectors.joining());
+    }
+
+    private static String containerMounts(Fn1<String, String> envLookup) {
+        return deliveredFiles(envLookup).stream()
+                                        .map(name -> " --mount type=bind,src=" + ClusterSecretSource.hostFile(name) + ",dst="
+                                                     + ClusterSecretSource.containerMount(name) + ",readonly -e "
+                                                     + ClusterSecretSource.fileVar(name) + "=\"" + ClusterSecretSource.containerMount(name) + "\"")
+                                        .collect(java.util.stream.Collectors.joining());
+    }
+
+    private static String jvmInstalls(Fn1<String, String> envLookup) {
+        return deliveredFiles(envLookup).stream()
+                                        .map(name -> " && install -m 0400 " + stagedPath(name, true) + " " + ClusterSecretSource.jvmFile(name))
+                                        .collect(java.util.stream.Collectors.joining());
+    }
+
+    private static String jvmFileVars(Fn1<String, String> envLookup) {
+        return deliveredFiles(envLookup).stream()
+                                        .map(name -> " '" + ClusterSecretSource.fileVar(name) + "=" + ClusterSecretSource.jvmFile(name) + "'")
+                                        .collect(java.util.stream.Collectors.joining());
+    }
+
+    /// Every staged copy the launch could have been given, removed on every exit (`rm -f` of an absent one is harmless).
+    private static String stagedFiles() {
+        return ClusterSecretSource.FILE_DELIVERED_ENVS.stream()
+                                  .flatMap(name -> java.util.stream.Stream.of(stagedPath(name, false), stagedPath(name, true)))
+                                  .collect(java.util.stream.Collectors.joining(" "));
     }
 
     static String JVM_JAR_PATH = "/opt/aether/aether-node.jar";
@@ -885,13 +908,10 @@ sealed interface BootstrapPhaseDeploy {
              + "; fi" + backupPath.map(path -> " && install -d -m 0750 " + path)
                                   .or("")
              + " && install -d -m 0755 " + NodeUserDataRenderer.JVM_ENV_DIR
-             + " && install -m 0400 " + JVM_SECRET_STAGED
-             + " " + NodeUserDataRenderer.JVM_SECRET_FILE
+             + jvmInstalls(envLookup)
              + " && touch " + NodeUserDataRenderer.JVM_ENV_FILE_PATH
              + " && chmod 600 " + NodeUserDataRenderer.JVM_ENV_FILE_PATH
-             + " && { printf '%s\\n' '" + ClusterSecretSource.SECRET_FILE_ENV
-             + "=" + NodeUserDataRenderer.JVM_SECRET_FILE
-             + "'" + identityEnvAssignments(clusterName, role, source, zone, envLookup)
+             + " && { printf '%s\\n'" + jvmFileVars(envLookup) + identityEnvAssignments(clusterName, role, source, zone, envLookup)
              + " 'AETHER_NODE_ID=" + nodeId
              + "'"
              + " 'AETHER_CLUSTER_PORT=" + clusterPort
@@ -899,14 +919,11 @@ sealed interface BootstrapPhaseDeploy {
              + " 'AETHER_MANAGEMENT_PORT=" + managementPort
              + "'"
              + " 'AETHER_PEERS=" + peers
-             + "'" + (hasCredentials(envLookup)
-                      ? " && cat " + JVM_CREDENTIALS_ENV_FILE
-                      : "")
+             + "'"
              + "; } > " + NodeUserDataRenderer.JVM_ENV_FILE_PATH
              + " && touch " + JVM_STARTED_MARKER
              + " && systemctl start " + NodeUserDataRenderer.JVM_UNIT_NAME
-             + " ); rc=$?; rm -f " + JVM_SECRET_STAGED
-             + " " + JVM_CREDENTIALS_ENV_FILE
+             + " ); rc=$?; rm -f " + stagedFiles()
              + "; exit $rc";
     }
 
@@ -931,10 +948,6 @@ sealed interface BootstrapPhaseDeploy {
     }
 
     private static Unit appendJvmEnvAssignment(StringBuilder sb, String name, String value) {
-        if (SECRET_IDENTITY_VARS.contains(name)) {
-            return Unit.unit();
-        }
-
         sb.append(" '").append(name).append('=').append(value).append('\'');
 
         return Unit.unit();
@@ -1241,60 +1254,49 @@ sealed interface BootstrapPhaseDeploy {
                                                          node.publicIp(),
                                                          "/opt/aether/config/aether.toml",
                                                          sshConfig))
-                      .flatMap(_ -> pushClusterSecret(node.nodeId(),
-                                                      node.publicIp(),
-                                                      CONTAINER_SECRET_STAGED,
-                                                      CONTAINER_CREDENTIALS_ENV_FILE,
-                                                      clusterSecret,
-                                                      envLookup,
-                                                      sshConfig,
-                                                      scpExec))
+                      .flatMap(_ -> pushClusterSecret(node.nodeId(), node.publicIp(), false, clusterSecret, envLookup, sshConfig, scpExec))
                       .flatMap(_ -> sshExec.apply(node.publicIp(),
                                                   startCommand,
                                                   sshConfig))
                       .mapToUnit();
     }
 
-    /// Pushes the cluster secret (the raw value) to `secretPath`, and, only when the operator's environment sets a
-    /// credential-class var, `NAME=value` lines to `credentialsPath`, both as `0600` files via the injected scp (#828); the
-    /// CLI-host temp copies are created owner-only and deleted afterwards. A value with a line break cannot be carried in
-    /// these files, so it is refused rather than truncated.
+    /// Pushes the cluster secret and each credential the operator's environment sets (the raw values) to their STAGED paths,
+    /// each a `0600` file via the injected scp (#828); the CLI-host temp copies are created owner-only and deleted afterwards. A
+    /// value with a line break is refused rather than truncated, and so are a conflicting, unreadable or empty `NAME_FILE`.
     @SuppressWarnings("JBCT-EX-01")
     static Result<Unit> pushClusterSecret(String nodeId,
                                           String host,
-                                          String secretPath,
-                                          String credentialsPath,
+                                          boolean jvm,
                                           String clusterSecret,
                                           Fn1<String, String> envLookup,
                                           SshConfig sshConfig,
                                           Fn4<Result<Unit>, String, String, String, SshConfig> scpExec) {
-        var values = new ArrayList<String>();
+        var pushes = new java.util.LinkedHashMap<String, String>();
 
-        values.add(clusterSecret);
-        var credentials = new StringBuilder();
+        pushes.put(ClusterSecretSource.SECRET_ENV, clusterSecret);
+        for (var name : deliveredFiles(envLookup).stream().filter(n -> !n.equals(ClusterSecretSource.SECRET_ENV)).toList()) {
+            var resolved = ClusterSecretSource.resolve(envLookup, name);
 
-        for (var name : SECRET_IDENTITY_VARS) {
-            var value = envLookup.apply(name);
-
-            if (value != null && !value.isBlank()) {
-                values.add(value);
-                credentials.append(name).append('=').append(value).append('\n');
+            if (resolved.isFailure()) {
+                return new BootstrapError.DeploymentFailed(nodeId, resolved.fold(Cause::message, _ -> "")).result();
             }
+
+            resolved.unwrap().onPresent(value -> pushes.put(name, value));
         }
 
-        if (values.stream().anyMatch(v -> v.indexOf('\n') >= 0 || v.indexOf('\r') >= 0)) {
+        if (pushes.values().stream().anyMatch(v -> v.indexOf('\n') >= 0 || v.indexOf('\r') >= 0)) {
             return new BootstrapError.DeploymentFailed(nodeId,
                                                        "a credential contains a line break; it cannot be delivered as a file").result();
         }
 
-        return pushFile(nodeId, host, secretPath, clusterSecret, sshConfig, scpExec).flatMap(_ -> credentials.isEmpty()
-                                                                                                  ? Result.unitResult()
-                                                                                                  : pushFile(nodeId,
-                                                                                                             host,
-                                                                                                             credentialsPath,
-                                                                                                             credentials.toString(),
-                                                                                                             sshConfig,
-                                                                                                             scpExec));
+        Result<Unit> result = Result.unitResult();
+
+        for (var entry : pushes.entrySet()) {
+            result = result.flatMap(_ -> pushFile(nodeId, host, stagedPath(entry.getKey(), jvm), entry.getValue(), sshConfig, scpExec));
+        }
+
+        return result;
     }
 
     private static Result<Unit> pushFile(String nodeId,

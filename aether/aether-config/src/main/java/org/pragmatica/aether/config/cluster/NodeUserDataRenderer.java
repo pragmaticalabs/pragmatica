@@ -3,6 +3,7 @@
 // Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.config.cluster;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.regex.Pattern;
 
@@ -54,9 +55,9 @@ public sealed interface NodeUserDataRenderer {
     /// `AETHER_CLUSTER_SECRET_FILE`; a JVM node reads [#JVM_SECRET_FILE] through the same variable. The value never appears in a
     /// process argv or in a container's environment (`docker inspect`). The file is KEPT for the life of the node: the bind
     /// mount re-resolves the host path on every container start, so removing it breaks a restart (loudly, with `--mount`).
-    String CONTAINER_SECRET_HOST_FILE = "/opt/aether/config/cluster-secret";
-    String CONTAINER_SECRET_MOUNT = "/run/secrets/aether-cluster-secret";
-    String JVM_SECRET_FILE = JVM_ENV_DIR + "/cluster-secret";
+    String CONTAINER_SECRET_HOST_FILE = ClusterSecretSource.hostFile(ClusterSecretSource.SECRET_ENV);
+    String CONTAINER_SECRET_MOUNT = ClusterSecretSource.containerMount(ClusterSecretSource.SECRET_ENV);
+    String JVM_SECRET_FILE = ClusterSecretSource.jvmFile(ClusterSecretSource.SECRET_ENV);
     String JVM_LAUNCHER_PATH = "/opt/aether/run-node.sh";
 
     static String deriveJarTag(String version) {
@@ -151,6 +152,34 @@ public sealed interface NodeUserDataRenderer {
                          List<String> sshAuthorizedKeys,
                          List<String> peers,
                          boolean startNode) {
+        return render(config,
+                      source,
+                      role,
+                      nodeId,
+                      nodeIndex,
+                      clusterSecret,
+                      clusterName,
+                      composedConfig,
+                      sshAuthorizedKeys,
+                      peers,
+                      startNode,
+                      System::getenv);
+    }
+
+    /// The same render with the host environment supplied, so which credentials get a file is stated by a caller (a test) rather
+    /// than inherited from the machine it runs on.
+    static String render(ClusterBootstrapConfig config,
+                         SourceProfile source,
+                         NodeRole role,
+                         String nodeId,
+                         int nodeIndex,
+                         String clusterSecret,
+                         ClusterName clusterName,
+                         TomlDocument composedConfig,
+                         List<String> sshAuthorizedKeys,
+                         List<String> peers,
+                         boolean startNode,
+                         Fn1<String, String> env) {
         var ports = config.operations().ports();
         var runtimeProfile = resolveRuntimeProfile(config, source, role);
         var isContainer = isContainerRuntime(runtimeProfile);
@@ -168,7 +197,9 @@ public sealed interface NodeUserDataRenderer {
                         ports.cluster(),
                         ports.management(),
                         peersValue);
-        appendClusterSecretFile(sb, clusterSecret, isContainer);
+        var credentials = presentCredentials(env);
+
+        appendCredentialFiles(sb, clusterSecret, credentials, env, isContainer);
         appendSshAuthorizedKeys(sb, sshAuthorizedKeys);
         appendAdvertiseHostResolution(sb);
         var backupPath = backupPath(composedConfig);
@@ -178,7 +209,7 @@ public sealed interface NodeUserDataRenderer {
             appendComposedConfig(sb, composedConfig);
             appendBackupDirectory(sb, backupPath, true);
             if (startNode) {
-                appendContainerRun(sb, clusterName, nodeId, role, source, backupPath);
+                appendContainerRun(sb, clusterName, nodeId, role, source, backupPath, credentials, env);
             } else {
                 appendContainerPullOnly(sb);
             }
@@ -193,7 +224,9 @@ public sealed interface NodeUserDataRenderer {
                          role,
                          source,
                          runtimeProfile.flatMap(RuntimeProfile::jvmArgs).or(""),
-                         startNode);
+                         startNode,
+                         credentials,
+                         env);
         }
 
         appendReadinessSignal(sb, nodeId, ports.cluster(), ports.management(), startNode);
@@ -292,29 +325,64 @@ public sealed interface NodeUserDataRenderer {
         sb.append("AETHER_PEERS=\"").append(peers).append("\"\n\n");
     }
 
-    /// #828 — the user-data is one script, so the secret is written to its file by shell builtins (`printf` is not an exec, so
-    /// the value is on no process argv) under `umask 077`, then given to the node's user: uid 1000 for the container, root for
-    /// the JVM unit. STATED LIMIT: this user-data itself still contains the secret in clear text. It is readable through the
-    /// cloud provider's metadata/API by the account holder, and from `/var/lib/cloud` and the metadata service by processes
-    /// on the VM. No file mode on the node can change that; the only fix is a secret store the VM fetches from.
-    private static void appendClusterSecretFile(StringBuilder sb, String clusterSecret, boolean container) {
-        var path = container
-                   ? CONTAINER_SECRET_HOST_FILE
-                   : JVM_SECRET_FILE;
+    /// #828 — the user-data is one script, so each credential is written to its file by shell builtins (`printf` is not an exec,
+    /// so the value is on no process argv) under `umask 077`, then given to the node's user: uid 1000 for the container, root for
+    /// the JVM unit. The cluster secret always; `AETHER_API_KEY(S)` when the rendering host's environment holds them. STATED
+    /// LIMIT: this user-data itself still contains the values in clear text. It is readable through the cloud provider's
+    /// metadata/API by the account holder, and from `/var/lib/cloud` and the metadata service by processes on the VM. No file mode
+    /// on the node can change that; the only fix is a secret store the VM fetches from.
+    private static void appendCredentialFiles(StringBuilder sb,
+                                              String clusterSecret,
+                                              List<String> credentials,
+                                              Fn1<String, String> env,
+                                              boolean container) {
+        sb.append("# --- Stage the credentials as files (never env vars or command lines) ---\n");
+        appendCredentialFile(sb, ClusterSecretSource.SECRET_ENV, clusterSecret, container);
+        for (var name : credentials) {
+            ClusterSecretSource.resolve(env, name)
+                               .fold(_ -> Option.<String> none(), found -> found)
+                               .onPresent(value -> appendCredentialFile(sb, name, value, container));
+        }
 
-        sb.append("# --- Stage the cluster secret as a file (never an env var or a command line) ---\n");
+        sb.append('\n');
+    }
+
+    private static void appendCredentialFile(StringBuilder sb, String name, String value, boolean container) {
+        var path = container
+                   ? ClusterSecretSource.hostFile(name)
+                   : ClusterSecretSource.jvmFile(name);
+
         sb.append("(umask 077; install -d -m 0755 ")
           .append(container
                   ? "/opt/aether/config"
                   : JVM_ENV_DIR)
           .append(" && printf '%s' ")
-          .append(shellQuote(clusterSecret))
+          .append(shellQuote(value))
           .append(" > ")
           .append(path)
           .append(")\n");
         sb.append(container
                   ? "chown 1000:1000 " + path + "\n"
-                  : "").append("chmod 0400 ").append(path).append("\n\n");
+                  : "").append("chmod 0400 ").append(path).append("\n");
+    }
+
+    /// The credential variables the rendering host actually holds (as a value or as a readable file); a node gets a file for each.
+    private static List<String> presentCredentials(Fn1<String, String> env) {
+        return ClusterSecretSource.CREDENTIAL_ENVS.stream()
+                                  .filter(name -> ClusterSecretSource.resolve(env, name)
+                                                                     .fold(_ -> Option.<String> none(), found -> found)
+                                                                     .isPresent())
+                                  .toList();
+    }
+
+    /// Every variable delivered by file to this node: the cluster secret first, then the present credentials.
+    private static List<String> filesFor(List<String> credentials) {
+        var all = new ArrayList<String>();
+
+        all.add(ClusterSecretSource.SECRET_ENV);
+        all.addAll(credentials);
+
+        return all;
     }
 
     private static String shellQuote(String value) {
@@ -383,7 +451,9 @@ public sealed interface NodeUserDataRenderer {
                                            String nodeId,
                                            NodeRole role,
                                            SourceProfile source,
-                                           Option<String> backupPath) {
+                                           Option<String> backupPath,
+                                           List<String> credentials,
+                                           Fn1<String, String> env) {
         sb.append("# --- Pull and run ---\n");
         sb.append("if ! docker image inspect \"${AETHER_IMAGE}\" >/dev/null 2>&1; then\n");
         sb.append("    docker pull \"${AETHER_IMAGE}\"\n");
@@ -402,11 +472,13 @@ public sealed interface NodeUserDataRenderer {
         sb.append("    -l aether-node-id=").append(nodeId).append(" \\\n");
         sb.append("    -l aether-role=").append(role.value()).append(" \\\n");
         sb.append("    -v /opt/aether/config/aether.toml:/app/aether.toml:ro \\\n");
-        sb.append("    --mount type=bind,src=")
-          .append(CONTAINER_SECRET_HOST_FILE)
-          .append(",dst=")
-          .append(CONTAINER_SECRET_MOUNT)
-          .append(",readonly \\\n");
+        for (var name : filesFor(credentials)) {
+            sb.append("    --mount type=bind,src=")
+              .append(ClusterSecretSource.hostFile(name))
+              .append(",dst=")
+              .append(ClusterSecretSource.containerMount(name))
+              .append(",readonly \\\n");
+        }
         backupPath.onPresent(path -> sb.append("    -v ")
                                        .append(BACKUP_HOST_DIRECTORY)
                                        .append(':')
@@ -417,7 +489,7 @@ public sealed interface NodeUserDataRenderer {
         sb.append("    -e MANAGEMENT_PORT=\"${AETHER_MANAGEMENT_PORT}\" \\\n");
         sb.append("    -e PEERS=\"${AETHER_PEERS}\" \\\n");
         sb.append("    ${ADVERTISE_ENV} \\\n");
-        appendEnv(sb, clusterName, role, source, true);
+        appendEnv(sb, clusterName, role, source, true, env);
         sb.append("    \"${AETHER_IMAGE}\"\n\n");
     }
 
@@ -439,7 +511,8 @@ public sealed interface NodeUserDataRenderer {
                                   ClusterName clusterName,
                                   NodeRole role,
                                   SourceProfile source,
-                                  boolean dockerRun) {
+                                  boolean dockerRun,
+                                  Fn1<String, String> env) {
         Fn2<Unit, String, String> emit = dockerRun
                                          ? (name, value) -> appendDockerRunEnvLine(sb, name, value)
                                          : (name, value) -> appendExportEnvLine(sb, name, value);
@@ -450,7 +523,7 @@ public sealed interface NodeUserDataRenderer {
                         source.name(),
                         source.knownZone(),
                         Option.some(CONTAINER_SECRET_MOUNT),
-                        System::getenv);
+                        env);
     }
 
     /// Single source of truth for the cluster-identity env allow-list emission, shared by the
@@ -514,15 +587,21 @@ public sealed interface NodeUserDataRenderer {
             // Sourced from the supplied ref (cloud-init: the script's own
             // ${AETHER_CLUSTER_SECRET} shell var); none() for the SSH start which emits the
             // finalized secret explicitly to avoid a duplicate -e AETHER_CLUSTER_SECRET.
-            case "AETHER_CLUSTER_SECRET" -> clusterSecretRef;
+            case "AETHER_CLUSTER_SECRET" -> clusterSecretRef.map(_ -> ClusterSecretSource.containerMount(name));
+            // The credentials ride files too (#828): the reference names the FILE, and only when the host holds the credential.
+            case "AETHER_API_KEY", "AETHER_API_KEYS" -> clusterSecretRef.filter(_ -> ClusterSecretSource.resolve(envLookup, name)
+                                                                                                         .fold(_ -> Option.<String> none(),
+                                                                                                               found -> found)
+                                                                                                         .isPresent())
+                                                                        .map(_ -> ClusterSecretSource.containerMount(name));
             default -> lookupNonEmpty(name, envLookup);
         };
     }
 
     /// The cluster secret is emitted as the `_FILE` variable (#828): the reference supplied is the secret file's PATH.
     private static String emittedName(String identityVar) {
-        return "AETHER_CLUSTER_SECRET".equals(identityVar)
-               ? ClusterSecretSource.SECRET_FILE_ENV
+        return ClusterSecretSource.FILE_DELIVERED_ENVS.contains(identityVar)
+               ? ClusterSecretSource.fileVar(identityVar)
                : identityVar;
     }
 
@@ -592,8 +671,10 @@ public sealed interface NodeUserDataRenderer {
                                      NodeRole role,
                                      SourceProfile source,
                                      String jvmArgs,
-                                     boolean startNode) {
-        appendJvmEnvFile(sb, clusterName, role, source);
+                                     boolean startNode,
+                                     List<String> credentials,
+                                     Fn1<String, String> env) {
+        appendJvmEnvFile(sb, clusterName, role, source, credentials, env);
         appendJvmLauncher(sb, jvmArgs);
         appendJvmUnit(sb, startNode);
     }
@@ -616,7 +697,9 @@ public sealed interface NodeUserDataRenderer {
     private static void appendJvmEnvFile(StringBuilder sb,
                                          ClusterName clusterName,
                                          NodeRole role,
-                                         SourceProfile source) {
+                                         SourceProfile source,
+                                         List<String> credentials,
+                                         Fn1<String, String> env) {
         sb.append("# --- Write the node env file systemd reads (0600: carries the cluster secret) ---\n");
         sb.append("install -d -m 0755 ").append(JVM_ENV_DIR).append('\n');
         sb.append("touch ").append(JVM_ENV_FILE_PATH).append('\n');
@@ -628,10 +711,13 @@ public sealed interface NodeUserDataRenderer {
                         source.name(),
                         source.knownZone(),
                         Option.none(),
-                        System::getenv);
+                        env);
         sb.append("AETHER_ENV_LITERAL\n");
         sb.append("cat >> ").append(JVM_ENV_FILE_PATH).append(" <<AETHER_ENV_RUNTIME\n");
-        sb.append("AETHER_CLUSTER_SECRET_FILE=").append(JVM_SECRET_FILE).append('\n');
+        for (var name : filesFor(credentials)) {
+            sb.append(ClusterSecretSource.fileVar(name)).append('=').append(ClusterSecretSource.jvmFile(name)).append('\n');
+        }
+
         sb.append("AETHER_NODE_ID=${AETHER_NODE_ID}\n");
         sb.append("AETHER_CLUSTER_PORT=${AETHER_CLUSTER_PORT}\n");
         sb.append("AETHER_MANAGEMENT_PORT=${AETHER_MANAGEMENT_PORT}\n");

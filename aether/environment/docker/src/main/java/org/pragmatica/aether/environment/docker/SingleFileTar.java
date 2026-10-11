@@ -14,6 +14,20 @@ interface SingleFileTar {
     int BLOCK = 512;
 
     static byte[] singleFileTar(String name, byte[] content, int mode, int uid, int gid) {
+        return filesTar(java.util.Map.of(name, content), mode, uid, gid);
+    }
+
+    /// One regular-file entry per map entry (in iteration order), all with the same mode and owner.
+    static byte[] filesTar(java.util.Map<String, byte[]> files, int mode, int uid, int gid) {
+        var out = new java.io.ByteArrayOutputStream();
+
+        files.forEach((name, content) -> entry(out, name, content, mode, uid, gid));
+        out.writeBytes(new byte[2 * BLOCK]);
+
+        return out.toByteArray();
+    }
+
+    private static void entry(java.io.ByteArrayOutputStream out, String name, byte[] content, int mode, int uid, int gid) {
         var header = new byte[BLOCK];
 
         put(header, 0, 100, name);
@@ -22,18 +36,14 @@ interface SingleFileTar {
         put(header, 116, 8, octal(gid, 7));
         put(header, 124, 12, octal(content.length, 11));
         put(header, 136, 12, octal(0, 11));
-        Arrays.fill(header, 148, 156, (byte)' ');
+        Arrays.fill(header, 148, 156, (byte) ' ');
         header[156] = '0';
         put(header, 257, 6, "ustar");
         put(header, 263, 2, "00");
         put(header, 148, 8, octal(checksum(header), 6) + "\0 ");
-        var padded = (content.length + BLOCK - 1) / BLOCK * BLOCK;
-        var archive = new byte[BLOCK + padded + 2 * BLOCK];
-
-        System.arraycopy(header, 0, archive, 0, BLOCK);
-        System.arraycopy(content, 0, archive, BLOCK, content.length);
-
-        return archive;
+        out.writeBytes(header);
+        out.writeBytes(content);
+        out.writeBytes(new byte[(BLOCK - content.length % BLOCK) % BLOCK]);
     }
 
     private static int checksum(byte[] header) {

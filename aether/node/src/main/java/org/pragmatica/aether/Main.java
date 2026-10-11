@@ -631,7 +631,7 @@ public record Main(String[] args) {
     /// `java -jar` runs). GIVEN: the file must load and validate, or the node REFUSES to start. It used to log one line and boot on
     /// defaults, which silently drops the operator's TLS, port, peers and secret settings.
     private Option<AetherConfig> loadConfig() {
-        return ClusterSecretSource.resolve(System::getenv)
+        return ClusterSecretSource.validate(System::getenv)
                                   .flatMap(_ -> resolveConfig(findArg("--config=")))
                                   .onFailure(this::refuseConfig)
                                   .expect("unreachable: refuseConfig exits");

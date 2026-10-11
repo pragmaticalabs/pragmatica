@@ -1599,10 +1599,45 @@ class BootstrapPhaseDeployCloudSshRestartTest {
         assertTrue(wire.sshCommands.stream().anyMatch(c -> c.contains("docker run")), "control: launches were sent");
         wire.sshCommands.forEach(c -> assertFalse(c.contains("key-one"), () -> "#828: API key on argv: " + c));
         assertEquals(CLUSTER_SECRET, wire.scpContents.get(0));
-        assertEquals("AETHER_API_KEYS=key-one,key-two\n", wire.scpContents.get(1));
-        assertEquals(BootstrapPhaseDeploy.CONTAINER_CREDENTIALS_ENV_FILE, wire.scpRemotePaths.get(1));
-        assertTrue(wire.sshCommands.stream().anyMatch(c -> c.contains("--env-file " + BootstrapPhaseDeploy.CONTAINER_CREDENTIALS_ENV_FILE)),
-                   "the credentials env file is named by the launch");
+        assertEquals("key-one,key-two", wire.scpContents.get(1), "positive control: the sentinel reached the pushed file");
+        assertEquals(BootstrapPhaseDeploy.stagedPath("AETHER_API_KEYS", false), wire.scpRemotePaths.get(1));
+        assertTrue(wire.sshCommands.stream().anyMatch(c -> c.contains("-e AETHER_API_KEYS_FILE=\"/run/secrets/aether-api-keys\"")
+                                                          && c.contains("--mount type=bind,src=/opt/aether/config/api-keys,dst=/run/secrets/aether-api-keys,readonly")),
+                   "the launch mounts the keys file read-only and names it");
+        wire.sshCommands.forEach(c -> assertFalse(c.contains("--env-file") || c.contains("AETHER_API_KEYS="), () -> "#828: no credential in the container environment: " + c));
+    }
+
+    @Test
+    void deployCloudSource_apiKeyFromAFileOnTheOperatorHost_isPushedByValue_andABrokenFileFailsTheDeploy() throws Exception {
+        var ctx = contextWithThreeCloudNodes(cloudSource());
+        var wire = new WireLog();
+        var file = Files.createTempFile("operator-key-", ".txt");
+
+        try {
+            Files.writeString(file, "sentinel-key-9b4c70\n");
+            Fn1<String, String> env = name -> switch (name) {
+                case SshKeyResolver.AETHER_SSH_KEY_ENV -> "/home/op/.ssh/aether_id_ed25519";
+                case "AETHER_API_KEY_FILE" -> file.toString();
+                default -> null;
+            };
+
+            var result = BootstrapPhaseDeploy.deployCloudSource(ctx, ctx.config().sources().get("eu-1"), sourceNameOrDefault("eu-1"), alwaysHealthy(),
+                                                                wire.ssh(), wire.scp(), env, 1_000, 10);
+
+            assertTrue(result.isSuccess(), () -> String.valueOf(result));
+            assertEquals("sentinel-key-9b4c70", wire.scpContents.get(1), "the file's value is pushed, not the operator's path");
+            wire.sshCommands.forEach(c -> assertFalse(c.contains("sentinel-key-9b4c70"), () -> "#828: key on argv: " + c));
+
+            var broken = new WireLog();
+            Fn1<String, String> brokenEnv = name -> name.equals("AETHER_API_KEY_FILE") ? "/no/such/key" : env.apply(name);
+            var failed = BootstrapPhaseDeploy.deployCloudSource(ctx, ctx.config().sources().get("eu-1"), sourceNameOrDefault("eu-1"), alwaysHealthy(),
+                                                                broken.ssh(), broken.scp(), brokenEnv, 1_000, 10);
+
+            assertTrue(failed.isFailure(), "an unreadable credential file refuses the deploy");
+            assertTrue(broken.sshCommands.stream().noneMatch(c -> c.contains("docker run")), "and nothing was launched");
+        } finally {
+            Files.deleteIfExists(file);
+        }
     }
 
     @Test
@@ -1632,12 +1667,15 @@ class BootstrapPhaseDeployCloudSshRestartTest {
 
         assertTrue(cmd.contains("'AETHER_PROVISIONED_BY=ops'"), () -> "control: a non-credential identity var is still written: " + cmd);
         assertFalse(cmd.contains("ak-123") || cmd.contains("k1,k2"), () -> "#828: credential on the JVM launch line: " + cmd);
-        assertTrue(cmd.contains("cat " + BootstrapPhaseDeploy.JVM_CREDENTIALS_ENV_FILE), () -> "the pushed credentials reach the unit's env file: " + cmd);
+        assertTrue(cmd.contains("'AETHER_API_KEYS_FILE=/etc/aether/api-keys'") && cmd.contains("'AETHER_API_KEY_FILE=/etc/aether/api-key'"),
+                   () -> "the unit's env file names the credential files: " + cmd);
+        assertTrue(cmd.contains("install -m 0400 " + BootstrapPhaseDeploy.stagedPath("AETHER_API_KEYS", true) + " /etc/aether/api-keys"), cmd);
 
         var without = BootstrapPhaseDeploy.buildJvmStartCommand("eu-1-core-0", NodeRole.CORE, SourceName.DEFAULT, Option.none(), 8090, 8091, "p",
                                                                 CLUSTER_NAME, emptyEnv());
 
-        assertFalse(without.contains("cat " + BootstrapPhaseDeploy.JVM_CREDENTIALS_ENV_FILE), () -> "control: no credentials, no cat of a file that was never pushed: " + without);
+        assertFalse(without.contains("AETHER_API_KEY") || without.contains("install -m 0400 /etc/aether/api-key"),
+                    () -> "control: no credentials, no file installed or named that was never pushed: " + without);
     }
 
     @Test
