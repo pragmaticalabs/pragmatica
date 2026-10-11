@@ -192,7 +192,8 @@ public final class StreamWriteRouter {
                                                          partition,
                                                          payloads,
                                                          timestamp,
-                                                         confirmationFactor - 1)
+                                                         confirmationFactor - 1,
+                                                         systemWrites.isPresent())
                                .fold(cause -> recoverBatchRefusal(cause, streamName, partition, payloads, timestamp),
                                      lastOffset -> awaitMinSync(streamName, partition, lastOffset, confirmationFactor).fold(result -> Promise.success(result.fold(cause -> unknownOutcomes(payloads.size(),
                                                                                                                                                                                            cause),
@@ -294,7 +295,12 @@ public final class StreamWriteRouter {
         // #1230: a NotOwnerAppend refusal is redirected to the committed owner, before #1236's floor check;
         // the floor precedes the append (a refusal is not in the log); after it, an unconfirmed barrier is
         // an unknown outcome.
-        return partitionManager.publishLocalAtFloor(streamName, partition, payload, timestamp, confirmationFactor - 1)
+        return partitionManager.publishLocalAtFloor(streamName,
+                                                    partition,
+                                                    payload,
+                                                    timestamp,
+                                                    confirmationFactor - 1,
+                                                    systemWrites.isPresent())
                                .fold(cause -> StreamForwardRetry.redirectNotOwner(cause,
                                                                                   owner -> forwardTo(owner,
                                                                                                      streamName,
@@ -336,6 +342,7 @@ public final class StreamWriteRouter {
                                                                               streamName,
                                                                               partition,
                                                                               payload,
-                                                                              timestamp));
+                                                                              timestamp,
+                                                                              systemWrites.isPresent()));
     }
 }

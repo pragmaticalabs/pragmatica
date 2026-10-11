@@ -165,7 +165,8 @@ final class DefaultStreamForwardHandler implements StreamForwardHandler {
                                           request.partition(),
                                           request.payload(),
                                           request.timestamp(),
-                                          partitionManager.confirmationFactorFor(request.streamName()) - 1)
+                                          partitionManager.confirmationFactorFor(request.streamName()) - 1,
+                                          request.systemWriter())
                         .async()
                         .flatMap(offset -> awaitMinSync(request, offset))
                         .onSuccess(offset -> sendSuccessResponse(request, offset))

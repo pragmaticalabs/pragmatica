@@ -41,6 +41,18 @@ import static org.pragmatica.lang.Option.option;
 public interface StreamForwardClient {
     Promise<Long> publishRemote(NodeId governorId, String streamName, int partition, byte[] payload, long timestamp);
 
+    /// `systemWriter` marks a publish forwarded by this node's own system publisher (#1338); the owner refuses a forwarded
+    /// write to a `system:` stream that does not carry it. The default drops the mark, so only a client that sends it can
+    /// forward a system write.
+    default Promise<Long> publishRemote(NodeId governorId,
+                                        String streamName,
+                                        int partition,
+                                        byte[] payload,
+                                        long timestamp,
+                                        boolean systemWriter) {
+        return publishRemote(governorId, streamName, partition, payload, timestamp);
+    }
+
     Promise<ReadForwardResult> readRemote(NodeId replicaId,
                                           String streamName,
                                           int partition,
@@ -255,6 +267,16 @@ final class DefaultStreamForwardClient implements StreamForwardClient {
                                        int partition,
                                        byte[] payload,
                                        long timestamp) {
+        return publishRemote(governorId, streamName, partition, payload, timestamp, false);
+    }
+
+    @Override
+    public Promise<Long> publishRemote(NodeId governorId,
+                                       String streamName,
+                                       int partition,
+                                       byte[] payload,
+                                       long timestamp,
+                                       boolean systemWriter) {
         var correlationId = UUID.randomUUID().toString();
         Promise<Long> promise = Promise.promise();
 
@@ -265,7 +287,7 @@ final class DefaultStreamForwardClient implements StreamForwardClient {
         var publishWait = Deadline.current().bounded(publishTimeout);
 
         SharedScheduler.schedule(() -> timeoutRequest(correlationId), publishWait);
-        var message = publishForward(selfNodeId, correlationId, streamName, partition, payload, timestamp);
+        var message = publishForward(selfNodeId, correlationId, streamName, partition, payload, timestamp, systemWriter);
         // The frame must not outlive the wait that just started (#1996): delivered later it would publish an event
         // whose caller was already told the outcome is unknown.
         transport.send(governorId, message, publishWait);
