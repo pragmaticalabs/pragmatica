@@ -120,6 +120,20 @@ class HetznerComputeProviderTest {
             assertThat(testClient.lastGetServerId).isEqualTo(42);
         }
 
+        /// #1111: createServer succeeds, then the server reports `off` (boot crash). The server EXISTS and bills, so the cause that leaves
+        /// `createFrom` must say so (typed), not read as a plain rejection.
+        @Test
+        void provision_serverCrashesDuringBoot_failsWithTheTypedReadinessTimeout() {
+            testClient.createServerResponse = Promise.success(runningServer(42, "aether-test"));
+            testClient.getServerResponse = Promise.success(new Server(42, "aether-test", "off", serverType(), image(),
+                                                                       publicNet("1.2.3.4"), List.of(), Map.of(), null));
+
+            seededProvider().provision(InstanceType.ON_DEMAND)
+                            .await()
+                            .onSuccess(info -> assertThat(info).as("expected readiness failure, not a phantom success").isNull())
+                            .onFailure(cause -> assertThat(cause).as("#1111: the readiness timeout reaches the caller typed (the instance EXISTS), never flattened into a provision failure").isInstanceOf(EnvironmentError.ProvisionReadinessTimeout.class));
+        }
+
         @Test
         void provision_failure_mapsToEnvironmentError() {
             testClient.createServerResponse = new HetznerError.ApiError(500, "server_error", "Internal error").promise();
