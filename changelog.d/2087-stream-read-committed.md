@@ -26,3 +26,6 @@
   removed. The log counts its cuts (`StreamPartitionManager.cutGeneration`); a fold built under an older count is dropped and rebuilt from
   the surviving log, a client read waits on the rebuild or refuses `FoldInProgress`, and a stale fold is never checkpointed.
   `[verified: EntityCutInvalidatesFoldTest]`
+- **The cut window and re-created streams.** The log's identity is odd from before a cut shrinks the ring until after it and carries the ring's
+  incarnation: a fold built in the window is never published, a read in it refuses, and a deleted-and-created-again stream does not inherit the old
+  fold; a catch-up in flight at a cut is dropped with the fold. `[verified: EntityCutInvalidatesFoldTest, EntityCommittedReadTest]`
