@@ -29,3 +29,8 @@
 - **The cut window and re-created streams.** The log's identity is odd from before a cut shrinks the ring until after it and carries the ring's
   incarnation: a fold built in the window is never published, a read in it refuses, and a deleted-and-created-again stream does not inherit the old
   fold; a catch-up in flight at a cut is dropped with the fold. `[verified: EntityCutInvalidatesFoldTest, EntityCommittedReadTest]`
+- **A checkpoint is validated against the lineage it was taken over.** The bounded promotion escape may cut acknowledged records, and a checkpoint
+  claiming one of them used to seed the rebuilt entity fold with it (the new lineage's record at that offset was never folded). A checkpoint now
+  records the identity of the log record at its claim (owner epoch when known, digest of the last 8 records); seeding compares it with the local
+  log and a mismatch discards the checkpoint and rebuilds from the log. The cut's generation bracket now closes on every exit, including a failed
+  ring shrink. `[verified: EntityCheckpointCutTest, CutBracketTest]`

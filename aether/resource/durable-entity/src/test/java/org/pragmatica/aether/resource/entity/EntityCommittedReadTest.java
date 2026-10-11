@@ -285,6 +285,46 @@ class EntityCommittedReadTest {
         assertThat(fold.get(0, "j").isPresent()).isFalse();
     }
 
+    /// The probe (#2080's bounded escape cuts acknowledged records): `k` and `j` are committed and checkpointed (claim 1); `j` is cut and a
+    /// different record `z` lands at offset 1 and commits. The claim is within the log, but the checkpoint folded `j`.
+    @Test
+    void aCheckpointTakenOverACutRecord_isDiscarded_andTheRebuildFoldsTheNewLineage() {
+        append("k", 1);
+        append("j", 2);
+        substrate.commitThrough(1L);
+        var candidate = fold.checkpointCandidate(0, -1L).unwrap();
+
+        assertThat(candidate.lineage().isPresent()).as("control: the lineage of the record at the claim is recorded").isTrue();
+        substrate.saveCheckpoint(KEYSPACE, 0, candidate.throughOffset(), candidate.snapshot(), candidate.lineage()).await();
+
+        substrate.cutTo(0L);
+        substrate.appendRaw(EntityLogRecord.upsert("z", "9".getBytes(StandardCharsets.UTF_8)).encode());
+        substrate.commitThrough(1L);
+
+        assertThat(fold.ready(0).await().isSuccess()).isTrue();
+        assertThat(fold.get(0, "j").isPresent()).as("j was cut: the rebuilt fold must not hold it").isFalse();
+        assertThat(fold.get(0, "z").isPresent()).as("z is the new lineage's record at offset 1").isTrue();
+    }
+
+    /// Control: where the local record at the claim cannot be read (below the sealed floor, which a cut never crosses) the checkpoint is
+    /// accepted and is what makes the unreadable prefix a non-event.
+    @Test
+    void aCheckpointWhoseClaimThisCopyCannotReadAnyMore_isStillUsed() {
+        append("k", 1);
+        append("j", 2);
+        append("z", 3);
+        substrate.commitThrough(2L);
+        var through = fold.checkpointCandidate(0, -1L).unwrap();
+
+        substrate.saveCheckpoint(KEYSPACE, 0, 1L, through.snapshot(), substrate.lineageAt(KEYSPACE, 0, 1L)).await();
+        substrate.earliestRetained = 2L;
+        substrate.sealedBelow = 2L;
+        substrate.cutGeneration += 2;
+
+        assertThat(fold.ready(0).await().isSuccess()).as("the log below 2 is gone; only the checkpoint can seed the fold").isTrue();
+        assertThat(fold.get(0, "k").isPresent()).isTrue();
+    }
+
     private void append(String key, int value) {
         var record = EntityLogRecord.upsert(key, String.valueOf(value).getBytes(StandardCharsets.UTF_8)).encode();
         var offset = substrate.appendRaw(record);
@@ -317,6 +357,9 @@ class EntityCommittedReadTest {
 
         volatile boolean cutDuringNextRead;
         volatile boolean blockNextRead;
+        volatile long earliestRetained;
+        volatile long sealedBelow;
+        volatile Option<EntityCheckpoint> saved = Option.none();
 
         long appendRaw(byte[] record) {
             log.add(record);
@@ -392,7 +435,7 @@ class EntityCommittedReadTest {
 
         @Override
         public long earliestRetainedOffset(String keyspace, int partition) {
-            return 0L;
+            return earliestRetained;
         }
 
         @Override
@@ -407,12 +450,33 @@ class EntityCommittedReadTest {
 
         @Override
         public Promise<Unit> saveCheckpoint(String keyspace, int partition, long throughOffset, byte[] snapshot) {
+            return saveCheckpoint(keyspace, partition, throughOffset, snapshot, Option.none());
+        }
+
+        @Override
+        public Promise<Unit> saveCheckpoint(String keyspace, int partition, long throughOffset, byte[] snapshot, Option<byte[]> lineage) {
+            saved = Option.some(EntityCheckpoint.entityCheckpoint(throughOffset, snapshot, lineage));
+
             return Promise.unitPromise();
         }
 
         @Override
         public Promise<Option<EntityCheckpoint>> loadCheckpoint(String keyspace, int partition) {
-            return Promise.success(Option.none());
+            return Promise.success(saved);
+        }
+
+        /// The identity of the records ending at `offset` as this copy holds them (a digest of the last four), none below `sealedBelow`.
+        @Override
+        public Option<byte[]> lineageAt(String keyspace, int partition, long offset) {
+            if (offset < sealedBelow || offset >= log.size()) {
+                return Option.none();
+            }
+
+            var window = log.subList((int) Math.max(0, offset - 3), (int) offset + 1);
+
+            return Option.some(java.nio.ByteBuffer.allocate(Integer.BYTES)
+                                                  .putInt(window.stream().mapToInt(java.util.Arrays::hashCode).reduce(17, (h, e) -> 31 * h + e))
+                                                  .array());
         }
     }
 
