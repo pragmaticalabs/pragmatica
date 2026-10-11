@@ -762,6 +762,42 @@ class BlueprintServiceTest {
             return racedService;
         }
 
+        /// #972 — the ARTIFACT publish path (`buildAllCommands`) stamps its attempt too: the blueprint it commits and
+        /// its apply-start record carry the same id. [#publish_stampsOneFreshAttemptId_intoTheBlueprintAndItsApplyStartRecord]
+        /// drives only the DSL path.
+        @Test
+        void publishFromArtifact_stampsOneAttemptId_intoTheBlueprintAndItsApplyStartRecord() throws IOException {
+            var blueprintArtifact = Artifact.artifact("org.example:redeploy-blueprint:1.0.0").unwrap();
+            var blueprintJar = tempDir.resolve("redeploy-blueprint-1.0.0.jar");
+
+            try (var out = new JarOutputStream(Files.newOutputStream(blueprintJar))) {
+                out.putNextEntry(new ZipEntry("META-INF/blueprint.toml"));
+                out.write("""
+                          id = "org.example:redeploy-app:1.0.0"
+
+                          [[slices]]
+                          artifact = "org.example:redeploy-slice:1.0.0"
+                          instances = 3
+                          """.getBytes(StandardCharsets.UTF_8));
+                out.closeEntry();
+            }
+            Repository artifactRepository = requested -> requested.equals(blueprintArtifact)
+                                                         ? Result.lift(Causes::fromThrowable, () -> blueprintJar.toUri().toURL())
+                                                                 .flatMap(url -> Location.location(requested, url))
+                                                                 .async()
+                                                         : liveRepository.locate(requested);
+
+            BlueprintService.blueprintService(liveCluster, liveStore, artifactRepository)
+                            .publishFromArtifact(blueprintArtifact.asString())
+                            .await()
+                            .onFailure(cause -> fail("Expected the artifact publish to succeed, got: " + cause.message()));
+
+            assertThat(committedAttempt()).as("the artifact publish must stamp an attempt id").isNotEmpty();
+            assertThat(liveService.outcome(REDEPLOY_ID).map(AetherValue.DeploymentOutcomeValue::attemptId))
+                    .as("the apply-start record names the same attempt as the blueprint it starts")
+                    .isEqualTo(Option.some(committedAttempt()));
+        }
+
         private void publishRedeployApp() {
             var dsl = """
                     id = "org.example:redeploy-app:1.0.0"
