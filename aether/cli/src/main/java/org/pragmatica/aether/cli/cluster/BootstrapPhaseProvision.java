@@ -579,9 +579,9 @@ sealed interface BootstrapPhaseProvision {
         var nodes = new ArrayList<ProvisionedNode>();
 
         for (var i = 0; i < count; i++) {
-            var minted = role == NodeRole.CORE
-                         ? Option.some(coreIds.get(i))
-                         : Option.<String> none();
+            var minted = Option.some(role == NodeRole.CORE
+                                     ? coreIds.get(i)
+                                     : ProvisionContext.mintNodeId(Option.some(clusterName)));
             var context = ProvisionContext.provisionContext(Option.some(clusterName),
                                                             role.value(),
                                                             sourceName,

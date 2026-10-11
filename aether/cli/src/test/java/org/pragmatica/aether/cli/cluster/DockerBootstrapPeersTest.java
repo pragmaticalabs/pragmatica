@@ -128,7 +128,8 @@ class DockerBootstrapPeersTest {
 
         assertThat(worker.context().peers().or("")).as("a non-empty core list, not two empty ones").isNotEmpty();
         assertThat(worker.context().peers().or("")).isEqualTo(coreRequest.context().peers().or(""));
-        assertThat(worker.context().nodeId().isEmpty()).as("the provider mints a worker's id").isTrue();
+        assertThat(worker.context().nodeId().or("")).as("#1027: a worker is handed a planned id too, so the id recorded for it is the identity it boots with")
+                                                    .startsWith("aether-").contains("-node-");
     }
 
     /// The port in every node's PEERS and the port the provider makes the node listen on are one value: bootstrap tells the provider.

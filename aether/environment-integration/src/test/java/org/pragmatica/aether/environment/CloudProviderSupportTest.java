@@ -26,9 +26,28 @@ class CloudProviderSupportTest {
             var labels = Map.of("aether-cluster", "test-a", "aether-source", "hetzner-eu", "aether-role", "core");
             var group = NodeGroupConfig.nodeGroupConfig(sourceNameOrDefault("hetzner-eu"), "core", 3, "cx22", "fsn1", labels);
 
-            CloudProviderSupport.buildProvisionSpec(group)
+            CloudProviderSupport.buildProvisionSpec(group, "node-under-test")
                                 .onFailure(cause -> assertThat(cause).isNull())
                                 .onSuccess(CloudProviderSupportTest::assertHasClusterLabels);
+        }
+
+        /// #1027: the context handed to the provider carries the planned node id, so the provider does not mint a second one.
+        @Test
+        void buildProvisionSpec_carriesThePlannedNodeIdInTheContext() {
+            var group = NodeGroupConfig.nodeGroupConfig(sourceNameOrDefault("src"), "core", 1, "default", "default", Map.of("aether-cluster", "dock"));
+
+            CloudProviderSupport.buildProvisionSpec(group, "aether-dock-node-planned")
+                                .onFailure(cause -> assertThat(cause).isNull())
+                                .onSuccess(spec -> assertThat(spec.context().nodeId().or("<none>")).isEqualTo("aether-dock-node-planned"));
+        }
+
+        @Test
+        void mintNodeId_isClusterScoped_andUnique() {
+            var cluster = ClusterName.maybeClusterName("dock");
+            var first = ProvisionContext.mintNodeId(cluster);
+
+            assertThat(first).startsWith("aether-dock-node-");
+            assertThat(ProvisionContext.mintNodeId(cluster)).isNotEqualTo(first);
         }
 
         @Test
@@ -36,7 +55,7 @@ class CloudProviderSupportTest {
             var labels = Map.<String, String>of();
             var group = NodeGroupConfig.nodeGroupConfig(sourceNameOrDefault("hetzner-eu"), "worker", 2, "cx32", "fsn1", labels);
 
-            CloudProviderSupport.buildProvisionSpec(group)
+            CloudProviderSupport.buildProvisionSpec(group, "node-under-test")
                                 .onFailure(cause -> assertThat(cause).isNull())
                                 .onSuccess(CloudProviderSupportTest::assertSizeAndPool);
         }
@@ -45,7 +64,7 @@ class CloudProviderSupportTest {
         void buildProvisionSpec_zoneDefault_omitsPlacement() {
             var group = NodeGroupConfig.nodeGroupConfig(sourceNameOrDefault("src"), "core", 1, "default", "default", Map.of());
 
-            CloudProviderSupport.buildProvisionSpec(group)
+            CloudProviderSupport.buildProvisionSpec(group, "node-under-test")
                                 .onFailure(cause -> assertThat(cause).isNull())
                                 .onSuccess(spec -> assertThat(spec.placement().isEmpty()).isTrue());
         }
@@ -54,7 +73,7 @@ class CloudProviderSupportTest {
         void buildProvisionSpec_zoneSpecified_addsZonePlacement() {
             var group = NodeGroupConfig.nodeGroupConfig(sourceNameOrDefault("src"), "core", 1, "default", "fsn1", Map.of());
 
-            CloudProviderSupport.buildProvisionSpec(group)
+            CloudProviderSupport.buildProvisionSpec(group, "node-under-test")
                                 .onFailure(cause -> assertThat(cause).isNull())
                                 .onSuccess(CloudProviderSupportTest::assertZoneFsn1);
         }
