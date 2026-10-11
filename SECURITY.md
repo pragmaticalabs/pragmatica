@@ -208,11 +208,35 @@ secret-bearing on its own (#684, distinct from #287, which closed only the on-di
 permission hygiene — chmod 600, via `SecureFiles.writeSecure`/`restrictToOwner`. A related exposure
 of the same secret named in #287's own discussion — `docker run -e AETHER_CLUSTER_SECRET=...` and
 inline-JVM-env-on-the-SSH-command-line, on live bootstrap/redeploy paths in
-`BootstrapPhaseDeploy.java` — was not addressed by that closure and remains open; it is a distinct
+`BootstrapPhaseDeploy.java` — was closed by #828, see the next subsection; it is a distinct
 code path from the generated-file vector #684 closes). The `DockerComposeGenerator`
 class, which used to bake a literal `AETHER_CLUSTER_SECRET: "<value>"` into a separate,
 never-wired code path, has been deleted rather than fixed — it had zero production callers, so
 patching it would not have closed anything a real deployment used.
+
+### How the cluster secret reaches a node (#828)
+
+The node reads its secret from the file named by `AETHER_CLUSTER_SECRET_FILE` (surrounding line breaks
+stripped). Setting both that variable and `AETHER_CLUSTER_SECRET` to *different* values is refused at start
+(exit 65): the node cannot know which was meant. Setting both to the same value, or only one, is accepted.
+Per launch path:
+
+| Path | Process argv | Container env (`docker inspect`) | Log lines | At rest |
+|---|---|---|---|---|
+| CLI bootstrap / SSH source, container | no | no | no | scp'd 0600 to a staged path, installed 0400 owned by uid 1000 at `/opt/aether/config/cluster-secret`, bind-mounted read-only at `/run/secrets/aether-cluster-secret`; staged copy removed on every exit; installed file kept for the container's life |
+| CLI bootstrap, JVM node | no | n/a | no | installed 0400 root at `/etc/aether/cluster-secret`; the unit's env file holds only the path |
+| Cloud-init, container and JVM | no (`printf` is a shell builtin) | no | no | written under `umask 077`, same final paths and modes as above |
+| Provider-minted replacement (`DockerComputeProvider`) | no | no | no | `docker create`, then the file is piped over stdin to `docker cp -` as a tar owned by uid 1000 mode 0400, then `docker start`; it lives in the container's own layer |
+| Hand-written compose / `docker run -e AETHER_CLUSTER_SECRET=...` by an operator | operator's choice | **yes** | operator's choice | unchanged; prefer `AETHER_CLUSTER_SECRET_FILE` with a mounted file |
+
+**Stated limits.** (1) Cloud-init user-data contains the secret in clear text. It is readable by the cloud
+account holder through the provider's metadata/API and by processes on the VM through the metadata service
+and `/var/lib/cloud`; no file mode on the node changes that. (2) For `CLOUD` sources the node's `aether.toml`
+also carries `[tls] cluster_secret` (0600, uid 1000 since #287). (3) `AETHER_API_KEY` / `AETHER_API_KEYS`
+have no `_FILE` form: they still reach the node as environment (a transient env file), so they show in
+`docker inspect`. (4) A bind-mounted secret file is re-resolved on every container start; removing the host
+file makes a restart fail, loudly, because the mount is `--mount type=bind` (which errors on a missing source)
+rather than `-v` (which would create a directory in its place).
 
 **What this does not close.** Once `docker compose up` resolves the reference, the running
 container's environment carries the actual secret value like any env-var-delivered secret, and

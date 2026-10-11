@@ -3,12 +3,14 @@
 // Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.environment.docker;
 
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 
 import org.pragmatica.aether.environment.ClusterName;
+import org.pragmatica.aether.environment.ClusterSecretSource;
 import org.pragmatica.aether.environment.ClusterIdentityEnv;
 import org.pragmatica.aether.environment.ComputeProvider;
 import org.pragmatica.aether.environment.EnvironmentError;
@@ -107,14 +109,21 @@ public record DockerComputeProvider(DockerCommandRunner runner, DockerConfig con
                       .or(() -> IdGenerator.generate(ProvisionContext.coreNodeNamePrefix(cluster)));
     }
 
-    private Promise<InstanceInfo> provisionWithIdentity(ProvisionRequest request, String containerName) {
-        var command = buildRunCommand(request, containerName);
+    /// In-container path of the cluster secret file a provider-minted node reads via `AETHER_CLUSTER_SECRET_FILE` (#828), and
+    /// the uid/gid of the image's `aether` user that owns it.
+    static final String SECRET_FILE_NAME = "aether-cluster-secret";
+    static final String SECRET_DIRECTORY = "/tmp";
+    static final String SECRET_FILE_PATH = SECRET_DIRECTORY + "/" + SECRET_FILE_NAME;
+    static final int NODE_UID = 1000;
 
-        return runner.execute(command)
-                     .map(containerId -> toProvisionedInfo(containerId, containerName, request))
-                     .flatMap(info -> confirmRunning(info,
-                                                     ReadinessPolicy.dockerDefault()))
-                     .onFailure(cause -> rollbackOnProvisionFailure(containerName, cause));
+    private Promise<InstanceInfo> provisionWithIdentity(ProvisionRequest request, String containerName) {
+        return ClusterSecretSource.resolve(hostEnv)
+                                  .async()
+                                  .flatMap(secret -> launch(request, containerName, secret))
+                                  .map(containerId -> toProvisionedInfo(containerId, containerName, request))
+                                  .flatMap(info -> confirmRunning(info,
+                                                                  ReadinessPolicy.dockerDefault()))
+                                  .onFailure(cause -> rollbackOnProvisionFailure(containerName, cause));
     }
 
     /// bootstrap list (3-part `nodeId:host:port` entries) so the new container can join
@@ -248,7 +257,40 @@ public record DockerComputeProvider(DockerCommandRunner runner, DockerConfig con
         return EnvironmentError.operationNotSupported("applyTags (Docker labels are immutable after creation)").promise();
     }
 
-    private List<String> buildRunCommand(ProvisionRequest request, String containerName) {
+    /// Without a secret, the plain `docker run -d`. With one: `docker create`, the secret file copied in over stdin as a tar
+    /// owned by the node user (mode 0400), then `docker start`. A bind mount would name a path on the daemon's host, which this
+    /// process (usually itself a container holding the docker socket) cannot write; `docker cp` goes through the daemon. The
+    /// value is on no argv and in no container env, and the file lives in the container's own layer, so it dies with the
+    /// container and survives a restart of it.
+    private Promise<String> launch(ProvisionRequest request, String containerName, Option<String> secret) {
+        return secret.fold(() -> runner.execute(buildRunCommand(request, containerName, false)),
+                           value -> runner.execute(buildCreateCommand(request, containerName))
+                                          .flatMap(id -> copySecret(containerName, value).flatMap(_ -> runner.execute(List.of("docker",
+                                                                                                                              "start",
+                                                                                                                              containerName)))
+                                                                   .map(_ -> id)));
+    }
+
+    private List<String> buildCreateCommand(ProvisionRequest request, String containerName) {
+        var command = new ArrayList<>(buildRunCommand(request, containerName, true));
+
+        command.set(1, "create");
+        command.remove(2);
+
+        return List.copyOf(command);
+    }
+
+    private Promise<String> copySecret(String containerName, String secret) {
+        var archive = SingleFileTar.singleFileTar(SECRET_FILE_NAME,
+                                                  secret.getBytes(StandardCharsets.UTF_8),
+                                                  0400,
+                                                  NODE_UID,
+                                                  NODE_UID);
+
+        return runner.execute(List.of("docker", "cp", "-", containerName + ":" + SECRET_DIRECTORY), archive);
+    }
+
+    private List<String> buildRunCommand(ProvisionRequest request, String containerName, boolean secretFile) {
         var ctx = request.context();
         var role = roleOrDefault(ctx);
         var cluster = clusterLabelValue(ctx);
@@ -342,10 +384,11 @@ public record DockerComputeProvider(DockerCommandRunner runner, DockerConfig con
         // loses identity vars). Dedupe (alreadyEmitted) against vars already emitted above:
         // AETHER_CLUSTER_NAME (from clusterLabelValue(ctx) — authoritative, equals the label),
         // AETHER_PROVISIONED_BY (from ctx.provisionedBy()), AETHER_API_KEY (from config.apiKey()).
-        // AETHER_CLUSTER_SECRET still rides the loop verbatim (a cluster-wide constant with no
-        // per-provision authoritative source, unlike the name).
+        // AETHER_CLUSTER_SECRET is deliberately NOT forwarded (#828): the value would sit on this process's docker argv and in the
+        // container's env (`docker inspect`). It travels as a file, see [#launch].
         ClusterIdentityEnv.IDENTITY_VARS.stream()
                                         .filter(name -> !ClusterIdentityEnv.NODE_OWN_VARS.contains(name))
+                                        .filter(name -> !ClusterSecretSource.SECRET_ENV.equals(name))
                                         .forEach(name -> propagateEnvVar(command, name));
         ClusterIdentityEnv.DOCKER_INFRA_VARS.forEach(name -> propagateEnvVar(command, name));
         // #1968: the backup configuration is environment-driven for a Docker node (it has no node TOML of its own), so a
@@ -382,6 +425,11 @@ public record DockerComputeProvider(DockerCommandRunner runner, DockerConfig con
 
         addSpecLabels(command, ctx.extraTags());
         addPlacementLabels(command, request.zone());
+        if (secretFile) {
+            command.add("-e");
+            command.add(ClusterSecretSource.SECRET_FILE_ENV + "=" + SECRET_FILE_PATH);
+        }
+
         command.add(config.imageName());
 
         return List.copyOf(command);

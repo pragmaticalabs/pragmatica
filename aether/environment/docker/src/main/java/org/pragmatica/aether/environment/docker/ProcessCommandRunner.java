@@ -22,8 +22,22 @@ public record ProcessCommandRunner() implements DockerCommandRunner {
         return Promise.lift(COMMAND_EXECUTION_FAILED, () -> runProcess(command));
     }
 
+    @Override
+    public Promise<String> execute(List<String> command, byte[] stdin) {
+        return Promise.lift(COMMAND_EXECUTION_FAILED, () -> runProcess(command, stdin));
+    }
+
     private static String runProcess(List<String> command) throws Exception {
+        return runProcess(command, new byte[0]);
+    }
+
+    private static String runProcess(List<String> command, byte[] stdin) throws Exception {
         var process = new ProcessBuilder(command).redirectErrorStream(true).start();
+
+        try (var in = process.getOutputStream()) {
+            in.write(stdin);
+        }
+
         var output = new String(process.getInputStream().readAllBytes()).trim();
         var exitCode = process.waitFor();
 

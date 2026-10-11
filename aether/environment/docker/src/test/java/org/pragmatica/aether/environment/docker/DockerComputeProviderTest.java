@@ -49,7 +49,8 @@ class DockerComputeProviderTest {
     @BeforeEach
     void setUp() {
         testRunner = new TestDockerCommandRunner();
-        provider = DockerComputeProvider.dockerComputeProvider(testRunner, CONFIG).unwrap();
+        // The build machine may export the cluster secret; a test must state its environment, not inherit one (SF4).
+        provider = DockerComputeProvider.dockerComputeProvider(testRunner, CONFIG, DockerComputeProviderTest::hostEnvWithoutSecret).unwrap();
     }
 
     @Nested
@@ -101,7 +102,7 @@ class DockerComputeProviderTest {
             var exposingRunner = new TestDockerCommandRunner();
             exposingRunner.queuedResponses.add(Promise.success("container-id-0"));
             exposingRunner.queuedResponses.add(Promise.success(RUNNING_INSPECT));
-            var exposingProvider = DockerComputeProvider.dockerComputeProvider(exposingRunner, exposingConfig).unwrap();
+            var exposingProvider = DockerComputeProvider.dockerComputeProvider(exposingRunner, exposingConfig, DockerComputeProviderTest::hostEnvWithoutSecret).unwrap();
 
             exposingProvider.provision(InstanceType.ON_DEMAND)
                             .await()
@@ -138,7 +139,7 @@ class DockerComputeProviderTest {
         @Test
         void buildRunCommand_twoProvisions_mintDistinctKsuidNames() {
             var exposingRunner = new TestDockerCommandRunner();
-            var exposingProvider = DockerComputeProvider.dockerComputeProvider(exposingRunner, CONFIG).unwrap();
+            var exposingProvider = DockerComputeProvider.dockerComputeProvider(exposingRunner, CONFIG, DockerComputeProviderTest::hostEnvWithoutSecret).unwrap();
 
             exposingRunner.queuedResponses.add(Promise.success("container-id-0"));
             exposingRunner.queuedResponses.add(Promise.success(RUNNING_INSPECT));
@@ -449,6 +450,8 @@ class DockerComputeProviderTest {
                                  "AETHER_CLUSTER_SECRET", "host-secret");
             var hostileProvider = DockerComputeProvider.dockerComputeProvider(testRunner, CONFIG, hostEnv::get).unwrap();
             testRunner.queuedResponses.add(Promise.success("id-0"));
+            testRunner.queuedResponses.add(Promise.success(""));
+            testRunner.queuedResponses.add(Promise.success(""));
             testRunner.queuedResponses.add(Promise.success(RUNNING_INSPECT));
             var ctx = ProvisionContext.provisionContext(maybeClusterName("test-cluster"), "worker", sourceNameOrDefault("eu-west"),
                                                          ProvisionContext.PROVISIONED_BY_BOOTSTRAP);
@@ -458,7 +461,8 @@ class DockerComputeProviderTest {
                            .onFailure(cause -> fail("Expected success but got: " + cause.message()));
 
             var command = testRunner.allCommands.getFirst();
-            assertThat(command).as("CONTROL: the injected host env is consulted").contains("AETHER_CLUSTER_SECRET=host-secret");
+            assertThat(command).as("CONTROL: the injected host env is consulted").contains("AETHER_CLUSTER_SECRET_FILE=" + DockerComputeProvider.SECRET_FILE_PATH);
+            assertThat(testRunner.allCommands.stream().flatMap(List::stream)).as("#828: the secret value is on no argv").noneMatch(arg -> arg.contains("host-secret"));
             assertThat(command.stream().filter(arg -> arg.startsWith("AETHER_SOURCE=")).toList()).containsExactly("AETHER_SOURCE=eu-west");
             assertThat(command).noneMatch(arg -> arg.startsWith("AETHER_ZONE="));
         }
@@ -620,7 +624,7 @@ class DockerComputeProviderTest {
                     .onFailure(cause -> fail("Expected success but got: " + cause.message()));
 
             var command = testRunner.allCommands.getFirst();
-            assertEnvPropagatedIfSet(command, "AETHER_CLUSTER_SECRET");
+            assertThat(command).as("#828: the cluster secret is never forwarded as an env var").noneMatch(arg -> arg.startsWith("AETHER_CLUSTER_SECRET="));
             assertEnvPropagatedIfSet(command, "AETHER_DOCKER_NETWORK");
             assertEnvPropagatedIfSet(command, "DOCKER_GID");
             assertEnvPropagatedIfSet(command, "AETHER_INSECURE_DEV_MODE");
@@ -631,6 +635,118 @@ class DockerComputeProviderTest {
             if (value != null && !value.isEmpty()) {
                 assertThat(command).contains(name + "=" + value);
             }
+        }
+    }
+
+    /// #828 — a provider-minted node gets the secret as a file copied in over stdin, never on any argv and never in the
+    /// container's environment. The sentinel is a value no other field can contain; the positive control is that it DID reach
+    /// the archive piped to `docker cp`.
+    @Nested
+    class SecretFileTests {
+        private static final String SENTINEL = "sentinel-secret-7f3a9c";
+
+        private ProvisionSpec spec() {
+            var ctx = ProvisionContext.provisionContext(maybeClusterName("test-cluster"), "core", sourceNameOrDefault("eu-west"),
+                                                         ProvisionContext.PROVISIONED_BY_BOOTSTRAP);
+
+            return ProvisionSpec.provisionSpec(InstanceType.ON_DEMAND, "docker", "core-pool", ctx).unwrap();
+        }
+
+        private DockerComputeProvider providerWith(Map<String, String> env) {
+            return DockerComputeProvider.dockerComputeProvider(testRunner, CONFIG, env::get).unwrap();
+        }
+
+        private String tarListing(byte[] archive) {
+            try {
+                var listing = new ProcessBuilder("tar", "-tvf", "-").redirectErrorStream(true).start();
+
+                try (var in = listing.getOutputStream()) {
+                    in.write(archive);
+                }
+
+                return new String(listing.getInputStream().readAllBytes());
+            } catch (java.io.IOException e) {
+                throw new AssertionError(e);
+            }
+        }
+
+        private void queueSuccessfulCreateCopyStart() {
+            testRunner.queuedResponses.add(Promise.success("id-0"));
+            testRunner.queuedResponses.add(Promise.success(""));
+            testRunner.queuedResponses.add(Promise.success(""));
+            testRunner.queuedResponses.add(Promise.success(RUNNING_INSPECT));
+        }
+
+        private void assertSecretOnNoArgvButInTheArchive() {
+            assertThat(testRunner.allCommands.stream().flatMap(List::stream)).as("the secret value is on no argv").noneMatch(arg -> arg.contains(SENTINEL));
+            assertThat(testRunner.allCommands.stream().flatMap(List::stream)).as("and no env var carries it").noneMatch(arg -> arg.startsWith("AETHER_CLUSTER_SECRET="));
+            assertThat(testRunner.stdins).hasSize(1);
+            assertThat(new String(testRunner.stdins.getFirst(), java.nio.charset.StandardCharsets.UTF_8)).as("positive control: the sentinel reached the archive").contains(SENTINEL);
+            assertThat(tarListing(testRunner.stdins.getFirst())).as("the archive entry is read-only and owned by the node user (uid/gid 1000)")
+                                                                   .contains("-r--------").contains("1000").contains("aether-cluster-secret");
+        }
+
+        @Test
+        void secretFromAFile_isCopiedInOverStdin_afterCreate_andBeforeStart() throws Exception {
+            var secretFile = java.nio.file.Files.createTempFile("provider-secret-", ".txt");
+
+            try {
+                java.nio.file.Files.writeString(secretFile, SENTINEL + "\n");
+                queueSuccessfulCreateCopyStart();
+
+                providerWith(Map.of("AETHER_CLUSTER_SECRET_FILE", secretFile.toString())).provision(spec()).await()
+                                                                                         .onFailure(cause -> fail("Expected success but got: " + cause.message()));
+
+                var commands = testRunner.allCommands;
+
+                assertThat(commands.get(0)).startsWith("docker", "create").doesNotContain("run").doesNotContain("-d")
+                                           .contains("AETHER_CLUSTER_SECRET_FILE=" + DockerComputeProvider.SECRET_FILE_PATH);
+                assertThat(commands.get(1)).startsWith("docker", "cp", "-");
+                assertThat(commands.get(2)).startsWith("docker", "start");
+                assertSecretOnNoArgvButInTheArchive();
+            } finally {
+                java.nio.file.Files.deleteIfExists(secretFile);
+            }
+        }
+
+        @Test
+        void secretFromThePlainEnvVar_alsoTravelsAsAFile_notAsAnEnvArg() {
+            queueSuccessfulCreateCopyStart();
+
+            providerWith(Map.of("AETHER_CLUSTER_SECRET", SENTINEL)).provision(spec()).await()
+                                                                    .onFailure(cause -> fail("Expected success but got: " + cause.message()));
+
+            assertThat(testRunner.allCommands.getFirst()).startsWith("docker", "create");
+            assertSecretOnNoArgvButInTheArchive();
+        }
+
+        @Test
+        void fileAndPlainVarThatDiffer_failProvisioning_beforeAnyDockerCommand() throws Exception {
+            var secretFile = java.nio.file.Files.createTempFile("provider-secret-", ".txt");
+
+            try {
+                java.nio.file.Files.writeString(secretFile, SENTINEL);
+
+                var result = providerWith(Map.of("AETHER_CLUSTER_SECRET_FILE", secretFile.toString(), "AETHER_CLUSTER_SECRET", "other")).provision(spec()).await();
+
+                assertThat(result.isFailure()).isTrue();
+                assertThat(testRunner.allCommands).as("a refused configuration launches nothing (only the rollback sweep may run)")
+                                                  .noneMatch(command -> command.contains("run") || command.contains("create") || command.contains("cp"));
+                assertThat(testRunner.stdins).isEmpty();
+            } finally {
+                java.nio.file.Files.deleteIfExists(secretFile);
+            }
+        }
+
+        @Test
+        void noSecretAnywhere_keepsThePlainDockerRun() {
+            testRunner.queuedResponses.add(Promise.success("id-0"));
+            testRunner.queuedResponses.add(Promise.success(RUNNING_INSPECT));
+
+            providerWith(Map.of()).provision(spec()).await().onFailure(cause -> fail("Expected success but got: " + cause.message()));
+
+            assertThat(testRunner.allCommands.getFirst()).startsWith("docker", "run", "-d");
+            assertThat(testRunner.stdins).isEmpty();
         }
     }
 
@@ -940,7 +1056,22 @@ class DockerComputeProviderTest {
     }
 
     /// Test stub for DockerCommandRunner that returns canned responses and captures arguments.
+    private static String hostEnvWithoutSecret(String name) {
+        return name.startsWith("AETHER_CLUSTER_SECRET")
+               ? null
+               : System.getenv(name);
+    }
+
     static final class TestDockerCommandRunner implements DockerCommandRunner {
+        List<byte[]> stdins = new ArrayList<>();
+
+        @Override
+        public Promise<String> execute(List<String> command, byte[] stdin) {
+            stdins.add(stdin);
+
+            return execute(command);
+        }
+
         Promise<String> nextResponse = Promise.success("");
         List<String> lastCommand = List.of();
         List<List<String>> allCommands = new ArrayList<>();

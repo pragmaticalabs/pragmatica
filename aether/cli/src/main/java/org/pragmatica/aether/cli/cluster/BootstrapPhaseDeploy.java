@@ -12,6 +12,7 @@ import java.util.stream.IntStream;
 
 import org.pragmatica.aether.cli.cluster.ClusterBootstrapOrchestrator.BootstrapContext;
 import org.pragmatica.aether.cli.cluster.ClusterBootstrapOrchestrator.BootstrapError;
+import org.pragmatica.aether.environment.ClusterSecretSource;
 import org.pragmatica.aether.config.cluster.ClusterBootstrapConfig;
 import org.pragmatica.aether.config.cluster.NodeRole;
 import org.pragmatica.aether.config.cluster.NodeUserDataRenderer;
@@ -138,7 +139,15 @@ sealed interface BootstrapPhaseDeploy {
                                              Fn4<Result<Unit>, String, String, String, SshConfig> scpExec,
                                              Fn1<String, String> envLookup) {
         return switch (source.type()) {
-            case CLOUD -> deployCloudSource(ctx, source, sourceName, healthCheck, sshExec, envLookup);
+            case CLOUD -> deployCloudSource(ctx,
+                                            source,
+                                            sourceName,
+                                            healthCheck,
+                                            sshExec,
+                                            scpExec,
+                                            envLookup,
+                                            SSH_PREFLIGHT_TIMEOUT_MS,
+                                            SSH_PREFLIGHT_POLL_MS);
             case SSH -> deploySshSource(ctx, source, sourceName, healthCheck, sshExec, scpExec, envLookup);
             case FORGE -> deployForgeSource(sourceName);
             case DOCKER -> deployDockerSource(sourceName);
@@ -173,12 +182,39 @@ sealed interface BootstrapPhaseDeploy {
                                  SSH_PREFLIGHT_POLL_MS);
     }
 
+    /// Test seam: the secret push is a no-op, so tests that pin the launch command need no scp.
+    /// Production reaches [#deployCloudSource] with the real scp through [#execute].
+    private static Result<Unit> noScp(String localPath, String host, String remotePath, SshConfig config) {
+        return Result.unitResult();
+    }
+
     @SuppressWarnings("JBCT-EX-01")
     static Result<Unit> deployCloudSource(BootstrapContext ctx,
                                           SourceProfile source,
                                           SourceName sourceName,
                                           Fn1<Result<String>, String> healthCheck,
                                           Fn3<Result<String>, String, String, SshConfig> sshExec,
+                                          Fn1<String, String> envLookup,
+                                          long preflightTimeoutMs,
+                                          long preflightPollMs) {
+        return deployCloudSource(ctx,
+                                 source,
+                                 sourceName,
+                                 healthCheck,
+                                 sshExec,
+                                 BootstrapPhaseDeploy::noScp,
+                                 envLookup,
+                                 preflightTimeoutMs,
+                                 preflightPollMs);
+    }
+
+    @SuppressWarnings("JBCT-EX-01")
+    static Result<Unit> deployCloudSource(BootstrapContext ctx,
+                                          SourceProfile source,
+                                          SourceName sourceName,
+                                          Fn1<Result<String>, String> healthCheck,
+                                          Fn3<Result<String>, String, String, SshConfig> sshExec,
+                                          Fn4<Result<Unit>, String, String, String, SshConfig> scpExec,
                                           Fn1<String, String> envLookup,
                                           long preflightTimeoutMs,
                                           long preflightPollMs) {
@@ -220,6 +256,7 @@ sealed interface BootstrapPhaseDeploy {
                                                    sourceNodes,
                                                    healthCheck,
                                                    sshExec,
+                                                   scpExec,
                                                    envLookup,
                                                    preflightTimeoutMs,
                                                    preflightPollMs);
@@ -334,6 +371,7 @@ sealed interface BootstrapPhaseDeploy {
                                                          List<ProvisionedNode> sourceNodes,
                                                          Fn1<Result<String>, String> healthCheck,
                                                          Fn3<Result<String>, String, String, SshConfig> sshExec,
+                                                         Fn4<Result<Unit>, String, String, String, SshConfig> scpExec,
                                                          Fn1<String, String> envLookup,
                                                          long preflightTimeoutMs,
                                                          long preflightPollMs) {
@@ -389,6 +427,25 @@ sealed interface BootstrapPhaseDeploy {
             }
 
             var role = roleResult.unwrap();
+            var secretPush = pushClusterSecret(node.nodeId(),
+                                               node.publicIp(),
+                                               isJvm
+                                               ? JVM_SECRET_STAGED
+                                               : CONTAINER_SECRET_STAGED,
+                                               isJvm
+                                               ? JVM_CREDENTIALS_ENV_FILE
+                                               : CONTAINER_CREDENTIALS_ENV_FILE,
+                                               clusterSecret,
+                                               envLookup,
+                                               sshConfig,
+                                               scpExec);
+
+            if (secretPush.isFailure()) {
+                return new BootstrapError.DeploymentFailed(node.publicIp(),
+                                                           "Failed to deliver the cluster secret: " + secretPush.fold(Cause::message,
+                                                                                                                      _ -> "")).result();
+            }
+
             var command = isJvm
                           ? buildJvmStartCommand(node.nodeId(),
                                                  role,
@@ -397,7 +454,6 @@ sealed interface BootstrapPhaseDeploy {
                                                  clusterPort,
                                                  managementPort,
                                                  peers,
-                                                 clusterSecret,
                                                  clusterName,
                                                  envLookup,
                                                  backupPath)
@@ -410,7 +466,6 @@ sealed interface BootstrapPhaseDeploy {
                                               clusterPort,
                                               managementPort,
                                               peers,
-                                              clusterSecret,
                                               envLookup,
                                               backupPath);
             var result = sshExec.apply(node.publicIp(), command, sshConfig);
@@ -584,8 +639,7 @@ sealed interface BootstrapPhaseDeploy {
                                     Option<String> zone,
                                     int clusterPort,
                                     int managementPort,
-                                    String peers,
-                                    String clusterSecret) {
+                                    String peers) {
         return buildStartCommand(image,
                                  clusterName,
                                  nodeId,
@@ -595,7 +649,6 @@ sealed interface BootstrapPhaseDeploy {
                                  clusterPort,
                                  managementPort,
                                  peers,
-                                 clusterSecret,
                                  System::getenv);
     }
 
@@ -608,8 +661,9 @@ sealed interface BootstrapPhaseDeploy {
     /// the install-only cloud-init would otherwise have emitted ([UserDataTemplate#emitIdentityEnv]) — otherwise
     /// AETHER_INSECURE_DEV_MODE and the rest of [ClusterIdentityEnv#IDENTITY_VARS] silently drop,
     /// the C2 security gate fails, and the health poll never succeeds. AETHER_CLUSTER_SECRET is
-    /// emitted explicitly from the finalized `clusterSecret` param and EXCLUDED from the allow-list
-    /// pass (`none()` ref) so it never appears twice. `envLookup` is injectable for unit testing.
+    /// delivered as a file bind-mounted read-only and named by `AETHER_CLUSTER_SECRET_FILE` (#828) — never inlined, never in
+    /// the container's environment — and EXCLUDED from
+    /// the allow-list pass (`none()` ref) so it never appears twice. `envLookup` is injectable for unit testing.
     ///
     /// #296 — `role` is the node's OWN role, threaded from its id: the `aether-role` label is what
     /// operators filter tiers by, and the `AETHER_ROLE` the identity pass emits from the same value
@@ -624,7 +678,6 @@ sealed interface BootstrapPhaseDeploy {
                                     int clusterPort,
                                     int managementPort,
                                     String peers,
-                                    String clusterSecret,
                                     Fn1<String, String> envLookup) {
         return buildStartCommand(image,
                                  clusterName,
@@ -635,7 +688,6 @@ sealed interface BootstrapPhaseDeploy {
                                  clusterPort,
                                  managementPort,
                                  peers,
-                                 clusterSecret,
                                  envLookup,
                                  Option.none());
     }
@@ -652,13 +704,14 @@ sealed interface BootstrapPhaseDeploy {
                                     int clusterPort,
                                     int managementPort,
                                     String peers,
-                                    String clusterSecret,
                                     Fn1<String, String> envLookup,
                                     Option<String> backupPath) {
-        return "if docker ps -a --format '{{.Names}}' | grep -qx aether-node; then echo " + ALREADY_PRESENT_MARKER
+        return "( if docker ps -a --format '{{.Names}}' | grep -qx aether-node; then echo " + ALREADY_PRESENT_MARKER
              + " >&2; exit " + ALREADY_PRESENT_EXIT
              + "; fi" + backupPath.map(_ -> " && install -d -m 0750 -o 1000 -g 1000 " + NodeUserDataRenderer.BACKUP_HOST_DIRECTORY)
                                   .or("")
+             + " && install -m 0400 -o 1000 -g 1000 " + CONTAINER_SECRET_STAGED
+             + " " + NodeUserDataRenderer.CONTAINER_SECRET_HOST_FILE
              + " && docker run -d --name aether-node --restart no --network host"
              + " -l aether-cluster=" + clusterName.value()
              + " -l aether-node-id=" + nodeId
@@ -674,9 +727,18 @@ sealed interface BootstrapPhaseDeploy {
              + "\""
              + " -e PEERS=\"" + peers
              + "\""
-             + " -e AETHER_CLUSTER_SECRET=\"" + clusterSecret
-             + "\"" + identityEnvFlags(clusterName, role, source, zone, envLookup)
-             + " " + image;
+             + " --mount type=bind,src=" + NodeUserDataRenderer.CONTAINER_SECRET_HOST_FILE
+             + ",dst=" + NodeUserDataRenderer.CONTAINER_SECRET_MOUNT
+             + ",readonly"
+             + " -e " + ClusterSecretSource.SECRET_FILE_ENV
+             + "=\"" + NodeUserDataRenderer.CONTAINER_SECRET_MOUNT
+             + "\"" + (hasCredentials(envLookup)
+                       ? " --env-file " + CONTAINER_CREDENTIALS_ENV_FILE
+                       : "") + identityEnvFlags(clusterName, role, source, zone, envLookup)
+             + " " + image
+             + " ); rc=$?; rm -f " + CONTAINER_SECRET_STAGED
+             + " " + CONTAINER_CREDENTIALS_ENV_FILE
+             + "; exit $rc";
     }
 
     /// Single-line `-e VAR="value"` fragment for the cluster-identity allow-list (minus
@@ -702,9 +764,35 @@ sealed interface BootstrapPhaseDeploy {
     }
 
     private static Unit appendRestartEnvFlag(StringBuilder sb, String name, String value) {
+        if (SECRET_IDENTITY_VARS.contains(name)) {
+            return Unit.unit();
+        }
+
         sb.append(" -e ").append(name).append("=\"").append(value).append("\"");
 
         return Unit.unit();
+    }
+
+    /// #828 — how the cluster secret travels. It is scp'd (0600) to a STAGED path, and the launch command installs it (0400,
+    /// the node's user) at its final host path — which the container bind-mounts read-only — only AFTER the already-present
+    /// guard passes, so a refused start never overwrites the secret of the node already running there. The staged copy is
+    /// removed by the same line on every exit; the installed file is KEPT (a container start re-resolves the bind source).
+    /// The secret therefore appears in no ssh command line (remote `ps`, shell history) and not in `docker inspect`.
+    static String CONTAINER_SECRET_STAGED = "/opt/aether/config/cluster-secret.staged";
+    static String JVM_SECRET_STAGED = NodeUserDataRenderer.JVM_ENV_DIR + "/cluster-secret.staged";
+    /// Credential-class identity vars (below) have no `_FILE` reader on the node, so they still reach it as environment: a
+    /// transient env file, `--env-file` for containers or appended to the unit's env file for JVMs. Pushed only when the
+    /// operator's environment sets one, removed by the launch line. [unverified residual: they show in `docker inspect`.]
+    static String CONTAINER_CREDENTIALS_ENV_FILE = "/opt/aether/config/credentials.env";
+    static String JVM_CREDENTIALS_ENV_FILE = NodeUserDataRenderer.JVM_ENV_DIR + "/credentials.env";
+    /// #828 — the identity allow-list members that are CREDENTIALS (the same class as the cluster
+    /// secret): they ride the pushed credentials file instead of `-e` / printf operands.
+    static List<String> SECRET_IDENTITY_VARS = List.of("AETHER_API_KEY", "AETHER_API_KEYS");
+
+    private static boolean hasCredentials(Fn1<String, String> envLookup) {
+        return SECRET_IDENTITY_VARS.stream().anyMatch(name -> Option.option(envLookup.apply(name))
+                                                                    .filter(value -> !value.isBlank())
+                                                                    .isPresent());
     }
 
     static String JVM_JAR_PATH = "/opt/aether/aether-node.jar";
@@ -716,7 +804,6 @@ sealed interface BootstrapPhaseDeploy {
                                        int clusterPort,
                                        int managementPort,
                                        String peers,
-                                       String clusterSecret,
                                        ClusterName clusterName) {
         return buildJvmStartCommand(nodeId,
                                     role,
@@ -725,7 +812,6 @@ sealed interface BootstrapPhaseDeploy {
                                     clusterPort,
                                     managementPort,
                                     peers,
-                                    clusterSecret,
                                     clusterName,
                                     System::getenv);
     }
@@ -762,7 +848,6 @@ sealed interface BootstrapPhaseDeploy {
                                        int clusterPort,
                                        int managementPort,
                                        String peers,
-                                       String clusterSecret,
                                        ClusterName clusterName,
                                        Fn1<String, String> envLookup) {
         return buildJvmStartCommand(nodeId,
@@ -772,7 +857,6 @@ sealed interface BootstrapPhaseDeploy {
                                     clusterPort,
                                     managementPort,
                                     peers,
-                                    clusterSecret,
                                     clusterName,
                                     envLookup,
                                     Option.none());
@@ -787,11 +871,10 @@ sealed interface BootstrapPhaseDeploy {
                                        int clusterPort,
                                        int managementPort,
                                        String peers,
-                                       String clusterSecret,
                                        ClusterName clusterName,
                                        Fn1<String, String> envLookup,
                                        Option<String> backupPath) {
-        return "if systemctl is-active --quiet " + NodeUserDataRenderer.JVM_UNIT_NAME
+        return "( if systemctl is-active --quiet " + NodeUserDataRenderer.JVM_UNIT_NAME
              + " || systemctl is-failed --quiet " + NodeUserDataRenderer.JVM_UNIT_NAME
              + " || [ -n \"$(systemctl show -p ActiveEnterTimestamp --value " + NodeUserDataRenderer.JVM_UNIT_NAME
              + ")\" ]"
@@ -802,10 +885,12 @@ sealed interface BootstrapPhaseDeploy {
              + "; fi" + backupPath.map(path -> " && install -d -m 0750 " + path)
                                   .or("")
              + " && install -d -m 0755 " + NodeUserDataRenderer.JVM_ENV_DIR
+             + " && install -m 0400 " + JVM_SECRET_STAGED
+             + " " + NodeUserDataRenderer.JVM_SECRET_FILE
              + " && touch " + NodeUserDataRenderer.JVM_ENV_FILE_PATH
              + " && chmod 600 " + NodeUserDataRenderer.JVM_ENV_FILE_PATH
-             + " && printf '%s\\n'"
-             + " 'AETHER_CLUSTER_SECRET=" + clusterSecret
+             + " && { printf '%s\\n' '" + ClusterSecretSource.SECRET_FILE_ENV
+             + "=" + NodeUserDataRenderer.JVM_SECRET_FILE
              + "'" + identityEnvAssignments(clusterName, role, source, zone, envLookup)
              + " 'AETHER_NODE_ID=" + nodeId
              + "'"
@@ -814,10 +899,15 @@ sealed interface BootstrapPhaseDeploy {
              + " 'AETHER_MANAGEMENT_PORT=" + managementPort
              + "'"
              + " 'AETHER_PEERS=" + peers
-             + "'"
-             + " > " + NodeUserDataRenderer.JVM_ENV_FILE_PATH
+             + "'" + (hasCredentials(envLookup)
+                      ? " && cat " + JVM_CREDENTIALS_ENV_FILE
+                      : "")
+             + "; } > " + NodeUserDataRenderer.JVM_ENV_FILE_PATH
              + " && touch " + JVM_STARTED_MARKER
-             + " && systemctl start " + NodeUserDataRenderer.JVM_UNIT_NAME;
+             + " && systemctl start " + NodeUserDataRenderer.JVM_UNIT_NAME
+             + " ); rc=$?; rm -f " + JVM_SECRET_STAGED
+             + " " + JVM_CREDENTIALS_ENV_FILE
+             + "; exit $rc";
     }
 
     /// Space-prefixed `'VAR=value'` printf operands for the cluster-identity allow-list (minus
@@ -841,6 +931,10 @@ sealed interface BootstrapPhaseDeploy {
     }
 
     private static Unit appendJvmEnvAssignment(StringBuilder sb, String name, String value) {
+        if (SECRET_IDENTITY_VARS.contains(name)) {
+            return Unit.unit();
+        }
+
         sb.append(" '").append(name).append('=').append(value).append('\'');
 
         return Unit.unit();
@@ -1047,9 +1141,10 @@ sealed interface BootstrapPhaseDeploy {
                                                                                                                                                                                        clusterPort,
                                                                                                                                                                                        managementPort,
                                                                                                                                                                                        peersValue,
-                                                                                                                                                                                       clusterSecret,
                                                                                                                                                                                        envLookup,
                                                                                                                                                                                        NodeUserDataRenderer.backupPath(doc)),
+                                                                                                                                                                  clusterSecret,
+                                                                                                                                                                  envLookup,
                                                                                                                                                                   sshExec,
                                                                                                                                                                   scpExec))));
 
@@ -1111,7 +1206,6 @@ sealed interface BootstrapPhaseDeploy {
                                        int clusterPort,
                                        int managementPort,
                                        String peers,
-                                       String clusterSecret,
                                        Fn1<String, String> envLookup,
                                        Option<String> backupPath) {
         return "mkdir -p /opt/aether/config && docker pull " + image
@@ -1124,7 +1218,6 @@ sealed interface BootstrapPhaseDeploy {
                                           clusterPort,
                                           managementPort,
                                           peers,
-                                          clusterSecret,
                                           envLookup,
                                           backupPath);
     }
@@ -1134,6 +1227,8 @@ sealed interface BootstrapPhaseDeploy {
                                               String nodeConfig,
                                               SshConfig sshConfig,
                                               String startCommand,
+                                              String clusterSecret,
+                                              Fn1<String, String> envLookup,
                                               Fn3<Result<String>, String, String, SshConfig> sshExec,
                                               Fn4<Result<Unit>, String, String, String, SshConfig> scpExec) {
         // The config dir must exist before the scp lands in it; the launch line recreates it harmlessly.
@@ -1146,10 +1241,75 @@ sealed interface BootstrapPhaseDeploy {
                                                          node.publicIp(),
                                                          "/opt/aether/config/aether.toml",
                                                          sshConfig))
+                      .flatMap(_ -> pushClusterSecret(node.nodeId(),
+                                                      node.publicIp(),
+                                                      CONTAINER_SECRET_STAGED,
+                                                      CONTAINER_CREDENTIALS_ENV_FILE,
+                                                      clusterSecret,
+                                                      envLookup,
+                                                      sshConfig,
+                                                      scpExec))
                       .flatMap(_ -> sshExec.apply(node.publicIp(),
                                                   startCommand,
                                                   sshConfig))
                       .mapToUnit();
+    }
+
+    /// Pushes the cluster secret (the raw value) to `secretPath`, and, only when the operator's environment sets a
+    /// credential-class var, `NAME=value` lines to `credentialsPath`, both as `0600` files via the injected scp (#828); the
+    /// CLI-host temp copies are created owner-only and deleted afterwards. A value with a line break cannot be carried in
+    /// these files, so it is refused rather than truncated.
+    @SuppressWarnings("JBCT-EX-01")
+    static Result<Unit> pushClusterSecret(String nodeId,
+                                          String host,
+                                          String secretPath,
+                                          String credentialsPath,
+                                          String clusterSecret,
+                                          Fn1<String, String> envLookup,
+                                          SshConfig sshConfig,
+                                          Fn4<Result<Unit>, String, String, String, SshConfig> scpExec) {
+        var values = new ArrayList<String>();
+
+        values.add(clusterSecret);
+        var credentials = new StringBuilder();
+
+        for (var name : SECRET_IDENTITY_VARS) {
+            var value = envLookup.apply(name);
+
+            if (value != null && !value.isBlank()) {
+                values.add(value);
+                credentials.append(name).append('=').append(value).append('\n');
+            }
+        }
+
+        if (values.stream().anyMatch(v -> v.indexOf('\n') >= 0 || v.indexOf('\r') >= 0)) {
+            return new BootstrapError.DeploymentFailed(nodeId,
+                                                       "a credential contains a line break; it cannot be delivered as a file").result();
+        }
+
+        return pushFile(nodeId, host, secretPath, clusterSecret, sshConfig, scpExec).flatMap(_ -> credentials.isEmpty()
+                                                                                                  ? Result.unitResult()
+                                                                                                  : pushFile(nodeId,
+                                                                                                             host,
+                                                                                                             credentialsPath,
+                                                                                                             credentials.toString(),
+                                                                                                             sshConfig,
+                                                                                                             scpExec));
+    }
+
+    private static Result<Unit> pushFile(String nodeId,
+                                         String host,
+                                         String remotePath,
+                                         String content,
+                                         SshConfig sshConfig,
+                                         Fn4<Result<Unit>, String, String, String, SshConfig> scpExec) {
+        return writeNodeConfigToTemp(nodeId, content).flatMap(tempPath -> {
+            var pushed = scpExec.apply(tempPath.toString(), host, remotePath, sshConfig);
+
+            Result.lift(e -> tempConfigFailure(nodeId, e.getMessage()), () -> Files.deleteIfExists(tempPath));
+
+            return pushed;
+        });
     }
 
     private static Result<Path> writeNodeConfigToTemp(String nodeId, String content) {

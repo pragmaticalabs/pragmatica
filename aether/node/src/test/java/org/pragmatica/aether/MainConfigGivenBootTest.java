@@ -117,6 +117,33 @@ class MainConfigGivenBootTest {
         assertPastConfigStage(boot(dir, "--config=" + write(dir, "valid.toml", VALID)));
     }
 
+    /// #828 — the node reads its cluster secret from the file `AETHER_CLUSTER_SECRET_FILE` names, and REFUSES to start when that
+    /// file and `AETHER_CLUSTER_SECRET` are both set to different values: the node cannot know which one is meant, and a wrong guess
+    /// derives its certificates from the wrong secret. The refusal names the variables and never a value.
+    @Test
+    void aSecretFileAndADifferingSecretVariable_refuseToStart_withExit65_namingNoValue(@TempDir Path dir) throws Exception {
+        var file = write(dir, "secret", "file-sentinel-1a2b");
+        var run = boot(dir, java.util.Map.of("AETHER_CLUSTER_SECRET_FILE", file.toString(), "AETHER_CLUSTER_SECRET", "plain-sentinel-3c4d"));
+
+        assertRefused(run, "AETHER_CLUSTER_SECRET_FILE");
+        assertThat(run.out() + run.err()).doesNotContain("file-sentinel-1a2b").doesNotContain("plain-sentinel-3c4d");
+    }
+
+    @Test
+    void anUnreadableSecretFile_refusesToStart_namingThePath(@TempDir Path dir) throws Exception {
+        var missing = dir.resolve("no-such-secret");
+
+        assertRefused(boot(dir, java.util.Map.of("AETHER_CLUSTER_SECRET_FILE", missing.toString())), missing.toString());
+    }
+
+    @Test
+    void aSecretFileAlone_andAnEqualPair_getPastTheConfigStage(@TempDir Path dir) throws Exception {
+        var file = write(dir, "secret", "file-sentinel-1a2b\n");
+
+        assertPastConfigStage(boot(dir, java.util.Map.of("AETHER_CLUSTER_SECRET_FILE", file.toString())));
+        assertPastConfigStage(boot(dir, java.util.Map.of("AETHER_CLUSTER_SECRET_FILE", file.toString(), "AETHER_CLUSTER_SECRET", "file-sentinel-1a2b")));
+    }
+
     @Test
     void resolveConfig_isPure_noneForNoArgument_failureForEveryBadArgument(@TempDir Path dir) throws Exception {
         assertThat(Main.resolveConfig(Option.none()).map(Option::isEmpty).or(false)).as("no argument is no configuration, not a failure").isTrue();
@@ -145,6 +172,10 @@ class MainConfigGivenBootTest {
     }
 
     private static Run boot(Path work, String... args) throws Exception {
+        return boot(work, java.util.Map.of(), args);
+    }
+
+    private static Run boot(Path work, java.util.Map<String, String> env, String... args) throws Exception {
         var java = Path.of(System.getProperty("java.home"), "bin", "java").toString();
         var command = new ArrayList<>(List.of(java, "-Xmx256m", "-cp", System.getProperty("java.class.path"), Main.class.getName()));
 
@@ -155,6 +186,9 @@ class MainConfigGivenBootTest {
         var builder = new ProcessBuilder(command).redirectOutput(out.toFile()).redirectError(err.toFile());
 
         builder.environment().remove("AETHER_CLUSTER_NAME");
+        builder.environment().remove("AETHER_CLUSTER_SECRET");
+        builder.environment().remove("AETHER_CLUSTER_SECRET_FILE");
+        builder.environment().putAll(env);
         var child = builder.start();
 
         if (!child.waitFor(DEADLINE_SECONDS, TimeUnit.SECONDS)) {

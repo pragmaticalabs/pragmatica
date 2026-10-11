@@ -17,6 +17,7 @@ import org.pragmatica.aether.config.cluster.InfrastructureConfig;
 import org.pragmatica.aether.config.cluster.LoadBalancerMode;
 import org.pragmatica.aether.config.cluster.NetworkingType;
 import org.pragmatica.aether.config.cluster.NodeRole;
+import org.pragmatica.aether.config.cluster.NodeUserDataRenderer;
 import org.pragmatica.aether.config.cluster.OperationsConfig;
 import org.pragmatica.aether.config.cluster.PortMapping;
 import org.pragmatica.aether.config.cluster.RoleSubTable;
@@ -296,8 +297,10 @@ class BootstrapPhaseDeploySshSourceTest {
         assertThat(result.isSuccess()).as(() -> "deploy must succeed: " + result).isTrue();
         assertThat(calls).containsExactly("ssh:10.0.0.1:mkdir -p /opt/aether/config",
                                           "scp:10.0.0.1",
+                                          "scp:10.0.0.1",
                                           "ssh:10.0.0.1:launch",
                                           "ssh:10.0.0.2:mkdir -p /opt/aether/config",
+                                          "scp:10.0.0.2",
                                           "scp:10.0.0.2",
                                           "ssh:10.0.0.2:launch");
     }
@@ -307,7 +310,7 @@ class BootstrapPhaseDeploySshSourceTest {
     /// reaches the launch line; an unlisted one never does.
     @Test
     void sshSource_forwardsListedIdentityEnvFromTheOperatorHost_andNothingElse() {
-        var hostEnv = Map.of("AETHER_API_KEYS", "k1,k2", "NOT_ON_THE_LIST", "leak");
+        var hostEnv = Map.of("AETHER_API_KEYS", "k1,k2", "AETHER_PROVISIONED_BY", "ops", "NOT_ON_THE_LIST", "leak");
         var ctx = context(Map.of("dc",
                                  sshSource("dc", List.of("10.0.0.1"), List.of(), "default")),
                           Map.of(),
@@ -315,8 +318,27 @@ class BootstrapPhaseDeploySshSourceTest {
         var result = deploy(ctx, "dc", hostEnv::get);
 
         assertThat(result.isSuccess()).as(() -> "deploy must succeed: " + result).isTrue();
-        assertThat(startCommands.get("10.0.0.1")).contains("-e AETHER_API_KEYS=\"k1,k2\"")
+        assertThat(startCommands.get("10.0.0.1")).as("#828: a credential-class identity var rides the secret file, not argv")
+                  .doesNotContain("k1,k2")
+                  .contains("-e AETHER_PROVISIONED_BY=\"ops\"")
                   .doesNotContain("NOT_ON_THE_LIST");
+    }
+
+    /// #828: the SSH source's launch line used to inline the cluster secret as `-e AETHER_CLUSTER_SECRET`.
+    @Test
+    void sshSource_launchLineCarriesNoSecretMaterial_itMountsAFileInstead() {
+        var ctx = context(Map.of("dc",
+                                 sshSource("dc", List.of("10.0.0.1"), List.of(), "default")),
+                          Map.of(),
+                          List.of(ssh("dc-core-0", "10.0.0.1")));
+        var result = deploy(ctx, "dc");
+
+        assertThat(result.isSuccess()).as(() -> "deploy must succeed: " + result).isTrue();
+        assertThat(startCommands).as("CONTROL: the host was launched").containsKey("10.0.0.1");
+        assertThat(startCommands.get("10.0.0.1")).doesNotContain(SECRET)
+                  .doesNotContain("AETHER_CLUSTER_SECRET=")
+                  .doesNotContain("--env-file")
+                  .contains("AETHER_CLUSTER_SECRET_FILE=\"" + NodeUserDataRenderer.CONTAINER_SECRET_MOUNT + "\"");
     }
 
     @Test
@@ -349,7 +371,8 @@ class BootstrapPhaseDeploySshSourceTest {
 
         assertThat(result.isSuccess()).as(() -> "deploy must succeed: " + result).isTrue();
         assertThat(startCommands.keySet()).as("`dc`'s deploy must not touch `lab`'s host").containsExactly("10.0.0.1");
-        assertThat(scpTargets).containsExactly("10.0.0.1:/opt/aether/config/aether.toml");
+        assertThat(scpTargets).containsExactly("10.0.0.1:/opt/aether/config/aether.toml",
+                                                     "10.0.0.1:" + BootstrapPhaseDeploy.CONTAINER_SECRET_STAGED);
     }
 
     @Test

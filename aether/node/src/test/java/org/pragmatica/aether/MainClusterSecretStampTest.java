@@ -144,6 +144,25 @@ class MainClusterSecretStampTest {
         assertThat(stamped.clusterSecret().unwrap()).isEqualTo(CONFIGURED_SECRET);
     }
 
+    /// #828 — the secret from `AETHER_CLUSTER_SECRET_FILE` reaches the stamped config and the certificate derivation, and an
+    /// explicitly configured `[tls] cluster_secret` still wins over it (the same precedence the plain variable has).
+    @Test
+    void secretFromAFile_isStampedAndDerivesTheSameBytes_andConfiguredSecretStillWins() throws Exception {
+        var file = java.nio.file.Files.createTempFile("stamp-secret-", ".txt");
+
+        try {
+            java.nio.file.Files.writeString(file, "file-sentinel-1a2b\n");
+            var ambient = org.pragmatica.aether.environment.ClusterSecretSource.resolve(java.util.Map.of("AETHER_CLUSTER_SECRET_FILE", file.toString())::get)
+                                                                                .fold(cause -> Option.<String>none(), value -> value);
+
+            assertThat(Main.withResolvedClusterSecret(minimalConfig(), configWith(""), ambient).clusterSecret().unwrap()).isEqualTo("file-sentinel-1a2b");
+            assertThat(new String(Main.resolveClusterSecret(TlsConfig.tlsConfig(""), ambient).unwrap())).isEqualTo("file-sentinel-1a2b");
+            assertThat(Main.withResolvedClusterSecret(minimalConfig(), configWith(CONFIGURED_SECRET), ambient).clusterSecret().unwrap()).isEqualTo(CONFIGURED_SECRET);
+        } finally {
+            java.nio.file.Files.deleteIfExists(file);
+        }
+    }
+
     private static Option<AetherConfig> configWith(String clusterSecret) {
         return Option.some(AetherConfig.aetherConfig(ClusterConfig.clusterConfig(Environment.DOCKER),
                                                      NodeConfig.nodeConfig(Environment.DOCKER),

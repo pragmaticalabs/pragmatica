@@ -390,6 +390,7 @@ For container deployment, configuration via environment variables:
 | `CLUSTER_PEERS` | required | Cluster peer list |
 | `JAVA_OPTS` | `-Xmx256m` | JVM options |
 | `AETHER_CLUSTER_SECRET` | none | Shared secret used to generate TLS certificates; fallback for `tls.cluster_secret` |
+| `AETHER_CLUSTER_SECRET_FILE` | none | Path to a file holding the cluster secret; preferred over the plain variable because the value is then in no argv or container environment. Both set to different values is refused at start (exit 65) |
 
 There are no `TLS_ENABLED` / `TLS_CERT_PATH` / `TLS_KEY_PATH` environment variables — TLS is
 configured via the `[cluster] tls` and `[tls]` TOML keys (`auto_generate`, `cert_path`,

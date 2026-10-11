@@ -6,6 +6,7 @@ package org.pragmatica.aether.config.cluster;
 import java.util.List;
 import java.util.regex.Pattern;
 
+import org.pragmatica.aether.environment.ClusterSecretSource;
 import org.pragmatica.aether.environment.ClusterIdentityEnv;
 import org.pragmatica.aether.environment.ClusterName;
 import org.pragmatica.aether.environment.SourceName;
@@ -48,6 +49,14 @@ public sealed interface NodeUserDataRenderer {
     String JVM_UNIT_PATH = "/etc/systemd/system/aether-node.service";
     String JVM_ENV_DIR = "/etc/aether";
     String JVM_ENV_FILE_PATH = "/etc/aether/node.env";
+    /// #828 — where the cluster secret lives on the node's host, as a file only the node's user can read. A container node
+    /// bind-mounts [#CONTAINER_SECRET_HOST_FILE] read-only at [#CONTAINER_SECRET_MOUNT] and is pointed at it by
+    /// `AETHER_CLUSTER_SECRET_FILE`; a JVM node reads [#JVM_SECRET_FILE] through the same variable. The value never appears in a
+    /// process argv or in a container's environment (`docker inspect`). The file is KEPT for the life of the node: the bind
+    /// mount re-resolves the host path on every container start, so removing it breaks a restart (loudly, with `--mount`).
+    String CONTAINER_SECRET_HOST_FILE = "/opt/aether/config/cluster-secret";
+    String CONTAINER_SECRET_MOUNT = "/run/secrets/aether-cluster-secret";
+    String JVM_SECRET_FILE = JVM_ENV_DIR + "/cluster-secret";
     String JVM_LAUNCHER_PATH = "/opt/aether/run-node.sh";
 
     static String deriveJarTag(String version) {
@@ -156,10 +165,10 @@ public sealed interface NodeUserDataRenderer {
                         config.cluster().version(),
                         image,
                         nodeId,
-                        clusterSecret,
                         ports.cluster(),
                         ports.management(),
                         peersValue);
+        appendClusterSecretFile(sb, clusterSecret, isContainer);
         appendSshAuthorizedKeys(sb, sshAuthorizedKeys);
         appendAdvertiseHostResolution(sb);
         var backupPath = backupPath(composedConfig);
@@ -272,17 +281,44 @@ public sealed interface NodeUserDataRenderer {
                                         String version,
                                         String image,
                                         String nodeId,
-                                        String clusterSecret,
                                         int clusterPort,
                                         int managementPort,
                                         String peers) {
         sb.append("AETHER_VERSION=\"").append(version).append("\"\n");
         sb.append("AETHER_IMAGE=\"").append(image).append("\"\n");
         sb.append("AETHER_NODE_ID=\"").append(nodeId).append("\"\n");
-        sb.append("AETHER_CLUSTER_SECRET=\"").append(clusterSecret).append("\"\n");
         sb.append("AETHER_CLUSTER_PORT=\"").append(clusterPort).append("\"\n");
         sb.append("AETHER_MANAGEMENT_PORT=\"").append(managementPort).append("\"\n");
         sb.append("AETHER_PEERS=\"").append(peers).append("\"\n\n");
+    }
+
+    /// #828 — the user-data is one script, so the secret is written to its file by shell builtins (`printf` is not an exec, so
+    /// the value is on no process argv) under `umask 077`, then given to the node's user: uid 1000 for the container, root for
+    /// the JVM unit. STATED LIMIT: this user-data itself still contains the secret in clear text. It is readable through the
+    /// cloud provider's metadata/API by the account holder, and from `/var/lib/cloud` and the metadata service by processes
+    /// on the VM. No file mode on the node can change that; the only fix is a secret store the VM fetches from.
+    private static void appendClusterSecretFile(StringBuilder sb, String clusterSecret, boolean container) {
+        var path = container
+                   ? CONTAINER_SECRET_HOST_FILE
+                   : JVM_SECRET_FILE;
+
+        sb.append("# --- Stage the cluster secret as a file (never an env var or a command line) ---\n");
+        sb.append("(umask 077; install -d -m 0755 ")
+          .append(container
+                  ? "/opt/aether/config"
+                  : JVM_ENV_DIR)
+          .append(" && printf '%s' ")
+          .append(shellQuote(clusterSecret))
+          .append(" > ")
+          .append(path)
+          .append(")\n");
+        sb.append(container
+                  ? "chown 1000:1000 " + path + "\n"
+                  : "").append("chmod 0400 ").append(path).append("\n\n");
+    }
+
+    private static String shellQuote(String value) {
+        return "'" + value.replace("'", "'\\''") + "'";
     }
 
     private static void appendDockerInstall(StringBuilder sb) {
@@ -366,6 +402,11 @@ public sealed interface NodeUserDataRenderer {
         sb.append("    -l aether-node-id=").append(nodeId).append(" \\\n");
         sb.append("    -l aether-role=").append(role.value()).append(" \\\n");
         sb.append("    -v /opt/aether/config/aether.toml:/app/aether.toml:ro \\\n");
+        sb.append("    --mount type=bind,src=")
+          .append(CONTAINER_SECRET_HOST_FILE)
+          .append(",dst=")
+          .append(CONTAINER_SECRET_MOUNT)
+          .append(",readonly \\\n");
         backupPath.onPresent(path -> sb.append("    -v ")
                                        .append(BACKUP_HOST_DIRECTORY)
                                        .append(':')
@@ -408,7 +449,7 @@ public sealed interface NodeUserDataRenderer {
                         role,
                         source.name(),
                         source.knownZone(),
-                        Option.some("${AETHER_CLUSTER_SECRET}"),
+                        Option.some(CONTAINER_SECRET_MOUNT),
                         System::getenv);
     }
 
@@ -438,7 +479,7 @@ public sealed interface NodeUserDataRenderer {
                                 Option<String> clusterSecretRef,
                                 Fn1<String, String> envLookup) {
         for (var name : ClusterIdentityEnv.IDENTITY_VARS) {
-            resolveEnvValue(name, clusterName, role, source, zone, clusterSecretRef, envLookup).onPresent(v -> emit.apply(name,
+            resolveEnvValue(name, clusterName, role, source, zone, clusterSecretRef, envLookup).onPresent(v -> emit.apply(emittedName(name),
                                                                                                                           v));
         }
         // --- Dev-mode (ISOLATED — never part of IDENTITY_VARS) ---
@@ -476,6 +517,13 @@ public sealed interface NodeUserDataRenderer {
             case "AETHER_CLUSTER_SECRET" -> clusterSecretRef;
             default -> lookupNonEmpty(name, envLookup);
         };
+    }
+
+    /// The cluster secret is emitted as the `_FILE` variable (#828): the reference supplied is the secret file's PATH.
+    private static String emittedName(String identityVar) {
+        return "AETHER_CLUSTER_SECRET".equals(identityVar)
+               ? ClusterSecretSource.SECRET_FILE_ENV
+               : identityVar;
     }
 
     private static Option<String> lookupNonEmpty(String name, Fn1<String, String> envLookup) {
@@ -583,7 +631,7 @@ public sealed interface NodeUserDataRenderer {
                         System::getenv);
         sb.append("AETHER_ENV_LITERAL\n");
         sb.append("cat >> ").append(JVM_ENV_FILE_PATH).append(" <<AETHER_ENV_RUNTIME\n");
-        sb.append("AETHER_CLUSTER_SECRET=${AETHER_CLUSTER_SECRET}\n");
+        sb.append("AETHER_CLUSTER_SECRET_FILE=").append(JVM_SECRET_FILE).append('\n');
         sb.append("AETHER_NODE_ID=${AETHER_NODE_ID}\n");
         sb.append("AETHER_CLUSTER_PORT=${AETHER_CLUSTER_PORT}\n");
         sb.append("AETHER_MANAGEMENT_PORT=${AETHER_MANAGEMENT_PORT}\n");

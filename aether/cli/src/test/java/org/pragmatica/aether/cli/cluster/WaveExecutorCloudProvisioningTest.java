@@ -93,7 +93,8 @@ class WaveExecutorCloudProvisioningTest {
                             .contains("# Role: worker")
                             .containsPattern("AETHER_SOURCE=\"?eu-1\"?")
                             .contains("AETHER_PEERS=\"" + PEER + "\"")
-                            .contains("AETHER_CLUSTER_SECRET=\"wave-secret\"");
+                            .contains("printf '%s' 'wave-secret' > /opt/aether/config/cluster-secret")
+                            .doesNotContain("AETHER_CLUSTER_SECRET=\"wave-secret\"");
         assertThat(spec.context().peers()).isEqualTo(Option.some(PEER));
         assertThat(spec.context().clusterName().map(name -> name.value())).isEqualTo(Option.some("prod-cluster"));
     }
