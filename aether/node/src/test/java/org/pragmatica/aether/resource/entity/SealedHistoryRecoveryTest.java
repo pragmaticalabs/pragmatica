@@ -331,7 +331,7 @@ class SealedHistoryRecoveryTest {
                                                             offset -> value(offset).getBytes(StandardCharsets.UTF_8)));
             var checkpoint = new EntityLogSubstrate.EntityCheckpoint(throughOffset,
                                                                      EntityFoldSnapshot.encode(state, Map.of()),
-                                                                     Option.some(new byte[]{1}));
+                                                                     Option.some(java.nio.ByteBuffer.allocate(Long.BYTES).putLong(throughOffset).array()));
 
             return (EntityLogSubstrate) Proxy.newProxyInstance(EntityLogSubstrate.class.getClassLoader(),
                                                                new Class<?>[]{EntityLogSubstrate.class},
