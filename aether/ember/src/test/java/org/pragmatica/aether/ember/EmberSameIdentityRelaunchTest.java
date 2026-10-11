@@ -150,7 +150,9 @@ class EmberSameIdentityRelaunchTest {
             .as("the refused process never completes a start")
             .isNotEqualTo("launched");
 
-        sleep(READMIT_WINDOW_MS);
+        var relaunchedId = relaunched.self();
+
+        awaitRefusedNeverParticipates(survivor, relaunched, relaunchedId);
         assertThat(relaunched.isReady()).as("the refused process must never become consensus-active").isFalse();
         assertThat(cluster.getNode("btk-3").isEmpty())
             .as("the refused process learns it was refused (explicit HelloRefused/IdentityRefused) and exits")
@@ -164,6 +166,23 @@ class EmberSameIdentityRelaunchTest {
         assertThat(write(survivor, "after-kill").isSuccess())
             .as("btk-1 plus a refused same-NodeId process must NOT form a quorum")
             .isFalse();
+        assertThat(cluster.allNodes().stream().map(node -> node.self().id())).as("no live process answers to the refused NodeId")
+                                                                                .doesNotContain("btk-3");
+    }
+
+    /// For the whole readmission window, the survivor never counts the refused identity as a member again and the
+    /// refused process never becomes consensus-active. Sampled, so a process admitted at any moment of the window
+    /// fails the test, not only one still admitted at its end.
+    private static void awaitRefusedNeverParticipates(AetherNode survivor, AetherNode relaunched, org.pragmatica.consensus.NodeId relaunchedId) {
+        var deadline = System.currentTimeMillis() + READMIT_WINDOW_MS;
+
+        while (System.currentTimeMillis() < deadline) {
+            assertThat(relaunched.isReady()).as("the refused process became consensus-active during the window").isFalse();
+            assertThat(survivor.membershipFsm().memberStates().get(relaunchedId))
+                .as("the survivor re-admitted the refused identity as a member during the window")
+                .isNotEqualTo("Member");
+            sleep(250);
+        }
     }
 
     private static org.pragmatica.lang.Result<List<Object>> write(AetherNode node, String keyId) {
