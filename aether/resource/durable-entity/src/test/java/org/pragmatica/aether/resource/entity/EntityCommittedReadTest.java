@@ -94,7 +94,9 @@ class EntityCommittedReadTest {
         var updated = entity.update("k", new IntOp.Add(4)).await();
 
         assertThat(updated.isSuccess()).as("the writer sequences against its own pending record").isTrue();
-        assertThat(updated.fold(cause -> -1, value -> value)).isEqualTo(7);
+        int state = updated.fold(cause -> -1, value -> value);
+
+        assertThat(state).isEqualTo(7);
         assertThat(entity.get("k").await().isFailure()).as("but a client read still waits for the commit").isTrue();
     }
 

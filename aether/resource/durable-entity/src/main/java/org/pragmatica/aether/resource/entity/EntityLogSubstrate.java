@@ -94,10 +94,10 @@ public interface EntityLogSubstrate {
     /// which is exactly what the catch-up machinery already establishes for a replica.
     boolean localLogComplete(String keyspace, int partition);
     /// The highest offset of `(keyspace, partition)` the log has COMMITTED (#2087): at or below it every record is acknowledged to
-    /// the keyspace's declared durability, so a client may be shown state derived from it. The default is the head, for a
-    /// substrate with no acknowledgement step (in-memory, tests).
+    /// the keyspace's declared durability, so a client may be shown state derived from it. The default is "everything",
+    /// for a substrate with no acknowledgement step (in-memory, tests): nothing is held back.
     default long committedOffset(String keyspace, int partition) {
-        return headOffset(keyspace, partition);
+        return Long.MAX_VALUE;
     }
 
     /// Resolves once [#committedOffset] reaches `offset`, or fails once `timeout` passes (#2087). The default resolves at once.
