@@ -194,9 +194,9 @@ class EmberReadCommittedFailoverTest {
 
     /// The tail an owner holds above its acknowledged position commits WITHOUT a new publish (#2087). Both replicas receive and hold the
     /// two records, but every acknowledgement is lost on its way to the owner, so the owner's committed position stays at the third
-    /// record and the publishers time out. Nothing else re-sends an acknowledgement for a replica that already holds everything (it is
-    /// CAUGHT_UP, so no backfill runs): only the owner's tick, re-offering the tail, makes the replicas acknowledge it again. Removing
-    /// the retransmit leaves the tail uncommitted for good (the mutation run in the PR).
+    /// record and the publishers time out. What repairs it is `PartitionBackfill`'s periodic re-verify of a CAUGHT_UP replica against its
+    /// owner, which re-sends the completion acknowledgement (or pulls the suffix when the replica is behind). Probe (recorded in the PR):
+    /// with that re-verify disabled this test goes red after the 60 s wait.
     @Test
     @Timeout(600)
     void unacknowledgedTail_commitsAfterTheAcknowledgementsAreLost_withoutANewPublish() {

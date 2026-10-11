@@ -18,5 +18,7 @@
 - **Durable-entity reads serve committed state only.** A client `get` of a key whose newest record is not yet committed waits up to the replication
   barrier timeout and then fails `NotYetCommitted` (transient); the owner's own writes and timers still sequence against pending entries, and a
   checkpoint claims only committed offsets. `[verified: EntityCommittedReadEndToEndTest]`
-- **An unacknowledged tail commits without a new publish.** The owner re-offers its tail as an ordinary batch after five quiet ticks (at most 256
-  events); replicas verify what they hold and acknowledge it. `[verified: EmberReadCommittedFailoverTest]`
+- **An unacknowledged tail commits without a new publish, by the existing replica re-verify.** A record an owner holds above its visible
+  position (inherited at a promotion, or left by a lost acknowledgement) is acknowledged again by `PartitionBackfill`'s periodic re-verify of
+  CAUGHT_UP replicas (5 s redrive, 20 s gate with the defaults: about 25 s plus a round trip); it does not run for a SYNCING, quarantined or
+  unreachable replica, or on the HRW owner itself. `[verified: EmberReadCommittedFailoverTest]`

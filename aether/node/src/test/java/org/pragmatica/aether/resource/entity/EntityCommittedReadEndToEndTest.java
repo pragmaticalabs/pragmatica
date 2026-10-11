@@ -47,6 +47,8 @@ class EntityCommittedReadEndToEndTest {
 
     private final AtomicBoolean acksReachOwner = new AtomicBoolean(false);
     private final AtomicBoolean announcementsReachReplica = new AtomicBoolean(false);
+    private final java.util.List<ReplicationMessage.ReplicateAck> heldAcks = new java.util.concurrent.CopyOnWriteArrayList<>();
+    private ReplicationManager[] ownerReplicationRef;
     private StreamPartitionManager ownerManager;
     private StreamPartitionManager replicaManager;
     private DurableEntity<String, Integer, IntOp> ownerEntity;
@@ -70,10 +72,15 @@ class EntityCommittedReadEndToEndTest {
         registry.registerReplica(arc, PARTITION, REPLICA);
         replicaManager = StreamPartitionManager.streamPartitionManager(64L * 1024 * 1024);
         replicaManager.placementRoleSupplier((_, _) -> org.pragmatica.aether.stream.replication.ReplicaSetController.Role.REPLICA);
-        var ownerReplication = new ReplicationManager[1];
+        ownerReplicationRef = new ReplicationManager[1];
+        var ownerReplication = ownerReplicationRef;
         ReplicationTransport ackTransport = (target, message) -> {
-            if (message instanceof ReplicationMessage.ReplicateAck ack && acksReachOwner.get()) {
-                ownerReplication[0].handleAck(ack);
+            if (message instanceof ReplicationMessage.ReplicateAck ack) {
+                if (acksReachOwner.get()) {
+                    ownerReplication[0].handleAck(ack);
+                } else {
+                    heldAcks.add(ack);
+                }
             }
         };
         var receive = ReplicationReceiveHandler.replicationReceiveHandler(REPLICA,
@@ -152,11 +159,13 @@ class EntityCommittedReadEndToEndTest {
         assertThat(pending.isResolved()).isFalse();
     }
 
+    private ReplicationManager ownerReplication() {
+        return ownerReplicationRef[0];
+    }
+
     private void deliverTheHeldAcknowledgement() {
-        // The replica's earlier acknowledgement was dropped; the owner's tick re-offers the tail and the replica acknowledges it.
-        for (var i = 0; i < 7; i++) {
-            ownerManager.repeatVisible();
-        }
+        // The acknowledgement the replica sent while the network dropped it reaches the owner now.
+        heldAcks.forEach(ownerReplication()::handleAck);
     }
 
     private void awaitHeld(StreamPartitionManager manager) {
