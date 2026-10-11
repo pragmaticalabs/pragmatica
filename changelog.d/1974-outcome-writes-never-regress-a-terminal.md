@@ -16,3 +16,15 @@
   and `succeededOutcomeRefusedByANewerPublish_isNotRetriedOverTheNewerAttempt` (unit, real fenced `KVStore`); [design intent — unverified] on a live cluster.
 - The FAILED and ROLLED_BACK terminals of an ALL_OR_NOTHING rollback were already rebuilt on a refusal by #972's
   transactional rollback; no change there. [mechanism: `submitRollback` re-invokes the command supplier, which re-derives the version]
+- **The first SUCCEEDED write also respected nothing.** It was unconditional, so it could replace a newer attempt's
+  FAILED when the store was ahead of the FSM, replace the same attempt's BEST_EFFORT FAILED, or write an outcome for a
+  deleted blueprint. It now applies the same check as its retries. Rule per transition, for one blueprint id:
+  - `IN_PROGRESS(N)` to `SUCCEEDED/FAILED/ROLLED_BACK(N)`: written.
+  - A terminal for `N` to any other write of `N` (first terminal wins): refused, except the BEST_EFFORT FAILED merge, which adds
+    slices to a FAILED for `N`. A BEST_EFFORT FAILED is the FSM's own decision that a slice is permanently failed (the operator
+    was told, the artifact is no longer redeployed), not a guess written on a timeout, so a later completion does not erase it.
+  - Any write for `N` while the committed blueprint is another attempt, or absent: refused.
+  - A terminal for an earlier attempt `M` to `IN_PROGRESS(N)` or to `SUCCEEDED(N)`: written.
+  Pinned by `AttemptBoundOutcomeTest.storeAheadOfFsm_newerAttemptsTerminal_isNotRegressedByStaleSucceeded`,
+  `bestEffortFailedOwnAttempt_thenInFlightCompletes_keepsTheFailed` and `deleteWhileApplyInFlight_thenCompletes_writesNoOutcome`
+  (unit, real fenced `KVStore`); [design intent — unverified] on a live cluster.
