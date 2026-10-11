@@ -48,7 +48,6 @@ class CapacityControlledLifecycleTest {
         @Override public Promise<List<InstanceInfo>> instancesForNode(NodeId node, SourceName source, String binding) { return instancesForNode(node, source); }
         @Override public Promise<Unit> terminateNode(NodeId node, SourceName source, String binding) { return terminateNode(node); }
         @Override public Promise<Unit> terminateNode(NodeId node) { return Promise.unitPromise(); }
-        @Override public Promise<Unit> restartNode(NodeId node) { return Promise.unitPromise(); }
         @Override public Promise<ActionResult> executeAction(NodeAction action) { return Causes.cause("unused").promise(); }
         @Override public org.pragmatica.lang.Result<String> sourceBinding(SourceName source) { return org.pragmatica.lang.Result.success("binding"); }
         @Override public boolean isCloudManaged() { return true; }

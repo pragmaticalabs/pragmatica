@@ -571,13 +571,13 @@ W_WORK="$(mktemp -d)"
 w_defs() {
     grep -E '^(KEY_PREFIX|ENTITY_TRANSIENT_FAILURE_TYPES|TRANSIENT_READ_DEADLINE_S|TRANSIENT_READ_BACKOFF_S)=' "$W02"
     local fn
-    for fn in key_for amount_for entity_post_any entity_refusal_class entity_post_status transient_failure_type read_amount \
+    for fn in now_s key_for amount_for entity_post_any entity_refusal_class entity_post_status transient_failure_type read_amount \
               test_pre_kill_state_readable test_every_acked_entity_survives_the_crash; do
         awk -v f="$fn" '$0 ~ "^" f "\\(\\) \\{" {on=1} on {print} on && /^\}/ {exit}' "$W02"
     done
 }
 w_defs > "${W_WORK}/defs.sh"
-for fn in entity_post_any entity_refusal_class entity_post_status transient_failure_type read_amount test_pre_kill_state_readable test_every_acked_entity_survives_the_crash; do
+for fn in now_s entity_post_any entity_refusal_class entity_post_status transient_failure_type read_amount test_pre_kill_state_readable test_every_acked_entity_survives_the_crash; do
     grep -q "^${fn}() {" "${W_WORK}/defs.sh" || fail "W0 ${fn} not extracted from the 02w suite (examined NOTHING)"
 done
 w_run() {  # <snippet> <queued bodies...> -> "rc=<rc> out=<stdout> calls=<n>"; stderr -> $W_WORK/err
@@ -587,6 +587,11 @@ w_run() {  # <snippet> <queued bodies...> -> "rc=<rc> out=<stdout> calls=<n>"; s
       ENTITY_APP_ENDPOINTS="http://w-stub:8070"; KILL_CONFIRMED=1
       TRANSIENT_READ_BACKOFF_S=0
       [ -n "${W_DEADLINE:-}" ] && TRANSIENT_READ_DEADLINE_S="$W_DEADLINE"
+      # A case that sets W_CLOCK_JUMP_AFTER_CALLS drives time by the number of stub calls made so far: the clock reads 0 until
+      # that many calls have happened and is far past any deadline afterwards. Cases that do not set it keep the real clock.
+      [ -n "${W_CLOCK_JUMP_AFTER_CALLS:-}" ] && now_s() {
+          if [ "$(grep -c . "${W_WORK}/calls")" -ge "$W_CLOCK_JUMP_AFTER_CALLS" ]; then NOW_S=1000000; else NOW_S=0; fi
+      }
       refresh_app_endpoints() { :; }
       log_warn() { echo "WARN $*" >&2; }; log_error() { echo "ERROR $*" >&2; }
       log_fail() { echo "FAIL $*" >&2; }; log_pass() { echo "PASS $*" >&2; }; log_info() { echo "INFO $*" >&2; }
@@ -659,13 +664,30 @@ for ft in FoldInProgressX XFoldInProgress foldinprogress; do
 done
 [ -z "$w11" ] && ok "W11 the allow-list matches by exact name (FoldInProgressX, XFoldInProgress, foldinprogress are not retried)" \
     || fail "W11 allow-list exactness: ${w11}"
-# A no-answer attempt is now swept until the deadline instead of ending the read at once (the post-kill
-# window), so the call count is timing-dependent: assert rc 4 and the report, not calls.
-got=$(W_DEADLINE=1 w_run 'read_amount ENTDUR-00003-Z' "$FOLD_BODY" __DOWN__ __DOWN__)
-case "$got" in "rc=4 out= calls="*) true ;; *) got="BAD:${got}" ;; esac
-[ "${got#BAD:}" = "$got" ] && grep -q 'previous attempt WAS answered with a transient refusal: .*still replaying its log' "${W_WORK}/err" \
-    && ok "W12 transient refusal then no answer: rc 4, and the report names the earlier transient answer" \
+# A no-answer attempt is swept until the deadline instead of ending the read at once (the post-kill window). The deadline is the
+# case's own clock, not the runner's (#1887): `now_s` is overridden to stay at 0 until two stub calls have been made and then jump past the
+# 1s deadline, so the case asserts the SEQUENCE (one attempt answered transient; one attempt that gets no answer, which makes two
+# stub calls; then the deadline) and exactly three calls, whatever the speed of the machine. With the real `$SECONDS` a 1s deadline was somewhere in (0, 1] seconds of wall time and a
+# slow first call alone could exhaust it, giving rc 5 after one call.
+got=$(W_DEADLINE=1 W_CLOCK_JUMP_AFTER_CALLS=2 w_run 'read_amount ENTDUR-00003-Z' "$FOLD_BODY" __DOWN__ __DOWN__)
+[ "$got" = "rc=4 out= calls=3" ] && grep -q 'previous attempt WAS answered with a transient refusal: .*still replaying its log' "${W_WORK}/err" \
+    && ok "W12 transient refusal then no answer: rc 4 after the transient attempt and the unanswered one, and the report names the earlier transient answer" \
     || fail "W12 transient then down: got '${got}'; $(tr '\n' '|' < "${W_WORK}/err")"
+# W14 (#1887): read_amount with the REAL clock keeps retrying for at least its stated deadline. Started with the shell clock at the end of
+# a second (SECONDS=0 after 0.9s), `SECONDS + 1` is reached 0.1s later; the read must still be retrying a full second after it began.
+SECONDS=0; sleep 0.9; w14_t0=$(perl -MTime::HiRes=time -e 'print time')
+W_DEADLINE=1 w_run 'read_amount ENTDUR-00003-Z' "$FOLD_BODY" > /dev/null
+w14_ms=$(perl -MTime::HiRes=time -e "printf '%d', (time - $w14_t0) * 1000")
+[ "$w14_ms" -ge 1000 ] && ok "W14 a 1s read deadline on the real clock keeps retrying for >= 1s (${w14_ms}ms)" \
+    || fail "W14 a 1s read deadline gave up after ${w14_ms}ms (< 1000): the deadline is the whole-second \$SECONDS tick, not the stated duration"
+# D1/D2 (#1887): deadline_in is reached NO SOONER than the stated duration. `$SECONDS` is whole seconds, so with the shell clock sitting
+# just before a tick (SECONDS=0 after 0.9s) the old `SECONDS + 3` is 3 and is reached 2.1s later; deadline_in 3 must be at least 4.
+SECONDS=0; sleep 0.9; got=$(deadline_in 3)
+[ "$got" -ge 4 ] && ok "D1 deadline_in 3 at the end of a shell second is >= 4 (reached no sooner than 3s of wall time), got ${got}" \
+    || fail "D1 deadline_in 3 at the end of a shell second: got '${got}', want >= 4 (SECONDS + 3 is reached after only 2.1s)"
+got=$(deadline_in 0); [ "$got" -le "$SECONDS" ] && [ "$(deadline_in x)" -le "$SECONDS" ] \
+    && ok "D2 deadline_in 0 (and a non-number) is already expired, as the stub cases that pass a 0s deadline need" \
+    || fail "D2 deadline_in 0: got '${got}' with SECONDS=${SECONDS}"
 got=$(w_run 'read_amount ENTDUR-00003-Z' '{"outcome":"failed","failureType":"FoldInProgress","failure":"x","failureType":"Other"}' "$FOUND3")
 [ "$got" = "rc=0 out=24 calls=2" ] \
     && ok "W13 the FIRST failureType in a body decides (greedy last-match would read 'Other')" \

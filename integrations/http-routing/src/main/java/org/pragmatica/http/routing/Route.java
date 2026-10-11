@@ -173,6 +173,19 @@ public interface Route<T> extends RouteSource, RouteShape {
                               RouteSecurityPolicy security,
                               int version,
                               int pathArity) {
+        return route(method, path, handler, contentType, spacers, name, security, version, pathArity, List.of());
+    }
+
+    static <T> Route<T> route(HttpMethod method,
+                              String path,
+                              Handler<T> handler,
+                              ContentType contentType,
+                              List<String> spacers,
+                              String name,
+                              RouteSecurityPolicy security,
+                              int version,
+                              int pathArity,
+                              List<Integer> spacerSlots) {
         record route <T>(HttpMethod method,
                          String path,
                          Handler<T> handler,
@@ -181,7 +194,8 @@ public interface Route<T> extends RouteSource, RouteShape {
                          String name,
                          RouteSecurityPolicy security,
                          int version,
-                         int pathArity) implements Route<T> {
+                         int pathArity,
+                         List<Integer> spacerSlots) implements Route<T> {
             @Override
             public int pathParamCount() {
                 return pathArity;
@@ -197,7 +211,8 @@ public interface Route<T> extends RouteSource, RouteShape {
                              name,
                              security,
                              version,
-                             pathArity);
+                             pathArity,
+                             spacerSlots);
             }
 
             @Override
@@ -224,7 +239,8 @@ public interface Route<T> extends RouteSource, RouteShape {
                             name,
                             security,
                             version,
-                            pathArity);
+                            pathArity,
+                            spacerSlots);
     }
 
     /// Mount a route in path mode (#198 §6.4, the default detection mode). For a versioned route
@@ -247,7 +263,8 @@ public interface Route<T> extends RouteSource, RouteShape {
                        route.name(),
                        route.security(),
                        route.version(),
-                       route.pathParamCount());
+                       route.pathParamCount(),
+                       route.spacerSlots());
     }
 
     /// Mount a route in header mode (#198 §7). For a versioned route (`version > 0`) the un-versioned
@@ -271,7 +288,8 @@ public interface Route<T> extends RouteSource, RouteShape {
                        route.name(),
                        route.security(),
                        route.version(),
-                       route.pathParamCount());
+                       route.pathParamCount(),
+                       route.spacerSlots());
     }
 
     static Subroutes in(String path) {
@@ -1048,7 +1066,19 @@ public interface Route<T> extends RouteSource, RouteShape {
                                      String name,
                                      RouteSecurityPolicy security,
                                      int version,
-                                     int pathArity) implements ContentTypeBuilder<T> {
+                                     int pathArity,
+                                     List<Integer> spacerSlots) implements ContentTypeBuilder<T> {
+        ContentTypeBuilderImpl(HttpMethod method,
+                               String path,
+                               Handler<T> handler,
+                               List<String> spacers,
+                               String name,
+                               RouteSecurityPolicy security,
+                               int version,
+                               int pathArity) {
+            this(method, path, handler, spacers, name, security, version, pathArity, List.of());
+        }
+
         ContentTypeBuilderImpl(HttpMethod method,
                                String path,
                                Handler<T> handler,
@@ -1070,22 +1100,46 @@ public interface Route<T> extends RouteSource, RouteShape {
 
         @Override
         public Route<T> as(ContentType contentType) {
-            return route(method, path, handler, contentType, spacers, name, security, version, pathArity);
+            return route(method, path, handler, contentType, spacers, name, security, version, pathArity, spacerSlots);
         }
 
         @Override
         public ContentTypeBuilder<T> named(String name) {
-            return new ContentTypeBuilderImpl<>(method, path, handler, spacers, name, security, version, pathArity);
+            return new ContentTypeBuilderImpl<>(method,
+                                                path,
+                                                handler,
+                                                spacers,
+                                                name,
+                                                security,
+                                                version,
+                                                pathArity,
+                                                spacerSlots);
         }
 
         @Override
         public ContentTypeBuilder<T> withSecurity(RouteSecurityPolicy security) {
-            return new ContentTypeBuilderImpl<>(method, path, handler, spacers, name, security, version, pathArity);
+            return new ContentTypeBuilderImpl<>(method,
+                                                path,
+                                                handler,
+                                                spacers,
+                                                name,
+                                                security,
+                                                version,
+                                                pathArity,
+                                                spacerSlots);
         }
 
         @Override
         public ContentTypeBuilder<T> versioned(int version) {
-            return new ContentTypeBuilderImpl<>(method, path, handler, spacers, name, security, version, pathArity);
+            return new ContentTypeBuilderImpl<>(method,
+                                                path,
+                                                handler,
+                                                spacers,
+                                                name,
+                                                security,
+                                                version,
+                                                pathArity,
+                                                spacerSlots);
         }
     }
 
@@ -1093,17 +1147,18 @@ public interface Route<T> extends RouteSource, RouteShape {
                                    String path,
                                    List<String> spacers,
                                    String defaultName,
-                                   int pathArity) implements ParameterBuilder<R> {
+                                   int pathArity,
+                                   List<Integer> spacerSlots) implements ParameterBuilder<R> {
         ParameterBuilderImpl(HttpMethod method, String path) {
-            this(method, path, List.of(), "", 0);
+            this(method, path, List.of(), "", 0, List.of());
         }
 
         ParameterBuilderImpl(HttpMethod method, String path, List<String> spacers) {
-            this(method, path, spacers, "", 0);
+            this(method, path, spacers, "", 0, List.of());
         }
 
         ParameterBuilderImpl(HttpMethod method, String path, List<String> spacers, String defaultName) {
-            this(method, path, spacers, defaultName, 0);
+            this(method, path, spacers, defaultName, 0, List.of());
         }
 
         @Override
@@ -1114,22 +1169,28 @@ public interface Route<T> extends RouteSource, RouteShape {
                                                 spacers,
                                                 defaultName,
                                                 RouteSecurityPolicy.permitAll(),
-                                                pathArity);
+                                                0,
+                                                pathArity,
+                                                spacerSlots);
         }
 
         // Path parameters - collect spacers from path parameter definitions
         @Override
         public <P1> PathBuilder1<R, P1> withPath(PathParameter<P1> p1) {
             var collected = collectSpacers(p1);
+            var slots = collectSpacerSlots(p1);
 
-            return new PathBuilder1Impl<>(new ParameterBuilderImpl<>(method, path, collected, defaultName, 1), p1);
+            return new PathBuilder1Impl<>(new ParameterBuilderImpl<>(method, path, collected, defaultName, 1, slots), p1);
         }
 
         @Override
         public <P1, P2> PathBuilder2<R, P1, P2> withPath(PathParameter<P1> p1, PathParameter<P2> p2) {
             var collected = collectSpacers(p1, p2);
+            var slots = collectSpacerSlots(p1, p2);
 
-            return new PathBuilder2Impl<>(new ParameterBuilderImpl<>(method, path, collected, defaultName, 2), p1, p2);
+            return new PathBuilder2Impl<>(new ParameterBuilderImpl<>(method, path, collected, defaultName, 2, slots),
+                                          p1,
+                                          p2);
         }
 
         @Override
@@ -1137,8 +1198,9 @@ public interface Route<T> extends RouteSource, RouteShape {
                                                                  PathParameter<P2> p2,
                                                                  PathParameter<P3> p3) {
             var collected = collectSpacers(p1, p2, p3);
+            var slots = collectSpacerSlots(p1, p2, p3);
 
-            return new PathBuilder3Impl<>(new ParameterBuilderImpl<>(method, path, collected, defaultName, 3),
+            return new PathBuilder3Impl<>(new ParameterBuilderImpl<>(method, path, collected, defaultName, 3, slots),
                                           p1,
                                           p2,
                                           p3);
@@ -1150,8 +1212,9 @@ public interface Route<T> extends RouteSource, RouteShape {
                                                                          PathParameter<P3> p3,
                                                                          PathParameter<P4> p4) {
             var collected = collectSpacers(p1, p2, p3, p4);
+            var slots = collectSpacerSlots(p1, p2, p3, p4);
 
-            return new PathBuilder4Impl<>(new ParameterBuilderImpl<>(method, path, collected, defaultName, 4),
+            return new PathBuilder4Impl<>(new ParameterBuilderImpl<>(method, path, collected, defaultName, 4, slots),
                                           p1,
                                           p2,
                                           p3,
@@ -1165,13 +1228,28 @@ public interface Route<T> extends RouteSource, RouteShape {
                                                                                  PathParameter<P4> p4,
                                                                                  PathParameter<P5> p5) {
             var collected = collectSpacers(p1, p2, p3, p4, p5);
+            var slots = collectSpacerSlots(p1, p2, p3, p4, p5);
 
-            return new PathBuilder5Impl<>(new ParameterBuilderImpl<>(method, path, collected, defaultName, 5),
+            return new PathBuilder5Impl<>(new ParameterBuilderImpl<>(method, path, collected, defaultName, 5, slots),
                                           p1,
                                           p2,
                                           p3,
                                           p4,
                                           p5);
+        }
+
+        // The index of each spacer among the route's trailing segments (#755): what lets selection match a spacer by
+        // POSITION, not merely by presence.
+        private static List<Integer> collectSpacerSlots(PathParameter<?>... params) {
+            var slots = new ArrayList<Integer>();
+
+            for (int index = 0; index < params.length; index++) {
+                if (params[index] instanceof PathParameter.Spacer) {
+                    slots.add(index);
+                }
+            }
+
+            return List.copyOf(slots);
         }
 
         // Helper to collect spacer text from path parameters

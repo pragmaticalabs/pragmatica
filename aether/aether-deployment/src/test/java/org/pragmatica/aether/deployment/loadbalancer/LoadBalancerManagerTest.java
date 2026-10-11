@@ -207,6 +207,113 @@ class LoadBalancerManagerTest {
         }
     }
 
+    /// #1314: a `NodeRoutesKey` names one (node, artifact) contribution. Its removal takes away that contribution
+    /// only, and its put REPLACES it. Before, removal dropped the node from every route it served, whatever the
+    /// artifact, and a put only ever added.
+    @Nested
+    class ContributionScope {
+        private static final Artifact ORDERS = Artifact.artifact("com.example:orders:1.0.0").unwrap();
+        private static final Artifact USERS = Artifact.artifact("com.example:users:1.0.0").unwrap();
+        private static final Artifact PROBE = Artifact.artifact("com.example:probe:1.0.0").unwrap();
+
+        @BeforeEach
+        void activateManager() {
+            topologyManager.register(node1, "10.0.0.1", 8080);
+            topologyManager.register(node2, "10.0.0.2", 8080);
+            activateAsLeader();
+            provider.clear();
+        }
+
+        @Test
+        void onNodeRoutesRemove_oneArtifactOfTwoOnANode_theOtherArtifactKeepsTheNode() {
+            manager.onNodeRoutesPut(put(node1, ORDERS, route("GET", "/orders/")));
+            manager.onNodeRoutesPut(put(node1, USERS, route("GET", "/users/")));
+            provider.clear();
+
+            manager.onNodeRoutesRemove(remove(node1, ORDERS));
+
+            assertThat(provider.routeChanges)
+                    .as("only the removed artifact's route is announced")
+                    .extracting(RouteChange::pathPrefix)
+                    .containsExactly("/orders/");
+            assertThat(provider.routeChanges.getFirst().nodeIps()).isEmpty();
+            assertThat(reconciledNodeIps("GET", "/users/")).containsExactly("10.0.0.1");
+        }
+
+        @Test
+        void onNodeRoutesPut_replacementValue_subtractsOmittedRoutes_andAddsNewOnes() {
+            manager.onNodeRoutesPut(put(node1, ORDERS, route("GET", "/orders/"), route("POST", "/orders/")));
+            provider.clear();
+
+            manager.onNodeRoutesPut(put(node1, ORDERS, route("GET", "/orders/"), route("GET", "/invoices/")));
+
+            assertThat(lastChange("POST", "/orders/").nodeIps())
+                    .as("a route the replacement omits must be withdrawn")
+                    .isEmpty();
+            assertThat(lastChange("GET", "/invoices/").nodeIps()).containsExactly("10.0.0.1");
+            assertThat(reconciledNodeIps("POST", "/orders/")).isEmpty();
+            assertThat(reconciledNodeIps("GET", "/orders/")).containsExactly("10.0.0.1");
+        }
+
+        @Test
+        void sharedRouteNodePair_staysUntilTheLastContributionIsRemoved() {
+            manager.onNodeRoutesPut(put(node1, ORDERS, route("GET", "/shared/")));
+            manager.onNodeRoutesPut(put(node1, USERS, route("GET", "/shared/")));
+            manager.onNodeRoutesPut(put(node2, USERS, route("GET", "/shared/")));
+            provider.clear();
+
+            manager.onNodeRoutesRemove(remove(node1, ORDERS));
+            assertThat(lastChange("GET", "/shared/").nodeIps()).containsExactlyInAnyOrder("10.0.0.1", "10.0.0.2");
+
+            manager.onNodeRoutesRemove(remove(node1, USERS));
+            assertThat(lastChange("GET", "/shared/").nodeIps()).containsExactly("10.0.0.2");
+        }
+
+        @Test
+        void repeatedPutsAndRemoves_areIdempotent() {
+            var orders = put(node1, ORDERS, route("GET", "/orders/"));
+            var users = put(node1, USERS, route("GET", "/users/"));
+
+            manager.onNodeRoutesPut(orders);
+            manager.onNodeRoutesPut(orders);
+            manager.onNodeRoutesPut(users);
+            manager.onNodeRoutesPut(users);
+            manager.onNodeRoutesRemove(remove(node1, USERS));
+            provider.clear();
+            manager.onNodeRoutesRemove(remove(node1, USERS));
+
+            assertThat(provider.routeChanges).as("a repeated remove changes nothing").isEmpty();
+            assertThat(reconciledNodeIps("GET", "/orders/")).containsExactly("10.0.0.1");
+            assertThat(reconciledNodeIps("GET", "/users/")).isEmpty();
+        }
+
+        /// The nodes the manager currently holds for a route, read through its public surface: a probe node
+        /// contributes the route under its own key, the announced change lists every serving node, and the probe's
+        /// contribution is withdrawn again.
+        private Set<String> reconciledNodeIps(String method, String path) {
+            var probeNode = NodeId.randomNodeId();
+
+            topologyManager.register(probeNode, "10.0.0.99", 8080);
+            var before = provider.routeChanges.size();
+
+            manager.onNodeRoutesPut(put(probeNode, PROBE, route(method, path)));
+            var served = new java.util.HashSet<>(provider.routeChanges.get(provider.routeChanges.size() - 1).nodeIps());
+
+            manager.onNodeRoutesRemove(remove(probeNode, PROBE));
+            provider.routeChanges.subList(before, provider.routeChanges.size()).clear();
+            served.remove("10.0.0.99");
+
+            return served;
+        }
+
+        private RouteChange lastChange(String method, String path) {
+            return provider.routeChanges.stream()
+                                        .filter(change -> change.httpMethod().equals(method) && change.pathPrefix().equals(path))
+                                        .reduce((first, second) -> second)
+                                        .orElseThrow(() -> new AssertionError("no route change for " + method + " " + path));
+        }
+    }
+
     /// Theme F drain-and-subscribe race fix — the receiver path must buffer events
     /// fired during `reconcile()`'s `forEach` drain and replay them exactly once.
     @Nested
@@ -297,6 +404,33 @@ class LoadBalancerManagerTest {
         };
     }
 
+    /// #1314 on the restart / leader-change path (v1882): contributions REBUILT from KV by reconcile, then one
+    /// artifact's key is removed. The node must keep the route it still serves through the other artifact.
+    @Test
+    void reconcileFromKv_thenRemoveOneArtifact_keepsTheOtherArtifactsRoute() {
+        var orders = org.pragmatica.aether.artifact.Artifact.artifact("com.example:orders:1.0.0").unwrap();
+        var users = org.pragmatica.aether.artifact.Artifact.artifact("com.example:users:1.0.0").unwrap();
+        kvStore.process(kvStore.createBatch(List.of(
+            new KVCommand.Put<>(NodeRoutesKey.nodeRoutesKey(node1, orders),
+                                NodeRoutesValue.nodeRoutesValue(List.of(RouteEntry.activeRoute("GET", "/shared/", "m"),
+                                                                        RouteEntry.activeRoute("GET", "/orders/", "m")))),
+            new KVCommand.Put<>(NodeRoutesKey.nodeRoutesKey(node1, users),
+                                NodeRoutesValue.nodeRoutesValue(List.of(RouteEntry.activeRoute("GET", "/shared/", "m")))))));
+        topologyManager.register(node1, "10.0.0.1", 8080);
+        activateAsLeader();
+        assertThat(provider.reconcileCalls).as("arming: activation reconciled from KV").hasSize(1);
+        provider.clear();
+
+        manager.onNodeRoutesRemove(remove(node1, orders));
+
+        var shared = provider.routeChanges.stream().filter(c -> c.pathPrefix().equals("/shared/")).toList();
+        var ordersChanges = provider.routeChanges.stream().filter(c -> c.pathPrefix().equals("/orders/")).toList();
+        assertThat(ordersChanges).as("arming: the removed artifact's own route is announced").isNotEmpty();
+        assertThat(ordersChanges.getLast().nodeIps()).as("/orders/ is withdrawn").isEmpty();
+        assertThat(shared.stream().allMatch(c -> c.nodeIps().contains("10.0.0.1")))
+            .as("/shared/ is never announced without node1, which still serves it through USERS: " + shared).isTrue();
+    }
+
     private void activateAsLeader() {
         manager.activate().await();
     }
@@ -308,6 +442,20 @@ class LoadBalancerManagerTest {
         var command = new KVCommand.Put<>(key, value);
         var notification = new ValuePut<>(command, Option.none());
         manager.onNodeRoutesPut(notification);
+    }
+
+    private static RouteEntry route(String method, String path) {
+        return RouteEntry.activeRoute(method, path, "handle");
+    }
+
+    private static ValuePut<NodeRoutesKey, NodeRoutesValue> put(NodeId node, Artifact artifact, RouteEntry... routes) {
+        return new ValuePut<>(new KVCommand.Put<>(NodeRoutesKey.nodeRoutesKey(node, artifact),
+                                                  NodeRoutesValue.nodeRoutesValue(List.of(routes))),
+                              Option.none());
+    }
+
+    private static ValueRemove<NodeRoutesKey, NodeRoutesValue> remove(NodeId node, Artifact artifact) {
+        return new ValueRemove<>(new KVCommand.Remove<>(NodeRoutesKey.nodeRoutesKey(node, artifact)), Option.none());
     }
 
     private void fireNodeRoutesRemove(NodeId nodeId) {

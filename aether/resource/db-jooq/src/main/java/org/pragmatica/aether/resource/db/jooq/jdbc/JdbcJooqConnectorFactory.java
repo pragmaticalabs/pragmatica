@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.resource.db.jooq.jdbc;
 
 import org.pragmatica.aether.resource.ResourceFactory;
@@ -44,17 +43,23 @@ public final class JdbcJooqConnectorFactory implements ResourceFactory<JooqConne
     }
 
     private static HikariDataSource hikariDataSource(DatabaseConnectorConfig config) {
+        return new HikariDataSource(hikariConfig(config));
+    }
+
+    /// Package-visible so what the pool is built with (URL, credentials) is checkable without connecting (#784): the
+    /// JDBC pool reads ITS OWN transport's values.
+    static HikariConfig hikariConfig(DatabaseConnectorConfig config) {
         var hikariConfig = new HikariConfig();
 
         hikariConfig.setJdbcUrl(config.effectiveJdbcUrl());
-        config.effectiveUsername().onPresent(hikariConfig::setUsername);
-        config.effectivePassword().onPresent(hikariConfig::setPassword);
+        config.effectiveUsername(DatabaseConnectorConfig.Transport.JDBC).onPresent(hikariConfig::setUsername);
+        config.effectivePassword(DatabaseConnectorConfig.Transport.JDBC).onPresent(hikariConfig::setPassword);
         hikariConfig.setConnectionTimeout(config.poolConfig().connectionTimeout().toMillis());
         hikariConfig.setIdleTimeout(config.poolConfig().idleTimeout().toMillis());
         hikariConfig.setMaxLifetime(config.poolConfig().maxLifetime().toMillis());
         hikariConfig.setMinimumIdle(config.poolConfig().minConnections());
         hikariConfig.setMaximumPoolSize(config.poolConfig().maxConnections());
 
-        return new HikariDataSource(hikariConfig);
+        return hikariConfig;
     }
 }

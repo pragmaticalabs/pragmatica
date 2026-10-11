@@ -6,8 +6,6 @@
 package org.pragmatica.aether.node;
 
 import java.io.IOException;
-import java.io.UncheckedIOException;
-import java.net.ServerSocket;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
@@ -193,7 +191,7 @@ class WalTruncationDurableBoundBootTest {
 
     private AetherNodeConfig minimalConfig() {
         var self = NodeId.nodeId("wal-durable-bound-boot-test").unwrap();
-        var selfInfo = NodeInfo.nodeInfo(self, nodeAddress("localhost", freePort()).unwrap());
+        var selfInfo = NodeInfo.nodeInfo(self, nodeAddress("localhost", ClusterTestPorts.freeClusterPort()).unwrap());
         // Everything on disk lands under tempDir: `content` and the stream data dir derive from this path.
         var artifactsConfig = new StorageConfig(8L * 1024 * 1024,
                                                 DISK_MAX_BYTES,
@@ -221,13 +219,5 @@ class WalTruncationDurableBoundBootTest {
                                 .managementHttpProtocol(HttpProtocol.H1)
                                 .storageConfig(Map.of("artifacts", artifactsConfig))
                                 .build();
-    }
-
-    private static int freePort() {
-        try (var socket = new ServerSocket(0)) {
-            return socket.getLocalPort();
-        } catch (IOException e) {
-            throw new UncheckedIOException(e);
-        }
     }
 }

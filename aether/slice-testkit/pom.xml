@@ -18,7 +18,6 @@
 
     <properties>
         <!-- Landing for review; publishing is a release-time decision for the maintainer. -->
-        <maven.deploy.skip>true</maven.deploy.skip>
         <testcontainers.version>1.21.4</testcontainers.version>
     </properties>
 

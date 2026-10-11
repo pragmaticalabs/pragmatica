@@ -85,6 +85,7 @@ class ClusterTopologyManagerZoneRotationTest {
             [source.eu-1]
             type = "cloud"
             provider = "hetzner"
+            credentials = "hcloud-token"
             region = "eu-central"
             zones = ["fsn1", "nbg1", "hel1"]
 
@@ -158,7 +159,7 @@ class ClusterTopologyManagerZoneRotationTest {
             @Override public Promise<List<InstanceInfo>> listInstances() { return Promise.success(List.of()); }
             @Override public Promise<InstanceInfo> instanceStatus(InstanceId id) { return org.pragmatica.lang.utils.Causes.cause("unused").promise(); }
         };
-        clusterStore.seedToml(MULTI_ZONE_TOML.replace("provider = \"hetzner\"", "provider = \"hetzner\"\ncredentials = \"test-account\"")
+        clusterStore.seedToml(MULTI_ZONE_TOML
             .replace("count = 3", "count = 3\ninstance_type = \"small\"\nimage = \"test-image\""));
         kv.process(kv.createBatch(List.of(new KVCommand.Put<>(AetherKey.ClusterConfigKey.CURRENT, clusterStore.current().unwrap()))));
         var registry = SourceComputeRegistry.sourceComputeRegistry(clusterStore::current,
@@ -262,6 +263,9 @@ class ClusterTopologyManagerZoneRotationTest {
             result.onFailure(cause -> assertThat(cause.message())
                     .as("the exhaustion cause names the zones that were tried")
                     .contains("fsn1", "nbg1", "hel1"));
+            result.onFailure(cause -> assertThat(cause)
+                    .as("#1111: every zone refused for capacity, so the leader can tell that no instance was made")
+                    .isInstanceOf(EnvironmentError.CapacityUnavailable.class));
             assertThat(lifecycleManager.attemptedZones())
                     .as("each zone attempted exactly once in order, then bail (no infinite loop)")
                     .containsExactly("fsn1", "nbg1", "hel1");
@@ -325,6 +329,7 @@ class ClusterTopologyManagerZoneRotationTest {
             [source.eu-1]
             type = "cloud"
             provider = "hetzner"
+            credentials = "hcloud-token"
             region = "eu-central"
 
             [source.eu-1.core]
@@ -429,10 +434,6 @@ class ClusterTopologyManagerZoneRotationTest {
         }
 
         @Override public Promise<Unit> terminateNode(NodeId nodeId) {
-            return Promise.success(Unit.unit());
-        }
-
-        @Override public Promise<Unit> restartNode(NodeId nodeId) {
             return Promise.success(Unit.unit());
         }
 

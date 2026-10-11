@@ -660,7 +660,8 @@ status_node_ids() {
 # Returns 0 as soon as either holds; 1 on timeout.
 wait_for_node_removed() {
     local target="$1" timeout="${2:-8}"
-    local deadline=$((SECONDS + timeout))
+    local deadline
+    deadline=$(deadline_in "$timeout")
     while :; do
         # Wall-clock ceiling (#426 item 1) checked BEFORE every blocking sub-call,
         # not just between loop iterations. kv_lifecycle_state and

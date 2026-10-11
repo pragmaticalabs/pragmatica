@@ -4,9 +4,6 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.node;
 
-import java.io.IOException;
-import java.io.UncheckedIOException;
-import java.net.ServerSocket;
 import java.nio.file.Path;
 import java.util.Base64;
 import java.util.List;
@@ -228,7 +225,7 @@ class AetherNodeContentStorageWarnBootTest {
                                            ConfigurationProvider configProvider,
                                            Path storageRoot) {
         var self = NodeId.nodeId("content-storage-warn-boot-test").unwrap();
-        var selfInfo = NodeInfo.nodeInfo(self, nodeAddress("localhost", freePort()).unwrap());
+        var selfInfo = NodeInfo.nodeInfo(self, nodeAddress("localhost", ClusterTestPorts.freeClusterPort()).unwrap());
 
         return AetherNodeConfig.builder()
                                 .self(self)
@@ -251,14 +248,6 @@ class AetherNodeContentStorageWarnBootTest {
 
     /// Ephemeral free port for the self node's cluster address. Small open/close race is acceptable
     /// for a single test process.
-    private static int freePort() {
-        try (var socket = new ServerSocket(0)) {
-            return socket.getLocalPort();
-        } catch (IOException e) {
-            throw new UncheckedIOException(e);
-        }
-    }
-
     private static Option<EnvironmentIntegration> environmentWith(Option<SecretsProvider> secrets) {
         return Option.some(EnvironmentIntegration.environmentIntegration(Option.none(), secrets, Option.none()));
     }

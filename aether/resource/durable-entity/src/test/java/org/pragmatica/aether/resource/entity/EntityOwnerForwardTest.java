@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.resource.entity;
 
 import java.nio.charset.StandardCharsets;
@@ -389,6 +388,38 @@ class EntityOwnerForwardTest {
                 assertThat(cause.message()).contains("owner not ready");
             });
         }
+    }
+
+    /// #1973: a not-sent forward stays a transient, typed cause end to end through the entity: the read of a key whose
+    /// committed owner has just died surfaces `ForwardNotSent`, not an untyped failure a caller reads as final.
+    @Test
+    void get_forwardNeverSent_surfacesTheTypedTransientCause() {
+        substrate.holds = false;
+        transport.refuseWith(new EntityOwnerForward.ForwardNotSent("entity owner-forward to other-node refused at send (NoPeerState)"));
+
+        var result = entityAs(SELF, OTHER, Option.some(transport)).get("k1").await();
+
+        assertThat(result.isFailure()).isTrue();
+        result.onFailure(cause -> {
+            assertThat(cause).isInstanceOf(EntityOwnerForward.ForwardNotSent.class);
+            assertThat(cause.isTransient()).isTrue();
+        });
+    }
+
+    /// #1973: the owner refusing an arrived-expired command without touching the entity (`ForwardBudgetExhausted`) applied
+    /// nothing either, so it crosses the wire as the same typed transient, not as the terminal carrier.
+    @Test
+    void create_ownerRefusesBecauseTheBudgetIsSpent_surfacesTheTypedTransientCause() {
+        transport.refuseWith(new EntityOwnerForward.ForwardRefused("ForwardBudgetExhausted", "budget spent on arrival"));
+
+        var result = entityAs(SELF, OTHER, Option.some(transport)).create("k1", 100).await();
+
+        assertThat(result.isFailure()).isTrue();
+        result.onFailure(cause -> {
+            assertThat(cause).isInstanceOf(EntityOwnerForward.ForwardNotSent.class);
+            assertThat(cause.isTransient()).isTrue();
+            assertThat(cause.message()).contains("budget spent on arrival");
+        });
     }
 
     /// The control for the row above: the terminal `UnknownKeyspace` (a keyspace nobody provisioned) must

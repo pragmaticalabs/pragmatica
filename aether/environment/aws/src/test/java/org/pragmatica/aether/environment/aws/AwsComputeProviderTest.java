@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 
 package org.pragmatica.aether.environment.aws;
 
@@ -96,7 +95,7 @@ class AwsComputeProviderTest {
             provider.provision(InstanceType.ON_DEMAND)
                     .await()
                     .onSuccess(info -> assertThat(info).as("expected readiness failure, not a phantom success").isNull())
-                    .onFailure(AwsComputeProviderTest::assertProvisionFailedError);
+                    .onFailure(cause -> assertThat(cause).as("#1111: the readiness timeout reaches the caller typed (the instance EXISTS), never flattened into a provision failure").isInstanceOf(EnvironmentError.ProvisionReadinessTimeout.class));
         }
 
         @Test
@@ -301,20 +300,6 @@ class AwsComputeProviderTest {
 
             assertThat(testClient.lastDescribeTagKey).isEqualTo("aether-node-id");
             assertThat(testClient.lastDescribeTagValue).isEqualTo("node-7");
-        }
-    }
-
-    @Nested
-    class RestartTests {
-
-        @Test
-        void restart_success_callsReboot() {
-            provider.restart(new InstanceId("i-abc123"))
-                    .await()
-                    .onFailure(cause -> assertThat(cause).isNull())
-                    .onSuccess(unit -> assertThat(unit).isNotNull());
-
-            assertThat(testClient.lastRebootedIds).containsExactly("i-abc123");
         }
     }
 

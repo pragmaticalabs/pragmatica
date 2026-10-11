@@ -252,7 +252,7 @@ in this shape.
 | `STREAMS_GROUP_DELETE` | `DELETE .../groups/delete/...` | `DELETE /api/v1/streams/{ns}/{stream}/{ver}/groups/{group}` |
 | `STREAMS_DELETE` | `DELETE /api/streams/delete/{ns}/{stream}/{ver}` | `DELETE /api/v1/streams/{ns}/{stream}/{ver}` |
 | `STREAM_NAMESPACES_LIST` | `GET /api/stream-namespaces/list` | `GET /api/v1/streams/namespaces` |
-| `STREAM_NAMESPACES_GET` | `GET /api/stream-namespaces/get/{...}` | `GET /api/v1/streams/namespaces/{ns}` (note: current entry declares a `(namespace, stream, version)` param triple — audit and reduce to `{ns}` during implementation) |
+| `STREAM_NAMESPACES_GET` | `GET /api/stream-namespaces/get/{...}` | `GET /api/v1/streams/namespaces/{address}` (one segment, the full `namespace:stream:version` address; the handler registered a `(namespace, stream, version)` triple against it until #1921) |
 
 `StreamNamespacesRoutes` handlers change accordingly (path-param shift, not just prefix); the
 `/api/stream-namespaces` root disappears. HTTP-method semantics carry the verb (create=POST on the

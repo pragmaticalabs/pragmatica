@@ -26,6 +26,7 @@ import java.util.stream.Collectors;
 
 import org.pragmatica.aether.config.cluster.NodeRole;
 import org.pragmatica.aether.config.cluster.SourceProfile;
+import org.pragmatica.aether.deployment.cluster.CapacityControlledLifecycle;
 import org.pragmatica.aether.deployment.cluster.ClusterTopologyManager;
 import org.pragmatica.aether.deployment.cluster.DrainReason;
 import org.pragmatica.aether.deployment.cluster.ProvisionDisposition;
@@ -34,8 +35,10 @@ import org.pragmatica.aether.deployment.cluster.SliceOwnershipQuery.DrainRefusal
 import org.pragmatica.aether.deployment.membership.MembershipConfig;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsm;
 import org.pragmatica.aether.environment.ClusterName;
+import org.pragmatica.aether.environment.EnvironmentError;
 import org.pragmatica.aether.environment.ProvisionContext;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.io.TimeSpan;
@@ -254,6 +257,9 @@ public final class LeaderReconciler {
     /// [`#setOwnsActiveSlices`]. A predicate (not a snapshot set) is intentional: ownership is read
     /// fresh per drain pass, never staged stale.
     private final AtomicReference<Predicate<NodeId>> ownsActiveSlices = new AtomicReference<>(id -> false);
+
+    /// #1543 E: replacements that are SURGE capacity (a live pairing's replacement before its original retires), not surplus.
+    private final AtomicReference<Supplier<Set<NodeId>>> surgeReplacements = new AtomicReference<>(Set::of);
 
     /// Drain-availability guard (#1488 owner ruling), consulted for SLICE-OWNER candidates only:
     /// `apply(candidate, remainingNodes)` returns the [`DrainRefusal`] naming the first hosted slice
@@ -813,6 +819,22 @@ public final class LeaderReconciler {
                              : predicate);
     }
 
+    /// Inject the surge set: members the surplus path must not count as surplus because a committed replacement pairing
+    /// brought them in on purpose (#1543). `null` resets to "no surge".
+    /// What the surge supplier reports now: the replacement pairings' nodes this reconciler counts as capacity. Read-only, for the
+    /// boot test that pins the node's wiring.
+    public Set<NodeId> surgeReplacementsView() {
+        return surgeReplacements.get()
+                                .get();
+    }
+
+    @Contract
+    public void setSurgeReplacements(Supplier<Set<NodeId>> supplier) {
+        surgeReplacements.set(supplier == null
+                              ? Set::of
+                              : supplier);
+    }
+
     /// Inject the drain-availability guard consulted for slice-owner drain candidates (#1488 owner
     /// ruling). `AetherNode` wires this to the KV-backed minAvailable check so an owner whose removal
     /// would drop a hosted slice below its `minAvailable` ACTIVE instances on the remaining nodes is
@@ -1260,6 +1282,10 @@ public final class LeaderReconciler {
                                                   .countsTowardCapacity(now, joinGraceWindow))
                             .map(Map.Entry::getKey)
                             .forEach(union::add);
+        // #1543: a committed replacement pairing's replacement is capacity on purpose, joined or not yet. Without it, an
+        // original that dies before its replacement is a member reads as a deficit and auto-heal provisions a second
+        // node for the same seat.
+        union.addAll(surgeReplacements.get().get());
 
         return union.size();
     }
@@ -1326,7 +1352,12 @@ public final class LeaderReconciler {
     /// young ages + one scheduled follow-up reconcile via [`#armDrainGraceReEval`]) rather than
     /// silently dropped. Internal — observers see only the count via
     /// [`ReconcileIntent#drainCount`].
-    private Set<NodeId> computePeersToDrain(Set<NodeId> currentMembers, int configuredCoreCount, int effective) {
+    private Set<NodeId> computePeersToDrain(Set<NodeId> currentMembers,
+                                            int configuredCoreCount,
+                                            int effectiveWithSurge) {
+        var surge = surgeReplacements.get().get().size();
+        var effective = effectiveWithSurge - surge;
+
         if (effective <= configuredCoreCount) {
             return Set.of();
         }
@@ -1735,7 +1766,50 @@ public final class LeaderReconciler {
                                  currentMembers,
                                  NodeRole.CORE)
            .onSuccess(disposition -> reconcileInFlightForDisposition(placeholder, disposition))
-           .onFailure(_ -> inFlightProvisioning.remove(placeholder));
+           .onFailure(cause -> reapFailedProvision(placeholder, cause));
+    }
+
+    /// #1111 — a failed create is a drop like the other three, with one exception: a failure that PROVES no instance was made (a capacity
+    /// refusal in every zone, the node cap, a refused fleet-capacity reservation) reaps nothing. Every other failure is AMBIGUOUS, because
+    /// the providers report a readiness timeout, a 5xx after the provider accepted, a lost response and a failed tag as an ordinary provision
+    /// failure while the instance exists and bills: the manager looks the instance up by its label and terminates it, or confirms it absent. Only
+    /// the call that actually removes the entry acts, so a placeholder the ceiling already dropped is not reaped twice.
+    @Contract
+    private void reapFailedProvision(NodeId placeholder, Cause cause) {
+        Option.option(inFlightProvisioning.remove(placeholder)).onPresent(entry -> settleFailedProvision(placeholder,
+                                                                                                         cause));
+    }
+
+    private void settleFailedProvision(NodeId placeholder, Cause cause) {
+        if (provesNoInstance(cause)) {
+            log.warn("LeaderReconciler in-flight replacement {} dropped: the provider created no instance, so nothing is reaped: {}",
+                     placeholder,
+                     cause.message());
+
+            return;
+        }
+
+        reapDropped(placeholder, "its create failed: " + cause.message(), ClusterTopologyManager.DroppedInstance.MAYBE);
+    }
+
+    private static ClusterTopologyManager.DroppedInstance knownInstance(boolean listed) {
+        return listed
+               ? ClusterTopologyManager.DroppedInstance.LISTED
+               : ClusterTopologyManager.DroppedInstance.CREATED;
+    }
+
+    /// The causes that state no instance was made: `CapacityUnavailable` (Hetzner `resource_unavailable`, AWS `InsufficientInstanceCapacity`, and
+    /// the manager's all-zones-exhausted refusal), `NodeCapExceeded` (the fleet cap, checked before the create call) and the fleet-capacity
+    /// refusal of `CapacityControlledLifecycle` ("no provider create was dispatched").
+    private static boolean provesNoInstance(Cause cause) {
+        return cause instanceof EnvironmentError.CapacityUnavailable || cause instanceof EnvironmentError.NodeCapExceeded || cause == CapacityControlledLifecycle.AdmissionFailure.CAPACITY_UNAVAILABLE;
+    }
+
+    /// #1111 — every drop of an in-flight replacement hands its instance to the manager's confirmed reap (bounded, confirmed, operator-visible
+    /// when unconfirmed), which never terminates a node that shows life. `knowledge` says what is known of the instance: listed by the provider, only created, or possibly never made.
+    @Contract
+    private void reapDropped(NodeId id, String reason, ClusterTopologyManager.DroppedInstance knowledge) {
+        ctm.reapDroppedReplacement(id, reason, knowledge);
     }
 
     /// Keep the in-flight placeholder only for a real [`ProvisionDisposition.Dispatched`] boot; a
@@ -1785,7 +1859,7 @@ public final class LeaderReconciler {
                                                                    entry.getValue()));
     }
 
-    private static boolean isPastCeilingLogged(long nowNanos, NodeId id, InFlightEntry entry) {
+    private boolean isPastCeilingLogged(long nowNanos, NodeId id, InFlightEntry entry) {
         if (!entry.isPastCeiling(nowNanos)) {
             return false;
         }
@@ -1794,6 +1868,11 @@ public final class LeaderReconciler {
                  id,
                  entry.ceiling().millis(),
                  entry.state());
+        reapDropped(id,
+                    "still unjoined after its " + entry.ceiling().millis()
+                   + " ms replacement ceiling (state=" + entry.state()
+                   + ")",
+                    knownInstance(entry.state() == InFlightState.CONFIRMED));
 
         return true;
     }
@@ -1927,6 +2006,9 @@ public final class LeaderReconciler {
         log.info("LeaderReconciler dropping in-flight replacement {}: provider reports {} — the deficit re-opens and re-dispatches after the deficit debounce",
                  id,
                  state);
+        reapDropped(id,
+                    "the provider reports " + state,
+                    knownInstance(state == ReplacementInstanceState.FAILED || polled.state() == InFlightState.CONFIRMED));
         triggerReconcile(ReconcileTrigger.NTT_FIRE);
     }
 

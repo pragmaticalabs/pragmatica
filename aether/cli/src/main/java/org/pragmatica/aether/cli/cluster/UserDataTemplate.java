@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.cli.cluster;
 
 import java.util.List;
@@ -85,6 +84,32 @@ sealed interface UserDataTemplate {
                          TomlDocument composedConfig,
                          List<SshPublicKey> sshPublicKeys,
                          List<String> peers) {
+        return render(config,
+                      source,
+                      role,
+                      nodeId,
+                      nodeIndex,
+                      clusterSecret,
+                      clusterName,
+                      composedConfig,
+                      sshPublicKeys,
+                      peers,
+                      true);
+    }
+
+    /// `startNode == false` renders install-only user data (#1543): the node is started later, once, by
+    /// the finalized-PEERS SSH push.
+    static String render(ClusterBootstrapConfig config,
+                         SourceProfile source,
+                         NodeRole role,
+                         String nodeId,
+                         int nodeIndex,
+                         String clusterSecret,
+                         ClusterName clusterName,
+                         TomlDocument composedConfig,
+                         List<SshPublicKey> sshPublicKeys,
+                         List<String> peers,
+                         boolean startNode) {
         return NodeUserDataRenderer.render(config,
                                            source,
                                            role,
@@ -94,7 +119,8 @@ sealed interface UserDataTemplate {
                                            clusterName,
                                            composedConfig,
                                            sshPublicKeys.stream().map(SshPublicKey::value).toList(),
-                                           peers);
+                                           peers,
+                                           startNode);
     }
 
     @Contract

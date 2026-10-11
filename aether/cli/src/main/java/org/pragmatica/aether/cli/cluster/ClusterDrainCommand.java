@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.cli.cluster;
 
 import java.util.List;
@@ -44,6 +43,9 @@ class ClusterDrainCommand implements Callable<Integer> {
     @Option(names = {"--yes", "--force"}, description = "Skip interactive confirmation")
     private boolean skipConfirmation;
 
+    @Option(names = {"--override-floor"}, description = "Override the slice minAvailable floor: proceed even if a hosted slice would fall below it (the cluster raises an operator warning)")
+    private boolean overrideFloor;
+
     @CommandLine.ParentCommand
     private ClusterCommand parent;
 
@@ -63,6 +65,7 @@ class ClusterDrainCommand implements Callable<Integer> {
         return clusterTarget.applyOverrides()
                             .flatMap(_ -> ClusterHttpClient.post(NODE_DRAIN,
                                                                  List.of(nodeId),
+                                                                 ClusterHttpClient.forceQuery(overrideFloor),
                                                                  "{}"))
                             .flatMap(MAPPER::readTree)
                             .fold(this::onFailure, this::onDrainInitiated);

@@ -131,6 +131,10 @@ public sealed interface RabiaProtocolMessage extends ProtocolMessage {
         }
 
         /// Distribute a new batch to all nodes.
-        record NewBatch<C extends Command>(NodeId sender, Batch<C> batch) implements Asynchronous {}
+        /// #2011: NOT offline-buffered. The transport's offline buffer re-delivers a frame on reattach with no time limit,
+        /// so a NewBatch could arrive minutes after its slot decided -- far outside any bounded committed-batch window --
+        /// and re-queue a committed batch. A NewBatch is an optimisation: a missed one is repaired by the proposals that
+        /// carry the batch ([RabiaEngine] learnProposedBatch), so dropping it for an offline peer costs nothing.
+        record NewBatch<C extends Command>(NodeId sender, Batch<C> batch) implements Asynchronous, org.pragmatica.consensus.net.NoOfflineBuffering {}
     }
 }

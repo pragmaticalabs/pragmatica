@@ -75,16 +75,16 @@ public final class ConfigRoutes implements RouteSource {
                                            .map(_ -> new ConfigSetResponse("config_set",
                                                                            req.key(),
                                                                            req.value())),
-                        nodeIdStr -> NodeId.nodeId(nodeIdStr)
-                                           .async()
-                                           .flatMap(nodeId -> configManager.setNodeConfig(req.key(),
-                                                                                          req.value(),
-                                                                                          nodeId)
-                                                                           .onSuccess(_ -> auditAndEmitConfigSet(req.key(),
-                                                                                                                 "node:" + nodeIdStr))
-                                                                           .map(_ -> new ConfigSetResponse("config_set",
-                                                                                                           req.key(),
-                                                                                                           req.value()))));
+                        nodeIdStr -> RequestParse.asRequest(NodeId.nodeId(nodeIdStr))
+                                                 .async()
+                                                 .flatMap(nodeId -> configManager.setNodeConfig(req.key(),
+                                                                                                req.value(),
+                                                                                                nodeId)
+                                                                                 .onSuccess(_ -> auditAndEmitConfigSet(req.key(),
+                                                                                                                       "node:" + nodeIdStr))
+                                                                                 .map(_ -> new ConfigSetResponse("config_set",
+                                                                                                                 req.key(),
+                                                                                                                 req.value()))));
     }
 
     private Result<SetConfigRequest> validateSetRequest(SetConfigRequest req) {
@@ -114,11 +114,12 @@ public final class ConfigRoutes implements RouteSource {
             return ConfigError.KEY_REQUIRED.promise();
         }
 
-        return NodeId.nodeId(nodeIdStr)
-                     .async()
-                     .flatMap(nodeId -> configManager.removeNodeConfig(key, nodeId)
-                                                     .onSuccess(_ -> auditAndEmitConfigRemove(key, "node:" + nodeIdStr))
-                                                     .map(_ -> new ConfigRemovedResponse("config_removed", key)));
+        return RequestParse.asRequest(NodeId.nodeId(nodeIdStr))
+                           .async()
+                           .flatMap(nodeId -> configManager.removeNodeConfig(key, nodeId)
+                                                           .onSuccess(_ -> auditAndEmitConfigRemove(key,
+                                                                                                    "node:" + nodeIdStr))
+                                                           .map(_ -> new ConfigRemovedResponse("config_removed", key)));
     }
 
     private void auditAndEmitConfigSet(String key, String scope) {

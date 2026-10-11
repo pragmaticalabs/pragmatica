@@ -78,6 +78,9 @@ public final class DrainProcedure {
     private final Runnable jvmExit;
     private final TimeSpan drainTimeout;
     private final AtomicReference<DrainState> state = new AtomicReference<>(DrainState.INACTIVE);
+    /// Why this node is draining, set by the single winning [#initiate] BEFORE anything the drain triggers
+    /// (the drainee's consensus going passive happens synchronously inside it). Null until initiated.
+    private final AtomicReference<DrainReason> initiatedReason = new AtomicReference<>();
     /// Two-condition exit gate (issue #427): [#performExit] via the quiesced fork runs only once BOTH
     /// the in-flight tracker has drained AND the graceful-departure push has settled (acks in, or its
     /// own bounded budget expired). The grace-deadline fork ([#onGraceExpired]) ignores both flags —
@@ -185,6 +188,7 @@ public final class DrainProcedure {
             return;
         }
 
+        initiatedReason.set(reason);
         log.warn("DrainProcedure: DRAINING (reason={}) — closing tracker gate, grace={}ms",
                  reason,
                  drainTimeout.millis());
@@ -223,6 +227,13 @@ public final class DrainProcedure {
                     () -> drainInitiatedEmitter.accept(reason))
               .onFailure(cause -> log.warn("DrainProcedure: SelfDrainInitiated emit failed: {} — drain proceeds",
                                            cause.message()));
+    }
+
+    /// Whether this node is draining because the leader COMMANDED it (a planned operator or controller drain,
+    /// #2014). False for `QUORUM_LOSS` and every other reason: a node that drains because it LOST quorum is
+    /// exactly the node whose `QuorumLost` must stay loud.
+    public boolean isCommandedDrain() {
+        return state.get() != DrainState.INACTIVE && initiatedReason.get() == DrainReason.COMMANDED;
     }
 
     /// Current observability state. Exposed for `/api/status` projections and tests.

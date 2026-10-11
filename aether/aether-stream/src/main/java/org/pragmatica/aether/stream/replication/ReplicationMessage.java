@@ -67,12 +67,22 @@ public sealed interface ReplicationMessage extends ProtocolMessage {
         }
     }
 
-    record ReplicateAck(NodeId replicaId, String streamName, int partition, long confirmedOffset) implements ReplicationMessage {
+    /// `ownerEpoch` is the committed owner epoch the replica confirmed under (#1730 phase 2): the owner counts a row only while it
+    /// is its current epoch, so a confirmation from an earlier tenure never resolves a later one. [Epoch#ZERO] when unfenced.
+    record ReplicateAck(NodeId replicaId, String streamName, int partition, long confirmedOffset, Epoch ownerEpoch) implements ReplicationMessage {
         public static ReplicateAck replicateAck(NodeId replicaId,
                                                 String streamName,
                                                 int partition,
                                                 long confirmedOffset) {
-            return new ReplicateAck(replicaId, streamName, partition, confirmedOffset);
+            return new ReplicateAck(replicaId, streamName, partition, confirmedOffset, Epoch.ZERO);
+        }
+
+        public static ReplicateAck replicateAck(NodeId replicaId,
+                                                String streamName,
+                                                int partition,
+                                                long confirmedOffset,
+                                                Epoch ownerEpoch) {
+            return new ReplicateAck(replicaId, streamName, partition, confirmedOffset, ownerEpoch);
         }
 
         @Override

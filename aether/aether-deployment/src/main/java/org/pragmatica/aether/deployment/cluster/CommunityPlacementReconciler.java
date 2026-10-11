@@ -44,6 +44,28 @@ public interface CommunityPlacementReconciler {
     Promise<Unit> requestRetirement(NodeId node, AetherValue.TopologyEntry expectedTopology);
     Promise<Boolean> onDrainCompleted(NodeId sender, String operationId);
 
+    /// #1543 E2: a worker replacement pairing brings a surge worker into a community on purpose. `protectedNodes` (a live
+    /// pairing's original before it retires, and its replacement throughout) are never chosen as the node a reduction removes.
+    /// Without it the surge reads as an excess and the placement removes whichever member sorts first, which can be the
+    /// replacement itself.
+    ///
+    /// `surgeNodes` are the pairings' replacements: capacity added on purpose, so they are not counted when deciding whether a
+    /// community holds an excess. Without it the shield alone moves the excess onto the first UNSHIELDED member, an innocent one.
+    default Unit protectReplacements(Supplier<java.util.Set<NodeId>> protectedNodes,
+                                     Supplier<java.util.Set<NodeId>> surgeNodes) {
+        return Unit.unit();
+    }
+
+    /// The nodes a reduction must not remove now. Read-only, for the boot test that pins the node's wiring.
+    default java.util.Set<NodeId> protectedView() {
+        return java.util.Set.of();
+    }
+
+    /// The pairings' replacements not counted as an excess now. Read-only, for the boot test that pins the node's wiring.
+    default java.util.Set<NodeId> surgeView() {
+        return java.util.Set.of();
+    }
+
     interface Actuator {
         org.pragmatica.lang.Result<String> sourceBinding(org.pragmatica.aether.environment.SourceName source);
 
@@ -77,7 +99,9 @@ public interface CommunityPlacementReconciler {
                                        retirementRefusal,
                                        new java.util.concurrent.ConcurrentHashMap<>(),
                                        drainTimeout,
-                                       new AtomicBoolean());
+                                       new AtomicBoolean(),
+                                       new java.util.concurrent.atomic.AtomicReference<>(java.util.Set::of),
+                                       new java.util.concurrent.atomic.AtomicReference<>(java.util.Set::of));
     }
 }
 
@@ -93,7 +117,30 @@ record PlacementReconciler(NodeId self,
                            java.util.function.BiConsumer<NodeId, org.pragmatica.lang.Cause> retirementRefusal,
                            java.util.concurrent.ConcurrentHashMap<NodeId, String> reportedRetirementRefusals,
                            org.pragmatica.lang.io.TimeSpan drainTimeout,
-                           AtomicBoolean running) implements CommunityPlacementReconciler {
+                           AtomicBoolean running,
+                           java.util.concurrent.atomic.AtomicReference<Supplier<java.util.Set<NodeId>>> protectedNodes,
+                           java.util.concurrent.atomic.AtomicReference<Supplier<java.util.Set<NodeId>>> surgeNodes) implements CommunityPlacementReconciler {
+    @Override
+    public java.util.Set<NodeId> protectedView() {
+        return protectedNodes.get()
+                             .get();
+    }
+
+    @Override
+    public java.util.Set<NodeId> surgeView() {
+        return surgeNodes.get()
+                         .get();
+    }
+
+    @Override
+    public Unit protectReplacements(Supplier<java.util.Set<NodeId>> protectedSupplier,
+                                    Supplier<java.util.Set<NodeId>> surgeSupplier) {
+        protectedNodes.set(protectedSupplier);
+        surgeNodes.set(surgeSupplier);
+
+        return Unit.unit();
+    }
+
     @Override
     public Promise<Unit> reconcile() {
         if (!activeLeader.getAsBoolean() || !running.compareAndSet(false, true)) {
@@ -850,8 +897,15 @@ record PlacementReconciler(NodeId self,
         var deficit = ordinary.isPresent()
                       ? ordinary
                       : probe;
+        var shielded = protectedNodes.get().get();
+        var surge = surgeNodes.get().get();
+        var counted = members.entrySet()
+                             .stream()
+                             .filter(entry -> !surge.contains(entry.getKey()))
+                             .collect(java.util.stream.Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue));
         var previous = members.entrySet()
                               .stream()
+                              .filter(entry -> !shielded.contains(entry.getKey()))
                               .filter(entry -> policy.locations()
                                                      .stream()
                                                      .noneMatch(location -> matches(entry.getValue(),
@@ -859,7 +913,7 @@ record PlacementReconciler(NodeId self,
                                                                                                         .stream()
                                                                                                         .filter(location -> matches(entry.getValue(),
                                                                                                                                     location))
-                                                                                                        .anyMatch(location -> matching(members,
+                                                                                                        .anyMatch(location -> matching(counted,
                                                                                                                                        location).size() > desired.get(location)))
                               .sorted(Map.Entry.comparingByKey(Comparator.comparing(NodeId::id)))
                               .findFirst();

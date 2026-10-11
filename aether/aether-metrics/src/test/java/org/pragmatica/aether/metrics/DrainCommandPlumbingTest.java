@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.metrics;
 
 import java.util.Map;
@@ -188,6 +187,52 @@ class DrainCommandPlumbingTest {
             collector.setDrainCommandHandler(() -> seenByHandler.set(collector.commandedDrainNodes()));
             collector.onClusterSyncPing(coDrainPing(LEADER));
             assertThat(seenByHandler.get()).containsExactlyInAnyOrder(SELF, PEER_A);
+        }
+
+        /// #2014: a FOLLOWER (not targeted) must still learn the drain set, so its DEAD edge reads a planned
+        /// departure as one. Deleting the observer call in `handleDrainCommand` turns this red.
+        @Test
+        void onClusterSyncPing_drainSetNotTargetingSelf_stillReachesTheObserver() {
+            var network = new RecordingNetwork();
+            var collector = ClusterSyncCollector.clusterSyncCollector(SELF, network);
+            collector.setMetricsProducerEligibility(_ -> true);
+
+            collector.setPingAuthority(LEADER::equals, LEADER::equals);
+            var seen = new AtomicReference<Set<NodeId>>(Set.of());
+
+            collector.setDrainSetObserver(seen::set);
+            collector.onClusterSyncPing(otherDrainPing());
+            assertThat(seen.get()).isNotEmpty().doesNotContain(SELF);
+        }
+
+        /// #2014: absence is how a cancelled drain is noticed, so an EMPTY authoritative set must reach the
+        /// observer too. Re-adding an `isEmpty()` guard turns this red.
+        @Test
+        void onClusterSyncPing_emptyDrainSet_reachesTheObserver() {
+            var network = new RecordingNetwork();
+            var collector = ClusterSyncCollector.clusterSyncCollector(SELF, network);
+            collector.setMetricsProducerEligibility(_ -> true);
+
+            collector.setPingAuthority(LEADER::equals, LEADER::equals);
+            var seen = new AtomicReference<Set<NodeId>>(null);
+
+            collector.setDrainSetObserver(seen::set);
+            collector.onClusterSyncPing(nonePing());
+            assertThat(seen.get()).isNotNull().isEmpty();
+        }
+
+        @Test
+        void onClusterSyncPing_nonAuthoritativeDrainSet_doesNotReachTheObserver() {
+            var network = new RecordingNetwork();
+            var collector = ClusterSyncCollector.clusterSyncCollector(SELF, network);
+            collector.setMetricsProducerEligibility(_ -> true);
+
+            collector.setPingAuthority(LEADER::equals, LEADER::equals);
+            var calls = new AtomicInteger();
+
+            collector.setDrainSetObserver(_ -> calls.incrementAndGet());
+            collector.onClusterSyncPing(coDrainPing(PEER_B));
+            assertThat(calls.get()).isZero();
         }
 
         @Test

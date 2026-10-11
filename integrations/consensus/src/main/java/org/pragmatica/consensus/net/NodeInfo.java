@@ -56,6 +56,9 @@ public record NodeInfo(NodeId id, NodeAddress address, Map<String, String> label
     public static final String LABEL_SOURCE = "source";
     /// Standard label key for the node's self-described role label.
     public static final String LABEL_ROLE = "role";
+    /// Standard label key for the software version the node is running (#1543 part C). Rides ANNOUNCE and the
+    /// QUIC Hello with the other labels; it is not in the steady-state gossip subset.
+    public static final String LABEL_VERSION = "version";
 
     /// Compact constructor ensures labels are an immutable copy.
     public NodeInfo {

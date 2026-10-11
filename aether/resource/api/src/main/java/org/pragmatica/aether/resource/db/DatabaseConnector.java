@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.resource.db;
 
 import org.pragmatica.lang.Promise;
@@ -22,6 +21,15 @@ import org.pragmatica.lang.io.AsyncCloseable;
 /// is the method they already override. Implementors keep overriding `stop()`.
 public interface DatabaseConnector extends AsyncCloseable {
     DatabaseConnectorConfig config();
+
+    /// The database type THIS connector connects to, derived from its own transport's URL (#784). The default is the
+    /// configuration's preferred-transport view; every real connector overrides it with its own transport, so
+    /// schema migration picks the dialect of the database actually in use even when a datasource also carries a
+    /// URL of another kind pointing at a different engine.
+    default DatabaseType databaseType() {
+        return config().effectiveType();
+    }
+
     Promise<Boolean> isHealthy();
 
     default Promise<Unit> stop() {

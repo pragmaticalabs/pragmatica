@@ -9,7 +9,7 @@ Global rules (git, delegation, challenge mode, ndx, consult-before-action) live 
 | `core/` | `Result`, `Option`, `Promise` |
 | `integrations/` | Jackson, Micrometer, DB, HTTP, consensus, statemachine, swim, storage |
 | `jbct/` | Formatting, linting, Maven plugin, slice-processor |
-| `aether/` | Distributed runtime (BSL 1.1; rest of repo is Apache-2.0) |
+| `aether/` | Distributed runtime (Apache-2.0, except the BSL 1.1 modules listed in `tools/license/bsl-modules.txt`) |
 
 **Version:** `1.0.0-rc4` on branch `release-1.0.0-rc4`.
 
@@ -148,7 +148,7 @@ Adding a Management API endpoint requires updating ALL four layers or the featur
 Changes to `slice-processor` code generation (`FactoryGenerator`, `ManifestGenerator` output structure) require bumping `ENVELOPE_FORMAT_VERSION` in `ManifestGenerator.java`. See [`aether/docs/contributors/envelope-versioning.md`](aether/docs/contributors/envelope-versioning.md).
 
 ### 4. BSL license headers
-Files under `aether/**`, `jbct/slice-processor/`, `jbct/slice-processor-tests/` carry the SPDX `BUSL-1.1` header template at `docs/legal/bsl-header.txt`. Bulk applicator: `tools/license/apply-bsl.sh`. Don't re-license or drop these headers without explicit approval.
+Only the modules in `tools/license/bsl-modules.txt` carry the SPDX `BUSL-1.1` header template at `docs/legal/bsl-header.txt`; everything else is Apache-2.0. `python3 tools/license/relicense.py` applies the boundary (idempotent), and `tools/check-licence-closure.py` (CI) fails if an Apache module depends on a BSL one or a header sits on the wrong side. Don't re-license or drop these headers without explicit approval.
 
 ### 5. Integration test environment
 - Remote host reachable as `$TARGET_HOST`, SSH key at `$AETHER_SSH_KEY`, user `$AETHER_SSH_USER`. Never inline these values — reference by name only.

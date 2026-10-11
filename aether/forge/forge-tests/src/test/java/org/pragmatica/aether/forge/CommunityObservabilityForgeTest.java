@@ -14,6 +14,7 @@ import java.util.regex.Pattern;
 
 import org.pragmatica.aether.api.ClusterEvent;
 import org.pragmatica.aether.api.ClusterEvent.CommunityMemberJoined;
+import org.pragmatica.aether.api.ClusterEvent.CommunityMemberLeft;
 import org.pragmatica.aether.api.ClusterEvent.CommunityMinted;
 import org.pragmatica.aether.api.ClusterEvent.CommunityStateChanged;
 import org.pragmatica.aether.api.ClusterEvent.Severity;
@@ -45,9 +46,10 @@ import static org.awaitility.Awaitility.await;
 /// ACTIVE) at exactly three live members, and killing one non-governor worker drops the leader's live
 /// count below the floor (ACTIVE → DEGRADED) once the community-absence window (20s default) passes.
 ///
-/// No MEMBER_LEFT is asserted for the killed worker: the roster is assignment, not liveness, and in one run
-/// at d67fb06cf none arrived within 180s (#1717): only the surviving WORKERS' SWIM confirmed the death; no core raised
-/// a worker-leave, so the directive and roster stayed and no MEMBER_LEFT arrived within 180s. The roster
+/// A force-killed worker reaches DEAD on the core (#1717: the core holds the worker's QUIC link, its drop arms
+/// the eviction backstop, and the governor's stale "alive" report, older than the drop, no longer vetoes it), which raises the worker
+/// leave: its directive and roster entry are removed, `MEMBER_LEFT` is emitted, and a replacement worker
+/// brings the community back to ACTIVE with the matching recovery edge and `MEMBER_JOINED`. The roster
 /// diff that emits MEMBER_LEFT is pinned in `CommunityLifecycleEventsTest$Roster`.
 ///
 /// Registered in `TEST_PORT_ALLOCATION.md`: cluster 12800-12805, SWIM UDP 12900-12905 (cluster + 100), management
@@ -67,6 +69,10 @@ class CommunityObservabilityForgeTest {
 
     @Test
     void communityLifecycle_isObservableThroughTheRouteAndEvents_fromFormationToDegradation() {
+        // #2044: the pool is 2 x cores = 6 slots, all taken by 3 cores + 3 workers, and a force-killed node does not hand
+        // its slot back (the release is attached before .timeout(1s), which fails that same promise when stop() outlasts
+        // it). One spare slot is what lets the replacement worker below join; drop it when #2044 is fixed.
+        assertThat(cluster.withAdditionalNodeSlots(1).isSuccess()).isTrue();
         LifecycleAwait.settled("start community-obs cluster", cluster, cluster.start());
         await().atMost(BUDGET.duration())
                .until(() -> cluster.currentLeader().isPresent());
@@ -89,6 +95,33 @@ class CommunityObservabilityForgeTest {
                                                                  .or(WORKERS)).isLessThan(WORKERS);
         await().atMost(BUDGET.duration())
                .untilAsserted(() -> assertThat(stateChanges(community)).anySatisfy(CommunityObservabilityForgeTest::assertDegradedEdge));
+        // #1717: the dead worker leaves every committed surface, and the leave is announced.
+        await().atMost(BUDGET.duration())
+               .untilAsserted(() -> assertThat(communityEvents(community)).filteredOn(CommunityMemberLeft.class::isInstance)
+                                                                         .extracting(event -> event.details().get("nodeId"))
+                                                                         .containsExactly(victim.id()));
+        assertThat(directive(victim).isPresent()).as("the killed worker's activation directive is removed").isFalse();
+        assertThat(roster(community)).as("the killed worker leaves the committed roster").doesNotContain(victim);
+        // Recovery: a replacement worker makes the community whole again, and the transition is announced.
+        var replacement = LifecycleAwait.nodeSettled("admit replacement worker", cluster, cluster.addWorkerNode());
+
+        await().atMost(BUDGET.duration())
+               .until(() -> field(communityJson(community), "state").equals(Option.some("ACTIVE"))
+                            && field(communityJson(community), "liveMembers").equals(Option.some(String.valueOf(WORKERS))));
+        await().atMost(BUDGET.duration())
+               .untilAsserted(() -> assertThat(stateChanges(community)).anySatisfy(event -> assertThat(event.details()).containsEntry("from", "DEGRADED")
+                                                                                                                       .containsEntry("to", "ACTIVE")));
+        await().atMost(BUDGET.duration())
+               .untilAsserted(() -> assertThat(communityEvents(community)).filteredOn(CommunityMemberJoined.class::isInstance)
+                                                                         .extracting(event -> event.details().get("nodeId"))
+                                                                         .contains(replacement.id()));
+    }
+
+    private List<NodeId> roster(String community) {
+        return leader().kvStore()
+                       .getTyped(GovernorAnnouncementKey.forCommunity(community), GovernorAnnouncementValue.class)
+                       .map(GovernorAnnouncementValue::members)
+                       .or(List.of());
     }
 
     private static void assertDegradedEdge(ClusterEvent event) {

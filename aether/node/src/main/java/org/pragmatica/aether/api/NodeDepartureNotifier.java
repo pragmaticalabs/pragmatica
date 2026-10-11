@@ -56,7 +56,12 @@ public record NodeDepartureNotifier(ClusterEventAggregator aggregator,
     /// history, while a CRITICAL alert on a routine rolling restart is only noise.
     @Contract
     public void onConfirmedDeparture(NodeId departed) {
-        aggregator.onConfirmedDeparture(departed);
+        if (alertManager.hasAnnouncedDeparture(departed)) {
+            aggregator.onAnnouncedDeparture(departed);
+        } else {
+            aggregator.onConfirmedDeparture(departed);
+        }
+
         alertManager.onNodeFailed(departed, self);
     }
 

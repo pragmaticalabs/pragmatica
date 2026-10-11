@@ -101,7 +101,9 @@ How far each operation can take a running slice down (#1495):
 | `aether scale` / `POST /api/v1/scale` | 3, and the slice's `minAvailable` | refused with `400` before the node is read |
 | Autoscaler scale-down | `max(minAvailable, 3)` | clamped; the decision is recorded `HELD` by the `MIN_INSTANCES` guard |
 | Automatic drain (leader reconciler) | `minAvailable` ACTIVE instances on the remaining nodes | the victim is deferred `[mechanism: SliceOwnershipQuery.minAvailableDrainGuard, SliceOwnershipQuery.java:104]` |
-| Operator drain or shutdown (`aether nodes drain`, `POST /api/v1/nodes/drain\|shutdown`) | **none yet**: only the core disruption budget is checked | see #1720 `[unverified-gap: #1720]` |
+| Operator drain or shutdown (`aether nodes drain`, `POST /api/v1/nodes/drain\|shutdown`) | `minAvailable` ACTIVE instances on the remaining nodes (`members - pending drains - target`), on top of the core disruption budget | refused `409` naming the slice and its counts; serialised against concurrent operator drains `[mechanism: NodeLifecycleRoutes.admitOperatorDrain (synchronized), SliceOwnershipQuery.minAvailableDrainViolations]` |
+| Forced operator drain or shutdown (`--override-floor`, `?force=true`) | **none** for the slice floor; the core disruption budget still applies | admitted, and the breach is reported as an operator warning `slice-floor-breached-by-force` naming each slice, never silent |
+| `aether cluster destroy` | **none**, by definition: it drains and shuts down every node without undeploying | passes `force` on every drain and shutdown it sends, so each node's breach raises the warning |
 | Automatic rollback (#1573) | 3 when it has to create the slice target; otherwise the existing count | a missing target is written at `SliceSpec.MIN_INSTANCES` |
 | A/B test (#1721) | 3: the variant is written onto the slice's own target at `SliceSpec.MIN_INSTANCES`; the conclusion writes `max(minAvailable, 3)` | `AbTestManager.VARIANT_INSTANCES` |
 

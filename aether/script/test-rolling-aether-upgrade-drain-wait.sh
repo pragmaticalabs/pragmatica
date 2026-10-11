@@ -15,7 +15,7 @@ FAILED=0
 log_error() { echo "[script-error] $1" >&2; }
 
 # Pull the functions under test out of the script without running its main flow.
-for fn in node_endpoint wait_for_refusal; do
+for fn in node_endpoint wait_for_refusal drain_post; do
     body=$(sed -n "/^${fn}() {/,/^}/p" "$SCRIPT")
     if [ -z "$body" ]; then
         echo "FAIL: function $fn not found in $SCRIPT"
@@ -61,6 +61,31 @@ if wait_for_refusal "127.0.0.1:$LIVE" 4 2>/dev/null; then
     fail "a live node answering 404 completed the wait"
 else
     pass "a live node answering 404 does NOT complete the wait"
+fi
+
+# --- #1720: drain_post keeps the body of a 409 slice-floor refusal. `curl -f` (api_call) discards it, so the upgrade
+# loop could neither recognise the transient refusal nor print its detail; the loop in upgrade_node decides on this body.
+auth_header() { :; }
+FLOOR_PORT=$(free_port)
+python3 - "$FLOOR_PORT" >/dev/null 2>&1 <<'PY' &
+import http.server, sys
+class H(http.server.BaseHTTPRequestHandler):
+    def do_POST(self):
+        body = b'{"status":409,"detail":"Cannot drain node n1: it would leave com.example:a:1.0.0 with 1 ACTIVE instance(s), below its minAvailable 2."}'
+        self.send_response(409); self.send_header("Content-Type", "application/problem+json")
+        self.send_header("Content-Length", str(len(body))); self.end_headers(); self.wfile.write(body)
+    def log_message(self, *a): pass
+http.server.HTTPServer(("127.0.0.1", int(sys.argv[1])), H).serve_forever()
+PY
+FLOOR_PID=$!
+trap 'kill $SERVER_PID $FLOOR_PID 2>/dev/null; wait 2>/dev/null; rm -rf "$DOCROOT"' EXIT
+for _ in 1 2 3 4 5 6 7 8 9 10; do curl -s -o /dev/null -X POST "http://127.0.0.1:$FLOOR_PORT/" && break; sleep 0.5; done
+CLUSTER="127.0.0.1:$FLOOR_PORT"
+resp=$(drain_post n1) || true
+if echo "$resp" | grep -q "minAvailable"; then
+    pass "drain_post keeps the 409 slice-floor body"
+else
+    fail "drain_post lost the 409 body: '$resp'"
 fi
 
 exit $FAILED

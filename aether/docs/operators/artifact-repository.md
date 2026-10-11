@@ -15,6 +15,10 @@ general-purpose Maven proxy or artifact manager.
 - Not a Maven Central mirror
 - Not a general artifact cache
 - Not a replacement for Nexus/Artifactory in your CI/CD pipeline
+- Not a Maven plugin repository: deploying a `maven-plugin` makes Maven PUT the group-level `<group path>/maven-metadata.xml`,
+  which is refused (400, saying why) under a two-segment group such as `org.example`. Under a group of three or more
+  segments that file is indistinguishable from an artifact-level path, so the deploy appears to succeed and the plugin
+  prefix metadata is stored as if it were artifact-level metadata. Harmless while plugin publishing is out of scope.
 
 ## Security Model
 

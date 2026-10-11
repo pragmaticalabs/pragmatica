@@ -4,9 +4,6 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.node;
 
-import java.io.IOException;
-import java.io.UncheckedIOException;
-import java.net.ServerSocket;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.List;
@@ -199,7 +196,7 @@ class DeferredStartRedriveWiringBootTest {
     /// and app HTTP off.
     private static AetherNodeConfig minimalConfig(Path storageRoot) {
         var self = NodeId.nodeId("deferred-start-redrive-boot-" + UUID.randomUUID()).unwrap();
-        var selfInfo = NodeInfo.nodeInfo(self, nodeAddress("localhost", freePort()).unwrap());
+        var selfInfo = NodeInfo.nodeInfo(self, nodeAddress("localhost", ClusterTestPorts.freeClusterPort()).unwrap());
 
         return AetherNodeConfig.builder()
                                 .self(self)
@@ -217,14 +214,6 @@ class DeferredStartRedriveWiringBootTest {
                                 .managementHttpProtocol(HttpProtocol.H1)
                                 .storageConfig(HermeticStorage.nodeStorageIn(storageRoot, false))
                                 .build();
-    }
-
-    private static int freePort() {
-        try (var socket = new ServerSocket(0)) {
-            return socket.getLocalPort();
-        } catch (IOException e) {
-            throw new UncheckedIOException(e);
-        }
     }
 
     private static LoggerConfig getOrCreateLoggerConfig(Configuration configuration) {

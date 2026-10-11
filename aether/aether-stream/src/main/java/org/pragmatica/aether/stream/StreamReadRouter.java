@@ -9,6 +9,7 @@ import java.util.EnumMap;
 import java.util.List;
 import java.util.Map;
 
+import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.ReadPreference;
 import org.pragmatica.aether.slice.fence.OwnershipEpochHighWater;
 import org.pragmatica.aether.stream.ForwardingReadRouter.OwnerResolver;
@@ -122,6 +123,49 @@ public final class StreamReadRouter {
                                                           int maxEvents,
                                                           ReadPreference preference) {
         return readRouter(preference).route(streamName, partition, fromOffset, maxEvents);
+    }
+
+    /// A GOVERNOR consumer read that carries the owner epoch the consumer last read under (#1730 phase 2 / #1873, KIP-320):
+    /// served from this node's ring when it is materialised here, forwarded to the resolved owner when it is not, and in
+    /// either case checked against the committed epoch starts by the node that serves it. The answer is the events and the
+    /// epoch they were served under, or the typed [StreamError.EpochDiverged].
+    ///
+    /// Unlike the plain GOVERNOR read, a failed forward is NOT softened to a local read: a refusal that tells the consumer its
+    /// lineage was replaced must reach it, and a local read of a ring this node does not hold could only fail again.
+    public Promise<StreamPartitionManager.EpochRead> readValidated(String streamName,
+                                                                   int partition,
+                                                                   long fromOffset,
+                                                                   int maxEvents,
+                                                                   Epoch consumerEpoch) {
+        return partitionManager.readServing(streamName, partition, fromOffset, maxEvents, consumerEpoch)
+                               .async()
+                               .fold(result -> result.fold(cause -> cause == StreamError.General.PARTITION_NOT_LOCAL
+                                                                    ? forwardValidated(streamName,
+                                                                                       partition,
+                                                                                       fromOffset,
+                                                                                       maxEvents,
+                                                                                       consumerEpoch)
+                                                                    : cause.<StreamPartitionManager.EpochRead> promise(),
+                                                           Promise::success));
+    }
+
+    private Promise<StreamPartitionManager.EpochRead> forwardValidated(String streamName,
+                                                                       int partition,
+                                                                       long fromOffset,
+                                                                       int maxEvents,
+                                                                       Epoch consumerEpoch) {
+        return ownerResolver.resolve(streamName, partition)
+                            .filter(owner -> !owner.equals(selfNodeId))
+                            .flatMap(owner -> forwardClient.map(client -> client.readRemoteValidated(owner,
+                                                                                                     streamName,
+                                                                                                     partition,
+                                                                                                     fromOffset,
+                                                                                                     maxEvents,
+                                                                                                     consumerEpoch)))
+                            .map(read -> read.map(result -> new StreamPartitionManager.EpochRead(toRawEvents(result.events(),
+                                                                                                             partition),
+                                                                                                 result.ownerEpoch())))
+                            .or(() -> StreamError.General.PARTITION_NOT_LOCAL.<StreamPartitionManager.EpochRead> promise());
     }
 
     ForwardingReadRouter<OffHeapRingBuffer.RawEvent> readRouter(ReadPreference preference) {

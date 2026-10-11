@@ -62,7 +62,7 @@ even with large per-method offsets (e.g., ManagementApiTest has offsets up to 38
 | StreamAckedRecordsOwnerKillTest (forge-tests) | 4760 | 4860 | 0 | 7 nodes (app-http 4960; moved off 38700, inside the Linux ephemeral range 32768-60999) |
 | BlueprintSecurityOverrideClusterWideTest | 23500 | 23600    | 0          | 5 nodes (app-http 23700; 5 since #1495's floor, so three instances leave two non-hosting nodes for #1659) — registered late |
 | LeaderTermFailoverTest        | 24000     | 24100          | 0          | 5 nodes (single method, app-http 24200; #1527/#1559 leader term strictly increases across two leader kills, and the re-election pre-latch fires). Moved off 37400, which is inside the Linux ephemeral range 32768-60999 |
-| CommunityObservabilityForgeTest | 12800 | 12950 | 0 | 6 nodes (3 cores + 3 workers, single method, app-http 13300, SWIM UDP 12900-12905; #1652 community route and lifecycle events) |
+| CommunityObservabilityForgeTest | 12800 | 12950 | 0 | 7 nodes (3 cores + 3 workers + 1 replacement worker, single method, app-http 13300-13306, SWIM UDP 12900-12906; cluster 12800-12806, mgmt 12950-12956; #1652 community route and lifecycle events) |
 | StreamConfirmationFactorOwnerKillTest | 14500 | 14600 | 0 | 5 nodes (app-http 14700; #1564 RF 3 / CF 2: an acked record survives the owner's loss) |
 | StreamConfirmationEqualsFactorAvailabilityTest | 16500 | 16600 | 0 | 3 nodes (app-http 16700; #1564 RF 3 / CF 3: one lost core refuses writes until a replacement is placed) |
 | StreamOwnerKillWritesResumeTest | 7700 | 7740 | 0 | 5 nodes (app-http 7770, SWIM UDP 7800-7804; #1339 every partition accepts a write after its owner is killed) |

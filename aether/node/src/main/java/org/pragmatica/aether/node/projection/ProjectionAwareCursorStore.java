@@ -69,7 +69,18 @@ public record ProjectionAwareCursorStore(ConsumerCursorStore delegate,
                                          long offset,
                                          Epoch assignmentEpoch,
                                          RewindEpoch rewindEpoch) {
-        return delegate.commit(consumerGroup, streamName, partition, offset, assignmentEpoch, rewindEpoch)
+        return commit(consumerGroup, streamName, partition, offset, assignmentEpoch, rewindEpoch, Epoch.ZERO);
+    }
+
+    @Override
+    public Promise<CommitOutcome> commit(String consumerGroup,
+                                         String streamName,
+                                         int partition,
+                                         long offset,
+                                         Epoch assignmentEpoch,
+                                         RewindEpoch rewindEpoch,
+                                         Epoch ownerEpoch) {
+        return delegate.commit(consumerGroup, streamName, partition, offset, assignmentEpoch, rewindEpoch, ownerEpoch)
                        .onSuccess(outcome -> reportUnlessFenced(outcome,
                                                                 consumerGroup,
                                                                 streamName,

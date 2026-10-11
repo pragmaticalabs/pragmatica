@@ -11,6 +11,7 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.function.IntConsumer;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
 import java.util.concurrent.atomic.AtomicReference;
@@ -27,7 +28,6 @@ import org.pragmatica.aether.ember.EmberCluster.StartFailure;
 import org.pragmatica.aether.ember.EmberConfig;
 import org.pragmatica.aether.config.AetherConfig;
 import org.pragmatica.aether.config.AppHttpConfig;
-import org.pragmatica.aether.config.ConfigLoader;
 import org.pragmatica.config.ConfigurationProvider;
 import org.pragmatica.aether.dashboard.StaticFileHandler;
 import org.pragmatica.aether.forge.load.ConfigurableLoadRunner;
@@ -149,6 +149,8 @@ public final class ForgeServer {
         }
 
         var startupConfig = startupConfigResult.unwrap();
+        // #909 - an aether.toml that exists and does not load is refused before anything is created, not dropped to the NONE defaults.
+        ForgeAppConfig.loadOrRefuse(startupConfig.forgeConfig(), System::exit);
         var forgeConfig = loadForgeConfig(startupConfig);
 
         printBanner(forgeConfig, startupConfig);
@@ -330,15 +332,20 @@ public final class ForgeServer {
     /// + [AppHttpConfig#DEFAULT_API_VERSION_HEADER] defaults — existing path-mode forge runs are
     /// byte-for-byte unchanged.
     private void applyApiVersioning(EmberCluster clusterInstance) {
-        startupConfig.forgeConfig()
-                     .map(path -> path.resolveSibling("aether.toml"))
-                     .filter(path -> path.toFile()
-                                         .exists())
-                     .map(ConfigLoader::load)
-                     .flatMap(Result::option)
-                     .map(AetherConfig::appHttp)
-                     .onPresent(appHttp -> clusterInstance.withApiVersioningDetection(appHttp.apiVersioningDetection(),
-                                                                                      appHttp.apiVersionHeaderName()));
+        applyApiVersioning(clusterInstance, System::exit);
+    }
+
+    /// Package-visible with the exit injected so the call site of the sibling-config refusal is pinnable (#909).
+    void applyApiVersioning(EmberCluster clusterInstance, IntConsumer exit) {
+        siblingAppConfig(exit).map(AetherConfig::appHttp)
+                        .onPresent(appHttp -> clusterInstance.withApiVersioningDetection(appHttp.apiVersioningDetection(),
+                                                                                         appHttp.apiVersionHeaderName()));
+    }
+
+    /// The sibling `aether.toml`, or none when there is no such file. One that exists and does not load is refused (#909): the cause is logged
+    /// at ERROR and Forge stops, because falling back to NONE would run an unauthenticated cluster for a user who configured authentication.
+    private Option<AetherConfig> siblingAppConfig(IntConsumer exit) {
+        return ForgeAppConfig.loadOrRefuse(startupConfig.forgeConfig(), exit);
     }
 
     /// #573 — make `forge run` honor `[app-http] security_mode` and `[app-http.api-keys.<key>]` from the
@@ -364,20 +371,19 @@ public final class ForgeServer {
     /// `ConfigLoader` resolves keys from `AETHER_API_KEYS` before any TOML, so a credential need never
     /// be written into committed config.
     private void applyAppHttpSecurity(EmberCluster clusterInstance) {
-        startupConfig.forgeConfig()
-                     .map(path -> path.resolveSibling("aether.toml"))
-                     .filter(path -> path.toFile()
-                                         .exists())
-                     .map(ConfigLoader::load)
-                     .flatMap(Result::option)
-                     .map(AetherConfig::appHttp)
-                     .filter(appHttp -> !appHttp.apiKeys()
-                                                .isEmpty())
-                     .onPresent(appHttp -> {
-                                    clusterInstance.withAppHttpSecurity(appHttp.securityMode(),
-                                                                        appHttp.apiKeys());
-                                    operatorApiKey.set(adminCapableKey(appHttp));
-                                });
+        applyAppHttpSecurity(clusterInstance, System::exit);
+    }
+
+    /// Package-visible with the exit injected (see [#applyApiVersioning]).
+    void applyAppHttpSecurity(EmberCluster clusterInstance, IntConsumer exit) {
+        siblingAppConfig(exit).map(AetherConfig::appHttp)
+                        .filter(appHttp -> !appHttp.apiKeys()
+                                                   .isEmpty())
+                        .onPresent(appHttp -> {
+                                       clusterInstance.withAppHttpSecurity(appHttp.securityMode(),
+                                                                           appHttp.apiKeys());
+                                       operatorApiKey.set(adminCapableKey(appHttp));
+                                   });
     }
 
     /// Pick the credential Forge itself will present. An ADMIN-roled key is preferred because the

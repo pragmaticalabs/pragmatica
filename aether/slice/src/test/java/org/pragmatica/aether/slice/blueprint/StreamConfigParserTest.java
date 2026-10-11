@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.slice.blueprint;
 
 import org.pragmatica.aether.slice.ReplicationFactors;
@@ -307,6 +306,36 @@ class StreamConfigParserTest {
         void rejectsZeroMaxEventSizeWithUnit() {
             assertValueRefused("max-event-size = \"0KB\"",
                                new StreamDeclarationError.ValueOutOfRange("orders", "max-event-size", "0KB", 1));
+        }
+
+        /// #1937: a `max-event-size` above what one replication or catch-up frame can carry is refused at config validation,
+        /// not at the first oversized event.
+        @Test
+        void rejectsMaxEventSizeThatCannotFitOneFrame() {
+            assertValueRefused("max-event-size = \"40MB\"",
+                               new StreamDeclarationError.ValueAboveMaximum("orders",
+                                                                            "max-event-size",
+                                                                            "40MB",
+                                                                            StreamEventLimits.MAX_EVENT_SIZE_BYTES));
+        }
+
+        @Test
+        void rejectsMaxEventSizeOneByteAboveTheFrameCeiling() {
+            var raw = String.valueOf(StreamEventLimits.MAX_EVENT_SIZE_BYTES + 1);
+
+            assertValueRefused("max-event-size = \"" + raw + "\"",
+                               new StreamDeclarationError.ValueAboveMaximum("orders",
+                                                                            "max-event-size",
+                                                                            raw,
+                                                                            StreamEventLimits.MAX_EVENT_SIZE_BYTES));
+        }
+
+        @Test
+        void acceptsMaxEventSizeExactlyAtTheFrameCeiling() {
+            var raw = String.valueOf(StreamEventLimits.MAX_EVENT_SIZE_BYTES);
+            var result = parseResources("[streams.orders]\nversion = \"1.0.0\"\nmax-event-size = \"" + raw + "\"\n", ReplicationFactors.BUILT_IN);
+
+            assertThat(result.isSuccess()).as("the ceiling itself is accepted: " + result).isTrue();
         }
 
         @Test

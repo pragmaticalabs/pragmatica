@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.slice.blueprint;
 
 import java.util.ArrayList;
@@ -569,7 +568,8 @@ public interface StreamConfigParser {
         var maxEventSize = optionalLong(section,
                                         "max-event-size",
                                         StreamValues::size,
-                                        StreamConfig.DEFAULT.maxEventSizeBytes());
+                                        StreamConfig.DEFAULT.maxEventSizeBytes()).flatMap(size -> fitsOneFrame(section,
+                                                                                                               size));
         var consistency = optionalEnum(section, "consistency", List.of("eventual", "strong"), "eventual");
         var compression = optionalEnum(section, "compression", List.of("none", "lz4", "zstd"), "none");
         var retention = parseRetention(section);
@@ -621,6 +621,17 @@ public interface StreamConfigParser {
                                                                                String.valueOf(present),
                                                                                1).<Option<Integer>> result())
                     .or(success(value));
+    }
+
+    /// #1937: one event travels alone in one replication or catch-up frame, so a `max-event-size` above what a frame can carry
+    /// is refused here, at config validation, rather than at the first oversized event ([StreamEventLimits]).
+    private static Result<Long> fitsOneFrame(StreamSection section, long size) {
+        return size <= StreamEventLimits.MAX_EVENT_SIZE_BYTES
+               ? success(size)
+               : new StreamDeclarationError.ValueAboveMaximum(section.alias(),
+                                                              "max-event-size",
+                                                              section.string("max-event-size").or(String.valueOf(size)),
+                                                              StreamEventLimits.MAX_EVENT_SIZE_BYTES).result();
     }
 
     private static Result<Long> optionalLong(StreamSection section,

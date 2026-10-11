@@ -81,7 +81,7 @@ class SchemaMigrationResolutionTest {
     private static final BlueprintId OWNER = BlueprintId.blueprintId(COORDS).unwrap();
     private static final String LAST_MIGRATION = "V003__add_index.sql";
     private static final int DECLARED_VERSION = 3;
-    private static final Cause NOT_IN_REPOSITORY = Causes.cause("Artifact not present in local repository");
+    private static final Cause NOT_IN_REPOSITORY = (org.pragmatica.aether.slice.repository.Repository.Absent) () -> "Artifact not present in local repository";
     private static final Cause NOT_IN_STORE = Causes.cause("Artifact not present in artifact store");
     private static final DatabaseConnectorConfig STUB_CONFIG = new DatabaseConnectorConfig(Option.none(),
                                                                                             Option.some(DatabaseType.POSTGRESQL),

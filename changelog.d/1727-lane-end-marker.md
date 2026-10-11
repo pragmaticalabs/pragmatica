@@ -1,0 +1,3 @@
+### Fixed (2026-10-08 — #1727, M1: a lost FIN stalled the lane handover)
+
+- **A retired or answered lane stream now ends with a zero-length frame that carries the FIN, and the receiver releases the lane on that frame.** quiche drops a FIN that first arrives on a retransmission of data the receiver has already read, so a bare FIN could be lost for good: the handover stuck and one stream credit leaked until the connection closed. The FIN now rides on bytes new to every copy of the stream, and the lane no longer depends on the FIN being surfaced. A message that encodes to zero bytes is refused at the writer, since a zero-length frame ends the lane. The netty timer stall (M2) is unchanged.

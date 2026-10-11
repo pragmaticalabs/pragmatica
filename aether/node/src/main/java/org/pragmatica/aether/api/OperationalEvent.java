@@ -247,4 +247,167 @@ public sealed interface OperationalEvent extends Message.Local {
                                                     System.currentTimeMillis());
         }
     }
+
+    /// #1723: a scheduled task's newest fire has an UNKNOWN outcome (no response within the invocation timeout), so it is
+    /// not known whether the work ran ([ClusterEvent.ScheduledTaskOutcomeUnknown]). `task` is
+    /// `section/artifact/method`, `node` the per-node row of an ALL-mode task (empty otherwise), `fireAt` when the fire
+    /// was recorded.
+    record ScheduledTaskOutcomeUnknown(String task, String node, long fireAt, String eventId, long timestamp) implements OperationalEvent {
+        public static ScheduledTaskOutcomeUnknown scheduledTaskOutcomeUnknown(String task,
+                                                                              String node,
+                                                                              long fireAt,
+                                                                              String eventId) {
+            return new ScheduledTaskOutcomeUnknown(task, node, fireAt, eventId, System.currentTimeMillis());
+        }
+
+        /// The key the aggregator pairs this event with its [ScheduledTaskOutcomeRestored] by.
+        public String key() {
+            return task + "@" + node;
+        }
+    }
+
+    /// #1206: two slices of DIFFERENT artifacts are serving the same HTTP route in the committed route table, so one of them
+    /// serves nothing ([ClusterEvent.RoutePrefixCollision]). A collision blueprint admission cannot see (the jar was
+    /// unavailable at admission, concurrent publishes, a slice deployed another way). `artifacts` are the artifact bases
+    /// claiming the route, sorted.
+    record RoutePrefixCollision(String method, String prefix, List<String> artifacts, String eventId, long timestamp) implements OperationalEvent {
+        public static RoutePrefixCollision routePrefixCollision(String method,
+                                                                String prefix,
+                                                                List<String> artifacts,
+                                                                String eventId) {
+            return new RoutePrefixCollision(method, prefix, List.copyOf(artifacts), eventId, System.currentTimeMillis());
+        }
+    }
+
+    /// #1206: the route no longer has two artifacts claiming it ([ClusterEvent.RoutePrefixCollisionCleared]). `artifacts` are the
+    /// bases that had been claiming it.
+    record RoutePrefixCollisionCleared(String method,
+                                       String prefix,
+                                       List<String> artifacts,
+                                       String eventId,
+                                       long timestamp) implements OperationalEvent {
+        public static RoutePrefixCollisionCleared routePrefixCollisionCleared(String method,
+                                                                              String prefix,
+                                                                              List<String> artifacts,
+                                                                              String eventId) {
+            return new RoutePrefixCollisionCleared(method,
+                                                   prefix,
+                                                   List.copyOf(artifacts),
+                                                   eventId,
+                                                   System.currentTimeMillis());
+        }
+    }
+
+    /// #1930: a scheduled task's fire is still in flight when its next tick arrives, so the tick (and each one after it, up to
+    /// the completion bound) is skipped ([ClusterEvent.ScheduledTaskFireHeld]). Raised ONCE per in-flight fire, by the node
+    /// whose scheduler holds it: `node`, `fireAt` (when that fire started), `inFlightMs` (how long it had been in flight at
+    /// the first skipped tick).
+    record ScheduledTaskFireHeld(String task,
+                                 String node,
+                                 long fireAt,
+                                 long inFlightMs,
+                                 String eventId,
+                                 long timestamp) implements OperationalEvent {
+        public static ScheduledTaskFireHeld scheduledTaskFireHeld(String task,
+                                                                  String node,
+                                                                  long fireAt,
+                                                                  long inFlightMs,
+                                                                  String eventId) {
+            return new ScheduledTaskFireHeld(task, node, fireAt, inFlightMs, eventId, System.currentTimeMillis());
+        }
+
+        public String key() {
+            return task + "@" + node;
+        }
+    }
+
+    /// #1930: the fire a [ScheduledTaskFireHeld] told the operator about resolved ([ClusterEvent.ScheduledTaskFireReleased]).
+    /// `outcome` is `executed`, `failed`, `unknown` (the completion bound passed with no response) or `completed` (released
+    /// by a manual trigger); `inFlightMs` is how long the fire was in flight in all.
+    record ScheduledTaskFireReleased(String task,
+                                     String node,
+                                     long fireAt,
+                                     long inFlightMs,
+                                     String outcome,
+                                     String eventId,
+                                     long timestamp) implements OperationalEvent {
+        public static ScheduledTaskFireReleased scheduledTaskFireReleased(String task,
+                                                                          String node,
+                                                                          long fireAt,
+                                                                          long inFlightMs,
+                                                                          String outcome,
+                                                                          String eventId) {
+            return new ScheduledTaskFireReleased(task,
+                                                 node,
+                                                 fireAt,
+                                                 inFlightMs,
+                                                 outcome,
+                                                 eventId,
+                                                 System.currentTimeMillis());
+        }
+
+        public String key() {
+            return task + "@" + node;
+        }
+    }
+
+    /// #1723: a scheduled task's newest fire is no longer unknown ([ClusterEvent.ScheduledTaskOutcomeRestored]). `reason`
+    /// says why: `late-answer` (the newest fire's late response arrived; `outcome` is what it said), `later-fire` (a
+    /// later fire completed; `outcome` is that fire's) or `task-removed` (the task was removed with its outcome still
+    /// unknown; `outcome` is `unknown`) or `node-departed` (the per-node row's node left the cluster for good while it
+    /// was unknown; `outcome` is `unknown`). `outcome` is otherwise `executed` or `failed`.
+    record ScheduledTaskOutcomeRestored(String task,
+                                        String node,
+                                        String outcome,
+                                        String reason,
+                                        String eventId,
+                                        long timestamp) implements OperationalEvent {
+        public static final String LATE_ANSWER = "late-answer";
+        public static final String LATER_FIRE = "later-fire";
+        public static final String TASK_REMOVED = "task-removed";
+        public static final String NODE_DEPARTED = "node-departed";
+
+        public static ScheduledTaskOutcomeRestored scheduledTaskOutcomeRestored(String task,
+                                                                                String node,
+                                                                                String outcome,
+                                                                                String reason,
+                                                                                String eventId) {
+            return new ScheduledTaskOutcomeRestored(task, node, outcome, reason, eventId, System.currentTimeMillis());
+        }
+
+        public boolean late() {
+            return LATE_ANSWER.equals(reason);
+        }
+
+        public String key() {
+            return task + "@" + node;
+        }
+    }
+
+    /// #1873: a stream partition's owner began a new epoch of the SAME owner (its ring was rebuilt: a restart without a WAL, a
+    /// lazy re-materialize, a re-created stream), so consumers that read the old epoch past `startOffset` are told to re-read
+    /// from it ([ClusterEvent.StreamLineageRestarted]). A fact about the committed record, not a loss: the owner may have pulled
+    /// every record back from replicas.
+    record StreamLineageRestarted(String stream,
+                                  int partition,
+                                  String owner,
+                                  String oldEpoch,
+                                  String newEpoch,
+                                  long startOffset,
+                                  long timestamp) implements OperationalEvent {
+        public static StreamLineageRestarted streamLineageRestarted(String stream,
+                                                                    int partition,
+                                                                    String owner,
+                                                                    String oldEpoch,
+                                                                    String newEpoch,
+                                                                    long startOffset) {
+            return new StreamLineageRestarted(stream,
+                                              partition,
+                                              owner,
+                                              oldEpoch,
+                                              newEpoch,
+                                              startOffset,
+                                              System.currentTimeMillis());
+        }
+    }
 }

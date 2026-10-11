@@ -12,9 +12,6 @@
 
     <artifactId>pg-test-corpus</artifactId>
 
-    <properties>
-        <maven.deploy.skip>true</maven.deploy.skip>
-    </properties>
     <name>PG Test Corpus</name>
     <description>PostgreSQL migration file examples for testing</description>
 </project>

@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.config.cluster;
 
 import java.util.List;
@@ -126,6 +125,20 @@ public sealed interface ClusterConfigError extends Cause, HttpStatusAware {
         @Override
         public String message() {
             return "Failed to parse cluster config: " + detail;
+        }
+    }
+
+    /// #2059: a cloud source lacks `[cloud.credentials]` keys its provider's integration factory requires.
+    /// Caught at compose time so the CLI names the key, instead of the node refusing to boot (#2058).
+    record CredentialsIncomplete(String sourceName, String provider, List<String> missing) implements ClusterConfigError {
+        @Override
+        public String message() {
+            return "Source '" + sourceName
+                 + "' (provider " + provider
+                 + ") is missing required cloud credential(s): " + String.join(", ", missing)
+                 + ". Set them under [source." + sourceName
+                 + ".node_config.cloud.credentials] (region/zone/location come from the source's own"
+                 + " region/zone).";
         }
     }
 
@@ -303,6 +316,47 @@ public sealed interface ClusterConfigError extends Cause, HttpStatusAware {
                  + "settings a config requires. Run 'aether cluster bootstrap <aether-cluster.toml>' "
                  + "first, then retry 'aether cluster upgrade --version " + targetVersion
                  + "'.";
+        }
+
+        @Override
+        public HttpStatus httpStatus() {
+            return HttpStatus.CONFLICT;
+        }
+    }
+
+    /// #1543 part C: an upgrade rewrites the committed `[cluster] version`, which replacements render into
+    /// their image tag / jar URL — unless a role's runtime profile pins `image` (container) or `jar_url`
+    /// (JVM), in which case the new version would be recorded and silently ignored. Refused, naming the
+    /// profiles to edit.
+    record UpgradeVersionPinned(String targetVersion, List<String> profiles) implements ClusterConfigError {
+        @Override
+        public String message() {
+            return "Refusing to upgrade to " + targetVersion
+                 + ": runtime profile(s) " + profiles
+                 + " pin image/jar_url literally, so replacements would keep booting the pinned artifact and ignore the "
+                 + "version. Use {version} in the pin (image = \"registry/aether-node:{version}\") to let it follow upgrades. "
+                 + "The pin must be declared that way in the config the cluster was bootstrapped with: 'aether cluster apply' "
+                 + "does not currently change runtime-profile content";
+        }
+
+        @Override
+        public HttpStatus httpStatus() {
+            return HttpStatus.CONFLICT;
+        }
+    }
+
+    /// #1543 part C: a changed `[cluster] version` on `apply` used to be answered 501 "escalate rather than retry"
+    /// (the generic unsupported-action refusal) while the CLI merely logged it. The version is the one replacements
+    /// provision, so it has exactly one writer — the upgrade route, which rewrites the committed TOML and refuses a
+    /// pinned image/jar_url. Apply refuses with a pointer to it.
+    record VersionChangeViaApply(String from, String to) implements ClusterConfigError {
+        @Override
+        public String message() {
+            return "cluster.version change " + from
+                 + " -> " + to
+                 + " is not applied through 'aether cluster apply'. Use 'aether cluster upgrade --version " + to
+                 + "' (it commits the version replacements are provisioned from), or keep version = \"" + from
+                 + "\" in the file you apply.";
         }
 
         @Override

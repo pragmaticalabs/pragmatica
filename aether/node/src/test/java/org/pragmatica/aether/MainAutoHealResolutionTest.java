@@ -201,10 +201,6 @@ class MainAutoHealResolutionTest {
             return Promise.success(Unit.unit());
         }
 
-        @Override public Promise<Unit> restartNode(NodeId nodeId) {
-            return Promise.success(Unit.unit());
-        }
-
         @Override public boolean isCloudManaged() {
             return true;
         }

@@ -186,7 +186,9 @@ class ManagementForwardOwnerGuardWiringTest {
                                                                                                                 Map.of(),
                                                                                                                 "req-owner-guard"))),
                                         _ -> {},
-                                        Set::of);
+                                        Set::of,
+                org.pragmatica.aether.api.routes.NodeLifecycleRoutes.SliceFloor.sliceFloor((_, _) -> java.util.List.of(),
+                                                                                         org.pragmatica.utility.warning.OperatorWarningSink.logOnly()));
     }
 
     private static final class RecordingClusterNetwork implements ClusterNetwork {

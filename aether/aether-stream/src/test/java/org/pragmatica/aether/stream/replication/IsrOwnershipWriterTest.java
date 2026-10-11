@@ -254,6 +254,18 @@ class IsrOwnershipWriterTest {
             assertThat(next.fenced()).containsExactly(A);
         }
 
+        /// #1873: a failover begins a new epoch but keeps the earlier epochs' starts, so a consumer asleep across it is still
+        /// checked against the boundary it crossed.
+        @Test
+        void next_failover_keepsTheEpochStartsOfTheEarlierEpochs() {
+            var started = new org.pragmatica.aether.slice.kvstore.AetherValue.EpochStart(GENERATION.withCounter(3L), 7L);
+            var current = record(A, 3L, List.of(A, B, C), 4L).withEpochStart(7L);
+            var next = writer.next(STREAM, PARTITION, Option.some(current), A, GENERATION, List.of(B, C)).unwrap();
+
+            assertThat(next.owner()).isIn(B, C);
+            assertThat(next.epochStarts()).as("the new epoch has no start until its owner commits it").containsExactly(started);
+        }
+
         @Test
         void next_fencedSetIsBounded_newestKept_andSettlesThere() {
             var stale = java.util.stream.IntStream.range(0, StreamPartitionOwnershipValue.FENCED_MAX)

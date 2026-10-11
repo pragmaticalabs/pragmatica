@@ -22,7 +22,6 @@ aether cluster create-key
 aether generate-completion
 aether nodes inflight
 aether nodes metrics
-jbct add-persistence
 jbct check-sheet
 jbct fix-slice
 jbct migrate

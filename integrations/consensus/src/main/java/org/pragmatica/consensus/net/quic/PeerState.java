@@ -24,8 +24,10 @@ import java.util.function.Consumer;
 import java.util.function.LongUnaryOperator;
 
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.net.NoOfflineBuffering;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.messaging.Message;
 
 import static org.pragmatica.lang.Option.option;
@@ -89,11 +91,40 @@ import static org.pragmatica.lang.Option.option;
 /// Distinct from Netty writability backpressure (which owns a separate per-stream queue on
 /// the `QuicStreamChannel`). Holds serialized broadcast/send payloads while the peer is
 /// CONNECTING or EVICTED. Bounded by [OFFLINE_BUFFER_MAX]; overflow drops the oldest entry
-/// (consensus messages are idempotent — the stall detector re-broadcasts stuck rounds).
+/// (consensus messages are idempotent — the stall detector re-broadcasts stuck rounds). Also bounded in TIME: every
+/// entry carries an [Expiry] (the caller's deadline, or the cluster-wide cap) and a drain drops what has passed it (#1996).
 ///
 /// Drained by [drainOfflineBuffer] right after `attach` completes. Cleared by `authoritativeRemove`.
 public final class PeerState {
     public static final int OFFLINE_BUFFER_MAX = 10_000;
+
+    /// The instant after which a buffered request frame must not be delivered (#1996): the moment its caller gives up.
+    /// Absolute `System.nanoTime` of the sending node, never put on the wire — the buffer is sender-side, so the
+    /// clock is the one that measured the caller's timeout. A frame is expired AT its instant, not after it: the
+    /// caller's timer fires at that same instant, so a frame flushed exactly then has an answer nobody collects.
+    public record Expiry(boolean bounded, long atNanos) {
+        /// No expiry: the frame is held until the buffer's size bound evicts it. The transport never offers this (#1996: every
+        /// frame it buffers expires at its caller's deadline or the cluster cap); it exists for the PeerState-level API and its tests.
+        public static final Expiry NEVER = new Expiry(false, 0L);
+
+        public static Expiry after(TimeSpan lifetime, long nowNanos) {
+            return new Expiry(true, nowNanos + lifetime.nanos());
+        }
+
+        public boolean passed(long nowNanos) {
+            return bounded && nowNanos - atNanos >= 0;
+        }
+    }
+
+    /// One buffered frame and the instant its caller stops waiting for it.
+    public record Buffered(Message.Wired message, Expiry expiry) {}
+
+    /// What [#drainOfflineBuffer] found at flush time: frames still worth delivering, and frames whose caller had
+    /// already given up, which the caller of the drain must report rather than deliver (#1996).
+    public record Drained(List<Buffered> live, List<Message.Wired> expired) {
+        public static final Drained EMPTY = new Drained(List.of(), List.of());
+    }
+
     /// Transition-record cause constants. Stable machine-readable identifiers consumed by the
     /// Wave-1 journal AND matched by `QuicClusterNetwork.emitPeerTransition` to map each
     /// transition onto exactly one typed transport emission.
@@ -138,6 +169,10 @@ public final class PeerState {
 
         /// Peer is REMOVED — message dropped.
         record Dropped() implements OfferOutcome {}
+
+        /// The peer has no live connection and the message is [NoOfflineBuffering]: it was NOT buffered and
+        /// is dropped, so it can never be delivered after a reconnect.
+        record NotBuffered() implements OfferOutcome {}
     }
 
     public enum AttachResult {
@@ -183,7 +218,7 @@ public final class PeerState {
     /// Wave-5 reconnect provenance: true once the peer has reached CONNECTED (upstream has been
     /// told about it via ADD/RECONNECT); reset by [#readmit] (upstream saw the REMOVE). Guarded by `this`.
     private boolean announcedUpstream;
-    private final Deque<Message.Wired> offlineBuffer = new ArrayDeque<>();
+    private final Deque<Buffered> offlineBuffer = new ArrayDeque<>();
     /// Wall-clock-free (`System.nanoTime`) instant of the most recent inbound frame observed on
     /// this peer's link, across ALL lanes (transport keepalives, ClusterSync pongs, consensus).
     /// RECEIPT EVIDENCE ONLY (Wave 5): refreshed EXCLUSIVELY by [#markInbound] — the single
@@ -573,36 +608,57 @@ public final class PeerState {
     /// as-is, serialized lazily at the single write/drain site, retaining its lane); `Dropped`
     /// when the peer is REMOVED.
     public synchronized OfferOutcome offerOutbound(Message.Wired message) {
+        return offerOutbound(message, Expiry.NEVER);
+    }
+
+    /// As [#offerOutbound(Message.Wired)], for a request frame whose caller stops waiting at `expiry`: a frame held
+    /// past that instant is dropped by [#drainOfflineBuffer] instead of delivered (#1996).
+    public synchronized OfferOutcome offerOutbound(Message.Wired message, Expiry expiry) {
         return switch (phase) {
             case CONNECTED -> new OfferOutcome.SendNow(connection);
             case REMOVED -> new OfferOutcome.Dropped();
-            case INIT, CONNECTING, EVICTED -> {
-                var wasFull = offlineBuffer.size() >= OFFLINE_BUFFER_MAX;
-
-                if (wasFull) {
-                    offlineBuffer.pollFirst();
-                }
-
-                offlineBuffer.offerLast(message);
-                yield new OfferOutcome.Queued(wasFull);
-            }
+            case INIT, CONNECTING, EVICTED -> message instanceof NoOfflineBuffering
+                                              ? new OfferOutcome.NotBuffered()
+                                              : buffered(message, expiry);
         };
     }
 
-    /// Drain the offline buffer. Intended to be called right after `attach` returns ACCEPTED.
-    /// The returned list is a snapshot of the buffered messages (each re-sent on its own lane
-    /// at drain time); internal deque is left empty.
-    public synchronized List<Message.Wired> drainOfflineBuffer() {
-        if (offlineBuffer.isEmpty()) {
-            return List.of();
+    /// Called only from [#offerOutbound], under the per-peer monitor.
+    private OfferOutcome buffered(Message.Wired message, Expiry expiry) {
+        var wasFull = offlineBuffer.size() >= OFFLINE_BUFFER_MAX;
+
+        if (wasFull) {
+            offlineBuffer.pollFirst();
         }
 
-        var drained = new ArrayList<Message.Wired>(offlineBuffer.size());
+        offlineBuffer.offerLast(new Buffered(message, expiry));
 
-        drained.addAll(offlineBuffer);
+        return new OfferOutcome.Queued(wasFull);
+    }
+
+    /// Drain the offline buffer. Intended to be called right after `attach` returns ACCEPTED.
+    /// `live` is a snapshot of the frames to re-send (each on its own lane at drain time); `expired` holds the frames
+    /// whose caller had given up by `nowNanos` — never delivered, so the caller of the drain can report them (#1996).
+    /// The internal deque is left empty.
+    public synchronized Drained drainOfflineBuffer(long nowNanos) {
+        if (offlineBuffer.isEmpty()) {
+            return Drained.EMPTY;
+        }
+
+        var live = new ArrayList<Buffered>(offlineBuffer.size());
+        var expired = new ArrayList<Message.Wired>();
+
+        for (var entry : offlineBuffer) {
+            if (entry.expiry().passed(nowNanos)) {
+                expired.add(entry.message());
+            } else {
+                live.add(entry);
+            }
+        }
+
         offlineBuffer.clear();
 
-        return drained;
+        return new Drained(live, expired);
     }
 
     /// Size of the offline buffer. Used for diagnostics and metrics.

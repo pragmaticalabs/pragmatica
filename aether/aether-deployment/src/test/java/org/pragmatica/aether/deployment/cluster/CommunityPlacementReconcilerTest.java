@@ -145,6 +145,82 @@ class CommunityPlacementReconcilerTest {
         assertThat(effects).isEmpty();
     }
 
+    private void seedSurgeWorker(NodeId surge) {
+        seed(new KVCommand.Put<>(new AetherKey.ActivationDirectiveKey(surge), new AetherValue.ActivationDirectiveValue(AetherValue.ActivationDirectiveValue.WORKER, "stable", "")));
+        seed(new KVCommand.Put<>(new AetherKey.NodePlacementKey(surge), new AetherValue.NodePlacementValue("pool", Option.some("old"), "surge-instance")));
+        ready.add(surge);
+    }
+
+    /// Control: with NO pairing a second member of a size-1 community is an excess, and the reduction removes whichever
+    /// member sorts first, here the newcomer. This is what a surge replacement would suffer without the pairing.
+    @Test
+    void unpairedExtraMember_isReducedAway_theNewcomerSortingFirst() {
+        initialize();
+        var surge = new NodeId("a-surge");
+
+        seedSurgeWorker(surge);
+        reconciler.reconcile().await();
+
+        assertThat(current().previousNode().unwrap()).isEqualTo(surge);
+    }
+
+    /// #1543 E2: mid-replacement BOTH nodes are protected (the original until it retires, the replacement throughout), so no
+    /// reduction may name either of them as the node to remove.
+    @Test
+    void pairedOriginalAndReplacement_areBothProtected_noReductionTakesEither() {
+        initialize();
+        var replacement = new NodeId("a-replacement");
+
+        seedSurgeWorker(replacement);
+        reconciler.protectReplacements(() -> Set.of(OLD, replacement), () -> Set.of(replacement));
+        reconciler.reconcile().await();
+
+        assertThat(store.getTyped(new AetherKey.CommunityPlacementOperationKey("stable"), CommunityPlacementOperationValue.class)
+                        .flatMap(operation -> operation.previousNode())
+                        .isEmpty()).as("no operation removes a protected node").isTrue();
+    }
+
+    /// When the original is retiring (so the replacement is counted again), the reduction must take the ORIGINAL, never the
+    /// protected replacement, even though the replacement sorts first.
+    @Test
+    void protectedReplacement_isNeverTheNodeAReductionRemoves() {
+        initialize();
+        var replacement = new NodeId("a-replacement");
+
+        seedSurgeWorker(replacement);
+        reconciler.protectReplacements(() -> Set.of(replacement), () -> Set.of(replacement));
+        reconciler.reconcile().await();
+
+        assertThat(current().previousNode().unwrap()).isEqualTo(OLD);
+    }
+
+    /// v-2042: a community of size 2 already holds its two members; a live pairing adds a surge replacement as the THIRD. The
+    /// shield keeps the pairing's nodes from being removed, but the third member still counted as an excess, so the reduction
+    /// removed whichever UNSHIELDED member sorted first: an innocent one. While a pairing is live the surge is not an excess.
+    @Test
+    void surgeReplacement_isNotAnExcess_theReductionNeverRemovesAnInnocentMember() {
+        var original = new NodeId("a-original");
+        var innocent = new NodeId("b-innocent");
+        var replacement = new NodeId("c-replacement");
+        var sizeTwoInOldZone = CONFIG.replace("target_size = 1", "target_size = 2").replace("zone = \"new\"", "zone = \"old\"");
+
+        seed(new KVCommand.Put<>(LeaderKey.INSTANCE, new LeaderValue(CORE, 1)));
+        seed(new KVCommand.Put<>(AetherKey.ClusterConfigKey.CURRENT,
+            new AetherValue.ClusterConfigValue(Option.some(sizeTwoInOldZone), "test", "1.0.0", List.of(), 3, 3, "forge", 1, 0)));
+        for (var member : List.of(original, innocent, replacement)) {
+            seed(new KVCommand.Put<>(new AetherKey.ActivationDirectiveKey(member), new AetherValue.ActivationDirectiveValue(AetherValue.ActivationDirectiveValue.WORKER, "stable", "")));
+            seed(new KVCommand.Put<>(new AetherKey.NodePlacementKey(member), new AetherValue.NodePlacementValue("pool", Option.some("old"), member.id() + "-instance")));
+            ready.add(member);
+        }
+        reconciler.protectReplacements(() -> Set.of(original, replacement), () -> Set.of(replacement));
+        reconciler.reconcile().await();
+
+        var operation = store.getTyped(new AetherKey.CommunityPlacementOperationKey("stable"), CommunityPlacementOperationValue.class);
+
+        assertThat(operation.flatMap(value -> value.previousNode()).map(NodeId::id).or("none"))
+            .as("no member is removed while the third is a pairing's surge replacement").isEqualTo("none");
+    }
+
     @Test
     void implicitSurplusWaitsForQuiescenceAcknowledgementWithoutExplicitPolicy() {
         initialize();

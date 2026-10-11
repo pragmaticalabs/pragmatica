@@ -9,6 +9,9 @@ import org.junit.jupiter.api.io.TempDir;
 import org.pragmatica.jbct.config.ConfigLoader;
 import org.pragmatica.jbct.config.JbctConfig;
 import org.pragmatica.jbct.format.JbctFormatter;
+import org.pragmatica.jbct.init.EventAdder;
+import org.pragmatica.jbct.init.PersistenceAdder;
+import org.pragmatica.jbct.init.SliceAdder;
 import org.pragmatica.jbct.init.SliceProjectInitializer;
 import org.pragmatica.jbct.lint.Diagnostic;
 import org.pragmatica.jbct.lint.DiagnosticSeverity;
@@ -75,6 +78,52 @@ class GeneratedSliceComplianceTest {
         assertThat(lintDiagnostics(slice, DiagnosticSeverity.WARNING))
                   .as("scaffold slice interface is the JBCT exemplar and must have zero lint warnings")
                   .isEmpty();
+    }
+
+    /// #1998: `jbct add-slice`, `jbct add-event` and `jbct add-persistence` write Java text blocks of their own, and each drifted from
+    /// the formatter or the linter (a project that fails its own `format-check`/`lint` on the first build). The same two sensors, on
+    /// what the adders write. The full Maven build of every variant is `generated-project-gate`.
+    @Test
+    void addedSources_currentFormatter_reportNoFormatDrift() {
+        for (var file : allJavaSources(generateScaffoldWithEveryAdd())) {
+            assertThat(isFormatted(file)).as("format-check must pass on %s (run 'mvn jbct:format' after editing templates)", file.getFileName())
+                                         .isTrue();
+        }
+    }
+
+    @Test
+    void addedMainSources_currentLinter_reportNoLintErrors() {
+        for (var file : mainJavaSources(generateScaffoldWithEveryAdd())) {
+            assertThat(lintDiagnostics(file, DiagnosticSeverity.ERROR)).as("generated main source %s must have no lint errors", file.getFileName())
+                                                                      .isEmpty();
+        }
+    }
+
+    @Test
+    void everyAdder_writesSomething_soTheTwoGatesAboveAreNotVacuous() {
+        var names = generateScaffoldWithEveryAdd().stream().map(path -> path.getFileName().toString()).toList();
+
+        assertThat(names).contains("Analytics.java", "OrderCreatedPublisher.java", "OrderCreatedSubscription.java", "SamplePersistence.java");
+    }
+
+    private List<Path> generateScaffoldWithEveryAdd() {
+        var files = new java.util.ArrayList<>(generateScaffold());
+        var projectDir = tempDir.resolve("hello");
+
+        SliceAdder.sliceAdder(projectDir, "Analytics")
+                  .flatMap(SliceAdder::addSlice)
+                  .onFailure(cause -> fail("add-slice failed: " + cause.message()))
+                  .onSuccess(files::addAll);
+        EventAdder.eventAdder(projectDir, "order-created")
+                  .flatMap(EventAdder::addEvent)
+                  .onFailure(cause -> fail("add-event failed: " + cause.message()))
+                  .onSuccess(files::addAll);
+        PersistenceAdder.persistenceAdder(projectDir)
+                        .flatMap(PersistenceAdder::addPersistence)
+                        .onFailure(cause -> fail("add-persistence failed: " + cause.message()))
+                        .onSuccess(files::addAll);
+
+        return files;
     }
 
     private List<Path> generateScaffold() {

@@ -38,13 +38,12 @@
 
         LICENSING: this module links `org.pragmatica-lite.aether:cli`, which is BSL-1.1. Its sources
         therefore carry the BSL header, not the Apache header used by `core`, `integrations` and
-        `jbct`. It publishes nothing (see maven.deploy.skip below), so the mixed-licence reactor
+        `jbct`. It publishes nothing (the root skips publishing unless a module opts in, #1988), so the mixed-licence reactor
         position creates no distribution question.
     -->
 
     <properties>
         <!-- Gate-only module: it produces an empty jar and must never be published. -->
-        <maven.deploy.skip>true</maven.deploy.skip>
         <gpg.skip>true</gpg.skip>
     </properties>
 

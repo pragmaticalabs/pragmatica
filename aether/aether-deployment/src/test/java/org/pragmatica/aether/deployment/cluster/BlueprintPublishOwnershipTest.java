@@ -108,7 +108,7 @@ class BlueprintPublishOwnershipTest {
     private static final Artifact SLICE = Artifact.artifact("org.example:orders-api:1.0.0").unwrap();
     private static final String SLICE_CLASS = "org.example.orders.OrdersSlice";
     private static final String DATASOURCE = "database";
-    private static final Cause NOT_IN_REPOSITORY = Causes.cause("Artifact not present in local repository");
+    private static final Cause NOT_IN_REPOSITORY = (org.pragmatica.aether.slice.repository.Repository.Absent) () -> "Artifact not present in local repository";
     private static final Cause NOT_IN_STORE = Causes.cause("Artifact not present in artifact store");
 
     private static final String SLICE_STANZA = """
@@ -644,7 +644,7 @@ class BlueprintPublishOwnershipTest {
                               .orElseGet(Option::none);
     }
 
-    private static final class TestClusterNode implements ClusterNode<KVCommand<AetherKey>> {
+    static final class TestClusterNode implements ClusterNode<KVCommand<AetherKey>> {
         private final TestKVStore store;
         // #759 review round 2, BLOCKING 3: tracks each apply() call's batch verbatim (mirrors
         // ClusterDeploymentStateTransactionalTest's RecordingClusterNode) so a test can pin that a
@@ -723,7 +723,7 @@ class BlueprintPublishOwnershipTest {
         }
     }
 
-    private static final class TestKVStore extends KVStore<AetherKey, AetherValue> {
+    static final class TestKVStore extends KVStore<AetherKey, AetherValue> {
         private final Map<AetherKey, AetherValue> storage = new HashMap<>();
 
         TestKVStore() {

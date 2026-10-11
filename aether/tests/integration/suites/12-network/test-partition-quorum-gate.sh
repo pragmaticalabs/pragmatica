@@ -1,8 +1,7 @@
 #!/bin/bash
-# SPDX-License-Identifier: BUSL-1.1
+# SPDX-License-Identifier: Apache-2.0
 # Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-# Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-# See LICENSE in the repository root for full terms.
+# Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 #
 # test-partition-quorum-gate.sh — Spec §16 rows S05 + S06.
 #
@@ -519,7 +518,8 @@ monitor_majority_during_partition() {
         ep=$(_resolve_live_endpoint)
         log_warn "S05: could not derive the leader's (${leader:-?}) management endpoint; reading through ${ep} (it may be a partitioned node)"
     fi
-    local deadline=$((SECONDS + PARTITION_DURATION_S))
+    local deadline
+    deadline=$(deadline_in "$PARTITION_DURATION_S")
     local ok_reads=0 unknown_reads=0 consecutive_unknown=0 sample cur_leader quorate
     local max_unknown="${S05_MAX_CONSECUTIVE_UNKNOWN:-3}" min_ok="${S05_MIN_OK_READS:-3}"
     while [ $SECONDS -lt $deadline ]; do

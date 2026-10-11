@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.config;
 
 import org.pragmatica.aether.environment.AutoHealConfig;
@@ -144,19 +143,27 @@ public record TimeoutsConfig(InvocationTimeouts invocation,
     /// has a second floor to clear — pings originate from the leader, so a leader election is a
     /// legitimate ping gap, and a value below worst-case election time dissolves healthy communities
     /// during a routine election.
+    ///
+    /// `offlineBufferCap` (#1996) is the longest ANY frame may be held in a peer's offline buffer while the peer is
+    /// unreachable; nothing is held for ever. A request with a caller deadline (an invocation, a forward, a stream or
+    /// replication request, a command forward) is dropped at the flush once that deadline has passed, and never held longer
+    /// than this; every other frame (consensus, DHT, responses, a fire-and-forget invocation) is bounded by the cap alone.
+    /// A policy default matching the longest caller wait the cluster ships with, not a measured value.
     public record ClusterTimeouts(TimeSpan hello,
                                   TimeSpan reconciliationInterval,
                                   TimeSpan pingInterval,
                                   TimeSpan channelProtection,
                                   TimeSpan coreAbsence,
-                                  TimeSpan communityAbsence) {
+                                  TimeSpan communityAbsence,
+                                  TimeSpan offlineBufferCap) {
         public static ClusterTimeouts clusterTimeouts() {
             return new ClusterTimeouts(timeSpan(5).seconds(),
                                        timeSpan(5).seconds(),
                                        timeSpan(1).seconds(),
                                        timeSpan(15).seconds(),
                                        timeSpan(10).seconds(),
-                                       timeSpan(20).seconds());
+                                       timeSpan(20).seconds(),
+                                       timeSpan(30).seconds());
         }
 
         /// The #590 ordering invariant as a predicate, so the one comparison that matters lives beside

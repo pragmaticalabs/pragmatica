@@ -10,7 +10,7 @@
 - Core value objects added to core module
 
 ### Methodology
-All features follow the [Evolutionary Implementation Protocol](../contributors/evolutionary-implementation.md):
+All features follow the [Evolutionary Implementation Protocol](../../contributors/evolutionary-implementation.md):
 decompose into layers, hard correctness gate per layer, no layer starts until the previous is green.
 
 ### Release Cadence

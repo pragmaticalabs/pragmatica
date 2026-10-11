@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 
 package org.pragmatica.aether.environment.azure;
 
@@ -70,6 +69,18 @@ class AzureComputeProviderTest {
                     .onFailure(cause -> assertThat(cause).isNull())
                     .onSuccess(AzureComputeProviderTest::assertProvisionedInstanceInfo);
             assertThat(testClient.lastGetVmName).isEqualTo("aether-test");
+        }
+
+        /// #1111: the create succeeds, then the VM reports stopped (boot crash): it EXISTS, so the typed readiness timeout leaves `createFrom`.
+        @Test
+        void provision_vmCrashesDuringBoot_failsWithTheTypedReadinessTimeout() {
+            testClient.createVmResponse = Promise.success(runningVm("aether-test"));
+            testClient.getVmResponse = Promise.success(vmWithPowerState("aether-test", "PowerState/stopped", "Succeeded"));
+
+            provider.provision(InstanceType.ON_DEMAND)
+                    .await()
+                    .onSuccess(info -> assertThat(info).as("expected readiness failure, not a phantom success").isNull())
+                    .onFailure(cause -> assertThat(cause).as("#1111: the readiness timeout reaches the caller typed (the instance EXISTS), never flattened into a provision failure").isInstanceOf(EnvironmentError.ProvisionReadinessTimeout.class));
         }
 
         /// SHOULD-FIX from adversarial review: the requested-spec threading added by this change was
@@ -242,22 +253,6 @@ class AzureComputeProviderTest {
                     .await()
                     .onSuccess(list -> assertThat(list).isNull())
                     .onFailure(AzureComputeProviderTest::assertListInstancesFailedError);
-        }
-    }
-
-    @Nested
-    class RestartTests {
-
-        @Test
-        void restart_success_callsRestartVm() {
-            testClient.restartVmResponse = Promise.success(Unit.unit());
-
-            provider.restart(new InstanceId("my-vm"))
-                    .await()
-                    .onFailure(cause -> assertThat(cause).isNull())
-                    .onSuccess(unit -> assertThat(unit).isNotNull());
-
-            assertThat(testClient.lastRestartedVmName).isEqualTo("my-vm");
         }
     }
 

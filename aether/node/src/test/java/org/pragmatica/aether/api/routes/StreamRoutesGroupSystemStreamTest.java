@@ -37,7 +37,7 @@ import static org.junit.jupiter.api.Assertions.fail;
 /// the guard's own refusal never mentions the leader, and `NOT_LEADER` proves the coordinator WAS
 /// reached — which is what the ordinary-name control asserts.
 class StreamRoutesGroupSystemStreamTest {
-    private static final String COORDINATOR_REACHED = "not leader";
+    private static final String COORDINATOR_REACHED = "requires the leader node";
 
     private static ManageableNode nodeStub() {
         return (ManageableNode) Proxy.newProxyInstance(ManageableNode.class.getClassLoader(),

@@ -7,3 +7,7 @@ org.pragmatica.aether.http.SiblingRouteSliceRoutes$PublicFirst
 org.pragmatica.aether.http.SiblingRouteSliceRoutes$AdminFirst
 org.pragmatica.aether.http.SiblingRouteSliceRoutes$PublicOrders
 org.pragmatica.aether.http.SiblingRouteSliceRoutes$AdminOrders
+org.pragmatica.aether.http.SpacerPositionSliceRoutes$IdThenEdit
+org.pragmatica.aether.http.SpacerPositionSliceRoutes$EditThenId
+org.pragmatica.aether.http.SpacerPositionSliceRoutes$Both
+org.pragmatica.aether.http.SpacerPositionPolicySliceRoutes$Mixed

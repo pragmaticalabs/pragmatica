@@ -2372,15 +2372,15 @@ demotion/GC managers present, wired `noOp()` in production — #250):
 ## References
 
 ### Internal
-- [Streaming Implementation Spec](streaming-spec.md) — Phase 1 streaming implementation (this spec provides Phase 2 persistence path)
-- [In-Memory Streams Design](in-memory-streams-spec.md) — Exploratory spec, Section 18 describes persistence path
-- [DHT Storage Architecture](../architecture/09-storage.md) — Current DHT architecture being extended
-- [StorageEngine Interface](../../../integrations/dht/src/main/java/org/pragmatica/dht/storage/StorageEngine.java) — Existing storage engine interface (becomes MemoryTier backend)
-- [KVStore Implementation](../../../integrations/cluster/src/main/java/org/pragmatica/cluster/state/kvstore/KVStore.java) — Consensus KV-Store (MetadataStore backend)
-- [AetherKey](../../../aether/slice/src/main/java/org/pragmatica/aether/slice/kvstore/AetherKey.java) — Structured key patterns (extended with storage keys)
-- [AetherValue](../../../aether/slice/src/main/java/org/pragmatica/aether/slice/kvstore/AetherValue.java) — Structured value patterns
-- [SecretsProvider](../../../aether/environment-integration/src/main/java/org/pragmatica/aether/environment/SecretsProvider.java) — SPI for encryption key management
-- [GitBackedPersistence](../../../integrations/consensus/src/main/java/org/pragmatica/consensus/rabia/GitBackedPersistence.java) — Current consensus persistence (replaceable by StorageBackedPersistence)
+- [Streaming Implementation Spec](../streaming-spec.md) — Phase 1 streaming implementation (this spec provides Phase 2 persistence path)
+- [In-Memory Streams Design](../in-memory-streams-spec.md) — Exploratory spec, Section 18 describes persistence path
+- [DHT Storage Architecture](../../architecture/09-storage.md) — Current DHT architecture being extended
+- [StorageEngine Interface](../../../../integrations/dht/src/main/java/org/pragmatica/dht/storage/StorageEngine.java) — Existing storage engine interface (becomes MemoryTier backend)
+- [KVStore Implementation](../../../../integrations/cluster/src/main/java/org/pragmatica/cluster/state/kvstore/KVStore.java) — Consensus KV-Store (MetadataStore backend)
+- [AetherKey](../../../slice/src/main/java/org/pragmatica/aether/slice/kvstore/AetherKey.java) — Structured key patterns (extended with storage keys)
+- [AetherValue](../../../slice/src/main/java/org/pragmatica/aether/slice/kvstore/AetherValue.java) — Structured value patterns
+- [SecretsProvider](../../../environment-integration/src/main/java/org/pragmatica/aether/environment/SecretsProvider.java) — SPI for encryption key management
+- GitBackedPersistence — Current consensus persistence (replaceable by StorageBackedPersistence)
 
 ### External
 - [Content-Addressable Storage](https://en.wikipedia.org/wiki/Content-addressable_storage) — CAS design principles

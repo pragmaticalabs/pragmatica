@@ -7,10 +7,12 @@ package org.pragmatica.aether.stream.forward;
 import java.util.ArrayList;
 import java.util.List;
 
+import org.pragmatica.http.HttpError;
 import org.pragmatica.aether.stream.replication.ReplicationError;
 import org.pragmatica.aether.slice.PublishOutcomeUnknown;
 import org.pragmatica.aether.slice.ResourceCapacityExhausted;
 import org.pragmatica.aether.stream.LinearizableOwnerServe;
+import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.stream.OffHeapRingBuffer;
 import org.pragmatica.aether.stream.StreamError;
 import org.pragmatica.aether.stream.StreamPartitionManager;
@@ -198,9 +200,38 @@ final class DefaultStreamForwardHandler implements StreamForwardHandler {
     @Override
     @SuppressWarnings("JBCT-RET-01")
     public void onReadForward(ReadForward request) {
-        serveRead(request).onSuccess(events -> sendReadSuccess(request, events))
-                 .onFailure(cause -> sendReadFailure(request,
-                                                     cause.message()));
+        if (isConsumerRead(request)) {
+            serveConsumerRead(request);
+
+            return;
+        }
+
+        serveRead(request).onSuccess(events -> sendReadSuccess(request, events, Epoch.ZERO))
+                 .onFailure(cause -> sendReadFailure(request, cause));
+    }
+
+    /// A plain consumer read: not a replica's catch-up, not a linearizable one. It is the read that carries the owner
+    /// epoch the consumer last read under (#1730 phase 2 / #1873).
+    private boolean isConsumerRead(ReadForward request) {
+        return ! isReplicaCatchup(request)
+               && !request.catchup()
+               && !request.linearizable();
+    }
+
+    /// Validated by [StreamPartitionManager#readServing(String, int, long, int, Epoch)]: the cursor is checked against the
+    /// committed epoch starts before a single event is served, and the answer carries the epoch it was served under.
+    /// A cursor that belongs to a replaced lineage is answered with the typed divergence.
+    private void serveConsumerRead(ReadForward request) {
+        partitionManager.readServing(request.streamName(),
+                                     request.partition(),
+                                     request.fromOffset(),
+                                     request.maxEvents(),
+                                     request.consumerEpoch())
+                        .async()
+                        .onSuccess(read -> sendReadSuccess(request,
+                                                           read.events(),
+                                                           read.ownerEpoch()))
+                        .onFailure(cause -> sendReadFailure(request, cause));
     }
 
     /// A `LINEARIZABLE`-class forwarded read re-runs the shared owner-side serve pipeline
@@ -328,12 +359,15 @@ final class DefaultStreamForwardHandler implements StreamForwardHandler {
     /// an event that may be in the log. Every other cause is permanent.
     @Contract
     private void sendPublishFailure(PublishForward request, Cause cause) {
+        log.warn("Forwarded publish failure correlationId={} (cause chain: {})",
+                 request.correlationId(),
+                 HttpError.causeChain(cause));
         if (isRetryable(cause)) {
-            sendRetryableResponse(request, cause.message());
+            sendRetryableResponse(request, HttpError.clientMessage(cause));
         } else if (cause instanceof PublishOutcomeUnknown) {
-            sendOutcomeUnknownResponse(request, cause.message());
+            sendOutcomeUnknownResponse(request, HttpError.clientMessage(cause));
         } else {
-            sendFailureResponse(request, cause.message());
+            sendFailureResponse(request, HttpError.clientMessage(cause));
         }
     }
 
@@ -374,7 +408,7 @@ final class DefaultStreamForwardHandler implements StreamForwardHandler {
                                                request.partition())
                                  .fold(cause -> ReadForwardResponse.failureResponse(selfNodeId,
                                                                                     request.correlationId(),
-                                                                                    cause.message()),
+                                                                                    HttpError.clientMessage(cause)),
                                        answer::withHistory)
                : answer;
     }
@@ -382,7 +416,7 @@ final class DefaultStreamForwardHandler implements StreamForwardHandler {
     /// #1333: every successful answer carries this node's visible bounds of the partition, read AFTER
     /// the events so the head is never behind the last event served.
     @Contract
-    private void sendReadSuccess(ReadForward request, List<OffHeapRingBuffer.RawEvent> events) {
+    private void sendReadSuccess(ReadForward request, List<OffHeapRingBuffer.RawEvent> events, Epoch ownerEpoch) {
         var capped = applyCap(events);
         var bounds = partitionManager.visibleBounds(request.streamName(),
                                                     request.partition())
@@ -393,7 +427,7 @@ final class DefaultStreamForwardHandler implements StreamForwardHandler {
                                                              capped.events(),
                                                              bounds)
                      : ReadForwardResponse.successResponse(selfNodeId, request.correlationId(), capped.events(), bounds);
-        var response = withCatchupHistory(request, answer);
+        var response = withCatchupHistory(request, answer.withOwnerEpoch(ownerEpoch));
 
         if (capped.truncated()) {
             metrics.recordTruncated();
@@ -409,19 +443,57 @@ final class DefaultStreamForwardHandler implements StreamForwardHandler {
                   capped.truncated());
     }
 
+    /// The typed divergence of a validated read goes out as itself (#1730 phase 2 / #1873), and every other refusal a read is
+    /// known to raise goes out as its typed code (#1967), so the caller rebuilds the cause a local read would have produced.
+    /// A failure outside that set goes out as its message.
     @Contract
-    private void sendReadFailure(ReadForward request, String errorMessage) {
-        var response = ReadForwardResponse.failureResponse(selfNodeId, request.correlationId(), errorMessage);
+    private void sendReadFailure(ReadForward request, Cause cause) {
+        if (cause instanceof StreamError.EpochDiverged diverged) {
+            transport.send(request.sender(),
+                           ReadForwardResponse.epochDivergedResponse(selfNodeId,
+                                                                     request.correlationId(),
+                                                                     diverged.ownerEpoch(),
+                                                                     diverged.resumeAt(),
+                                                                     diverged.provenLossFrom(),
+                                                                     diverged.message()));
+            log.info("Forwarded read diverged for {}[{}] fromOffset={} correlationId={}: {}",
+                     request.streamName(),
+                     request.partition(),
+                     request.fromOffset(),
+                     request.correlationId(),
+                     diverged.message());
 
-        transport.send(request.sender(), response);
+            return;
+        }
+
+        var clientText = HttpError.clientMessage(cause);
+
+        log.warn("Forwarded read failure correlationId={} (cause chain: {})",
+                 request.correlationId(),
+                 HttpError.causeChain(cause));
+        transport.send(request.sender(), failureAnswer(request, cause, clientText));
         log.warn("Forwarded read failed for {}[{}] fromOffset={} correlationId={}: {}",
                  request.streamName(),
                  request.partition(),
                  request.fromOffset(),
                  request.correlationId(),
-                 errorMessage);
+                 clientText);
     }
 
+    private ReadForwardResponse failureAnswer(ReadForward request, Cause cause, String clientText) {
+        return ReadRefusal.readRefusal(cause).fold(() -> ReadForwardResponse.failureResponse(selfNodeId,
+                                                                                             request.correlationId(),
+                                                                                             clientText),
+                                                   refusal -> ReadForwardResponse.refusalResponse(selfNodeId,
+                                                                                                  request.correlationId(),
+                                                                                                  refusal,
+                                                                                                  clientText));
+    }
+
+    /// #1431: the FIRST event of a page is always admitted, even when it alone exceeds the cap — the rule the
+    /// replication manager already follows ("a single event larger than the budget is still sent alone"). A page cut
+    /// before its first event can never advance a reader past that event: a catch-up, a promotion probe or a consumer
+    /// read would stall on it. So a capped page is never empty, and only the transport frame limit bounds one event.
     private CappedEvents applyCap(List<OffHeapRingBuffer.RawEvent> events) {
         var capped = new ArrayList<RawEventDto>();
         var total = ENVELOPE_OVERHEAD_BYTES;
@@ -429,7 +501,7 @@ final class DefaultStreamForwardHandler implements StreamForwardHandler {
         for (var event : events) {
             var next = total + event.data().length + PER_EVENT_OVERHEAD_BYTES;
 
-            if (next > maxReadResponseBytes) {
+            if (next > maxReadResponseBytes && !capped.isEmpty()) {
                 break;
             }
 

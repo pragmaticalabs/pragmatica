@@ -82,10 +82,18 @@ class NodeLifecycleRoutesDepartureVerdictTest {
                                                                case "metricsCollector" -> collector;
                                                                case "membershipFsm" -> fsm;
                                                                case "leader" -> Option.none();
+                                                               case "topologyManager" -> noTopology();
                                                                default -> throw new UnsupportedOperationException(method.getName());
                                                            });
 
         return NodeLifecycleRoutes.nodeLifecycleRoutes(() -> node, _ -> {}, Set::of);
+    }
+
+    private static org.pragmatica.consensus.topology.TopologyManager noTopology() {
+        return (org.pragmatica.consensus.topology.TopologyManager) Proxy.newProxyInstance(
+            org.pragmatica.consensus.topology.TopologyManager.class.getClassLoader(),
+            new Class[]{org.pragmatica.consensus.topology.TopologyManager.class},
+            (_, _, _) -> Option.<org.pragmatica.consensus.net.NodeInfo> none());
     }
 
     private static ClusterSyncPong drainingPong(NodeId sender) {

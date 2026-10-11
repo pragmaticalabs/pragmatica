@@ -134,6 +134,18 @@ _log_prefix() {
     fi
 }
 
+# deadline_in <seconds>: the absolute `$SECONDS` value a poll loop compares against, reached NO SOONER than <seconds> of wall time from now.
+# `$((SECONDS + N))` is not that: `$SECONDS` counts whole seconds from integer boundaries of the shell's own clock, so it expires after
+# anywhere in (N-1, N] seconds, and a short budget (an 8s node-removal wait, a 5s partition hold) can lose most of a second, or all of
+# it for N=1 (#1887: a 1s stub deadline expired after one slow call). This one is in [N, N+1). A budget of 0 stays "already expired".
+deadline_in() {
+    if [ "${1:-0}" -gt 0 ] 2>/dev/null; then
+        echo $((SECONDS + $1 + 1))
+    else
+        echo "$SECONDS"
+    fi
+}
+
 log_info()  { echo -e "${GREEN}[INFO]${NC}  $(_log_prefix)$1"; }
 log_warn()  { echo -e "${YELLOW}[WARN]${NC}  $(_log_prefix)$1"; }
 log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
@@ -278,7 +290,8 @@ _run_with_timeout_kill() {
     _run_with_timeout "$secs" "$@"
 }
 
-# Reap a background job: wait up to <seconds> for it to end, then kill it and its children (TERM, then KILL). Never fails.
+# Reap a background job: wait up to <seconds> for it to end, then kill it and its whole process tree (TERM, then KILL).
+# Never fails.
 # Usage: reap_bg_job <pid> [seconds]
 reap_bg_job() {
     local pid="${1:-}" bound="${2:-10}" waited=0
@@ -291,11 +304,23 @@ reap_bg_job() {
         pkill -TERM -P "$pid" 2>/dev/null || true
         kill -TERM "$pid" 2>/dev/null || true
         sleep 1
-        pkill -KILL -P "$pid" 2>/dev/null || true
-        kill -KILL "$pid" 2>/dev/null || true
+        _kill_tree "$pid"
     fi
     wait "$pid" 2>/dev/null || true
     return 0
+}
+
+# Kill <pid> and every descendant with SIGKILL (#1886). Each process is STOPPED before its children are listed, so it
+# cannot fork a replacement between the listing and its own kill, and descendants are killed before their parent, so
+# none is orphaned out of reach of `-P`. Killing the job first left a child it had just respawned, and killing only its
+# direct children left grandchildren; either survived the reap and outlived the suite.
+_kill_tree() {
+    local p="$1" c
+    kill -STOP "$p" 2>/dev/null || return 0
+    for c in $(pgrep -P "$p" 2>/dev/null); do
+        _kill_tree "$c"
+    done
+    kill -KILL "$p" 2>/dev/null || true
 }
 
 # A run-level warning: logged, AND recorded in RUN_WARNINGS_FILE (exported by run-tests.sh) so print_summary, the end-of-run
@@ -459,24 +484,6 @@ _fork_bounded() {
 # same API key — a successful read from the wrong subject.
 _live_endpoint_sticky_file() {
     printf '%s/aether-live-endpoint-%s-%s' "${TMPDIR:-/tmp}" "${CLUSTER_ID:-default}" "${AETHER_RUN_ID:-norun}"
-}
-# VMs THIS run deleted through cloud_kill_vm: one `<node id> <hetzner server id>` line each, keyed by AETHER_RUN_ID (removed on
-# exit by run-tests.sh). A deleted VM's address no longer resolves, so a later cloud_server_id on its node id is rc 3 (unknown);
-# without this record a cleanup that asks to revive "the node I killed" got a counted FAIL for a deletion the harness made.
-_cloud_deleted_vms_file() {
-    printf '%s/aether-deleted-vms-%s' "${TMPDIR:-/tmp}" "${AETHER_RUN_ID:-norun}"
-}
-# <node id> <server id>
-_cloud_record_deleted_vm() {
-    printf '%s %s\n' "$1" "${2:-?}" >> "$(_cloud_deleted_vms_file)" 2>/dev/null || true
-    return 0
-}
-# prints the server id (or ?) and returns 0 when this run deleted <node id>; returns 1 otherwise
-_cloud_deleted_vm_server() {
-    local sid
-    sid=$(awk -v n="$1" '$1 == n { print $2; found = 1 } END { exit !found }' "$(_cloud_deleted_vms_file)" 2>/dev/null | tail -1) || return 1
-    [ -n "$sid" ] || return 1
-    printf '%s' "$sid"
 }
 _pin_dead_file() {
     printf '%s/aether-pin-dead-%s-%s' "${TMPDIR:-/tmp}" "${CLUSTER_ID:-default}" "${AETHER_RUN_ID:-norun}"
@@ -1411,7 +1418,7 @@ ENV_TYPE="${ENV_TYPE:-docker}"
 export ENV_TYPE
 CLOUD_MODE="${CLOUD_MODE:-false}"   # backward compat: true maps to ENV_TYPE=cloud
 if [ "$CLOUD_MODE" = "true" ]; then ENV_TYPE="cloud"; fi
-# Sync the reverse direction: kill_node, start_node, etc. still branch on CLOUD_MODE.
+# Sync the reverse direction: kill_node, restart_all_nodes, etc. still branch on CLOUD_MODE.
 if [ "$ENV_TYPE" = "cloud" ]; then CLOUD_MODE="true"; fi
 export CLOUD_MODE
 # BASTION_IP is retained for backward-compat env templates but ignored under
@@ -1486,10 +1493,58 @@ to_node_id() {
         aether-*) echo "$node_id"; return 0 ;;
     esac
     if [[ "$node_id" =~ ^node-([0-9]+)$ ]] && [ -n "${CLUSTER_ID:-}" ]; then
-        echo "aether-${CLUSTER_ID}-node-${BASH_REMATCH[1]}"
+        local ordinal="${BASH_REMATCH[1]}"
+        if [ "$CLUSTER_ID" = "b" ]; then
+            ordinal=$(b_seed_number "$(b_current_generation)" "$ordinal")
+        fi
+        echo "aether-${CLUSTER_ID}-node-${ordinal}"
         return 0
     fi
     echo "$node_id"
+}
+
+# ---------------------------------------------------------------------------
+# Cluster B core-node generations (#1968, #1543)
+# ---------------------------------------------------------------------------
+# A node id never returns: restart_all_nodes restarts the whole cluster onto FRESH core ids and restores the KV from the
+# backup. Core ids are `aether-b-node-<number>`. Generation 0 (the first start) is 1..5; generation G >= 1 is G*100+i, so
+# every id still ends in digits and the ordinal (i) is recoverable as (number-1)%100+1 wherever an id is mapped to a
+# host port or a position. The current generation is kept on the Docker host (one cluster B per host), read when needed.
+BACKUP_REMOTE_VOLUME="aether-b-backup-remote"
+BACKUP_GENERATION_FILE='~/.aether-b-generation'
+
+# The core number of seed ordinal <i> (1-based) at generation <G>.
+b_seed_number() {
+    local gen="$1" ordinal="$2"
+    if [ "${gen:-0}" -gt 0 ] 2>/dev/null; then
+        echo $((gen * 100 + ordinal))
+    else
+        echo "$ordinal"
+    fi
+}
+
+# The 0-based position of core number <N> (any generation) in the fixed per-seed port ranges.
+b_seed_offset() {
+    echo $((($1 - 1) % 100))
+}
+
+# The current generation of cluster B, 0 when none was ever started by restart_all_nodes. Cached per process in a NON-exported
+# variable that restart_all_nodes refreshes, so a suite subshell started after a restart reads the file once.
+b_current_generation() {
+    if [ -z "${_AETHER_B_GEN:-}" ]; then
+        _AETHER_B_GEN=$(remote_exec "cat ${BACKUP_GENERATION_FILE} 2>/dev/null || echo 0" 2>/dev/null | tail -n1 | tr -dc '0-9')
+        _AETHER_B_GEN="${_AETHER_B_GEN:-0}"
+    fi
+    echo "$_AETHER_B_GEN"
+}
+
+# Shell run on the Docker host to (re)create the backup remote of a cluster B start: a fresh external volume holding an
+# initialised bare repository owned by the in-container user (uid 1000), and generation 0. The remote is what a restart restores
+# from, so it must exist before the nodes boot and must not be removed by `compose down -v` (it is external).
+backup_remote_init_script() {
+    cat <<SCRIPT
+docker volume rm -f ${BACKUP_REMOTE_VOLUME} >/dev/null 2>&1; rm -f ${BACKUP_GENERATION_FILE}; docker volume create ${BACKUP_REMOTE_VOLUME} >/dev/null && docker run --rm --user root --entrypoint sh -v ${BACKUP_REMOTE_VOLUME}:/r aether-node:local -c 'git init -q --bare /r/kv.git && chown -R 1000:1000 /r'
+SCRIPT
 }
 
 # Map a node's runtime id (as reported by the management API, e.g. in
@@ -1503,7 +1558,7 @@ to_node_id() {
 _registered_by_to_offset() {
     local id="$1"
     if [[ "$id" =~ ^(aether-[ab]-)?node-([0-9]+)$ ]]; then
-        echo "$(( ${BASH_REMATCH[2]} - 1 ))"
+        b_seed_offset "${BASH_REMATCH[2]}"
         return 0
     fi
     if [[ "$id" =~ ^[A-Za-z0-9-]+-core-([0-9]+)$ ]]; then

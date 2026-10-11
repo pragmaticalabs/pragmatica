@@ -20,7 +20,6 @@
     <properties>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <maven.compiler.release>25</maven.compiler.release>
-        <maven.deploy.skip>true</maven.deploy.skip>
         <jbct.skip>false</jbct.skip>
     </properties>
 

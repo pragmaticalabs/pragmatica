@@ -4,10 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.node;
 
-import java.io.IOException;
-import java.io.UncheckedIOException;
 import java.net.InetSocketAddress;
-import java.net.ServerSocket;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.List;
@@ -226,7 +223,7 @@ class SwimFaultyReArmBootTest {
 
     private void startGossipTransport() {
         var codec = NodeCodecs.nodeCodecs(FrameworkCodecs.frameworkCodecs());
-        var port = freePort();
+        var port = ClusterTestPorts.freeClusterPort();
 
         gossipTransport = NettySwimTransport.nettySwimTransport(codec, codec)
                                             .onFailure(cause -> fail("gossip transport: " + cause.message()))
@@ -253,7 +250,7 @@ class SwimFaultyReArmBootTest {
     private AetherNodeConfig minimalConfig() {
         var self = NodeId.nodeId("swim-faulty-rearm-boot-" + UUID.randomUUID()).unwrap();
 
-        selfPort = freePort();
+        selfPort = ClusterTestPorts.freeClusterPort();
         var selfInfo = NodeInfo.nodeInfo(self, nodeAddress("localhost", selfPort).unwrap());
         var autoHeal = AutoHealConfig.autoHealConfig(timeSpan(15).seconds(),
                                                       timeSpan(1200).millis(),
@@ -286,14 +283,6 @@ class SwimFaultyReArmBootTest {
                                 .controllerConfig(ControllerConfig.DEFAULT)
                                 .autoHeal(autoHeal)
                                 .build();
-    }
-
-    private static int freePort() {
-        try (var socket = new ServerSocket(0)) {
-            return socket.getLocalPort();
-        } catch (IOException e) {
-            throw new UncheckedIOException(e);
-        }
     }
 
     private static LoggerConfig getOrCreateLoggerConfig(Configuration configuration, String loggerName) {

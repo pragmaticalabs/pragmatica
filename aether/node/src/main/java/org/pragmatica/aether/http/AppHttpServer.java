@@ -59,9 +59,11 @@ import org.pragmatica.consensus.topology.ClusterStateNotification;
 import org.pragmatica.consensus.topology.MembershipDecision;
 import org.pragmatica.consensus.topology.TransportObservation;
 import org.pragmatica.http.CommonContentType;
+import org.pragmatica.http.HttpError;
 import org.pragmatica.http.HttpStatus;
 import org.pragmatica.http.ProblemDetail;
 import org.pragmatica.http.server.HttpServer;
+import org.pragmatica.http.server.HttpServerError;
 import org.pragmatica.http.server.HttpServerConfig;
 import org.pragmatica.http.HttpRequest;
 import org.pragmatica.http.server.ResponseWriter;
@@ -76,6 +78,7 @@ import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.Deadline;
 import org.pragmatica.messaging.MessageReceiver;
+import org.pragmatica.utility.warning.OperatorWarningSink;
 import org.pragmatica.net.tcp.ClientAuthPolicy;
 import org.pragmatica.net.tcp.QuicSslContextFactory;
 import org.pragmatica.net.tcp.TlsConfig;
@@ -96,6 +99,11 @@ public interface AppHttpServer {
     Promise<Unit> start();
     Promise<Unit> stop();
     Promise<Unit> rotateCertificate(CertificateBundle newBundle);
+
+    /// Binds the operator-event sink for certificate-rotation refusals (and their recovery).
+    @Contract
+    void setOperatorWarningSink(OperatorWarningSink sink);
+
     Option<Integer> boundPort();
 
     @Contract
@@ -270,6 +278,7 @@ public interface AppHttpServer {
 class AppHttpServerAdapter implements AppHttpServer {
     private static final Logger log = LoggerFactory.getLogger(AppHttpServerAdapter.class);
 
+    private final TlsRotation tlsRotation = TlsRotation.tlsRotation("app-http");
     private final AppHttpConfig config;
     private final NodeId selfNodeId;
     private final HttpRouteRegistry routeRegistry;
@@ -523,12 +532,26 @@ class AppHttpServerAdapter implements AppHttpServer {
     private Promise<Unit> startH3Server() {
         var quicTls = tls.map(cfg -> QuicSslContextFactory.createServer(cfg, ClientAuthPolicy.NOT_REQUESTED))
                          .or(QuicSslContextFactory.createSelfSignedServer());
+        // A QUIC context that cannot be built refuses the start (fail closed). A BIND failure of the HTTP/3 listener is
+        // non-fatal only when HTTP/1.1 also serves (BOTH); with HTTP/3 as the only app protocol it would leave the node
+        // running with no app listener at all, so it is propagated.
+        return quicTls.fold(cause -> quicTlsRefused(cause),
+                            context -> tolerateBindFailureWhenH1Serves(startH3WithSslContext(context)));
+    }
 
-        return quicTls.onFailure(cause -> log.error("Failed to create QUIC SSL context: {}",
-                                                    cause.message()))
-                      .map(this::startH3WithSslContext)
-                      .or(Promise::unitPromise)
-                      .recover(AppHttpServerAdapter::logH3DisabledAndReturnUnit);
+    private Promise<Unit> tolerateBindFailureWhenH1Serves(Promise<Unit> h3Start) {
+        return config.httpProtocol()
+                     .includesH1()
+               ? h3Start.recover(AppHttpServerAdapter::logH3DisabledAndReturnUnit)
+               : h3Start;
+    }
+
+    private Promise<Unit> quicTlsRefused(Cause cause) {
+        var failure = new HttpServerError.TlsFailed("app-http-h3", config.port(), cause);
+
+        log.error("HTTP server 'app-http-h3' will not start: {}", failure.message());
+
+        return failure.promise();
     }
 
     private static Unit logH3DisabledAndReturnUnit(Cause cause) {
@@ -616,6 +639,23 @@ class AppHttpServerAdapter implements AppHttpServer {
         }
 
         log.info("Rotating app HTTP server TLS certificate");
+        // The new TLS material is built before the running listeners are touched: a bundle that does not build is
+        // refused and the current certificate keeps serving, instead of stopping the listeners and restarting them
+        // without TLS.
+        return tlsRotation.validate(newBundle,
+                                    config.httpProtocol().includesH1(),
+                                    config.httpProtocol().includesH3())
+                          .fold(tlsRotation::<Unit> refuse,
+                                _ -> rotateValidated(newBundle));
+    }
+
+    @Contract
+    @Override
+    public void setOperatorWarningSink(OperatorWarningSink sink) {
+        tlsRotation.useSink(sink);
+    }
+
+    private Promise<Unit> rotateValidated(CertificateBundle newBundle) {
         var previous = context.currentServers();
         var currentRoutes = context.currentRoutes();
 
@@ -629,7 +669,8 @@ class AppHttpServerAdapter implements AppHttpServer {
                             .onSuccess(pair -> context.dispatch(new AppHttpEvents.CertRotationApplied(pair.server(),
                                                                                                       pair.h3(),
                                                                                                       currentRoutes)))
-                            .mapToUnit();
+                            .mapToUnit()
+                            .onSuccessRun(tlsRotation::applied);
     }
 
     private Promise<AppHttpContext.ServerPair> restartWithNewBundle(CertificateBundle newBundle) {
@@ -1416,20 +1457,20 @@ class AppHttpServerAdapter implements AppHttpServer {
         switch (cause) {
             case org.pragmatica.aether.invoke.InvocationAdmission.Error ignored -> sendProblem(response,
                                                                                                HttpStatus.SERVICE_UNAVAILABLE,
-                                                                                               cause.message(),
+                                                                                               HttpError.clientMessage(cause),
                                                                                                path,
                                                                                                requestId);
             case RateGuardError.LimitExceeded exceeded -> sendRateLimitResponse(response, path, requestId, exceeded);
             case Cause transientCause when transientCause.isTransient() -> sendProblem(response,
                                                                                        HttpStatus.SERVICE_UNAVAILABLE,
-                                                                                       transientCause.message(),
+                                                                                       HttpError.clientMessage(transientCause),
                                                                                        path,
                                                                                        requestId);
             default -> {
                 log.error("Failed to handle local route [{}]: {}", requestId, cause.message());
                 sendProblem(response,
                             HttpStatus.INTERNAL_SERVER_ERROR,
-                            "Request processing failed: " + cause.message(),
+                            "Request processing failed: " + HttpError.clientMessage(cause),
                             path,
                             requestId);
             }
@@ -1488,7 +1529,7 @@ class AppHttpServerAdapter implements AppHttpServer {
                      .onSuccess(responseData -> sendResponse(response, responseData, requestId))
                      .onFailure(cause -> sendProblem(response,
                                                      HttpStatus.GATEWAY_TIMEOUT,
-                                                     cause.message(),
+                                                     HttpError.clientMessage(cause),
                                                      request.path(),
                                                      requestId));
     }
@@ -1517,8 +1558,12 @@ class AppHttpServerAdapter implements AppHttpServer {
                                         HttpForwardRequest request,
                                         String prefix,
                                         Cause cause) {
-        log.error("{} [{}]: {}", prefix, request.requestId(), cause.message());
-        sendForwardError(network, request, prefix + ": " + cause.message());
+        log.error("{} [{}]: {} (cause chain: {})",
+                  prefix,
+                  request.requestId(),
+                  cause.message(),
+                  HttpError.causeChain(cause));
+        sendForwardError(network, request, prefix + ": " + HttpError.clientMessage(cause));
     }
 
     @Contract
@@ -1735,7 +1780,8 @@ class AppHttpServerAdapter implements AppHttpServer {
                                       long startTime,
                                       HttpRequestContext httpCtx) {
         routeInfo.onPresent(info -> recordMetricsFailure(info, startTime, httpCtx.body().length, cause));
-        sendForwardError(network, request, cause.message());
+        log.warn("[{}] Forwarded request failed (cause chain: {})", request.requestId(), HttpError.causeChain(cause));
+        sendForwardError(network, request, HttpError.clientMessage(cause));
     }
 
     private void sendForwardSuccess(ClusterNetwork network,

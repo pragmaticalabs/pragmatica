@@ -97,7 +97,7 @@ Authority traces to something executable, not to prose. The partition contract i
 | No dual-leader / no split-brain on leader loss — new leader elected, id ≠ old | `test-kill-leader.sh` (C3/C4) |
 | Quorum survival + auto-heal under kill and under load (error rate < chaos-tier 10%) | `test-kill-node.sh`, `test-kill-multiple.sh`, `test-kill-under-load.sh` (C5–C8) |
 | Stream owner kill → new owner serves the **complete** pre-kill history (all N events, in order) with no lagging CAUGHT_UP replica | `test-stream-replica-failover.sh` (C17–C20, #260/#261/#333) |
-| Stream append is crash-durable across a full-cluster restart (per-partition WAL) | Forge `StreamCrashDurabilityTest` (streaming-persistence A6) |
+| Stream append is crash-durable across a full-cluster restart (per-partition WAL), **only with `[backup]` restored onto the same node ids and volumes**; without `[backup]` the stream is a new life and the old WAL is not read (tripwire) | Forge `StreamCrashDurabilityTest` (streaming-persistence A6) |
 | Append epoch fence — deposed-but-alive owner's stale append rejected | Forge `StreamOwnershipDriverFenceTest` |
 
 ### Pending validation

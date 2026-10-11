@@ -415,7 +415,7 @@ on-failure = "stall"             # REJECTED as inert
 | `partitions` | int | `4` | Number of partitions. Immutable after creation (Phase 1). |
 | `retention` | string | `"count"` | Retention mode: `"time"`, `"count"`, `"size"` or `"compound"` (`max-age`, `max-count`, `max-bytes`, `retention-mode` = `any`/`all`). **`time`/`size` retention also cap at the default count/bytes unless declared; eviction at whichever limit is hit first** (#1549) — `time` keeps the default 100,000 events and 256 MB, `size` the default 100,000 events and 24 h, and `compound` the default for any of `max-count`/`max-bytes`/`max-age` it omits (under `retention-mode = "all"` a partition is evicted only once every limit is exceeded). The ring's index is sized from the count, so it can never be unbounded; a count it cannot index is refused (`RetentionCountUnindexable`). `count` keeps no byte or age cap. |
 | `retention-value` | string/int | `"100000"` (count) | Value interpreted by retention mode. Time: duration string. Count: integer. Size: byte size string. |
-| `max-event-size` | string | `"1MB"` | Maximum serialized event size. Events exceeding this are rejected at publish. |
+| `max-event-size` | string | `"1MB"` | Maximum serialized event size. Events exceeding this are rejected at publish. A value above the one-frame ceiling (32 MiB transport frame, less its transfer reserve, less a 4 KiB message envelope: 33,484,800 bytes) is refused at config validation, because a single event travels alone in one replication or catch-up frame (#1937). |
 | `backpressure` | string | — | **Not implemented; refused as `unknown-stream-key` since #1549** (design: `"block"`, `"drop-oldest"`, `"reject"`). |
 | `storage` | string | — | **Not implemented; refused as `unknown-stream-key` since #1549** (design: `"memory"` or `"persistent"`, AHSE-backed). |
 | `storage-instance` | string | — | **Not implemented; refused as `unknown-stream-key` since #1549** (design: AHSE instance name, see [AHSE spec](future/hierarchical-storage-spec.md)). |
@@ -1486,14 +1486,16 @@ Update lastCheckpointedOffset
 | Medium (1s-5s, default 1s) | Good balance. At most 1s of reprocessing on failover. |
 | Long (10s-60s) | Minimal consensus load. Up to 60s of reprocessing on failover. |
 
+The reprocessing figures above hold while the partition keeps receiving events; the shipped consumer starts a commit on a delivery, a dead letter, or once after a rewound resume's catch-up (timers only retry or follow up a commit already requested), so a quiet partition keeps its last commit (or none) until the next delivery or a graceful detach (#1385).
+
 ### 10.4 Recovery on Governor Failover
 
 When a governor fails and a new governor takes over:
 
 1. New governor reads `StreamCursorCheckpointKey/Value` from consensus for all consumer groups on affected partitions.
 2. Consumers reconnect and resume from last checkpointed offset.
-3. Events between last checkpoint and failure are redelivered (at-least-once within checkpoint window).
-4. Consumer handlers must be idempotent within the checkpoint window.
+3. Events between last checkpoint and failure are redelivered (at-least-once). The checkpoint window bounds this only while the partition keeps receiving events: the shipped consumer evaluates the checkpoint trigger on delivery (a dead letter and one catch-up commit after a rewound resume also request one; timers only retry or follow up a commit already requested), so a partition that goes quiet within its first interval after attach has no checkpoint and replays from offset 0 (#1385; the timer-driven diagram in §10.2 is the design, the trailing commit is not yet implemented).
+4. Consumer handlers must be idempotent; the checkpoint window bounds redelivery only while the partition keeps receiving events (see item 3).
 
 **Phase 1 limitation:** Ring buffer data is lost on governor failure (no replication). Consumers resume from checkpoint offset but events between checkpoint and failure are gone. Consumers receive `CURSOR_EXPIRED` if the new governor's buffer does not contain the checkpointed offset, and fall back to `auto-offset-reset` policy.
 

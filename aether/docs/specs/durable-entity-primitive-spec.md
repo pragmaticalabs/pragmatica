@@ -462,6 +462,12 @@ public sealed interface EntityError extends Cause {
 }
 ```
 
+Forwarding a command to a remote committed owner adds two further transient causes (`EntityOwnerForward`, #1973), both answered 503 at an
+app route and told apart by their message: `ForwardNotSent` (the transport refused the send, or the budget was already spent: **never sent, nothing
+applied, safe to retry**) and `ForwardTimedOut` (the command was sent and no answer came in time: **outcome unknown, the owner may have applied it,
+retry only an idempotent operation**). The owner refusing an arrived-expired command without touching the entity (`ForwardBudgetExhausted` over the
+wire) crosses back as `ForwardNotSent`.
+
 `NotCurrentOwner` vs `OwnershipNotYetCommitted` is the load-bearing distinction: the first is stable
 and means *go elsewhere*, the second is transient and means *retry here*. Collapsing them into one
 "retry" cause produces a message that never clears — that exact defect shipped once and was fixed in

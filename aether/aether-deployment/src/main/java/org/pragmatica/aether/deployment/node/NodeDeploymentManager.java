@@ -51,6 +51,7 @@ import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Functions.Fn2;
 import org.pragmatica.lang.Option;
+import org.pragmatica.utility.warning.OperatorWarningSink;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.parse.Number;
 import org.pragmatica.lang.io.TimeSpan;
@@ -120,6 +121,12 @@ public interface NodeDeploymentManager {
 
     @Contract
     void setSelfReadySignal(Runnable signal);
+
+    /// Binds THIS node's operator-warning sink, so a deployment condition an operator must see (a declared stream
+    /// consumer that could not be registered, #1935) reaches this node's event log. Until bound, only the log line
+    /// is written.
+    @Contract
+    void setOperatorWarningSink(OperatorWarningSink sink);
 
     boolean isActive();
 
@@ -644,6 +651,12 @@ public interface NodeDeploymentManager {
         @Override
         public void setShutdownCallback(Runnable callback) {
             ctx.setShutdownCallback(callback);
+        }
+
+        @Contract
+        @Override
+        public void setOperatorWarningSink(OperatorWarningSink sink) {
+            ctx.setOperatorWarningSink(sink);
         }
     }
 }

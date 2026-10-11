@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.cli.cluster;
 
 import java.net.http.HttpHeaders;
@@ -75,9 +74,13 @@ final class ScriptedDrainHttp implements HttpOperations {
     }
 
     private final Step drainResponse;
+    private final List<Step> drainSequence = new CopyOnWriteArrayList<>();
+    private final AtomicInteger drainCalls = new AtomicInteger();
     private final List<Step> lifecycleScript;
     private final AtomicInteger lifecycleCalls = new AtomicInteger();
     private final List<String> requests = new CopyOnWriteArrayList<>();
+    private final List<String> requestsWithQuery = new CopyOnWriteArrayList<>();
+    private final List<String> requestUris = new CopyOnWriteArrayList<>();
 
     ScriptedDrainHttp(Step drainResponse, Step... lifecycleScript) {
         this.drainResponse = drainResponse;
@@ -102,8 +105,18 @@ final class ScriptedDrainHttp implements HttpOperations {
                        .toList();
     }
 
+    /// Every request as `METHOD scheme://host:port/path?query`: where it was SENT.
+    List<String> requestUris() {
+        return List.copyOf(requestUris);
+    }
+
     List<String> requests() {
         return List.copyOf(requests);
+    }
+
+    /// Every request as `METHOD path?query` — `requests()` strips the query, which the #1720 `force` flag lives in.
+    List<String> requestsWithQuery() {
+        return List.copyOf(requestsWithQuery);
     }
 
     long lifecycleGets() {
@@ -117,6 +130,9 @@ final class ScriptedDrainHttp implements HttpOperations {
     @Override
     public <T> Promise<HttpResult<T>> send(HttpRequest request, BodyHandler<T> handler) {
         requests.add(request.method() + " " + request.uri().getPath());
+        requestUris.add(request.method() + " " + request.uri());
+        requestsWithQuery.add(request.method() + " " + request.uri().getPath()
+                              + (request.uri().getRawQuery() == null ? "" : "?" + request.uri().getRawQuery()));
 
         var path = request.uri().getPath();
         var step = request.method().equals("POST")
@@ -128,10 +144,62 @@ final class ScriptedDrainHttp implements HttpOperations {
         return respond(step);
     }
 
+    private Step shutdownResponse = new Step.Reply(200, "{\"success\":true,\"message\":\"ok\"}");
+
+    /// The answer to every `POST /api/v1/nodes/shutdown/{id}`; success unless set.
+    ScriptedDrainHttp withShutdownResponse(Step step) {
+        shutdownResponse = step;
+
+        return this;
+    }
+
     private Step postStep(String path) {
         return path.startsWith("/api/v1/nodes/drain/")
-               ? drainResponse
-               : new Step.Reply(200, "{\"success\":true,\"message\":\"ok\"}");
+               ? nextDrainStep()
+               : shutdownResponse;
+    }
+
+    /// Successive answers to the drain POST; the last one repeats. Without a sequence every POST gets `drainResponse`.
+    ScriptedDrainHttp withDrainSequence(Step... steps) {
+        drainSequence.addAll(List.of(steps));
+
+        return this;
+    }
+
+    private Step nextDrainStep() {
+        if (drainSequence.isEmpty()) {
+            return drainResponse;
+        }
+
+        return drainSequence.get(Math.min(drainCalls.getAndIncrement(), drainSequence.size() - 1));
+    }
+
+    /// The 409 problem document the slice-floor guard answers (#1720), as `ProblemResponses` renders it.
+    static Step sliceFloorRefused(String nodeId) {
+        return new Step.Reply(409,
+                              "{\"type\":\"about:blank\",\"title\":\"Conflict\",\"status\":409,"
+                              + "\"detail\":\"Cannot drain node " + nodeId + ": it would leave com.example:slice-a:1.0.0 with 1"
+                              + " ACTIVE instance(s), below its minAvailable 2. Re-run with force=true to override, which takes"
+                              + " the slice below its floor.\",\"instance\":\"/api/v1/nodes/drain/" + nodeId + "\",\"requestId\":\"r-1\"}");
+    }
+
+    /// The 409 the core disruption budget answers (`NodeLifecycleRoutes#budgetExceededError`), as the management server renders it.
+    static Step budgetRefused(String nodeId) {
+        return new Step.Reply(409,
+                              "{\"type\":\"about:blank\",\"title\":\"Conflict\",\"status\":409,"
+                              + "\"detail\":\"Conflict: Disruption budget exceeded: draining " + nodeId
+                              + " would leave 1 core-scoped operational nodes, minimum is 2 (role=core; worker drains bypass this guard)\","
+                              + "\"instance\":\"/api/v1/nodes/drain/" + nodeId + "\",\"requestId\":\"r-1\"}");
+    }
+
+    static Step otherConflict(String nodeId) {
+        return new Step.Reply(409,
+                              "{\"type\":\"about:blank\",\"title\":\"Conflict\",\"status\":409,"
+                              + "\"detail\":\"Conflict: node " + nodeId + " is not READY\",\"instance\":\"/api/v1/nodes/drain/" + nodeId + "\"}");
+    }
+
+    static Step serverError() {
+        return new Step.Reply(500, "{\"status\":500,\"detail\":\"internal error\"}");
     }
 
     private Step endpointStep(String nodeId) {

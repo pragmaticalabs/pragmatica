@@ -558,6 +558,10 @@ restore = "auto"
 | `remote` | string | `""` | Git remote the leader pushes to, fast-forward only |
 | `restore` | string | `"auto"` | `auto`: a cold start restores the backup head (fresh when empty); `fresh`: ignore the backup |
 
+Each key is overridable by an environment variable: `AETHER_BACKUP_ENABLED`, `AETHER_BACKUP_PATH`, `AETHER_BACKUP_REMOTE`, `AETHER_BACKUP_RESTORE`.
+**The environment wins over the TOML, per key**; a blank variable counts as unset. When the environment value differs from the TOML value the node logs a
+WARN at startup naming the key and both sources (never the values). A Docker node has no TOML of its own and is configured by these variables alone.
+
 The leader writes the backup on change (#1532); a whole-cluster restart is a regular start of fresh cores
 followed by the restore (#1533). See the [backup-recovery runbook](../operators/runbooks/backup-recovery.md).
 
@@ -595,6 +599,7 @@ reshuffle_concurrency = 2
 caught_up_max_lag_offsets = 1024
 # segment_disk_max_bytes = "200GB"   # unset: derived from the disk at boot
 isr_lag_max = "30s"
+promotion_escape_after = "120s"
 ```
 
 | Field | Type | Default | Description |
@@ -606,6 +611,7 @@ isr_lag_max = "30s"
 | `caught_up_max_lag_offsets` | long | `1024` | How far a `CAUGHT_UP` replica may trail the freshest peer watermark and still serve reads or count toward the ring-release catch-up gate. Must be `>= 0` |
 | `segment_disk_max_bytes` | data size | derived | Cap on this node's local-disk tier for sealed stream segments. Unset (or `0`): 40% of the usable space on the filesystem holding the stream data directory at boot, clamped to at least 1 GiB and at most usable space minus 2 GiB (the WAL usually shares the disk); the chosen value is logged at INFO. A value above the usable space is kept, with a WARN. Must be `>= 0` |
 | `isr_lag_max` | duration | `30s` | How long a member of a partition's in-sync replica set (ISR) may stay behind the owner's head before the owner asks for it to leave the ISR (#1730; Kafka's `replica.lag.time.max.ms`). **Liveness only:** the ISR changes only by a committed write and a `confirmation_factor` ≥ 2 acknowledgement waits for every committed ISR member, so no value makes an acknowledgement unsafe. Smaller drops a slow replica sooner (shorter ack stalls, fewer in-sync copies); larger keeps it longer (an acknowledgement can wait up to this long for a lagging member) |
+| `promotion_escape_after` | duration | `120s` | How long a stream partition's promotion (the owner activation gate, the replica promotion contest) waits for members that do not answer (each unreachable member continuously for this long, on its own clock) before a candidate named in the partition's COMMITTED in-sync set goes ahead without them (#2080). A candidate outside the set, or a record with no committed set, never goes ahead. Refused if below the alarm bounds it follows: two `swim.suspect_timeout` windows (20 s at the default) and the contest's source wait (20 s at the default). **The default is a guess**: a lower value risks escaping past a node that only boots slowly after a full-cluster cold restart, which can leave acknowledged records behind (retained in a recovery segment and reported); the measured boot spread of a cold restart would settle it. Each escape raises the CRITICAL operator event `stream-promotion-past-unreachable-peers` naming this bound and the time elapsed |
 
 `reshuffle_concurrency` paces backfill work so a large reshuffle cannot flood a node. Raise it when
 partitions queue behind slow backfills; lower it when backfill traffic competes with serving. A partition

@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.slice.dependency;
 
 import java.net.URL;
@@ -310,16 +309,10 @@ public interface SharedDependencyLoader {
     }
 
     private static Result<Option<Location>> emptyWhenAbsent(Result<Location> located) {
-        return located.fold(cause -> isAbsent(cause)
+        return located.fold(cause -> Repository.isAbsent(cause)
                                      ? Result.success(Option.<Location> none())
                                      : cause.<Option<Location>> result(),
                             location -> Result.success(Option.some(location)));
-    }
-
-    /// `Repository.Absent` is what a single repository answers; the composite behind `SliceStore` reports
-    /// `Intermittent.ArtifactNotFound` once EVERY repository did (#1769), which is the same fact one level up.
-    private static boolean isAbsent(Cause cause) {
-        return cause instanceof Repository.Absent || cause instanceof SliceLoadingFailure.Intermittent.ArtifactNotFound;
     }
 
     private static Promise<Unit> registerAsRuntimeProvided(ArtifactDependency dependency,

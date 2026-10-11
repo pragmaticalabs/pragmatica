@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.resource;
 
 import java.util.ArrayList;
@@ -232,14 +231,33 @@ public final class SpiResourceProvider implements ResourceProvider {
     /// refcounting, because nothing in the current model exercises it.
     @Override
     public Promise<Unit> releaseAll(String sliceId) {
+        // The shared unattributed scope is released by nobody here. Relying instead on "no real
+        // slice is named <unattributed>" would make the pin an accident of naming rather than
+        // an invariant, and a slice id that collided would quietly close a pool still in use.
+        return UNATTRIBUTED_SCOPE.equals(sliceId)
+               ? Promise.unitPromise()
+               : releaseScope(sliceId);
+    }
+
+    /// Close the shared (unattributed) scope: every resource provisioned through the context-free
+    /// overload (#903).
+    ///
+    /// `releaseAll` can never reach it (see [#UNATTRIBUTED_SCOPE]), because a caller that presents no
+    /// slice identity has no "last consumer", and closing on any one slice's unload would be
+    /// use-after-close for every other holder. The only point at which no consumer remains is node
+    /// shutdown, so that is the only caller. Same detach-then-close single-remover discipline as
+    /// `releaseAll`, so a second call finds nothing and closes nothing.
+    public Promise<Unit> closeShared() {
+        return releaseScope(UNATTRIBUTED_SCOPE);
+    }
+
+    private Promise<Unit> releaseScope(String scope) {
         var closeFutures = new ArrayList<Promise<Unit>>();
 
         for (var entry : List.copyOf(promiseCache.entrySet())) {
             var key = entry.getKey();
-            // The shared unattributed scope is released by nobody. Relying instead on "no real
-            // slice is named <unattributed>" would make the pin an accident of naming rather than
-            // an invariant, and a slice id that collided would quietly close a pool still in use.
-            if (UNATTRIBUTED_SCOPE.equals(key.scope()) || !sliceId.equals(key.scope())) {
+
+            if (!scope.equals(key.scope())) {
                 continue;
             }
 
@@ -254,8 +272,17 @@ public final class SpiResourceProvider implements ResourceProvider {
             return Promise.unitPromise();
         }
         // allOf collects Results rather than short-circuiting, so one resource that fails to close
-        // (or one entry holding a failed provision) cannot block the release of the others.
-        return Promise.allOf(closeFutures).map(_ -> Unit.unit());
+        // (or one entry holding a failed provision) cannot block the release of the others. It also
+        // never fails, so each failed close is logged here or it is not reported at all.
+        return Promise.allOf(closeFutures).map(results -> logFailedCloses(scope, results));
+    }
+
+    private static Unit logFailedCloses(String scope, List<Result<Unit>> results) {
+        results.forEach(result -> result.onFailure(cause -> System.getLogger(SpiResourceProvider.class.getName()).log(System.Logger.Level.WARNING,
+                                                                                                                      "Resource close failed while releasing scope " + scope
+                                                                                                                     + " — the resource is released from the cache anyway: " + cause.message())));
+
+        return Unit.unit();
     }
 
     /// Close through the factory that built the resource, with a close that THROWS turned into a

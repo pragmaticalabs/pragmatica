@@ -6,9 +6,6 @@ package org.pragmatica.aether.node;
 
 import org.pragmatica.cluster.metrics.MetricObservation;
 
-import java.io.IOException;
-import java.io.UncheckedIOException;
-import java.net.ServerSocket;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.List;
@@ -142,7 +139,7 @@ class SwimHintInstallBootTest {
         // SWIM as a PING_TIMEOUT hint, whose origin is PEER_UNRESPONSIVE — not the LINK_LOST an inline
         // PEER_LEFT hint would carry.
         node.membershipFsm().onMemberDescriptor(NodeInfo.nodeInfo(PEER,
-            nodeAddress("localhost", freePort()).unwrap(), java.util.Map.of(NodeInfo.LABEL_ROLE, "core")));
+            nodeAddress("localhost", ClusterTestPorts.freeClusterPort()).unwrap(), java.util.Map.of(NodeInfo.LABEL_ROLE, "core")));
         await().atMost(HINT_BOUND)
                .untilAsserted(() -> {
                    // Audience refresh is periodic; preserve real collector ingress for the probe.
@@ -171,7 +168,7 @@ class SwimHintInstallBootTest {
     /// self-signed QUIC TLS (server and client contexts), management and app HTTP off.
     private static AetherNodeConfig minimalConfig(Path storageRoot) {
         var self = NodeId.nodeId("swim-hint-install-boot-" + UUID.randomUUID()).unwrap();
-        var selfInfo = NodeInfo.nodeInfo(self, nodeAddress("localhost", freePort()).unwrap());
+        var selfInfo = NodeInfo.nodeInfo(self, nodeAddress("localhost", ClusterTestPorts.freeClusterPort()).unwrap());
 
         return AetherNodeConfig.builder()
                                 .self(self)
@@ -189,14 +186,6 @@ class SwimHintInstallBootTest {
                                 .managementHttpProtocol(HttpProtocol.H1)
                                 .storageConfig(HermeticStorage.nodeStorageIn(storageRoot, false))
                                 .build();
-    }
-
-    private static int freePort() {
-        try (var socket = new ServerSocket(0)) {
-            return socket.getLocalPort();
-        } catch (IOException e) {
-            throw new UncheckedIOException(e);
-        }
     }
 
     private static LoggerConfig getOrCreateLoggerConfig(Configuration configuration) {

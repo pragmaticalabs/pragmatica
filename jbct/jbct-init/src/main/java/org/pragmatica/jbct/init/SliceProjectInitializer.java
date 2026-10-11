@@ -574,7 +574,8 @@ public final class SliceProjectInitializer {
         .aether/
         """;
 
-    private static final String SLICE_INTERFACE_TEMPLATE = """
+    /// Shared with [SliceAdder] (#1998): `jbct add-slice` generated its own copy, which drifted from the linter.
+    static final String SLICE_INTERFACE_TEMPLATE = """
         package {{slicePackage}};
 
         import org.pragmatica.aether.slice.annotation.Slice;
@@ -627,7 +628,8 @@ public final class SliceProjectInitializer {
         }
         """;
 
-    private static final String SLICE_TEST_TEMPLATE = """
+    /// Shared with [SliceAdder] (#1998): `jbct add-slice` generated its own copy, which drifted from the linter.
+    static final String SLICE_TEST_TEMPLATE = """
         package {{slicePackage}};
 
         import org.junit.jupiter.api.Test;

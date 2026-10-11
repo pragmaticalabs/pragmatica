@@ -13,7 +13,10 @@ import java.util.function.Supplier;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
+import org.pragmatica.aether.api.ManagementServerError;
 import org.pragmatica.aether.management.route.ManagementRoute;
+import org.pragmatica.aether.slice.kvstore.AetherKey.StreamConfigKey;
+import org.pragmatica.aether.slice.kvstore.AetherValue.StreamConfigValue;
 import org.pragmatica.aether.node.ManageableNode;
 import org.pragmatica.aether.node.projection.ProjectionHandle;
 import org.pragmatica.aether.node.projection.ProjectionNodeSupport;
@@ -137,9 +140,10 @@ public final class TopicRoutes implements RouteSource {
     }
 
     private Promise<TopicGroupsResponse> groups(String namespace, String topic, String version, String groupsLiteral) {
-        return ResourceAddress.resourceAddress(namespace, topic, version)
-                              .async()
-                              .flatMap(address -> groupsOf(address.asString()));
+        return RequestParse.asRequest(ResourceAddress.resourceAddress(namespace, topic, version))
+                           .async()
+                           .flatMap(address -> knownTopic(address.asString()).async())
+                           .flatMap(this::groupsOf);
     }
 
     private Promise<TopicGroupsResponse> groupsOf(String topicAddress) {
@@ -258,10 +262,58 @@ public final class TopicRoutes implements RouteSource {
                                              String version,
                                              String rebuildLiteral,
                                              String group) {
-        return ResourceAddress.resourceAddress(namespace, topic, version)
-                              .async()
-                              .flatMap(address -> rebuildGroup(DurableTopicNames.topicStream(address.asString()),
-                                                               URLDecoder.decode(group, StandardCharsets.UTF_8)));
+        return RequestParse.asRequest(ResourceAddress.resourceAddress(namespace, topic, version))
+                           .flatMap(address -> decodeGroup(group).flatMap(decoded -> knownGroupOnKnownTopic(address.asString(),
+                                                                                                            decoded)))
+                           .fold(cause -> cause.<RebuildResponse> promise(),
+                                 promise -> promise);
+    }
+
+    /// Form first (the address and the percent-escape are already parsed here), existence second, hosting last.
+    private Result<Promise<RebuildResponse>> knownGroupOnKnownTopic(String topicAddress, String group) {
+        var topicStream = DurableTopicNames.topicStream(topicAddress);
+
+        return knownTopic(topicAddress).flatMap(_ -> knownGroup(topicStream, group))
+                         .map(known -> rebuildGroup(topicStream, known));
+    }
+
+    /// 404 for a topic this node can see no trace of: neither a committed stream config in its KV view nor the stream
+    /// materialized in its engine (#1921). A topic created moments ago on another node can read as unknown here until its
+    /// config commit applies; the answer is about this node's view, like every other read on a LOCAL route.
+    private Result<String> knownTopic(String topicAddress) {
+        var node = nodeSupplier.get();
+        var topicStream = DurableTopicNames.topicStream(topicAddress);
+        var committed = node.kvStore()
+                            .getTyped(StreamConfigKey.streamConfigKey(topicStream),
+                                      StreamConfigValue.class)
+                            .isPresent();
+
+        return committed || node.streamPartitionManager()
+                                .streamInfo(topicStream)
+                                .isPresent()
+               ? Result.success(topicAddress)
+               : new ManagementServerError.NotFound("Topic " + topicAddress + " not found").result();
+    }
+
+    /// 404 for a consumer group no declared consumer of the topic carries; a KNOWN group that is not hosted here stays the
+    /// deliberate 409 of [#notHostedHere].
+    private Result<String> knownGroup(String topicStream, String group) {
+        return nodeSupplier.get()
+                           .streamConsumerManager()
+                           .topicGroupStatuses(topicStream)
+                           .stream()
+                           .anyMatch(status -> status.consumerGroup()
+                                                     .equals(group))
+               ? Result.success(group)
+               : new ManagementServerError.NotFound("Consumer group '" + group + "' not found on " + topicStream).result();
+    }
+
+    /// `URLDecoder.decode` throws on a malformed escape (`%zz`, a trailing `%`); the group segment is caller input, so that
+    /// is a 400 carrying the offending segment, not a throw out of the handler (#1921).
+    private static Result<String> decodeGroup(String group) {
+        return Result.lift(_ -> new ManagementServerError.InvalidRequest("Malformed percent-escape in consumer group '" + group
+                                                                        + "'"),
+                           () -> URLDecoder.decode(group, StandardCharsets.UTF_8));
     }
 
     /// Two conditions, both LOCAL: the projection must be attached here AND this node must consume at

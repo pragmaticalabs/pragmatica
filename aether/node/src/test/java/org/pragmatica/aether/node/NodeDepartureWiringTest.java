@@ -36,6 +36,17 @@ class NodeDepartureWiringTest {
         assertThat(code).doesNotContain("departureNotifier.onConfirmedDeparture(departed)");
     }
 
+    /// #1720: a floor-refused operator drain target that dies closes its refusal ON THE TRANSITION. The hook rides the
+    /// single `onTransition` listener (the DEAD-edge listener above is pinned to carry nothing else) and reaches the
+    /// management server only for the DEAD state.
+    @Test
+    void sliceFloorRefusal_isClosedFromTheTransitionListener_forTheDeadStateOnly() {
+        var code = assemblyCode();
+
+        assertThat(code).contains("closeSliceFloorRefusalOnDeath(managementServerRef,record);");
+        assertThat(code).contains("if(\"Dead\".equals(record.toState())){managementServerRef.get().onPresent(server->server.onMemberDeparted(record.nodeId()));}");
+    }
+
     /// `AetherNode.java` with line comments removed and all whitespace stripped. An unreadable file fails loudly,
     /// because a pin that scans nothing always passes.
     static String assemblyCode() {

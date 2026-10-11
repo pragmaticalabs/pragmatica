@@ -54,6 +54,8 @@ _resolve_live_endpoint() { echo http://pinned; }
 API_KEY=k
 remote_exec() { echo "remote_exec $1" >> "$CALLS"; }
 STUB
+# the REAL deadline_in (the S05 hold reads it from lib/common.sh), not a stand-in
+sed -n "/^deadline_in() {/,/^}/p" "${SCRIPT_DIR}/../lib/common.sh" >> "$WORK/lib/common.sh"
 cat > "$WORK/lib/cluster.sh" <<'STUB'
 cluster_active_core_count() { echo 5; }
 cluster_leader() { echo node-1; }

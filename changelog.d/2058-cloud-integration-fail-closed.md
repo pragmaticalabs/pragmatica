@@ -1,0 +1,9 @@
+### Fixed (2026-10-08 — #2058: a `[cloud]` section whose integration cannot be created no longer boots the node without it)
+- **A node whose config has a `[cloud]` section now REFUSES to start when that section's integration cannot be created.** `Main#resolveEnvironment` used to log
+  `Failed to create cloud environment` and continue with no integration, so the leader could not provision, replace or scale until the first incident. Now: exit code **69**
+  (`EX_UNAVAILABLE`; 65 is the refused config file, 78 the refused identity) and a `FATAL: refusing to start: the [cloud] section names provider '<p>' but its integration could
+  not be created: <cause>. The provider's [cloud.credentials] TOML keys must provide: <keys>` line on stderr and in the log. No `[cloud]` section is unchanged; a `docker` section is refused only when its provider rejects a `[backup] path` outside `/data` (TOML or `AETHER_BACKUP_PATH`), which is a new docker refusal.
+- **WARNING for operators of aws, gcp and azure sources, and of a hetzner source without `credentials`:** their nodes already had no working integration (the bootstrap overlay
+  rendered only `api_token` until #2059, while the aws, gcp and azure factories require `access_key_id`/`secret_access_key`/`region`, `project_id`/`service_account_email`/`private_key_pem`/`zone`
+  and `tenant_id`/`client_id`/`client_secret`/`subscription_id`/`resource_group`/`location`), and booted regardless. They now stop at boot. Since #2059 the overlay renders them from the source and the bootstrap validate phase names a missing one; a source stored before that fix needs them under `[source.<name>.node_config.cloud.credentials]`. Supervisors must not restart on 69 unchanged (`node-operations.md#exit-codes`).
+  `[verified: MainCloudIntegrationBootTest (child JVM; the two refusal tests go red when the refusal is replaced by the old log-and-continue)]`

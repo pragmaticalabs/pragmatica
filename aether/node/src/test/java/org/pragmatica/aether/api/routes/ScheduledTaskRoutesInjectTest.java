@@ -95,6 +95,156 @@ class ScheduledTaskRoutesInjectTest {
                                                        devMode);
     }
 
+    private ScheduledTaskRoutes routesWith(RecordingInvoker withInvoker) {
+        return ScheduledTaskRoutes.scheduledTaskRoutes(registry,
+                                                       stubManager(),
+                                                       () -> node.asManageableNode(),
+                                                       withInvoker.asSliceInvoker(),
+                                                       stateRegistry,
+                                                       () -> true);
+    }
+
+    /// #1723: /inject is judged by the callee's COMPLETION, not by the request being enqueued. The invoker models a remote
+    /// callee faithfully: the fire-and-forget `invoke` resolves at once while the completion fails. The route must answer a
+    /// failure and record no success, and a completion that never arrived (outcome unknown) must be recorded as such, not as
+    /// a failure and not as an execution.
+    @Nested
+    class CompletionOutcome {
+        @Test
+        void inject_calleeFailsAfterTheRequestWasAccepted_isAFailure_andRecordsNoSuccess() {
+            registry.addTask(SECTION, ARTIFACT, METHOD);
+            var remoteLike = new RecordingInvoker();
+
+            remoteLike.failure = org.pragmatica.lang.utils.Causes.cause("callee failed");
+            var result = invokeInject(routesWith(remoteLike), new ScheduledTaskInjectRequest(SECTION, ARTIFACT, METHOD)).await();
+
+            assertTrue(result.isFailure(), () -> "a fire whose callee failed must not read as executed: " + result);
+            assertTrue(node.commands.stream()
+                                    .flatMap(List::stream)
+                                    .noneMatch(command -> String.valueOf(command).contains("totalExecutions=1")),
+                       () -> "no success state may be written: " + node.commands);
+        }
+
+        @Test
+        void inject_unknownOutcome_isRecordedAsUnknown_notAsAFailureAndNotAsAnExecution() {
+            registry.addTask(SECTION, ARTIFACT, METHOD);
+            var remoteLike = new RecordingInvoker();
+
+            remoteLike.failure = org.pragmatica.aether.invoke.SliceInvokerError.CompletionUnknown.completionUnknown(Artifact.artifact(ARTIFACT).unwrap(), MethodName.methodName(METHOD).unwrap(), org.pragmatica.lang.utils.Causes.cause("timed out"));
+            var result = invokeInject(routesWith(remoteLike), new ScheduledTaskInjectRequest(SECTION, ARTIFACT, METHOD)).await();
+
+            assertTrue(result.isFailure(), "the caller is told the fire did not complete");
+            var written = node.commands.stream()
+                                       .flatMap(List::stream)
+                                       .filter(command -> command instanceof KVCommand.Put<?, ?> put && put.value() instanceof ScheduledTaskStateValue)
+                                       .map(command -> (ScheduledTaskStateValue) ((KVCommand.Put<?, ?>) command).value())
+                                       .toList();
+
+            assertEquals(1, written.size(), "one state write");
+            assertEquals(ScheduledTaskStateValue.OUTCOME_UNKNOWN, written.getFirst().lastOutcome());
+            assertEquals(0, written.getFirst().consecutiveFailures(), "unknown is not a failure");
+            assertEquals(0, written.getFirst().totalExecutions(), "unknown is not an execution");
+            assertEquals(1, written.getFirst().completionTimeouts());
+        }
+
+        /// The failure half of the same rule: a callee that answered with a failure is recorded as a FAILURE (the streak
+        /// moves), never as UNKNOWN. Without this, recording every failed /inject as unknown would pass every test here.
+        @Test
+        void inject_calleeFails_isRecordedAsAFailure_notAsUnknown() {
+            registry.addTask(SECTION, ARTIFACT, METHOD);
+            var remoteLike = new RecordingInvoker();
+
+            remoteLike.failure = org.pragmatica.lang.utils.Causes.cause("callee failed");
+            invokeInject(routesWith(remoteLike), new ScheduledTaskInjectRequest(SECTION, ARTIFACT, METHOD)).await();
+            var written = node.commands.stream()
+                                       .flatMap(List::stream)
+                                       .filter(command -> command instanceof KVCommand.Put<?, ?> put && put.value() instanceof ScheduledTaskStateValue)
+                                       .map(command -> (ScheduledTaskStateValue) ((KVCommand.Put<?, ?>) command).value())
+                                       .toList();
+
+            assertEquals(1, written.size(), "one state write");
+            assertEquals(ScheduledTaskStateValue.OUTCOME_FAILURE, written.getFirst().lastOutcome());
+            assertEquals(1, written.getFirst().consecutiveFailures(), "a failure moves the streak");
+            assertEquals(0, written.getFirst().completionTimeouts(), "a failure is not a timeout");
+            assertEquals("callee failed", written.getFirst().lastFailureMessage());
+        }
+
+        /// #1723 (owner ruling N1): the callee's response arrives after the injected fire was recorded UNKNOWN. It is the
+        /// fire's real outcome and is written over the row: an execution, no longer counted as unknown.
+        @Test
+        void inject_lateSuccessResponse_resolvesTheUnknownFire_intoAnExecution() {
+            var lateOutcome = injectWithUnknownOutcome();
+
+            lateOutcome.succeed(Unit.unit());
+            var written = awaitWrittenStates(2);
+
+            assertEquals(2, written.size(), "the unknown write, then the resolution");
+            assertEquals(ScheduledTaskStateValue.OUTCOME_SUCCESS, written.getLast().lastOutcome());
+            assertEquals(1, written.getLast().totalExecutions(), "the late answer makes the fire an execution");
+            assertEquals(1, written.getLast().lateResolutions(), "a late answer is counted");
+        }
+
+        @Test
+        void inject_lateFailureResponse_resolvesTheUnknownFire_intoAFailure() {
+            var lateOutcome = injectWithUnknownOutcome();
+
+            lateOutcome.fail(org.pragmatica.lang.utils.Causes.cause("callee failed late"));
+            var written = awaitWrittenStates(2);
+
+            assertEquals(2, written.size(), "the unknown write, then the resolution");
+            assertEquals(ScheduledTaskStateValue.OUTCOME_FAILURE, written.getLast().lastOutcome());
+            assertEquals(1, written.getLast().consecutiveFailures(), "the late answer makes the fire a failure");
+            assertEquals("callee failed late", written.getLast().lastFailureMessage());
+            assertEquals(1, written.getLast().lateResolutions());
+        }
+
+        /// Injects a fire that times out, commits the UNKNOWN row it wrote (as the KV store would), and returns the
+        /// fire's late outcome for the test to settle.
+        private Promise<Unit> injectWithUnknownOutcome() {
+            registry.addTask(SECTION, ARTIFACT, METHOD);
+            var remoteLike = new RecordingInvoker();
+            var lateOutcome = Promise.<Unit> promise();
+
+            remoteLike.failure = org.pragmatica.aether.invoke.SliceInvokerError.CompletionUnknown.completionUnknown(Artifact.artifact(ARTIFACT).unwrap(), MethodName.methodName(METHOD).unwrap(), org.pragmatica.lang.utils.Causes.cause("timed out"), lateOutcome);
+            invokeInject(routesWith(remoteLike), new ScheduledTaskInjectRequest(SECTION, ARTIFACT, METHOD)).await();
+            var unknown = writtenStates();
+
+            assertEquals(1, unknown.size(), "premise: one state write");
+            assertEquals(ScheduledTaskStateValue.OUTCOME_UNKNOWN, unknown.getFirst().lastOutcome(), "premise");
+            node.commands.stream()
+                         .flatMap(List::stream)
+                         .filter(command -> command instanceof KVCommand.Put<?, ?> put && put.value() instanceof ScheduledTaskStateValue)
+                         .forEach(command -> stateRegistry.put((ScheduledTaskStateKey) ((KVCommand.Put<?, ?>) command).key(),
+                                                               (ScheduledTaskStateValue) ((KVCommand.Put<?, ?>) command).value()));
+
+            return lateOutcome;
+        }
+
+        /// The late outcome is applied on the promise's own thread: wait for the write, bounded.
+        private List<ScheduledTaskStateValue> awaitWrittenStates(int count) {
+            var deadline = System.currentTimeMillis() + 3_000L;
+
+            while (writtenStates().size() < count && System.currentTimeMillis() < deadline) {
+                try {
+                    Thread.sleep(20);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    break;
+                }
+            }
+
+            return writtenStates();
+        }
+
+        private List<ScheduledTaskStateValue> writtenStates() {
+            return node.commands.stream()
+                                .flatMap(List::stream)
+                                .filter(command -> command instanceof KVCommand.Put<?, ?> put && put.value() instanceof ScheduledTaskStateValue)
+                                .map(command -> (ScheduledTaskStateValue) ((KVCommand.Put<?, ?>) command).value())
+                                .toList();
+        }
+    }
+
     @Nested
     class DevModeGate {
 
@@ -505,7 +655,16 @@ class ScheduledTaskRoutesInjectTest {
                 SliceInvoker.class.getClassLoader(),
                 new Class[]{SliceInvoker.class},
                 (_, method, args) -> {
+                    // #1723: models a REMOTE callee faithfully. The fire-and-forget `invoke` resolves at once (the request
+                    // was handed to the transport) whatever the callee does; only the completion-aware call reports the
+                    // callee's outcome (`failure`). A route that judged the fire by `invoke` would read every fire as a success.
                     if ("invoke".equals(method.getName()) && args != null && args.length == 3) {
+                        var slice = (Artifact) args[0];
+                        var methodName = (MethodName) args[1];
+                        invocations.add(new Invocation(slice.asString(), methodName.name()));
+                        return Promise.success(Unit.unit());
+                    }
+                    if ("invokeAwaitingCompletion".equals(method.getName()) && args != null && args.length == 3) {
                         var slice = (Artifact) args[0];
                         var methodName = (MethodName) args[1];
                         invocations.add(new Invocation(slice.asString(), methodName.name()));

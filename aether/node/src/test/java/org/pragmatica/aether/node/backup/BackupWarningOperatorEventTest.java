@@ -41,6 +41,26 @@ class BackupWarningOperatorEventTest {
         assertRaisedAlone(Code.BACKUP_FORKED, OperatorWarningCode.BACKUP_FORKED);
     }
 
+    /// #1968: a leader without `[backup]` over a committed backup is an operator event, and so is its recovery (INFO, paired).
+    @Test
+    void aLeaderWithoutBackup_isRaisedAsAnOperatorWarning() {
+        assertRaisedAlone(Code.BACKUP_CONFIG_MISSING, OperatorWarningCode.BACKUP_CONFIG_MISSING);
+    }
+
+    @Test
+    void theMissingBackupRecovery_isRaisedAsAnInfoOperatorWarning_pairedWithTheWarning() {
+        assertRaisedAlone(Code.BACKUP_CONFIG_RESTORED, OperatorWarningCode.BACKUP_CONFIG_RESTORED);
+        assertThat(OperatorWarningCode.BACKUP_CONFIG_RESTORED.level()).isEqualTo(org.pragmatica.utility.warning.WarningLevel.INFO);
+        assertThat(OperatorWarningCode.BACKUP_CONFIG_RESTORED.recoveryOf().unwrap()).isEqualTo(OperatorWarningCode.BACKUP_CONFIG_MISSING);
+    }
+
+    @Test
+    void theBlockedRestoreRecovery_isRaisedAsAnInfoOperatorWarning_pairedWithTheWarning() {
+        assertRaisedAlone(Code.BACKUP_RESTORE_UNBLOCKED, OperatorWarningCode.BACKUP_RESTORE_UNBLOCKED);
+        assertThat(OperatorWarningCode.BACKUP_RESTORE_UNBLOCKED.level()).isEqualTo(org.pragmatica.utility.warning.WarningLevel.INFO);
+        assertThat(OperatorWarningCode.BACKUP_RESTORE_UNBLOCKED.recoveryOf().unwrap()).isEqualTo(OperatorWarningCode.BACKUP_RESTORE_BLOCKED);
+    }
+
     private void assertRaisedAlone(Code code, OperatorWarningCode expected) {
         sink.emit(BackupWarning.backupWarning(Code.BACKUP_GATED, "not an event"));
         sink.emit(BackupWarning.backupWarning(code, "detail for " + code));

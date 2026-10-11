@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.slice.kvstore;
 
 import org.pragmatica.aether.artifact.Artifact;
@@ -426,21 +425,9 @@ public sealed interface AetherKey extends StructuredKey permits AetherKey.Cluste
         }
 
         private static String normalizePrefix(String path) {
-            if (!Verify.Is.present(path)) {
-                return "/";
-            }
-
-            var normalized = path.strip();
-
-            if (!normalized.startsWith("/")) {
-                normalized = "/" + normalized;
-            }
-
-            if (!normalized.endsWith("/")) {
-                normalized = normalized + "/";
-            }
-
-            return normalized;
+            return Verify.Is.present(path)
+                   ? org.pragmatica.aether.http.handler.RouteIdentity.normalizePrefix(path)
+                   : "/";
         }
     }
 
@@ -1210,6 +1197,43 @@ public sealed interface AetherKey extends StructuredKey permits AetherKey.Cluste
         @Override
         public String asString() {
             return "capacity-reservation/" + nodeId.id();
+        }
+    }
+
+    /// #2062: the admission marker of a node's EXTERNAL capacity reservation (see `AetherValue.CapacityAdmissionValue`). Runtime state.
+    record CapacityAdmissionKey(NodeId nodeId) implements RuntimeKey {
+        @Override
+        public String asString() {
+            return "capacity-admission/" + nodeId.id();
+        }
+    }
+
+    /// #1543: the pairing of a node being replaced (`original`) with the fresh-id node replacing it. Runtime
+    /// state: an in-flight replacement names nodes a restored cluster no longer has.
+    record NodeReplacementKey(NodeId original) implements RuntimeKey {
+        @Override
+        public String asString() {
+            return "node-replacement/" + original.id();
+        }
+    }
+
+    /// #2062: a retired node whose instance the CTM could not confirm terminated at the provider. Runtime state: it names nodes a restored cluster
+    /// no longer has. Written by the active topology manager when it marks the node and removed when the termination is confirmed, so a new leader
+    /// inherits every open "unconfirmed" and can close it.
+    record UnconfirmedTerminationKey(NodeId nodeId) implements RuntimeKey {
+        @Override
+        public String asString() {
+            return "unconfirmed-termination/" + nodeId.id();
+        }
+    }
+
+    /// #1543 part F: the one rolling-upgrade run of the cluster. Runtime state: a run names nodes a restored cluster no longer has.
+    record UpgradeRunKey() implements RuntimeKey {
+        public static final UpgradeRunKey INSTANCE = new UpgradeRunKey();
+
+        @Override
+        public String asString() {
+            return "upgrade-run/current";
         }
     }
 

@@ -86,4 +86,17 @@
          `aether-invoke`, `aether-storage`, `ember` and `pg-codegen` depend on it at compile scope, so an inherited
          skipPublishing here left every one of them unresolvable from Central. tools/check-publish-closure.py
          refuses an unclosed published set. -->
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.sonatype.central</groupId>
+                <artifactId>central-publishing-maven-plugin</artifactId>
+                <inherited>false</inherited>
+                <configuration>
+                    <skipPublishing>false</skipPublishing>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
 </project>

@@ -85,6 +85,9 @@ class TerminatedWorkerGhostTest {
         Option.option(cluster).onPresent(c -> LifecycleAwait.bestEffort("cluster stop in tearDown()", c, c.stop()));
     }
 
+    /// #1717 (was a known red): a hard-killed worker used to stay `Suspect` in the leader's membership FSM forever. With the
+    /// worker death rule (either plane arms the backstop; evidence newer than the signal vetoes) it is declared dead at the
+    /// kill plus `splitTimeout`, and every roster forgets it.
     @Test
     void hardKilledWorker_leavesEveryStatusRoster_onceMembershipDeclaresItDead() {
         var workerId = LifecycleAwait.nodeSettled("addWorkerNode in hardKilledWorker_leavesEveryStatusRoster_onceMembershipDeclaresItDead()",

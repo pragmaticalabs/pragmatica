@@ -40,7 +40,7 @@ public final class AbTestRoutes implements RouteSource {
 
     private static final Cause MISSING_VARIANTS = new ManagementServerError.InvalidRequest("Missing or empty variants");
 
-    private static final Cause TEST_NOT_FOUND = Causes.cause("A/B test not found");
+    private static final Cause TEST_NOT_FOUND = new ManagementServerError.NotFound("A/B test not found");
 
     private final Supplier<ManageableNode> nodeSupplier;
 
