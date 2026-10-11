@@ -58,6 +58,23 @@ class KVStoreCommittedNotificationTest {
     }
 
     @Test
+    void subscriberOnFirstCommandOfBatchSeesEveryLaterCommandOfThatBatch() {
+        var seenFromFirst = new ArrayList<String>();
+        router.addRoute(KVStoreNotification.ValuePut.class, (KVStoreNotification.ValuePut<Key, String> put) -> {
+            if (put.cause().key().equals(FIRST)) {
+                seenFromFirst.add(store.get(SECOND).fold(() -> "absent", v -> v));
+                seenFromFirst.add(store.get(REENTRANT).fold(() -> "absent", v -> v));
+            }
+        });
+
+        store.processCommitted(store.createBatch(List.of(new KVCommand.Put<>(FIRST, "one"),
+                                                        new KVCommand.Put<>(SECOND, "two"),
+                                                        new KVCommand.Put<>(REENTRANT, "three"))), 17);
+
+        assertThat(seenFromFirst).as("first command's subscriber must read the whole batch").containsExactly("two", "three");
+    }
+
+    @Test
     void reentrantCommitQueuesBehindWholeEarlierBatch() {
         var delivered = new ArrayList<Key>();
         router.addRoute(KVStoreNotification.ValuePut.class, (KVStoreNotification.ValuePut<Key, String> put) -> {
