@@ -4,6 +4,7 @@
 package org.pragmatica.aether.environment;
 
 import java.util.List;
+import java.util.Map;
 import java.util.stream.IntStream;
 
 import org.pragmatica.lang.Option;
@@ -19,11 +20,14 @@ public final class CloudProviderSupport {
     private CloudProviderSupport() {}
 
     public static Promise<List<ProvisionedNode>> provisionVia(ComputeProvider compute, NodeGroupConfig group) {
-        var provisions = IntStream.range(0, group.count()).mapToObj(i -> provisionSingle(compute, group, i)).toList();
+        var provisions = IntStream.range(0, group.count()).mapToObj(_ -> provisionSingle(compute, group)).toList();
 
         return Promise.allOf(provisions).flatMap(CloudProviderSupport::aggregateResults);
     }
 
+    /// The returned node is keyed by `nodeId`, the caller's own attribution key (the bootstrap's `<source>-<role>-<index>` label, parsed back by deploy,
+    /// post and the cleanup ledger). It is NOT the provider-side identity: that is the id the caller put in `spec.context()`, which the provider
+    /// uses (#1027). [#provisionVia] has no such key and records the planned id itself.
     public static Promise<ProvisionedNode> provisionOne(ComputeProvider compute, String nodeId, ProvisionSpec spec) {
         return compute.provision(spec)
                       .map(info -> toProvisionedNode(nodeId, info));
@@ -72,31 +76,36 @@ public final class CloudProviderSupport {
                : Option.none();
     }
 
-    private static Promise<ProvisionedNode> provisionSingle(ComputeProvider compute, NodeGroupConfig group, int index) {
-        var nodeId = group.sourceName().value() + "-" + group.role() + "-" + index;
+    private static Promise<ProvisionedNode> provisionSingle(ComputeProvider compute, NodeGroupConfig group) {
+        var clusterName = ClusterName.maybeClusterName(group.tags().get("aether-cluster"));
+        var nodeId = ProvisionContext.mintNodeId(clusterName);
 
-        return buildProvisionSpec(group).async()
+        return buildProvisionSpec(group, nodeId).async()
                                  .flatMap(compute::provision)
                                  .map(info -> toProvisionedNode(nodeId, info));
     }
 
-    static Result<ProvisionSpec> buildProvisionSpec(NodeGroupConfig group) {
+    static Result<ProvisionSpec> buildProvisionSpec(NodeGroupConfig group, String nodeId) {
         var spec = ProvisionSpec.provisionSpec(InstanceType.ON_DEMAND,
                                                group.instanceType(),
                                                group.role(),
-                                               toContext(group));
+                                               toContext(group, nodeId));
 
         return spec.map(s -> withZonePlacement(s, group.zone()));
     }
 
-    private static ProvisionContext toContext(NodeGroupConfig group) {
+    private static ProvisionContext toContext(NodeGroupConfig group, String nodeId) {
         var tags = group.tags();
         var clusterName = ClusterName.maybeClusterName(tags.get("aether-cluster"));
 
         return ProvisionContext.provisionContext(clusterName,
                                                  group.role(),
                                                  group.sourceName(),
-                                                 ProvisionContext.PROVISIONED_BY_BOOTSTRAP);
+                                                 Option.some(nodeId),
+                                                 Option.empty(),
+                                                 ProvisionContext.DEFAULT_CORE_MAX,
+                                                 ProvisionContext.PROVISIONED_BY_BOOTSTRAP,
+                                                 Map.of());
     }
 
     private static ProvisionSpec withZonePlacement(ProvisionSpec spec, String zone) {

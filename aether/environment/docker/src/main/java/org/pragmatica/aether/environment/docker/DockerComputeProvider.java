@@ -285,6 +285,8 @@ public record DockerComputeProvider(DockerCommandRunner runner, DockerConfig con
                                               "--label",
                                               "aether.node-id=" + nodeId,
                                               "--label",
+                                              "aether.source=" + ctx.sourceName().value(),
+                                              "--label",
                                               "aether.provisioned-by=ctm",
                                               "-e",
                                               "NODE_ID=" + nodeId,
