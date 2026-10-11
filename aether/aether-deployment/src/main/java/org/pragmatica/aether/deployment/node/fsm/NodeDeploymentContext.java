@@ -65,6 +65,13 @@ public final class NodeDeploymentContext {
 
     /// #1109 H4: starts parked for want of a committed target, from the first refusal until the park resolves. Held here, not in
     /// the `Active` state, because `Active` is rebuilt on every quorum cycle and the bounded park is measured across them.
+    /// #1117: the stream-ref ACQUIRE commands of each slice's CURRENT activation attempt, built once from the applied
+    /// mirror and then reused verbatim by every write of that attempt (the chain's own and the stuck-timer re-drive).
+    /// `acquireCommand` is an absolute Put (refCount = mirror + 1), so a re-drive that rebuilt it from a mirror the
+    /// original had meanwhile advanced would write +2; reusing the attempt's commands makes the late original and the
+    /// re-drive carry the SAME Put, whichever lands first.
+    private final ConcurrentHashMap<SliceNodeKey, List<KVCommand<AetherKey>>> acquireCommandsByAttempt = new ConcurrentHashMap<>();
+
     private final java.util.concurrent.ConcurrentMap<SliceNodeKey, ParkedStart> parkedStarts = new java.util.concurrent.ConcurrentHashMap<>();
 
     private final LongSupplier clock;
@@ -414,5 +421,17 @@ public final class NodeDeploymentContext {
 
     public Supplier<Option<Epoch>> currentEpochSupplier() {
         return currentEpochSupplier;
+    }
+
+    /// The ACQUIRE commands of `sliceKey`'s current activation attempt; `build` runs only for the first caller of the attempt.
+    public List<KVCommand<AetherKey>> acquireCommandsOfAttempt(SliceNodeKey sliceKey,
+                                                               Supplier<List<KVCommand<AetherKey>>> build) {
+        return acquireCommandsByAttempt.computeIfAbsent(sliceKey, _ -> build.get());
+    }
+
+    /// Ends the attempt's reuse: called when a new activation attempt starts and when the slice is observed ACTIVE or gone.
+    @Contract
+    public void endActivationAttempt(SliceNodeKey sliceKey) {
+        acquireCommandsByAttempt.remove(sliceKey);
     }
 }

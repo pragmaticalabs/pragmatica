@@ -36,6 +36,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.BlueprintStreamBindingsVa
 import org.pragmatica.aether.slice.kvstore.AetherValue.BlueprintStreamBindingsValue.NamedAddress;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeArtifactValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.StreamRegistryValue;
 import org.pragmatica.aether.slice.resource.ResourceAddress;
 import org.pragmatica.cluster.node.ClusterNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
@@ -307,6 +308,65 @@ class NodeDeploymentStateStuckReconcileTest {
         }
 
         assertThat(local.state()).as("the committed %s is adopted into the local view", beyond).isEqualTo(beyond);
+    }
+
+    /// The late-original hazard: the chain's own write (built from the mirror at the time) lands AFTER the timer's
+    /// re-drive, or its stream-ref Put is already in the mirror when the re-drive is built. `acquireCommand` is an
+    /// absolute Put (refCount = mirror + 1); a re-drive rebuilt from the advanced mirror would write 2 for the one
+    /// instance. Both writes of one activation attempt must carry the SAME Put.
+    @Test
+    void theRedriveCarriesTheSameStreamRefPutAsTheOriginalWrite_evenWhenTheOriginalsPutIsAlreadyInTheMirror() {
+        commit(SliceState.ROUTING);
+        var key = seed(SliceState.ROUTING);
+
+        activeState().remediateStuckRouting(key);
+        var original = streamRefPuts(cluster.batches.getFirst());
+
+        assertThat(original).as("precondition: the re-drive carries one stream-ref Put").hasSize(1);
+        assertThat(refCount(original.getFirst())).as("one instance, one reference").isEqualTo(1);
+        // the original's Put lands in the mirror before the second timer fire builds its batch
+        applyToKv(original.getFirst());
+        seed(SliceState.ROUTING);
+        commit(SliceState.ROUTING);
+        cluster.batches.clear();
+
+        activeState().remediateStuckRouting(key);
+
+        var second = streamRefPuts(cluster.batches.getFirst());
+
+        assertThat(second).hasSize(1);
+        assertThat(refCount(second.getFirst()))
+                .as("rebuilt from the advanced mirror this would be 2: the instance would hold two references and never release")
+                .isEqualTo(1);
+    }
+
+    @Test
+    void aNewActivationAttemptBuildsItsStreamRefPutAgainFromTheMirror() {
+        commit(SliceState.ROUTING);
+        var key = seed(SliceState.ROUTING);
+
+        activeState().remediateStuckRouting(key);
+        applyToKv(streamRefPuts(cluster.batches.getFirst()).getFirst());
+        // the node observes its slice ACTIVE (the attempt ends), the slice later restarts and re-drives a fresh attempt
+        commit(SliceState.ACTIVE);
+        activeState().remediateStuckRouting(seed(SliceState.ROUTING));
+        commit(SliceState.ROUTING);
+        seed(SliceState.ROUTING);
+        cluster.batches.clear();
+
+        activeState().remediateStuckRouting(key);
+
+        assertThat(refCount(streamRefPuts(cluster.batches.getFirst()).getFirst()))
+                .as("a new attempt reads the mirror afresh: the earlier attempt's reference is already counted, this is the second")
+                .isEqualTo(2);
+    }
+
+    private static List<KVCommand<AetherKey>> streamRefPuts(List<KVCommand<AetherKey>> batch) {
+        return batch.stream().filter(command -> command.key() instanceof StreamRegistryKey).toList();
+    }
+
+    private static int refCount(KVCommand<AetherKey> command) {
+        return ((StreamRegistryValue) ((KVCommand.Put<AetherKey, ?>) command).value()).entry().refCount();
     }
 
     private SliceNodeKey servingSeed(SliceState state) {
