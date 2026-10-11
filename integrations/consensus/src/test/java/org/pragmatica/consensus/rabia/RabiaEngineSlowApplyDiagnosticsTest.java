@@ -80,19 +80,22 @@ class RabiaEngineSlowApplyDiagnosticsTest {
         engine.safeExecuteForTesting(() -> blockedInTheCallUnderTest(entered, release));
         assertThat(entered.await(5, TimeUnit.SECONDS)).isTrue();
 
-        var report = engine.slowTaskCheckForTesting(System.nanoTime() + timeSpan(2).seconds().nanos());
+        try {
+            var report = engine.slowTaskCheckForTesting(System.nanoTime() + timeSpan(2).seconds().nanos());
 
-        assertThat(report.isPresent())
-            .as("a task that has held the worker for 2 s must be reported while it is still running")
-            .isTrue();
-        assertThat(report.unwrap())
-            .as("the report must name the call the worker is blocked in, not only how long it has been blocked")
-            .contains("blockedInTheCallUnderTest");
-        assertThat(engine.slowTaskCheckForTesting(System.nanoTime() + timeSpan(3).seconds().nanos()).isPresent())
-            .as("one task is reported once, however long it keeps running")
-            .isFalse();
+            assertThat(report.isPresent())
+                .as("a task that has held the worker for 2 s must be reported while it is still running")
+                .isTrue();
+            assertThat(report.unwrap())
+                .as("the report must name the call the worker is blocked in, not only how long it has been blocked")
+                .contains("blockedInTheCallUnderTest");
+            assertThat(engine.slowTaskCheckForTesting(System.nanoTime() + timeSpan(3).seconds().nanos()).isPresent())
+                .as("one task is reported once, however long it keeps running")
+                .isFalse();
+        } finally {
+            release.countDown();
+        }
 
-        release.countDown();
         awaitIdle();
 
         assertThat(engine.slowTaskCheckForTesting(System.nanoTime() + timeSpan(10).seconds().nanos()).isPresent())
