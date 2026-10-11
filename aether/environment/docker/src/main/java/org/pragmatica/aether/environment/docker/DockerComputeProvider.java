@@ -54,6 +54,17 @@ public record DockerComputeProvider(DockerCommandRunner runner, DockerConfig con
         return success(new DockerComputeProvider(runner, config, hostEnv));
     }
 
+    /// Makes sure the configured network exists before any container is started on it (#2131), creating it labelled with `clusterName` when absent.
+    public Promise<DockerNetwork.Ensured> ensureNetwork(String clusterName) {
+        return DockerNetwork.ensure(runner, config.networkName(), clusterName);
+    }
+
+    /// Removes the network named `networkName` (the one the LEDGER recorded, which can differ from the configured one today) if it carries
+    /// `clusterName`'s label and is empty; see [DockerNetwork#removeIfOwnedAndEmpty].
+    public Promise<DockerNetwork.Removal> removeNetworkIfOwnedAndEmpty(String networkName, String clusterName) {
+        return DockerNetwork.removeIfOwnedAndEmpty(runner, networkName, clusterName);
+    }
+
     @Override
     public Promise<InstanceInfo> provision(InstanceType instanceType) {
         var ctx = ProvisionContext.provisionContext(ClusterName.maybeClusterName("default"),
