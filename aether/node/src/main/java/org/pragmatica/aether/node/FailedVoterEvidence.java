@@ -56,7 +56,8 @@ final class FailedVoterEvidence {
                                .filter(entry -> !NodeReplacementWiring.alive(Option.some(entry.getValue())))
                                .map(Map.Entry::getKey);
 
-        return Stream.concat(observedNotReady.stream(), gone)
+        return Stream.concat(observedNotReady.stream(),
+                             gone)
                      .collect(Collectors.toUnmodifiableSet());
     }
 }
