@@ -832,7 +832,7 @@ class ClusterDeploymentStateActiveTest {
         }
     }
 
-    /// #1109 H1: the leader writes the blueprint mirror and only QUEUES the target put, then `reconcile()` allocates
+    /// #1109 H1 (fixed): the leader writes the blueprint mirror and only QUEUES the target put, then `reconcile()` allocates
     /// from the mirror. The recording cluster double never applies, so the target put stays pending exactly as it
     /// does while another batch outranks it in the slot ordering.
     @Nested
@@ -840,26 +840,6 @@ class ClusterDeploymentStateActiveTest {
         private static final BlueprintId OWNER = BlueprintId.blueprintId("org.example:orders-app:1.0.0").unwrap();
         private static final SliceTargetKey TARGET_KEY = SliceTargetKey.sliceTargetKey(ARTIFACT.base());
 
-        /// TRIPWIRE: asserts the CURRENT behaviour at the rc4 tip (#1109 H1 is real). When the leader gates LOAD on
-        /// the committed target (Stage 1 (d)) this goes red: delete it and enable
-        /// [#reconcileWhileTargetPutIsPending_issuesNoLoad_thenExactlyOneLoadOnceItApplies] beside it.
-        @Test
-        void tripwire_reconcileWhileTargetPutIsPending_currentlyIssuesLoadFromTheMirror() {
-            var queuedTarget = queueBlueprintLeavingTargetPending();
-
-            assertThat(loadPuts()).as("control: handling the blueprint put itself issues no LOAD").isEmpty();
-
-            activeState().reconcile();
-
-            assertThat(loadPuts())
-                    .as("H1 at the tip: reconcile() allocates from the mirror and issues LOAD before the target put applied."
-                        + " If this fails the leader now gates LOAD on the committed target: enable the @Disabled test beside it")
-                    .hasSize(1);
-            assertThat(kvStore.get(TARGET_KEY).isPresent()).as("the target is still not in the applied store").isFalse();
-            assertThat(queuedTarget).hasSize(1);
-        }
-
-        @org.junit.jupiter.api.Disabled("#1109 H1: enable when the leader gates LOAD on the committed target (Stage 1 (d)); delete the tripwire beside it")
         @Test
         void reconcileWhileTargetPutIsPending_issuesNoLoad_thenExactlyOneLoadOnceItApplies() {
             var queuedTarget = queueBlueprintLeavingTargetPending();

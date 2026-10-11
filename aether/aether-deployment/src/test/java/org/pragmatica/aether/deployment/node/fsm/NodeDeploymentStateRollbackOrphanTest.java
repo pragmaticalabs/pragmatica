@@ -13,7 +13,9 @@ import org.pragmatica.aether.artifact.Version;
 import org.pragmatica.aether.deployment.node.fsm.NodeDeploymentEvents.NodeArtifactPutReceived;
 import org.pragmatica.aether.deployment.node.fsm.NodeDeploymentEvents.SliceTargetPutReceived;
 import org.pragmatica.aether.deployment.node.fsm.NodeDeploymentEvents.VersionRoutingPutReceived;
-import org.pragmatica.aether.metrics.deployment.DeploymentEvent;
+import org.pragmatica.utility.warning.OperatorWarning;
+import org.pragmatica.utility.warning.OperatorWarningSink;
+import org.pragmatica.aether.slice.kvstore.AetherKey.SliceNodeKey;
 import org.pragmatica.aether.slice.MethodName;
 import org.pragmatica.aether.slice.Slice;
 import org.pragmatica.aether.slice.SliceActionConfig;
@@ -59,6 +61,7 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
 
@@ -94,6 +97,8 @@ class NodeDeploymentStateRollbackOrphanTest {
     private static final Duration SETTLE = Duration.ofSeconds(2);
 
     private MessageRouter.MutableRouter router;
+    private final AtomicReference<NodeDeploymentContext> ctxRef = new AtomicReference<>();
+    private final java.util.concurrent.atomic.AtomicLong clock = new java.util.concurrent.atomic.AtomicLong(10_000_000L);
     private KVStore<AetherKey, AetherValue> kvStore;
     private RecordingSliceStore sliceStore;
     private RecordingClusterNode cluster;
@@ -107,7 +112,7 @@ class NodeDeploymentStateRollbackOrphanTest {
         sliceStore = new RecordingSliceStore();
         cluster = new RecordingClusterNode(SELF);
         invocations = new RecordingInvocationHandler();
-        var ctxHolder = new AtomicReference<NodeDeploymentContext>();
+        var ctxHolder = ctxRef;
         Function<Fsm<NodeDeploymentState, ClusterFsmEvent>, NodeDeploymentState> factory =
                 fsm -> buildContext(fsm, ctxHolder, router, kvStore, cluster, sliceStore);
         harness = FsmTestHarness.harness("ndm-rollback-orphan-test-" + SELF.id(), factory);
@@ -459,64 +464,178 @@ class NodeDeploymentStateRollbackOrphanTest {
         }
     }
 
-    /// #1109 H4: a LOAD parked for a target that never arrives. `SliceState.LOAD` carries no timeout, so it is not
-    /// transitional and the leader's stuck-transitional sweep never sees it; the node's only signal is the single WARN
-    /// at parking time (`committedTargetPermits`). Nothing is written, no failure event is raised, nothing resolves it.
+    /// #1109 H4: a start parked for a target that does not arrive is operator-visible once the bound elapses on the node's clock.
+    /// `SliceState.LOAD` carries no timeout, so nothing else ever reports it. The park itself is untouched: it stays retry-able.
     @Nested
-    class ParkedStartNeverResolved {
-        private final List<Object> failures = Collections.synchronizedList(new ArrayList<>());
-        private final List<Object> completions = Collections.synchronizedList(new ArrayList<>());
-        private final List<Object> transitions = Collections.synchronizedList(new ArrayList<>());
+    class ParkedStartEscalates {
+        private final List<OperatorWarning> warnings = new CopyOnWriteArrayList<>();
+        private final SliceNodeKey parked = SliceNodeKey.sliceNodeKey(ARTIFACT, SELF);
+        private final String subject = ARTIFACT + "@" + SELF.id();
 
         @BeforeEach
-        void tap() {
-            router.addRoute(DeploymentEvent.DeploymentFailed.class, failures::add);
-            router.addRoute(DeploymentEvent.DeploymentCompleted.class, completions::add);
-            router.addRoute(DeploymentEvent.StateTransition.class, transitions::add);
+        void bindSink() {
+            ctxRef.get().setOperatorWarningSink(OperatorWarningSink.handingOffTo(warnings::add));
         }
 
-        private void parkLoadForATargetThatNeverArrives() {
+        private void park(SliceState state) {
             harness.dispatch(new QuorumEstablished());
-            dispatchNodeArtifactPut(SELF, ARTIFACT, SliceState.LOAD);
-            settle();
+            dispatchNodeArtifactPut(SELF, ARTIFACT, state);
+            assertThat(ctxRef.get().parkedStart(parked).isPresent()).as("control: the start is parked").isTrue();
         }
 
-        /// TRIPWIRE: asserts the CURRENT behaviour at the rc4 tip (H4 is real). It goes red when a parked start
-        /// escalates (WARN beyond parking, event, counter, or a timeout on LOAD): delete it and enable
-        /// [#parkedLoadWhoseTargetNeverArrives_escalates] beside it.
+        private void fire() {
+            ((NodeDeploymentState.Active) harness.state()).escalateParkedStart(parked);
+        }
+
+        private List<String> codes() {
+            return warnings.stream().map(w -> w.code().code()).toList();
+        }
+
+        private long bound() {
+            return ctxRef.get().parkedStartBound().millis();
+        }
+
         @Test
-        void tripwire_parkedLoadWhoseTargetNeverArrives_isSilentAfterParkingToday() {
-            parkLoadForATargetThatNeverArrives();
+        void beforeTheBound_silent_atTheBound_oneWarning_andNoRepeat() {
+            park(SliceState.LOAD);
 
-            var why = "#1109 H4 fixed: a parked LOAD now escalates. Delete this tripwire and enable parkedLoadWhoseTargetNeverArrives_escalates";
+            clock.addAndGet(bound() - 1);
+            fire();
+            settle();
+            assertThat(warnings).as("one millisecond short of the bound: silent").isEmpty();
 
-            assertThat(SliceState.LOAD.timeout().isPresent()).as(why + " (LOAD has a timeout)").isFalse();
-            assertThat(SliceState.LOAD.isTransitional()).as(why + " (LOAD is transitional)").isFalse();
-            assertThat(SliceState.ACTIVATE.timeout().isPresent()).as(why + " (ACTIVATE has a timeout)").isFalse();
-            assertThat(cluster.commands)
-                    .as(why + " (the node wrote a transition or removal for the parked slice)")
-                    .noneMatch(command -> command instanceof KVCommand.Put<AetherKey, ?> put
-                                          && put.key() instanceof NodeArtifactKey key && key.artifact().equals(ARTIFACT)
-                                          || command instanceof KVCommand.Remove<AetherKey> remove
-                                             && remove.key() instanceof NodeArtifactKey removedKey && removedKey.artifact().equals(ARTIFACT));
-            assertThat(failures).as(why + " (a DeploymentFailed event was raised)").isEmpty();
-            assertThat(completions).as(why + " (a DeploymentCompleted event was raised)").isEmpty();
-            assertThat(transitions).as(why + " (only the applied LOAD's own StateTransition is expected)").hasSize(1);
-            assertThat(sliceStore.loadRequests).as(why + " (the slice was loaded)").isEmpty();
+            clock.addAndGet(1);
+            fire();
+            await().atMost(SETTLE).untilAsserted(() -> assertThat(codes()).containsExactly("slice-start-awaiting-target"));
+            assertThat(warnings.getFirst().subject()).isEqualTo(subject);
 
-            // Control: the start is parked, not discarded, so the silence above is a parked LOAD and not a dropped one.
+            clock.addAndGet(bound());
+            fire();
+            settle();
+            assertThat(codes()).as("raised once per park, not per tick").hasSize(1);
+        }
+
+        @Test
+        void parkStaysRetryable_targetArrivingAfterTheWarning_loadsAndRaisesTheRecoveryOnce() {
+            park(SliceState.LOAD);
+            clock.addAndGet(bound());
+            fire();
+            await().atMost(SETTLE).untilAsserted(() -> assertThat(codes()).containsExactly("slice-start-awaiting-target"));
+            assertThat(sliceStore.loadRequests).as("the warning did not give up the start").isEmpty();
+
+            targetArrives(BASE, V1);
+
+            await().atMost(SETTLE).untilAsserted(() -> assertThat(sliceStore.loadRequests).containsExactly(ARTIFACT));
+            await().atMost(SETTLE).untilAsserted(() -> assertThat(codes()).containsExactly("slice-start-awaiting-target",
+                                                                                             "slice-start-deferral-ended"));
+            assertThat(warnings.get(1).subject()).isEqualTo(subject);
+        }
+
+        @Test
+        void targetArrivingBeforeTheBound_neverWarns_andRaisesNoRecovery() {
+            park(SliceState.LOAD);
             targetArrives(BASE, V1);
             await().atMost(SETTLE).untilAsserted(() -> assertThat(sliceStore.loadRequests).containsExactly(ARTIFACT));
+
+            clock.addAndGet(bound() * 2);
+            fire();
+            settle();
+
+            assertThat(warnings).as("resolved before the bound: no warning, and so no recovery").isEmpty();
         }
 
-        /// The issue's pin: "a dropped put fails loud". The mechanism (throttled WARN, event, counter, bounded park)
-        /// is the Stage 1 H4 decision; an operator-visible failure event stands in for it here.
-        @org.junit.jupiter.api.Disabled("#1109 H4: enable when a parked LOAD escalates; the event assertion stands in for the chosen mechanism")
         @Test
-        void parkedLoadWhoseTargetNeverArrives_escalates() {
-            parkLoadForATargetThatNeverArrives();
+        void unloadSupersedingAWarnedPark_raisesTheRecovery_andALaterFireIsSilent() {
+            park(SliceState.LOAD);
+            clock.addAndGet(bound());
+            fire();
+            await().atMost(SETTLE).untilAsserted(() -> assertThat(codes()).containsExactly("slice-start-awaiting-target"));
 
-            assertThat(failures).as("a LOAD parked for a target that never arrives must raise an operator-visible failure").isNotEmpty();
+            dispatchNodeArtifactPut(SELF, ARTIFACT, SliceState.UNLOAD);
+
+            await().atMost(SETTLE).untilAsserted(() -> assertThat(codes()).containsExactly("slice-start-awaiting-target",
+                                                                                             "slice-start-deferral-ended"));
+            fire();
+            settle();
+            assertThat(codes()).as("the park is gone: a late fire raises nothing").hasSize(2);
+        }
+
+        @Test
+        void theBoundIsArmedByTheFirstRefusal_noTickIsNeeded() {
+            ctxRef.get().setParkedStartBound(timeSpan(1).seconds());
+            park(SliceState.LOAD);
+            clock.addAndGet(bound());
+
+            await().atMost(Duration.ofSeconds(10)).untilAsserted(() -> assertThat(codes()).containsExactly("slice-start-awaiting-target"));
+        }
+
+        @Test
+        void aRepeatedRefusalKeepsTheOriginalParkTime_theBoundRunsFromTheFirst() {
+            park(SliceState.LOAD);
+            clock.addAndGet(bound() - 1);
+
+            targetArrives(BASE, V2);
+            settle();
+            assertThat(ctxRef.get().parkedStart(parked).isPresent()).as("control: re-driven and refused again, still parked").isTrue();
+            clock.addAndGet(1);
+            fire();
+
+            await().atMost(SETTLE).untilAsserted(() -> assertThat(codes()).containsExactly("slice-start-awaiting-target"));
+        }
+
+        @Test
+        void parkResolvedInTheStoreWithoutANotification_doesNotWarn() {
+            park(SliceState.LOAD);
+            seedNodeArtifact(SELF, ARTIFACT, SliceState.FAILED);
+            clock.addAndGet(bound());
+
+            fire();
+
+            settle();
+            assertThat(warnings).as("the committed store no longer shows the parked LOAD").isEmpty();
+        }
+
+        @Test
+        void warnedParkWhoseKeyIsRemoved_raisesTheRecovery() {
+            park(SliceState.LOAD);
+            clock.addAndGet(bound());
+            fire();
+            await().atMost(SETTLE).untilAsserted(() -> assertThat(codes()).containsExactly("slice-start-awaiting-target"));
+            var key = NodeArtifactKey.nodeArtifactKey(SELF, ARTIFACT);
+
+            applyToKvStore(new KVCommand.Remove<AetherKey>(key));
+            harness.dispatch(new NodeDeploymentEvents.NodeArtifactRemoveReceived(
+                    new org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove<>(new KVCommand.Remove<NodeArtifactKey>(key), Option.none())));
+
+            await().atMost(SETTLE).untilAsserted(() -> assertThat(codes()).containsExactly("slice-start-awaiting-target",
+                                                                                             "slice-start-deferral-ended"));
+        }
+
+        @Test
+        void warnedParkDroppedAsStaleAcrossAQuorumCycle_raisesTheRecovery() {
+            park(SliceState.LOAD);
+            clock.addAndGet(bound());
+            fire();
+            await().atMost(SETTLE).untilAsserted(() -> assertThat(codes()).containsExactly("slice-start-awaiting-target"));
+
+            harness.dispatch(new QuorumDisappeared());
+            applyToKvStore(new KVCommand.Remove<>(NodeArtifactKey.nodeArtifactKey(SELF, ARTIFACT)));
+            harness.dispatch(new QuorumEstablished());
+
+            await().atMost(SETTLE).untilAsserted(() -> assertThat(codes()).containsExactly("slice-start-awaiting-target",
+                                                                                             "slice-start-deferral-ended"));
+        }
+
+        @Test
+        void activateParkedForAMissingTarget_escalatesLikeALoad() {
+            sliceStore.loaded.add(ARTIFACT);
+            park(SliceState.ACTIVATE);
+
+            clock.addAndGet(bound());
+            fire();
+
+            await().atMost(SETTLE).untilAsserted(() -> assertThat(codes()).containsExactly("slice-start-awaiting-target"));
+            assertThat(warnings.getFirst().message()).contains("ACTIVATE");
         }
     }
 
@@ -574,7 +693,8 @@ class NodeDeploymentStateRollbackOrphanTest {
                                                 Option.none(),
                                                 Option.none(),
                                                 timeSpan(120_000).millis(),
-                                                timeSpan(2_000).millis());
+                                                timeSpan(2_000).millis(),
+                                                clock::get);
 
         ctxHolder.set(context);
 

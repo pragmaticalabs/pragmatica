@@ -9,6 +9,7 @@ import java.util.Set;
 import java.util.stream.Collectors;
 
 import org.pragmatica.aether.artifact.Artifact;
+import org.pragmatica.aether.deployment.CommittedSliceTarget;
 import org.pragmatica.aether.config.PlacementPolicy;
 import org.pragmatica.aether.deployment.cluster.AllocationPool;
 import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager.Blueprint;
@@ -254,8 +255,20 @@ record SliceAllocationEngine(Active active, List<NodeId> eligibleNodes) {
         return allocated;
     }
 
+    /// #1109 H1: a LOAD is issued only for a COMMITTED target. `blueprints` is a leader-local mirror written when the target put is
+    /// only queued, so allocating from it let a LOAD commit ahead of the put it depends on (the pending batches are ordered by hash,
+    /// not by submission). The check precedes the `sliceStates` bookkeeping on purpose: a refused attempt must leave no trace,
+    /// otherwise the next tick sees the instance as allocated and never issues it. The target put's own notification
+    /// (`handleSliceTargetChange`) and every `reconcile()` tick re-attempt, so a refusal costs one tick, not the allocation.
     boolean tryAllocate(Artifact artifact, NodeId node) {
         var sliceKey = SliceNodeKey.sliceNodeKey(artifact, node);
+
+        if (!CommittedSliceTarget.permits(active.ctx().kvStore(), artifact)) {
+            log.debug("tryAllocate: no committed SliceTarget names {} yet — not issuing LOAD on {} (#1109)", artifact, node);
+
+            return false;
+        }
+
         var alreadyExists = active.sliceStates().containsKey(sliceKey);
 
         log.debug("tryAllocate: artifact={}, node={}, sliceKey={}, alreadyExists={}",

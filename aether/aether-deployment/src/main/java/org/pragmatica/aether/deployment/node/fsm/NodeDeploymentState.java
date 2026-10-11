@@ -364,7 +364,7 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
             log.debug("ValueRemove received for key: {}", sliceKey);
             var deployment = Option.option(deployments.remove(sliceKey));
 
-            deferredStarts.remove(sliceKey);
+            unpark(sliceKey, "the entry was removed");
             routingEpochAckTracker.clear(sliceKey);
             if (shouldForceCleanup(deployment)) {
                 forceCleanupSlice(sliceKey);
@@ -375,7 +375,7 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
             var state = sliceNodeValue.state();
             var timestamp = ctx.nowMs();
 
-            deferredStarts.remove(sliceKey);
+            unpark(sliceKey, "a newer state for the entry was committed");
             var previousDeployment = Option.option(deployments.get(sliceKey));
             var previousState = previousDeployment.map(SliceDeployment::state);
             var deployment = SliceDeployment.sliceDeployment(sliceKey, state, timestamp);
@@ -801,12 +801,15 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
         /// that key and re-issues UNLOAD until it is gone, and the UNLOAD put clears the deferral.
         private boolean committedTargetPermits(SliceNodeKey sliceKey, SliceState refusedState) {
             if (CommittedSliceTarget.permits(ctx.kvStore(), sliceKey.artifact())) {
-                deferredStarts.remove(sliceKey);
+                unpark(sliceKey, "the committed target arrived");
 
                 return true;
             }
 
             deferredStarts.put(sliceKey, refusedState);
+            if (ctx.parkStart(sliceKey, refusedState)) {
+                SharedScheduler.schedule(() -> escalateParkedStart(sliceKey), ctx.parkedStartBound());
+            }
             log.warn("Node {} defers {} of {}: no committed SliceTarget names this version (#1068) — "
                     + "re-evaluated when a target arrives; if the blueprint was rolled back the leader's orphan sweep removes the entry",
                      ctx.self().id(),
@@ -822,7 +825,56 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
         /// deferrals the committed store still shows at the deferred state; the rest are dropped here on
         /// entry, before the LOAD rescan.
         private void dropStaleDeferredStarts() {
-            deferredStarts.entrySet().removeIf(this::deferralIsStale);
+            deferredStarts.entrySet()
+                          .stream()
+                          .filter(this::deferralIsStale)
+                          .map(Map.Entry::getKey)
+                          .toList()
+                          .forEach(sliceKey -> unpark(sliceKey, "the entry no longer holds the parked state"));
+        }
+
+        private static String parkSubject(SliceNodeKey sliceKey) {
+            return sliceKey.artifact() + "@" + sliceKey.nodeId().id();
+        }
+
+        /// Ends a park (target arrived, entry superseded or removed). The recovery event is raised only when the warning was.
+        /// The parked state is not touched while it is still parked: [#escalateParkedStart] never removes it.
+        private void unpark(SliceNodeKey sliceKey, String why) {
+            deferredStarts.remove(sliceKey);
+            ctx.unparkStart(sliceKey)
+               .filter(NodeDeploymentContext.ParkedStart::warned)
+               .onPresent(parked -> OperatorWarnings.raise(log,
+                                                           ctx.operatorWarnings(),
+                                                           OperatorWarningCode.SLICE_START_DEFERRAL_ENDED,
+                                                           parkSubject(sliceKey),
+                                                           "Node {} no longer holds the deferred {} of {}: {}",
+                                                           ctx.self().id(),
+                                                           parked.state(),
+                                                           sliceKey.artifact(),
+                                                           why));
+        }
+
+        /// Fires `parkedStartBound` after the first refusal. Silent while the bound has not elapsed on the node's clock, while the
+        /// committed store no longer shows the parked state (the park resolved some other way), and after the warning was raised once.
+        /// It only raises: the park stays in `deferredStarts` and is re-driven by the next target exactly as before.
+        /// Package-private so the contract is testable with an injected clock instead of waiting out the real bound.
+        @Contract
+        void escalateParkedStart(SliceNodeKey sliceKey) {
+            ctx.parkedStart(sliceKey)
+               .filter(parked -> ctx.nowMs() - parked.since() >= ctx.parkedStartBound().millis())
+               .filter(parked -> !deferralIsStale(Map.entry(sliceKey, parked.state())))
+               .filter(_ -> ctx.markParkWarned(sliceKey))
+               .onPresent(parked -> OperatorWarnings.raise(log,
+                                                           ctx.operatorWarnings(),
+                                                           OperatorWarningCode.SLICE_START_AWAITING_TARGET,
+                                                           parkSubject(sliceKey),
+                                                           "Node {} has held the {} of {} for {} ms: no committed SliceTarget names this version (#1109). "
+                                                           + "The start stays parked and is re-driven when the target arrives; if the blueprint was rolled back, "
+                                                           + "the leader's orphan sweep removes the entry",
+                                                           ctx.self().id(),
+                                                           parked.state(),
+                                                           sliceKey.artifact(),
+                                                           ctx.nowMs() - parked.since()));
         }
 
         private boolean deferralIsStale(Map.Entry<SliceNodeKey, SliceState> deferred) {

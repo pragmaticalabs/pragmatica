@@ -63,6 +63,10 @@ public final class NodeDeploymentContext {
 
     private final java.util.Set<String> unregisteredConsumers = java.util.concurrent.ConcurrentHashMap.newKeySet();
 
+    /// #1109 H4: starts parked for want of a committed target, from the first refusal until the park resolves. Held here, not in
+    /// the `Active` state, because `Active` is rebuilt on every quorum cycle and the bounded park is measured across them.
+    private final java.util.concurrent.ConcurrentMap<SliceNodeKey, ParkedStart> parkedStarts = new java.util.concurrent.ConcurrentHashMap<>();
+
     private final LongSupplier clock;
     private final Supplier<Option<Epoch>> currentEpochSupplier;
     private final NodeDeploymentState dormant;
@@ -204,6 +208,54 @@ public final class NodeDeploymentContext {
         this.currentEpochSupplier = currentEpochSupplier;
         this.dormant = new NodeDeploymentState.Dormant(this, List.of(), Map.of());
         this.stopped = new NodeDeploymentState.Stopped(this);
+    }
+
+    /// #1109 H4: how long a start may stay parked before the operator is told. A LOAD that is not parked would be in LOADING, whose own
+    /// bound is 2 minutes; a start parked past that waits on something other than ordinary lag.
+    private final AtomicReference<TimeSpan> parkedStartBound = new AtomicReference<>(SliceState.LOADING.timeout().or(TimeSpan.timeSpan(2).minutes()));
+
+    public TimeSpan parkedStartBound() {
+        return parkedStartBound.get();
+    }
+
+    @Contract
+    public void setParkedStartBound(TimeSpan bound) {
+        parkedStartBound.set(bound);
+    }
+
+    /// A start (`state` is what was refused: LOAD, ACTIVATE or an ACTIVE claim) parked since `since`; `warned` once the
+    /// operator warning for it has been raised.
+    public record ParkedStart(long since, SliceState state, boolean warned) {}
+
+    /// Records the first refusal of a start. True when this call opened the park (the caller arms the bound); a repeated
+    /// refusal of the same slice keeps the original `since`, so the bound runs from the first refusal.
+    @Contract
+    public boolean parkStart(SliceNodeKey sliceKey, SliceState state) {
+        return parkedStarts.putIfAbsent(sliceKey, new ParkedStart(nowMs(), state, false)) == null;
+    }
+
+    public Option<ParkedStart> parkedStart(SliceNodeKey sliceKey) {
+        return Option.option(parkedStarts.get(sliceKey));
+    }
+
+    /// True for the one caller that moved the park from silent to warned.
+    @Contract
+    public boolean markParkWarned(SliceNodeKey sliceKey) {
+        var transitioned = new java.util.concurrent.atomic.AtomicBoolean();
+
+        parkedStarts.computeIfPresent(sliceKey, (_, parked) -> {
+            transitioned.set(!parked.warned());
+
+            return new ParkedStart(parked.since(), parked.state(), true);
+        });
+
+        return transitioned.get();
+    }
+
+    /// Ends the park; returns what was recorded so the caller can raise the recovery when a warning stood.
+    @Contract
+    public Option<ParkedStart> unparkStart(SliceNodeKey sliceKey) {
+        return Option.option(parkedStarts.remove(sliceKey));
     }
 
     public long nowMs() {
