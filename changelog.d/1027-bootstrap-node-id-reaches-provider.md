@@ -10,5 +10,5 @@
 - Docker removal (`aether cluster apply` scale-down, role removal, source removal) addressed `<source>-<role>-<index>` labels that no container is named,
   so it never removed the intended container. It now finds the cluster/source/role containers by label (docker containers carry a new `aether.source`
   label; containers created before this change lack it and are not matched) and removes the newest `count` by node id; fewer matching containers than
-  asked is refused and removes nothing. The rolling-restart drain/destroy of a single docker node still addresses the label (unchanged).
+  asked is refused and removes nothing. Rolling restart of a docker node restarts the OLDEST container of the source/role (replacements are newer, so the original nodes are walked in turn), draining it at its published management port and destroying it by its own name, instead of addressing the label.
 - [verified: `DockerProvisionViaIdentityTest` (real `DockerComputeProvider` with a recording runner), `CloudProviderSupportTest`, `DockerBootstrapProvisionPhaseTest` (including: a docker bootstrap's ledger holds one `ProvisionedVm` per node and destroy recognises the cluster), `DockerBootstrapPeersTest`, `WaveExecutorDockerRemovalTest`, `ProvisionContextTest`]

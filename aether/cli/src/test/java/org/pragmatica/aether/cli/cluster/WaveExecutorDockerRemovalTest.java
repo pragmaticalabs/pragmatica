@@ -67,7 +67,10 @@ class WaveExecutorDockerRemovalTest {
     }
 
     private static FakeDocker docker() {
-        return new FakeDocker(List.of(container("aether-dock-node-01a", "dock", "local", "worker"),
+        return new FakeDocker(List.of(container("aether-dock-node-009", "dock", "other", "worker"),
+                                      container("aether-else-node-008", "else", "local", "worker"),
+                                      container("aether-dock-node-007", "dock", "local", "core"),
+                                      container("aether-dock-node-01a", "dock", "local", "worker"),
                                       container("aether-dock-node-01b", "dock", "local", "worker"),
                                       container("aether-dock-node-01c", "dock", "local", "worker"),
                                       container("aether-dock-node-01d", "dock", "other", "worker"),
@@ -144,5 +147,53 @@ class WaveExecutorDockerRemovalTest {
         } finally {
             ProviderResolver.dockerFactoryOverride = null;
         }
+    }
+
+    /// Rolling restart of ONE docker node, through the real drain-and-destroy step: the `<source>-<role>-<index>` label names no container, so the
+    /// OLDEST container of the cluster/source/role is drained at its published management port and then destroyed by its own name.
+    @Test
+    void aRollingRestartOfADockerNode_drainsAndDestroysTheOldestRealContainer_notTheLabel() {
+        var compute = docker();
+        var http = new ScriptedDrainHttp(ScriptedDrainHttp.drainAccepted("aether-dock-node-01a"),
+                                         ScriptedDrainHttp.notFound("aether-dock-node-01a"),
+                                         ScriptedDrainHttp.connectionRefused());
+        var originalHttp = ClusterHttpClient.HTTP_OPS_REF.get();
+
+        ProviderResolver.dockerFactoryOverride = factoryReturning(compute);
+        DockerHostPorts.override = container -> org.pragmatica.lang.Result.success(38911);
+        ClusterHttpClient.HTTP_OPS_REF.set(http);
+        try {
+            var source = org.pragmatica.aether.config.cluster.ClusterBootstrapConfigParser.parse(DOCKER_CLUSTER).unwrap().sources().get("local");
+
+            var result = WaveExecutor.drainAndDestroyNode(DOCK, "local-worker-0", sourceNameOrDefault("local"), NodeRole.WORKER, source, 8080);
+
+            assertThat(result.isSuccess()).isTrue();
+            assertThat(compute.terminated).as("the oldest local worker of cluster dock, by its own name").containsExactly("aether-dock-node-01a");
+            assertThat(http.requestUris()).as("drained at the published port, by the real node id")
+                                          .anyMatch(uri -> uri.startsWith("POST http") && uri.contains("://127.0.0.1:38911/api/v1/nodes/drain/aether-dock-node-01a"));
+            assertThat(http.requests()).noneMatch(request -> request.contains("local-worker-0"));
+        } finally {
+            ProviderResolver.dockerFactoryOverride = null;
+            DockerHostPorts.override = null;
+            ClusterHttpClient.HTTP_OPS_REF.set(originalHttp);
+        }
+    }
+
+    private static org.pragmatica.aether.environment.EnvironmentIntegrationFactory factoryReturning(ComputeProvider compute) {
+        return new org.pragmatica.aether.environment.EnvironmentIntegrationFactory() {
+            @Override
+            public String providerName() {
+                return "docker";
+            }
+
+            @Override
+            public org.pragmatica.lang.Result<org.pragmatica.aether.environment.EnvironmentIntegration> create(org.pragmatica.aether.environment.CloudConfig config) {
+                return org.pragmatica.lang.Result.success(new org.pragmatica.aether.environment.EnvironmentIntegration() {
+                    @Override public Option<ComputeProvider> compute() { return Option.some(compute); }
+                    @Override public Option<org.pragmatica.aether.environment.SecretsProvider> secrets() { return Option.none(); }
+                    @Override public Option<org.pragmatica.aether.environment.LoadBalancerProvider> loadBalancer() { return Option.none(); }
+                });
+            }
+        };
     }
 }
