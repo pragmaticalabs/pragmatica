@@ -129,7 +129,11 @@ public interface EntityLogSubstrate {
     }
 
     /// [#saveCheckpoint(String, int, long, byte[])] recording `lineage` with the checkpoint. The default drops it.
-    default Promise<Unit> saveCheckpoint(String keyspace, int partition, long throughOffset, byte[] snapshot, Option<byte[]> lineage) {
+    default Promise<Unit> saveCheckpoint(String keyspace,
+                                         int partition,
+                                         long throughOffset,
+                                         byte[] snapshot,
+                                         Option<byte[]> lineage) {
         return saveCheckpoint(keyspace, partition, throughOffset, snapshot);
     }
 

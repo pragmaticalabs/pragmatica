@@ -837,7 +837,9 @@ final class EntityFold {
     /// lineage, or an offset this node cannot read (below the sealed floor, which a cut never crosses), is accepted as before.
     private boolean lineageHolds(int partition, EntityLogSubstrate.EntityCheckpoint checkpoint) {
         return checkpoint.lineage()
-                         .flatMap(recorded -> substrate.lineageAt(keyspace, partition, checkpoint.throughOffset())
+                         .flatMap(recorded -> substrate.lineageAt(keyspace,
+                                                                  partition,
+                                                                  checkpoint.throughOffset())
                                                        .map(local -> java.util.Arrays.equals(recorded, local)))
                          .or(true);
     }

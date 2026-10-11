@@ -635,7 +635,11 @@ public final class StreamEntityLogSubstrate implements EntityLogSubstrate {
     /// would leave a committed pointer to a block that does not exist, which a recovering node could not
     /// distinguish from corruption.
     @Override
-    public Promise<Unit> saveCheckpoint(String keyspace, int partition, long throughOffset, byte[] snapshot, Option<byte[]> lineage) {
+    public Promise<Unit> saveCheckpoint(String keyspace,
+                                        int partition,
+                                        long throughOffset,
+                                        byte[] snapshot,
+                                        Option<byte[]> lineage) {
         return storage.put(CheckpointFrame.frame(snapshot, lineage))
                       .flatMap(blockId -> publishCheckpointPointer(keyspace, partition, throughOffset, blockId));
     }
@@ -648,10 +652,17 @@ public final class StreamEntityLogSubstrate implements EntityLogSubstrate {
         var stream = EntityPartitionArc.arcName(keyspace);
         var from = Math.max(0L, offset - CheckpointFrame.LINEAGE_WINDOW + 1L);
 
-        return partitionManager.readAppended(stream, partition, from, (int) (offset - from + 1L))
+        return partitionManager.readAppended(stream,
+                                             partition,
+                                             from,
+                                             (int)(offset - from + 1L))
                                .option()
-                               .filter(events -> events.size() == offset - from + 1L && events.getLast().offset() == offset)
-                               .flatMap(events -> CheckpointFrame.lineageOf(events, partitionManager.epochAt(stream, partition, offset)));
+                               .filter(events -> events.size() == offset - from + 1L && events.getLast()
+                                                                                              .offset() == offset)
+                               .flatMap(events -> CheckpointFrame.lineageOf(events,
+                                                                            partitionManager.epochAt(stream,
+                                                                                                     partition,
+                                                                                                     offset)));
     }
 
     public Promise<Unit> saveCheckpoint(String keyspace, int partition, long throughOffset, byte[] snapshot) {
@@ -695,7 +706,8 @@ public final class StreamEntityLogSubstrate implements EntityLogSubstrate {
         return BlockId.fromHex(pointer.blockIdHex())
                       .async()
                       .flatMap(storage::get)
-                      .map(bytes -> bytes.map(block -> CheckpointFrame.unframe(pointer.throughOffset(), block)))
+                      .map(bytes -> bytes.map(block -> CheckpointFrame.unframe(pointer.throughOffset(),
+                                                                               block)))
                       .recover(_ -> Option.none());
     }
 }

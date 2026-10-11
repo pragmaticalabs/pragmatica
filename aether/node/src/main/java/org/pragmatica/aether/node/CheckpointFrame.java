@@ -29,16 +29,21 @@ final class CheckpointFrame {
 
     static byte[] frame(byte[] snapshot, Option<byte[]> lineage) {
         return lineage.map(identity -> ByteBuffer.allocate(MARKER.length + Integer.BYTES + identity.length + snapshot.length)
-                                                  .put(MARKER)
-                                                  .putInt(identity.length)
-                                                  .put(identity)
-                                                  .put(snapshot)
-                                                  .array())
+                                                 .put(MARKER)
+                                                 .putInt(identity.length)
+                                                 .put(identity)
+                                                 .put(snapshot)
+                                                 .array())
                       .or(snapshot);
     }
 
     static EntityCheckpoint unframe(long throughOffset, byte[] block) {
-        if (block.length < MARKER.length + Integer.BYTES || !Arrays.equals(block, 0, MARKER.length, MARKER, 0, MARKER.length)) {
+        if (block.length < MARKER.length + Integer.BYTES || !Arrays.equals(block,
+                                                                           0,
+                                                                           MARKER.length,
+                                                                           MARKER,
+                                                                           0,
+                                                                           MARKER.length)) {
             return EntityCheckpoint.entityCheckpoint(throughOffset, block);
         }
 
@@ -52,7 +57,6 @@ final class CheckpointFrame {
         var identity = new byte[length];
 
         buffer.get(identity);
-
         var snapshot = new byte[buffer.remaining()];
 
         buffer.get(snapshot);
@@ -72,7 +76,6 @@ final class CheckpointFrame {
             digest.update(ByteBuffer.allocate(Long.BYTES).putLong(event.offset()).array());
             digest.update(event.data());
         });
-
         var identity = digest.digest();
 
         return epoch.map(known -> ByteBuffer.allocate(1 + 3 * Long.BYTES + identity.length)
@@ -82,6 +85,9 @@ final class CheckpointFrame {
                                             .putLong(known.localCounter())
                                             .put(identity)
                                             .array())
-                    .or(() -> ByteBuffer.allocate(1 + identity.length).put((byte) 0).put(identity).array());
+                    .or(() -> ByteBuffer.allocate(1 + identity.length)
+                                        .put((byte) 0)
+                                        .put(identity)
+                                        .array());
     }
 }

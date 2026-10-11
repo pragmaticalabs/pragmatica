@@ -2527,7 +2527,6 @@ public final class StreamPartitionManager implements AutoCloseable {
         var preserved = new java.util.concurrent.atomic.AtomicReference<RecoverySegment.Preserved>();
 
         cutWindowHook.run();
-
         var token = new Object();
 
         try {
@@ -2549,8 +2548,8 @@ public final class StreamPartitionManager implements AutoCloseable {
                                        })
                        .onFailure(_ -> {
                            if (wrote.get()) {
-                               restoreWitness(streamName, partition, wal);
-                           }
+                           restoreWitness(streamName, partition, wal);
+                       }
                        })
                        .onSuccess(_ -> option(preserved.get()).onPresent(segment -> reportPreserved(streamName,
                                                                                                     partition,
@@ -2729,7 +2728,12 @@ public final class StreamPartitionManager implements AutoCloseable {
         var key = partitionKeyOf(streamName, partition);
 
         openCuts.put(key, token);
-        cutGenerations.compute(key, (_, count) -> count == null ? 1L : (count & 1L) == 1L ? count : count + 1L);
+        cutGenerations.compute(key,
+                               (_, count) -> count == null
+                                             ? 1L
+                                             : (count & 1L) == 1L
+                                               ? count
+                                               : count + 1L);
     }
 
     @Contract
@@ -2737,7 +2741,12 @@ public final class StreamPartitionManager implements AutoCloseable {
         var key = partitionKeyOf(streamName, partition);
 
         if (openCuts.remove(key, token)) {
-            cutGenerations.compute(key, (_, count) -> count == null ? 0L : (count & 1L) == 1L ? count + 1L : count);
+            cutGenerations.compute(key,
+                                   (_, count) -> count == null
+                                                 ? 0L
+                                                 : (count & 1L) == 1L
+                                                   ? count + 1L
+                                                   : count);
         }
     }
 
@@ -3978,10 +3987,10 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// for a copy that keeps no log or records none (#2087 B4-cut: part of a checkpoint's lineage identity).
     public Option<Epoch> epochAt(String streamName, int partition, long offset) {
         return epochHistory(streamName, partition).option()
-                                                  .flatMap(history -> Option.from(history.stream()
-                                                                                         .filter(entry -> entry.startOffset() <= offset)
-                                                                                         .reduce((earlier, later) -> later)))
-                                                  .map(ProvenanceEntry::rank);
+                           .flatMap(history -> Option.from(history.stream()
+                                                                  .filter(entry -> entry.startOffset() <= offset)
+                                                                  .reduce((earlier, later) -> later)))
+                           .map(ProvenanceEntry::rank);
     }
 
     /// What this node's copy of `(streamName, partition)` says about its records' provenance (#1596): the input of
