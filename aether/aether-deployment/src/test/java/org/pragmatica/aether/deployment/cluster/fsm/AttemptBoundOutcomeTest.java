@@ -853,6 +853,7 @@ class AttemptBoundOutcomeTest {
             this.interference = interference;
         }
 
+        private static final int RUNAWAY = 20;
         private boolean repeating;
 
         void beforeEveryTransaction(Runnable interference) {
@@ -875,12 +876,13 @@ class AttemptBoundOutcomeTest {
         @Override public <R> Promise<List<R>> apply(List<KVCommand<AetherKey>> batch) {
             if (batch.stream().anyMatch(KVCommand.LeaderTransaction.class::isInstance)) {
                 transactions++;
-                if (transactions > 20) {
-                    throw new AssertionError("unbounded rollback retry: " + transactions + " transactions submitted");
-                }
                 var once = interference;
                 interference = repeating ? once : () -> {};
-                once.run();
+                // A repeating contender gives up after RUNAWAY submissions, so a rollback that never stops retrying
+                // ends here and fails the count assertion in the test body, instead of recursing until the fork dies.
+                if (transactions <= RUNAWAY) {
+                    once.run();
+                }
             }
             kvStore.process(kvStore.createBatch(batch));
 
