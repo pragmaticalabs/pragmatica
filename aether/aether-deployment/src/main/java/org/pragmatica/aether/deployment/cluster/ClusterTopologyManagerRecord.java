@@ -1862,6 +1862,49 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         return incarnation(node) == generation;
     }
 
+    @Override
+    public Unit reapDroppedReplacement(NodeId node, String reason, boolean seenBefore) {
+        if (seenBefore) {
+            seenInstances.add(node);
+        }
+
+        var epoch = activationEpoch.get();
+        var start = (Runnable)() -> reapUnlessLive(node, epoch, REAP_LIVENESS_RECHECKS);
+
+        lifecycleManager.sourceOf(node)
+                        .fold(() -> {
+                                  log.warn("CTM: in-flight replacement {} dropped ({}): no compute source is known for it, so its instance id cannot be listed; terminating by node id",
+                                           node,
+                                           reason);
+                                  start.run();
+
+                                  return unit();
+                              },
+                              source -> announceDroppedReplacement(node, source, reason, start));
+
+        return unit();
+    }
+
+    /// The WARN names source, node and instance id: the listing that finds the instance is the one that can state its id, so it runs first and the
+    /// reap starts when it ends, whatever it said (a failed listing is stated, and the reap's own listing is the confirmation).
+    private Unit announceDroppedReplacement(NodeId node, SourceName source, String reason, Runnable start) {
+        lifecycleManager.instancesForNode(node, source)
+                        .onSuccess(listed -> log.warn("CTM: in-flight replacement {} dropped ({}); source={}, instanceIds={}; terminating",
+                                                      node,
+                                                      reason,
+                                                      source,
+                                                      listed.stream().map(instance -> instance.id()
+                                                                                              .value()).toList()))
+                        .onFailure(cause -> log.warn("CTM: in-flight replacement {} dropped ({}); source={}, instance id unknown (listing failed: {}); terminating by node id",
+                                                     node,
+                                                     reason,
+                                                     source,
+                                                     cause.message()))
+                        .onResult(_ -> start.run());
+
+        return unit();
+    }
+
     /// Idempotent per node INCARNATION: NodeRemoved and the drain-grace backstop both reap, and a reap confirmed once is not re-asked (and so cannot be
     /// reported as unconfirmed by a listing that, correctly, no longer shows the instance). A node that shows life again is a new incarnation whose
     /// join has not been seen yet ([#forgetIncarnation]): it is never confirmed gone.

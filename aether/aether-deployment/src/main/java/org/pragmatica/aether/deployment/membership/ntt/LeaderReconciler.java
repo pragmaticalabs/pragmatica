@@ -34,8 +34,10 @@ import org.pragmatica.aether.deployment.cluster.SliceOwnershipQuery.DrainRefusal
 import org.pragmatica.aether.deployment.membership.MembershipConfig;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsm;
 import org.pragmatica.aether.environment.ClusterName;
+import org.pragmatica.aether.environment.EnvironmentError;
 import org.pragmatica.aether.environment.ProvisionContext;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.io.TimeSpan;
@@ -1763,7 +1765,38 @@ public final class LeaderReconciler {
                                  currentMembers,
                                  NodeRole.CORE)
            .onSuccess(disposition -> reconcileInFlightForDisposition(placeholder, disposition))
-           .onFailure(_ -> inFlightProvisioning.remove(placeholder));
+           .onFailure(cause -> reapFailedProvision(placeholder, cause));
+    }
+
+    /// #1111 — a create that failed AFTER the provider made the instance (a readiness timeout: the instance exists, listed under the placeholder's
+    /// node-id tag) is a drop like the other three: the entry goes, and so does whatever the provider holds under the placeholder. A create the
+    /// provider REJECTED (quota, capacity, an API error) made nothing, so there is nothing to terminate: it is stated at WARN with its cause and reaps
+    /// nothing, because a reap of a VM that never existed would end in a false `instance-termination-unconfirmed` and a mark that never clears. Only
+    /// the call that actually removes the entry acts, so a placeholder the ceiling already dropped is not reaped twice. A failure after creation of
+    /// any other shape is not reaped here: the next activation's orphan replay owns it.
+    @Contract
+    private void reapFailedProvision(NodeId placeholder, Cause cause) {
+        Option.option(inFlightProvisioning.remove(placeholder)).onPresent(entry -> settleFailedProvision(placeholder,
+                                                                                                         cause));
+    }
+
+    private void settleFailedProvision(NodeId placeholder, Cause cause) {
+        if (cause instanceof EnvironmentError.ProvisionReadinessTimeout) {
+            reapDropped(placeholder, "its create failed after the instance was made: " + cause.message(), true);
+
+            return;
+        }
+
+        log.warn("LeaderReconciler in-flight replacement {} dropped: the provider rejected its create, so no instance exists and nothing is reaped: {}",
+                 placeholder,
+                 cause.message());
+    }
+
+    /// #1111 — every drop of an in-flight replacement hands its instance to the manager's confirmed reap (bounded, confirmed, operator-visible
+    /// when unconfirmed), which never terminates a node that shows life. `seenBefore` is true only when the provider has listed the instance.
+    @Contract
+    private void reapDropped(NodeId id, String reason, boolean seenBefore) {
+        ctm.reapDroppedReplacement(id, reason, seenBefore);
     }
 
     /// Keep the in-flight placeholder only for a real [`ProvisionDisposition.Dispatched`] boot; a
@@ -1813,7 +1846,7 @@ public final class LeaderReconciler {
                                                                    entry.getValue()));
     }
 
-    private static boolean isPastCeilingLogged(long nowNanos, NodeId id, InFlightEntry entry) {
+    private boolean isPastCeilingLogged(long nowNanos, NodeId id, InFlightEntry entry) {
         if (!entry.isPastCeiling(nowNanos)) {
             return false;
         }
@@ -1822,6 +1855,11 @@ public final class LeaderReconciler {
                  id,
                  entry.ceiling().millis(),
                  entry.state());
+        reapDropped(id,
+                    "still unjoined after its " + entry.ceiling().millis()
+                   + " ms replacement ceiling (state=" + entry.state()
+                   + ")",
+                    entry.state() == InFlightState.CONFIRMED);
 
         return true;
     }
@@ -1955,6 +1993,9 @@ public final class LeaderReconciler {
         log.info("LeaderReconciler dropping in-flight replacement {}: provider reports {} — the deficit re-opens and re-dispatches after the deficit debounce",
                  id,
                  state);
+        reapDropped(id,
+                    "the provider reports " + state,
+                    state == ReplacementInstanceState.FAILED || polled.state() == InFlightState.CONFIRMED);
         triggerReconcile(ReconcileTrigger.NTT_FIRE);
     }
 
