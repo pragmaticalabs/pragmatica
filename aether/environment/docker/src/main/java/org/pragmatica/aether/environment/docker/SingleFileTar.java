@@ -7,6 +7,7 @@ package org.pragmatica.aether.environment.docker;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 
+
 /// A ustar archive holding exactly one regular file, built in memory (#828). `docker cp - <container>:<dir>` extracts it with the
 /// owner and mode written here, so a secret reaches a created container as a file owned by the node's user, mode 0400, without
 /// touching the host filesystem, any argv, or the container's environment.
@@ -22,7 +23,7 @@ interface SingleFileTar {
         put(header, 116, 8, octal(gid, 7));
         put(header, 124, 12, octal(content.length, 11));
         put(header, 136, 12, octal(0, 11));
-        Arrays.fill(header, 148, 156, (byte) ' ');
+        Arrays.fill(header, 148, 156, (byte)' ');
         header[156] = '0';
         put(header, 257, 6, "ustar");
         put(header, 263, 2, "00");

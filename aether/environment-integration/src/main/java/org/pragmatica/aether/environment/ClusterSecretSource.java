@@ -13,6 +13,7 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.utils.Causes;
 
+
 /// The one reader of the ambient cluster secret (#828). Two sources: `AETHER_CLUSTER_SECRET` (the value) and
 /// `AETHER_CLUSTER_SECRET_FILE` (a path to a file holding it). The file form exists so launchers never put the value in a process
 /// argv or a container's environment (`docker inspect`): the value travels as a file only the node's user can read.
@@ -24,7 +25,9 @@ public interface ClusterSecretSource {
     String SECRET_ENV = "AETHER_CLUSTER_SECRET";
     String SECRET_FILE_ENV = "AETHER_CLUSTER_SECRET_FILE";
 
-    Cause CONFLICT = Causes.cause(SECRET_ENV + " and " + SECRET_FILE_ENV + " are both set and differ; set only " + SECRET_FILE_ENV);
+    Cause CONFLICT = Causes.cause(SECRET_ENV
+                                 + " and " + SECRET_FILE_ENV
+                                 + " are both set and differ; set only " + SECRET_FILE_ENV);
 
     static Result<Option<String>> resolve(Fn1<String, String> env) {
         return resolve(env, ClusterSecretSource::readFile);
@@ -34,10 +37,12 @@ public interface ClusterSecretSource {
         var plain = nonBlank(env.apply(SECRET_ENV));
 
         return nonBlank(env.apply(SECRET_FILE_ENV)).fold(() -> Result.success(plain),
-                                                          path -> fromFile(path, reader, plain));
+                                                         path -> fromFile(path, reader, plain));
     }
 
-    private static Result<Option<String>> fromFile(String path, Fn1<Result<String>, Path> reader, Option<String> plain) {
+    private static Result<Option<String>> fromFile(String path,
+                                                   Fn1<Result<String>, Path> reader,
+                                                   Option<String> plain) {
         return reader.apply(Path.of(path))
                      .mapError(_ -> Causes.cause(SECRET_FILE_ENV + " file '" + path + "' is not readable"))
                      .flatMap(value -> nonEmpty(path, value))
@@ -60,7 +65,8 @@ public interface ClusterSecretSource {
     }
 
     private static Result<String> readFile(Path path) {
-        return Result.lift(_ -> Causes.cause(SECRET_FILE_ENV + " file '" + path + "' is not readable"), () -> Files.readString(path));
+        return Result.lift(_ -> Causes.cause(SECRET_FILE_ENV + " file '" + path + "' is not readable"),
+                           () -> Files.readString(path));
     }
 
     private static Option<String> nonBlank(String value) {

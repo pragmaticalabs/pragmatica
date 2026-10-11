@@ -711,7 +711,8 @@ sealed interface BootstrapPhaseDeploy {
              + " >&2; exit " + ALREADY_PRESENT_EXIT
              + "; fi" + backupPath.map(_ -> " && install -d -m 0750 -o 1000 -g 1000 " + NodeUserDataRenderer.BACKUP_HOST_DIRECTORY)
                                   .or("")
-             + " && install -m 0400 -o 1000 -g 1000 " + CONTAINER_SECRET_STAGED + " " + NodeUserDataRenderer.CONTAINER_SECRET_HOST_FILE
+             + " && install -m 0400 -o 1000 -g 1000 " + CONTAINER_SECRET_STAGED
+             + " " + NodeUserDataRenderer.CONTAINER_SECRET_HOST_FILE
              + " && docker run -d --name aether-node --restart no --network host"
              + " -l aether-cluster=" + clusterName.value()
              + " -l aether-node-id=" + nodeId
@@ -728,14 +729,16 @@ sealed interface BootstrapPhaseDeploy {
              + " -e PEERS=\"" + peers
              + "\""
              + " --mount type=bind,src=" + NodeUserDataRenderer.CONTAINER_SECRET_HOST_FILE
-             + ",dst=" + NodeUserDataRenderer.CONTAINER_SECRET_MOUNT + ",readonly"
-             + " -e " + ClusterSecretSource.SECRET_FILE_ENV + "=\"" + NodeUserDataRenderer.CONTAINER_SECRET_MOUNT + "\""
-             + (hasCredentials(envLookup)
-                ? " --env-file " + CONTAINER_CREDENTIALS_ENV_FILE
-                : "")
-             + identityEnvFlags(clusterName, role, source, zone, envLookup)
+             + ",dst=" + NodeUserDataRenderer.CONTAINER_SECRET_MOUNT
+             + ",readonly"
+             + " -e " + ClusterSecretSource.SECRET_FILE_ENV
+             + "=\"" + NodeUserDataRenderer.CONTAINER_SECRET_MOUNT
+             + "\"" + (hasCredentials(envLookup)
+                       ? " --env-file " + CONTAINER_CREDENTIALS_ENV_FILE
+                       : "") + identityEnvFlags(clusterName, role, source, zone, envLookup)
              + " " + image
-             + " ); rc=$?; rm -f " + CONTAINER_SECRET_STAGED + " " + CONTAINER_CREDENTIALS_ENV_FILE
+             + " ); rc=$?; rm -f " + CONTAINER_SECRET_STAGED
+             + " " + CONTAINER_CREDENTIALS_ENV_FILE
              + "; exit $rc";
     }
 
@@ -788,11 +791,11 @@ sealed interface BootstrapPhaseDeploy {
     static List<String> SECRET_IDENTITY_VARS = List.of("AETHER_API_KEY", "AETHER_API_KEYS");
 
     private static boolean hasCredentials(Fn1<String, String> envLookup) {
-        return SECRET_IDENTITY_VARS.stream()
-                                   .anyMatch(name -> Option.option(envLookup.apply(name))
-                                                           .filter(value -> !value.isBlank())
-                                                           .isPresent());
+        return SECRET_IDENTITY_VARS.stream().anyMatch(name -> Option.option(envLookup.apply(name))
+                                                                    .filter(value -> !value.isBlank())
+                                                                    .isPresent());
     }
+
     static String JVM_JAR_PATH = "/opt/aether/aether-node.jar";
 
     static String buildJvmStartCommand(String nodeId,
@@ -883,10 +886,12 @@ sealed interface BootstrapPhaseDeploy {
              + "; fi" + backupPath.map(path -> " && install -d -m 0750 " + path)
                                   .or("")
              + " && install -d -m 0755 " + NodeUserDataRenderer.JVM_ENV_DIR
-             + " && install -m 0400 " + JVM_SECRET_STAGED + " " + NodeUserDataRenderer.JVM_SECRET_FILE
+             + " && install -m 0400 " + JVM_SECRET_STAGED
+             + " " + NodeUserDataRenderer.JVM_SECRET_FILE
              + " && touch " + NodeUserDataRenderer.JVM_ENV_FILE_PATH
              + " && chmod 600 " + NodeUserDataRenderer.JVM_ENV_FILE_PATH
-             + " && { printf '%s\\n' '" + ClusterSecretSource.SECRET_FILE_ENV + "=" + NodeUserDataRenderer.JVM_SECRET_FILE
+             + " && { printf '%s\\n' '" + ClusterSecretSource.SECRET_FILE_ENV
+             + "=" + NodeUserDataRenderer.JVM_SECRET_FILE
              + "'" + identityEnvAssignments(clusterName, role, source, zone, envLookup)
              + " 'AETHER_NODE_ID=" + nodeId
              + "'"
@@ -895,14 +900,14 @@ sealed interface BootstrapPhaseDeploy {
              + " 'AETHER_MANAGEMENT_PORT=" + managementPort
              + "'"
              + " 'AETHER_PEERS=" + peers
-             + "'"
-             + (hasCredentials(envLookup)
-                ? " && cat " + JVM_CREDENTIALS_ENV_FILE
-                : "")
+             + "'" + (hasCredentials(envLookup)
+                      ? " && cat " + JVM_CREDENTIALS_ENV_FILE
+                      : "")
              + "; } > " + NodeUserDataRenderer.JVM_ENV_FILE_PATH
              + " && touch " + JVM_STARTED_MARKER
              + " && systemctl start " + NodeUserDataRenderer.JVM_UNIT_NAME
-             + " ); rc=$?; rm -f " + JVM_SECRET_STAGED + " " + JVM_CREDENTIALS_ENV_FILE
+             + " ); rc=$?; rm -f " + JVM_SECRET_STAGED
+             + " " + JVM_CREDENTIALS_ENV_FILE
              + "; exit $rc";
     }
 

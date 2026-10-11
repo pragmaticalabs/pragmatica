@@ -304,12 +304,18 @@ public sealed interface NodeUserDataRenderer {
                    : JVM_SECRET_FILE;
 
         sb.append("# --- Stage the cluster secret as a file (never an env var or a command line) ---\n");
-        sb.append("(umask 077; install -d -m 0755 ").append(container ? "/opt/aether/config" : JVM_ENV_DIR).append(" && printf '%s' ")
-          .append(shellQuote(clusterSecret)).append(" > ").append(path).append(")\n");
+        sb.append("(umask 077; install -d -m 0755 ")
+          .append(container
+                  ? "/opt/aether/config"
+                  : JVM_ENV_DIR)
+          .append(" && printf '%s' ")
+          .append(shellQuote(clusterSecret))
+          .append(" > ")
+          .append(path)
+          .append(")\n");
         sb.append(container
                   ? "chown 1000:1000 " + path + "\n"
-                  : "")
-          .append("chmod 0400 ").append(path).append("\n\n");
+                  : "").append("chmod 0400 ").append(path).append("\n\n");
     }
 
     private static String shellQuote(String value) {
@@ -397,7 +403,11 @@ public sealed interface NodeUserDataRenderer {
         sb.append("    -l aether-node-id=").append(nodeId).append(" \\\n");
         sb.append("    -l aether-role=").append(role.value()).append(" \\\n");
         sb.append("    -v /opt/aether/config/aether.toml:/app/aether.toml:ro \\\n");
-        sb.append("    --mount type=bind,src=").append(CONTAINER_SECRET_HOST_FILE).append(",dst=").append(CONTAINER_SECRET_MOUNT).append(",readonly \\\n");
+        sb.append("    --mount type=bind,src=")
+          .append(CONTAINER_SECRET_HOST_FILE)
+          .append(",dst=")
+          .append(CONTAINER_SECRET_MOUNT)
+          .append(",readonly \\\n");
         backupPath.onPresent(path -> sb.append("    -v ")
                                        .append(BACKUP_HOST_DIRECTORY)
                                        .append(':')

@@ -122,9 +122,9 @@ public record DockerComputeProvider(DockerCommandRunner runner, DockerConfig con
                                   .async()
                                   .flatMap(secret -> launch(request, containerName, secret))
                                   .map(containerId -> toProvisionedInfo(containerId, containerName, request))
-                     .flatMap(info -> confirmRunning(info,
-                                                     ReadinessPolicy.dockerDefault()))
-                     .onFailure(cause -> rollbackOnProvisionFailure(containerName, cause));
+                                  .flatMap(info -> confirmRunning(info,
+                                                                  ReadinessPolicy.dockerDefault()))
+                                  .onFailure(cause -> rollbackOnProvisionFailure(containerName, cause));
     }
 
     /// bootstrap list (3-part `nodeId:host:port` entries) so the new container can join
@@ -269,7 +269,7 @@ public record DockerComputeProvider(DockerCommandRunner runner, DockerConfig con
                                           .flatMap(id -> copySecret(containerName, value).flatMap(_ -> runner.execute(List.of("docker",
                                                                                                                               "start",
                                                                                                                               containerName)))
-                                                                                         .map(_ -> id)));
+                                                                   .map(_ -> id)));
     }
 
     private List<String> buildCreateCommand(ProvisionRequest request, String containerName) {
@@ -282,7 +282,11 @@ public record DockerComputeProvider(DockerCommandRunner runner, DockerConfig con
     }
 
     private Promise<String> copySecret(String containerName, String secret) {
-        var archive = SingleFileTar.singleFileTar(SECRET_FILE_NAME, secret.getBytes(StandardCharsets.UTF_8), 0400, NODE_UID, NODE_UID);
+        var archive = SingleFileTar.singleFileTar(SECRET_FILE_NAME,
+                                                  secret.getBytes(StandardCharsets.UTF_8),
+                                                  0400,
+                                                  NODE_UID,
+                                                  NODE_UID);
 
         return runner.execute(List.of("docker", "cp", "-", containerName + ":" + SECRET_DIRECTORY), archive);
     }

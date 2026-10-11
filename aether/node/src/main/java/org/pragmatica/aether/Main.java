@@ -608,7 +608,7 @@ public record Main(String[] args) {
     /// Every resolver above takes it as a parameter so tests can state the environment rather than
     /// inherit it (SF4).
     private static Option<String> environmentClusterSecret() {
-        return ClusterSecretSource.resolve(System::getenv).fold(_ -> Option.<String>none(), value -> value);
+        return ClusterSecretSource.resolve(System::getenv).fold(_ -> Option.<String> none(), value -> value);
     }
 
     private static final Cause MISSING_CLUSTER_SECRET = Causes.cause("No cluster secret configured. Set 'cluster_secret' in [tls] section "
@@ -631,10 +631,10 @@ public record Main(String[] args) {
     /// `java -jar` runs). GIVEN: the file must load and validate, or the node REFUSES to start. It used to log one line and boot on
     /// defaults, which silently drops the operator's TLS, port, peers and secret settings.
     private Option<AetherConfig> loadConfig() {
-        ClusterSecretSource.resolve(System::getenv).onFailure(this::refuseConfig);
-
-        return resolveConfig(findArg("--config=")).onFailure(this::refuseConfig)
-                            .expect("unreachable: refuseConfig exits");
+        return ClusterSecretSource.resolve(System::getenv)
+                                  .flatMap(_ -> resolveConfig(findArg("--config=")))
+                                  .onFailure(this::refuseConfig)
+                                  .expect("unreachable: refuseConfig exits");
     }
 
     /// Package-private and pure so the decision is testable without a process: no argument gives no configuration; an argument that is

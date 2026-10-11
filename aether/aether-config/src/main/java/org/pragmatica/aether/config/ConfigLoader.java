@@ -322,7 +322,8 @@ public final class ConfigLoader {
         var keyPath = doc.getString("tls", "key_path").or("");
         var caPath = doc.getString("tls", "ca_path").or("");
         var clusterSecret = doc.getString("tls", "cluster_secret")
-                               .orElse(() -> ClusterSecretSource.resolve(System::getenv).fold(_ -> Option.<String>none(), value -> value))
+                               .orElse(() -> ClusterSecretSource.resolve(System::getenv).fold(_ -> Option.<String> none(),
+                                                                                              value -> value))
                                .or("");
 
         return new TlsConfig(autoGen, certPath, keyPath, caPath, clusterSecret);
