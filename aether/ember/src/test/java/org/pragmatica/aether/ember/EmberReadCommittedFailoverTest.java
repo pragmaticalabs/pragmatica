@@ -192,6 +192,48 @@ class EmberReadCommittedFailoverTest {
         assertThat(payloads(newOwner, "new owner")).as("the new lineage extends what was read").startsWith("acked-0", "acked-1", "acked-2").endsWith("after-failover");
     }
 
+    /// The tail an owner holds above its acknowledged position commits WITHOUT a new publish once the cut heals (#2087): the far member
+    /// never received the two records, so no acknowledgement can arrive for them; the owner's tick re-offers them, the far member lands
+    /// and acknowledges them, and the committed position moves to cover them on the owner AND on both replicas. Before the retransmit
+    /// existed they stayed uncommitted until some later publish.
+    @Test
+    @Timeout(600)
+    void unacknowledgedTail_commitsAfterTheCutHeals_withoutANewPublish() {
+        cluster = EmberTestPorts.startedCluster(PORTS, this::fiveNodes, START_BOUND);
+        awaitLeader();
+        assertThat(post(leaderPort(), "/api/v1/streams/" + NAMESPACE + "/rcfailover/" + VERSION, "{\"partitions\":1}").acked()).isTrue();
+
+        var record = awaitFullIsr();
+        var owner = cluster.getNode(record.owner().id()).unwrap();
+        var replicas = record.isr().stream().filter(member -> !member.equals(record.owner())).toList();
+        var far = replicas.getLast();
+        var others = cluster.allNodes().stream().map(AetherNode::self).filter(id -> !id.equals(far)).collect(Collectors.toSet());
+
+        for (var i = 0; i < ACKED; i++) {
+            assertThat(publishAcked(owner, "acked-" + i).acked()).isTrue();
+        }
+
+        cut(Set.of(far), others);
+        var unacked = startPublishes(owner, UNACKED, 12);
+
+        awaitUntil(() -> owner.streamPartitionManager().partitionBuffer(ENGINE_KEY, PARTITION).map(ring -> ring.headOffset()).or(-1L) >= ACKED + UNACKED - 1,
+                   REPLICA_VISIBLE_BUDGET_MS,
+                   "the owner appended the two records");
+        assertThat(payloads(owner, "owner while cut")).as("control: the owner serves only the acknowledged records while the far member is cut off")
+                                                      .containsExactly("acked-0", "acked-1", "acked-2");
+        unacked.forEach(CompletableFuture::join);
+        cluster.allNodes().forEach(node -> node.partitionFrom(Set.of()));
+
+        // No publish from here on: only the owner's tick can move the committed position.
+        awaitUntil(() -> payloads(owner, "owner after heal").size() == ACKED + UNACKED, 60_000L, "the tail committed on the owner without a new publish");
+        for (var member : replicas) {
+            var node = cluster.getNode(member.id()).unwrap();
+
+            awaitUntil(() -> payloads(node, "replica after heal").size() == ACKED + UNACKED, 60_000L, member.id() + " serves the tail");
+        }
+        assertThat(payloads(owner, "owner")).containsExactly("acked-0", "acked-1", "acked-2", "unacked-0", "unacked-1");
+    }
+
     private Response publishAcked(AetherNode owner, String payload) {
         var deadline = System.currentTimeMillis() + ISR_BUDGET_MS;
         var last = publish(owner, payload, 30);
