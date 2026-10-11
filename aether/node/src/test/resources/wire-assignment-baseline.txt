@@ -689,7 +689,7 @@ TAG  org.pragmatica.aether.stream.provenance.ProvenanceEntry$ProvenanceKind 1712
 TAG  org.pragmatica.aether.stream.replication.ReplicationMessage$BatchSync 97
 TAG  org.pragmatica.aether.stream.replication.ReplicationMessage$CatchupRequest 98
 TAG  org.pragmatica.aether.stream.replication.ReplicationMessage$CatchupResponse 99
-TAG  org.pragmatica.aether.stream.replication.ReplicationMessage$CommitAdvance 2140
+TAG  org.pragmatica.aether.stream.replication.ReplicationMessage$CommitAdvance 2142
 TAG  org.pragmatica.aether.stream.replication.ReplicationMessage$ReplicateAck 100
 TAG  org.pragmatica.aether.stream.replication.ReplicationMessage$ReplicateEvents 101
 TAG  org.pragmatica.aether.stream.topic.DlqEnvelope 111

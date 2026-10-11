@@ -632,10 +632,10 @@ public interface SystemTags {
         // #2062: the admission marker of an EXTERNAL capacity reservation — 2134..2137 belong to the rolling-upgrade run state (#1543 F1/F2, open PRs)
         pin(table, 2138, "org.pragmatica.aether.slice.kvstore.AetherKey.CapacityAdmissionKey");
         pin(table, 2139, "org.pragmatica.aether.slice.kvstore.AetherValue.CapacityAdmissionValue");
-        // #2087: the owner's visible position, announced to its replicas. 2132..2139 are claimed by branches in flight
-        // (scanned across every open PR head and every origin branch on 2026-10-10; 2132..2139 have since landed), so this takes the next free slot.
-        pin(table, 2140, "org.pragmatica.aether.stream.replication.ReplicationMessage.CommitAdvance");
-        // ---- 2141..16383 RESERVED ----
+        // #2087: the owner's visible position, announced to its replicas. 2140 and 2141 are held by #2118 (open), so this takes the
+        // next free slot (scanned across every open PR head and every origin branch on 2026-10-11).
+        pin(table, 2142, "org.pragmatica.aether.stream.replication.ReplicationMessage.CommitAdvance");
+        // ---- 2143..16383 RESERVED ----
         rejectDuplicateTags(table);
 
         return Map.copyOf(table);
