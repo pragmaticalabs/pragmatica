@@ -311,6 +311,25 @@ public interface ClusterTopologyManager extends TopologyManager {
         return org.pragmatica.lang.Unit.unit();
     }
 
+    /// What the leader knows of the instance behind a dropped in-flight replacement (#1111).
+    enum DroppedInstance {
+        /// The provider has listed the instance: an empty listing later means it is gone.
+        LISTED,
+        /// A create returned an instance, but no listing has shown it: an empty listing proves nothing yet (listings lag creation).
+        CREATED,
+        /// The create FAILED, so the instance may never have existed: only repeated successful empty listings confirm it absent.
+        MAYBE
+    }
+
+    /// #1111: the leader dropped the in-flight auto-heal replacement minted as `node` (the per-source ceiling, a FAILED or repeatedly absent
+    /// listing, or a failed create) without it joining. Whatever the provider holds under that identity is looked up by its node-id label and
+    /// terminated through the confirmed reap, with a WARN naming the source, node and instance id; a failed termination ends in the same
+    /// unconfirmed mark and event as a retirement. A [DroppedInstance#MAYBE] drop whose instance is confirmed absent ends quietly. A node that
+    /// shows life is never terminated. Default: nothing.
+    default org.pragmatica.lang.Unit reapDroppedReplacement(NodeId node, String reason, DroppedInstance knowledge) {
+        return org.pragmatica.lang.Unit.unit();
+    }
+
     /// #1543: the committed replacement pairings, read by worker surplus selection.
     default org.pragmatica.lang.Unit setNodeReplacements(NodeReplacementIndex index) {
         return org.pragmatica.lang.Unit.unit();

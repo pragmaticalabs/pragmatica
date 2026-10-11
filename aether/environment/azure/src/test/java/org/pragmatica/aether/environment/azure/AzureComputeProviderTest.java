@@ -71,6 +71,18 @@ class AzureComputeProviderTest {
             assertThat(testClient.lastGetVmName).isEqualTo("aether-test");
         }
 
+        /// #1111: the create succeeds, then the VM reports stopped (boot crash): it EXISTS, so the typed readiness timeout leaves `createFrom`.
+        @Test
+        void provision_vmCrashesDuringBoot_failsWithTheTypedReadinessTimeout() {
+            testClient.createVmResponse = Promise.success(runningVm("aether-test"));
+            testClient.getVmResponse = Promise.success(vmWithPowerState("aether-test", "PowerState/stopped", "Succeeded"));
+
+            provider.provision(InstanceType.ON_DEMAND)
+                    .await()
+                    .onSuccess(info -> assertThat(info).as("expected readiness failure, not a phantom success").isNull())
+                    .onFailure(cause -> assertThat(cause).as("#1111: the readiness timeout reaches the caller typed (the instance EXISTS), never flattened into a provision failure").isInstanceOf(EnvironmentError.ProvisionReadinessTimeout.class));
+        }
+
         /// SHOULD-FIX from adversarial review: the requested-spec threading added by this change was
         /// pinned for Hetzner and for NOBODY ELSE — reverting it here left 253 tests green. A
         /// mutation that leaves everything green means unpinned, not independent.

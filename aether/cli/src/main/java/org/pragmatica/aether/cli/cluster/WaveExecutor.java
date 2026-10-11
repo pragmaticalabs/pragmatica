@@ -5,6 +5,7 @@ package org.pragmatica.aether.cli.cluster;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Comparator;
 import java.util.Map;
 
 import org.pragmatica.aether.config.cluster.ClusterBootstrapConfig;
@@ -18,6 +19,7 @@ import org.pragmatica.aether.config.cluster.SshConfig;
 import org.pragmatica.aether.environment.ClusterName;
 import org.pragmatica.aether.environment.CloudProviderSupport;
 import org.pragmatica.aether.environment.ComputeProvider;
+import org.pragmatica.aether.environment.InstanceInfo;
 import org.pragmatica.aether.environment.NodeGroupConfig;
 import org.pragmatica.aether.environment.ProvisionedNode;
 import org.pragmatica.aether.environment.SourceName;
@@ -401,21 +403,25 @@ public final class WaveExecutor {
                                                             CreatedNodes created) {
         logAction("~", "  draining " + nodeId + "...");
 
-        return drainAndDestroyNode(nodeId, sourceName, role, source, managementPort).flatMap(_ -> reprovisionNode(sourceName,
-                                                                                                                  role,
-                                                                                                                  desired,
-                                                                                                                  created))
+        return drainAndDestroyNode(desired.cluster().name(),
+                                   nodeId,
+                                   sourceName,
+                                   role,
+                                   source,
+                                   managementPort).flatMap(_ -> reprovisionNode(sourceName, role, desired, created))
                                   .map(_ -> logAndCount("~", "  " + nodeId + " restarted with new runtime", 1));
     }
 
-    private static Result<Unit> drainAndDestroyNode(String nodeId,
-                                                    SourceName sourceName,
-                                                    NodeRole role,
-                                                    SourceProfile source,
-                                                    int managementPort) {
+    static Result<Unit> drainAndDestroyNode(ClusterName clusterName,
+                                            String nodeId,
+                                            SourceName sourceName,
+                                            NodeRole role,
+                                            SourceProfile source,
+                                            int managementPort) {
         return switch (source.type()) {
             case SSH -> drainSshNode(nodeId, sourceName, source, managementPort);
-            case CLOUD, DOCKER -> drainAndDestroyComputeNode(nodeId, sourceName, role, source, managementPort);
+            case CLOUD -> drainAndDestroyComputeNode(nodeId, sourceName, role, source, managementPort);
+            case DOCKER -> drainAndDestroyDockerNode(clusterName, sourceName, role);
             case FORGE -> forgeRestartPlaceholder(nodeId);
         };
     }
@@ -449,6 +455,54 @@ public final class WaveExecutor {
         logAction("~", "  SSH stop on " + host);
 
         return RemoteCommandRunner.ssh(host, "docker stop aether-node || true", sshConfig).mapToUnit();
+    }
+
+    /// Rolling restart of one docker node. The `<source>-<role>-<index>` label the loop computes names no container, so it can neither be drained
+    /// nor destroyed by that name (#1027). The node to restart is the OLDEST container of the cluster/source/role: each restart replaces a node with
+    /// a NEWER one (ULID ids sort by creation), so "oldest" walks the original nodes in turn and never re-selects a replacement. The drain dials the
+    /// container's PUBLISHED management port, the only address the operator's host can reach.
+    private static Result<Unit> drainAndDestroyDockerNode(ClusterName clusterName,
+                                                          SourceName sourceName,
+                                                          NodeRole role) {
+        return ProviderResolver.resolveDockerComputeWithoutBackup().flatMap(compute -> oldestDockerNodeId(compute,
+                                                                                                          clusterName,
+                                                                                                          sourceName,
+                                                                                                          role).flatMap(realId -> drainDockerNode(realId).flatMap(_ -> CloudProviderSupport.destroyVia(compute,
+                                                                                                                                                                                                       List.of(realId))
+                                                                                                                                                                                           .await())));
+    }
+
+    @SuppressWarnings("JBCT-EX-01")
+    private static Result<String> oldestDockerNodeId(ComputeProvider compute,
+                                                     ClusterName clusterName,
+                                                     SourceName sourceName,
+                                                     NodeRole role) {
+        return compute.listInstances(Map.of("aether.cluster",
+                                            clusterName.value(),
+                                            "aether.role",
+                                            role.value(),
+                                            "aether.source",
+                                            sourceName.value()))
+                      .await()
+                      .flatMap(instances -> instances.stream()
+                                                     .map(info -> info.nodeId()
+                                                                      .or(info.id().value()))
+                                                     .sorted()
+                                                     .findFirst()
+                                                     .<Result<String>> map(Result::success)
+                                                     .orElseGet(() -> new ApplyError.ScaleDownShort(sourceName,
+                                                                                                    role,
+                                                                                                    1,
+                                                                                                    List.<String> of()).result()));
+    }
+
+    private static Result<String> drainDockerNode(String nodeId) {
+        return DockerHostPorts.managementPort(nodeId)
+                              .flatMap(port -> ClusterHttpClient.drainNodeAndAwait("127.0.0.1",
+                                                                                   port,
+                                                                                   nodeId,
+                                                                                   DRAIN_TIMEOUT_MS))
+                              .map(_ -> nodeId);
     }
 
     private static Result<Unit> drainAndDestroyComputeNode(String nodeId,
@@ -627,9 +681,7 @@ public final class WaveExecutor {
         return success(totalRemoved);
     }
 
-    private static Result<Integer> executeRemoval(DiffAction action,
-                                                  ClusterBootstrapConfig stored,
-                                                  int managementPort) {
+    static Result<Integer> executeRemoval(DiffAction action, ClusterBootstrapConfig stored, int managementPort) {
         return switch (action) {
             case DiffAction.RemoveSource a -> destroyEntireSource(a.sourceName(), stored, managementPort);
             case DiffAction.RemoveRole a -> destroyRole(a.sourceName(), a.role(), a.count(), stored, managementPort);
@@ -646,12 +698,16 @@ public final class WaveExecutor {
     private static Result<Integer> destroyEntireSource(SourceName sourceName,
                                                        ClusterBootstrapConfig stored,
                                                        int managementPort) {
-        return lookupSource(sourceName, stored.sources()).flatMap(source -> destroyAllRoles(sourceName,
+        return lookupSource(sourceName, stored.sources()).flatMap(source -> destroyAllRoles(stored.cluster().name(),
+                                                                                            sourceName,
                                                                                             source,
                                                                                             managementPort));
     }
 
-    private static Result<Integer> destroyAllRoles(SourceName sourceName, SourceProfile source, int managementPort) {
+    private static Result<Integer> destroyAllRoles(ClusterName clusterName,
+                                                   SourceName sourceName,
+                                                   SourceProfile source,
+                                                   int managementPort) {
         var totalDestroyed = 0;
 
         for (var entry : source.roles().entrySet()) {
@@ -661,7 +717,7 @@ public final class WaveExecutor {
                 continue;
             }
 
-            var result = dispatchDestroy(sourceName, source, entry.getKey(), count, managementPort);
+            var result = dispatchRemoval(clusterName, sourceName, source, entry.getKey(), count, managementPort);
 
             if (result.isFailure()) {
                 return result.map(_ -> 0);
@@ -681,7 +737,8 @@ public final class WaveExecutor {
                                                ClusterBootstrapConfig stored,
                                                int managementPort) {
         return lookupSource(sourceName,
-                            stored.sources()).flatMap(source -> dispatchDestroy(sourceName,
+                            stored.sources()).flatMap(source -> dispatchRemoval(stored.cluster().name(),
+                                                                                sourceName,
                                                                                 source,
                                                                                 role,
                                                                                 count,
@@ -700,7 +757,8 @@ public final class WaveExecutor {
         var excess = from - to;
 
         return lookupSource(sourceName,
-                            stored.sources()).flatMap(source -> dispatchDestroy(sourceName,
+                            stored.sources()).flatMap(source -> dispatchRemoval(stored.cluster().name(),
+                                                                                sourceName,
                                                                                 source,
                                                                                 role,
                                                                                 excess,
@@ -711,6 +769,60 @@ public final class WaveExecutor {
                                                 + ": scaled down by " + excess
                                                 + " node(s) (LIFO)",
                                                  excess));
+    }
+
+    /// Removal of the NEWEST `count` nodes of a source's role (scale-down, role removal, source removal). A docker node's id is its container name
+    /// (`aether-<cluster>-node-<ulid>`), which the `<source>-<role>-<index>` label never matches, so docker removal discovers the real containers
+    /// ([#destroyDockerNodes]); the other source types keep addressing their own ids (#1027).
+    private static Result<Unit> dispatchRemoval(ClusterName clusterName,
+                                                SourceName sourceName,
+                                                SourceProfile source,
+                                                NodeRole role,
+                                                int count,
+                                                int managementPort) {
+        return source.type() == SourceType.DOCKER
+               ? ProviderResolver.resolveDockerComputeWithoutBackup().flatMap(compute -> destroyDockerNodes(compute,
+                                                                                                            clusterName,
+                                                                                                            sourceName,
+                                                                                                            role,
+                                                                                                            count))
+               : dispatchDestroy(sourceName, source, role, count, managementPort);
+    }
+
+    /// Terminates the `count` newest containers of `cluster`/`source`/`role`, newest = the greatest node id (a ULID, so id order is creation
+    /// order). Fewer matching containers than `count` is a refusal, not a partial removal: terminating whatever happens to match could remove a
+    /// node the plan did not name.
+    @SuppressWarnings("JBCT-EX-01")
+    static Result<Unit> destroyDockerNodes(ComputeProvider compute,
+                                           ClusterName clusterName,
+                                           SourceName sourceName,
+                                           NodeRole role,
+                                           int count) {
+        var found = compute.listInstances(Map.of("aether.cluster",
+                                                 clusterName.value(),
+                                                 "aether.role",
+                                                 role.value(),
+                                                 "aether.source",
+                                                 sourceName.value()))
+                           .await();
+
+        return found.flatMap(instances -> newestNodeIds(instances, sourceName, role, count))
+                    .flatMap(ids -> CloudProviderSupport.destroyVia(compute, ids).await());
+    }
+
+    private static Result<List<String>> newestNodeIds(List<InstanceInfo> instances,
+                                                      SourceName sourceName,
+                                                      NodeRole role,
+                                                      int count) {
+        var ids = instances.stream()
+                           .map(info -> info.nodeId()
+                                            .or(info.id().value()))
+                           .sorted(Comparator.reverseOrder())
+                           .toList();
+
+        return ids.size() < count
+               ? new ApplyError.ScaleDownShort(sourceName, role, count, ids).<List<String>> result()
+               : Result.success(ids.subList(0, count));
     }
 
     private static Result<Unit> dispatchDestroy(SourceName sourceName,
@@ -844,6 +956,18 @@ public final class WaveExecutor {
             public String message() {
                 return "SSH source '" + sourceName
                      + "' cannot scale up: hosts are fixed. Add hosts to the config and re-apply.";
+            }
+        }
+
+        record ScaleDownShort(SourceName sourceName, NodeRole role, int wanted, List<String> found) implements ApplyError {
+            @Override
+            public String message() {
+                return "cannot remove " + wanted
+                     + " " + role.value()
+                     + " node(s) of docker source '" + sourceName
+                     + "': only " + found.size()
+                     + " container(s) carry its labels (" + found
+                     + "). Nothing was removed.";
             }
         }
 
