@@ -127,6 +127,17 @@ class EmberPlannedDepartureAlertsTest {
         awaitCondition(() -> "an observer's cluster-events stream carries CRITICAL NodeFailed for the unplanned death; held: " + eventDump(observers, victim),
                        EVENT_REPLICATION_BUDGET_MS,
                        () -> observers.stream().anyMatch(n -> criticalNodeFailed(n, victim)));
+        // #1338: the event is per-observer ("one NodeFailed per member confirming the death", `details.observedBy`), and only
+        // the cluster-events OWNER emits locally; every other observer write-forwards its event to the owner. The check above is
+        // satisfied by the owner's own event alone, so it cannot tell a working forward from a refused one (a forward refused at the
+        // owner, e.g. one that loses its system-writer mark, drops the non-owners' events with a WARN and leaves it green). Every
+        // observer that raised the alert must therefore have ITS OWN NodeFailed in the stream.
+        awaitCondition("every observer raised the CRITICAL node-health alert", DEPARTURE_BUDGET_MS, () -> observers.stream().allMatch(n -> hasCriticalAlert(n, victim)));
+        var alerted = observers.stream().map(n -> n.self().id().id()).collect(java.util.stream.Collectors.toSet());
+
+        awaitCondition(() -> "every observer's own NodeFailed for the unplanned death landed in the stream (forwarded events included); landed from: " + failedObservers(observers, victim) + " of " + alerted,
+                       EVENT_REPLICATION_BUDGET_MS,
+                       () -> failedObservers(observers, victim).containsAll(alerted));
         assertThat(announcedNodeLeft(nodes.getFirst(), victim)).as("an unplanned death is never recorded as an announced departure").isFalse();
     }
 
@@ -214,6 +225,15 @@ class EmberPlannedDepartureAlertsTest {
         return readers.stream()
                       .flatMap(n -> events(n).stream())
                       .filter(e -> e instanceof ClusterEvent.NodeLeft && subject.equals(e.details().get("nodeId")) && "DrainRequested".equals(e.details().get("cause")))
+                      .map(e -> e.details().get("observedBy"))
+                      .collect(java.util.stream.Collectors.toSet());
+    }
+
+    /// Ids of the observers whose CRITICAL `NodeFailed` for `subject` is readable from any of `readers`.
+    private static java.util.Set<String> failedObservers(List<AetherNode> readers, String subject) {
+        return readers.stream()
+                      .flatMap(n -> events(n).stream())
+                      .filter(e -> e instanceof ClusterEvent.NodeFailed && subject.equals(e.details().get("nodeId")) && e.severity() == ClusterEvent.Severity.CRITICAL)
                       .map(e -> e.details().get("observedBy"))
                       .collect(java.util.stream.Collectors.toSet());
     }
