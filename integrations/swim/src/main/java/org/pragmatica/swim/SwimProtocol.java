@@ -1985,7 +1985,7 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// ANNOUNCE, so gossip carrying another IP for it keeps the resident address (or, for a member being re-admitted,
     /// the pinned IP with the gossiped port) and raises the address-conflict warning, throttled like the ANNOUNCE case.
     /// An unresolved gossiped address cannot be compared and is not taken for a pinned member, without a warning.
-    private InetSocketAddress addressUnderPin(MembershipUpdate update, InetSocketAddress resident) {
+    private InetSocketAddress addressUnderPin(MembershipUpdate update, Option<InetSocketAddress> resident) {
         var pinned = addressPins.get(update.nodeId());
         var gossiped = update.address();
 
@@ -2003,9 +2003,8 @@ public final class SwimProtocol implements SwimMessageHandler {
             reportAddressConflict(update.nodeId(), pinned, gossipedIp, "gossip");
         }
 
-        return resident != null && pinned.equals(resident.getAddress())
-               ? resident
-               : new InetSocketAddress(pinned, gossiped.getPort());
+        return resident.filter(address -> pinned.equals(address.getAddress()))
+                       .fold(() -> new InetSocketAddress(pinned, gossiped.getPort()), address -> address);
     }
 
     private Unit reportAddressConflict(NodeId id, InetAddress pinned, InetAddress attempted, String carrier) {
@@ -2674,7 +2673,7 @@ public final class SwimProtocol implements SwimMessageHandler {
         var member = SwimMember.swimMember(update.nodeId(),
                                            update.state(),
                                            update.incarnation(),
-                                           addressUnderPin(update, null),
+                                           addressUnderPin(update, Option.none()),
                                            update.labels());
 
         if (!storeScopedMember(update.nodeId(), member)) {
@@ -2833,7 +2832,7 @@ public final class SwimProtocol implements SwimMessageHandler {
         var updated = SwimMember.swimMember(update.nodeId(),
                                             update.state(),
                                             update.incarnation(),
-                                            addressUnderPin(update, existing.address()),
+                                            addressUnderPin(update, Option.some(existing.address())),
                                             resident.labels());
 
         if (!storeScopedMember(update.nodeId(), updated)) {
