@@ -217,6 +217,17 @@ class ClusterTopologyManagerDroppedReplacementTest {
         assertThat(warned("in-flight replacement", DROPPED.id(), "no compute source is known")).isTrue();
     }
 
+    /// The listing that names the instance id fails: the WARN says so, with the source, the node and the listing's cause.
+    @Test
+    void droppedReplacement_whenTheAnnouncingListingFails_warnsWithSourceNodeAndCause() {
+        listing.set(EnvironmentError.operationNotSupported("provider API down").promise());
+
+        ctm.reapDroppedReplacement(DROPPED, "still unjoined after its ceiling", false);
+
+        await().atMost(Duration.ofSeconds(5))
+               .until(() -> warned("in-flight replacement", DROPPED.id(), "source=", "instance id unknown", "provider API down"));
+    }
+
     /// Control: a replacement that joined (SWIM shows it alive) is never terminated, however many retries pass.
     @Test
     void droppedReplacement_thatShowsLife_isNeverTerminated() {

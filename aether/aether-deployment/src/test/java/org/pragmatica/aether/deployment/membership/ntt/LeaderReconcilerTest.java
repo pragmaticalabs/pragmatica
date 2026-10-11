@@ -1873,8 +1873,8 @@ class LeaderReconcilerTest {
         }
 
         @Test
-        void inFlightEntry_droppedWhenItsCreateFails_isReaped_withTheFailureAsTheReason() {
-            ctm.failNextProvision(Causes.cause("instance did not become ready within the readiness timeout"));
+        void inFlightEntry_droppedWhenItsCreateTimesOutOnReadiness_isReaped_asSeen() {
+            ctm.failNextProvision(READINESS_TIMEOUT);
             configuredCoreCount.set(5);
             seedClusterWithPeers(PEER_A, PEER_B, PEER_C, PEER_D);
             reconciler.activate();
@@ -1886,8 +1886,26 @@ class LeaderReconcilerTest {
 
             var reap = onlyDroppedReap(ctm.provisionReplacementCalls().getFirst());
 
-            assertThat(reap.reason()).contains("create failed").contains("readiness timeout");
-            assertThat(reap.seenBefore()).isFalse();
+            assertThat(reap.reason()).contains("create failed").contains("did not reach");
+            assertThat(reap.seenBefore()).as("the create returned an instance: the provider lists it").isTrue();
+        }
+
+        /// A create the provider rejected made no instance: nothing to terminate, and a reap would end in a false unconfirmed event and a mark that never clears.
+        @Test
+        void inFlightEntry_droppedWhenTheProviderRejectsItsCreate_isNotReaped() {
+            ctm.failNextProvision(Causes.cause("quota exceeded for server type"));
+            configuredCoreCount.set(5);
+            seedClusterWithPeers(PEER_A, PEER_B, PEER_C, PEER_D);
+            reconciler.activate();
+            scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
+            removePeers(PEER_D);
+            triggerAndFireReconcile();
+            advancePastProvisioningGates();
+            triggerAndFireReconcile();
+
+            assertThat(ctm.provisionReplacementCalls()).as("arming: a provision was attempted and failed").hasSize(1);
+            assertThat(reconciler.inFlightProvisioningKeys()).as("the entry is dropped").doesNotContain(ctm.provisionReplacementCalls().getFirst());
+            assertThat(ctm.droppedReaps()).isEmpty();
         }
 
         /// A create that was refused or deferred made no instance: nothing to reap, and no unconfirmed event to raise for it.
@@ -1943,7 +1961,7 @@ class LeaderReconcilerTest {
 
             advancePollIntervals(10);
             assertThat(reapsOf(minted)).as("arming: the ceiling dropped the DISPATCHING entry").hasSize(1);
-            create.fail(Causes.cause("readiness timeout, late"));
+            create.fail(READINESS_TIMEOUT);
             create.await();
 
             // The failure callback runs off this thread; an absence needs a window, so a second reap of the same placeholder would have to land inside it.
@@ -3941,6 +3959,12 @@ class LeaderReconcilerTest {
 
     /// Recording `ClusterTopologyManager` stub. Phase 1.5 verification surface for
     /// `provisionReplacement` / `drainNode` / `reconcile` v2 calls.
+    private static final org.pragmatica.aether.environment.EnvironmentError.ProvisionReadinessTimeout READINESS_TIMEOUT =
+        org.pragmatica.aether.environment.EnvironmentError.ProvisionReadinessTimeout.provisionReadinessTimeout(
+            org.pragmatica.aether.environment.InstanceId.instanceId("i-slow").unwrap(),
+            new org.pragmatica.aether.environment.InstanceStatus.Provisioning(),
+            300_000L).unwrap();
+
     private record DroppedReap(NodeId node, String reason, boolean seenBefore) {}
 
     private static final class RecordingCtm implements ClusterTopologyManager {

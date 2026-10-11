@@ -34,6 +34,7 @@ import org.pragmatica.aether.deployment.cluster.SliceOwnershipQuery.DrainRefusal
 import org.pragmatica.aether.deployment.membership.MembershipConfig;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsm;
 import org.pragmatica.aether.environment.ClusterName;
+import org.pragmatica.aether.environment.EnvironmentError;
 import org.pragmatica.aether.environment.ProvisionContext;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Cause;
@@ -1767,14 +1768,28 @@ public final class LeaderReconciler {
            .onFailure(cause -> reapFailedProvision(placeholder, cause));
     }
 
-    /// #1111 — a create that failed after the provider may have made the instance (a readiness timeout) is a drop like the other
-    /// three: the entry goes, and so does whatever the provider holds under the placeholder. Only the call that actually removes the
-    /// entry reaps, so a placeholder the ceiling already dropped is not reaped twice.
+    /// #1111 — a create that failed AFTER the provider made the instance (a readiness timeout: the instance exists, listed under the placeholder's
+    /// node-id tag) is a drop like the other three: the entry goes, and so does whatever the provider holds under the placeholder. A create the
+    /// provider REJECTED (quota, capacity, an API error) made nothing, so there is nothing to terminate: it is stated at WARN with its cause and reaps
+    /// nothing, because a reap of a VM that never existed would end in a false `instance-termination-unconfirmed` and a mark that never clears. Only
+    /// the call that actually removes the entry acts, so a placeholder the ceiling already dropped is not reaped twice. A failure after creation of
+    /// any other shape is not reaped here: the next activation's orphan replay owns it.
     @Contract
     private void reapFailedProvision(NodeId placeholder, Cause cause) {
-        Option.option(inFlightProvisioning.remove(placeholder)).onPresent(entry -> reapDropped(placeholder,
-                                                                                               "its create failed: " + cause.message(),
-                                                                                               false));
+        Option.option(inFlightProvisioning.remove(placeholder))
+              .onPresent(entry -> settleFailedProvision(placeholder, cause));
+    }
+
+    private void settleFailedProvision(NodeId placeholder, Cause cause) {
+        if (cause instanceof EnvironmentError.ProvisionReadinessTimeout) {
+            reapDropped(placeholder, "its create failed after the instance was made: " + cause.message(), true);
+
+            return;
+        }
+
+        log.warn("LeaderReconciler in-flight replacement {} dropped: the provider rejected its create, so no instance exists and nothing is reaped: {}",
+                 placeholder,
+                 cause.message());
     }
 
     /// #1111 — every drop of an in-flight replacement hands its instance to the manager's confirmed reap (bounded, confirmed, operator-visible
