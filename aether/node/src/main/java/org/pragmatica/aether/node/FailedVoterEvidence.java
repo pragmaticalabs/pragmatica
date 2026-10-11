@@ -18,7 +18,7 @@ import org.pragmatica.lang.Option;
 
 
 /// #2098: the positive evidence of failure the core voter reconciler needs before it may remove a voter. A node is failed when the leader
-/// OBSERVED it reporting a state other than READY, or membership holds it Dead or Departing. A node absent from both is merely unobserved and
+/// OBSERVED it reporting a state other than READY and SYNCING (SYNCING is what a healthy follower reports across a leader change), or membership holds it Dead or Departing. A node absent from both is merely unobserved and
 /// is never failed on that account, so a fresh leader cannot drop a healthy voter it has not heard from yet.
 ///
 /// The two sources are the leader's reported-state view (the metrics collector) and the membership verdicts; both are read afresh on
@@ -40,11 +40,12 @@ final class FailedVoterEvidence {
         return () -> failedVoters(observedNotReady(reportedStates.get()), memberStates.get());
     }
 
-    /// The nodes a report was OBSERVED for whose state is not READY.
+    /// The nodes a report was OBSERVED for whose state is neither READY nor SYNCING. SYNCING is not evidence: the state holder reports it whenever
+    /// consensus is inactive, which a healthy follower is across a leader change.
     static Set<NodeId> observedNotReady(Map<NodeId, NodeReportedState> states) {
         return states.entrySet()
                      .stream()
-                     .filter(entry -> entry.getValue() != NodeReportedState.READY)
+                     .filter(entry -> entry.getValue() != NodeReportedState.READY && entry.getValue() != NodeReportedState.SYNCING)
                      .map(Map.Entry::getKey)
                      .collect(Collectors.toUnmodifiableSet());
     }

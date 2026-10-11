@@ -186,4 +186,58 @@ class CoreVoterReconcilerTest {
         assertThat(CoreVoterReconciler.selectVoters(A, five, Set.of(A, B, C, D, E, f), 5, Map.of(D, f)))
             .containsExactly(A, B, C, f, E);
     }
+
+    private static List<List<NodeId>> requestsOf(VoterConfiguration roster, int desired, Set<NodeId> ready, Set<NodeId> failed, Map<NodeId, NodeId> swaps) {
+        var requested = new java.util.ArrayList<List<NodeId>>();
+
+        CoreVoterReconciler.coreVoterReconciler(A, () -> true, () -> Option.some(roster), () -> Option.some(roster), () -> desired,
+            () -> ready, () -> swaps, () -> failed, config -> { requested.add(config.members()); return Promise.unitPromise(); }).reconcile().await();
+
+        return requested;
+    }
+
+    private static final NodeId G = new NodeId("g");
+    private static final VoterConfiguration SEVEN = new VoterConfiguration(0, new ClusterConfig(List.of(A, B, C, D, E, F, G)));
+
+    /// F2: a Dead or Departing voter that still has a READY entry (stale) is healed: `ready - failed`.
+    @Test
+    void deadVoterWithAStaleReadyEntry_isHealed() {
+        var requested = requestsOf(FIVE, 5, Set.of(A, B, C, D, F), Set.of(D), Map.of());
+
+        assertThat(requested).hasSize(1);
+        assertThat(requested.getFirst()).containsExactlyInAnyOrder(A, B, C, E, F);
+    }
+
+    /// F3: a surplus trim (7 voters, desired 5) is a size reduction. Failed voters go first.
+    @Test
+    void surplusTrim_removesTheFailedVoterFirst() {
+        var requested = requestsOf(SEVEN, 5, Set.of(A, B, C, D), Set.of(G), Map.of());
+
+        assertThat(requested).hasSize(1);
+        assertThat(requested.getFirst()).containsExactlyInAnyOrder(A, B, C, D, E);
+    }
+
+    /// F3: then never-observed voters, before any observed-healthy one, whatever the ids: the healthy F and G stay, the unobserved D and E go.
+    @Test
+    void surplusTrim_removesNeverObservedVotersBeforeObservedHealthyOnes() {
+        var requested = requestsOf(SEVEN, 5, Set.of(A, F, G), Set.of(), Map.of());
+
+        assertThat(requested).hasSize(1);
+        assertThat(requested.getFirst()).containsExactlyInAnyOrder(A, B, C, F, G);
+    }
+
+    /// F3: id order is only the final tie-break among equals.
+    @Test
+    void surplusTrim_amongEquals_breaksTiesById() {
+        var requested = requestsOf(SEVEN, 5, Set.of(A, B, C, D, E, F, G), Set.of(), Map.of());
+
+        assertThat(requested.getFirst()).containsExactlyInAnyOrder(A, B, C, D, E);
+    }
+
+    /// F3: never while a swap is in progress (Mode 1's trigger); control: the same trim without a swap goes through.
+    @Test
+    void surplusTrim_isRefusedWhileASwapIsInProgress() {
+        assertThat(requestsOf(SEVEN, 5, Set.of(A, B, C, D, E, F), Set.of(G), Map.of(F, new NodeId("h")))).isEmpty();
+        assertThat(requestsOf(SEVEN, 5, Set.of(A, B, C, D, E, F), Set.of(G), Map.of())).hasSize(1);
+    }
 }

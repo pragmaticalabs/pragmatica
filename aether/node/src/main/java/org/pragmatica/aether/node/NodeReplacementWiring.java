@@ -330,6 +330,8 @@ public final class NodeReplacementWiring {
         // seen up again is forgotten ([#forgetReapOfLiveNode]).
         private final Set<NodeId> reaped = ConcurrentHashMap.newKeySet();
         private final Map<NodeId, String> reapFailure = new ConcurrentHashMap<>();
+        /// Why a provision of this replacement last waited (#2098), shown by the provisioning deadline if the wait never ends.
+        private final Map<NodeId, String> provisionWait = new ConcurrentHashMap<>();
         private final Map<NodeId, Long> reapSince = new ConcurrentHashMap<>();
         // Nodes whose instance a provider listing showed while they were still up: only for these does a later EMPTY listing mean gone.
         private final Set<NodeId> seen = ConcurrentHashMap.newKeySet();
@@ -399,7 +401,7 @@ public final class NodeReplacementWiring {
                                    reaped.contains(original),
                                    reapFailure.getOrDefault(original,
                                                             reapFailure.getOrDefault(record.replacement(), "")),
-                                   inventoryBlocker(in.kvStore()).or(""));
+                                   inventoryBlocker(in.kvStore()).or(provisionWait.getOrDefault(record.replacement(), "")));
         }
 
         /// A node that is up under an id whose reap was confirmed is a new incarnation of the id (ruling e9959fa6d(2)): the confirmation described the
@@ -463,10 +465,28 @@ public final class NodeReplacementWiring {
                                            NodeRole.nodeRole(record.role()).or(NodeRole.CORE),
                                            SourceName.sourceNameOrDefault(record.source()))
                      .<EffectResult> map(disposition -> switch (disposition) {
-                case ProvisionDisposition.Dispatched _ -> new EffectResult.Done();
+                case ProvisionDisposition.Dispatched _ -> provisionDispatched(record);
                 case ProvisionDisposition.Deferred deferred -> new EffectResult.Deferred("provisioning deferred: " + deferred.reason());
             })
-                     .recover(cause -> new EffectResult.Failed(cause.message()));
+                     .recover(cause -> provisionFailed(record, cause));
+        }
+
+        /// A provision refused because the fleet inventory is being initialized is a wait, not a refusal (#2098): it defers and is
+        /// tried again on the next tick, bounded by the provisioning deadline, whose cause then names it. Any other cause fails the provision.
+        private EffectResult provisionFailed(NodeReplacementValue record, Cause cause) {
+            if (cause instanceof org.pragmatica.aether.deployment.cluster.FleetInventoryInitializing) {
+                provisionWait.put(record.replacement(), cause.message());
+
+                return new EffectResult.Deferred("provisioning deferred: " + cause.message());
+            }
+
+            return new EffectResult.Failed(cause.message());
+        }
+
+        private EffectResult provisionDispatched(NodeReplacementValue record) {
+            provisionWait.remove(record.replacement());
+
+            return new EffectResult.Done();
         }
 
         /// Done only when the provider's own listing, taken after the terminate, shows the instance gone. A refusal, a listing that

@@ -1684,6 +1684,10 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     /// phase-NORMAL / operator reset via [#resetProvisioningCircuit].
     @Contract
     private void recordProvisioningFailure(Cause cause) {
+        if (cause instanceof FleetInventoryInitializing) {
+            return;
+        }
+
         var failures = consecutiveProvisioningFailures.incrementAndGet();
 
         lastProvisionFailureRef.set(new LastProvisionFailure(cause.message(), nowMs()));

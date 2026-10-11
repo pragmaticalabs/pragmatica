@@ -110,7 +110,7 @@ class CoreCandidateRetirementTest {
 
     @Test void observedNotReady_excludesReady_andIsEmptyForNoObservation() {
         assertThat(FailedVoterEvidence.observedNotReady(java.util.Map.of(A, org.pragmatica.aether.metrics.NodeReportedState.READY,
-                                                               B, org.pragmatica.aether.metrics.NodeReportedState.SYNCING))).containsExactly(B);
+                                                               B, org.pragmatica.aether.metrics.NodeReportedState.DRAINING))).containsExactly(B);
         assertThat(FailedVoterEvidence.observedNotReady(java.util.Map.of())).isEmpty();
     }
 }

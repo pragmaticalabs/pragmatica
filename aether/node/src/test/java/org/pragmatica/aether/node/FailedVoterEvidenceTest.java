@@ -24,7 +24,7 @@ class FailedVoterEvidenceTest {
 
     @Test
     void anObservedNonReadyNode_isFailed_evenWhenMembershipStillCallsItAMember() {
-        var failed = FailedVoterEvidence.failedVoterEvidence(() -> Map.of(A, NodeReportedState.READY, B, NodeReportedState.SYNCING, C, NodeReportedState.DRAINING),
+        var failed = FailedVoterEvidence.failedVoterEvidence(() -> Map.of(A, NodeReportedState.READY, B, NodeReportedState.DRAINING, C, NodeReportedState.DRAINING),
                                                              () -> Map.of(A, "Member", B, "Member", C, "Member", D, "Member"));
 
         assertThat(failed.get()).containsExactlyInAnyOrder(B, C);
@@ -40,7 +40,7 @@ class FailedVoterEvidenceTest {
     /// Control: a node neither observed non-READY nor held Dead/Departing is NOT failed, whatever else is going on (the amendment).
     @Test
     void anUnobservedAliveNode_isNeverFailed() {
-        var failed = FailedVoterEvidence.failedVoterEvidence(() -> Map.of(B, NodeReportedState.SYNCING), () -> Map.of(A, "Member", B, "Dead"));
+        var failed = FailedVoterEvidence.failedVoterEvidence(() -> Map.of(B, NodeReportedState.DRAINING), () -> Map.of(A, "Member", B, "Dead"));
 
         assertThat(failed.get()).containsExactly(B).doesNotContain(A, D);
     }
@@ -53,7 +53,7 @@ class FailedVoterEvidenceTest {
         var failed = FailedVoterEvidence.failedVoterEvidence(reported::get, members::get);
 
         assertThat(failed.get()).isEmpty();
-        reported.set(Map.of(A, NodeReportedState.SYNCING));
+        reported.set(Map.of(A, NodeReportedState.DRAINING));
         assertThat(failed.get()).containsExactly(A);
         reported.set(Map.of());
         members.set(Map.of(A, "Dead"));
@@ -68,12 +68,22 @@ class FailedVoterEvidenceTest {
         var fsm = org.mockito.Mockito.mock(org.pragmatica.aether.deployment.membership.fsm.MembershipFsm.class);
         var current = new AtomicReference<org.pragmatica.aether.deployment.membership.fsm.MembershipFsm>();
 
-        org.mockito.Mockito.when(collector.reportedStates()).thenReturn(Map.of(B, NodeReportedState.SYNCING));
+        org.mockito.Mockito.when(collector.reportedStates()).thenReturn(Map.of(B, NodeReportedState.DRAINING));
         org.mockito.Mockito.when(fsm.memberStates()).thenReturn(Map.of(A, "Dead", C, "Member"));
         var failed = FailedVoterEvidence.forNode(collector, current::get);
 
         assertThat(failed.get()).as("no FSM yet: the collector alone").containsExactly(B);
         current.set(fsm);
         assertThat(failed.get()).containsExactlyInAnyOrder(A, B);
+    }
+
+    /// SYNCING is what a healthy follower reports across a leader change (the holder reports it whenever consensus is inactive), so it is
+    /// not evidence of failure; DRAINING is.
+    @Test
+    void anObservedSyncingNode_isNotFailed() {
+        var failed = FailedVoterEvidence.failedVoterEvidence(() -> Map.of(A, NodeReportedState.SYNCING, B, NodeReportedState.DRAINING),
+                                                             () -> Map.of(A, "Member", B, "Member"));
+
+        assertThat(failed.get()).containsExactly(B);
     }
 }

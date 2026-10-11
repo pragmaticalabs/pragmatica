@@ -280,6 +280,50 @@ class NodeReplacementEnvTest {
         assertThat(NodeReplacementWiring.inventoryBlocker(storeOver(Map.of(AetherKey.ClusterConfigKey.CURRENT, stored.get(AetherKey.ClusterConfigKey.CURRENT)))).isPresent()).isFalse();
     }
 
+    /// F5: the CTM's other transient, an inventory initialization still in progress, defers like the missing configuration: nothing is rolled
+    /// back, and the next tick dispatches.
+    @Test
+    void provisioningDuringInventoryInitialization_isDeferred_thenDispatched() {
+        when(ctm.provisionReplacement(any(), any(), any(), any(), any()))
+            .thenReturn(new org.pragmatica.aether.deployment.cluster.FleetInventoryInitializing().<ProvisionDisposition> promise())
+            .thenReturn(Promise.success(ProvisionDisposition.dispatched()));
+        record(NodeReplacementPhase.PROVISIONING, 999_999L);
+        wiring.reconciler().reconcile().await();
+
+        assertThat(commands).as("deferred: no phase committed, in particular no roll back").isEmpty();
+
+        wiring.reconciler().reconcile().await();
+
+        assertThat(committedRecord().phase()).isEqualTo(NodeReplacementPhase.JOINING);
+    }
+
+    /// F5: an initialization that never finishes ends at the provisioning deadline, and the cause is named.
+    @Test
+    void anInventoryInitializationThatNeverFinishes_endsAtTheDeadline_namingIt() {
+        when(ctm.provisionReplacement(any(), any(), any(), any(), any()))
+            .thenReturn(new org.pragmatica.aether.deployment.cluster.FleetInventoryInitializing().<ProvisionDisposition> promise());
+        record(NodeReplacementPhase.PROVISIONING, 500L);
+        now = 100L;
+        wiring.reconciler().reconcile().await();
+        now = 2_000L;
+        wiring.reconciler().reconcile().await();
+
+        var committed = committedRecord();
+
+        assertThat(committed.phase()).isEqualTo(NodeReplacementPhase.ROLLED_BACK);
+        assertThat(committed.reason()).contains("provisioning deadline").contains("Fleet inventory initialization in progress");
+    }
+
+    /// Control: any other provisioning cause still fails the provision.
+    @Test
+    void anyOtherProvisioningCause_stillFailsTheProvision() {
+        when(ctm.provisionReplacement(any(), any(), any(), any(), any())).thenReturn(Causes.cause("quota").<ProvisionDisposition> promise());
+        record(NodeReplacementPhase.PROVISIONING, 999_999L);
+        wiring.reconciler().reconcile().await();
+
+        assertThat(committedRecord().phase()).isEqualTo(NodeReplacementPhase.ROLLED_BACK);
+    }
+
     @SuppressWarnings("unchecked")
     private static KVStore<AetherKey, AetherValue> storeOver(Map<AetherKey, AetherValue> content) {
         var store = mock(KVStore.class);
