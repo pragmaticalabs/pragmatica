@@ -16,19 +16,19 @@ private reporting.
 
 ## License implications of contributing — read this first
 
-This repository is dual-licensed by directory; **your contribution takes the license of the
-directory it lands in.** From [`LICENSE`](LICENSE):
+This repository is Apache-2.0 by default; **your contribution takes the license of the
+module it lands in.** From [`LICENSE`](LICENSE) and [`tools/license/bsl-modules.txt`](tools/license/bsl-modules.txt):
 
 | Path | License |
 |---|---|
-| `core/`, `integrations/`, `examples/`, `jbct/` (except the two paths below) | Apache-2.0 |
-| `aether/`, `jbct/slice-processor/`, `jbct/slice-processor-tests/` | Business Source License 1.1 |
+| everything not listed below (`core/`, `integrations/`, `examples/`, `jbct/`, and the rest of `aether/`) | Apache-2.0 |
+| `aether/node`, `aether/aether-deployment`, `aether/aether-control`, `aether/aether-ttm`, `aether/aether-ttm-onnx`, `aether/aether-stream`, `aether/aether-invoke`, `aether/ember`, `aether/forge/forge-api`, `aether/forge/forge-core`, `aether/forge/forge-tests` | Business Source License 1.1 |
 
-**BSL-1.1 is not an OSI-approved open-source license.** If your PR touches `aether/` or the
-slice-processor, you are contributing to a source-available codebase whose Change Date is
+**BSL-1.1 is not an OSI-approved open-source license.** If your PR touches one of the BSL modules
+above, you are contributing to a source-available codebase whose Change Date is
 2030-01-01 (after which that code relicenses to Apache-2.0), and whose Additional Use Grant
 excludes Managed Service / SaaS offerings — the Licensor (Pragmatica Labs) retains that
-commercial right in the meantime. Full terms: [`aether/LICENSE`](aether/LICENSE). By submitting a
+commercial right in the meantime. Full terms: the `LICENSE` file inside each BSL module. By submitting a
 PR you agree your contribution is offered under the license terms of the module it's submitted
 to — there is no separate CLA in this repository as of this writing.
 
@@ -41,8 +41,9 @@ New source files need the SPDX header matching their module:
   // Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
   // See LICENSE in the repository root for full terms.
   ```
-- Apache-2.0 files may carry a shorter header or none; the module's own `LICENSE` file governs
-  either way (per `LICENSE` at the repo root).
+- Apache-2.0 files may carry the block in [`docs/legal/apache-header.txt`](docs/legal/apache-header.txt) or
+  none; the root `LICENSE` governs either way. `tools/license/relicense.py` applies both headers from
+  the module list, and `tools/check-licence-closure.py` (CI) checks them.
 
 ## Development setup
 
@@ -229,7 +230,7 @@ witness behavior that violates this, report it via the same private channel as a
 
 - [`README.md`](README.md) — module map and quick start.
 - [`SECURITY.md`](SECURITY.md) — vulnerability reporting and Aether's trust model.
-- [`LICENSE`](LICENSE) — the license map; [`aether/LICENSE`](aether/LICENSE) for the full BSL-1.1
-  text; [`LICENSE-APACHE-2.0`](LICENSE-APACHE-2.0) for the full Apache-2.0 text.
+- [`LICENSE`](LICENSE) — the license map; each BSL module's own `LICENSE` file (for example
+  [`aether/node/LICENSE`](aether/node/LICENSE)) for the full BSL-1.1 text; [`LICENSE-APACHE-2.0`](LICENSE-APACHE-2.0) for the full Apache-2.0 text.
 - [`build.sh`](build.sh) and [`.github/workflows/ci.yml`](.github/workflows/ci.yml) — the build
   and CI gate, respectively.

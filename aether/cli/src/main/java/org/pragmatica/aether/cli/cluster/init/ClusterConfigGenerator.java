@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.cli.cluster.init;
 
 import java.util.List;
@@ -297,7 +296,13 @@ public sealed interface ClusterConfigGenerator {
     }
 
     private static void appendTls(StringBuilder sb, ClusterConfigAnswers answers) {
-        if (answers.target() == SourceType.DOCKER || answers.target() == SourceType.FORGE || answers.tls() instanceof TlsAnswers.Skipped) {
+        if (answers.target() == SourceType.DOCKER) {
+            appendDockerPlainHttp(sb);
+
+            return;
+        }
+
+        if (answers.target() == SourceType.FORGE || answers.tls() instanceof TlsAnswers.Skipped) {
             appendCommentedTlsTemplate(sb);
 
             return;
@@ -311,6 +316,16 @@ public sealed interface ClusterConfigGenerator {
         }
 
         appendSecret(sb, answers.secret());
+        appendBlank(sb);
+    }
+
+    /// A docker source cannot serve management TLS (its nodes boot from the image's plain-HTTP configuration), and bootstrap refuses a
+    /// docker source whose config declares TLS (#2089), so the generated config says "no TLS" out loud instead of leaving the default.
+    private static void appendDockerPlainHttp(StringBuilder sb) {
+        appendComment(sb,
+                      "Docker nodes serve the management API over plain HTTP; bootstrap refuses a docker source that declares TLS.");
+        appendSection(sb, "operations.tls");
+        appendKvBare(sb, "auto_generate", "false");
         appendBlank(sb);
     }
 

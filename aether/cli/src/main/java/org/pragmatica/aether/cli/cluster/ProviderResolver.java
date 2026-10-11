@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.cli.cluster;
 
 import java.util.ArrayList;
@@ -20,6 +19,7 @@ import org.pragmatica.aether.environment.ClusterName;
 import org.pragmatica.aether.environment.CloudConfig;
 import org.pragmatica.aether.environment.CloudCredentials;
 import org.pragmatica.aether.environment.ComputeProvider;
+import org.pragmatica.aether.environment.docker.DockerComputeProvider;
 import org.pragmatica.aether.environment.EnvironmentIntegration;
 import org.pragmatica.aether.environment.EnvironmentIntegrationFactory;
 import org.pragmatica.aether.environment.FirewallId;
@@ -292,6 +292,28 @@ public final class ProviderResolver {
     /// The Docker provider for provisioning a source's nodes (#1968): the source's `node_config` `[backup]` is handed to it as the
     /// `AETHER_BACKUP_*` entries of the compute map, the way a running leader hands its effective backup to the provider that mints
     /// replacements, so the nodes it starts carry the same backup (a Docker node has no node TOML of its own).
+    /// The docker compute for a BOOTSTRAP: its nodes receive `clusterSecret`, the one the CLI minted (or resumed from state) and derives its
+    /// admin key from, instead of whatever `AETHER_CLUSTER_SECRET` the CLI's own environment holds (#2089). The provider forwards the identity
+    /// variables from its `hostEnv`; this hands it a `hostEnv` that answers the secret from the bootstrap and every other name from the process
+    /// environment. An ambient `AETHER_CLUSTER_SECRET` is therefore ignored for bootstrap. A provider that is not the docker one (a test
+    /// double) is returned unchanged.
+    static Result<ComputeProvider> resolveDockerCompute(SourceProfile source, String clusterSecret) {
+        return resolveDockerCompute(source).flatMap(compute -> withClusterSecret(compute, clusterSecret));
+    }
+
+    static final String CLUSTER_SECRET_VAR = "AETHER_CLUSTER_SECRET";
+
+    private static Result<ComputeProvider> withClusterSecret(ComputeProvider compute, String clusterSecret) {
+        return compute instanceof DockerComputeProvider docker
+               ? DockerComputeProvider.dockerComputeProvider(docker.runner(),
+                                                             docker.config(),
+                                                             name -> CLUSTER_SECRET_VAR.equals(name)
+                                                                     ? clusterSecret
+                                                                     : System.getenv(name))
+                                      .map(ComputeProvider.class::cast)
+               : Result.success(compute);
+    }
+
     public static Result<ComputeProvider> resolveDockerCompute(SourceProfile source) {
         return lookupFactory("docker").flatMap(factory -> factory.create(dockerCloudConfig(backupEnvironment(source))))
                             .flatMap(ProviderResolver::extractCompute);
@@ -318,8 +340,18 @@ public final class ProviderResolver {
         return dockerCloudConfig(Map.of());
     }
 
+    /// The provider is told the cluster port bootstrap writes into every node's `PEERS` (#2089), so the two cannot drift apart.
+    static final String DOCKER_CLUSTER_PORT_KEY = "cluster_port";
+    static final String DOCKER_EXPOSE_HOST_PORTS_KEY = "expose_host_ports";
+
     private static CloudConfig dockerCloudConfig(Map<String, String> compute) {
-        return new CloudConfig("docker", Map.of(), Map.copyOf(compute), Map.of(), Map.of(), Map.of(), Map.of());
+        var withPort = new java.util.HashMap<>(compute);
+
+        withPort.put(DOCKER_CLUSTER_PORT_KEY, String.valueOf(DockerCores.CLUSTER_PORT));
+        // The CLI runs outside the docker network: it reaches a node through its published management port (#2089).
+        withPort.put(DOCKER_EXPOSE_HOST_PORTS_KEY, "true");
+
+        return new CloudConfig("docker", Map.of(), Map.copyOf(withPort), Map.of(), Map.of(), Map.of(), Map.of());
     }
 
     private static BootstrapError.ProvisionFailed factoryNotFound(String providerName) {
