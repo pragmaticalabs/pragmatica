@@ -178,6 +178,11 @@ class BlueprintPublishConflictStatusTest {
                 return Option.none();
             }
 
+            @Override
+            public Option<DeploymentOutcomeValue> attributedOutcome(BlueprintId id) {
+                return Option.none();
+            }
+
             @Override public Option<DeploymentOutcomeValue> outcome(BlueprintId id) {
                 return Option.none();
             }

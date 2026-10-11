@@ -17,7 +17,8 @@ package org.pragmatica.cluster.state.kvstore;
 /// so every replica decides identically.
 ///
 /// Opt-in, not blanket on [VersionFenced]: other `VersionFenced` records are still deleted by witnessless
-/// removers (blueprint withdrawal clears its `DeploymentOutcomeValue` bare, #972). Making those removers
-/// witnessed is that ticket's change; adopting it is `implements WitnessedRemoval` plus a witness at the
-/// call site.
+/// removers (blueprint withdrawal clears its `DeploymentOutcomeValue` bare). #972 did not need that remover
+/// witnessed: it binds each outcome to the publish attempt it closes instead, and an absent outcome is
+/// never read as a verdict. Adopting this for a record is `implements WitnessedRemoval` plus a witness at
+/// the call site.
 public interface WitnessedRemoval extends VersionFenced {}
