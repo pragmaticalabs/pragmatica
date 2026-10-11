@@ -451,6 +451,11 @@ class BlueprintDeployStatusTest {
             /// see `BlueprintStatusAggregationTest`), so it fails loudly via `unsupported` like every
             /// other untouched collaborator method on this stub.
             @Override
+            public Option<DeploymentOutcomeValue> attributedOutcome(BlueprintId id) {
+                return unsupported("attributedOutcome");
+            }
+
+            @Override
             public Option<DeploymentOutcomeValue> outcome(BlueprintId id) {
                 return unsupported("outcome");
             }
