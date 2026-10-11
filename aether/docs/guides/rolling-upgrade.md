@@ -151,3 +151,10 @@ are gone from the membership.
 Aether supports mixed-version clusters through envelope versioning. A partially-upgraded cluster is
 fully functional. See [`../reference/versioning-and-compatibility.md`](../reference/versioning-and-compatibility.md)
 for what that does and does not cover.
+
+## How Versions Are Compared
+
+The command compares versions for **equality only**. A node counts as upgraded when the version it advertises equals the target; the
+command does not order versions. A request for an older version is therefore accepted and runs exactly like an upgrade (a downgrade by
+replacement), and a request for the version the cluster config already stores is refused as "already at version" unless a run towards it
+is still live or owed, in which case it attaches to that run.
