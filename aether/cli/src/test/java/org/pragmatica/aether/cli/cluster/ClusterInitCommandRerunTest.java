@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.cli.cluster;
 
 import java.io.ByteArrayInputStream;
@@ -203,8 +202,10 @@ class ClusterInitCommandRerunTest {
         assertThat(init(output, "0")).isEqualTo(0);
         var first = read(output);
 
+        // The docker scaffold lost its four commented "uncomment to enable TLS" lines (#2089: docker cannot serve TLS, so the section is now
+        // a live explicit `auto_generate = false`); the control only needs to show the scaffold carries many comments, 28 do.
         assertThat(commentLines(first)).as("positive control: the generated scaffold carries its commented templates")
-                  .isGreaterThan(30);
+                  .isGreaterThan(20);
 
         for (int run = 2; run <= 4; run++) {
             assertThat(init(output, "0")).as("re-run " + run + " with the same answers is not an error: " + stderr())

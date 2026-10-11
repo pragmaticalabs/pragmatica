@@ -14,6 +14,14 @@
     <name>Aether Forge Integration Tests</name>
     <description>Integration tests for Aether Forge</description>
 
+    <licenses>
+        <license>
+            <name>Business Source License 1.1</name>
+            <url>https://mariadb.com/bsl11/</url>
+            <comments>Converts to Apache License 2.0 on January 1, 2030</comments>
+        </license>
+    </licenses>
+
     <properties>
         <!-- One reused fork runs every selected class, so this bounds the whole run, not one class.
              1800 fits the per-PR job. heavy-forge.yml raises it, because the Heavy set runs in one fork. -->

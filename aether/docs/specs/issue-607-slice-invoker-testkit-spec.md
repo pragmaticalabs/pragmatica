@@ -1,9 +1,6 @@
-<!--
-SPDX-License-Identifier: BUSL-1.1
-Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-See LICENSE in the repository root for full terms.
--->
+<!-- SPDX-License-Identifier: Apache-2.0 -->
+<!-- Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko -->
+<!-- Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms. -->
 
 # Slice Test Kit v2 — Slice-to-Slice Invocation — Design Specification
 
@@ -88,7 +85,7 @@ Cluster semantics: routing, failover/retry (`invokeWithRetry`), affinity, weight
 
 ## 6. Compatibility
 
-`SliceInvokerFacade`, `MethodHandle`, `SliceCreationContext`, generated code: **untouched**. All additions live in `aether/slice-testkit` (BSL-1.1, test scope, dependency direction per #399 §6.2). No production change is required. **Flagged for owner (would touch production, not needed now):** the `UNRESOLVED` version fallback (`FactoryClassGenerator.java:936`) is worked around by base-coordinate keying; fixing resolution in the processor is a separate decision (envelope-version bump rules apply) — note this is the same manifest-coordinate weakness implicated in #704's dropped dependency edges.
+`SliceInvokerFacade`, `MethodHandle`, `SliceCreationContext`, generated code: **untouched**. All additions live in `aether/slice-testkit` (Apache-2.0, test scope, dependency direction per #399 §6.2). No production change is required. **Flagged for owner (would touch production, not needed now):** the `UNRESOLVED` version fallback (`FactoryClassGenerator.java:936`) is worked around by base-coordinate keying; fixing resolution in the processor is a separate decision (envelope-version bump rules apply) — note this is the same manifest-coordinate weakness implicated in #704's dropped dependency edges.
 
 ## 7. Acceptance criteria
 
