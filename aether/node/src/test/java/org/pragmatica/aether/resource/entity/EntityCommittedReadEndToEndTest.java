@@ -178,7 +178,7 @@ class EntityCommittedReadEndToEndTest {
                                         new SegmentIndex(),
                                         EvictionListener.NOOP,
                                         null,
-                                        null,
+                                        new org.pragmatica.cluster.state.kvstore.KVStore<org.pragmatica.aether.slice.kvstore.AetherKey, org.pragmatica.aether.slice.kvstore.AetherValue>(null, null, null),
                                         null);
     }
 
