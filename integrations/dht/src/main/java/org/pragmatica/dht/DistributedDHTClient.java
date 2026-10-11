@@ -69,8 +69,13 @@ public final class DistributedDHTClient implements DHTClient {
     private final Supplier<DHTConfig> config;
     private final OwnerEpochSource ownerEpochSource;
     private final ResolveFallbackObserver fallbackObserver;
-    /// Pending operations indexed by correlation ID.
-    private final ConcurrentHashMap<String, PendingOperation<?>> pendingOps = new ConcurrentHashMap<>();
+    /// Pending operations indexed by correlation ID. One map is shared by a base client and every instance
+    /// derived from it ([#scoped], [#withResolveFallbackObserver]): the node routes replies to a single
+    /// instance, and correlation IDs are globally unique, so a reply finds the collector that issued it
+    /// whichever instance receives it (#1776). Configuration stays per instance; only reply lookup is shared.
+    private final ConcurrentHashMap<String, PendingOperation<?>> pendingOps;
+
+    private final java.util.concurrent.atomic.AtomicInteger liveExpiries = new java.util.concurrent.atomic.AtomicInteger();
 
     private record PendingOperation<T>(QuorumCollector<T> collector) {}
 
@@ -78,12 +83,14 @@ public final class DistributedDHTClient implements DHTClient {
                                  DHTNetwork network,
                                  Supplier<DHTConfig> config,
                                  OwnerEpochSource ownerEpochSource,
-                                 ResolveFallbackObserver fallbackObserver) {
+                                 ResolveFallbackObserver fallbackObserver,
+                                 ConcurrentHashMap<String, PendingOperation<?>> pendingOps) {
         this.node = node;
         this.network = network;
         this.config = config;
         this.ownerEpochSource = ownerEpochSource;
         this.fallbackObserver = fallbackObserver;
+        this.pendingOps = pendingOps;
     }
 
     /// Create a distributed DHT client at the unfenced epoch floor ([OwnerEpochSource#zero]).
@@ -96,7 +103,8 @@ public final class DistributedDHTClient implements DHTClient {
                                         network,
                                         () -> config,
                                         OwnerEpochSource.zero(),
-                                        ResolveFallbackObserver.noop());
+                                        ResolveFallbackObserver.noop(),
+                                        new ConcurrentHashMap<>());
     }
 
     /// Create a distributed DHT client that stamps every put with the node's current owner epoch
@@ -110,7 +118,12 @@ public final class DistributedDHTClient implements DHTClient {
                                                             DHTNetwork network,
                                                             DHTConfig config,
                                                             OwnerEpochSource ownerEpochSource) {
-        return new DistributedDHTClient(node, network, () -> config, ownerEpochSource, ResolveFallbackObserver.noop());
+        return new DistributedDHTClient(node,
+                                        network,
+                                        () -> config,
+                                        ownerEpochSource,
+                                        ResolveFallbackObserver.noop(),
+                                        new ConcurrentHashMap<>());
     }
 
     /// Create a distributed DHT client that follows the node's LIVE replication ([DHTNode#config]): the cluster's
@@ -120,7 +133,12 @@ public final class DistributedDHTClient implements DHTClient {
     public static DistributedDHTClient distributedDHTClient(DHTNode node,
                                                             DHTNetwork network,
                                                             OwnerEpochSource ownerEpochSource) {
-        return new DistributedDHTClient(node, network, node::config, ownerEpochSource, ResolveFallbackObserver.noop());
+        return new DistributedDHTClient(node,
+                                        network,
+                                        node::config,
+                                        ownerEpochSource,
+                                        ResolveFallbackObserver.noop(),
+                                        new ConcurrentHashMap<>());
     }
 
     /// Return a client that reports resolve-time alternate-target fallback outcomes (issue #428, C2)
@@ -130,7 +148,7 @@ public final class DistributedDHTClient implements DHTClient {
     ///
     /// @param observer sink for fallback-resolved and unresolved-after-fallback notifications
     public DistributedDHTClient withResolveFallbackObserver(ResolveFallbackObserver observer) {
-        return new DistributedDHTClient(node, network, config, ownerEpochSource, observer);
+        return new DistributedDHTClient(node, network, config, ownerEpochSource, observer, pendingOps);
     }
 
     @Override
@@ -141,7 +159,7 @@ public final class DistributedDHTClient implements DHTClient {
     /// A client for a namespace with its own declared replication, read on every operation so a committed change
     /// of the declaration takes effect without a restart (#1777 track 1, e.g. the cache's `[cache]` factors).
     public DistributedDHTClient scoped(Supplier<DHTConfig> scopedConfig) {
-        return new DistributedDHTClient(node, network, scopedConfig, ownerEpochSource, fallbackObserver);
+        return new DistributedDHTClient(node, network, scopedConfig, ownerEpochSource, fallbackObserver, pendingOps);
     }
 
     @Override
@@ -1048,6 +1066,41 @@ public final class DistributedDHTClient implements DHTClient {
         return HEX.formatHex(key);
     }
 
+    /// Register the request so its reply finds the collector, and bound the entry's life: it is dropped once every
+    /// reply of the operation has arrived, or the operation timeout has passed since the request was sent, whichever
+    /// comes first. A peer that never answers and never leaves the ring would otherwise leave the entry in the shared
+    /// map for good, after a quorum success, a fast-fail, a timeout, or for a silent replacement read alike.
+    ///
+    /// The entry is deliberately NOT dropped at the moment the operation completes: a reply that lands after the
+    /// quorum is still consumed, because it feeds the late-stale evidence of a write ([#noteLateStale]) and the late
+    /// value a read discarded, both of which wait for [QuorumCollector#allReplied] for at most the operation timeout.
+    /// Expiry and a late reply arbitrate on the atomic `pendingOps.remove`: whichever removes the entry first owns
+    /// it, the other finds nothing and does nothing.
+    private <T> void track(String correlationId, QuorumCollector<T> collector) {
+        pendingOps.put(correlationId, new PendingOperation<>(collector));
+        Promise<Unit> settled = Promise.promise();
+
+        liveExpiries.incrementAndGet();
+        collector.allReplied().onSuccess(_ -> settled.succeed(unit()));
+        settled.timeout(config.get().operationTimeout()).onResultRun(() -> expire(correlationId));
+    }
+
+    private void expire(String correlationId) {
+        pendingOps.remove(correlationId);
+        liveExpiries.decrementAndGet();
+    }
+
+    /// Expiry timers still armed: one per tracked request until all its operation's replies arrive (the timer is then
+    /// cancelled) or the operation timeout fires. Test seam.
+    int pendingExpiries() {
+        return liveExpiries.get();
+    }
+
+    /// Requests awaiting a reply, across this client and every instance derived from it. Test seam.
+    int pendingOperations() {
+        return pendingOps.size();
+    }
+
     private Option<PendingOperation<?>> removePending(String correlationId) {
         return Option.option(pendingOps.remove(correlationId));
     }
@@ -1130,7 +1183,7 @@ public final class DistributedDHTClient implements DHTClient {
                                byte[] key,
                                QuorumCollector<Option<DHTMessage.KeyValue>> collector,
                                String correlationId) {
-        pendingOps.put(correlationId, new PendingOperation<>(collector));
+        track(correlationId, collector);
         dispatchTracked(target,
                         new DHTMessage.GetRequest(correlationId, node.nodeId(), key),
                         correlationId,
@@ -1144,7 +1197,7 @@ public final class DistributedDHTClient implements DHTClient {
                                QuorumCollector<Unit> collector) {
         var correlationId = IdGenerator.generate();
 
-        pendingOps.put(correlationId, new PendingOperation<>(collector));
+        track(correlationId, collector);
         dispatchTracked(target,
                         new DHTMessage.PutRequest(correlationId,
                                                   node.nodeId(),
@@ -1162,7 +1215,7 @@ public final class DistributedDHTClient implements DHTClient {
     private void sendRemoteRemove(NodeId target, byte[] key, WriteStamp stamp, QuorumCollector<Boolean> collector) {
         var correlationId = IdGenerator.generate();
 
-        pendingOps.put(correlationId, new PendingOperation<>(collector));
+        track(correlationId, collector);
         dispatchTracked(target,
                         new DHTMessage.RemoveRequest(correlationId,
                                                      node.nodeId(),
@@ -1179,7 +1232,7 @@ public final class DistributedDHTClient implements DHTClient {
     private void sendRemoteExists(NodeId target, byte[] key, QuorumCollector<Option<DHTMessage.KeyValue>> collector) {
         var correlationId = IdGenerator.generate();
 
-        pendingOps.put(correlationId, new PendingOperation<>(collector));
+        track(correlationId, collector);
         dispatchTracked(target,
                         new DHTMessage.ExistsRequest(correlationId, node.nodeId(), key),
                         correlationId,
