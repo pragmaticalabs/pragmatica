@@ -14,6 +14,10 @@
   up; if `12` consecutive successful listings show no instance (the absent-listing count of #1049), the drop is confirmed absent: an INFO line, no mark and no event.
 - **The readiness timeout keeps its type.** `createFrom` of Hetzner, AWS, GCP, Azure and Docker flattened `ProvisionReadinessTimeout` into
   `ProvisionFailed`; each now passes it through (the instance exists).
+- **Two bounds on a failed create's lookup.** It is confirmed absent only by 12 consecutive successful empty listings spaced
+  `provisioningTimeout/6` apart (about 110 s at the defaults): an instance first listed later than that is not reaped by this path and is left to
+  the next leader activation's orphan replay. A listing that FAILS is neither absent nor terminal: it is retried, and only 12 consecutive failures
+  end in `instance-termination-unconfirmed`; any answer resets that count.
 - **A joined replacement is never terminated.** Membership clears the entry of a replacement that joined, so it is never dropped; and a dropped node
   that shows life when the reap runs is deferred, as a retirement is. A replacement alive in SWIM but not yet joined when its ceiling or readiness bound
   expires is given up on by design.
