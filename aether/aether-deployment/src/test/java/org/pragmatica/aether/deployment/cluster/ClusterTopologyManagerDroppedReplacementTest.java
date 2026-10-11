@@ -21,6 +21,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import org.pragmatica.aether.deployment.DeploymentMap;
+import org.pragmatica.aether.deployment.cluster.ClusterTopologyManager.DroppedInstance;
 import org.pragmatica.aether.deployment.cluster.ClusterTopologyManagerActuatorTest.CapturingAppender;
 import org.pragmatica.aether.environment.AutoHealConfig;
 import org.pragmatica.aether.environment.ComputeProvider;
@@ -63,6 +64,7 @@ class ClusterTopologyManagerDroppedReplacementTest {
 
     private final AtomicReference<Promise<List<InstanceInfo>>> listing = new AtomicReference<>(Promise.success(List.of()));
     private final AtomicInteger terminates = new AtomicInteger();
+    private final AtomicInteger listings = new AtomicInteger();
     private final AtomicBoolean terminateRemoves = new AtomicBoolean(true);
     private final AtomicReference<Set<NodeId>> swimAlive = new AtomicReference<>(Set.of());
     private CapturingAppender appender;
@@ -165,7 +167,7 @@ class ClusterTopologyManagerDroppedReplacementTest {
     void droppedReplacement_isTerminated_andTheWarnNamesSourceNodeAndInstanceId() {
         providerLists(instance("i-orphan-7", InstanceStatus.RUNNING));
 
-        ctm.reapDroppedReplacement(DROPPED, "still unjoined after its ceiling", true);
+        ctm.reapDroppedReplacement(DROPPED, "still unjoined after its ceiling", DroppedInstance.LISTED);
 
         await().atMost(Duration.ofSeconds(5)).until(() -> terminates.get() == 1);
         assertThat(warned("in-flight replacement", DROPPED.id(), "i-orphan-7", "source=", "still unjoined after its ceiling")).as("warns: " + appender.capturedWarns()).isTrue();
@@ -176,7 +178,7 @@ class ClusterTopologyManagerDroppedReplacementTest {
         providerLists(instance("i-stuck-1", InstanceStatus.RUNNING));
         terminateRemoves.set(false);
 
-        ctm.reapDroppedReplacement(DROPPED, "the provider reports FAILED", true);
+        ctm.reapDroppedReplacement(DROPPED, "the provider reports FAILED", DroppedInstance.LISTED);
 
         await().atMost(Duration.ofSeconds(10))
                .until(() -> warned("instance-termination-unconfirmed", DROPPED.id()));
@@ -185,7 +187,7 @@ class ClusterTopologyManagerDroppedReplacementTest {
 
     @Test
     void droppedReplacement_theProviderListedBefore_andNowListsNothing_isConfirmedGone_withoutAnEvent() {
-        ctm.reapDroppedReplacement(DROPPED, "the provider reports ABSENT", true);
+        ctm.reapDroppedReplacement(DROPPED, "the provider reports ABSENT", DroppedInstance.LISTED);
 
         settle();
         assertThat(terminates.get()).isZero();
@@ -195,7 +197,7 @@ class ClusterTopologyManagerDroppedReplacementTest {
     /// The conservative reading #2062 fixed for retirements: an empty listing proves nothing for an instance the provider never listed.
     @Test
     void droppedReplacement_neverListed_andListingNothing_isNotConfirmed_andRaisesTheEvent() {
-        ctm.reapDroppedReplacement(DROPPED, "twelve absent listings", false);
+        ctm.reapDroppedReplacement(DROPPED, "twelve absent listings", DroppedInstance.CREATED);
 
         await().atMost(Duration.ofSeconds(10))
                .until(() -> warned("instance-termination-unconfirmed", DROPPED.id()));
@@ -211,7 +213,7 @@ class ClusterTopologyManagerDroppedReplacementTest {
         ctm.activate();
         providerLists(instance("i-nosource-2", InstanceStatus.RUNNING));
 
-        ctm.reapDroppedReplacement(DROPPED, "the provider reports FAILED", true);
+        ctm.reapDroppedReplacement(DROPPED, "the provider reports FAILED", DroppedInstance.LISTED);
 
         await().atMost(Duration.ofSeconds(5)).until(() -> terminates.get() == 1);
         assertThat(warned("in-flight replacement", DROPPED.id(), "no compute source is known")).isTrue();
@@ -222,10 +224,129 @@ class ClusterTopologyManagerDroppedReplacementTest {
     void droppedReplacement_whenTheAnnouncingListingFails_warnsWithSourceNodeAndCause() {
         listing.set(EnvironmentError.operationNotSupported("provider API down").promise());
 
-        ctm.reapDroppedReplacement(DROPPED, "still unjoined after its ceiling", false);
+        ctm.reapDroppedReplacement(DROPPED, "still unjoined after its ceiling", DroppedInstance.CREATED);
 
         await().atMost(Duration.ofSeconds(5))
-               .until(() -> warned("in-flight replacement", DROPPED.id(), "source=", "instance id unknown", "provider API down"));
+               .until(() -> warned("in-flight replacement", DROPPED.id(), "source=", "lookup of its instance failed", "provider API down", "not known"));
+    }
+
+    /// A failed create may have made no instance (#1111): only consecutive successful empty listings confirm that, and then quietly. The WARN
+    /// must not claim that no instance exists before they have.
+    @Test
+    void droppedFailedCreate_confirmedAbsentByRepeatedEmptyListings_endsQuietly() {
+        ctm.reapDroppedReplacement(DROPPED, "its create failed: 503", DroppedInstance.MAYBE);
+
+        await().atMost(Duration.ofSeconds(5)).until(() -> listings.get() >= ClusterTopologyManagerRecord.ABSENT_LISTINGS_TO_CONFIRM);
+        settle();
+        assertThat(listings.get()).as("the bound is the whole confirmation: it stops asking").isEqualTo(ClusterTopologyManagerRecord.ABSENT_LISTINGS_TO_CONFIRM);
+        assertThat(terminates.get()).isZero();
+        assertThat(warned("instance-termination-unconfirmed")).as("no mark and no event for a VM that never existed").isFalse();
+        assertThat(warned("no instance exists")).isFalse();
+    }
+
+    @Test
+    void droppedFailedCreate_whoseInstanceIsFound_isTerminated_andNamedInTheWarn() {
+        providerLists(instance("i-boot-crash-4", InstanceStatus.RUNNING));
+
+        ctm.reapDroppedReplacement(DROPPED, "its create failed: 503 after accept", DroppedInstance.MAYBE);
+
+        await().atMost(Duration.ofSeconds(5)).until(() -> terminates.get() == 1);
+        assertThat(warned("in-flight replacement", DROPPED.id(), "i-boot-crash-4", "source=")).isTrue();
+        assertThat(warned("instance-termination-unconfirmed")).isFalse();
+    }
+
+    /// Listings lag creation: an instance that appears after a few empty listings is found and terminated, not confirmed absent.
+    @Test
+    void droppedFailedCreate_whoseInstanceAppearsLate_isTerminated() {
+        ctm.reapDroppedReplacement(DROPPED, "its create failed: timeout", DroppedInstance.MAYBE);
+        await().atMost(Duration.ofSeconds(5)).until(() -> listings.get() >= 3);
+        providerLists(instance("i-late-9", InstanceStatus.RUNNING));
+
+        await().atMost(Duration.ofSeconds(5)).until(() -> terminates.get() == 1);
+        assertThat(warned("i-late-9")).isTrue();
+    }
+
+    /// A lookup that cannot be answered is never read as "absent": the confirmed reap retries it and ends in the unconfirmed event.
+    @Test
+    void droppedFailedCreate_whoseLookupKeepsFailing_endsInTheUnconfirmedEvent() {
+        listing.set(EnvironmentError.operationNotSupported("provider API down").promise());
+
+        ctm.reapDroppedReplacement(DROPPED, "its create failed: timeout", DroppedInstance.MAYBE);
+
+        await().atMost(Duration.ofSeconds(10)).until(() -> warned("instance-termination-unconfirmed", DROPPED.id()));
+        assertThat(warned("no instance exists")).isFalse();
+    }
+
+    /// Control: a node that joined while the absence was being confirmed is a new incarnation; the check stops and terminates nothing.
+    @Test
+    void droppedFailedCreate_whoseNodeJoins_stopsConfirmingAbsence() {
+        ctm.reapDroppedReplacement(DROPPED, "its create failed: timeout", DroppedInstance.MAYBE);
+        await().atMost(Duration.ofSeconds(5)).until(() -> listings.get() >= 2);
+        ctm.onMembershipDecision(org.pragmatica.consensus.topology.MembershipDecision.nodeJoined(DROPPED, List.of(SELF, DROPPED)));
+        var atJoin = listings.get();
+
+        settle();
+        assertThat(listings.get()).as("the absence check stopped asking").isLessThanOrEqualTo(atJoin + 1);
+        assertThat(terminates.get()).isZero();
+    }
+
+    @Test
+    void droppedReplacement_atAnInactiveManager_saysNothingIsTerminatedHere() {
+        providerLists(instance("i-orphan-2", InstanceStatus.RUNNING));
+        ctm.deactivate();
+
+        ctm.reapDroppedReplacement(DROPPED, "still unjoined after its ceiling", DroppedInstance.LISTED);
+
+        assertThat(warned("not the active topology manager", DROPPED.id())).isTrue();
+        assertThat(terminates.get()).isZero();
+    }
+
+    private Map<NodeId, SourceName> sources() {
+        return ((ClusterTopologyManagerRecord) ctm).replacementSources();
+    }
+
+    /// The source a replacement was created for is kept only while the replacement can still be dropped: forgotten when its absence is confirmed,
+    /// when it joins and when its reap confirms.
+    @Test
+    void replacementSource_isForgotten_whenAbsenceIsConfirmed() {
+        sources().put(DROPPED, SourceName.DEFAULT);
+
+        ctm.reapDroppedReplacement(DROPPED, "its create failed: 503", DroppedInstance.MAYBE);
+
+        await().atMost(Duration.ofSeconds(5)).until(() -> listings.get() >= ClusterTopologyManagerRecord.ABSENT_LISTINGS_TO_CONFIRM);
+        await().atMost(Duration.ofSeconds(5)).until(() -> sources().isEmpty());
+    }
+
+    @Test
+    void replacementSource_isForgotten_whenTheReplacementJoins() {
+        sources().put(DROPPED, SourceName.DEFAULT);
+
+        ctm.onMembershipDecision(org.pragmatica.consensus.topology.MembershipDecision.nodeJoined(DROPPED, List.of(SELF, DROPPED)));
+
+        assertThat(sources()).isEmpty();
+    }
+
+    @Test
+    void replacementSource_isForgotten_whenTheReapConfirms() {
+        sources().put(DROPPED, SourceName.DEFAULT);
+        providerLists(instance("i-confirm-3", InstanceStatus.RUNNING));
+
+        ctm.reapDroppedReplacement(DROPPED, "still unjoined after its ceiling", DroppedInstance.LISTED);
+
+        await().atMost(Duration.ofSeconds(5)).until(() -> terminates.get() == 1);
+        await().atMost(Duration.ofSeconds(5)).until(() -> sources().isEmpty());
+    }
+
+    /// A chain does not outlive its activation: deactivated, the absence check asks the provider nothing more.
+    @Test
+    void droppedFailedCreate_absenceCheckStops_whenTheManagerDeactivates() {
+        ctm.reapDroppedReplacement(DROPPED, "its create failed: timeout", DroppedInstance.MAYBE);
+        await().atMost(Duration.ofSeconds(5)).until(() -> listings.get() >= 2);
+        ctm.deactivate();
+        var atDeactivation = listings.get();
+
+        settle();
+        assertThat(listings.get()).isLessThanOrEqualTo(atDeactivation + 1);
     }
 
     /// Control: a replacement that joined (SWIM shows it alive) is never terminated, however many retries pass.
@@ -234,7 +355,7 @@ class ClusterTopologyManagerDroppedReplacementTest {
         providerLists(instance("i-joined-1", InstanceStatus.RUNNING));
         swimAlive.set(Set.of(DROPPED));
 
-        ctm.reapDroppedReplacement(DROPPED, "still unjoined after its ceiling", true);
+        ctm.reapDroppedReplacement(DROPPED, "still unjoined after its ceiling", DroppedInstance.LISTED);
 
         await().atMost(Duration.ofSeconds(5)).until(() -> warned("DEFERRED", DROPPED.id()));
         settle();
@@ -292,6 +413,8 @@ class ClusterTopologyManagerDroppedReplacementTest {
 
         @Override
         public Promise<List<InstanceInfo>> listInstances() {
+            listings.incrementAndGet();
+
             return listing.get();
         }
 

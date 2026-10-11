@@ -355,6 +355,11 @@ public record GcpComputeProvider(GcpClient client, GcpEnvironmentConfig config) 
     /// asked for. A blank `zone` here means the insert requested the client-level default placement
     /// — [EnvironmentError.ProvisionFailed] renders that as "not recorded", never as an empty field.
     private static EnvironmentError toProvisionError(String instanceType, String zone, Cause cause) {
+        // #1111: the VM EXISTS (it was created, then failed readiness): the typed cause reaches the caller, never flattened into a rejection.
+        if (cause instanceof EnvironmentError.ProvisionReadinessTimeout timeout) {
+            return timeout;
+        }
+
         return EnvironmentError.provisionFailed(instanceType, zone, new RuntimeException(cause.message()));
     }
 

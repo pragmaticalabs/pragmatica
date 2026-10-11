@@ -1820,7 +1820,7 @@ class LeaderReconcilerTest {
             var reap = onlyDroppedReap(minted);
 
             assertThat(reap.reason()).contains("replacement ceiling").contains("CONFIRMED");
-            assertThat(reap.seenBefore()).as("the provider listed it (PRESENT) before the ceiling").isTrue();
+            assertThat(reap.knowledge()).as("the provider listed it (PRESENT) before the ceiling").isEqualTo(ClusterTopologyManager.DroppedInstance.LISTED);
         }
 
         @Test
@@ -1831,7 +1831,7 @@ class LeaderReconcilerTest {
             ctm.reportInstanceState(minted, ReplacementInstanceState.UNKNOWN);
             advancePollIntervals(10);
 
-            assertThat(onlyDroppedReap(minted).seenBefore()).as("UNKNOWN is no sighting").isFalse();
+            assertThat(onlyDroppedReap(minted).knowledge()).as("UNKNOWN is no sighting: created, never listed").isEqualTo(ClusterTopologyManager.DroppedInstance.CREATED);
         }
 
         @Test
@@ -1844,7 +1844,7 @@ class LeaderReconcilerTest {
             var reap = onlyDroppedReap(minted);
 
             assertThat(reap.reason()).contains("ABSENT");
-            assertThat(reap.seenBefore()).as("twelve empty listings are not a sighting: a lagging listing may still hold the VM").isFalse();
+            assertThat(reap.knowledge()).as("twelve empty listings are not a sighting: a lagging listing may still hold the VM").isEqualTo(ClusterTopologyManager.DroppedInstance.CREATED);
         }
 
         @Test
@@ -1856,7 +1856,7 @@ class LeaderReconcilerTest {
             ctm.reportInstanceState(minted, ReplacementInstanceState.ABSENT);
             advanceOnePollInterval();
 
-            assertThat(onlyDroppedReap(minted).seenBefore()).as("it was listed PRESENT before").isTrue();
+            assertThat(onlyDroppedReap(minted).knowledge()).as("it was listed PRESENT before").isEqualTo(ClusterTopologyManager.DroppedInstance.LISTED);
         }
 
         @Test
@@ -1869,12 +1869,12 @@ class LeaderReconcilerTest {
             var reap = onlyDroppedReap(minted);
 
             assertThat(reap.reason()).contains("FAILED");
-            assertThat(reap.seenBefore()).as("FAILED is stated about instances the provider listed").isTrue();
+            assertThat(reap.knowledge()).as("FAILED is stated about instances the provider listed").isEqualTo(ClusterTopologyManager.DroppedInstance.LISTED);
         }
 
-        @Test
-        void inFlightEntry_droppedWhenItsCreateTimesOutOnReadiness_isReaped_asSeen() {
-            ctm.failNextProvision(READINESS_TIMEOUT);
+        /// Fails the next create with `cause`, drives the reconciler to dispatch it and returns the placeholder the dropped entry was minted as.
+        private NodeId dropOnFailedCreate(org.pragmatica.lang.Cause cause) {
+            ctm.failNextProvision(cause);
             configuredCoreCount.set(5);
             seedClusterWithPeers(PEER_A, PEER_B, PEER_C, PEER_D);
             reconciler.activate();
@@ -1883,28 +1883,60 @@ class LeaderReconcilerTest {
             triggerAndFireReconcile();
             advancePastProvisioningGates();
             triggerAndFireReconcile();
-
-            var reap = onlyDroppedReap(ctm.provisionReplacementCalls().getFirst());
-
-            assertThat(reap.reason()).contains("create failed").contains("did not reach");
-            assertThat(reap.seenBefore()).as("the create returned an instance: the provider lists it").isTrue();
-        }
-
-        /// A create the provider rejected made no instance: nothing to terminate, and a reap would end in a false unconfirmed event and a mark that never clears.
-        @Test
-        void inFlightEntry_droppedWhenTheProviderRejectsItsCreate_isNotReaped() {
-            ctm.failNextProvision(Causes.cause("quota exceeded for server type"));
-            configuredCoreCount.set(5);
-            seedClusterWithPeers(PEER_A, PEER_B, PEER_C, PEER_D);
-            reconciler.activate();
-            scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
-            removePeers(PEER_D);
-            triggerAndFireReconcile();
-            advancePastProvisioningGates();
-            triggerAndFireReconcile();
-
             assertThat(ctm.provisionReplacementCalls()).as("arming: a provision was attempted and failed").hasSize(1);
-            assertThat(reconciler.inFlightProvisioningKeys()).as("the entry is dropped").doesNotContain(ctm.provisionReplacementCalls().getFirst());
+
+            return ctm.provisionReplacementCalls().getFirst();
+        }
+
+        /// Every create failure that does not PROVE no instance was made is ambiguous (the providers report a readiness timeout, a 5xx after the
+        /// provider accepted and a failed tag as ordinary failures while the instance exists), so it goes to the lookup-and-reap, never to a WARN.
+        private void assertReapedAsMaybe(org.pragmatica.lang.Cause cause) {
+            var reap = onlyDroppedReap(dropOnFailedCreate(cause));
+
+            assertThat(reap.reason()).contains("create failed").contains(cause.message());
+            assertThat(reap.knowledge()).as("the instance may or may not exist: only the lookup can say").isEqualTo(ClusterTopologyManager.DroppedInstance.MAYBE);
+        }
+
+        @Test
+        void inFlightEntry_droppedWhenItsCreateTimesOutOnReadiness_isReaped_asMaybe() {
+            assertReapedAsMaybe(READINESS_TIMEOUT);
+        }
+
+        @Test
+        void inFlightEntry_droppedWhenItsCreateFailsAfterTheProviderAccepted_isReaped_asMaybe() {
+            assertReapedAsMaybe(org.pragmatica.aether.environment.EnvironmentError.provisionFailed(new RuntimeException("503 service unavailable after accept")));
+        }
+
+        @Test
+        void inFlightEntry_droppedWhenItsCreateFailsOnTheTagStep_isReaped_asMaybe() {
+            assertReapedAsMaybe(org.pragmatica.aether.environment.EnvironmentError.provisionFailed(new RuntimeException("createTags failed after RunInstances")));
+        }
+
+        @Test
+        void inFlightEntry_droppedWhenItsCreateFailsWithAnUntypedCause_isReaped_asMaybe() {
+            assertReapedAsMaybe(Causes.cause("quota exceeded for server type"));
+        }
+
+        /// Capacity refused in every zone, the node cap, and a refused fleet reservation PROVE that no instance was made: nothing to look up.
+        @Test
+        void inFlightEntry_droppedWhenCapacityIsUnavailable_isNotReaped() {
+            dropOnFailedCreate(org.pragmatica.aether.environment.EnvironmentError.capacityUnavailable("nbg1", new RuntimeException("resource_unavailable")));
+
+            assertThat(ctm.droppedReaps()).isEmpty();
+        }
+
+        @Test
+        void inFlightEntry_droppedWhenTheNodeCapIsExceeded_isNotReaped() {
+            dropOnFailedCreate(org.pragmatica.aether.environment.EnvironmentError.NodeCapExceeded
+                                   .nodeCapExceeded(org.pragmatica.aether.environment.ClusterName.clusterName("test-cluster").unwrap(), 5, 5).unwrap());
+
+            assertThat(ctm.droppedReaps()).isEmpty();
+        }
+
+        @Test
+        void inFlightEntry_droppedWhenTheFleetReservationIsRefused_isNotReaped() {
+            dropOnFailedCreate(org.pragmatica.aether.deployment.cluster.CapacityControlledLifecycle.AdmissionFailure.CAPACITY_UNAVAILABLE);
+
             assertThat(ctm.droppedReaps()).isEmpty();
         }
 
@@ -3965,7 +3997,271 @@ class LeaderReconcilerTest {
             new org.pragmatica.aether.environment.InstanceStatus.Provisioning(),
             300_000L).unwrap();
 
-    private record DroppedReap(NodeId node, String reason, boolean seenBefore) {}
+    /// #1111, round 2: the reconciler wired to the REAL topology manager and the REAL lifecycle over a fake provider whose create MAKES an instance and
+    /// then fails with the cause each provider really emits (the provider-side shapes are pinned in the provider modules). Nothing here is a
+    /// hand-built verdict: whether the instance is terminated follows from the cause, the label lookup and the confirmed reap.
+    @Nested
+    class RealCreatePath {
+        private static final String LOGGER_NAME = "org.pragmatica.aether.deployment.cluster.ClusterTopologyManager";
+        private final ConcurrentHashMap<String, org.pragmatica.aether.environment.InstanceInfo> inventory = new ConcurrentHashMap<>();
+        private final AtomicReference<Cause> createOutcome = new AtomicReference<>();
+        private final AtomicBoolean createMakesInstance = new AtomicBoolean(true);
+        private final AtomicInteger terminates = new AtomicInteger();
+        private final AtomicInteger listings = new AtomicInteger();
+        private WarnCapture appender;
+        private LoggerConfig loggerConfig;
+        private Level originalLevel;
+
+        @BeforeEach
+        void wire() {
+            appender = WarnCapture.create();
+            appender.start();
+            var logContext = (LoggerContext) LogManager.getContext(false);
+            var existing = logContext.getConfiguration().getLoggerConfig(LOGGER_NAME);
+
+            loggerConfig = LOGGER_NAME.equals(existing.getName())
+                           ? existing
+                           : new LoggerConfig(LOGGER_NAME, Level.WARN, false);
+            if (!LOGGER_NAME.equals(existing.getName())) {
+                logContext.getConfiguration().addLogger(LOGGER_NAME, loggerConfig);
+            }
+            originalLevel = loggerConfig.getLevel();
+            loggerConfig.addAppender(appender, Level.WARN, null);
+            loggerConfig.setLevel(Level.WARN);
+            logContext.updateLoggers();
+            ctm.real = realTopologyManager(true);
+            ctm.real.activate();
+        }
+
+        @org.junit.jupiter.api.AfterEach
+        void unwire() {
+            ctm.real.deactivate();
+            var logContext = (LoggerContext) LogManager.getContext(false);
+
+            loggerConfig.removeAppender(appender.getName());
+            loggerConfig.setLevel(originalLevel);
+            logContext.updateLoggers();
+            appender.stop();
+        }
+
+        private ClusterTopologyManager realTopologyManager(boolean namesASource) {
+            var snapshotSource = new org.pragmatica.consensus.topology.GenerationSnapshotSource() {
+                @Override
+                public Option<org.pragmatica.consensus.topology.MembershipView> currentMembershipView() {
+                    return Option.none();
+                }
+
+                @Override
+                public long observedRabiaTerm() {
+                    return 0L;
+                }
+            };
+            var nodes = new ArrayList<NodeInfo>();
+            var port = 7100;
+
+            for (var node : List.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D)) {
+                nodes.add(NodeInfo.nodeInfo(node, org.pragmatica.net.tcp.NodeAddress.nodeAddress("localhost", port++).unwrap()));
+            }
+
+            var config = new org.pragmatica.consensus.topology.TopologyConfig(SELF, 5, timeSpan(60).seconds(), timeSpan(1).seconds(), nodes);
+            var observer = TopologyObserver.topologyObserver(config, org.pragmatica.messaging.MessageRouter.mutable(), snapshotSource).unwrap();
+            var autoHeal = org.pragmatica.aether.environment.AutoHealConfig.autoHealConfig(timeSpan(1).millis(), timeSpan(60).millis()).unwrap();
+            var liveness = org.pragmatica.aether.deployment.cluster.MembershipLiveness.membershipLiveness(Set::of,
+                                                                                                           Set::of,
+                                                                                                           _ -> false,
+                                                                                                           _ -> false,
+                                                                                                           Set::of,
+                                                                                                           () -> 5,
+                                                                                                           _ -> Option.none());
+            var plain = org.pragmatica.aether.deployment.cluster.NodeLifecycleManager.nodeLifecycleManager(Option.some(new CreatingProvider()));
+            var lifecycle = namesASource
+                            ? new SourcedLifecycle(plain)
+                            : plain;
+            var manager = ClusterTopologyManager.clusterTopologyManager(observer,
+                                                                        lifecycle,
+                                                                        autoHeal,
+                                                                        org.pragmatica.aether.deployment.DeploymentMap.deploymentMap(),
+                                                                        snapshotSource,
+                                                                        () -> Option.<org.pragmatica.aether.slice.kvstore.AetherValue.ClusterConfigValue> none(),
+                                                                        commands -> Promise.success(List.<Object> of()),
+                                                                        () -> org.pragmatica.aether.slice.kvstore.AetherValue.ClusterPhase.NORMAL,
+                                                                        _ -> {},
+                                                                        _ -> {},
+                                                                        Option::none,
+                                                                        liveness);
+
+            manager.setRetirementRefusal(_ -> Option.none());
+
+            return manager;
+        }
+
+        private NodeId dispatchWithCreate(Cause outcome, boolean makesInstance) {
+            createOutcome.set(outcome);
+            createMakesInstance.set(makesInstance);
+            configuredCoreCount.set(5);
+            seedClusterWithPeers(PEER_A, PEER_B, PEER_C, PEER_D);
+            reconciler.activate();
+            scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
+            removePeers(PEER_D);
+            triggerAndFireReconcile();
+            advancePastProvisioningGates();
+            triggerAndFireReconcile();
+            await().atMost(java.time.Duration.ofSeconds(5)).until(() -> !ctm.provisionReplacementCalls().isEmpty());
+
+            return ctm.provisionReplacementCalls().getFirst();
+        }
+
+        private boolean warned(String... fragments) {
+            return appender.warns().stream().anyMatch(message -> List.of(fragments).stream().allMatch(message::contains));
+        }
+
+        private void assertInstanceOfTheFailedCreateIsTerminated(Cause outcome) {
+            var minted = dispatchWithCreate(outcome, true);
+
+            await().atMost(java.time.Duration.ofSeconds(10)).until(() -> terminates.get() == 1);
+            assertThat(inventory).as("the instance the create made is gone").isEmpty();
+            assertThat(warned("in-flight replacement", minted.id(), "source=", "instanceIds=[i-" + minted.id() + "]")).as("warns: " + appender.warns()).isTrue();
+            assertThat(warned("instance-termination-unconfirmed")).isFalse();
+        }
+
+        @Test
+        void aCreateThatMadeAnInstanceThenTimedOutOnReadiness_isTerminated() {
+            assertInstanceOfTheFailedCreateIsTerminated(READINESS_TIMEOUT);
+        }
+
+        @Test
+        void aCreateThatMadeAnInstanceThenFailedWith5xxAfterAccept_isTerminated() {
+            assertInstanceOfTheFailedCreateIsTerminated(org.pragmatica.aether.environment.EnvironmentError.provisionFailed(new RuntimeException("503 after accept")));
+        }
+
+        @Test
+        void aCreateThatMadeAnInstanceThenFailedOnTheTagStep_isTerminated() {
+            assertInstanceOfTheFailedCreateIsTerminated(org.pragmatica.aether.environment.EnvironmentError.provisionFailed(new RuntimeException("createTags failed after RunInstances")));
+        }
+
+        /// The lifecycle names no source for a placeholder that has no reservation yet: the source the create was sent to is remembered by the
+        /// manager and the lookup goes there, so the WARN still names the source and the instance id.
+        @Test
+        void aDroppedCreate_isLookedUpAtTheSourceItWasCreatedFor() {
+            ctm.real.deactivate();
+            ctm.real = realTopologyManager(false);
+            ctm.real.activate();
+            var minted = dispatchWithCreate(org.pragmatica.aether.environment.EnvironmentError.provisionFailed(new RuntimeException("503 after accept")), true);
+
+            await().atMost(java.time.Duration.ofSeconds(10)).until(() -> terminates.get() == 1);
+            assertThat(warned("in-flight replacement", minted.id(), "source=", "instanceIds=[i-" + minted.id() + "]")).as("warns: " + appender.warns()).isTrue();
+        }
+
+        @Test
+        void aCapacityRefusal_makesNoInstance_andIsNeverLookedUp() {
+            var minted = dispatchWithCreate(org.pragmatica.aether.environment.EnvironmentError.capacityUnavailable("nbg1", new RuntimeException("resource_unavailable")), false);
+            var before = listings.get();
+
+            await().during(java.time.Duration.ofMillis(500)).atMost(java.time.Duration.ofSeconds(5)).until(() -> true);
+            assertThat(ctm.droppedReaps()).as("a capacity refusal proves no instance was made: no reap for " + minted + " warns=" + appender.warns()).isEmpty();
+            assertThat(terminates.get()).isZero();
+            assertThat(listings.get()).as("nothing looked the instance up").isEqualTo(before);
+            assertThat(warned("instance-termination-unconfirmed")).isFalse();
+        }
+
+        /// The rejected create that made nothing: the lookup is repeated across the absent-listing bound, then the drop ends quietly.
+        @Test
+        void aFailedCreateThatMadeNothing_isConfirmedAbsentByRepeatedListings_withNoEvent() {
+            var minted = dispatchWithCreate(org.pragmatica.aether.environment.EnvironmentError.provisionFailed(new RuntimeException("quota exceeded")), false);
+
+            await().atMost(java.time.Duration.ofSeconds(10))
+                   .until(() -> ctm.droppedReaps().stream().anyMatch(reap -> reap.node().equals(minted)) && listings.get() >= 12);
+            await().during(java.time.Duration.ofMillis(500)).atMost(java.time.Duration.ofSeconds(5)).until(() -> true);
+            assertThat(terminates.get()).isZero();
+            assertThat(warned("instance-termination-unconfirmed")).as("no event for a VM that never existed").isFalse();
+            assertThat(warned("no instance exists")).isFalse();
+        }
+
+        private final class CreatingProvider implements org.pragmatica.aether.environment.ComputeProvider {
+            @Override
+            public org.pragmatica.aether.environment.ProviderDefaults providerDefaults() {
+                return org.pragmatica.aether.environment.ProviderDefaults.providerDefaults("cx22", "img", "img", "nbg1", Option.none(), true);
+            }
+
+            @Override
+            public Promise<org.pragmatica.aether.environment.InstanceInfo> createFrom(org.pragmatica.aether.environment.ProvisionRequest request) {
+                var node = request.context().nodeId().or("unnamed");
+
+                if (createMakesInstance.get()) {
+                    inventory.put(node,
+                                  new org.pragmatica.aether.environment.InstanceInfo(org.pragmatica.aether.environment.InstanceId.instanceId("i-" + node).unwrap(),
+                                                                                       org.pragmatica.aether.environment.InstanceStatus.RUNNING,
+                                                                                       List.of(),
+                                                                                       org.pragmatica.aether.environment.InstanceType.ON_DEMAND,
+                                                                                       Map.of("aether.node-id", node),
+                                                                                       Option.some(node),
+                                                                                       Option.none()));
+                }
+
+                return createOutcome.get().promise();
+            }
+
+            @Override
+            public Promise<Unit> terminate(org.pragmatica.aether.environment.InstanceId instanceId) {
+                terminates.incrementAndGet();
+                inventory.values().removeIf(instance -> instance.id().equals(instanceId));
+
+                return Promise.unitPromise();
+            }
+
+            @Override
+            public Promise<List<org.pragmatica.aether.environment.InstanceInfo>> listInstances() {
+                listings.incrementAndGet();
+
+                return Promise.success(List.copyOf(inventory.values()));
+            }
+
+            @Override
+            public Promise<org.pragmatica.aether.environment.InstanceInfo> instanceStatus(org.pragmatica.aether.environment.InstanceId instanceId) {
+                return org.pragmatica.aether.environment.EnvironmentError.operationNotSupported("instanceStatus").promise();
+            }
+        }
+    }
+
+    /// The production lifecycle's `sourceOf` is total; the single-provider record names none, so this names the default.
+    private record SourcedLifecycle(org.pragmatica.aether.deployment.cluster.NodeLifecycleManager delegate) implements org.pragmatica.aether.deployment.cluster.NodeLifecycleManager {
+        @Override
+        public Promise<org.pragmatica.aether.deployment.cluster.ActionResult> executeAction(org.pragmatica.aether.deployment.cluster.NodeAction action) {
+            return delegate.executeAction(action);
+        }
+
+        @Override
+        public Promise<org.pragmatica.aether.environment.InstanceInfo> provisionNode(org.pragmatica.aether.environment.ProvisionSpec spec) {
+            return delegate.provisionNode(spec);
+        }
+
+        @Override
+        public Promise<Unit> terminateNode(NodeId nodeId) {
+            return delegate.terminateNode(nodeId);
+        }
+
+        @Override
+        public Promise<List<org.pragmatica.aether.environment.InstanceInfo>> instancesForNode(NodeId nodeId) {
+            return delegate.instancesForNode(nodeId);
+        }
+
+        @Override
+        public Promise<List<org.pragmatica.aether.environment.InstanceInfo>> listInstances(Map<String, String> tagFilter) {
+            return delegate.listInstances(tagFilter);
+        }
+
+        @Override
+        public boolean isCloudManaged() {
+            return delegate.isCloudManaged();
+        }
+
+        @Override
+        public Option<SourceName> sourceOf(NodeId nodeId) {
+            return Option.some(SourceName.DEFAULT);
+        }
+    }
+
+    private record DroppedReap(NodeId node, String reason, ClusterTopologyManager.DroppedInstance knowledge) {}
 
     private static final class RecordingCtm implements ClusterTopologyManager {
         @Override public boolean usesExplicitCommunities() { return false; }
@@ -4028,11 +4324,16 @@ class LeaderReconcilerTest {
             return List.copyOf(drainNodeCalls);
         }
 
+        /// When set, the three operations of the in-flight path run on this real topology manager (the recording stays).
+        volatile ClusterTopologyManager real;
         private final List<DroppedReap> droppedReaps = new CopyOnWriteArrayList<>();
 
         @Override
-        public Unit reapDroppedReplacement(NodeId node, String reason, boolean seenBefore) {
-            droppedReaps.add(new DroppedReap(node, reason, seenBefore));
+        public Unit reapDroppedReplacement(NodeId node, String reason, ClusterTopologyManager.DroppedInstance knowledge) {
+            droppedReaps.add(new DroppedReap(node, reason, knowledge));
+            if (real != null) {
+                real.reapDroppedReplacement(node, reason, knowledge);
+            }
 
             return Unit.unit();
         }
@@ -4082,6 +4383,9 @@ class LeaderReconcilerTest {
                                                                   NodeRole intendedRole) {
             provisionReplacementCalls.add(newNodeId);
             provisionReplacementRoles.add(intendedRole);
+            if (real != null) {
+                return real.provisionReplacement(newNodeId, failedPeer, clusterMembers, intendedRole);
+            }
             return nextProvisionResult.get();
         }
 
@@ -4095,6 +4399,9 @@ class LeaderReconcilerTest {
         @Override
         public Promise<ReplacementInstanceState> replacementInstanceState(NodeId nodeId) {
             instanceStateQueries.add(nodeId);
+            if (real != null) {
+                return real.replacementInstanceState(nodeId);
+            }
             return heldInstanceStateAnswer.get()
                                           .or(() -> Promise.success(instanceStates.getOrDefault(nodeId,
                                                                                                 ReplacementInstanceState.UNKNOWN)));

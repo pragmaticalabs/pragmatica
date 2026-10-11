@@ -86,6 +86,20 @@ class GcpComputeProviderTest {
                     .onSuccess(GcpComputeProviderTest::assertProvisionedInstanceInfo);
         }
 
+        /// #1111: the insert succeeds, then the instance reports TERMINATED (boot crash): it EXISTS, so the typed readiness timeout leaves `createFrom`.
+        @Test
+        void provision_instanceCrashesDuringBoot_failsWithTheTypedReadinessTimeout() {
+            testClient.getInstanceResponse = Promise.success(new org.pragmatica.cloud.gcp.api.Instance("aether-test",
+                                                                                                         "TERMINATED",
+                                                                                                         "us-central1-a",
+                                                                                                         List.of(),
+                                                                                                         Map.of()));
+            provider.provision(InstanceType.ON_DEMAND)
+                    .await()
+                    .onSuccess(info -> assertThat(info).as("expected readiness failure, not a phantom success").isNull())
+                    .onFailure(cause -> assertThat(cause).as("#1111: the readiness timeout reaches the caller typed (the instance EXISTS), never flattened into a provision failure").isInstanceOf(EnvironmentError.ProvisionReadinessTimeout.class));
+        }
+
         /// SHOULD-FIX from adversarial review: the requested-spec threading added by this change was
         /// pinned for Hetzner and for NOBODY ELSE — reverting it here left 253 tests green. A
         /// mutation that leaves everything green means unpinned, not independent.

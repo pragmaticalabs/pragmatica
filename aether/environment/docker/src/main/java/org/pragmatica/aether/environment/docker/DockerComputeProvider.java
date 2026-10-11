@@ -665,6 +665,11 @@ public record DockerComputeProvider(DockerCommandRunner runner, DockerConfig con
     /// availability by — `instanceSize` here selects a local container shape, so naming it would
     /// point the operator at a catalogue that does not exist.
     private static EnvironmentError toProvisionError(Cause cause) {
+        // #1111: the container EXISTS (it was created, then failed readiness): the typed cause reaches the caller, never flattened into a rejection.
+        if (cause instanceof EnvironmentError.ProvisionReadinessTimeout timeout) {
+            return timeout;
+        }
+
         return EnvironmentError.provisionFailed(new RuntimeException(cause.message()));
     }
 

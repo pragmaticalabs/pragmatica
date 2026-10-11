@@ -133,7 +133,8 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                     ConcurrentHashMap<NodeId, Long> failedReaps,
                                     org.pragmatica.lang.concurrent.CancellableTask unconfirmedRecheck,
                                     AtomicReference<Supplier<Map<NodeId, AetherValue.UnconfirmedTerminationValue>>> persistedMarks,
-                                    org.pragmatica.lang.concurrent.CancellableTask workerTopologyPolling) implements ClusterTopologyManager {
+                                    org.pragmatica.lang.concurrent.CancellableTask workerTopologyPolling,
+                                    ConcurrentHashMap<NodeId, SourceName> replacementSources) implements ClusterTopologyManager {
     private static final Logger log = LoggerFactory.getLogger(ClusterTopologyManager.class);
     private static final int MINIMUM_CLUSTER_SIZE = 3;
     private static final int MAX_CONSECUTIVE_PROVISIONING_FAILURES = 3;
@@ -276,7 +277,8 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                                 new ConcurrentHashMap<>(),
                                                 org.pragmatica.lang.concurrent.CancellableTask.cancellableTask(),
                                                 new AtomicReference<>(Map::of),
-                                                org.pragmatica.lang.concurrent.CancellableTask.cancellableTask());
+                                                org.pragmatica.lang.concurrent.CancellableTask.cancellableTask(),
+                                                new ConcurrentHashMap<>());
     }
 
     @Override
@@ -876,7 +878,8 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
 
             return Promise.success(ProvisionDisposition.deferred(ProvisionDisposition.DeferralReason.NO_HEALTHY_PEERS));
         }
-
+        // #1111: the source this create goes to, kept so a drop of the replacement can look the instance up where it was (to be) made.
+        replacementSources.put(newNodeId, sourceName);
         var baseSpec = ProvisionSpec.provisionSpec(InstanceType.ON_DEMAND,
                                                    roleInstanceType(intendedRole, sourceName),
                                                    intendedRole.value(),
@@ -1087,9 +1090,11 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         log.warn("CTM v2: provisionReplacement zone '{}' capacity-unavailable — rotating to '{}'", fromZone, toZone);
     }
 
+    /// Every zone refused for capacity, so no instance was created: typed as [EnvironmentError.CapacityUnavailable] so the leader's drop of the
+    /// replacement can tell it from a create that may have left an instance behind (#1111).
     private static Cause zonesExhausted(List<String> zones) {
-        return Causes.cause("CTM v2: provisionReplacement exhausted all configured zones on capacity unavailability: " + String.join(", ",
-                                                                                                                                     zones));
+        return EnvironmentError.capacityUnavailable(String.join(", ", zones),
+                                                    new RuntimeException("CTM v2: provisionReplacement exhausted all configured zones on capacity unavailability"));
     }
 
     /// #334 — the ordered zone list to rotate over for a replacement of `intendedRole`, reusing the
@@ -1862,47 +1867,158 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         return incarnation(node) == generation;
     }
 
+    /// #1111: an in-flight replacement the leader dropped is looked up by its node-id label and reaped. What was known of its instance decides what
+    /// an EMPTY lookup means: [DroppedInstance#LISTED] and [DroppedInstance#CREATED] are handed to the confirmed reap (an instance the provider
+    /// never listed stays unconfirmed, as for a retirement), [DroppedInstance#MAYBE] (a create that failed, so the instance may never have
+    /// existed) is confirmed absent only by [#ABSENT_LISTINGS_TO_CONFIRM] consecutive successful empty listings, and then quietly: no mark, no event.
+    /// A listing that fails goes to the confirmed reap, whose bounded retries end in the unconfirmed event, so a lookup that cannot be answered is
+    /// never read as "absent".
     @Override
-    public Unit reapDroppedReplacement(NodeId node, String reason, boolean seenBefore) {
-        if (seenBefore) {
+    public Unit reapDroppedReplacement(NodeId node, String reason, DroppedInstance knowledge) {
+        if (!active.get()) {
+            log.warn("CTM: in-flight replacement {} dropped ({}) but this is not the active topology manager; nothing is terminated here, the next activation's orphan replay owns the instance",
+                     node,
+                     reason);
+
+            return unit();
+        }
+
+        if (knowledge == DroppedInstance.LISTED) {
             seenInstances.add(node);
         }
 
         var epoch = activationEpoch.get();
+        var generation = incarnation(node);
         var start = (Runnable)() -> reapUnlessLive(node, epoch, REAP_LIVENESS_RECHECKS);
 
-        lifecycleManager.sourceOf(node)
-                        .fold(() -> {
-                                  log.warn("CTM: in-flight replacement {} dropped ({}): no compute source is known for it, so its instance id cannot be listed; terminating by node id",
-                                           node,
-                                           reason);
-                                  start.run();
+        Option.option(replacementSources.get(node))
+              .orElse(() -> lifecycleManager.sourceOf(node))
+              .fold(() -> {
+                        log.warn("CTM: in-flight replacement {} dropped ({}): no compute source is known for it, so its instance id cannot be listed; terminating by node id",
+                                 node,
+                                 reason);
+                        start.run();
 
-                                  return unit();
-                              },
-                              source -> announceDroppedReplacement(node, source, reason, start));
+                        return unit();
+                    },
+                    source -> lookUpDropped(node, source, reason, knowledge, epoch, generation, 1, start));
 
         return unit();
     }
 
-    /// The WARN names source, node and instance id: the listing that finds the instance is the one that can state its id, so it runs first and the
-    /// reap starts when it ends, whatever it said (a failed listing is stated, and the reap's own listing is the confirmation).
-    private Unit announceDroppedReplacement(NodeId node, SourceName source, String reason, Runnable start) {
+    /// Consecutive successful empty listings that confirm a failed create left no instance: the count of absent listings the reconciler needs
+    /// to drop an in-flight entry whose instance was never listed (#1049), and of reap retries ([#FAILED_REAP_RETRIES]).
+    static final int ABSENT_LISTINGS_TO_CONFIRM = FAILED_REAP_RETRIES;
+
+    /// One lookup of a dropped replacement. The WARN names source, node and instance id when the lookup finds the instance; it never says that no
+    /// instance exists until [#ABSENT_LISTINGS_TO_CONFIRM] listings have shown none.
+    private Unit lookUpDropped(NodeId node,
+                               SourceName source,
+                               String reason,
+                               DroppedInstance knowledge,
+                               long epoch,
+                               long generation,
+                               int absentListings,
+                               Runnable start) {
         lifecycleManager.instancesForNode(node, source)
-                        .onSuccess(listed -> log.warn("CTM: in-flight replacement {} dropped ({}); source={}, instanceIds={}; terminating",
-                                                      node,
-                                                      reason,
-                                                      source,
-                                                      listed.stream().map(instance -> instance.id()
-                                                                                              .value()).toList()))
-                        .onFailure(cause -> log.warn("CTM: in-flight replacement {} dropped ({}); source={}, instance id unknown (listing failed: {}); terminating by node id",
-                                                     node,
-                                                     reason,
-                                                     source,
-                                                     cause.message()))
-                        .onResult(_ -> start.run());
+                        .onResult(result -> result.fold(cause -> lookupFailed(node, source, reason, cause, start),
+                                                        listed -> lookupAnswered(node,
+                                                                                 source,
+                                                                                 reason,
+                                                                                 knowledge,
+                                                                                 epoch,
+                                                                                 generation,
+                                                                                 absentListings,
+                                                                                 listed,
+                                                                                 start)));
 
         return unit();
+    }
+
+    private Unit lookupFailed(NodeId node, SourceName source, String reason, Cause cause, Runnable start) {
+        log.warn("CTM: in-flight replacement {} dropped ({}); source={}, the lookup of its instance failed ({}), so whether it exists is not known; the confirmed reap retries the lookup",
+                 node,
+                 reason,
+                 source,
+                 cause.message());
+        start.run();
+
+        return unit();
+    }
+
+    private Unit lookupAnswered(NodeId node,
+                                SourceName source,
+                                String reason,
+                                DroppedInstance knowledge,
+                                long epoch,
+                                long generation,
+                                int absentListings,
+                                List<InstanceInfo> listed,
+                                Runnable start) {
+        if (!listed.isEmpty()) {
+            log.warn("CTM: in-flight replacement {} dropped ({}); source={}, instanceIds={}; terminating",
+                     node,
+                     reason,
+                     source,
+                     listed.stream().map(instance -> instance.id()
+                                                             .value()).toList());
+            start.run();
+
+            return unit();
+        }
+
+        if (knowledge != DroppedInstance.MAYBE) {
+            log.warn("CTM: in-flight replacement {} dropped ({}); source={}, the provider lists no instance of it yet; the confirmed reap decides",
+                     node,
+                     reason,
+                     source);
+            start.run();
+
+            return unit();
+        }
+
+        return confirmAbsence(node, source, reason, epoch, generation, absentListings, start);
+    }
+
+    private Unit confirmAbsence(NodeId node,
+                                SourceName source,
+                                String reason,
+                                long epoch,
+                                long generation,
+                                int absentListings,
+                                Runnable start) {
+        if (absentListings >= ABSENT_LISTINGS_TO_CONFIRM) {
+            replacementSources.remove(node);
+            log.info("CTM: in-flight replacement {} dropped ({}): {} consecutive listings of source={} show no instance of it, so its create left nothing; confirmed absent, nothing to terminate",
+                     node,
+                     reason,
+                     absentListings,
+                     source);
+
+            return unit();
+        }
+
+        SharedScheduler.schedule(() -> recheckAbsence(node, source, reason, epoch, generation, absentListings + 1, start),
+                                 failedReapInterval());
+
+        return unit();
+    }
+
+    private void recheckAbsence(NodeId node,
+                                SourceName source,
+                                String reason,
+                                long epoch,
+                                long generation,
+                                int absentListings,
+                                Runnable start) {
+        if (!active.get() || activationEpoch.get() != epoch || !sameIncarnation(node, generation)) {
+            log.debug("CTM: absence check of dropped replacement {} stopped — deactivated, re-activated or joined since",
+                      node);
+
+            return;
+        }
+
+        lookUpDropped(node, source, reason, DroppedInstance.MAYBE, epoch, generation, absentListings, start);
     }
 
     /// Idempotent per node INCARNATION: NodeRemoved and the drain-grace backstop both reap, and a reap confirmed once is not re-asked (and so cannot be
@@ -2465,6 +2581,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         incarnations.merge(nodeId, 1L, Long::sum);
         cancelPendingDrain(nodeId);
         lifecycleManager.readmitExternal(nodeId).onFailure(cause -> rejoinNotReconciled(nodeId, cause));
+        replacementSources.remove(nodeId);
         confirmedReaps.remove(nodeId);
         seenInstances.remove(nodeId);
         listedAbsent.remove(nodeId);
@@ -2492,6 +2609,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     }
 
     private void reapConfirmed(NodeId nodeId) {
+        replacementSources.remove(nodeId);
         failedReaps.remove(nodeId);
         var marked = unconfirmedReaps.remove(nodeId);
         var persisted = persistedMarks.get().get().containsKey(nodeId);

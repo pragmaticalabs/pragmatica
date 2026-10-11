@@ -936,6 +936,8 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
                                                      String attemptedLocation,
                                                      Cause cause) {
         return switch (cause) {
+            // #1111: the server EXISTS (it was created, then failed readiness): the typed cause reaches the caller, never flattened into a rejection.
+            case EnvironmentError.ProvisionReadinessTimeout timeout -> timeout;
             case HetznerError.ApiError apiError when CAPACITY_UNAVAILABLE_CODE.equals(apiError.code()) -> EnvironmentError.capacityUnavailable(attemptedLocation,
                                                                                                                                                new RuntimeException(cause.message()));
             default -> EnvironmentError.provisionFailed(attemptedServerType,

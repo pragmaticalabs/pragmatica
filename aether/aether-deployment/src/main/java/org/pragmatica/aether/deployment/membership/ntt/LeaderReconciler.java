@@ -26,6 +26,7 @@ import java.util.stream.Collectors;
 
 import org.pragmatica.aether.config.cluster.NodeRole;
 import org.pragmatica.aether.config.cluster.SourceProfile;
+import org.pragmatica.aether.deployment.cluster.CapacityControlledLifecycle;
 import org.pragmatica.aether.deployment.cluster.ClusterTopologyManager;
 import org.pragmatica.aether.deployment.cluster.DrainReason;
 import org.pragmatica.aether.deployment.cluster.ProvisionDisposition;
@@ -1768,12 +1769,11 @@ public final class LeaderReconciler {
            .onFailure(cause -> reapFailedProvision(placeholder, cause));
     }
 
-    /// #1111 — a create that failed AFTER the provider made the instance (a readiness timeout: the instance exists, listed under the placeholder's
-    /// node-id tag) is a drop like the other three: the entry goes, and so does whatever the provider holds under the placeholder. A create the
-    /// provider REJECTED (quota, capacity, an API error) made nothing, so there is nothing to terminate: it is stated at WARN with its cause and reaps
-    /// nothing, because a reap of a VM that never existed would end in a false `instance-termination-unconfirmed` and a mark that never clears. Only
-    /// the call that actually removes the entry acts, so a placeholder the ceiling already dropped is not reaped twice. A failure after creation of
-    /// any other shape is not reaped here: the next activation's orphan replay owns it.
+    /// #1111 — a failed create is a drop like the other three, with one exception: a failure that PROVES no instance was made (a capacity
+    /// refusal in every zone, the node cap, a refused fleet-capacity reservation) reaps nothing. Every other failure is AMBIGUOUS, because
+    /// the providers report a readiness timeout, a 5xx after the provider accepted, a lost response and a failed tag as an ordinary provision
+    /// failure while the instance exists and bills: the manager looks the instance up by its label and terminates it, or confirms it absent. Only
+    /// the call that actually removes the entry acts, so a placeholder the ceiling already dropped is not reaped twice.
     @Contract
     private void reapFailedProvision(NodeId placeholder, Cause cause) {
         Option.option(inFlightProvisioning.remove(placeholder)).onPresent(entry -> settleFailedProvision(placeholder,
@@ -1781,22 +1781,35 @@ public final class LeaderReconciler {
     }
 
     private void settleFailedProvision(NodeId placeholder, Cause cause) {
-        if (cause instanceof EnvironmentError.ProvisionReadinessTimeout) {
-            reapDropped(placeholder, "its create failed after the instance was made: " + cause.message(), true);
+        if (provesNoInstance(cause)) {
+            log.warn("LeaderReconciler in-flight replacement {} dropped: the provider created no instance, so nothing is reaped: {}",
+                     placeholder,
+                     cause.message());
 
             return;
         }
 
-        log.warn("LeaderReconciler in-flight replacement {} dropped: the provider rejected its create, so no instance exists and nothing is reaped: {}",
-                 placeholder,
-                 cause.message());
+        reapDropped(placeholder, "its create failed: " + cause.message(), ClusterTopologyManager.DroppedInstance.MAYBE);
+    }
+
+    private static ClusterTopologyManager.DroppedInstance knownInstance(boolean listed) {
+        return listed
+               ? ClusterTopologyManager.DroppedInstance.LISTED
+               : ClusterTopologyManager.DroppedInstance.CREATED;
+    }
+
+    /// The causes that state no instance was made: `CapacityUnavailable` (Hetzner `resource_unavailable`, AWS `InsufficientInstanceCapacity`, and
+    /// the manager's all-zones-exhausted refusal), `NodeCapExceeded` (the fleet cap, checked before the create call) and the fleet-capacity
+    /// refusal of `CapacityControlledLifecycle` ("no provider create was dispatched").
+    private static boolean provesNoInstance(Cause cause) {
+        return cause instanceof EnvironmentError.CapacityUnavailable || cause instanceof EnvironmentError.NodeCapExceeded || cause == CapacityControlledLifecycle.AdmissionFailure.CAPACITY_UNAVAILABLE;
     }
 
     /// #1111 — every drop of an in-flight replacement hands its instance to the manager's confirmed reap (bounded, confirmed, operator-visible
-    /// when unconfirmed), which never terminates a node that shows life. `seenBefore` is true only when the provider has listed the instance.
+    /// when unconfirmed), which never terminates a node that shows life. `knowledge` says what is known of the instance: listed by the provider, only created, or possibly never made.
     @Contract
-    private void reapDropped(NodeId id, String reason, boolean seenBefore) {
-        ctm.reapDroppedReplacement(id, reason, seenBefore);
+    private void reapDropped(NodeId id, String reason, ClusterTopologyManager.DroppedInstance knowledge) {
+        ctm.reapDroppedReplacement(id, reason, knowledge);
     }
 
     /// Keep the in-flight placeholder only for a real [`ProvisionDisposition.Dispatched`] boot; a
@@ -1859,7 +1872,7 @@ public final class LeaderReconciler {
                     "still unjoined after its " + entry.ceiling().millis()
                    + " ms replacement ceiling (state=" + entry.state()
                    + ")",
-                    entry.state() == InFlightState.CONFIRMED);
+                    knownInstance(entry.state() == InFlightState.CONFIRMED));
 
         return true;
     }
@@ -1995,7 +2008,7 @@ public final class LeaderReconciler {
                  state);
         reapDropped(id,
                     "the provider reports " + state,
-                    state == ReplacementInstanceState.FAILED || polled.state() == InFlightState.CONFIRMED);
+                    knownInstance(state == ReplacementInstanceState.FAILED || polled.state() == InFlightState.CONFIRMED));
         triggerReconcile(ReconcileTrigger.NTT_FIRE);
     }
 
