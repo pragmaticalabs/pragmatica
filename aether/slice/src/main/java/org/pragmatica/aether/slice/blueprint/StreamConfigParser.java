@@ -318,7 +318,9 @@ public interface StreamConfigParser {
                                    + "' must specify either 'version' (owned) or 'source' (external)").result();
     }
 
-    private static Result<StreamResource> parseExternalResource(String streamName, String source, Option<String> roleOpt) {
+    private static Result<StreamResource> parseExternalResource(String streamName,
+                                                                String source,
+                                                                Option<String> roleOpt) {
         return ResourceAddress.resourceAddress(source)
                               .flatMap(addr -> refuseReservedKind(streamName, source, addr))
                               .flatMap(addr -> refuseWritingRole(streamName, source, addr, roleOpt))
@@ -343,8 +345,11 @@ public interface StreamConfigParser {
                                                              String source,
                                                              ResourceAddress addr,
                                                              Option<String> roleOpt) {
-        return Option.some(addr).filter(ResourceAddress::isSystem)
-                     .flatMap(_ -> roleOpt.map(String::trim).map(String::toLowerCase).filter(StreamConfigParser::writes))
+        return Option.some(addr)
+                     .filter(ResourceAddress::isSystem)
+                     .flatMap(_ -> roleOpt.map(String::trim)
+                                          .map(String::toLowerCase)
+                                          .filter(StreamConfigParser::writes))
                      .map(role -> StreamSourceError.SystemSourceNotConsumer.FACTORY.apply(streamName, source, role).<ResourceAddress> result())
                      .or(() -> success(addr));
     }

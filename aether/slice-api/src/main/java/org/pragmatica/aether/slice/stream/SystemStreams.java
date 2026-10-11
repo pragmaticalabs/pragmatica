@@ -27,13 +27,11 @@ public final class SystemStreams {
     /// Whether `engineKey` names one of [#ALL] — what the management-api write-gate (`ManagementServer`)
     /// checks a resolved stream identity against.
     ///
-    /// This used to recompute `address.name().value()` locally, on the reasoning that every member of
-    /// `ALL` is in the `system` namespace so its engine key is just its bare name. That reasoning was
-    /// correct and the duplication was still the hazard: the gate's spelling and the reduction it
-    /// mirrors were free to drift apart, silently, in the direction that lets a `system:*` write past
-    /// a security gate. Since #1040 both sides call [StreamEngineKey#engineKey], so the gate cannot
-    /// disagree with the identity the routes resolve — including for any future `ALL` member that is
-    /// somehow not in the `system` namespace, where the old local reduction would have been wrong.
+    /// This used to recompute `address.name().value()` locally, on the reasoning that a system stream's
+    /// engine key is its bare name. It is not (#1338): the key is the full address, which is also the name the
+    /// framework creates the stream under, and the bare name of a system stream is an ordinary stream name that is
+    /// not forbidden. Since #1040 both sides call [StreamEngineKey#engineKey], so the gate cannot disagree with the
+    /// identity the routes resolve. The owner's append path refuses a write to ANY `system:` stream, not only these.
     public static boolean isForbiddenEngineKey(String engineKey) {
         return ALL.stream().anyMatch(address -> StreamEngineKey.engineKey(address).equals(engineKey));
     }

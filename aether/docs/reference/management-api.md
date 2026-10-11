@@ -5839,7 +5839,7 @@ Outcomes, by status:
 | `name` missing | `400` | `Missing stream name` |
 | `name` is not a catalog address (a bare name such as `my-stream`) | `400` | names the `namespace:stream:version` form to retype — a bare name has no catalog address, so nothing could list, read or delete the stream it would mint |
 | `name` carries a reserved stream-kind prefix (`system:`, `topic:`, `entity:`) | `400` | `ReservedStreamName`, naming the prefix; nothing is created — see [Reserved stream-name prefixes](#reserved-stream-name-prefixes-400). Runs before the existence check, so a reserved name is never answered `"exists"`. |
-| `name` is an enumerated system stream (bare or catalog spelling) | `405` | [`system:*` write gate](#system-write-gate-405) |
+| `name` is an enumerated system stream (catalog spelling; the bare name is an ordinary name and not refused as one) | `405` | [`system:*` write gate](#system-write-gate-405) |
 | Stream config commit failed or timed out (10 s) | `500` | the cause; nothing is registered |
 | Catalog entry commit failed or timed out (10 s) | `500` | the cause; the ring stays materialized, and a retry registers it rather than failing on the half-done first attempt |
 
@@ -6236,15 +6236,19 @@ stream name in the request body rather than the path, so this path-only gate can
 `StreamRoutes#joinGroup`/`#leaveGroup` that refuses a reserved system stream name before the
 coordinator is called (`405 Cannot join or leave a consumer group on a reserved system stream` — the
 same status this gate answers with). The body name is canonicalized the way this gate canonicalizes
-a path — the catalog spelling `system:cluster-events:1.0.0` reduces to the engine key
-`cluster-events` before the predicate — so both spellings are refused; a missing name is
+a path — the catalog spelling `system:cluster-events:1.0.0` is the engine key, and the
+predicate runs on it — so the catalog spelling is refused; the bare name `cluster-events` is an ordinary
+stream name and is not (#1338); a missing name is
 `Missing stream name`. The evidence question that ticket was filed on was answered: joining/leaving
 does mutate state — both call `rebalance`, which proposes replicated KV assignment records under the
 named stream.
 
-Reads of `system:*` streams (e.g. `system:cluster-events`) are unaffected; only writes are gated.
+Reads of `system:*` streams (e.g. `system:cluster-events:1.0.0`) are unaffected; only writes are gated.
 The compile-time SPI split already blocks application code from producing into system streams;
-this is the HTTP-path guard.
+this is the HTTP-path guard. Since #1338 the refusal is also applied where a write is appended (the stream
+write router and the owner's append), with `405` and `SystemStreamWriteRefused`, so a slice that binds a
+system stream through a blueprint `External` source gets a read-only stream, and a forwarded write to a
+system stream is refused at the owner unless the frame carries the sending node's system-writer claim.
 
 ### Reserved stream-name prefixes (400)
 
@@ -6275,7 +6279,8 @@ refusal as the routes above, instead of the earlier silent empty-bindings publis
 `system`-namespace source is exempt: it is a read-only reference to a stream the runtime already provisioned (#1338).
 System streams are read-only to blueprints, slices and the Management API: a write to a `system:` stream from
 anything but the node's own system publisher is refused with `405` (`SystemStreamWriteRefused`), and a catalog
-create in the `system` namespace is refused as a reserved kind.
+create in the `system` namespace is refused as a reserved kind. A `system` source declared with a writing role (`producer`, `both`) is refused at deploy under rule
+`source-system-not-consumer`.
 
 Without the refusal, a stream minted ahead of the real resource would plant an operator-chosen config
 (partitions, replication factors, retention) that the resource later finds already in place. For

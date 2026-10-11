@@ -24,5 +24,11 @@
   a flat bare-named operator stream; it is now refused `400` as a reserved kind. A body-carried bare name equal to a
   system stream's bare name is no longer treated as the system stream (it still cannot be created, being not a catalog
   address).
-- Not changed: the inter-node forward handler (`StreamForwardHandler`) trusts the sending node; the gate sits at the
-  originating writer.
+- **Forwarded writes.** The same refusal sits on the owner's appends, which every publish reaches (single, batch,
+  forwarded and the materialize-then-retry path). A write forwarded to a `system:` stream is refused at the owner unless
+  the frame carries the sending node's system-writer claim (`PublishForward#systemWriter`, set only by a node's own
+  system publisher). The guarantee is therefore: non-system callers and origin-side omissions cannot write a system
+  stream. It is not a defence against a peer that holds the cluster secret, which can forge the claim (pinned by
+  `SystemStreamForwardPinsTest#honestyPin_aPeerThatSetsTheMark_landsASystemWrite_theClaimIsForgeable`).
+- **A writing role on a `system` External source is refused at deploy** (rule `source-system-not-consumer`, gating),
+  instead of at the first publish. `role = "producer"` or `"both"` is refused; `consumer` or no role is accepted.

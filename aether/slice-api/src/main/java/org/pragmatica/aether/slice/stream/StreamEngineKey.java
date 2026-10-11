@@ -36,7 +36,7 @@ public sealed interface StreamEngineKey {
     /// Engine-key prefixes marking a stream KIND that only internal provisioning creates (#1282): `system:`
     /// (system streams, named from their `system`-namespace address), `topic:` (durable topics and their
     /// DLQs) and `entity:` (entity keyspace logs). Runtime rules key off these prefixes, so no user input —
-    /// a Management-API write or a Management-API write — may mint under one; a blueprint `External` source in the `system` namespace is a read-only reference, not a mint, and is the one exception. Declared here because
+    /// a Management-API write — may mint under one; a blueprint `External` source in the `system` namespace is a read-only reference, not a mint, and is the one exception. Declared here because
     /// the blueprint parser (aether/slice) cannot see the canonical owners (`DurableTopicNames` in
     /// aether-stream, `EntityPartitionArc` in aether-dht); `ReservedStreamNamesTest` in aether/node pins
     /// this list against them.

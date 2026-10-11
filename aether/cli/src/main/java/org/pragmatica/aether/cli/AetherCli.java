@@ -4218,8 +4218,8 @@ public class AetherCli implements Runnable {
         ///
         /// It previously defaulted to the system-namespace catalog address, preserving the original
         /// single-name UX for `status`/`publish`/`read`/`delete`. That convenience became a silent wrong
-        /// answer when #1040 qualified application streams: a bare name resolves to `system:<name>:1.0.0`,
-        /// which `StreamEngineKey` reduces back to a bare engine key, while the application stream now
+        /// answer when #1040 qualified application streams: a bare name resolved to `system:<name>:1.0.0`,
+        /// which `StreamEngineKey` then reduced to a bare engine key (since #1338 it keys by the full address), while the application stream now
         /// lives under `<blueprint-ns>:<stream>:<version>`. The command then succeeded and returned an
         /// EMPTY result — indistinguishable from a stream with no events. Measured on a live 5-node
         /// cluster 2026-09-13 with 20 events present: the bare name returned 0 of 20, the full identity

@@ -124,8 +124,8 @@ public interface HttpForwarder {
     /// Resolves the HRW owner a [RouteTarget.PartitionOwner] route must be forwarded to (#1039).
     ///
     /// Injected rather than computed here: the destination is `hrw(engineKey, partition)`, and the
-    /// engine key comes from `StreamManager.engineKey`'s two-shape reduction (bare name for `system`
-    /// streams, `ns:stream:version` otherwise), which lives in module `node`. Re-implementing that
+    /// engine key comes from `StreamManager.engineKey` (the full `ns:stream:version` address in every
+    /// namespace, `system` included), which lives in module `node`. Re-implementing that
     /// reduction in this module would give one declaration two engine keys — the defect tracked by
     /// #1040 — so the node supplies the whole resolution, owner included, reading the SAME resolver
     /// the replica-snapshot handler reads.
