@@ -2086,6 +2086,10 @@ class NodeReplacementRealRegistryReapTest {
         states.remove(OLD);
         ctmUnderTest.markUnconfirmed(OLD, "second incarnation");
         within(10, () -> assertThat(persistedMark(OLD).map(AetherValue.UnconfirmedTerminationValue::cause).or("")).isEqualTo("second incarnation"));
+        // The second incarnation's own re-check now lists successfully and finds nothing: it is the permanent warning, once, and the node is
+        // recorded as listed-absent - the state the earlier incarnation's late result would otherwise act on.
+        listing.set(Promise.success(List.of()));
+        within(10, () -> assertThat(persistedMark(OLD).map(AetherValue.UnconfirmedTerminationValue::absent).or(false)).isTrue());
         settle();
         var before = unconfirmedWarnings();
 
