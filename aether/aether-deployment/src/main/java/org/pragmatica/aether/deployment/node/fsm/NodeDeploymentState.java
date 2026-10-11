@@ -622,7 +622,9 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
 
         private Option<SliceState> committedStateOf(SliceNodeKey sliceKey) {
             return ctx.kvStore()
-                      .getTyped(NodeArtifactKey.nodeArtifactKey(ctx.self(), sliceKey.artifact()), NodeArtifactValue.class)
+                      .getTyped(NodeArtifactKey.nodeArtifactKey(ctx.self(),
+                                                                sliceKey.artifact()),
+                                NodeArtifactValue.class)
                       .map(NodeArtifactValue::state);
         }
 

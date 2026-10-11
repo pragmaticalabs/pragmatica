@@ -19,7 +19,19 @@ public record RabiaMetrics(String role,
                            long totalDecisionLatencyNs,
                            long oldestPendingBatchAgeMs,
                            long applyTimeoutCount) {
-    public static final RabiaMetrics EMPTY = new RabiaMetrics("FOLLOWER", Option.empty(), 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+    public static final RabiaMetrics EMPTY = new RabiaMetrics("FOLLOWER",
+                                                              Option.empty(),
+                                                              0,
+                                                              0,
+                                                              0,
+                                                              0,
+                                                              0,
+                                                              0,
+                                                              0,
+                                                              0,
+                                                              0,
+                                                              0,
+                                                              0);
 
     /// The record as it was before #1117 added the pending-age and apply-timeout signals; both read zero.
     public RabiaMetrics(String role,

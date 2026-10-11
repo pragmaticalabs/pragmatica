@@ -1940,15 +1940,18 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         /// each slice, at the leader's last apply; it says nothing about the other instances or about any node's
         /// local state, so the line carries "n of m instances ACTIVE" per slice instead of claiming "all active".
         String deployedVerdict(BlueprintId blueprintId, Set<Artifact> slices) {
-            return "Blueprint " + blueprintId.asString() + " deployed: each of its " + slices.size()
-                   + " slices has at least one ACTIVE instance [" + instanceCoverage(slices)
-                   + "]; other instances may still be activating";
+            return "Blueprint " + blueprintId.asString()
+                 + " deployed: each of its " + slices.size()
+                 + " slices has at least one ACTIVE instance [" + instanceCoverage(slices)
+                 + "]; other instances may still be activating";
         }
 
         private String instanceCoverage(Set<Artifact> slices) {
             return slices.stream()
-                         .map(artifact -> artifact.asString() + ": " + activeInstanceCount(artifact) + " of "
-                                         + desiredReplicaCount(artifact) + " instances ACTIVE")
+                         .map(artifact -> artifact.asString()
+                                         + ": " + activeInstanceCount(artifact)
+                                         + " of " + desiredReplicaCount(artifact)
+                                         + " instances ACTIVE")
                          .sorted()
                          .collect(Collectors.joining("; "));
         }
