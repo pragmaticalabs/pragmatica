@@ -163,11 +163,9 @@ class EmberSameIdentityRelaunchTest {
 
         assertThat(cluster.killNode("btk-2", false).await(STOP_BOUND).isSuccess()).isTrue();
 
-        // Not asserted: that a write cannot commit. A cluster that lost two cores is entitled to PROVISION a replacement
-        // under a fresh NodeId (terminal removal's recovery path), and btk-1 plus that replacement commit. Whether and
-        // when it does depends on whether the killed node was ever observed healthy, which is health timing and not
-        // this property. The property is that the refused identity itself never participates, asserted above and
-        // during the whole window below.
+        assertThat(write(survivor, "after-kill").isSuccess())
+            .as("btk-1 plus a refused same-NodeId process must NOT form a quorum")
+            .isFalse();
         assertThat(cluster.allNodes().stream().map(node -> node.self().id())).as("no live process answers to the refused NodeId")
                                                                                 .doesNotContain("btk-3");
     }

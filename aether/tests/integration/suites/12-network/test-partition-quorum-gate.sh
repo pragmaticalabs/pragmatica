@@ -207,15 +207,21 @@ container_for_node() {
 PARTITION_IP_DIR="${PARTITION_IP_DIR:-$(mktemp -d "${TMPDIR:-/tmp}/s05-ips.XXXXXX")}"
 
 remember_network_ip() {
-    local container="$1" nets
-    nets=$(remote_exec "docker inspect -f '{{json .NetworkSettings.Networks}}' ${container}" 2>/dev/null || true)
-    printf '%s' "$nets" | python3 -c '
+    local container="$1" nets ip err
+    err="${PARTITION_IP_DIR}/${container}.err"
+    : > "${PARTITION_IP_DIR}/${container}"
+    if ! nets=$(remote_exec "docker inspect -f '{{json .NetworkSettings.Networks}}' ${container}" 2>"$err"); then
+        log_warn "remember_network_ip: docker inspect of ${container} failed ($(tr '\n' ' ' < "$err")); no address remembered, the reconnect will not restore one"
+        return 0
+    fi
+    if ! ip=$(printf '%s' "$nets" | python3 -c '
 import json, sys
-try:
-    print(json.load(sys.stdin)["'"${NETWORK_NAME}"'"]["IPAddress"])
-except Exception:
-    pass
-' > "${PARTITION_IP_DIR}/${container}" 2>/dev/null || true
+print(json.load(sys.stdin)["'"${NETWORK_NAME}"'"]["IPAddress"])
+' 2>"$err"); then
+        log_warn "remember_network_ip: ${container} has no address on ${NETWORK_NAME} ($(tr '\n' ' ' < "$err")); the reconnect will not restore one"
+        return 0
+    fi
+    printf '%s' "$ip" > "${PARTITION_IP_DIR}/${container}"
 }
 
 recall_network_ip() {

@@ -752,6 +752,25 @@ class SwimProtocolTest {
                 .isEqualTo(afterAck);
         }
 
+        /// The join-ack latch belongs to one join attempt: a node that joins again must announce again, however the
+        /// previous attempt ended.
+        @Test
+        void announceJoin_afterAnEarlierJoinWasAcknowledged_announcesAgain() throws InterruptedException {
+            protocol.announceJoin(nodeInfoFor(SELF_ID, SELF_ADDR), "", 0L, List.of(ADDR_A));
+            waitUntil(() -> announceCount(transport) >= 1, 3_000L);
+            protocol.onMessage(ADDR_A, Ack.ack(NODE_A, 0L, List.of()));
+            Thread.sleep(1_200L);
+
+            var afterFirstJoin = announceCount(transport);
+
+            protocol.announceJoin(nodeInfoFor(SELF_ID, SELF_ADDR), "", 0L, List.of(ADDR_A));
+
+            waitUntil(() -> announceCount(transport) > afterFirstJoin, 3_000L);
+            assertThat(announceCount(transport))
+                .as("the new join attempt must not inherit the previous attempt's acknowledgement")
+                .isGreaterThan(afterFirstJoin);
+        }
+
         /// #501: the announce loop is a periodic task on the shared scheduler; `stop()` must cancel it
         /// like the probe tick, or a stopped protocol keeps sending ANNOUNCE for up to 30s.
         @Test

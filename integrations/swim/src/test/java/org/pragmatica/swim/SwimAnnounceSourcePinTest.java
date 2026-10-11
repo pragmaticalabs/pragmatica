@@ -612,6 +612,161 @@ class SwimAnnounceSourcePinTest {
         assertThat(observations.byType(SwimObservation.HealthyObserved.class)).isEmpty();
     }
 
+    // -- gossip cannot move a pinned address --
+
+    private static MembershipUpdate aliveAt(NodeId member, long incarnation, InetSocketAddress address) {
+        return MembershipUpdate.membershipUpdate(member, MemberState.ALIVE, incarnation, address);
+    }
+
+    @Test
+    void gossipWithAnotherAddress_forAResidentPinnedMember_keepsThePinnedAddress_andAppliesTheState() {
+        protocol = manualProtocol();
+        pinnedMemberA();
+
+        protocol.onMessage(B_ADDR, new Ping(NODE_B, 1L, List.of(aliveAt(NODE_A, 2L, A_OTHER))));
+
+        assertThat(protocol.members().get(NODE_A).address())
+            .as("only a confirmed ANNOUNCE moves a pinned member's address")
+            .isEqualTo(A_REAL);
+        assertThat(protocol.members().get(NODE_A).incarnation())
+            .as("the state the update carries is still applied")
+            .isEqualTo(2L);
+    }
+
+    @Test
+    void gossipWithAnotherAddress_forAPinnedMember_raisesTheAddressConflictWarning_withTheMemberAsSubject() {
+        protocol = manualProtocol();
+        pinnedMemberA();
+
+        for (int i = 0; i < 20; i++) {
+            protocol.onMessage(B_ADDR, new Ping(NODE_B, i + 1L, List.of(aliveAt(NODE_A, 2L + i, A_OTHER))));
+        }
+
+        await().pollDelay(Duration.ofMillis(300)).atMost(Duration.ofSeconds(5)).until(() -> !warnings.isEmpty());
+        assertThat(warnings).as("throttled like the ANNOUNCE case").hasSize(1);
+        assertThat(warnings.getFirst().code()).isEqualTo(OperatorWarningCode.SWIM_MEMBER_ADDRESS_CONFLICT);
+        assertThat(warnings.getFirst().subject()).as("the operator sees which member").isEqualTo(NODE_A.id());
+        assertThat(warnings.getFirst().message()).contains("gossip", "10.0.0.1", "203.0.113.9");
+    }
+
+    @Test
+    void gossipWithThePinnedAddress_isAdoptedAsBefore_andRaisesNoWarning() {
+        protocol = manualProtocol();
+        pinnedMemberA();
+        var samePinnedIpOtherPort = new InetSocketAddress("10.0.0.1", 9100);
+
+        protocol.onMessage(B_ADDR, new Ping(NODE_B, 1L, List.of(aliveAt(NODE_A, 2L, samePinnedIpOtherPort))));
+
+        assertThat(protocol.members().get(NODE_A).address()).isEqualTo(samePinnedIpOtherPort);
+        assertNoConflictRaised("gossip that agrees with the pin is not a conflict");
+    }
+
+    @Test
+    void gossipReadmittingARemovedPinnedMember_takesThePinnedIp_notTheGossipedOne() {
+        protocol = tickingProtocol();
+        pinnedMemberA();
+        driveToTombstone();
+
+        protocol.onMessage(B_ADDR, new Ping(NODE_B, 3L, List.of(aliveAt(NODE_A, 5L, A_OTHER))));
+
+        assertThat(protocol.members()).containsKey(NODE_A);
+        assertThat(protocol.members().get(NODE_A).address())
+            .as("a member brought back by gossip keeps its pinned IP (with the gossiped port)")
+            .isEqualTo(new InetSocketAddress("10.0.0.1", 9001));
+        assertThat(protocol.addressConflictsReportedForTest()).isEqualTo(1);
+    }
+
+    // -- the operator warning --
+
+    @Test
+    void addressConflictWarning_namesTheMemberAsSubject_andSaysReplaceNotRestart() {
+        protocol = manualProtocol();
+        pinnedMemberA();
+
+        protocol.onMessage(A_OTHER, announceA());
+
+        await().atMost(Duration.ofSeconds(5)).until(() -> !warnings.isEmpty());
+        assertThat(warnings.getFirst().subject()).isEqualTo(NODE_A.id());
+        assertThat(warnings.getFirst().message()).contains("fresh NodeId").doesNotContain("restart");
+    }
+
+    @Test
+    void addressConflicts_areThrottledPerMemberAndAttemptedSource_notGlobally() {
+        protocol = manualProtocol();
+        pinnedMemberA();
+
+        for (var i = 0; i < 5; i++) {
+            protocol.onMessage(A_OTHER, announceA());
+            protocol.onMessage(A_MOVED, announceA());
+            protocol.onMessage(new InetSocketAddress("198.51.100.7", 9001), announceA());
+        }
+
+        assertThat(protocol.addressConflictsReportedForTest())
+            .as("three attempted sources are three conflicts, however often each repeats")
+            .isEqualTo(3);
+    }
+
+    // -- re-probe window, sweep wiring --
+
+    @Test
+    void secondAnnounceFromTheSameSource_afterTheReprobeWindow_sendsASecondProbe() throws InterruptedException {
+        protocol = manualProtocol();
+
+        protocol.onMessage(A_REAL, announceA());
+        Thread.sleep(450);
+        protocol.onMessage(A_REAL, announceA());
+
+        assertThat(transport.sentMessages.stream().filter(sent -> sent.target().equals(A_REAL) && sent.message() instanceof Ping).count())
+            .as("a lost Ack to the first probe is retried by the next ANNOUNCE once the 400 ms window has passed")
+            .isEqualTo(2);
+    }
+
+    @Test
+    void tick_forgetsACandidateWhoseMemberLeftTheMembershipScope_withoutAnyTestHook() {
+        protocol = tickingProtocol();
+        protocol.onMessage(A_REAL, announceA());
+        assertThat(protocol.addressCandidatesForTest()).isEqualTo(1);
+
+        protocol.setMembershipEligibility(_ -> false);
+
+        await().atMost(Duration.ofSeconds(5))
+               .untilAsserted(() -> assertThat(protocol.addressCandidatesForTest())
+                   .as("the periodic tick sweeps candidates; nothing calls the sweep by hand")
+                   .isZero());
+    }
+
+    // -- accepted ANNOUNCE details --
+
+    @Test
+    void announceWithNoToken_fromThePinnedSource_isAcceptedWithoutANewProbe() {
+        protocol = manualProtocol();
+        protocol.putMemberForTest(NODE_B, B_ADDR, MemberState.ALIVE);
+        pinnedMemberA();
+        transport.sentMessages.clear();
+
+        protocol.onMessage(A_REAL, Announce.announce(infoOf(NODE_A, 9001), "", 1L, 0L));
+
+        assertThat(transport.sentMessages.stream().filter(sent -> sent.message() instanceof Ping).toList())
+            .as("a token-less ANNOUNCE (an older node) has no token to prove")
+            .isEmpty();
+        assertThat(transport.sentMessages.stream().filter(sent -> sent.message() instanceof Ack ack && ack.sequence() == 0L).toList())
+            .as("and is answered with the join ack")
+            .isNotEmpty();
+    }
+
+    @Test
+    void reAnnounceFromThePinnedSource_doesNotRefreshTheProbeAddress() {
+        protocol = manualProtocol();
+        pinnedMemberA();
+        protocol.putMemberForTest(NODE_A, A_MOVED, MemberState.ALIVE);
+
+        protocol.onMessage(A_REAL, announceA());
+
+        assertThat(protocol.members().get(NODE_A).address())
+            .as("only the first confirmation lets an ANNOUNCE take the resident member's address")
+            .isEqualTo(A_MOVED);
+    }
+
     // -- helpers --
 
     private static Ack provenAck(NodeId member, long token, long sequence) {

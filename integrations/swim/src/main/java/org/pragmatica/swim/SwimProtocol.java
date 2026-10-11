@@ -1867,7 +1867,7 @@ public final class SwimProtocol implements SwimMessageHandler {
         } else if (pinned.equals(source)) {
             acceptAnnounce(sender, announce, false);
         } else {
-            reportAddressConflict(id, pinned, source);
+            reportAddressConflict(id, pinned, source, "an ANNOUNCE");
         }
     }
 
@@ -1951,7 +1951,7 @@ public final class SwimProtocol implements SwimMessageHandler {
         if (pinned == null || pinned.equals(sender.getAddress())) {
             acceptAnnounce(candidate.source(), announce, pinned == null);
         } else {
-            reportAddressConflict(id, pinned, sender.getAddress());
+            reportAddressConflict(id, pinned, sender.getAddress(), "an ANNOUNCE");
         }
 
         return true;
@@ -1981,9 +1981,36 @@ public final class SwimProtocol implements SwimMessageHandler {
         return true;
     }
 
-    private Unit reportAddressConflict(NodeId id, InetAddress pinned, InetAddress attempted) {
+    /// The address a gossiped update may give a member. A pinned member's address changes only through a confirmed
+    /// ANNOUNCE, so gossip carrying another IP for it keeps the resident address (or, for a member being re-admitted,
+    /// the pinned IP with the gossiped port) and raises the address-conflict warning, throttled like the ANNOUNCE case.
+    /// An unresolved gossiped address cannot be compared and is not taken for a pinned member, without a warning.
+    private InetSocketAddress addressUnderPin(MembershipUpdate update, InetSocketAddress resident) {
+        var pinned = addressPins.get(update.nodeId());
+        var gossiped = update.address();
+
+        if (pinned == null) {
+            return gossiped;
+        }
+
+        var gossipedIp = gossiped.getAddress();
+
+        if (gossipedIp != null && gossipedIp.equals(pinned)) {
+            return gossiped;
+        }
+
+        if (gossipedIp != null) {
+            reportAddressConflict(update.nodeId(), pinned, gossipedIp, "gossip");
+        }
+
+        return resident != null && pinned.equals(resident.getAddress())
+               ? resident
+               : new InetSocketAddress(pinned, gossiped.getPort());
+    }
+
+    private Unit reportAddressConflict(NodeId id, InetAddress pinned, InetAddress attempted, String carrier) {
         if (!dueForReport(id.id() + "@" + attempted.getHostAddress())) {
-            LOG.debug("SWIM ANNOUNCE for {} from {} refused again: pinned to {}", id.id(), attempted, pinned);
+            LOG.debug("SWIM {} for {} from {} refused again: pinned to {}", carrier, id.id(), attempted, pinned);
 
             return Unit.unit();
         }
@@ -1992,11 +2019,12 @@ public final class SwimProtocol implements SwimMessageHandler {
                                       operatorWarningSink,
                                       SWIM_MEMBER_ADDRESS_CONFLICT,
                                       id.id(),
-                                      "SWIM member {} is pinned to address {}; an ANNOUNCE for it from {} was refused. "
-                                     + "A restarted process takes a new identity; a live process whose address changed "
-                                     + "must be restarted",
+                                      "SWIM member {} is pinned to address {}; {} for it from {} was refused. "
+                                     + "A replacement process takes a new NodeId; a live process whose address changed "
+                                     + "must be replaced under a fresh NodeId",
                                       id.id(),
                                       pinned.getHostAddress(),
+                                      carrier,
                                       attempted.getHostAddress());
     }
 
@@ -2298,11 +2326,6 @@ public final class SwimProtocol implements SwimMessageHandler {
                                                  Announce.announce(self, clusterName, incarnation, bootToken)));
     }
 
-    /// Boot-token gate for evidence about `peer` (owner ruling, session 28). `0` carries no process
-    /// identity and is admitted. The first non-zero token is recorded; an equal token is admitted
-    /// (same process — heals exactly as before). A different token retires the identity: the
-    /// resident process is treated as dead and the new one is refused, as is every later piece of
-    /// evidence for a retired id. Every refusal is counted and logged.
     /// A token that differs from the recorded one, presented by gossip (or a ping) rather than by the member's own
     /// answer to this node's probe: it can retire nothing, because only the member's own answer to a probe identifies its process.
     private boolean isUnprovenTokenConflict(MembershipUpdate update) {
@@ -2314,6 +2337,11 @@ public final class SwimProtocol implements SwimMessageHandler {
                && !isRetired(update.nodeId());
     }
 
+    /// Boot-token gate for evidence about `peer` (owner ruling, session 28). `0` carries no process
+    /// identity and is admitted. The first non-zero token is recorded; an equal token is admitted
+    /// (same process — heals exactly as before). A different token retires the identity: the
+    /// resident process is treated as dead and the new one is refused, as is every later piece of
+    /// evidence for a retired id. Every refusal is counted and logged.
     private boolean admitsBootToken(NodeId peer, long token) {
         return switch (bootTokens.admit(peer, token)) {
             case ADMITTED -> true;
@@ -2646,7 +2674,7 @@ public final class SwimProtocol implements SwimMessageHandler {
         var member = SwimMember.swimMember(update.nodeId(),
                                            update.state(),
                                            update.incarnation(),
-                                           update.address(),
+                                           addressUnderPin(update, null),
                                            update.labels());
 
         if (!storeScopedMember(update.nodeId(), member)) {
@@ -2805,7 +2833,7 @@ public final class SwimProtocol implements SwimMessageHandler {
         var updated = SwimMember.swimMember(update.nodeId(),
                                             update.state(),
                                             update.incarnation(),
-                                            update.address(),
+                                            addressUnderPin(update, existing.address()),
                                             resident.labels());
 
         if (!storeScopedMember(update.nodeId(), updated)) {
@@ -3424,6 +3452,11 @@ public final class SwimProtocol implements SwimMessageHandler {
 
     private static long unpredictableSequenceStart() {
         return 1L + SEQUENCE_RANDOM.nextLong(Long.MAX_VALUE / 2);
+    }
+
+    /// Test-only: unconfirmed ANNOUNCE source addresses still awaiting an answer to their probe.
+    int addressCandidatesForTest() {
+        return addressCandidates.size();
     }
 
     /// Test-only: the pinned address of a member, if any.

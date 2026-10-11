@@ -107,6 +107,46 @@ class SwimBootTokenTest {
         assertThat(protocol.bootTokenRefusals()).isZero();
     }
 
+    /// A Ping is a datagram like gossip: a Ping from A carrying a different token FOR A identifies no process, because
+    /// only A's own answer to this node's probe does. It retires nothing.
+    @Test
+    void differentToken_inAPingFromTheMemberItself_retiresNothing() {
+        announce(5, TOKEN);
+
+        protocol.onMessage(ADDR_A,
+                           Ping.ping(NODE_A, 1L, List.of(MembershipUpdate.membershipUpdate(NODE_A, MemberState.ALIVE, 99, ADDR_A, OTHER_TOKEN))));
+
+        assertThat(protocol.isRetiredIdentity(NODE_A)).isFalse();
+        assertThat(protocol.members().get(NODE_A).state()).isNotEqualTo(MemberState.FAULTY);
+        assertThat(protocol.bootTokenRefusals()).isZero();
+    }
+
+    /// An Ack that answers a probe of B proves B's process, not A's: a different token for A carried in it retires
+    /// nothing, whether or not the Ack answers an outstanding probe.
+    @Test
+    void differentToken_forAnotherMember_inAnAckFromB_retiresNothing() {
+        announce(5, TOKEN);
+        protocol.putMemberForTest(NODE_B, ADDR_B, MemberState.ALIVE);
+        var forA = List.of(MembershipUpdate.membershipUpdate(NODE_A, MemberState.ALIVE, 99, ADDR_A, OTHER_TOKEN));
+
+        protocol.onMessage(ADDR_B, Ack.ack(NODE_B, 123_456_789L, forA));
+        for (var i = 0; i < 6; i++) {
+            protocol.probeOnceForTest();
+        }
+        targetTransport.sentMessages.stream()
+                                    .filter(sent -> sent.target().equals(ADDR_B) && sent.message() instanceof Ping)
+                                    .map(sent -> (Ping) sent.message())
+                                    .toList()
+                                    .forEach(ping -> protocol.onMessage(ADDR_B, Ack.ack(NODE_B, ping.sequence(), forA)));
+
+        assertThat(targetTransport.sentMessages.stream().anyMatch(sent -> sent.target().equals(ADDR_B) && sent.message() instanceof Ping))
+            .as("positive control: B was probed and its answer was delivered")
+            .isTrue();
+        assertThat(protocol.isRetiredIdentity(NODE_A)).isFalse();
+        assertThat(protocol.members().get(NODE_A).state()).isNotEqualTo(MemberState.FAULTY);
+        assertThat(protocol.bootTokenRefusals()).isZero();
+    }
+
     @Test
     void differentToken_inTheMembersOwnAnswerToOurProbe_retiresIdentity() {
         announce(5, TOKEN);
