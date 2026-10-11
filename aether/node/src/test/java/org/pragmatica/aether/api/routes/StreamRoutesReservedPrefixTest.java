@@ -267,18 +267,19 @@ class StreamRoutesReservedPrefixTest {
         }
     }
 
-    /// Over-refusal guard: a `system`-namespace catalog address reduces to its bare engine name — the flat
-    /// operator-stream spelling — so it is NOT reserved and still mints.
+    /// #1338: system streams are read-only to the Management API, so a `system`-namespace catalog address is refused
+    /// like any reserved kind — it no longer reduces to a bare operator stream — and nothing is minted, under either name.
     @Test
-    void catalogCreate_systemNamespaceFlatStream_stillSucceeds() {
+    void catalogCreate_systemNamespace_isRefusedAndNothingIsMinted() {
         var manager = streamPartitionManager(Long.MAX_VALUE);
 
         try {
             catalogRoutes(manager, StreamNamespacesService.inMemory())
                 .createStream("system", "diagnostics", "1.0.0", new StreamApiRoutes.CreateRequest(null))
-                .onFailure(cause -> fail("a flat operator stream must still be creatable: " + cause.message()));
+                .onSuccess(_ -> fail("a system-namespace stream must not be creatable through the Management API"));
 
-            assertThat(manager.streamInfo("diagnostics").isPresent()).isTrue();
+            assertThat(manager.streamInfo("diagnostics").isPresent()).isFalse();
+            assertThat(manager.streamInfo("system:diagnostics:1.0.0").isPresent()).isFalse();
         } finally {
             manager.close();
         }
