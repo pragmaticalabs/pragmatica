@@ -15,9 +15,14 @@ import java.util.List;
 final class GitFixtures {
     private GitFixtures() {}
 
-    /// Create a bare repository and return its path as a remote URL.
+    /// Create a bare repository and return its path as a remote URL. Its `receive-pack` runs any auto-maintenance
+    /// in the foreground (#2095): a detached one writes into the directory after the push returned and raced
+    /// `@TempDir` cleanup. The remote's own config is the only lever — a client's `-c` does not reach a path
+    /// remote's `receive-pack`.
     static String bareRemote(Path path) {
         run(List.of("git", "init", "--quiet", "--bare", path.toString()));
+        run(List.of("git", "-C", path.toString(), "config", "gc.autoDetach", "false"));
+        run(List.of("git", "-C", path.toString(), "config", "maintenance.autoDetach", "false"));
 
         return path.toString();
     }
