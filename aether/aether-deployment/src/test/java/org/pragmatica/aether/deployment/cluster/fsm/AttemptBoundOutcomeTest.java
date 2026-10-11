@@ -562,7 +562,12 @@ class AttemptBoundOutcomeTest {
         seed(leaderStore,
              new KVCommand.Remove<AetherKey>(AppBlueprintKey.appBlueprintKey(expanded.id())),
              new KVCommand.Remove<AetherKey>(DeploymentOutcomeKey.deploymentOutcomeKey(expanded.id())));
-        exhaustRetryBudgetOn(leaderHarness, SELF, SLICE);
+        leaderHarness.dispatch(new ClusterDeploymentEvents.AppBlueprintRemoveReceived(new KVStoreNotification.ValueRemove<>(new KVCommand.Remove<>(AppBlueprintKey.appBlueprintKey(expanded.id())),
+                                                                                                                         Option.some(AppBlueprintValue.appBlueprintValue(expanded, false, FIRST_ATTEMPT)))));
+        leaderHarness.dispatch(new NodeArtifactPutReceived(replayOn(SELF,
+                                                                    SLICE,
+                                                                    NodeArtifactValue.failedNodeArtifactValue(org.pragmatica.lang.utils.Causes.cause("deterministic: slice does not start"),
+                                                                                                              Unrecognised.PERMANENT))));
 
         assertThat(outcome(leaderStore, expanded.id())).as("no FAILED for a deleted blueprint").isEqualTo(Option.none());
         assertThat(committedBlueprint(leaderStore, expanded.id())).isEqualTo(Option.none());

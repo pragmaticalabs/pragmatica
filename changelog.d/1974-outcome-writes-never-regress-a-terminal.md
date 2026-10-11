@@ -25,10 +25,10 @@
     in either order). A BEST_EFFORT FAILED is the FSM's own decision that a slice is permanently failed (the operator
     was told, the artifact is no longer redeployed), not a guess written on a timeout, so a later SUCCEEDED does not erase it.
   - A write for `N` while the committed blueprint is another attempt: refused for the SUCCEEDED and the rollback writers;
-    the BEST_EFFORT merge writes under the committed attempt. While the blueprint is absent: SUCCEEDED refused, BEST_EFFORT
-    writes nothing, but an ALL_OR_NOTHING rollback still writes FAILED for `N` (its fence expects the blueprint absent),
-    so a delete during an in-flight apply followed by a permanent slice failure leaves a FAILED for a deleted id. Known limit.
+    the BEST_EFFORT merge writes under the committed attempt. While the blueprint is absent (deleted during the apply):
+    SUCCEEDED refused, BEST_EFFORT writes nothing, and an ALL_OR_NOTHING rollback is skipped (INFO) rather than writing a
+    FAILED for the deleted id, since the deletion supersedes it.
   - A terminal for an earlier attempt `M` to `IN_PROGRESS(N)` or to `SUCCEEDED(N)`: written.
   Pinned by `AttemptBoundOutcomeTest.storeAheadOfFsm_newerAttemptsTerminal_isNotRegressedByStaleSucceeded`,
-  `bestEffortFailedOwnAttempt_thenInFlightCompletes_keepsTheFailed` and `deleteWhileApplyInFlight_thenCompletes_writesNoOutcome`
+  `bestEffortFailedOwnAttempt_thenInFlightCompletes_keepsTheFailed` and `deleteWhileApplyInFlight_thenCompletes_writesNoOutcome` and `rollbackOfADeletedBlueprint_writesNoOutcomeForTheDeletedId`
   (unit, real fenced `KVStore`); [design intent — unverified] on a live cluster.
