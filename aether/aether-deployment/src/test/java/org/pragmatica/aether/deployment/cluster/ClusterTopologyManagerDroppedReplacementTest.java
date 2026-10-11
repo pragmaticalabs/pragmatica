@@ -112,11 +112,16 @@ class ClusterTopologyManagerDroppedReplacementTest {
 
     /// A small provisioning timeout makes every retry interval of the confirmed reap a few milliseconds.
     private ClusterTopologyManager ctmOver(NodeLifecycleManager lifecycleManager) {
+        return ctmOver(lifecycleManager, 60);
+    }
+
+    /// The provisioning window sets the interval between absence checks (a sixth of it): a long one parks the check between two listings.
+    private ClusterTopologyManager ctmOver(NodeLifecycleManager lifecycleManager, long provisioningWindowMillis) {
         var snapshotSource = new StubSnapshotSource();
         var self = NodeInfo.nodeInfo(SELF, NodeAddress.nodeAddress("localhost", 5000).unwrap());
         var config = new TopologyConfig(SELF, 3, timeSpan(60).seconds(), timeSpan(1).seconds(), List.of(self));
         var observer = TopologyObserver.topologyObserver(config, MessageRouter.mutable(), snapshotSource).unwrap();
-        var autoHeal = AutoHealConfig.autoHealConfig(timeSpan(1).millis(), timeSpan(60).millis()).unwrap();
+        var autoHeal = AutoHealConfig.autoHealConfig(timeSpan(1).millis(), timeSpan(provisioningWindowMillis).millis()).unwrap();
         var liveness = MembershipLiveness.membershipLiveness(Set::of,
                                                              Set::of,
                                                              node -> swimAlive.get().contains(node),
@@ -278,15 +283,23 @@ class ClusterTopologyManagerDroppedReplacementTest {
     }
 
     /// Control: a node that joined while the absence was being confirmed is a new incarnation; the check stops and terminates nothing.
+    /// The next absence check is a second away (a six second window): the join lands between two listings, deterministically.
+    private void parkBetweenTwoListings() {
+        ctm.deactivate();
+        ctm = ctmOver(new SourcedLifecycle(NodeLifecycleManager.nodeLifecycleManager(Option.some(new FakeProvider()))), 6_000);
+        ctm.setRetirementRefusal(_ -> Option.none());
+        ctm.activate();
+        ctm.reapDroppedReplacement(DROPPED, "its create failed: timeout", DroppedInstance.MAYBE);
+        await().atMost(Duration.ofSeconds(5)).until(() -> listings.get() == 1);
+    }
+
     @Test
     void droppedFailedCreate_whoseNodeJoins_stopsConfirmingAbsence() {
-        ctm.reapDroppedReplacement(DROPPED, "its create failed: timeout", DroppedInstance.MAYBE);
-        await().atMost(Duration.ofSeconds(5)).until(() -> listings.get() >= 2);
+        parkBetweenTwoListings();
         ctm.onMembershipDecision(org.pragmatica.consensus.topology.MembershipDecision.nodeJoined(DROPPED, List.of(SELF, DROPPED)));
-        var atJoin = listings.get();
 
-        settle();
-        assertThat(listings.get()).as("the absence check stopped asking").isLessThanOrEqualTo(atJoin + 1);
+        await().pollDelay(Duration.ofMillis(1600)).atMost(Duration.ofSeconds(5)).until(() -> true);
+        assertThat(listings.get()).as("the check that fired after the join asked nothing").isEqualTo(1);
         assertThat(terminates.get()).isZero();
     }
 
@@ -340,13 +353,11 @@ class ClusterTopologyManagerDroppedReplacementTest {
     /// A chain does not outlive its activation: deactivated, the absence check asks the provider nothing more.
     @Test
     void droppedFailedCreate_absenceCheckStops_whenTheManagerDeactivates() {
-        ctm.reapDroppedReplacement(DROPPED, "its create failed: timeout", DroppedInstance.MAYBE);
-        await().atMost(Duration.ofSeconds(5)).until(() -> listings.get() >= 2);
+        parkBetweenTwoListings();
         ctm.deactivate();
-        var atDeactivation = listings.get();
 
-        settle();
-        assertThat(listings.get()).isLessThanOrEqualTo(atDeactivation + 1);
+        await().pollDelay(Duration.ofMillis(1600)).atMost(Duration.ofSeconds(5)).until(() -> true);
+        assertThat(listings.get()).as("the check that fired after the deactivation asked nothing").isEqualTo(1);
     }
 
     /// Control: a replacement that joined (SWIM shows it alive) is never terminated, however many retries pass.
