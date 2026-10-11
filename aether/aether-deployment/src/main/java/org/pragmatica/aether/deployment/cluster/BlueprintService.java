@@ -398,13 +398,17 @@ class BlueprintServiceInstance implements BlueprintService {
 
     @Override
     public Option<AetherValue.DeploymentOutcomeValue> attributedOutcome(BlueprintId id) {
-        var committedAttempt = store.get(AetherKey.AppBlueprintKey.appBlueprintKey(id))
-                                    .filter(AppBlueprintValue.class::isInstance)
-                                    .map(AppBlueprintValue.class::cast)
-                                    .map(AppBlueprintValue::attemptId);
+        var committedAttempt = committedAttempt(id);
 
         return outcome(id).filter(outcome -> committedAttempt.map(outcome::describesAttempt)
                                                              .or(true));
+    }
+
+    private Option<String> committedAttempt(BlueprintId id) {
+        return store.get(AetherKey.AppBlueprintKey.appBlueprintKey(id))
+                    .filter(AppBlueprintValue.class::isInstance)
+                    .map(AppBlueprintValue.class::cast)
+                    .map(AppBlueprintValue::attemptId);
     }
 
     @Override
@@ -489,7 +493,7 @@ class BlueprintServiceInstance implements BlueprintService {
     /// earlier attempt's outcome against the live blueprint. Failing the caller here would tell it the
     /// opposite of what the cluster does.
     private Promise<ExpandedBlueprint> confirmOutcomeStart(ExpandedBlueprint expanded, String attemptId, int attempt) {
-        if (outcomeStartLanded(expanded.id())) {
+        if (outcomeStartSettled(expanded.id(), attemptId)) {
             return Promise.success(expanded);
         }
 
@@ -514,10 +518,20 @@ class BlueprintServiceInstance implements BlueprintService {
                       .flatMap(_ -> confirmOutcomeStart(expanded, attemptId, attempt + 1));
     }
 
-    private boolean outcomeStartLanded(BlueprintId id) {
-        return outcome(id).map(AetherValue.DeploymentOutcomeValue::status)
-                      .filter(status -> status == AetherValue.DeploymentOutcomeStatus.IN_PROGRESS)
-                      .isPresent();
+    /// #1974 — no apply-start write may regress a terminal, so the retry stops on any of:
+    ///   - an IN_PROGRESS record (ours, or a competing publish's identical one);
+    ///   - a record that describes THIS attempt: the apply this publish started has already settled, and
+    ///     replacing its SUCCEEDED/FAILED/ROLLED_BACK with IN_PROGRESS would erase the real outcome
+    ///     (the retry used to do exactly that when the apply finished before the confirmation read);
+    ///   - a committed blueprint of ANOTHER attempt: a newer publish owns the id and its record is not ours
+    ///     to replace.
+    /// Only a terminal of an EARLIER attempt, beside this attempt's own blueprint, is retried over.
+    private boolean outcomeStartSettled(BlueprintId id, String attemptId) {
+        var inProgressOrOwn = outcome(id).filter(outcome -> outcome.status() == AetherValue.DeploymentOutcomeStatus.IN_PROGRESS || outcome.describesAttempt(attemptId))
+                                     .isPresent();
+        var superseded = committedAttempt(id).filter(committed -> !committed.equals(attemptId)).isPresent();
+
+        return inProgressOrOwn || superseded;
     }
 
     @Override

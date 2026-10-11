@@ -318,6 +318,153 @@ class AttemptBoundOutcomeTest {
         assertThat(outcomeAttempt(store, expanded.id())).isEqualTo(FIRST_ATTEMPT);
     }
 
+    /// #1974 mirror case. The SUCCEEDED Put is built with the successor of the version it read; a racing
+    /// writer of the record (a publish's IN_PROGRESS) commits first, so the applier refuses the Put silently.
+    /// Without a confirmation the terminal is lost for good: nothing revisits an apply that already left
+    /// in-flight tracking.
+    @Test
+    void succeededOutcomeRefusedByARacingWrite_isRebuiltAgainstTheCurrentVersionAndLands() {
+        var store = storeWithLeader();
+        var node = new SucceededRaceClusterNode(SELF, store);
+        var harness = leaderHarness(node, store, DeploymentAtomicity.ALL_OR_NOTHING);
+        var expanded = blueprint(3);
+
+        applyBlueprint(harness, store, expanded, FIRST_ATTEMPT, 1L);
+        node.beforeFirstSucceededPut(() -> seed(store,
+                                                new KVCommand.Put<>(DeploymentOutcomeKey.deploymentOutcomeKey(expanded.id()),
+                                                                    DeploymentOutcomeValue.inProgress(5L, 2L, FIRST_ATTEMPT))));
+        bringUp(harness);
+
+        assertThat(node.succeededPutsFor(FIRST_ATTEMPT)).as("the refused SUCCEEDED was rebuilt and resubmitted exactly once").isEqualTo(2);
+        assertThat(outcomeStatusName(store, expanded.id())).isEqualTo(DeploymentOutcomeStatus.SUCCEEDED.name());
+        assertThat(outcomeAttempt(store, expanded.id())).isEqualTo(FIRST_ATTEMPT);
+    }
+
+    /// #1974 mirror case, the other half of the confirmation: when the write that refused the SUCCEEDED is a
+    /// publish of a NEWER attempt, the id is no longer ours and the retry must not write attempt 1's SUCCEEDED
+    /// over attempt 2's record.
+    @Test
+    void succeededOutcomeRefusedByANewerPublish_isNotRetriedOverTheNewerAttempt() {
+        var store = storeWithLeader();
+        var node = new SucceededRaceClusterNode(SELF, store);
+        var harness = leaderHarness(node, store, DeploymentAtomicity.ALL_OR_NOTHING);
+        var expanded = blueprint(3);
+
+        applyBlueprint(harness, store, expanded, FIRST_ATTEMPT, 1L);
+        node.beforeFirstSucceededPut(() -> seed(store,
+                                                new KVCommand.Put<>(AppBlueprintKey.appBlueprintKey(expanded.id()),
+                                                                    AppBlueprintValue.appBlueprintValue(expanded, false, SECOND_ATTEMPT)),
+                                                new KVCommand.Put<>(DeploymentOutcomeKey.deploymentOutcomeKey(expanded.id()),
+                                                                    DeploymentOutcomeValue.inProgress(5L, 2L, SECOND_ATTEMPT))));
+        bringUp(harness);
+
+        assertThat(node.succeededPutsFor(FIRST_ATTEMPT)).as("the superseded apply does not resubmit").isEqualTo(1);
+        assertThat(outcomeAttempt(store, expanded.id())).as("the record stays the newer attempt's").isEqualTo(SECOND_ATTEMPT);
+    }
+
+    /// #1974: the confirmation is bounded. A contender that refuses every rebuilt SUCCEEDED leaves the first write
+    /// plus `MAX_OUTCOME_MERGE_ATTEMPTS` (5) retries, then gives up rather than resubmitting without end.
+    @Test
+    void succeededOutcomeRefusedEveryTime_isRetriedFiveTimesThenGivenUp() {
+        var store = storeWithLeader();
+        var node = new SucceededRaceClusterNode(SELF, store);
+        var harness = leaderHarness(node, store, DeploymentAtomicity.ALL_OR_NOTHING);
+        var expanded = blueprint(3);
+
+        applyBlueprint(harness, store, expanded, FIRST_ATTEMPT, 1L);
+        node.beforeEverySucceededPut(() -> seed(store,
+                                                new KVCommand.Put<>(DeploymentOutcomeKey.deploymentOutcomeKey(expanded.id()),
+                                                                    DeploymentOutcomeValue.inProgress(5L,
+                                                                                                      outcome(store, expanded.id()).map(DeploymentOutcomeValue::outcomeVersion).or(0L) + 1,
+                                                                                                      FIRST_ATTEMPT))));
+        bringUp(harness);
+
+        // Three independent writers each spend their own budget of one write and five retries: the in-flight
+        // completion on the first report, then the durable-state repair on each of the two reports.
+        assertThat(node.succeededPutsFor(FIRST_ATTEMPT)).as("three writers x (one write and five retries)").isEqualTo(18);
+        assertThat(outcomeStatusName(store, expanded.id())).as("never landed").isEqualTo(DeploymentOutcomeStatus.IN_PROGRESS.name());
+    }
+
+    /// #1974: a leader that deactivated between the write and its confirmation does not resubmit.
+    @Test
+    void succeededOutcomeRefusedWhileTheLeaderDeactivates_isNotRetried() {
+        var store = storeWithLeader();
+        var node = new SucceededRaceClusterNode(SELF, store);
+        var harness = leaderHarness(node, store, DeploymentAtomicity.ALL_OR_NOTHING);
+        var expanded = blueprint(3);
+
+        applyBlueprint(harness, store, expanded, FIRST_ATTEMPT, 1L);
+        var active = activeState(harness);
+
+        node.beforeFirstSucceededPut(() -> {
+            seed(store,
+                 new KVCommand.Put<>(DeploymentOutcomeKey.deploymentOutcomeKey(expanded.id()),
+                                     DeploymentOutcomeValue.inProgress(5L, 2L, FIRST_ATTEMPT)));
+            active.deactivated().set(true);
+        });
+        bringUp(harness);
+
+        // The in-flight completion's write, and the repair's own first write on the same report: the repair has no
+        // deactivation guard of its own, but neither write is retried once the leader has deactivated.
+        assertThat(node.succeededPutsFor(FIRST_ATTEMPT)).as("no retry after deactivation").isEqualTo(2);
+    }
+
+    /// Runs `interference` once, just before the first batch that carries a SUCCEEDED outcome Put is applied, as
+    /// a competing writer committed ahead of it would.
+    private static final class SucceededRaceClusterNode implements ClusterNode<KVCommand<AetherKey>> {
+        private final NodeId self;
+        private final KVStore<AetherKey, AetherValue> kvStore;
+        private Runnable interference = () -> {};
+        private final List<String> succeededAttempts = new ArrayList<>();
+        private boolean repeating;
+
+        private SucceededRaceClusterNode(NodeId self, KVStore<AetherKey, AetherValue> kvStore) {
+            this.self = self;
+            this.kvStore = kvStore;
+        }
+
+        void beforeFirstSucceededPut(Runnable interference) {
+            this.interference = interference;
+        }
+
+        void beforeEverySucceededPut(Runnable interference) {
+            this.interference = interference;
+            this.repeating = true;
+        }
+
+        long succeededPutsFor(String attemptId) {
+            return succeededAttempts.stream().filter(attemptId::equals).count();
+        }
+
+        @Override public NodeId self() {return self;}
+
+        @Override public TopologyManager topologyManager() {return stubTopologyManager(self);}
+
+        @Override public Promise<Unit> start() {return Promise.unitPromise();}
+
+        @Override public Promise<Unit> stop() {return Promise.unitPromise();}
+
+        @Override public <R> Promise<List<R>> apply(List<KVCommand<AetherKey>> batch) {
+            batch.stream().flatMap(command -> succeededAttempt(command).stream()).forEach(succeededAttempts::add);
+            if (batch.stream().anyMatch(command -> succeededAttempt(command).isPresent())) {
+                var once = interference;
+                interference = repeating ? once : () -> {};
+                once.run();
+            }
+            kvStore.process(kvStore.createBatch(batch));
+
+            return Promise.success(Collections.emptyList());
+        }
+
+        private static Option<String> succeededAttempt(KVCommand<AetherKey> command) {
+            return command instanceof KVCommand.Put<AetherKey, ?> put
+                   && put.value() instanceof DeploymentOutcomeValue outcome
+                   && outcome.status() == DeploymentOutcomeStatus.SUCCEEDED
+                   ? Option.some(outcome.attemptId())
+                   : Option.none();
+        }
+    }
+
     private static final class InterferingClusterNode implements ClusterNode<KVCommand<AetherKey>> {
         private final NodeId self;
         private final KVStore<AetherKey, AetherValue> kvStore;

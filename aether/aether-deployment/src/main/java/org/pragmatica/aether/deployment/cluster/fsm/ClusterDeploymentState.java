@@ -3177,14 +3177,57 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         /// #760/#724 review round 2 item l: does NOT go through the shared [#submitBatch(List)] —
         /// see [#handleSucceededOutcomeWriteFailure(BlueprintId, Cause, List)] for why this call
         /// site's failure needs a targeted WARN instead of `submitBatch`'s generic ERROR.
+        ///
+        /// #1974 — the version is derived when the command is BUILT, so a racing writer of the record (a
+        /// publish writing IN_PROGRESS) makes the applier refuse this Put silently. The apply resolving says
+        /// nothing about whether it landed, so [#confirmSucceededOutcome] re-reads and rebuilds it against the
+        /// current version, bounded by [#MAX_OUTCOME_MERGE_ATTEMPTS]. The ALL_OR_NOTHING FAILED and ROLLED_BACK
+        /// terminals get the same treatment from [#submitRollback], which rebuilds its commands on a refusal.
         private void recordSucceededOutcome(BlueprintId blueprintId, String attemptId) {
+            submitSucceededOutcome(blueprintId, attemptId, 0);
+        }
+
+        private void submitSucceededOutcome(BlueprintId blueprintId, String attemptId, int attempt) {
             var key = DeploymentOutcomeKey.deploymentOutcomeKey(blueprintId);
             var value = DeploymentOutcomeValue.succeeded(ctx.nowMs(), nextOutcomeVersion(key), attemptId);
             var command = List.<KVCommand<AetherKey>> of(new KVCommand.Put<>(key, value));
 
             ctx.cluster()
                .apply(command)
+               .onSuccess(_ -> confirmSucceededOutcome(blueprintId, attemptId, attempt))
                .onFailure(cause -> handleSucceededOutcomeWriteFailure(blueprintId, cause, command));
+        }
+
+        private void confirmSucceededOutcome(BlueprintId blueprintId, String attemptId, int attempt) {
+            if (deactivated.get() || succeededOutcomeSettled(blueprintId, attemptId)) {
+                return;
+            }
+
+            if (attempt >= MAX_OUTCOME_MERGE_ATTEMPTS) {
+                log.error("SUCCEEDED deployment-outcome record for blueprint {} was NOT persisted after {} attempts —"
+                         + " it was refused each time by a competing write of the record",
+                          blueprintId.asString(),
+                          attempt + 1);
+
+                return;
+            }
+
+            log.debug("SUCCEEDED outcome for blueprint {} was fenced out (attempt {}), retrying against current committed value",
+                      blueprintId.asString(),
+                      attempt);
+            submitSucceededOutcome(blueprintId, attemptId, attempt + 1);
+        }
+
+        /// Nothing left to write: a terminal for this attempt is committed (its own SUCCEEDED, or a BEST_EFFORT
+        /// FAILED a retry must not regress), or the id no longer carries this attempt (a newer publish owns it,
+        /// or the blueprint is gone), so there is no apply of ours to close.
+        private boolean succeededOutcomeSettled(BlueprintId blueprintId, String attemptId) {
+            var terminalForAttempt = committedOutcome(DeploymentOutcomeKey.deploymentOutcomeKey(blueprintId)).filter(outcome -> outcome.describesAttempt(attemptId))
+                                                     .filter(outcome -> outcome.status() != DeploymentOutcomeStatus.IN_PROGRESS)
+                                                     .isPresent();
+            var stillCommitted = committedAttemptOf(blueprintId).filter(attemptId::equals).isPresent();
+
+            return terminalForAttempt || !stillCommitted;
         }
 
         /// Unlike every other write funneled through [#submitBatch(List)], this one cannot be

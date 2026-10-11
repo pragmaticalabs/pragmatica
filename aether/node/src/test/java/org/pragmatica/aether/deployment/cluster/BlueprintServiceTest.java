@@ -675,6 +675,82 @@ class BlueprintServiceTest {
                     .isTrue();
         }
 
+        /// #1974 — the apply this publish started settles before the confirmation reads the record (the
+        /// FSM wrote SUCCEEDED for THIS attempt). The retry used to read "not IN_PROGRESS" as "fenced out" and
+        /// wrote IN_PROGRESS over the real outcome.
+        @Test
+        void publish_whoseOwnApplyAlreadySettled_doesNotOverwriteItsTerminalWithInProgress() {
+            var racedService = publishRacingTheFsm(attempt -> AetherValue.DeploymentOutcomeValue.succeeded(2L, 2L, attempt),
+                                                   false);
+
+            assertThat(racedService.outcome(REDEPLOY_ID).map(AetherValue.DeploymentOutcomeValue::status))
+                    .as("the apply's own SUCCEEDED stands, not an IN_PROGRESS written over it")
+                    .isEqualTo(Option.some(AetherValue.DeploymentOutcomeStatus.SUCCEEDED));
+            assertThat(racedService.attributedOutcome(REDEPLOY_ID).map(AetherValue.DeploymentOutcomeValue::status))
+                    .isEqualTo(Option.some(AetherValue.DeploymentOutcomeStatus.SUCCEEDED));
+        }
+
+        /// #1974 — a newer publish of the same id committed before the confirmation read, and its apply
+        /// already holds a terminal. That record is not this publish's to replace.
+        @Test
+        void publish_supersededByANewerPublish_doesNotOverwriteTheNewerAttemptsTerminal() {
+            var racedService = publishRacingTheFsm(attempt -> AetherValue.DeploymentOutcomeValue.failed(List.of(REDEPLOY_SLICE.asString()),
+                                                                                                          "newer attempt failed",
+                                                                                                          2L,
+                                                                                                          2L,
+                                                                                                          "a-newer-attempt"),
+                                                   true);
+
+            assertThat(racedService.outcome(REDEPLOY_ID).map(AetherValue.DeploymentOutcomeValue::attemptId))
+                    .as("the newer attempt's FAILED stands")
+                    .isEqualTo(Option.some("a-newer-attempt"));
+        }
+
+        /// Publishes through a cluster that, right after the publish batch lands, commits what a concurrent
+        /// writer would: `terminalFor` applied to the attempt the record should close, and — when `newerPublish`
+        /// — a blueprint of a different attempt, as a second publish of the id would have left.
+        private BlueprintService publishRacingTheFsm(java.util.function.Function<String, AetherValue.DeploymentOutcomeValue> terminalFor,
+                                                     boolean newerPublish) {
+            var outcomeKey = AetherKey.DeploymentOutcomeKey.deploymentOutcomeKey(REDEPLOY_ID);
+            var blueprintKey = AetherKey.AppBlueprintKey.appBlueprintKey(REDEPLOY_ID);
+            var raced = new boolean[]{false};
+            var racingCluster = new TestClusterNode() {
+                @Override
+                public <R> Promise<List<R>> apply(List<KVCommand<AetherKey>> commands) {
+                    Promise<List<R>> applied = super.apply(commands);
+
+                    if (!raced[0] && commands.stream().anyMatch(command -> blueprintKey.equals(command.key()))) {
+                        raced[0] = true;
+                        var published = (AetherValue.AppBlueprintValue) liveStore.get(blueprintKey).unwrap();
+
+                        if (newerPublish) {
+                            liveStore.processCommand(new KVCommand.Put<>(blueprintKey,
+                                                                         AetherValue.AppBlueprintValue.appBlueprintValue(published.blueprint(),
+                                                                                                                         false,
+                                                                                                                         "a-newer-attempt")));
+                        }
+                        liveStore.processCommand(new KVCommand.Put<>(outcomeKey, terminalFor.apply(published.attemptId())));
+                    }
+                    return applied;
+                }
+            };
+            racingCluster.setStore(liveStore);
+            var racedService = BlueprintService.blueprintService(racingCluster, liveStore, liveRepository);
+            var dsl = """
+                    id = "org.example:redeploy-app:1.0.0"
+
+                    [[slices]]
+                    artifact = "org.example:redeploy-slice:1.0.0"
+                    instances = 3
+                    """;
+
+            racedService.publish(dsl)
+                        .await()
+                        .onFailure(cause -> fail("the publish must succeed, got: " + cause.message()));
+
+            return racedService;
+        }
+
         private void publishRedeployApp() {
             var dsl = """
                     id = "org.example:redeploy-app:1.0.0"
