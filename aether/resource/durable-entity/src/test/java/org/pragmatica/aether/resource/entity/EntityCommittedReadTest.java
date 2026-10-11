@@ -186,6 +186,32 @@ class EntityCommittedReadTest {
         assertThat(fold.checkpointableThrough(0)).isEqualTo(-1L);
     }
 
+    /// The window between a successful `ready` and the read: a cut in it must not let the read answer from the old fold.
+    @Test
+    void getCommitted_ofAFoldBuiltBeforeACut_refusesInsteadOfAnswering() {
+        append("k", 5);
+        assertThat(fold.getCommitted(0, "k").await().unwrap().isPresent()).as("control: served before the cut").isTrue();
+
+        substrate.cutTo(-1L);
+        var refused = fold.getCommitted(0, "k").await();
+
+        assertThat(refused.isFailure()).isTrue();
+        refused.onFailure(cause -> assertThat(cause).isInstanceOf(EntityLogError.FoldInProgress.class));
+    }
+
+    /// A rebuild whose replay overlapped a cut holds records the cut removed: it is discarded, never published.
+    @Test
+    void aRebuildThatOverlappedACut_isDiscarded_andTheRetryPublishesTheSurvivingLog() {
+        substrate.log.add(EntityLogRecord.upsert("k", "5".getBytes(StandardCharsets.UTF_8)).encode());
+        substrate.cutDuringNextRead = true;
+
+        var first = fold.ready(0).await();
+
+        assertThat(first.isFailure()).as("the cut happened while the rebuild replayed").isTrue();
+        assertThat(fold.ready(0).await().isSuccess()).as("the retry rebuilds from the surviving log").isTrue();
+        assertThat(fold.get(0, "k").isPresent()).as("offset 0 survived the cut").isTrue();
+    }
+
     private void append(String key, int value) {
         var record = EntityLogRecord.upsert(key, String.valueOf(value).getBytes(StandardCharsets.UTF_8)).encode();
         var offset = substrate.appendRaw(record);
@@ -215,6 +241,8 @@ class EntityCommittedReadTest {
         public long cutGeneration(String keyspace, int partition) {
             return cutGeneration;
         }
+
+        volatile boolean cutDuringNextRead;
 
         long appendRaw(byte[] record) {
             log.add(record);
@@ -267,6 +295,10 @@ class EntityCommittedReadTest {
 
         @Override
         public Promise<List<byte[]>> read(String keyspace, int partition, long fromOffset, int maxRecords) {
+            if (cutDuringNextRead) {
+                cutDuringNextRead = false;
+                cutGeneration++;
+            }
             if (fromOffset >= log.size()) {
                 return Promise.success(List.of());
             }
