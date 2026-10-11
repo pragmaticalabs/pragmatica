@@ -27,9 +27,9 @@ import static org.pragmatica.aether.stream.replication.ReplicationManager.replic
 import static org.pragmatica.aether.stream.replication.ReplicationReceiveHandler.replicationReceiveHandler;
 
 /// #2087: an owner's unacknowledged tail commits without a new publish, because the owner re-offers it as an ordinary batch and the
-/// replica takes it through its normal receive path. Three replica shapes: one that already HOLDS the tail (a promotion's peers),
-/// one that is BEHIND by exactly the tail (it lands the records and acknowledges), and one that is further behind (a gap: it does
-/// not acknowledge and re-enters backfill, as for any live batch).
+/// replica takes it through its normal receive path. Two replica shapes: one that already HOLDS the tail (a promotion's peers) and one
+/// that is BEHIND by exactly the tail (it lands the records and acknowledges). A replica further behind sees a gap and re-enters
+/// backfill, as for any live batch (covered by the receive handler's own gap tests).
 class TailRetransmitReplicaTest {
     private static final NodeId OWNER = new NodeId("owner-node");
     private static final NodeId REPLICA = new NodeId("replica-node");
@@ -115,9 +115,9 @@ class TailRetransmitReplicaTest {
 
     @Test
     void replicaBehindByExactlyTheTail_landsTheRecords_andAcknowledgesThem() {
+        acksReachOwner.set(true);
         publish("a");
         publish("b");
-        acksReachOwner.set(true);
         batchReachesReplica = offset -> false;
         publish("c");
         publish("d");
@@ -130,20 +130,5 @@ class TailRetransmitReplicaTest {
 
         assertThat(replicaManager.appendedHead(STREAM, PARTITION)).as("the retransmit landed c and d").isEqualTo(3L);
         assertThat(visibleOnOwner()).as("and its acknowledgement committed them").isEqualTo(4);
-    }
-
-    @Test
-    void replicaFurtherBehind_seesAGap_andDoesNotAcknowledge() {
-        batchReachesReplica = offset -> false;
-        publish("a");
-        publish("b");
-        batchReachesReplica = offset -> true;
-        acksReachOwner.set(true);
-
-        ticks(6);
-
-        assertThat(gaps.get()).as("a batch starting past the replica's head is the gap path (backfill), as for any live batch").isPositive();
-        assertThat(acks).as("it acknowledges nothing it does not hold").isEmpty();
-        assertThat(visibleOnOwner()).isZero();
     }
 }
