@@ -124,11 +124,11 @@ public record DockerComputeProvider(DockerCommandRunner runner, DockerConfig con
 
     private Promise<InstanceInfo> provisionWithIdentity(ProvisionRequest request, String containerName) {
         return resolveCredentials().async()
-                                   .flatMap(credentials -> launch(request, containerName, credentials))
-                                   .map(containerId -> toProvisionedInfo(containerId, containerName, request))
-                                   .flatMap(info -> confirmRunning(info,
-                                                                   ReadinessPolicy.dockerDefault()))
-                                   .onFailure(cause -> rollbackOnProvisionFailure(containerName, cause));
+                                 .flatMap(credentials -> launch(request, containerName, credentials))
+                                 .map(containerId -> toProvisionedInfo(containerId, containerName, request))
+                                 .flatMap(info -> confirmRunning(info,
+                                                                 ReadinessPolicy.dockerDefault()))
+                                 .onFailure(cause -> rollbackOnProvisionFailure(containerName, cause));
     }
 
     /// The credentials this node is minted with, by variable name, from the leader's environment (value or `_FILE`). The
@@ -290,11 +290,13 @@ public record DockerComputeProvider(DockerCommandRunner runner, DockerConfig con
     private Promise<String> launch(ProvisionRequest request, String containerName, Map<String, String> credentials) {
         return credentials.isEmpty()
                ? runner.execute(buildRunCommand(request, containerName, List.of()))
-               : runner.execute(buildCreateCommand(request, containerName, List.copyOf(credentials.keySet())))
+               : runner.execute(buildCreateCommand(request,
+                                                   containerName,
+                                                   List.copyOf(credentials.keySet())))
                        .flatMap(id -> copyCredentials(containerName, credentials).flatMap(_ -> runner.execute(List.of("docker",
-                                                                                                                       "start",
-                                                                                                                       containerName)))
-                                                                                .map(_ -> id));
+                                                                                                                      "start",
+                                                                                                                      containerName)))
+                                                     .map(_ -> id));
     }
 
     private List<String> buildCreateCommand(ProvisionRequest request, String containerName, List<String> fileVars) {

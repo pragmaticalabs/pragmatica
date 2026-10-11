@@ -27,7 +27,12 @@ interface SingleFileTar {
         return out.toByteArray();
     }
 
-    private static void entry(java.io.ByteArrayOutputStream out, String name, byte[] content, int mode, int uid, int gid) {
+    private static void entry(java.io.ByteArrayOutputStream out,
+                              String name,
+                              byte[] content,
+                              int mode,
+                              int uid,
+                              int gid) {
         var header = new byte[BLOCK];
 
         put(header, 0, 100, name);
@@ -36,7 +41,7 @@ interface SingleFileTar {
         put(header, 116, 8, octal(gid, 7));
         put(header, 124, 12, octal(content.length, 11));
         put(header, 136, 12, octal(0, 11));
-        Arrays.fill(header, 148, 156, (byte) ' ');
+        Arrays.fill(header, 148, 156, (byte)' ');
         header[156] = '0';
         put(header, 257, 6, "ustar");
         put(header, 263, 2, "00");

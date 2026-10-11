@@ -391,6 +391,7 @@ For container deployment, configuration via environment variables:
 | `JAVA_OPTS` | `-Xmx256m` | JVM options |
 | `AETHER_CLUSTER_SECRET` | none | Shared secret used to generate TLS certificates; fallback for `tls.cluster_secret` |
 | `AETHER_CLUSTER_SECRET_FILE` | none | Path to a file holding the cluster secret; preferred over the plain variable because the value is then in no argv or container environment. Both set to different values is refused at start (exit 65) |
+| `AETHER_API_KEYS_FILE` | none | Path to a file holding the accepted API keys in the `AETHER_API_KEYS` format; wins over the plain variable, and both set to different values is refused at start (exit 65). Every `${env:NAME}` reference in a node config accepts `NAME_FILE` the same way |
 
 There are no `TLS_ENABLED` / `TLS_CERT_PATH` / `TLS_KEY_PATH` environment variables — TLS is
 configured via the `[cluster] tls` and `[tls]` TOML keys (`auto_generate`, `cert_path`,

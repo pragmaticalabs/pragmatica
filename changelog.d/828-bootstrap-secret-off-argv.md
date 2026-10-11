@@ -14,10 +14,13 @@
   - Provider-minted replacement nodes (`DockerComputeProvider`): `docker create`, the file piped over stdin to `docker cp -`
     as a tar owned by uid 1000 mode 0400, `docker start`. The leader's `AETHER_CLUSTER_SECRET` is no longer forwarded as `-e`.
   [verified: sentinel tests per path — `BootstrapPhaseDeployCloudSshRestartTest`, `BootstrapPhaseDeploySshSourceTest`, `BootstrapLaunchOnceTest` (runs the real launch line under `sh`), `BootstrapPhaseProvisionUserDataTest`, `UserDataTemplate*Test`, `DockerComputeProviderTest$SecretFileTests`, `SingleFileTarTest` (extracts with system `tar`)]
-- **Same class, same fix: `AETHER_API_KEY` / `AETHER_API_KEYS`** forwarded from the operator's host env no longer ride `-e` / printf
-  operands; they ride a transient `0600` env file. A credential with a line break is refused by name.
-- **Stated limits.** Cloud-init user-data still contains the secret in clear text: readable via the cloud provider's metadata/API by
-  the account holder and, on the VM, via the metadata service and `/var/lib/cloud`. `AETHER_API_KEY(S)` have no `_FILE` form, so they
-  remain environment variables (visible in `docker inspect`). Hand-written compose files and operator `docker run -e` keep the
-  env-var form unless the operator adopts the file form. A removed bind-mount source makes a container restart fail loudly.
+- **Same class, same fix: `AETHER_API_KEY` / `AETHER_API_KEYS`** forwarded from the operator's host env (and the provider's
+  configured `api_key`) now travel as files exactly like the cluster secret, on every path above: `AETHER_API_KEYS_FILE` is read by
+  the config loader ahead of any TOML, and any `${env:NAME}` reference in a node config has a `NAME_FILE` form
+  (`api_key = "${env:AETHER_API_KEY}"` among them). Same rules: a conflicting, unreadable or empty file is refused at start (exit 65),
+  and a value with a line break is refused by name. Launch paths forward no other secret-bearing variable (see the audit in the PR).
+- **Stated limits.** Cloud-init user-data still contains the secret and keys in clear text: readable via the cloud provider's
+  metadata/API by the account holder and, on the VM, via the metadata service and `/var/lib/cloud`. Hand-written compose files and
+  operator `docker run -e` keep the env-var form unless the operator adopts the file form. A removed bind-mount source makes a
+  container restart fail loudly.
 - [unverified: no real container was started — the local Docker daemon was not running; the real-path `docker inspect` check was not run]

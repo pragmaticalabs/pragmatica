@@ -160,7 +160,9 @@ sealed interface BootstrapPhaseDeploy {
                                           SourceName sourceName,
                                           Fn1<Result<String>, String> healthCheck) {
         Fn3<Result<String>, String, String, SshConfig> noopSsh = (host, command, config) -> Result.success("");
-        Fn1<String, String> noopEnv = name -> SshKeyResolver.AETHER_SSH_KEY_ENV.equals(name) ? "/dev/null" : null;
+        Fn1<String, String> noopEnv = name -> SshKeyResolver.AETHER_SSH_KEY_ENV.equals(name)
+                                              ? "/dev/null"
+                                              : null;
 
         return deployCloudSource(ctx, source, sourceName, healthCheck, noopSsh, noopEnv);
     }
@@ -427,7 +429,13 @@ sealed interface BootstrapPhaseDeploy {
             }
 
             var role = roleResult.unwrap();
-            var secretPush = pushClusterSecret(node.nodeId(), node.publicIp(), isJvm, clusterSecret, envLookup, sshConfig, scpExec);
+            var secretPush = pushClusterSecret(node.nodeId(),
+                                               node.publicIp(),
+                                               isJvm,
+                                               clusterSecret,
+                                               envLookup,
+                                               sshConfig,
+                                               scpExec);
 
             if (secretPush.isFailure()) {
                 return new BootstrapError.DeploymentFailed(node.publicIp(),
@@ -698,8 +706,7 @@ sealed interface BootstrapPhaseDeploy {
         return "( if docker ps -a --format '{{.Names}}' | grep -qx aether-node; then echo " + ALREADY_PRESENT_MARKER
              + " >&2; exit " + ALREADY_PRESENT_EXIT
              + "; fi" + backupPath.map(_ -> " && install -d -m 0750 -o 1000 -g 1000 " + NodeUserDataRenderer.BACKUP_HOST_DIRECTORY)
-                                  .or("")
-             + containerInstalls(envLookup)
+                                  .or("") + containerInstalls(envLookup)
              + " && docker run -d --name aether-node --restart no --network host"
              + " -l aether-cluster=" + clusterName.value()
              + " -l aether-node-id=" + nodeId
@@ -714,9 +721,7 @@ sealed interface BootstrapPhaseDeploy {
              + " -e MANAGEMENT_PORT=\"" + managementPort
              + "\""
              + " -e PEERS=\"" + peers
-             + "\""
-             + containerMounts(envLookup)
-             + identityEnvFlags(clusterName, role, source, zone, envLookup)
+             + "\"" + containerMounts(envLookup) + identityEnvFlags(clusterName, role, source, zone, envLookup)
              + " " + image
              + " ); rc=$?; rm -f " + stagedFiles()
              + "; exit $rc";
@@ -773,8 +778,9 @@ sealed interface BootstrapPhaseDeploy {
 
         all.add(ClusterSecretSource.SECRET_ENV);
         ClusterSecretSource.CREDENTIAL_ENVS.stream()
-                           .filter(name -> isSet(envLookup, name) || isSet(envLookup, ClusterSecretSource.fileVar(name)))
-                           .forEach(all::add);
+                                           .filter(name -> isSet(envLookup, name) || isSet(envLookup,
+                                                                                           ClusterSecretSource.fileVar(name)))
+                                           .forEach(all::add);
 
         return all;
     }
@@ -787,35 +793,42 @@ sealed interface BootstrapPhaseDeploy {
 
     private static String containerInstalls(Fn1<String, String> envLookup) {
         return deliveredFiles(envLookup).stream()
-                                        .map(name -> " && install -m 0400 -o 1000 -g 1000 " + stagedPath(name, false) + " " + ClusterSecretSource.hostFile(name))
-                                        .collect(java.util.stream.Collectors.joining());
+                             .map(name -> " && install -m 0400 -o 1000 -g 1000 " + stagedPath(name, false)
+                                         + " " + ClusterSecretSource.hostFile(name))
+                             .collect(java.util.stream.Collectors.joining());
     }
 
     private static String containerMounts(Fn1<String, String> envLookup) {
         return deliveredFiles(envLookup).stream()
-                                        .map(name -> " --mount type=bind,src=" + ClusterSecretSource.hostFile(name) + ",dst="
-                                                     + ClusterSecretSource.containerMount(name) + ",readonly -e "
-                                                     + ClusterSecretSource.fileVar(name) + "=\"" + ClusterSecretSource.containerMount(name) + "\"")
-                                        .collect(java.util.stream.Collectors.joining());
+                             .map(name -> " --mount type=bind,src=" + ClusterSecretSource.hostFile(name)
+                                         + ",dst=" + ClusterSecretSource.containerMount(name)
+                                         + ",readonly -e " + ClusterSecretSource.fileVar(name)
+                                         + "=\"" + ClusterSecretSource.containerMount(name)
+                                         + "\"")
+                             .collect(java.util.stream.Collectors.joining());
     }
 
     private static String jvmInstalls(Fn1<String, String> envLookup) {
         return deliveredFiles(envLookup).stream()
-                                        .map(name -> " && install -m 0400 " + stagedPath(name, true) + " " + ClusterSecretSource.jvmFile(name))
-                                        .collect(java.util.stream.Collectors.joining());
+                             .map(name -> " && install -m 0400 " + stagedPath(name, true)
+                                         + " " + ClusterSecretSource.jvmFile(name))
+                             .collect(java.util.stream.Collectors.joining());
     }
 
     private static String jvmFileVars(Fn1<String, String> envLookup) {
         return deliveredFiles(envLookup).stream()
-                                        .map(name -> " '" + ClusterSecretSource.fileVar(name) + "=" + ClusterSecretSource.jvmFile(name) + "'")
-                                        .collect(java.util.stream.Collectors.joining());
+                             .map(name -> " '" + ClusterSecretSource.fileVar(name)
+                                         + "=" + ClusterSecretSource.jvmFile(name)
+                                         + "'")
+                             .collect(java.util.stream.Collectors.joining());
     }
 
     /// Every staged copy the launch could have been given, removed on every exit (`rm -f` of an absent one is harmless).
     private static String stagedFiles() {
         return ClusterSecretSource.FILE_DELIVERED_ENVS.stream()
-                                  .flatMap(name -> java.util.stream.Stream.of(stagedPath(name, false), stagedPath(name, true)))
-                                  .collect(java.util.stream.Collectors.joining(" "));
+                                                      .flatMap(name -> java.util.stream.Stream.of(stagedPath(name, false),
+                                                                                                  stagedPath(name, true)))
+                                                      .collect(java.util.stream.Collectors.joining(" "));
     }
 
     static String JVM_JAR_PATH = "/opt/aether/aether-node.jar";
@@ -907,11 +920,14 @@ sealed interface BootstrapPhaseDeploy {
              + " >&2; exit " + ALREADY_PRESENT_EXIT
              + "; fi" + backupPath.map(path -> " && install -d -m 0750 " + path)
                                   .or("")
-             + " && install -d -m 0755 " + NodeUserDataRenderer.JVM_ENV_DIR
-             + jvmInstalls(envLookup)
+             + " && install -d -m 0755 " + NodeUserDataRenderer.JVM_ENV_DIR + jvmInstalls(envLookup)
              + " && touch " + NodeUserDataRenderer.JVM_ENV_FILE_PATH
              + " && chmod 600 " + NodeUserDataRenderer.JVM_ENV_FILE_PATH
-             + " && { printf '%s\\n'" + jvmFileVars(envLookup) + identityEnvAssignments(clusterName, role, source, zone, envLookup)
+             + " && { printf '%s\\n'" + jvmFileVars(envLookup) + identityEnvAssignments(clusterName,
+                                                                                        role,
+                                                                                        source,
+                                                                                        zone,
+                                                                                        envLookup)
              + " 'AETHER_NODE_ID=" + nodeId
              + "'"
              + " 'AETHER_CLUSTER_PORT=" + clusterPort
@@ -1254,7 +1270,13 @@ sealed interface BootstrapPhaseDeploy {
                                                          node.publicIp(),
                                                          "/opt/aether/config/aether.toml",
                                                          sshConfig))
-                      .flatMap(_ -> pushClusterSecret(node.nodeId(), node.publicIp(), false, clusterSecret, envLookup, sshConfig, scpExec))
+                      .flatMap(_ -> pushClusterSecret(node.nodeId(),
+                                                      node.publicIp(),
+                                                      false,
+                                                      clusterSecret,
+                                                      envLookup,
+                                                      sshConfig,
+                                                      scpExec))
                       .flatMap(_ -> sshExec.apply(node.publicIp(),
                                                   startCommand,
                                                   sshConfig))
@@ -1275,7 +1297,9 @@ sealed interface BootstrapPhaseDeploy {
         var pushes = new java.util.LinkedHashMap<String, String>();
 
         pushes.put(ClusterSecretSource.SECRET_ENV, clusterSecret);
-        for (var name : deliveredFiles(envLookup).stream().filter(n -> !n.equals(ClusterSecretSource.SECRET_ENV)).toList()) {
+        for (var name : deliveredFiles(envLookup).stream()
+                                      .filter(n -> !n.equals(ClusterSecretSource.SECRET_ENV))
+                                      .toList()) {
             var resolved = ClusterSecretSource.resolve(envLookup, name);
 
             if (resolved.isFailure()) {
@@ -1293,7 +1317,12 @@ sealed interface BootstrapPhaseDeploy {
         Result<Unit> result = Result.unitResult();
 
         for (var entry : pushes.entrySet()) {
-            result = result.flatMap(_ -> pushFile(nodeId, host, stagedPath(entry.getKey(), jvm), entry.getValue(), sshConfig, scpExec));
+            result = result.flatMap(_ -> pushFile(nodeId,
+                                                  host,
+                                                  stagedPath(entry.getKey(), jvm),
+                                                  entry.getValue(),
+                                                  sshConfig,
+                                                  scpExec));
         }
 
         return result;

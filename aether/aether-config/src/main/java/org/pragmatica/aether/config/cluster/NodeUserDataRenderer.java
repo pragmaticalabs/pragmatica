@@ -340,7 +340,8 @@ public sealed interface NodeUserDataRenderer {
         appendCredentialFile(sb, ClusterSecretSource.SECRET_ENV, clusterSecret, container);
         for (var name : credentials) {
             ClusterSecretSource.resolve(env, name)
-                               .fold(_ -> Option.<String> none(), found -> found)
+                               .fold(_ -> Option.<String> none(),
+                                     found -> found)
                                .onPresent(value -> appendCredentialFile(sb, name, value, container));
         }
 
@@ -369,10 +370,11 @@ public sealed interface NodeUserDataRenderer {
     /// The credential variables the rendering host actually holds (as a value or as a readable file); a node gets a file for each.
     private static List<String> presentCredentials(Fn1<String, String> env) {
         return ClusterSecretSource.CREDENTIAL_ENVS.stream()
-                                  .filter(name -> ClusterSecretSource.resolve(env, name)
-                                                                     .fold(_ -> Option.<String> none(), found -> found)
-                                                                     .isPresent())
-                                  .toList();
+                                                  .filter(name -> ClusterSecretSource.resolve(env, name)
+                                                                                     .fold(_ -> Option.<String> none(),
+                                                                                           found -> found)
+                                                                                     .isPresent())
+                                                  .toList();
     }
 
     /// Every variable delivered by file to this node: the cluster secret first, then the present credentials.
@@ -479,6 +481,7 @@ public sealed interface NodeUserDataRenderer {
               .append(ClusterSecretSource.containerMount(name))
               .append(",readonly \\\n");
         }
+
         backupPath.onPresent(path -> sb.append("    -v ")
                                        .append(BACKUP_HOST_DIRECTORY)
                                        .append(':')
@@ -589,11 +592,11 @@ public sealed interface NodeUserDataRenderer {
             // finalized secret explicitly to avoid a duplicate -e AETHER_CLUSTER_SECRET.
             case "AETHER_CLUSTER_SECRET" -> clusterSecretRef.map(_ -> ClusterSecretSource.containerMount(name));
             // The credentials ride files too (#828): the reference names the FILE, and only when the host holds the credential.
-            case "AETHER_API_KEY", "AETHER_API_KEYS" -> clusterSecretRef.filter(_ -> ClusterSecretSource.resolve(envLookup, name)
-                                                                                                         .fold(_ -> Option.<String> none(),
-                                                                                                               found -> found)
-                                                                                                         .isPresent())
-                                                                        .map(_ -> ClusterSecretSource.containerMount(name));
+            case "AETHER_API_KEY", "AETHER_API_KEYS" -> clusterSecretRef.filter(_ -> ClusterSecretSource.resolve(envLookup,
+                                                                                                                 name)
+                                                                                                        .fold(_ -> Option.<String> none(),
+                                                                                                              found -> found)
+                                                                                                        .isPresent()).map(_ -> ClusterSecretSource.containerMount(name));
             default -> lookupNonEmpty(name, envLookup);
         };
     }
@@ -715,7 +718,10 @@ public sealed interface NodeUserDataRenderer {
         sb.append("AETHER_ENV_LITERAL\n");
         sb.append("cat >> ").append(JVM_ENV_FILE_PATH).append(" <<AETHER_ENV_RUNTIME\n");
         for (var name : filesFor(credentials)) {
-            sb.append(ClusterSecretSource.fileVar(name)).append('=').append(ClusterSecretSource.jvmFile(name)).append('\n');
+            sb.append(ClusterSecretSource.fileVar(name))
+              .append('=')
+              .append(ClusterSecretSource.jvmFile(name))
+              .append('\n');
         }
 
         sb.append("AETHER_NODE_ID=${AETHER_NODE_ID}\n");

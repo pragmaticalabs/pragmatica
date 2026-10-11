@@ -216,7 +216,7 @@ patching it would not have closed anything a real deployment used.
 
 ### How the cluster secret reaches a node (#828)
 
-The node reads its secret from the file named by `AETHER_CLUSTER_SECRET_FILE` (surrounding line breaks
+The node reads its secret from the file named by `AETHER_CLUSTER_SECRET_FILE`, and its API keys from `AETHER_API_KEYS_FILE` (any `${env:NAME}` in a node config likewise has a `NAME_FILE` form) (surrounding line breaks
 stripped). Setting both that variable and `AETHER_CLUSTER_SECRET` to *different* values is refused at start
 (exit 65): the node cannot know which was meant. Setting both to the same value, or only one, is accepted.
 Per launch path:
@@ -232,9 +232,7 @@ Per launch path:
 **Stated limits.** (1) Cloud-init user-data contains the secret in clear text. It is readable by the cloud
 account holder through the provider's metadata/API and by processes on the VM through the metadata service
 and `/var/lib/cloud`; no file mode on the node changes that. (2) For `CLOUD` sources the node's `aether.toml`
-also carries `[tls] cluster_secret` (0600, uid 1000 since #287). (3) `AETHER_API_KEY` / `AETHER_API_KEYS`
-have no `_FILE` form: they still reach the node as environment (a transient env file), so they show in
-`docker inspect`. (4) A bind-mounted secret file is re-resolved on every container start; removing the host
+also carries `[tls] cluster_secret` (0600, uid 1000 since #287). (3) Operator-written compose and `docker run -e` keep the env-var form, and so show in `docker inspect`, unless the operator adopts `NAME_FILE`. (4) A bind-mounted secret file is re-resolved on every container start; removing the host
 file makes a restart fail, loudly, because the mount is `--mount type=bind` (which errors on a missing source)
 rather than `-v` (which would create a directory in its place).
 

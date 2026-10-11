@@ -5,11 +5,10 @@ package org.pragmatica.aether.environment;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
 
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Functions.Fn1;
-import java.util.List;
-
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
@@ -60,7 +59,9 @@ public interface ClusterSecretSource {
     }
 
     static Cause conflict(String plainVar) {
-        return Causes.cause(plainVar + " and " + fileVar(plainVar) + " are both set and differ; set only " + fileVar(plainVar));
+        return Causes.cause(plainVar
+                           + " and " + fileVar(plainVar)
+                           + " are both set and differ; set only " + fileVar(plainVar));
     }
 
     static Result<Option<String>> resolve(Fn1<String, String> env) {
@@ -79,7 +80,7 @@ public interface ClusterSecretSource {
         var plain = nonBlank(env.apply(plainVar));
 
         return nonBlank(env.apply(fileVar(plainVar))).fold(() -> Result.success(plain),
-                                                          path -> fromFile(plainVar, path, reader, plain));
+                                                           path -> fromFile(plainVar, path, reader, plain));
     }
 
     /// Start-up gate: every file-delivered variable resolves (neither conflicting, unreadable nor empty).
@@ -92,7 +93,10 @@ public interface ClusterSecretSource {
                                   .orElse(Result.unitResult());
     }
 
-    private static Result<Option<String>> fromFile(String plainVar, String path, Fn1<Result<String>, Path> reader, Option<String> plain) {
+    private static Result<Option<String>> fromFile(String plainVar,
+                                                   String path,
+                                                   Fn1<Result<String>, Path> reader,
+                                                   Option<String> plain) {
         return reader.apply(Path.of(path))
                      .mapError(_ -> Causes.cause(fileVar(plainVar) + " file '" + path + "' is not readable"))
                      .flatMap(value -> nonEmpty(plainVar, path, value))
@@ -115,7 +119,8 @@ public interface ClusterSecretSource {
     }
 
     private static Result<String> readFile(Path path) {
-        return Result.lift(_ -> Causes.cause("file '" + path + "' is not readable"), () -> Files.readString(path));
+        return Result.lift(_ -> Causes.cause("file '" + path + "' is not readable"),
+                           () -> Files.readString(path));
     }
 
     private static Option<String> nonBlank(String value) {
