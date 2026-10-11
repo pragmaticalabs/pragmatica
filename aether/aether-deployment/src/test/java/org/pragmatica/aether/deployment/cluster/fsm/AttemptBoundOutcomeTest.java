@@ -71,6 +71,7 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 class AttemptBoundOutcomeTest {
     private static final NodeId SELF = new NodeId("node-self");
     private static final NodeId NODE_A = new NodeId("node-a");
+    private static final NodeId OUTSIDE_PLACEMENT = new NodeId("node-outside");
     private static final Artifact SLICE = Artifact.artifact("com.example:slice-a:1.0.0").unwrap();
     private static final Artifact SLICE_B = Artifact.artifact("com.example:slice-b:1.0.0").unwrap();
     private static final int TERMINAL_ON_REPORT = 6;
@@ -333,7 +334,7 @@ class AttemptBoundOutcomeTest {
         node.beforeFirstSucceededPut(() -> seed(store,
                                                 new KVCommand.Put<>(DeploymentOutcomeKey.deploymentOutcomeKey(expanded.id()),
                                                                     DeploymentOutcomeValue.inProgress(5L, 2L, FIRST_ATTEMPT))));
-        bringUp(harness);
+        completeInFlightApplyOnly(harness);
 
         assertThat(node.succeededPutsFor(FIRST_ATTEMPT)).as("the refused SUCCEEDED was rebuilt and resubmitted exactly once").isEqualTo(2);
         assertThat(outcomeStatusName(store, expanded.id())).isEqualTo(DeploymentOutcomeStatus.SUCCEEDED.name());
@@ -356,7 +357,7 @@ class AttemptBoundOutcomeTest {
                                                                     AppBlueprintValue.appBlueprintValue(expanded, false, SECOND_ATTEMPT)),
                                                 new KVCommand.Put<>(DeploymentOutcomeKey.deploymentOutcomeKey(expanded.id()),
                                                                     DeploymentOutcomeValue.inProgress(5L, 2L, SECOND_ATTEMPT))));
-        bringUp(harness);
+        completeInFlightApplyOnly(harness);
 
         assertThat(node.succeededPutsFor(FIRST_ATTEMPT)).as("the superseded apply does not resubmit").isEqualTo(1);
         assertThat(outcomeAttempt(store, expanded.id())).as("the record stays the newer attempt's").isEqualTo(SECOND_ATTEMPT);
@@ -377,12 +378,30 @@ class AttemptBoundOutcomeTest {
                                                                     DeploymentOutcomeValue.inProgress(5L,
                                                                                                       outcome(store, expanded.id()).map(DeploymentOutcomeValue::outcomeVersion).or(0L) + 1,
                                                                                                       FIRST_ATTEMPT))));
-        bringUp(harness);
+        completeInFlightApplyOnly(harness);
 
-        // Three independent writers each spend their own budget of one write and five retries: the in-flight
-        // completion on the first report, then the durable-state repair on each of the two reports.
-        assertThat(node.succeededPutsFor(FIRST_ATTEMPT)).as("three writers x (one write and five retries)").isEqualTo(18);
+        assertThat(node.succeededPutsFor(FIRST_ATTEMPT)).as("one write and five retries").isEqualTo(6);
         assertThat(outcomeStatusName(store, expanded.id())).as("never landed").isEqualTo(DeploymentOutcomeStatus.IN_PROGRESS.name());
+    }
+
+    /// #1974: a terminal of an EARLIER attempt that wins the race is not this attempt's outcome, so the SUCCEEDED
+    /// is rebuilt over it rather than treated as landed.
+    @Test
+    void succeededOutcomeRefusedByAnEarlierAttemptsTerminal_isRebuiltAndLands() {
+        var store = storeWithLeader();
+        var node = new SucceededRaceClusterNode(SELF, store);
+        var harness = leaderHarness(node, store, DeploymentAtomicity.ALL_OR_NOTHING);
+        var expanded = blueprint(3);
+
+        applyBlueprint(harness, store, expanded, SECOND_ATTEMPT, 1L);
+        node.beforeFirstSucceededPut(() -> seed(store,
+                                                new KVCommand.Put<>(DeploymentOutcomeKey.deploymentOutcomeKey(expanded.id()),
+                                                                    DeploymentOutcomeValue.failed(List.of(SLICE.asString()), PREVIOUS_CAUSE, 5L, 2L, FIRST_ATTEMPT))));
+        completeInFlightApplyOnly(harness);
+
+        assertThat(node.succeededPutsFor(SECOND_ATTEMPT)).isEqualTo(2);
+        assertThat(outcomeStatusName(store, expanded.id())).isEqualTo(DeploymentOutcomeStatus.SUCCEEDED.name());
+        assertThat(outcomeAttempt(store, expanded.id())).isEqualTo(SECOND_ATTEMPT);
     }
 
     /// #1974: a leader that deactivated between the write and its confirmation does not resubmit.
@@ -402,11 +421,9 @@ class AttemptBoundOutcomeTest {
                                      DeploymentOutcomeValue.inProgress(5L, 2L, FIRST_ATTEMPT)));
             active.deactivated().set(true);
         });
-        bringUp(harness);
+        completeInFlightApplyOnly(harness);
 
-        // The in-flight completion's write, and the repair's own first write on the same report: the repair has no
-        // deactivation guard of its own, but neither write is retried once the leader has deactivated.
-        assertThat(node.succeededPutsFor(FIRST_ATTEMPT)).as("no retry after deactivation").isEqualTo(2);
+        assertThat(node.succeededPutsFor(FIRST_ATTEMPT)).as("no retry after deactivation").isEqualTo(1);
     }
 
     /// Runs `interference` once, just before the first batch that carries a SUCCEEDED outcome Put is applied, as
@@ -515,6 +532,13 @@ class AttemptBoundOutcomeTest {
                                  AppBlueprintValue.appBlueprintValue(expanded, false, SECOND_ATTEMPT)),
              new KVCommand.Put<>(DeploymentOutcomeKey.deploymentOutcomeKey(expanded.id()),
                                  DeploymentOutcomeValue.failed(List.of(SLICE.asString()), PREVIOUS_CAUSE, 1L, 6L, FIRST_ATTEMPT)));
+    }
+
+    /// The last slice goes ACTIVE on a node outside the placement set. That completes the in-flight apply, which
+    /// writes SUCCEEDED, but not the durable-state repair, which counts only placement nodes. With [#bringUp] both
+    /// writers fire on the same report and the repair heals whatever the first one lost, hiding it.
+    private static void completeInFlightApplyOnly(FsmTestHarness<ClusterDeploymentState, ClusterFsmEvent> harness) {
+        harness.dispatch(new NodeArtifactPutReceived(replayOn(OUTSIDE_PLACEMENT, SLICE, activeInstance())));
     }
 
     private static void bringUp(FsmTestHarness<ClusterDeploymentState, ClusterFsmEvent> harness) {

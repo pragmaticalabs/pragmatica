@@ -706,6 +706,17 @@ class BlueprintServiceTest {
                     .isEqualTo(Option.some("a-newer-attempt"));
         }
 
+        /// #1974 — an IN_PROGRESS record is an apply-start that landed, whichever publish wrote it: a competing
+        /// publish of the id writes an identical one, so replacing it gains nothing. Unchanged by the attempt binding.
+        @Test
+        void publish_whoseApplyStartLostToAnotherInProgressRecord_isNotRetried() {
+            var racedService = publishRacingTheFsm(attempt -> AetherValue.DeploymentOutcomeValue.inProgress(2L, 2L, "a-competing-attempt"),
+                                                   false);
+
+            assertThat(racedService.outcome(REDEPLOY_ID).map(AetherValue.DeploymentOutcomeValue::attemptId))
+                    .isEqualTo(Option.some("a-competing-attempt"));
+        }
+
         /// Publishes through a cluster that, right after the publish batch lands, commits what a concurrent
         /// writer would: `terminalFor` applied to the attempt the record should close, and — when `newerPublish`
         /// — a blueprint of a different attempt, as a second publish of the id would have left.
