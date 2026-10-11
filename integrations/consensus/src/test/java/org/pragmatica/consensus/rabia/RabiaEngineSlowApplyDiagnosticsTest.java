@@ -176,6 +176,20 @@ class RabiaEngineSlowApplyDiagnosticsTest {
     }
 
     @Test
+    void withTwoBatchesPending_theAgeIsTheOlderOnes() throws Exception {
+        engine(ProtocolConfig.testConfig());
+        activate();
+        engine.apply(List.of(new TestCommand("older")));
+        Thread.sleep(500);
+        engine.apply(List.of(new TestCommand("younger")));
+        Thread.sleep(50);
+
+        assertThat(metrics.oldestPendingAgeMs.get().getAsLong())
+            .as("the OLDEST pending batch is reported; the younger one is about 50 ms old, the older about 550 ms")
+            .isGreaterThanOrEqualTo(450L);
+    }
+
+    @Test
     void anApplyThatIsNeverAnswered_countsOneApplyTimeout() throws Exception {
         var shortApply = ProtocolConfig.protocolConfig(timeSpan(60).seconds(),
                                                        timeSpan(5).seconds(),
