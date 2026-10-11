@@ -4693,9 +4693,12 @@ Clears ONE `instance-termination-unconfirmed` mark, by retired node id, after th
 instance by hand. Body `{"instance": "<provider-instance-id>", "force": false}`; `unknown` is accepted for `instance`, an absent or blank `instance` is
 refused, `force` is optional and defaults to false. Route target is `LEADER`, authorization OPERATOR.
 
-Before it clears, the cluster asks the node's source provider for the node's instances (selected by the node's labels, so a wrong or `unknown` id does
-not hide a listed instance). An instance still listed and not terminated refuses the clear (`409`, naming the instance and its state), and so does a
-provider that cannot be asked (`409`, fail closed). `force: true` overrides both (an EXTERNAL node's own re-check confirms its mark when it has left the membership, so it rarely needs a clear).
+Before it clears, the cluster asks the node's source provider twice: for the node's instances by the node's labels (so a wrong or `unknown` id does not hide
+a listed instance) and, when `instance` is an id, for that instance by id (so an instance the provider shows without the node's labels is not missed). Either
+showing an instance that is not terminated refuses the clear (`409`, naming the instance and its state), and so does either read failing (`409`, fail closed;
+a not-found for the id is an answer, not a failure). `force: true` overrides both. An EXTERNAL node has no provider of ours to ask: its clear is refused (`409`,
+"no provider to check this external node; use --force after confirming it is gone") unless `force` is given (an external node's own re-check normally confirms
+its mark once it has left the membership).
 
 The clear is audited: the cluster raises `instance-termination-cleared` naming the node, the authenticated operator, the instance the operator
 attests, whether the provider check was forced, the provider state seen, the instance id the cluster itself had listed for the node (or `never listed`)

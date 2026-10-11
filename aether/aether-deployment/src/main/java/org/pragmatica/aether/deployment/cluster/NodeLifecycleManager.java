@@ -12,6 +12,7 @@ import java.util.stream.Stream;
 import org.pragmatica.aether.environment.ClusterName;
 import org.pragmatica.aether.environment.ComputeProvider;
 import org.pragmatica.aether.environment.EnvironmentError;
+import org.pragmatica.aether.environment.InstanceId;
 import org.pragmatica.aether.environment.InstanceInfo;
 import org.pragmatica.aether.environment.ProvisionSpec;
 import org.pragmatica.aether.environment.SourceName;
@@ -155,6 +156,12 @@ public interface NodeLifecycleManager {
         return instancesForNode(nodeId);
     }
 
+    /// The provider's own read of ONE instance by its id (#2062: the operator clear checks the instance the operator names, as well as the node's labelled
+    /// instances). A read only: no reservation is observed or released. Default refusal, for the reason [#instancesForNode] has one.
+    default Promise<InstanceInfo> instanceStatus(InstanceId instanceId, SourceName source) {
+        return EnvironmentError.operationNotSupported("instanceStatus: no ComputeProvider").promise();
+    }
+
     /// Cap-less construction — no fleet bound is enforced. Retained for callers that provision
     /// against a non-cloud provider (Docker/forge), where an unbounded fleet is not a cost hazard.
     static NodeLifecycleManager nodeLifecycleManager(Option<ComputeProvider> computeProvider) {
@@ -279,6 +286,12 @@ record NodeLifecycleManagerRecord(Option<ComputeProvider> computeProvider,
     public Promise<List<InstanceInfo>> listInstances(Map<String, String> tagFilter) {
         return computeProvider.fold(() -> EnvironmentError.operationNotSupported("listInstances: no ComputeProvider").promise(),
                                     provider -> provider.listInstances(tagFilter));
+    }
+
+    @Override
+    public Promise<InstanceInfo> instanceStatus(InstanceId instanceId, SourceName source) {
+        return computeProvider.fold(() -> EnvironmentError.operationNotSupported("instanceStatus: no ComputeProvider").promise(),
+                                    provider -> provider.instanceStatus(instanceId));
     }
 
     @Override
@@ -511,6 +524,12 @@ record SourceNodeLifecycleManager(SourceComputeRegistry registry,
     public Promise<List<InstanceInfo>> instancesForNode(NodeId nodeId, SourceName source) {
         return forSource(source).async()
                         .flatMap(manager -> manager.instancesForNode(nodeId));
+    }
+
+    @Override
+    public Promise<InstanceInfo> instanceStatus(InstanceId instanceId, SourceName source) {
+        return forSource(source).async()
+                        .flatMap(manager -> manager.instanceStatus(instanceId, source));
     }
 
     @Override

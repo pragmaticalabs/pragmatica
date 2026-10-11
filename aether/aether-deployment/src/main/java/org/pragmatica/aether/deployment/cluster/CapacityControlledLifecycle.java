@@ -493,6 +493,12 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
     }
 
     @Override
+    public Promise<org.pragmatica.aether.environment.InstanceInfo> instanceStatus(org.pragmatica.aether.environment.InstanceId instanceId,
+                                                                                  SourceName source) {
+        return delegate.instanceStatus(instanceId, source);
+    }
+
+    @Override
     public Promise<List<InstanceInfo>> instancesForNode(NodeId node) {
         return source(node).fold(() -> delegate.instancesForNode(node), value -> instancesForNode(node, value));
     }

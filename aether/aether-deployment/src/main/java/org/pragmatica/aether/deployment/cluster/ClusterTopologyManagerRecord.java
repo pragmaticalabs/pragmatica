@@ -2252,14 +2252,14 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         var cause = persisted.map(AetherValue.UnconfirmedTerminationValue::cause).or("mark not persisted");
         var known = Option.option(knownInstanceIds.get(nodeId)).or("never listed");
 
-        return providerState(nodeId, force).flatMap(state -> deleteExactMark(nodeId, persisted).flatMap(_ -> afterClear(nodeId,
-                                                                                                                        generation,
-                                                                                                                        new Cleared(operator,
-                                                                                                                                    attestedInstance,
-                                                                                                                                    force,
-                                                                                                                                    state,
-                                                                                                                                    known,
-                                                                                                                                    cause))));
+        return providerState(nodeId, attestedInstance, force).flatMap(state -> deleteExactMark(nodeId, persisted).flatMap(_ -> afterClear(nodeId,
+                                                                                                                                          generation,
+                                                                                                                                          new Cleared(operator,
+                                                                                                                                                      attestedInstance,
+                                                                                                                                                      force,
+                                                                                                                                                      state,
+                                                                                                                                                      known,
+                                                                                                                                                      cause))));
     }
 
     /// What the operator's clear is audited with: who, what they attest, whether they overrode the provider check and what the provider showed.
@@ -2270,39 +2270,114 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                            String known,
                            String cause) {}
 
-    /// Looks the node's instances up at its source provider, by the node's labels (a wrong or `unknown` attested id cannot hide a listed instance).
-    /// A listed instance that is not terminated, or a provider that cannot answer, refuses the clear unless forced; the state seen is returned for the event.
-    private Promise<String> providerState(NodeId nodeId, boolean force) {
-        return lifecycleManager.instancesForNode(nodeId,
-                                                 lifecycleManager.sourceOf(nodeId).or(SourceName.DEFAULT))
-                               .fold(result -> result.fold(failure -> providerUnreachable(nodeId, failure, force),
-                                                           listed -> judgeListed(nodeId, listed, force)));
-    }
-
-    private static Promise<String> providerUnreachable(NodeId nodeId, Cause failure, boolean force) {
-        return force
-               ? Promise.success("provider unreachable: " + failure.message())
-               : new UnconfirmedClearRefusal.ProviderUnreachable(nodeId, failure.message()).promise();
-    }
-
-    private static Promise<String> judgeListed(NodeId nodeId,
-                                               List<org.pragmatica.aether.environment.InstanceInfo> listed,
-                                               boolean force) {
-        var running = listed.stream()
-                            .filter(instance -> !(instance.status() instanceof InstanceStatus.Terminated))
-                            .toList();
-
-        if (running.isEmpty() || force) {
-            return Promise.success(listed.isEmpty()
-                                   ? "no instance listed"
-                                   : describe(listed));
+    /// Looks the instance up at the node's source provider two ways, and refuses on either: by the node's LABELS (a wrong or `unknown` attested id cannot
+    /// hide a listed instance) and, when the operator names an id, by that ID (an instance the operator names that the provider shows without the node's
+    /// labels is refused too). A listed instance that is not terminated, or a read that fails (a not-found for the id is an answer, not a failure), refuses
+    /// the clear unless forced; the state seen is returned for the event. An EXTERNAL node has no provider of ours to ask: refused unless forced.
+    private Promise<String> providerState(NodeId nodeId, String attested, boolean force) {
+        if (lifecycleManager.externalNode(nodeId)) {
+            return force
+                   ? Promise.success(EXTERNAL_STATE)
+                   : new UnconfirmedClearRefusal.ExternalNodeUnchecked(nodeId).promise();
         }
 
-        var first = running.getFirst();
+        var source = lifecycleManager.sourceOf(nodeId).or(SourceName.DEFAULT);
 
-        return new UnconfirmedClearRefusal.InstanceStillListed(nodeId,
-                                                               first.id().value(),
-                                                               statusName(first)).promise();
+        return lifecycleManager.instancesForNode(nodeId, source)
+                               .fold(labelled -> readById(attested, source).flatMap(byId -> judge(nodeId,
+                                                                                                  labelled,
+                                                                                                  byId,
+                                                                                                  force)));
+    }
+
+    private static final String EXTERNAL_STATE = "external node: no provider to check";
+    private static final String UNKNOWN_INSTANCE = "unknown";
+
+    /// What the by-id read answered. `Skipped`: the operator attested `unknown`, there is no id to read.
+    private sealed interface ByIdRead {
+        record Skipped() implements ByIdRead {}
+
+        record NotFound(String id) implements ByIdRead {}
+
+        record Found(org.pragmatica.aether.environment.InstanceInfo info) implements ByIdRead {}
+
+        record Failed(String id, Cause cause) implements ByIdRead {}
+    }
+
+    private Promise<ByIdRead> readById(String attested, SourceName source) {
+        if (attested.equals(UNKNOWN_INSTANCE)) {
+            return Promise.success(new ByIdRead.Skipped());
+        }
+
+        return lifecycleManager.instanceStatus(new org.pragmatica.aether.environment.InstanceId(attested),
+                                               source)
+                               .fold(result -> Promise.success(result.fold(cause -> byIdFailure(attested, cause),
+                                                                           ByIdRead.Found::new)));
+    }
+
+    private static ByIdRead byIdFailure(String attested, Cause cause) {
+        return cause instanceof org.pragmatica.aether.environment.EnvironmentError.InstanceNotFound
+               ? new ByIdRead.NotFound(attested)
+               : new ByIdRead.Failed(attested, cause);
+    }
+
+    private static Promise<String> judge(NodeId nodeId,
+                                         org.pragmatica.lang.Result<List<org.pragmatica.aether.environment.InstanceInfo>> labelled,
+                                         ByIdRead byId,
+                                         boolean force) {
+        var labelledInstances = labelled.fold(_ -> List.<org.pragmatica.aether.environment.InstanceInfo> of(),
+                                              listed -> listed);
+        var found = byId instanceof ByIdRead.Found(var info)
+                    ? List.of(info)
+                    : List.<org.pragmatica.aether.environment.InstanceInfo> of();
+        var running = java.util.stream.Stream.concat(found.stream(),
+                                                     labelledInstances.stream())
+                                             .filter(instance -> !(instance.status() instanceof InstanceStatus.Terminated))
+                                             .toList();
+        var unreachable = unreachableCause(labelled, byId);
+
+        if (!running.isEmpty() && !force) {
+            var first = running.getFirst();
+
+            return new UnconfirmedClearRefusal.InstanceStillListed(nodeId,
+                                                                   first.id().value(),
+                                                                   statusName(first)).promise();
+        }
+
+        if (unreachable.isPresent() && !force) {
+            return new UnconfirmedClearRefusal.ProviderUnreachable(nodeId, unreachable.unwrap()).promise();
+        }
+
+        return Promise.success(stateSeen(labelled, byId));
+    }
+
+    private static Option<String> unreachableCause(org.pragmatica.lang.Result<List<org.pragmatica.aether.environment.InstanceInfo>> labelled,
+                                                   ByIdRead byId) {
+        var labelFailure = labelled.fold(cause -> Option.some(cause.message()),
+                                         _ -> Option.<String> none());
+
+        if (labelFailure.isPresent()) {
+            return labelFailure;
+        }
+
+        return byId instanceof ByIdRead.Failed(var id, var cause)
+               ? Option.some("instance " + id + ": " + cause.message())
+               : Option.none();
+    }
+
+    private static String stateSeen(org.pragmatica.lang.Result<List<org.pragmatica.aether.environment.InstanceInfo>> labelled,
+                                    ByIdRead byId) {
+        var byLabels = labelled.fold(cause -> "provider unreachable: " + cause.message(),
+                                     listed -> listed.isEmpty()
+                                               ? "no instance listed"
+                                               : describe(listed));
+
+        return switch (byId) {
+            case ByIdRead.Skipped _ -> byLabels;
+            case ByIdRead.NotFound(var id) -> byLabels + "; by id " + id + ": not found";
+            case ByIdRead.Found(var info) -> byLabels + "; by id " + info.id().value() + ": " + statusName(info);
+            case ByIdRead.Failed(var id, var cause) -> byLabels + "; by id " + id + ": unreachable: " + cause.message();
+        };
     }
 
     private static String describe(List<org.pragmatica.aether.environment.InstanceInfo> listed) {

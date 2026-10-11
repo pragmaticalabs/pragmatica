@@ -1890,6 +1890,8 @@ class NodeReplacementRealRegistryReapTest {
     }
 
     private static final String CLEAR_COMMAND = "aether cluster clear-unconfirmed " + "core-old" + " --instance <provider-instance-id|unknown>";
+    /// When set, the provider's by-id read answers this instead of looking the id up in the listing.
+    private final AtomicReference<Promise<InstanceInfo>> statusOverride = new AtomicReference<>();
     /// Handed to the NEXT provider listing only: holds one re-check's listing in flight while later listings answer normally.
     private final AtomicReference<Promise<List<InstanceInfo>>> oneShotListing = new AtomicReference<>();
     /// Runs once, after the next KV commit through the manager's writer has been applied and before its continuation.
@@ -1976,7 +1978,7 @@ class NodeReplacementRealRegistryReapTest {
         assertThat(persistedMark(other).isPresent()).as("the other mark is untouched").isTrue();
         within(5, () -> assertThat(warnings).contains("instance-termination-cleared:core-old:Operator alice cleared the unconfirmed termination of retired node core-old: "
                                                       + "the operator attests instance i-424242 was verified and terminated by hand "
-                                                      + "(forced=false; provider state: no instance listed; the cluster knew instance: never listed; the mark said: never listed)"));
+                                                      + "(forced=false; provider state: no instance listed; by id i-424242: not found; the cluster knew instance: never listed; the mark said: never listed)"));
         assertThat(warnings.stream().filter(w -> w.startsWith("instance-termination-cleared:")).count()).as("one event, for one node").isEqualTo(1);
     }
 
@@ -2224,6 +2226,94 @@ class NodeReplacementRealRegistryReapTest {
         within(5, () -> assertThat(clearedWarning("(forced=true; provider state: i-1=RUNNING; ")).isTrue());
     }
 
+    /// Round 2: the instance the operator NAMES is read by id as well. The provider shows it, running, WITHOUT the node's labels: refused.
+    @Test
+    void clearUnconfirmed_aNamedInstanceFoundWithoutTheNodesLabels_isRefused() {
+        absentMark();
+        listing.set(Promise.success(List.of(instance(new NodeId("some-other-node"), "i-77", InstanceStatus.RUNNING))));
+
+        assertThat(refusalOf(ctmUnderTest.clearUnconfirmed(OLD, "alice", "i-77")))
+            .isEqualTo(new ClusterTopologyManager.UnconfirmedClearRefusal.InstanceStillListed(OLD, "i-77", "RUNNING"));
+        assertThat(persistedMark(OLD).isPresent()).isTrue();
+    }
+
+    @Test
+    void clearUnconfirmed_aNamedInstanceFoundTerminated_withNoLabelledInstance_clears() {
+        absentMark();
+        listing.set(Promise.success(List.of(instance(new NodeId("some-other-node"), "i-77", InstanceStatus.TERMINATED))));
+
+        assertThat(ctmUnderTest.clearUnconfirmed(OLD, "alice", "i-77").await().isSuccess()).isTrue();
+
+        within(5, () -> assertThat(clearedWarning("(forced=false; provider state: no instance listed; by id i-77: TERMINATED; ")).isTrue());
+    }
+
+    /// A failing by-id read refuses, although the label lookup is clean: the instance the operator names cannot be shown gone.
+    @Test
+    void clearUnconfirmed_aFailingByIdRead_refuses_failingClosed() {
+        absentMark();
+        statusOverride.set(EnvironmentError.operationNotSupported("status API down").promise());
+
+        var refusal = refusalOf(ctmUnderTest.clearUnconfirmed(OLD, "alice", "i-1"));
+
+        assertThat(refusal).isInstanceOf(ClusterTopologyManager.UnconfirmedClearRefusal.ProviderUnreachable.class);
+        assertThat(refusal.message()).contains("status API down").contains("i-1");
+        assertThat(persistedMark(OLD).isPresent()).isTrue();
+    }
+
+    /// A failing label lookup refuses, although the by-id read is clean.
+    @Test
+    void clearUnconfirmed_aFailingLabelLookup_refuses_evenWhenTheNamedInstanceIsShownTerminated() {
+        absentMark();
+        listing.set(EnvironmentError.operationNotSupported("provider API down").promise());
+        statusOverride.set(Promise.success(instance(OLD, "i-1", InstanceStatus.TERMINATED)));
+
+        var refusal = refusalOf(ctmUnderTest.clearUnconfirmed(OLD, "alice", "i-1"));
+
+        assertThat(refusal).isInstanceOf(ClusterTopologyManager.UnconfirmedClearRefusal.ProviderUnreachable.class);
+        assertThat(refusal.message()).contains("provider API down");
+    }
+
+    /// `unknown` names no id: the by-id read is not made (a failing one would refuse), and the labels alone decide.
+    @Test
+    void clearUnconfirmed_unknown_doesNotReadById() {
+        absentMark();
+        statusOverride.set(EnvironmentError.operationNotSupported("status API down").promise());
+
+        assertThat(ctmUnderTest.clearUnconfirmed(OLD, "alice", "unknown").await().isSuccess()).isTrue();
+    }
+
+    @Test
+    void clearUnconfirmed_forceOverridesAFailingByIdRead_andTheEventSaysSo() {
+        absentMark();
+        statusOverride.set(EnvironmentError.operationNotSupported("status API down").promise());
+
+        assertThat(ctmUnderTest.clearUnconfirmed(OLD, "alice", "i-1", true).await().isSuccess()).isTrue();
+
+        within(5, () -> assertThat(clearedWarning("(forced=true; provider state: no instance listed; by id i-1: unreachable: ")).isTrue());
+    }
+
+    /// Round 2: an EXTERNAL node's mark that persists (its release is refused as inconsistent against an empty ledger) cannot be checked at any provider:
+    /// refused with a cause that says so, unless forced.
+    @Test
+    void clearUnconfirmed_anExternalNode_isRefusedWithACauseThatSaysThereIsNoProviderToCheck_unlessForced() {
+        put(new AetherKey.CapacityReservationKey(OLD), new CapacityReservationValue("west", "", "core", CapacityReservationPhase.OBSERVED));
+        put(AetherKey.CapacityLedgerKey.INSTANCE, new CapacityLedgerValue(0, 1, true));
+        ctmUnderTest.markUnconfirmed(OLD, "operator's own node");
+        within(10, () -> assertThat(persistedMark(OLD).isPresent()).isTrue());
+        settle();
+        assertThat(persistedMark(OLD).isPresent()).as("the mark persists: the external release is refused").isTrue();
+
+        var refusal = refusalOf(ctmUnderTest.clearUnconfirmed(OLD, "alice", "unknown"));
+
+        assertThat(refusal).isEqualTo(new ClusterTopologyManager.UnconfirmedClearRefusal.ExternalNodeUnchecked(OLD));
+        assertThat(refusal.message()).contains("no provider to check this external node; use --force after confirming it is gone");
+        assertThat(persistedMark(OLD).isPresent()).isTrue();
+
+        assertThat(ctmUnderTest.clearUnconfirmed(OLD, "alice", "unknown", true).await().isSuccess()).isTrue();
+
+        within(5, () -> assertThat(clearedWarning("(forced=true; provider state: external node: no provider to check; ")).isTrue());
+    }
+
     /// An instance the provider lists as TERMINATED is gone: the clear goes through unforced, and the event names what the provider showed.
     @Test
     void clearUnconfirmed_aTerminatedInstanceDoesNotRefuse() {
@@ -2329,7 +2419,18 @@ class NodeReplacementRealRegistryReapTest {
 
         @Override
         public Promise<InstanceInfo> instanceStatus(InstanceId id) {
-            return EnvironmentError.operationNotSupported("status").promise();
+            var forced = statusOverride.get();
+
+            if (forced != null) {
+                return forced;
+            }
+
+            return listing.get()
+                          .flatMap(all -> all.stream()
+                                             .filter(instance -> instance.id().equals(id))
+                                             .findFirst()
+                                             .<Promise<InstanceInfo>> map(Promise::success)
+                                             .orElseGet(() -> EnvironmentError.instanceNotFound(id).promise()));
         }
     }
 }

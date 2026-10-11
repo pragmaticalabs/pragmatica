@@ -2,9 +2,10 @@
 
 - **An operator can clear an unconfirmed-termination mark (#2062).** `aether cluster clear-unconfirmed <node> --instance <provider-instance-id|unknown> [--force]`
   (`POST /api/v1/nodes/unconfirmed/clear/{id}`, OPERATOR, leader-routed) clears ONE mark after the operator verified at the provider and terminated the instance
-  by hand. The cluster asks the node's provider first, by the node's labels, so a wrong or `unknown` instance id does not hide a listed instance: the clear is
-  refused (409, naming the instance and its state) while an instance of the node is still listed and not terminated, and refused when the provider cannot be
-  asked; `--force` overrides both and is recorded in the event. It is also refused, with nothing cleared, for a node that shows life (409), for a node with no mark
+  by hand. The cluster asks the node's provider first, twice: by the node's labels (so a wrong or `unknown` instance id does not hide a listed instance) and,
+  for a given id, by that id (so an instance shown without the node's labels is not missed). The clear is refused (409, naming the instance and its state) while
+  either shows an instance that is not terminated, and refused when either read fails; an external node, which has no provider to ask, is refused with a cause that
+  says so. `--force` overrides all of these and is recorded in the event. It is also refused, with nothing cleared, for a node that shows life (409), for a node with no mark
   (404), and when the mark changed while the clear was committing (the delete carries the exact mark it read, so a later incarnation's mark survives). A clear
   raises `instance-termination-cleared`, which names the node, the authenticated operator, the instance the operator attests, whether the check was forced, the
   provider state seen, the instance id the cluster had listed for the node (or `never listed`) and the mark's cause, and closes the open warning cluster-wide.

@@ -202,12 +202,13 @@ public interface ClusterTopologyManager extends TopologyManager {
     }
 
     /// #2062 (owner ruling 28992d91b): an OPERATOR clears ONE mark, by node id, after verifying at the provider and terminating the instance by hand.
-    /// `attestedInstance` is the provider instance id the operator terminated (or `unknown`). Before it clears, the manager looks the node's instance(s)
-    /// up at the node's source provider (selected by the node's labels, so a wrong or `unknown` id does not hide a listed instance): an instance still
-    /// listed and not terminated, or a provider that cannot answer, REFUSES the clear (fail closed) unless `force`, which overrides both and is recorded
-    /// in the event with the provider state seen. Also refused, with nothing cleared: no mark, a node that shows life, a mark that changed since it was
-    /// read, a manager that is not the active leader. A clear writes the exact mark it read, so a mark of a later incarnation survives it, and closes the
-    /// open warning cluster-wide. Default: not the active leader.
+    /// `attestedInstance` is the provider instance id the operator terminated (or `unknown`). Before it clears, the manager asks the node's source provider
+    /// twice: for the node's LABELLED instances (so a wrong or `unknown` id does not hide a listed instance) and, when an id is given, for that INSTANCE by
+    /// id (so an instance the provider shows without the node's labels is not missed). Either showing an instance that is not terminated, or either read
+    /// failing (a not-found for the id is an answer), REFUSES the clear (fail closed) unless `force`, which overrides both and is recorded in the event
+    /// with the provider state seen. An EXTERNAL node has no provider of ours to ask: refused unless `force`. Also refused, with nothing cleared: no mark, a
+    /// node that shows life, a mark that changed since it was read, a manager that is not the active leader. A clear writes the exact mark it read, so a mark
+    /// of a later incarnation survives it, and closes the open warning cluster-wide. Default: not the active leader.
     default Promise<Unit> clearUnconfirmed(NodeId node, String operator, String attestedInstance, boolean force) {
         return new UnconfirmedClearRefusal.NotActive().promise();
     }
@@ -248,6 +249,15 @@ public interface ClusterTopologyManager extends TopologyManager {
                      + " of " + node.id()
                      + " (" + state
                      + "); terminate it first, or clear with force if you accept that it stays running";
+            }
+        }
+
+        /// An EXTERNAL node (the operator started it): there is no provider of ours to ask, so the clear cannot be checked.
+        record ExternalNodeUnchecked(NodeId node) implements UnconfirmedClearRefusal {
+            @Override
+            public String message() {
+                return "External node " + node.id()
+                     + ": no provider to check this external node; use --force after confirming it is gone";
             }
         }
 

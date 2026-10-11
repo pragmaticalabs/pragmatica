@@ -37,6 +37,12 @@ class UnconfirmedClearRefusalTest {
     }
 
     @Test
+    void anExternalNode_saysThereIsNoProviderToCheckAndTheWayOut() {
+        assertThat(new UnconfirmedClearRefusal.ExternalNodeUnchecked(NODE).message())
+            .contains("core-old").contains("no provider to check this external node; use --force after confirming it is gone");
+    }
+
+    @Test
     void aLiveNode_saysItsInstanceMustNotBeTerminated() {
         assertThat(new UnconfirmedClearRefusal.NodeLive(NODE).message()).contains("core-old").contains("shows life").contains("must not be terminated");
     }
