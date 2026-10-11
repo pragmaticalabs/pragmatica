@@ -65,7 +65,7 @@ class ClusterUpgradeRunOwedTest {
         return command;
     }
 
-    private static com.fasterxml.jackson.databind.JsonNode config() {
+    private static tools.jackson.databind.JsonNode config() {
         return MAPPER.readTree("{\"version\":\"2.0.0\",\"configVersion\":7}").unwrap();
     }
 
