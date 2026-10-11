@@ -263,6 +263,9 @@ class ClusterTopologyManagerZoneRotationTest {
             result.onFailure(cause -> assertThat(cause.message())
                     .as("the exhaustion cause names the zones that were tried")
                     .contains("fsn1", "nbg1", "hel1"));
+            result.onFailure(cause -> assertThat(cause)
+                    .as("#1111: every zone refused for capacity, so the leader can tell that no instance was made")
+                    .isInstanceOf(EnvironmentError.CapacityUnavailable.class));
             assertThat(lifecycleManager.attemptedZones())
                     .as("each zone attempted exactly once in order, then bail (no infinite loop)")
                     .containsExactly("fsn1", "nbg1", "hel1");
