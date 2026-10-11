@@ -1486,7 +1486,7 @@ Update lastCheckpointedOffset
 | Medium (1s-5s, default 1s) | Good balance. At most 1s of reprocessing on failover. |
 | Long (10s-60s) | Minimal consensus load. Up to 60s of reprocessing on failover. |
 
-The reprocessing figures above hold while the partition keeps receiving events; the shipped consumer commits on delivery, not on a timer, so a quiet partition keeps its last commit (or none) until the next delivery or a graceful detach (#1385).
+The reprocessing figures above hold while the partition keeps receiving events; the shipped consumer starts a commit on a delivery (timers only retry or follow up a commit already requested), so a quiet partition keeps its last commit (or none) until the next delivery or a graceful detach (#1385).
 
 ### 10.4 Recovery on Governor Failover
 
@@ -1494,8 +1494,8 @@ When a governor fails and a new governor takes over:
 
 1. New governor reads `StreamCursorCheckpointKey/Value` from consensus for all consumer groups on affected partitions.
 2. Consumers reconnect and resume from last checkpointed offset.
-3. Events between last checkpoint and failure are redelivered (at-least-once). The checkpoint window bounds this only while the partition keeps receiving events: the shipped consumer evaluates the checkpoint trigger on delivery, not on a timer, so a partition that goes quiet within its first interval after attach has no checkpoint and replays from offset 0 (#1385; the timer-driven diagram in §10.2 is the design, the trailing commit is not yet implemented).
-4. Consumer handlers must be idempotent within the checkpoint window.
+3. Events between last checkpoint and failure are redelivered (at-least-once). The checkpoint window bounds this only while the partition keeps receiving events: the shipped consumer evaluates the checkpoint trigger on delivery (timers only retry or follow up a commit already requested), so a partition that goes quiet within its first interval after attach has no checkpoint and replays from offset 0 (#1385; the timer-driven diagram in §10.2 is the design, the trailing commit is not yet implemented).
+4. Consumer handlers must be idempotent; the checkpoint window bounds redelivery only while the partition keeps receiving events (see item 3).
 
 **Phase 1 limitation:** Ring buffer data is lost on governor failure (no replication). Consumers resume from checkpoint offset but events between checkpoint and failure are gone. Consumers receive `CURSOR_EXPIRED` if the new governor's buffer does not contain the checkpointed offset, and fall back to `auto-offset-reset` policy.
 
