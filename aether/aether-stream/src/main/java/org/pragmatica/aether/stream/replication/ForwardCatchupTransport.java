@@ -17,6 +17,7 @@ import org.pragmatica.aether.stream.forward.StreamForwardClient;
 import org.pragmatica.aether.stream.forward.StreamForwardClient.ReadForwardResult;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.utility.warning.OperatorWarningCode;
@@ -62,6 +63,20 @@ public final class ForwardCatchupTransport implements CatchupTransport {
     private final OperatorWarningSink warnings;
     private final LongSupplier clock;
     private final ConcurrentHashMap<String, Episode> episodes = new ConcurrentHashMap<>();
+    /// Raise-before-resolve (#2004) for the episode report: marking an episode reported and raising it, and removing it and resolving it, each
+    /// happen under this monitor, so a vouched answer that lands while the report is being raised waits for it and delivers
+    /// [not answering, restored], never [restored, not answering] (which the aggregator drops, leaving the warning open). A catch-up of one
+    /// partition is not single-flight at this seam (a live-batch gap, the redrive and a flight that timed out can overlap), so this pair races in
+    /// production. A leaf lock: while it is held only the map and [OperatorWarnings#raise] (a log line and a bounded hand-off) run.
+    private final Object episodeOrder = new Object();
+
+    /// Test seam: runs after an episode is marked reported and before it is raised, inside the monitor.
+    private volatile Runnable reportWindowHook = () -> {};
+
+    @Contract
+    void reportWindowHook(Runnable hook) {
+        this.reportWindowHook = hook;
+    }
 
     /// One run of unvouched answers for a partition: when it began, when it was last seen, and whether the operator was told.
     private record Episode(long firstAt, long lastAt, boolean reported) {}
@@ -173,17 +188,19 @@ public final class ForwardCatchupTransport implements CatchupTransport {
     private void endEpisode(NodeId target, ReplicationMessage.CatchupRequest request) {
         var key = partitionKey(request);
 
-        Option.option(episodes.remove(key))
-              .filter(Episode::reported)
-              .onPresent(ended -> OperatorWarnings.raise(log,
-                                                         warnings,
-                                                         OperatorWarningCode.STREAM_CATCHUP_SOURCE_ANSWERING_RESTORED,
-                                                         key + "@" + target.id(),
-                                                         "Replica {} can catch up from {} again: it now answers as a replica of the partition "
-                                                        + "(its catch-up was answered as a consumer read for {} s).",
-                                                         key,
-                                                         target.id(),
-                                                         (ended.lastAt() - ended.firstAt()) / 1_000L));
+        synchronized (episodeOrder) {
+            Option.option(episodes.remove(key))
+                  .filter(Episode::reported)
+                  .onPresent(ended -> OperatorWarnings.raise(log,
+                                                             warnings,
+                                                             OperatorWarningCode.STREAM_CATCHUP_SOURCE_ANSWERING_RESTORED,
+                                                             key + "@" + target.id(),
+                                                             "Replica {} can catch up from {} again: it now answers as a replica of the partition "
+                                                            + "(its catch-up was answered as a consumer read for {} s).",
+                                                             key,
+                                                             target.id(),
+                                                             (ended.lastAt() - ended.firstAt()) / 1_000L));
+        }
     }
 
     /// Tells the operator once, when this partition's catch-up has been answered as a consumer read for
@@ -195,20 +212,24 @@ public final class ForwardCatchupTransport implements CatchupTransport {
         var key = partitionKey(request);
         var now = clock.getAsLong();
         var report = new AtomicBoolean();
-        var episode = episodes.compute(key, (_, previous) -> advance(Option.option(previous), now, report));
 
-        if (report.get()) {
-            OperatorWarnings.raise(log,
-                                   warnings,
-                                   OperatorWarningCode.STREAM_CATCHUP_SOURCE_NOT_ANSWERING,
-                                   key + "@" + target.id(),
-                                   "Replica {} cannot catch up from {}: for {} s its catch-up has been answered as a consumer read, "
-                                  + "because the source does not list this node as a replica of the partition. No records are "
-                                  + "applied and the replica stays out of the in-sync set until the source's placement view "
-                                  + "agrees; it retries every backfill redrive.",
-                                   key,
-                                   target.id(),
-                                   (episode.lastAt() - episode.firstAt()) / 1_000L);
+        synchronized (episodeOrder) {
+            var episode = episodes.compute(key, (_, previous) -> advance(Option.option(previous), now, report));
+
+            if (report.get()) {
+                reportWindowHook.run();
+                OperatorWarnings.raise(log,
+                                       warnings,
+                                       OperatorWarningCode.STREAM_CATCHUP_SOURCE_NOT_ANSWERING,
+                                       key + "@" + target.id(),
+                                       "Replica {} cannot catch up from {}: for {} s its catch-up has been answered as a consumer read, "
+                                      + "because the source does not list this node as a replica of the partition. No records are "
+                                      + "applied and the replica stays out of the in-sync set until the source's placement view "
+                                      + "agrees; it retries every backfill redrive.",
+                                       key,
+                                       target.id(),
+                                       (episode.lastAt() - episode.firstAt()) / 1_000L);
+            }
         }
     }
 

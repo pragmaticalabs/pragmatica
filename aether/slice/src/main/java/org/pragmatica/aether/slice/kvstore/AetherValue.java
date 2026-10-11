@@ -3085,6 +3085,25 @@ public sealed interface AetherValue {
                                     String intendedRole,
                                     CapacityReservationPhase phase) implements AetherValue, org.pragmatica.cluster.state.kvstore.LeaderAuthorized {}
 
+    /// #2062: the admission marker of an EXTERNAL node's capacity reservation. A node that joins while its reservation is present bumps the marker; a release of
+    /// the reservation is committed only against the marker value it read (a read witness), so a release that began before the join cannot commit after it.
+    /// It is a separate value, so [CapacityReservationValue] keeps its wire shape and an older writer's bytes still decode (a rolling upgrade is mixed-version).
+    /// `released` is the EXTERNAL reservation the last release of the node deleted, written by the release itself in the same transaction: a node that joins
+    /// when its reservation is already gone (whichever leader released it, however long before) is admitted again from it.
+    /// `supersededBy` is the retirement tombstone: the node was retired by a replacement (the id of the node that replaced it), so its identity is SUPERSEDED. A
+    /// join of a superseded id is refused and the node evicted, never admitted again: that would add a core beside its replacement.
+    record CapacityAdmissionValue(long admissions,
+                                  Option<CapacityReservationValue> released,
+                                  Option<String> supersededBy) implements AetherValue, org.pragmatica.cluster.state.kvstore.LeaderAuthorized {
+        public CapacityAdmissionValue(long admissions) {
+            this(admissions, Option.none(), Option.none());
+        }
+
+        public CapacityAdmissionValue(long admissions, Option<CapacityReservationValue> released) {
+            this(admissions, released, Option.none());
+        }
+    }
+
     @Codec
     enum CapacityReservationPhase {
         DISPATCHED,
@@ -3136,6 +3155,12 @@ public sealed interface AetherValue {
                                             epoch + 1);
         }
     }
+
+    /// #2062: why the termination of a retired node's instance is not confirmed (`cause`), and whether the provider ever listed the instance
+    /// (`seen`): only for a node it listed does a later empty listing mean "gone", so a new leader re-checking the mark keeps that memory. `absent`
+    /// is set when a listing SUCCEEDED and did not contain the instance: no listing can ever confirm such a mark, so it is not re-checked. A listing
+    /// that FAILED proves nothing, and a mark that only ever met failures keeps `absent` false and keeps being re-checked.
+    record UnconfirmedTerminationValue(String cause, boolean seen, boolean absent) implements AetherValue, org.pragmatica.cluster.state.kvstore.LeaderAuthorized {}
 
     /// #1543 replacement steps. `DONE` and `ROLLED_BACK` are terminal and inert; `FAILED_KEPT_BOTH` is terminal
     /// and keeps both nodes until an operator settles it. `REVERTING` swaps the original back into the electorate
