@@ -112,6 +112,40 @@ class EntityCommittedReadTest {
         assertThat(fold.checkpointableThrough(0)).isEqualTo(0L);
     }
 
+    @Test
+    void aRecordLandingBehindTheFoldsBack_isHeldBackUntilItCommits() {
+        substrate.commitThrough(-1L);
+        entity.get("warm").await();
+
+        substrate.appendRaw(EntityLogRecord.upsert("late", "8".getBytes(StandardCharsets.UTF_8)).encode());
+
+        var refused = entity.get("late").await();
+
+        assertThat(refused.isFailure()).as("applied by catch-up, not yet committed").isTrue();
+        refused.onFailure(cause -> assertThat(cause).isInstanceOf(EntityLogError.NotYetCommitted.class));
+
+        substrate.commitThrough(0L);
+
+        assertThat(entity.get("late").await().unwrap()).isEqualTo(Option.some(8));
+    }
+
+    /// Every write is applied BEFORE its acknowledgement, so every written key is tracked; without the sweep the map would grow with
+    /// every key ever written and never read.
+    @Test
+    void pendingKeys_areSweptOnceTheyCommit_soTheMapTracksTheUnacknowledgedWindow() {
+        substrate.commitThrough(-1L);
+        fold.ready(0).await();
+        for (var i = 0; i < 1500; i++) {
+            append("k" + i, i);
+        }
+        assertThat(fold.pendingKeys(0)).as("control: all 1500 written keys are tracked while nothing commits").isEqualTo(1500);
+
+        substrate.commitThrough(1499L);
+        append("last", 1);
+
+        assertThat(fold.pendingKeys(0)).as("the keys that committed left; only the unacknowledged one remains").isEqualTo(1);
+    }
+
     private void append(String key, int value) {
         var record = EntityLogRecord.upsert(key, String.valueOf(value).getBytes(StandardCharsets.UTF_8)).encode();
         var offset = substrate.appendRaw(record);

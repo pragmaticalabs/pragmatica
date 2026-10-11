@@ -387,6 +387,11 @@ final class EntityFold {
         return unit();
     }
 
+    /// Package-private test hook (#2087): how many keys are tracked as holding a record the log has not committed.
+    int pendingKeys(int partition) {
+        return publishedFold(partition).pending.size();
+    }
+
     /// Package-private test hook: how many keys hold a per-key offset above the watermark.
     int trackedKeyOffsets(int partition) {
         return publishedFold(partition).keyApplied.size();
