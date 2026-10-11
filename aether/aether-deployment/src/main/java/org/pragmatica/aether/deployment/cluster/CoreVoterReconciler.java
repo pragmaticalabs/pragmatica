@@ -76,14 +76,22 @@ public interface CoreVoterReconciler {
 
             private Promise<Unit> reconcileInstalled(VoterConfiguration current) {
                 var down = failed.get();
-                var ready = readyCoreCandidates.get().stream().filter(node -> !down.contains(node)).collect(java.util.stream.Collectors.toUnmodifiableSet());
-                var assumed = current.members().stream().filter(node -> !down.contains(node) && !ready.contains(node)).collect(java.util.stream.Collectors.toUnmodifiableSet());
+                var ready = readyCoreCandidates.get()
+                                               .stream()
+                                               .filter(node -> !down.contains(node))
+                                               .collect(java.util.stream.Collectors.toUnmodifiableSet());
+                var assumed = current.members()
+                                     .stream()
+                                     .filter(node -> !down.contains(node) && !ready.contains(node))
+                                     .collect(java.util.stream.Collectors.toUnmodifiableSet());
                 var swaps = voterSwaps.get();
                 var target = selectVoters(self, current, ready, assumed, desired.getAsInt(), swaps);
 
-                if (target.isEmpty() || Set.copyOf(target).equals(Set.copyOf(current.members())) || shrinksDuringASwap(target, current, swaps) || settled.get()
-                                                                                                           .filter(current::equals)
-                                                                                                           .isEmpty()) {
+                if (target.isEmpty() || Set.copyOf(target).equals(Set.copyOf(current.members())) || shrinksDuringASwap(target,
+                                                                                                                       current,
+                                                                                                                       swaps) || settled.get()
+                                                                                                                                        .filter(current::equals)
+                                                                                                                                        .isEmpty()) {
                     return Promise.unitPromise();
                 }
 
@@ -93,8 +101,11 @@ public interface CoreVoterReconciler {
             }
 
             /// A surplus trim is a size reduction, not a heal; it never runs while a swap is in progress (#2098 Mode 1's trigger).
-            private boolean shrinksDuringASwap(List<NodeId> target, VoterConfiguration current, Map<NodeId, NodeId> swaps) {
-                return target.size() < current.members().size() && !swaps.isEmpty();
+            private boolean shrinksDuringASwap(List<NodeId> target,
+                                               VoterConfiguration current,
+                                               Map<NodeId, NodeId> swaps) {
+                return target.size() < current.members()
+                                              .size() && !swaps.isEmpty();
             }
         }
 
@@ -117,7 +128,11 @@ public interface CoreVoterReconciler {
     /// `assumed` are current voters the leader has not observed and holds no evidence against (#2098): they rank below an observed-ready voter
     /// and above any newcomer and any voter with evidence of failure, so a surplus trim removes failed voters first, then unobserved ones,
     /// then healthy ones (id order only breaks ties), and a newcomer never displaces an unobserved voter.
-    static List<NodeId> selectVoters(NodeId self, VoterConfiguration current, Set<NodeId> ready, Set<NodeId> assumed, int desired) {
+    static List<NodeId> selectVoters(NodeId self,
+                                     VoterConfiguration current,
+                                     Set<NodeId> ready,
+                                     Set<NodeId> assumed,
+                                     int desired) {
         if (desired < 1 || desired % 2 == 0) {
             return List.of();
         }
@@ -126,7 +141,11 @@ public interface CoreVoterReconciler {
         var candidates = Stream.concat(current.members().stream(),
                                        ready.stream())
                                .distinct()
-                               .sorted(Comparator.<NodeId> comparingInt(node -> rank(node, self, existing, ready, assumed)).thenComparing(NodeId::id))
+                               .sorted(Comparator.<NodeId> comparingInt(node -> rank(node,
+                                                                                     self,
+                                                                                     existing,
+                                                                                     ready,
+                                                                                     assumed)).thenComparing(NodeId::id))
                                .limit(desired)
                                .toList();
 
