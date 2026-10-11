@@ -657,8 +657,7 @@ public final class StreamEntityLogSubstrate implements EntityLogSubstrate {
                                              from,
                                              (int)(offset - from + 1L))
                                .option()
-                               .filter(events -> events.size() == offset - from + 1L && events.getLast()
-                                                                                              .offset() == offset)
+                               .filter(events -> CheckpointFrame.coversWindow(events, from, offset))
                                .flatMap(events -> CheckpointFrame.lineageOf(events,
                                                                             partitionManager.epochAt(stream,
                                                                                                      partition,

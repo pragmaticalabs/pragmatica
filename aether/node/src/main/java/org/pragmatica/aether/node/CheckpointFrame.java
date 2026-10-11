@@ -64,6 +64,14 @@ final class CheckpointFrame {
         return EntityCheckpoint.entityCheckpoint(throughOffset, snapshot, Option.some(identity));
     }
 
+    /// Whether `events` are exactly the window `[from, offset]`: the right count, ending at `offset`.
+    static boolean coversWindow(List<RawEvent> events, long from, long offset) {
+        return events.size() == offset - from + 1L && events.stream()
+                                                            .mapToLong(RawEvent::offset)
+                                                            .max()
+                                                            .orElse(-1L) == offset;
+    }
+
     /// Epoch (when known) and the SHA-256 of the records' offsets and bytes, oldest first.
     static Option<byte[]> lineageOf(List<RawEvent> events, Option<Epoch> epoch) {
         return Result.lift(() -> MessageDigest.getInstance("SHA-256"))
