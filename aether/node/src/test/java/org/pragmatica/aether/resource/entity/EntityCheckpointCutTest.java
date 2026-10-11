@@ -115,6 +115,33 @@ class EntityCheckpointCutTest {
         assertThat(fold.get(PARTITION, "k").isPresent()).as("k, at offset 0, is shared by both lineages").isTrue();
     }
 
+    /// The identity covers a WINDOW of records: a new lineage that reproduces the record at the claim byte for byte, but not the ones before it,
+    /// still differs from what the checkpoint folded.
+    @Test
+    void aCutThatRewritesAnEarlierRecord_butReproducesTheClaimRecordByteForByte_isStillDetected() {
+        var b = record("b", 2);
+
+        landAcknowledged(0L, record("a", 1), E1);
+        landAcknowledged(1L, b, E1);
+        manager.commitAdvanced(arc, PARTITION, 1L, E1);
+        var fold = EntityFold.entityFold(KEYSPACE, substrate);
+
+        fold.ready(PARTITION).await();
+        var candidate = fold.checkpointCandidate(PARTITION, -1L).unwrap();
+
+        substrate.saveCheckpoint(KEYSPACE, PARTITION, candidate.throughOffset(), candidate.snapshot(), candidate.lineage()).await();
+
+        assertThat(manager.appendRecovered(arc, PARTITION, 0L, record("a2", 5), 5L, E2).isFailure()).as("control: a divergence at offset 0").isTrue();
+        assertThat(manager.repairDivergence(arc, PARTITION, _ -> true).isSuccess()).as("control: the whole tail is cut").isTrue();
+        assertThat(manager.appendRecovered(arc, PARTITION, 0L, record("a2", 5), 5L, E2).isSuccess()).isTrue();
+        assertThat(manager.appendRecovered(arc, PARTITION, 1L, b, 6L, E2).isSuccess()).as("control: the claim record is reproduced byte for byte").isTrue();
+        manager.commitAdvanced(arc, PARTITION, 1L, E2);
+
+        assertThat(fold.ready(PARTITION).await().isSuccess()).isTrue();
+        assertThat(fold.get(PARTITION, "a").isPresent()).as("a was cut: not folded from the stale checkpoint").isFalse();
+        assertThat(fold.get(PARTITION, "a2").isPresent()).as("the new lineage's record at offset 0").isTrue();
+    }
+
     /// Control: the validation does not discard a checkpoint whose lineage still holds -- a cut ABOVE the claim leaves it valid, and the
     /// rebuild seeds from it (the log below the claim is not needed).
     @Test
