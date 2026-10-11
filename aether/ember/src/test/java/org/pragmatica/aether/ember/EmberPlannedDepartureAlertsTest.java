@@ -133,7 +133,7 @@ class EmberPlannedDepartureAlertsTest {
         // owner, e.g. one that loses its system-writer mark, drops the non-owners' events with a WARN and leaves it green). Every
         // observer that raised the alert must therefore have ITS OWN NodeFailed in the stream.
         awaitCondition("every observer raised the CRITICAL node-health alert", DEPARTURE_BUDGET_MS, () -> observers.stream().allMatch(n -> hasCriticalAlert(n, victim)));
-        var alerted = observers.stream().map(n -> n.self().id().id()).collect(java.util.stream.Collectors.toSet());
+        var alerted = observers.stream().map(n -> n.self().id()).collect(java.util.stream.Collectors.toSet());
 
         awaitCondition(() -> "every observer's own NodeFailed for the unplanned death landed in the stream (forwarded events included); landed from: " + failedObservers(observers, victim) + " of " + alerted,
                        EVENT_REPLICATION_BUDGET_MS,
