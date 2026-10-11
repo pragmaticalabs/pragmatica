@@ -53,6 +53,7 @@ import org.pragmatica.consensus.topology.MembershipView;
 import org.pragmatica.consensus.topology.TopologyConfig;
 import org.pragmatica.consensus.topology.TopologyObserver;
 import org.pragmatica.hlc.HlcTimestamp;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
@@ -126,6 +127,7 @@ class NodeReplacementRealRegistryReapTest {
     private ClusterTopologyManager ctmUnderTest;
     private NodeReplacementWiring.Wiring wiring;
     private String realBinding;
+    private NodeLifecycleManager delegateLifecycle;
 
     @BeforeEach
     @SuppressWarnings({"rawtypes", "unchecked"})
@@ -137,6 +139,8 @@ class NodeReplacementRealRegistryReapTest {
         store.process(store.createBatch(List.of(new KVCommand.Put(LeaderKey.INSTANCE, LEADER))));
         put(AetherKey.ClusterConfigKey.CURRENT, new ClusterConfigValue(Option.some(CONFIG), "test", "1.0.0", List.of(), 3, 9, "test", 1L, 1L));
         var delegate = NodeLifecycleManager.nodeLifecycleManager(registry, _ -> Result.success(WEST), Option.none(), Option.none());
+
+        delegateLifecycle = delegate;
 
         lifecycle = CapacityControlledLifecycle.capacityControlledLifecycle(delegate, CORE, store, this::process, () -> true, () -> 10);
         var ctm = ctmOver(lifecycle);
@@ -178,9 +182,18 @@ class NodeReplacementRealRegistryReapTest {
 
         var gate = processGate.getAndSet(null);
 
-        return gate == null
-               ? Promise.success(store.process(store.createBatch(commands)))
-               : gate.flatMap(_ -> Promise.success(store.process(store.createBatch(commands))));
+        if (gate == null) {
+            var applied = store.process(store.createBatch(commands));
+            var hook = afterProcessHook.getAndSet(null);
+
+            if (hook != null) {
+                hook.run();
+            }
+
+            return Promise.success(applied);
+        }
+
+        return gate.flatMap(_ -> Promise.success(store.process(store.createBatch(commands))));
     }
 
     @SuppressWarnings({"rawtypes", "unchecked"})
@@ -1616,12 +1629,11 @@ class NodeReplacementRealRegistryReapTest {
         within(20, () -> assertThat(warnings).anyMatch(w -> w.startsWith("instance-termination-unconfirmed:" + OLD.id())));
 
         assertThat(warnings).anyMatch(w -> w.startsWith("instance-termination-unconfirmed:" + OLD.id()) && w.contains("a failing listing proves nothing") && !w.contains("by hand"));
-        assertThat(persistedMark(OLD).map(m -> !m.seen() && !m.absent()).or(false)).as("not seen, and nothing proves it absent").isTrue();
+        // The event is handed off before the mark's write commits: the mark is awaited, not read at the instant the event is seen.
+        within(10, () -> assertThat(persistedMark(OLD).map(m -> !m.seen() && !m.absent()).or(false)).as("not seen, and nothing proves it absent").isTrue());
         var before = lists.get();
 
-        Thread.sleep(1500);
-
-        assertThat(lists.get() - before).as("still re-checked at the normal cadence").isGreaterThanOrEqualTo(2);
+        within(30, () -> assertThat(lists.get() - before).as("still re-checked at the normal cadence").isGreaterThanOrEqualTo(2));
 
         listing.set(Promise.success(List.of(instance(OLD, "i-1", InstanceStatus.RUNNING))));
 
@@ -1879,6 +1891,850 @@ class NodeReplacementRealRegistryReapTest {
         assertThat(raised("instance-termination-confirmed")).isFalse();
     }
 
+    private static final String CLEAR_COMMAND = "aether cluster clear-unconfirmed " + "core-old" + " --instance <provider-instance-id|unknown>";
+    /// When set, the provider's by-id read answers this instead of looking the id up in the listing.
+    private final AtomicReference<Promise<InstanceInfo>> statusOverride = new AtomicReference<>();
+    /// Handed to the NEXT provider listing only: holds one re-check's listing in flight while later listings answer normally.
+    private final AtomicReference<Promise<List<InstanceInfo>>> oneShotListing = new AtomicReference<>();
+    /// Runs once, after the next KV commit through the manager's writer has been applied and before its continuation.
+    private final AtomicReference<Runnable> afterProcessHook = new AtomicReference<>();
+
+    /// What a later leader's re-mark does: a leader transaction that replaces the exact mark it read (a plain put of a leader-authorized value is refused).
+    @SuppressWarnings({"rawtypes", "unchecked"})
+    private void replaceMark(NodeId node, AetherValue.UnconfirmedTerminationValue expected, AetherValue.UnconfirmedTerminationValue replacement) {
+        var key = new AetherKey.UnconfirmedTerminationKey(node);
+
+        store.process(store.createBatch(List.of(new KVCommand.LeaderTransaction(key,
+                                                                                java.util.UUID.randomUUID().toString(),
+                                                                                LEADER,
+                                                                                List.of(),
+                                                                                List.of(new KVCommand.Mutation<>(key, Option.some(expected), Option.some(replacement)))))));
+    }
+
+    /// The sink hands events off asynchronously: a negative assertion waits for what a wrongly raised event would need.
+    private static void settle() {
+        try {
+            Thread.sleep(500);
+        } catch (InterruptedException _) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    private boolean clearedWarning(String containing) {
+        return warnings.stream().anyMatch(w -> w.startsWith("instance-termination-cleared:" + OLD.id()) && w.contains(containing));
+    }
+
+    private boolean anyCleared() {
+        return warnings.stream().anyMatch(w -> w.startsWith("instance-termination-cleared:"));
+    }
+
+    private long unconfirmedWarnings() {
+        return warnings.stream().filter(w -> w.startsWith("instance-termination-unconfirmed:" + OLD.id())).count();
+    }
+
+    private static Cause refusalOf(Promise<Unit> clear) {
+        var result = clear.await();
+        var cause = new AtomicReference<Cause>();
+
+        assertThat(result.isFailure()).as("the clear is refused").isTrue();
+        result.onFailure(cause::set);
+
+        return cause.get();
+    }
+
+    private void markWhileListingFails(NodeId node, String cause) {
+        put(AetherKey.CapacityLedgerKey.INSTANCE, new CapacityLedgerValue(3, 1, true));
+        listing.set(EnvironmentError.operationNotSupported("provider API down").promise());
+        ctmUnderTest.markUnconfirmed(node, cause);
+        within(10, () -> assertThat(persistedMark(node).isPresent()).isTrue());
+    }
+
+    /// A mark whose instance the provider never listed although a listing succeeded: the permanent operator warning, which the leader does not
+    /// re-check, so nothing but the test touches it.
+    private void absentMark() {
+        put(AetherKey.CapacityLedgerKey.INSTANCE, new CapacityLedgerValue(3, 1, true));
+        assertThat(ctmUnderTest.reapRetired(OLD, WEST, false).await().isFailure()).as("a listing SUCCEEDED and showed nothing").isTrue();
+        ctmUnderTest.markUnconfirmed(OLD, "never listed");
+        within(10, () -> assertThat(persistedMark(OLD).map(m -> !m.seen() && m.absent()).or(false)).isTrue());
+    }
+
+    private void providerStillShowsTheInstance(InstanceStatus status) {
+        stuck.set(true);
+        listing.set(Promise.success(List.of(instance(OLD, "i-1", status))));
+    }
+
+    /// #2062 operator clear: ONE mark goes, by node id, and nothing else does. The audit event is pinned in full and in order: operator, node, the
+    /// instance the operator attests, whether the provider check was overridden, what the provider showed, the instance the cluster knew, the mark's cause.
+    @Test
+    void clearUnconfirmed_clearsOneMarkAndOnlyThatOne_andTheEventIsPinnedInFull() {
+        var other = new NodeId("other-1");
+
+        absentMark();
+        ctmUnderTest.markUnconfirmed(other, "also never listed");
+        within(10, () -> assertThat(persistedMark(other).isPresent()).isTrue());
+
+        var result = ctmUnderTest.clearUnconfirmed(OLD, "alice", "i-424242").await();
+
+        assertThat(result.isSuccess()).isTrue();
+        assertThat(persistedMark(OLD).isEmpty()).as("the named mark is gone").isTrue();
+        assertThat(persistedMark(other).isPresent()).as("the other mark is untouched").isTrue();
+        within(5, () -> assertThat(warnings).contains("instance-termination-cleared:core-old:Operator alice cleared the unconfirmed termination of retired node core-old: "
+                                                      + "the operator attests instance i-424242 was verified and terminated by hand "
+                                                      + "(forced=false; provider state: no instance listed; by id i-424242: not found; the cluster knew instance: never listed; the mark said: never listed)"));
+        assertThat(warnings.stream().filter(w -> w.startsWith("instance-termination-cleared:")).count()).as("one event, for one node").isEqualTo(1);
+    }
+
+    /// A forced clear records that it was forced and what the provider showed (here: it could not be asked), and the instance the cluster had listed.
+    @Test
+    void clearUnconfirmed_aForcedClear_recordsForcedTheProviderStateAndTheListedInstance() throws Exception {
+        markAfterSeeingTheInstance("the listing still showed the instance");
+        within(10, () -> assertThat(persistedMark(OLD).isPresent()).isTrue());
+
+        assertThat(ctmUnderTest.clearUnconfirmed(OLD, "bob", "unknown", true).await().isSuccess()).isTrue();
+
+        within(5, () -> assertThat(warnings).anyMatch(w -> w.startsWith("instance-termination-cleared:core-old:Operator bob cleared ")
+                                                           && w.contains("attests instance unknown was verified")
+                                                           && w.contains("(forced=true; provider state: provider unreachable: ")
+                                                           && w.contains("; the cluster knew instance: i-1; the mark said: the listing still showed the instance)")));
+    }
+
+    /// A node that shows life is never cleared: typed refusal, the mark and its warning stay, no event.
+    @Test
+    void clearUnconfirmed_isRefusedForANodeThatIsDemonstrablyLive_andClearsNothing() {
+        markWhileListingFails(OLD, "never listed");
+        states.put(OLD, "Member");
+
+        assertThat(refusalOf(ctmUnderTest.clearUnconfirmed(OLD, "alice", "i-1", true))).isInstanceOf(ClusterTopologyManager.UnconfirmedClearRefusal.NodeLive.class);
+        assertThat(persistedMark(OLD).isPresent()).as("nothing cleared, even forced").isTrue();
+        settle();
+        assertThat(anyCleared()).as("no event").isFalse();
+    }
+
+    @Test
+    void clearUnconfirmed_isRefusedForANodeWithNoMark_withATypedNotMarked() {
+        assertThat(refusalOf(ctmUnderTest.clearUnconfirmed(OLD, "alice", "i-1"))).isInstanceOf(ClusterTopologyManager.UnconfirmedClearRefusal.NotMarked.class);
+        settle();
+        assertThat(anyCleared()).isFalse();
+    }
+
+    /// A manager that is not the active leader clears nothing.
+    @Test
+    void clearUnconfirmed_isRefusedByAManagerThatIsNotActive() {
+        markWhileListingFails(OLD, "never listed");
+        ctmUnderTest.deactivate();
+
+        assertThat(refusalOf(ctmUnderTest.clearUnconfirmed(OLD, "alice", "i-1", true))).isInstanceOf(ClusterTopologyManager.UnconfirmedClearRefusal.NotActive.class);
+        assertThat(persistedMark(OLD).isPresent()).isTrue();
+    }
+
+    /// A clear that lost to a newer mark (a later incarnation's, a different value) deletes nothing: the delete carries the exact value read.
+    @Test
+    void clearUnconfirmed_doesNotDeleteAMarkThatChangedUnderIt() {
+        absentMark();
+        var read = Map.of(OLD, persistedMark(OLD).unwrap());
+        var newer = new AetherValue.UnconfirmedTerminationValue("the next incarnation's mark", false, true);
+
+        ctmUnderTest.setUnconfirmedMarks(() -> read);
+        replaceMark(OLD, read.get(OLD), newer);
+
+        assertThat(refusalOf(ctmUnderTest.clearUnconfirmed(OLD, "alice", "i-1"))).isInstanceOf(ClusterTopologyManager.UnconfirmedClearRefusal.Changed.class);
+        assertThat(persistedMark(OLD)).as("the newer mark survives").isEqualTo(Option.some(newer));
+        settle();
+        assertThat(anyCleared()).isFalse();
+    }
+
+    /// A cleared node is no longer a marked node: the leader stops re-checking it, so nothing is confirmed, re-marked or warned again after the clear.
+    @Test
+    void clearUnconfirmed_endsTheRecheck_soNothingFollowsTheClear() throws Exception {
+        markWhileListingFails(OLD, "never listed");
+
+        assertThat(ctmUnderTest.clearUnconfirmed(OLD, "alice", "i-1", true).await().isSuccess()).isTrue();
+        listing.set(Promise.success(List.of()));
+        Thread.sleep(1500);
+
+        assertThat(raised("instance-termination-confirmed")).as("the cleared mark is not re-checked into a confirmation").isFalse();
+        assertThat(persistedMark(OLD).isEmpty()).as("nor re-marked by a re-check of the cleared node").isTrue();
+        assertThat(unconfirmedWarnings()).as("nor warned about again").isEqualTo(1);
+    }
+
+    /// v-2125 F1: a re-check whose listing is still in flight when the operator clears; its late result must not re-create the cleared mark or warn again.
+    @Test
+    void clearUnconfirmed_duringAnInFlightRecheck_isNotResurrectedByTheLateListing() throws Exception {
+        markWhileListingFails(OLD, "never listed");
+        Promise<List<InstanceInfo>> inFlight = Promise.promise();
+
+        lists.set(0);
+        oneShotListing.set(inFlight);
+        within(10, () -> assertThat(oneShotListing.get()).as("a re-check listing is in flight").isNull());
+
+        assertThat(ctmUnderTest.clearUnconfirmed(OLD, "alice", "i-1", true).await().isSuccess()).isTrue();
+        assertThat(persistedMark(OLD).isEmpty()).isTrue();
+        inFlight.succeed(List.of());
+        Thread.sleep(1500);
+
+        assertThat(persistedMark(OLD).isEmpty()).as("the cleared mark stays cleared").isTrue();
+        assertThat(unconfirmedWarnings()).as("no second unconfirmed warning after the clear").isEqualTo(1);
+    }
+
+    /// v-2125 F1, incarnation fence: a re-check of the FIRST incarnation is still in flight when the node rejoins and is retired again; its late result
+    /// belongs to the incarnation that is gone and must not warn about, or rewrite, the second incarnation's mark.
+    @Test
+    void aRecheckOfAnEarlierIncarnation_isFencedOut_whenItsListingReturnsLate() throws Exception {
+        markWhileListingFails(OLD, "first incarnation");
+        Promise<List<InstanceInfo>> inFlight = Promise.promise();
+
+        oneShotListing.set(inFlight);
+        within(10, () -> assertThat(oneShotListing.get()).as("a re-check listing is in flight").isNull());
+        joins(OLD);
+        within(5, () -> assertThat(persistedMark(OLD).isEmpty()).isTrue());
+        states.remove(OLD);
+        ctmUnderTest.markUnconfirmed(OLD, "second incarnation");
+        within(10, () -> assertThat(persistedMark(OLD).map(AetherValue.UnconfirmedTerminationValue::cause).or("")).isEqualTo("second incarnation"));
+        // The second incarnation's own re-check now lists successfully and finds nothing: it is the permanent warning, once, and the node is
+        // recorded as listed-absent - the state the earlier incarnation's late result would otherwise act on.
+        listing.set(Promise.success(List.of()));
+        within(10, () -> assertThat(persistedMark(OLD).map(AetherValue.UnconfirmedTerminationValue::absent).or(false)).isTrue());
+        settle();
+        var before = unconfirmedWarnings();
+
+        inFlight.succeed(List.of());
+        Thread.sleep(1000);
+
+        assertThat(unconfirmedWarnings()).as("the earlier incarnation's late listing raises nothing").isEqualTo(before);
+        assertThat(persistedMark(OLD).map(AetherValue.UnconfirmedTerminationValue::cause).or("")).isEqualTo("second incarnation");
+    }
+
+    /// The node rejoins and is retired again between the clear's commit and its in-memory removal: the later incarnation's in-memory mark stays.
+    @Test
+    void clearUnconfirmed_keepsALaterIncarnationsInMemoryMark() throws Exception {
+        markWhileListingFails(OLD, "first incarnation");
+        afterProcessHook.set(() -> {
+            joins(OLD);
+            states.remove(OLD);
+            ctmUnderTest.markUnconfirmed(OLD, "second incarnation");
+        });
+
+        assertThat(ctmUnderTest.clearUnconfirmed(OLD, "alice", "i-1", true).await().isSuccess()).isTrue();
+        within(10, () -> assertThat(persistedMark(OLD).map(AetherValue.UnconfirmedTerminationValue::cause).or("")).isEqualTo("second incarnation"));
+        settle();
+        var before = unconfirmedWarnings();
+
+        ctmUnderTest.markUnconfirmed(OLD, "third");
+        settle();
+
+        assertThat(unconfirmedWarnings()).as("the second incarnation's mark is still held in memory: a repeat mark is silent").isEqualTo(before);
+    }
+
+    /// A successor leader does not resurrect a cleared mark: the clear is a committed KV delete, not a memory of the old leader.
+    @Test
+    void clearUnconfirmed_aSuccessorLeaderDoesNotResurrectTheClearedMark() throws Exception {
+        markAfterSeeingTheInstance("the listing still showed the instance");
+        within(10, () -> assertThat(persistedMark(OLD).isPresent()).isTrue());
+        assertThat(ctmUnderTest.clearUnconfirmed(OLD, "alice", "i-1", true).await().isSuccess()).isTrue();
+        ctmUnderTest.deactivate();
+        var successorEvents = new java.util.concurrent.CopyOnWriteArrayList<String>();
+        var successor = newManager(lifecycle, false, 60L, successorEvents);
+
+        Thread.sleep(1500);
+
+        assertThat(persistedMark(OLD).isEmpty()).isTrue();
+        assertThat(successorEvents).isEmpty();
+        assertThat(refusalOf(successor.clearUnconfirmed(OLD, "alice", "i-1", true))).isInstanceOf(ClusterTopologyManager.UnconfirmedClearRefusal.NotMarked.class);
+    }
+
+    /// A mark held only in memory (its persist failed) is cleared too: nothing to delete in the store, the in-memory mark goes, and the clear is audited.
+    @Test
+    void clearUnconfirmed_clearsAMarkThatExistsOnlyInMemory() {
+        put(AetherKey.CapacityLedgerKey.INSTANCE, new CapacityLedgerValue(3, 1, true));
+        assertThat(ctmUnderTest.reapRetired(OLD, WEST, false).await().isFailure()).isTrue();
+        ctmUnderTest.setHierarchyStateWriter(org.pragmatica.aether.deployment.cluster.HierarchyStateWriter.unavailable());
+        ctmUnderTest.markUnconfirmed(OLD, "persist failed");
+        ctmUnderTest.setHierarchyStateWriter(org.pragmatica.aether.deployment.cluster.HierarchyStateWriter.hierarchyStateWriter(() -> store.getTyped(LeaderKey.INSTANCE, LeaderValue.class),
+                                                                                                                                key -> store.get(key),
+                                                                                                                                this::process));
+        within(5, () -> assertThat(unconfirmedWarnings()).isEqualTo(1));
+        assertThat(persistedMark(OLD).isEmpty()).as("only in memory").isTrue();
+
+        assertThat(ctmUnderTest.clearUnconfirmed(OLD, "alice", "i-1").await().isSuccess()).isTrue();
+
+        within(5, () -> assertThat(clearedWarning("the mark said: mark not persisted")).isTrue());
+        var before = unconfirmedWarnings();
+
+        ctmUnderTest.markUnconfirmed(OLD, "again");
+
+        within(5, () -> assertThat(unconfirmedWarnings()).as("the in-memory mark is gone: marking again warns again").isEqualTo(before + 1));
+    }
+
+    /// Ruling: the provider is asked before the clear, so the clear cannot hide a paid orphan. The instance the cluster would have listed is still
+    /// running: refused, naming the instance and its state, whatever the operator attests.
+    @Test
+    void clearUnconfirmed_isRefusedWhileTheProviderStillListsTheInstance_namingInstanceAndState() {
+        absentMark();
+        providerStillShowsTheInstance(InstanceStatus.RUNNING);
+
+        var refusal = refusalOf(ctmUnderTest.clearUnconfirmed(OLD, "alice", "i-1"));
+
+        assertThat(refusal).isEqualTo(new ClusterTopologyManager.UnconfirmedClearRefusal.InstanceStillListed(OLD, "i-1", "RUNNING"));
+        assertThat(persistedMark(OLD).isPresent()).as("nothing cleared").isTrue();
+        settle();
+        assertThat(anyCleared()).isFalse();
+    }
+
+    /// A WRONG instance id, with the node's labelled instance listed, is refused: the lookup is by the node's labels, not by the attested id.
+    @Test
+    void clearUnconfirmed_aWrongInstanceId_whileTheNodesLabelledInstanceIsListed_isRefused() {
+        absentMark();
+        providerStillShowsTheInstance(InstanceStatus.RUNNING);
+
+        assertThat(refusalOf(ctmUnderTest.clearUnconfirmed(OLD, "mallory", "i-WRONG")))
+            .isEqualTo(new ClusterTopologyManager.UnconfirmedClearRefusal.InstanceStillListed(OLD, "i-1", "RUNNING"));
+        assertThat(persistedMark(OLD).isPresent()).isTrue();
+    }
+
+    @Test
+    void clearUnconfirmed_unknown_whileTheNodesLabelledInstanceIsListed_isRefused() {
+        absentMark();
+        providerStillShowsTheInstance(InstanceStatus.PROVISIONING);
+
+        assertThat(refusalOf(ctmUnderTest.clearUnconfirmed(OLD, "alice", "unknown")))
+            .isEqualTo(new ClusterTopologyManager.UnconfirmedClearRefusal.InstanceStillListed(OLD, "i-1", "PROVISIONING"));
+        assertThat(persistedMark(OLD).isPresent()).isTrue();
+    }
+
+    /// A provider that cannot be asked refuses the clear (fail closed).
+    @Test
+    void clearUnconfirmed_isRefusedWhenTheProviderCannotBeAsked() {
+        absentMark();
+        listing.set(EnvironmentError.operationNotSupported("provider API down").promise());
+
+        var refusal = refusalOf(ctmUnderTest.clearUnconfirmed(OLD, "alice", "i-1"));
+
+        assertThat(refusal).isInstanceOf(ClusterTopologyManager.UnconfirmedClearRefusal.ProviderUnreachable.class);
+        assertThat(refusal.message()).contains("provider API down");
+        assertThat(persistedMark(OLD).isPresent()).isTrue();
+        settle();
+        assertThat(anyCleared()).isFalse();
+    }
+
+    /// `force` overrides a listed instance, and the event records forced=true and the state seen.
+    @Test
+    void clearUnconfirmed_forceOverridesAListedInstance_andTheEventRecordsIt() {
+        absentMark();
+        providerStillShowsTheInstance(InstanceStatus.RUNNING);
+
+        assertThat(ctmUnderTest.clearUnconfirmed(OLD, "alice", "unknown", true).await().isSuccess()).isTrue();
+
+        assertThat(persistedMark(OLD).isEmpty()).isTrue();
+        within(5, () -> assertThat(clearedWarning("(forced=true; provider state: i-1=RUNNING; ")).isTrue());
+    }
+
+    /// Round 2: the instance the operator NAMES is read by id as well. The provider shows it, running, WITHOUT the node's labels: refused.
+    @Test
+    void clearUnconfirmed_aNamedInstanceFoundWithoutTheNodesLabels_isRefused() {
+        absentMark();
+        listing.set(Promise.success(List.of(instance(new NodeId("some-other-node"), "i-77", InstanceStatus.RUNNING))));
+
+        assertThat(refusalOf(ctmUnderTest.clearUnconfirmed(OLD, "alice", "i-77")))
+            .isEqualTo(new ClusterTopologyManager.UnconfirmedClearRefusal.InstanceStillListed(OLD, "i-77", "RUNNING"));
+        assertThat(persistedMark(OLD).isPresent()).isTrue();
+    }
+
+    @Test
+    void clearUnconfirmed_aNamedInstanceFoundTerminated_withNoLabelledInstance_clears() {
+        absentMark();
+        listing.set(Promise.success(List.of(instance(new NodeId("some-other-node"), "i-77", InstanceStatus.TERMINATED))));
+
+        assertThat(ctmUnderTest.clearUnconfirmed(OLD, "alice", "i-77").await().isSuccess()).isTrue();
+
+        within(5, () -> assertThat(clearedWarning("(forced=false; provider state: no instance listed; by id i-77: TERMINATED; ")).isTrue());
+    }
+
+    /// A failing by-id read refuses, although the label lookup is clean: the instance the operator names cannot be shown gone.
+    @Test
+    void clearUnconfirmed_aFailingByIdRead_refuses_failingClosed() {
+        absentMark();
+        statusOverride.set(EnvironmentError.operationNotSupported("status API down").promise());
+
+        var refusal = refusalOf(ctmUnderTest.clearUnconfirmed(OLD, "alice", "i-1"));
+
+        assertThat(refusal).isInstanceOf(ClusterTopologyManager.UnconfirmedClearRefusal.ProviderUnreachable.class);
+        assertThat(refusal.message()).contains("status API down").contains("i-1");
+        assertThat(persistedMark(OLD).isPresent()).isTrue();
+    }
+
+    /// A failing label lookup refuses, although the by-id read is clean.
+    @Test
+    void clearUnconfirmed_aFailingLabelLookup_refuses_evenWhenTheNamedInstanceIsShownTerminated() {
+        absentMark();
+        listing.set(EnvironmentError.operationNotSupported("provider API down").promise());
+        statusOverride.set(Promise.success(instance(OLD, "i-1", InstanceStatus.TERMINATED)));
+
+        var refusal = refusalOf(ctmUnderTest.clearUnconfirmed(OLD, "alice", "i-1"));
+
+        assertThat(refusal).isInstanceOf(ClusterTopologyManager.UnconfirmedClearRefusal.ProviderUnreachable.class);
+        assertThat(refusal.message()).contains("provider API down");
+    }
+
+    /// `unknown` names no id: the by-id read is not made (a failing one would refuse), and the labels alone decide.
+    @Test
+    void clearUnconfirmed_unknown_doesNotReadById() {
+        absentMark();
+        statusOverride.set(EnvironmentError.operationNotSupported("status API down").promise());
+
+        assertThat(ctmUnderTest.clearUnconfirmed(OLD, "alice", "unknown").await().isSuccess()).isTrue();
+    }
+
+    @Test
+    void clearUnconfirmed_forceOverridesAFailingByIdRead_andTheEventSaysSo() {
+        absentMark();
+        statusOverride.set(EnvironmentError.operationNotSupported("status API down").promise());
+
+        assertThat(ctmUnderTest.clearUnconfirmed(OLD, "alice", "i-1", true).await().isSuccess()).isTrue();
+
+        within(5, () -> assertThat(clearedWarning("(forced=true; provider state: no instance listed; by id i-1: unreachable: ")).isTrue());
+    }
+
+    /// Round 2: an EXTERNAL node's mark that persists (its release is refused as inconsistent against an empty ledger) cannot be checked at any provider:
+    /// refused with a cause that says so, unless forced.
+    @Test
+    void clearUnconfirmed_anExternalNode_isRefusedWithACauseThatSaysThereIsNoProviderToCheck_unlessForced() {
+        put(new AetherKey.CapacityReservationKey(OLD), new CapacityReservationValue("west", "", "core", CapacityReservationPhase.OBSERVED));
+        put(AetherKey.CapacityLedgerKey.INSTANCE, new CapacityLedgerValue(0, 1, true));
+        ctmUnderTest.markUnconfirmed(OLD, "operator's own node");
+        within(10, () -> assertThat(persistedMark(OLD).isPresent()).isTrue());
+        settle();
+        assertThat(persistedMark(OLD).isPresent()).as("the mark persists: the external release is refused").isTrue();
+
+        var refusal = refusalOf(ctmUnderTest.clearUnconfirmed(OLD, "alice", "unknown"));
+
+        assertThat(refusal).isEqualTo(new ClusterTopologyManager.UnconfirmedClearRefusal.ExternalNodeUnchecked(OLD));
+        assertThat(refusal.message()).contains("no provider to check this external node; use --force after confirming it is gone");
+        assertThat(persistedMark(OLD).isPresent()).isTrue();
+
+        assertThat(ctmUnderTest.clearUnconfirmed(OLD, "alice", "unknown", true).await().isSuccess()).isTrue();
+
+        within(5, () -> assertThat(clearedWarning("(forced=true; provider state: external node: no provider to check; ")).isTrue());
+        settle();
+        assertThat(reservation(OLD).isPresent()).as("the ledger refuses the release as inconsistent: nothing is returned, and the clear still stands").isTrue();
+        assertThat(allocated()).isEqualTo(0);
+    }
+
+    private void confirmedReservation() {
+        put(new AetherKey.CapacityReservationKey(OLD), new CapacityReservationValue("west", realBinding, "core", CapacityReservationPhase.OBSERVED));
+        put(AetherKey.CapacityLedgerKey.INSTANCE, new CapacityLedgerValue(3, 1, true));
+    }
+
+    private int allocated() {
+        return store.getTyped(AetherKey.CapacityLedgerKey.INSTANCE, CapacityLedgerValue.class).unwrap().allocated();
+    }
+
+    /// Round 3 (v-2125 D1/D2): the clear's checks are READS. The label lookup finds nothing (the named instance carries other labels), the by-id read finds it
+    /// running and the clear is refused: the node's confirmed reservation and the ledger are exactly as they were, while the instance runs.
+    @Test
+    void clearUnconfirmed_aRefusedClear_leavesTheReservationAndTheLedgerUntouched() {
+        absentMark();
+        confirmedReservation();
+        listing.set(Promise.success(List.of(instance(new NodeId("some-other-node"), "i-77", InstanceStatus.RUNNING))));
+
+        assertThat(refusalOf(ctmUnderTest.clearUnconfirmed(OLD, "alice", "i-77"))).isInstanceOf(ClusterTopologyManager.UnconfirmedClearRefusal.InstanceStillListed.class);
+
+        assertThat(reservation(OLD).isPresent()).as("the reservation of a node whose instance runs is kept").isTrue();
+        assertThat(allocated()).as("and the ledger still counts it").isEqualTo(3);
+    }
+
+    /// The capacity is returned by the clear that commits, once every read shows nothing live.
+    @Test
+    void clearUnconfirmed_aCommittedClear_whenNoReadShowsTheInstanceLive_returnsTheCapacity() {
+        absentMark();
+        confirmedReservation();
+
+        assertThat(ctmUnderTest.clearUnconfirmed(OLD, "alice", "i-77").await().isSuccess()).isTrue();
+
+        within(5, () -> assertThat(reservation(OLD).isEmpty()).as("the reservation is released by the committed clear").isTrue());
+        assertThat(allocated()).isEqualTo(2);
+    }
+
+    /// The node rejoins between the clear's commit and the return of its capacity: the new incarnation keeps its reservation.
+    @Test
+    void clearUnconfirmed_aNodeThatRejoinsAfterTheCommit_keepsItsReservation() throws Exception {
+        absentMark();
+        confirmedReservation();
+        afterProcessHook.set(() -> {
+            joins(OLD);
+            states.remove(OLD);
+        });
+
+        assertThat(ctmUnderTest.clearUnconfirmed(OLD, "alice", "i-77").await().isSuccess()).isTrue();
+
+        settle();
+        assertThat(reservation(OLD).isPresent()).as("the next incarnation's reservation is not returned by the old incarnation's clear").isTrue();
+        assertThat(allocated()).isEqualTo(3);
+    }
+
+    /// The node shows life after the commit: its capacity is not returned.
+    @Test
+    void clearUnconfirmed_aNodeThatShowsLifeAfterTheCommit_keepsItsReservation() throws Exception {
+        absentMark();
+        confirmedReservation();
+        afterProcessHook.set(() -> states.put(OLD, "Member"));
+
+        assertThat(ctmUnderTest.clearUnconfirmed(OLD, "alice", "i-77").await().isSuccess()).isTrue();
+
+        settle();
+        assertThat(reservation(OLD).isPresent()).isTrue();
+        assertThat(allocated()).isEqualTo(3);
+    }
+
+    /// A forced clear over an instance that is still listed does not return its capacity: a read showed it live.
+    @Test
+    void clearUnconfirmed_aForcedClearOverALiveInstance_doesNotReturnTheCapacity() {
+        absentMark();
+        confirmedReservation();
+        listing.set(Promise.success(List.of(instance(OLD, "i-1", InstanceStatus.RUNNING))));
+
+        assertThat(ctmUnderTest.clearUnconfirmed(OLD, "alice", "i-1", true).await().isSuccess()).isTrue();
+
+        settle();
+        assertThat(reservation(OLD).isPresent()).isTrue();
+        assertThat(allocated()).isEqualTo(3);
+    }
+
+    /// A forced clear that could not read the provider does not return the capacity either.
+    @Test
+    void clearUnconfirmed_aForcedClear_whenAReadFailed_doesNotReturnTheCapacity() {
+        absentMark();
+        confirmedReservation();
+        listing.set(EnvironmentError.operationNotSupported("provider API down").promise());
+
+        assertThat(ctmUnderTest.clearUnconfirmed(OLD, "alice", "unknown", true).await().isSuccess()).isTrue();
+
+        settle();
+        assertThat(reservation(OLD).isPresent()).isTrue();
+        assertThat(allocated()).isEqualTo(3);
+    }
+
+    /// Round 3 (v-2125 D5): the node shows life while the provider is being read. Liveness is asked again at the commit, and the clear is refused.
+    @Test
+    void clearUnconfirmed_aNodeThatShowsLifeDuringTheProviderReads_isNotCleared() throws Exception {
+        absentMark();
+        Promise<List<InstanceInfo>> held = Promise.promise();
+
+        oneShotListing.set(held);
+        var clear = ctmUnderTest.clearUnconfirmed(OLD, "alice", "unknown");
+
+        states.put(OLD, "Member");
+        held.succeed(List.of());
+
+        assertThat(refusalOf(clear)).isInstanceOf(ClusterTopologyManager.UnconfirmedClearRefusal.NodeLive.class);
+        assertThat(persistedMark(OLD).isPresent()).as("nothing cleared").isTrue();
+        settle();
+        assertThat(anyCleared()).isFalse();
+    }
+
+    /// The incarnation fence at the commit matters for a mark held only in memory (its persist failed): there is no stored value to fail the delete's
+    /// compare-and-set, so only the incarnation tells the clear that the mark it read is the previous incarnation's.
+    @Test
+    void clearUnconfirmed_aMemoryOnlyMark_ofANodeThatRejoinedDuringTheProviderReads_isNotCleared() throws Exception {
+        put(AetherKey.CapacityLedgerKey.INSTANCE, new CapacityLedgerValue(3, 1, true));
+        assertThat(ctmUnderTest.reapRetired(OLD, WEST, false).await().isFailure()).isTrue();
+        ctmUnderTest.setHierarchyStateWriter(org.pragmatica.aether.deployment.cluster.HierarchyStateWriter.unavailable());
+        ctmUnderTest.markUnconfirmed(OLD, "persist failed");
+        ctmUnderTest.setHierarchyStateWriter(org.pragmatica.aether.deployment.cluster.HierarchyStateWriter.hierarchyStateWriter(() -> store.getTyped(LeaderKey.INSTANCE, LeaderValue.class),
+                                                                                                                                key -> store.get(key),
+                                                                                                                                this::process));
+        assertThat(persistedMark(OLD).isEmpty()).as("only in memory").isTrue();
+        Promise<List<InstanceInfo>> held = Promise.promise();
+
+        oneShotListing.set(held);
+        var clear = ctmUnderTest.clearUnconfirmed(OLD, "alice", "unknown");
+
+        joins(OLD);
+        states.remove(OLD);
+        held.succeed(List.of());
+
+        assertThat(refusalOf(clear)).isInstanceOf(ClusterTopologyManager.UnconfirmedClearRefusal.Changed.class);
+        settle();
+        assertThat(anyCleared()).isFalse();
+    }
+
+    /// The node rejoined while the provider was being read: a new incarnation, nothing of the old one is cleared (and the new one's mark is not touched).
+    @Test
+    void clearUnconfirmed_aNodeThatRejoinedDuringTheProviderReads_isNotCleared() throws Exception {
+        absentMark();
+        Promise<List<InstanceInfo>> held = Promise.promise();
+
+        oneShotListing.set(held);
+        var clear = ctmUnderTest.clearUnconfirmed(OLD, "alice", "unknown");
+
+        joins(OLD);
+        states.remove(OLD);
+        held.succeed(List.of());
+
+        assertThat(refusalOf(clear)).isInstanceOf(ClusterTopologyManager.UnconfirmedClearRefusal.Changed.class);
+        settle();
+        assertThat(anyCleared()).isFalse();
+    }
+
+
+    // ---- v-2125 round-3 probes D1, D2, D5, shipped as red-first tests (red on 54d671e98) ----
+    private void reservationFor(NodeId node) {
+        put(new AetherKey.CapacityReservationKey(node), new CapacityReservationValue("west", realBinding, "core", CapacityReservationPhase.OBSERVED));
+    }
+
+    /// D1: the by-id read finds the instance RUNNING, the labels show none: the clear is refused. Is the node's capacity reservation still held afterwards?
+    @Test
+    void v2125d_byIdFoundRunning_labelsNone_refused_reservationAndLedgerUntouched() {
+        absentMark();
+        reservationFor(OLD);
+        var before = allocated();
+        statusOverride.set(Promise.success(instance(OLD, "i-1", InstanceStatus.RUNNING)));
+
+        var refusal = refusalOf(ctmUnderTest.clearUnconfirmed(OLD, "alice", "i-1"));
+        assertThat(refusal).isInstanceOf(ClusterTopologyManager.UnconfirmedClearRefusal.InstanceStillListed.class);
+        assertThat(reservation(OLD).isPresent()).as("a refused clear must not release the reservation of a running instance").isTrue();
+        assertThat(allocated()).as("ledger untouched by a refused clear").isEqualTo(before);
+    }
+
+    /// D2: same with the by-id read FAILING (fail-closed refusal): reservation untouched?
+    @Test
+    void v2125d_byIdFails_labelsNone_refused_reservationAndLedgerUntouched() {
+        absentMark();
+        reservationFor(OLD);
+        var before = allocated();
+        statusOverride.set(EnvironmentError.operationNotSupported("status API down").promise());
+
+        var refusal = refusalOf(ctmUnderTest.clearUnconfirmed(OLD, "alice", "i-1"));
+        assertThat(reservation(OLD).isPresent()).isTrue();
+        assertThat(allocated()).isEqualTo(before);
+    }
+
+    /// D5: the node shows life while the provider read is in flight (no join decision yet): is it still cleared?
+    @Test
+    void v2125d_nodeShowsLifeDuringTheProviderRead_isNotCleared() {
+        absentMark();
+        Promise<InstanceInfo> gate = Promise.promise();
+        statusOverride.set(gate);
+
+        var clear = ctmUnderTest.clearUnconfirmed(OLD, "alice", "i-1");
+
+        states.put(OLD, "Member");
+        gate.succeed(instance(OLD, "i-1", InstanceStatus.TERMINATED));
+        var r = clear.await();
+        assertThat(r.isFailure()).as("a node that shows life is never cleared").isTrue();
+    }
+
+
+    // ---- v-2125 regressions, green on 54d671e98 and kept ----
+    /// D4: two concurrent clears with the by-id read held: exactly one wins, one event.
+    @Test
+    void v2125d_twoConcurrentClears_oneWins_oneEvent() {
+        absentMark();
+        Promise<InstanceInfo> gate = Promise.promise();
+        statusOverride.set(gate);
+
+        var a = ctmUnderTest.clearUnconfirmed(OLD, "alice", "i-1");
+        var b = ctmUnderTest.clearUnconfirmed(OLD, "bob", "i-1");
+
+        gate.succeed(instance(OLD, "i-1", InstanceStatus.TERMINATED));
+        var ra = a.await();
+        var rb = b.await();
+
+        settle();
+        assertThat((ra.isSuccess() ? 1 : 0) + (rb.isSuccess() ? 1 : 0)).isEqualTo(1);
+        assertThat(warnings.stream().filter(w -> w.startsWith("instance-termination-cleared:")).count()).isEqualTo(1);
+    }
+
+    /// D6 (independent re-derivation of F1): a re-check listing in flight when a FORCED clear lands must not re-create the mark.
+    @Test
+    void v2125d_recheckInFlight_forcedClear_isNotResurrected() throws Exception {
+        markWhileListingFails(OLD, "never listed");
+        Promise<List<InstanceInfo>> inFlight = Promise.promise();
+
+        lists.set(0);
+        oneShotListing.set(inFlight);
+        within(10, () -> assertThat(lists.get()).as("the re-check listing is in flight").isGreaterThan(0));
+
+        assertThat(ctmUnderTest.clearUnconfirmed(OLD, "alice", "i-1", true).await().isSuccess()).isTrue();
+        assertThat(persistedMark(OLD).isEmpty()).isTrue();
+        inFlight.succeed(List.of());
+        Thread.sleep(1500);
+
+        assertThat(persistedMark(OLD).isEmpty()).as("the cleared mark must stay cleared").isTrue();
+        assertThat(unconfirmedWarnings()).as("no second unconfirmed warning").isEqualTo(1);
+    }
+
+    /// A FORCED clear while the by-id read finds the instance running: it clears the mark and says so, and it does NOT return the capacity (a read showed the
+    /// instance live); the ledger and the reservation stay as they were.
+    @Test
+    void clearUnconfirmed_aForcedClear_whenTheNamedInstanceRuns_clearsTheMarkButKeepsTheCapacity() {
+        absentMark();
+        reservationFor(OLD);
+        var before = allocated();
+        statusOverride.set(Promise.success(instance(OLD, "i-1", InstanceStatus.RUNNING)));
+
+        assertThat(ctmUnderTest.clearUnconfirmed(OLD, "alice", "i-1", true).await().isSuccess()).isTrue();
+
+        assertThat(persistedMark(OLD).isEmpty()).isTrue();
+        within(5, () -> assertThat(clearedWarning("(forced=true; provider state: no instance listed; by id i-1: RUNNING; ")).isTrue());
+        settle();
+        assertThat(reservation(OLD).isPresent()).isTrue();
+        assertThat(allocated()).isEqualTo(before);
+    }
+
+    /// Odd attested ids never throw: a case variant of `unknown` is just an id (not found, so it clears), and so are ids with spaces, non-ASCII or a newline.
+    @Test
+    void clearUnconfirmed_oddAttestedIds_areIdsLikeAnyOther_andNeverThrow() {
+        for (var odd : new String[] {"UNKNOWN", "i 1 ; rm", "\u00e9\u00e9", "i-1\n"}) {
+            absentMark();
+
+            var result = ctmUnderTest.clearUnconfirmed(OLD, "alice", odd).await();
+
+            assertThat(result.isSuccess()).as("attested id [%s]", odd.replace("\n", "\\n")).isTrue();
+            within(5, () -> assertThat(persistedMark(OLD).isEmpty()).isTrue());
+        }
+    }
+
+    private long clearedEvents() {
+        return warnings.stream().filter(w -> w.startsWith("instance-termination-cleared:")).count();
+    }
+
+    /// v-2125 E3: the commit-time incarnation fence, reachable with a PERSISTED mark. The node rejoins during the (forced) clear's provider read and is marked
+    /// again with a byte-equal mark; the delete's compare-and-set on the value cannot tell the two incarnations apart, only the fence can.
+    @Test
+    void v2125e_aLaterIncarnationsEqualMark_isNotDeletedByAnEarlierClear() {
+        markWhileListingFails(OLD, "X");
+        Promise<InstanceInfo> gate = Promise.promise();
+        statusOverride.set(gate);
+
+        var clear = ctmUnderTest.clearUnconfirmed(OLD, "alice", "i-1", true);
+
+        joins(OLD);
+        within(5, () -> assertThat(persistedMark(OLD).isEmpty()).isTrue());
+        states.remove(OLD);
+        ctmUnderTest.markUnconfirmed(OLD, "X");
+        within(10, () -> assertThat(persistedMark(OLD).isPresent()).isTrue());
+        gate.succeed(instance(OLD, "i-1", InstanceStatus.TERMINATED));
+        var result = clear.await();
+
+        settle();
+        assertThat(result.isFailure()).as("an earlier incarnation's clear is refused").isTrue();
+        assertThat(persistedMark(OLD).isPresent()).as("the later incarnation's equal mark survives").isTrue();
+        assertThat(clearedEvents()).isZero();
+    }
+
+    private void replaceLedger(CapacityLedgerValue expected, CapacityLedgerValue replacement) {
+        var key = AetherKey.CapacityLedgerKey.INSTANCE;
+
+        store.process(store.createBatch(List.of(new KVCommand.LeaderTransaction(key,
+                                                                                java.util.UUID.randomUUID().toString(),
+                                                                                LEADER,
+                                                                                List.of(),
+                                                                                List.of(new KVCommand.Mutation<>(key, Option.some(expected), Option.some(replacement)))))));
+    }
+
+    /// Y6: what an external node's reservation is. The operator started the node, so Aether reserved only a slot for it (a reservation with no provider binding,
+    /// counted in the ledger). A forced clear returns exactly that slot, through the fenced external release, and makes no provider call.
+    @Test
+    void clearUnconfirmed_aForcedClearOfAnExternalNode_returnsTheSlotAetherReservedForIt_andMakesNoProviderCall() {
+        put(new AetherKey.CapacityReservationKey(OLD), new CapacityReservationValue("west", "", "core", CapacityReservationPhase.OBSERVED));
+        put(AetherKey.CapacityLedgerKey.INSTANCE, new CapacityLedgerValue(0, 1, true));
+        ctmUnderTest.deactivate();
+        // A manager whose re-check interval is an hour: otherwise the external node's own re-check confirms the mark the moment the ledger is mended.
+        var slow = newManager(lifecycle, false, 3_600_000L, warnings);
+
+        slow.markUnconfirmed(OLD, "operator's own node");
+        within(10, () -> assertThat(persistedMark(OLD).isPresent()).isTrue());
+        replaceLedger(new CapacityLedgerValue(0, 1, true), new CapacityLedgerValue(2, 2, true));
+        var providerCalls = lists.get() + terminates.get();
+
+        assertThat(slow.clearUnconfirmed(OLD, "alice", "unknown", true).await().isSuccess()).isTrue();
+
+        within(5, () -> assertThat(reservation(OLD).isEmpty()).as("the external reservation is returned").isTrue());
+        assertThat(allocated()).as("with its slot").isEqualTo(1);
+        assertThat(lists.get() + terminates.get()).as("no provider call for an external node").isEqualTo(providerCalls);
+    }
+
+    /// Y7: the leader gate on the capacity return. A manager that is not the leader returns nothing; the leader (the harness manager) returns the slot.
+    @Test
+    void releaseAfterOperatorClear_isLeaderGated() {
+        confirmedReservation();
+        var nonLeader = CapacityControlledLifecycle.capacityControlledLifecycle(delegateLifecycle, CORE, store, this::process, () -> false, () -> 10);
+
+        assertThat(nonLeader.releaseAfterOperatorClear(OLD, WEST).await().isSuccess()).isTrue();
+
+        assertThat(reservation(OLD).isPresent()).as("a non-leader releases nothing").isTrue();
+        assertThat(allocated()).isEqualTo(3);
+        assertThat(lifecycle.releaseAfterOperatorClear(OLD, WEST).await().isSuccess()).isTrue();
+        assertThat(reservation(OLD).isEmpty()).as("the leader returns the slot").isTrue();
+        assertThat(allocated()).isEqualTo(2);
+    }
+
+    /// An instance the provider lists as TERMINATED is gone: the clear goes through unforced, and the event names what the provider showed.
+    @Test
+    void clearUnconfirmed_aTerminatedInstanceDoesNotRefuse() {
+        absentMark();
+        providerStillShowsTheInstance(InstanceStatus.TERMINATED);
+
+        assertThat(ctmUnderTest.clearUnconfirmed(OLD, "alice", "i-1").await().isSuccess()).isTrue();
+
+        within(5, () -> assertThat(clearedWarning("(forced=false; provider state: i-1=TERMINATED; ")).isTrue());
+    }
+
+    /// What the cluster knew of the previous incarnation's instance is not quoted for the next one.
+    @Test
+    void clearUnconfirmed_doesNotQuoteTheInstanceOfAPreviousIncarnation() throws Exception {
+        markAfterSeeingTheInstance("the listing still showed the instance");
+        within(10, () -> assertThat(persistedMark(OLD).isPresent()).isTrue());
+        joins(OLD);
+        within(5, () -> assertThat(persistedMark(OLD).isEmpty()).isTrue());
+        states.remove(OLD);
+        listing.set(EnvironmentError.operationNotSupported("provider API down").promise());
+        ctmUnderTest.markUnconfirmed(OLD, "second incarnation");
+        within(10, () -> assertThat(persistedMark(OLD).isPresent()).isTrue());
+
+        assertThat(ctmUnderTest.clearUnconfirmed(OLD, "carol", "i-9", true).await().isSuccess()).isTrue();
+
+        within(5, () -> assertThat(clearedWarning("carol")).isTrue());
+        assertThat(clearedWarning("the cluster knew instance: never listed")).as("the previous incarnation's i-1 is forgotten").isTrue();
+    }
+
+    /// The warning text names the command, with the node id filled in, in all three forms of the warning (seen, never seen, listed-absent).
+    @Test
+    void theUnconfirmedWarning_namesTheClearCommand_inAllThreeForms() throws Exception {
+        markAfterSeeingTheInstance("the listing still showed the instance");
+        within(5, () -> assertThat(warnings).anyMatch(w -> w.startsWith("instance-termination-unconfirmed:" + OLD.id()) && w.contains("terminate it, then the cluster confirms it by listing") && w.contains(CLEAR_COMMAND)));
+    }
+
+    @Test
+    void theUnconfirmedWarning_namesTheClearCommand_whenNeverSeen() {
+        markWhileListingFails(OLD, "never listed");
+        within(5, () -> assertThat(warnings).anyMatch(w -> w.startsWith("instance-termination-unconfirmed:" + OLD.id()) && w.contains("a failing listing proves nothing") && w.contains(CLEAR_COMMAND)));
+    }
+
+    @Test
+    void theUnconfirmedWarning_namesTheClearCommand_whenListedAbsent() {
+        absentMark();
+        within(5, () -> assertThat(warnings).anyMatch(w -> w.startsWith("instance-termination-unconfirmed:" + OLD.id()) && w.contains("by hand") && w.contains(CLEAR_COMMAND)));
+    }
+
+    /// A clear never touches a mark of a later incarnation: the node rejoins (its mark is dropped) and is retired again (a new mark); a clear after the
+    /// rejoin finds nothing to clear.
+    @Test
+    void clearUnconfirmed_afterARejoin_findsNoMark_andALaterMarkSurvivesAnEarlierClearAttempt() throws Exception {
+        markWhileListingFails(OLD, "first incarnation");
+        joins(OLD);
+        within(5, () -> assertThat(persistedMark(OLD).isEmpty()).isTrue());
+        states.remove(OLD);
+
+        assertThat(refusalOf(ctmUnderTest.clearUnconfirmed(OLD, "alice", "i-1", true))).as("the old incarnation's mark is gone: nothing to clear")
+            .isInstanceOf(ClusterTopologyManager.UnconfirmedClearRefusal.NotMarked.class);
+
+        ctmUnderTest.markUnconfirmed(OLD, "second incarnation");
+        within(10, () -> assertThat(persistedMark(OLD).map(AetherValue.UnconfirmedTerminationValue::cause).or("")).isEqualTo("second incarnation"));
+        settle();
+        assertThat(anyCleared()).as("the failed attempt raised nothing").isFalse();
+    }
+
     private final class CountingProvider implements ComputeProvider {
         @Override
         public Promise<org.pragmatica.aether.environment.InstanceInfo> createFrom(ProvisionRequest request) {
@@ -1909,12 +2765,27 @@ class NodeReplacementRealRegistryReapTest {
         public Promise<List<InstanceInfo>> listInstances() {
             lists.incrementAndGet();
 
-            return listing.get();
+            var held = oneShotListing.getAndSet(null);
+
+            return held != null
+                   ? held
+                   : listing.get();
         }
 
         @Override
         public Promise<InstanceInfo> instanceStatus(InstanceId id) {
-            return EnvironmentError.operationNotSupported("status").promise();
+            var forced = statusOverride.get();
+
+            if (forced != null) {
+                return forced;
+            }
+
+            return listing.get()
+                          .flatMap(all -> all.stream()
+                                             .filter(instance -> instance.id().equals(id))
+                                             .findFirst()
+                                             .<Promise<InstanceInfo>> map(Promise::success)
+                                             .orElseGet(() -> EnvironmentError.instanceNotFound(id).promise()));
         }
     }
 }

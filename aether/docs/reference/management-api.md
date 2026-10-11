@@ -56,6 +56,7 @@ Roles are hierarchical: ADMIN has all OPERATOR permissions, and OPERATOR has all
 | Node drain | OPERATOR | `POST /api/v1/nodes/drain/{id}` |
 | Node replacement | OPERATOR | `POST /api/v1/nodes/replace/{id}`, `POST /api/v1/nodes/replacements/settle/{id}` |
 | Rolling upgrade run (pause/resume/abort) | OPERATOR | `POST /api/v1/upgrade/pause`, `POST /api/v1/upgrade/resume`, `POST /api/v1/upgrade/abort` |
+| Unconfirmed-termination clear | OPERATOR | `POST /api/v1/nodes/unconfirmed/clear/{id}` |
 | Scaling | OPERATOR | `POST /api/v1/scale` |
 | Schema operations | OPERATOR | `POST /api/v1/schema/*` |
 | Deployment strategies | OPERATOR | `POST /api/v1/deploy`, `POST /api/v1/deploy/promote/*`, `POST /api/v1/deploy/rollback/*`, `POST /api/v1/deploy/complete/*`, `POST /api/v1/ab-tests/*` |
@@ -4479,6 +4480,7 @@ separate, still in-flight consolidation effort (spec §3.2–§3.3) owns that su
 | POST | `/api/v1/upgrade/pause` | Node Lifecycle |
 | POST | `/api/v1/upgrade/resume` | Node Lifecycle |
 | POST | `/api/v1/upgrade/abort` | Node Lifecycle |
+| POST | `/api/v1/nodes/unconfirmed/clear/{id}` | Node Lifecycle |
 | GET | `/api/v1/scheduled-tasks` | Scheduled Tasks |
 | GET | `/api/v1/scheduled-tasks/{section}` | Scheduled Tasks |
 | POST | `/api/v1/scheduled-tasks/pause/{section}/{artifact}/{methodName}` | Scheduled Tasks |
@@ -4694,6 +4696,31 @@ pauses the run again, naming it. Authorization OPERATOR, route target `LEADER`. 
 End the run. Like a pause it is a request that waits for the replacement in flight to reach a terminal state, then the run is `ABORTED`;
 nodes already replaced stay replaced, the others stay as they are. Not resumable: a new `POST /api/v1/cluster/upgrade` starts a new run.
 Authorization OPERATOR, route target `LEADER`. `404` there is no run; `409` the run has already ended.
+
+### POST /api/v1/nodes/unconfirmed/clear/{id}
+
+Clears ONE `instance-termination-unconfirmed` mark, by retired node id, after the operator verified at the compute provider and terminated the
+instance by hand. Body `{"instance": "<provider-instance-id>", "force": false}`; `unknown` is accepted for `instance`, an absent or blank `instance` is
+refused, `force` is optional and defaults to false. Route target is `LEADER`, authorization OPERATOR.
+
+Before it clears, the cluster asks the node's source provider twice: for the node's instances by the node's labels (so a wrong or `unknown` id does not hide
+a listed instance) and, when `instance` is an id, for that instance by id (so an instance the provider shows without the node's labels is not missed). Either
+showing an instance that is not terminated refuses the clear (`409`, naming the instance and its state), and so does either read failing (`409`, fail closed;
+a not-found for the id is an answer, not a failure). `force: true` overrides both. An EXTERNAL node has no provider of ours to ask: its clear is refused (`409`,
+"no provider to check this external node; use --force after confirming it is gone") unless `force` is given (an external node's own re-check normally confirms
+its mark once it has left the membership).
+
+The provider checks are reads with no effect on capacity: a refused clear leaves the node's reservation and the ledger as they were, and a clear that commits returns the
+capacity only when every read showed the instance not live. A node that shows life, or rejoins, while the provider is read is refused at the commit.
+
+The clear is audited: the cluster raises `instance-termination-cleared` naming the node, the authenticated operator, the instance the operator
+attests, whether the provider check was forced, the provider state seen, the instance id the cluster itself had listed for the node (or `never listed`)
+and the mark's cause; the event closes the open warning cluster-wide, like a confirmation. `400` for a missing `instance` or an id that does not parse;
+`404` when the node has no mark; `409` when the node shows life in the membership (nothing is cleared, forced or not: a live node's instance must not be
+terminated), the provider still lists the instance or cannot be asked, the mark changed or the clear was not confirmed committed (read the mark again
+before retrying), or the node is not the leader; `401`/`403` when the caller is not authorized.
+CLI: `aether cluster clear-unconfirmed <node> --instance <id|unknown> [--force]`; exit 0 cleared, 3 no such mark, 1 any other refusal or failure,
+64 a missing or blank `--instance`.
 
 ### POST /api/v1/nodes/promote/{id}
 

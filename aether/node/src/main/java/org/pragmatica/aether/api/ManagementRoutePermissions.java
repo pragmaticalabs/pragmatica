@@ -125,7 +125,8 @@ public sealed interface ManagementRoutePermissions {
                        ManagementRoute.NODE_REPLACEMENT_SETTLE,
                        ManagementRoute.UPGRADE_PAUSE,
                        ManagementRoute.UPGRADE_RESUME,
-                       ManagementRoute.UPGRADE_ABORT);
+                       ManagementRoute.UPGRADE_ABORT,
+                       ManagementRoute.NODE_UNCONFIRMED_CLEAR);
     }
 
     private static List<ManagementRoute> adminRoutes() {
