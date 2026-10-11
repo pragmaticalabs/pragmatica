@@ -2779,7 +2779,7 @@ public final class StreamPartitionManager implements AutoCloseable {
     private final ConcurrentHashMap<String, Object> openCuts = new ConcurrentHashMap<>();
 
     @Contract
-    private void beginCut(String streamName, int partition, Object token) {
+    void beginCut(String streamName, int partition, Object token) {
         var key = partitionKeyOf(streamName, partition);
 
         openCuts.put(key, token);
@@ -2792,7 +2792,7 @@ public final class StreamPartitionManager implements AutoCloseable {
     }
 
     @Contract
-    private void endCut(String streamName, int partition, Object token) {
+    void endCut(String streamName, int partition, Object token) {
         var key = partitionKeyOf(streamName, partition);
 
         if (openCuts.remove(key, token)) {

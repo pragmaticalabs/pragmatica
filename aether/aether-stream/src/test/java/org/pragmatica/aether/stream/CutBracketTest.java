@@ -73,4 +73,22 @@ class CutBracketTest {
         assertThat(replica.cutGeneration(STREAM, PARTITION) & 1L).as("even after it").isZero();
         assertThat(replica.cutGeneration(STREAM, PARTITION)).isNotEqualTo(before);
     }
+
+    /// A close that arrives late (the earlier cut's exit runs after the ring's lock was released) must not close a LATER cut's bracket: it finds
+    /// a different token and does nothing.
+    @Test
+    void aLateCloseOfAnEarlierCut_doesNotCloseALaterCutsBracket() {
+        var earlier = new Object();
+        var later = new Object();
+
+        replica.beginCut(STREAM, PARTITION, earlier);
+        replica.beginCut(STREAM, PARTITION, later);
+        replica.endCut(STREAM, PARTITION, earlier);
+
+        assertThat(replica.cutGeneration(STREAM, PARTITION) & 1L).as("the later cut is still running").isEqualTo(1L);
+
+        replica.endCut(STREAM, PARTITION, later);
+
+        assertThat(replica.cutGeneration(STREAM, PARTITION) & 1L).as("its own close ends it").isZero();
+    }
 }
