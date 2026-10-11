@@ -236,7 +236,7 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
         }
 
         if (!initializing.compareAndSet(false, true)) {
-            return Causes.cause("Fleet inventory initialization in progress").promise();
+            return new FleetInventoryInitializing().promise();
         }
 
         return initializeInventory().onResultRun(() -> initializing.set(false));
