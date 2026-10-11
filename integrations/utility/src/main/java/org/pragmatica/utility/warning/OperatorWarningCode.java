@@ -318,7 +318,11 @@ public enum OperatorWarningCode {
     /// buffer until their callers gave up, and were DROPPED at the flush instead of being delivered to the peer once it
     /// reattached (#1996). A point event: the frames are already gone, so there is no recovery. Subject is the peer; the message
     /// carries how many frames and of which message types. The exact total is the `quic_offline_expired_total` metric.
-    OFFLINE_FRAMES_EXPIRED("offline-frames-expired", "cluster-transport", WarningLevel.WARNING);
+    OFFLINE_FRAMES_EXPIRED("offline-frames-expired", "cluster-transport", WarningLevel.WARNING),
+    /// The leader minted a durable-entity keyspace's first ownership records over a hosting set that had not settled
+    /// within the first-mint ceiling (#1734). Owners may be moved once the set settles, which opens a transient not-held
+    /// window per moved arc. Subject is the keyspace.
+    ENTITY_OWNERSHIP_UNSETTLED_MINT("entity-ownership-unsettled-mint", "entity-ownership", WarningLevel.WARNING);
     private final String code;
     private final String subsystem;
     private final WarningLevel level;
