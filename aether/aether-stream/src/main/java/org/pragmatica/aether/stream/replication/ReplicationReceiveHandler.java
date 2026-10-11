@@ -348,6 +348,7 @@ public final class ReplicationReceiveHandler {
     /// `StreamPartitionManager::commitAdvanced`; the default drops it.
     @FunctionalInterface
     public interface CommitSink {
+        @Contract
         void committed(String streamName, int partition, long committedThrough, Epoch ownerEpoch);
     }
 
