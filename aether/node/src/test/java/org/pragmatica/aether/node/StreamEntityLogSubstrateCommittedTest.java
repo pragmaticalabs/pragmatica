@@ -6,6 +6,7 @@ package org.pragmatica.aether.node;
 
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.dht.EntityPartitionArc;
+import org.pragmatica.aether.resource.entity.EntityLogSubstrate;
 import org.pragmatica.aether.slice.ReplicationFactors;
 import org.pragmatica.aether.stream.EvictionListener;
 import org.pragmatica.aether.stream.StreamPartitionManager;
@@ -121,6 +122,38 @@ class StreamEntityLogSubstrateCommittedTest {
             assertThat(StreamEntityLogSubstrate.awaitVisible(ring, () -> true, TimeSpan.timeSpan(300).millis()).await().isSuccess())
                 .as("resolved by the re-check after registration, not by a listener call")
                 .isTrue();
+        } finally {
+            partitionManager.close();
+        }
+    }
+
+    /// A copy that holds the record but keeps no epoch history cannot vouch for its owner epoch: `lineageAt` answers the UNVOUCHED identity
+    /// (present, empty), which is never the same lineage as anything. It is not "none" -- that would read as "the record is unreadable here, so it
+    /// lies below the sealed floor and was never cut" and accept a checkpoint recorded elsewhere. A record this copy does not hold stays none.
+    @Test
+    void lineageAt_onACopyWithNoEpochHistory_isUnvouched_notAbsent() {
+        var arc = EntityPartitionArc.arcName(KEYSPACE);
+        var partitionManager = streamPartitionManager(64L * 1024 * 1024, EvictionListener.NOOP, replicationManager(SELF, replicaRegistry()));
+
+        try {
+            var substrate = streamEntityLogSubstrate(partitionManager,
+                                                     (_, _) -> new StreamPartitionManager.ReplicaCatchupSource.CatchupView(0, false),
+                                                     null,
+                                                     null,
+                                                     EvictionListener.NOOP,
+                                                     null,
+                                                     null,
+                                                     null);
+
+            substrate.ensureLog(KEYSPACE, 1, new ReplicationFactors(1, 1)).unwrap();
+            partitionManager.publishLocal(arc, 0, new byte[] {1}, 1L).onFailure(cause -> fail(cause.message()));
+
+            assertThat(partitionManager.epochAt(arc, 0, 0L).isEmpty()).as("control: no log here, so no epoch history").isTrue();
+            assertThat(substrate.lineageAt(KEYSPACE, 0, 0L).isPresent()).as("the record is held: the answer is not 'unreadable'").isTrue();
+            assertThat(substrate.lineageAt(KEYSPACE, 0, 0L).unwrap()).as("unvouched").isEmpty();
+            assertThat(EntityLogSubstrate.sameLineage(substrate.lineageAt(KEYSPACE, 0, 0L).unwrap(), substrate.lineageAt(KEYSPACE, 0, 0L).unwrap()))
+                .as("never the same lineage as anything, itself included").isFalse();
+            assertThat(substrate.lineageAt(KEYSPACE, 0, 5L).isEmpty()).as("a record this copy does not hold").isTrue();
         } finally {
             partitionManager.close();
         }
