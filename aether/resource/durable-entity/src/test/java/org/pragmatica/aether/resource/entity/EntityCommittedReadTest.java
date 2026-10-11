@@ -179,10 +179,11 @@ class EntityCommittedReadTest {
     void aStaleFold_isNeverCheckpointed_afterACut() {
         append("k", 5);
         append("j", 9);
+        assertThat(fold.checkpointableThrough(0)).as("control: before the cut the fold claims what the log committed").isEqualTo(1L);
 
-        substrate.cutTo(-1L);
+        substrate.cutTo(0L);
 
-        assertThat(fold.checkpointCandidate(0, -1L).isPresent()).as("the contents may hold cut records").isFalse();
+        assertThat(fold.checkpointCandidate(0, -1L).isPresent()).as("the contents hold j, which the cut removed, although offset 0 is still committed").isFalse();
         assertThat(fold.checkpointableThrough(0)).isEqualTo(-1L);
     }
 
