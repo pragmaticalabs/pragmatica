@@ -854,6 +854,9 @@ class AttemptBoundOutcomeTest {
         @Override public <R> Promise<List<R>> apply(List<KVCommand<AetherKey>> batch) {
             if (batch.stream().anyMatch(KVCommand.LeaderTransaction.class::isInstance)) {
                 transactions++;
+                if (transactions > 20) {
+                    throw new AssertionError("unbounded rollback retry: " + transactions + " transactions submitted");
+                }
                 var once = interference;
                 interference = repeating ? once : () -> {};
                 once.run();
