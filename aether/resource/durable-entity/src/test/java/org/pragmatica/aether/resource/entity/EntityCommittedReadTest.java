@@ -337,8 +337,8 @@ class EntityCommittedReadTest {
         assertThat(fold.checkpointCandidate(0, -1L).isPresent()).as("the contents hold j, cut while the lineage was read").isFalse();
     }
 
-    /// A copy that cannot vouch for the owner epoch of the claim record (it holds the record, keeps no epoch history) cannot validate a checkpoint:
-    /// it is discarded, whatever the digest says. The snapshot lacks `j`, so a seeded fold is observably wrong.
+    /// A copy that cannot vouch for the owner epoch of the claim record (it holds the record, keeps no epoch history) cannot validate a checkpoint
+    /// recorded elsewhere: it is discarded, whatever the digest says. The snapshot lacks `j`, so a seeded fold is observably wrong.
     @Test
     void aCheckpointOverARecordWhoseEpochThisCopyCannotVouchFor_isDiscarded() {
         append("k", 1);
@@ -346,8 +346,8 @@ class EntityCommittedReadTest {
 
         append("j", 2);
         substrate.commitThrough(1L);
-        substrate.unvouched = true;
         substrate.saveCheckpoint(KEYSPACE, 0, 1L, withoutJ.snapshot(), substrate.lineageAt(KEYSPACE, 0, 1L)).await();
+        substrate.unvouched = true;
         substrate.cutGeneration += 2;
 
         assertThat(fold.ready(0).await().isSuccess()).isTrue();
