@@ -8,6 +8,7 @@ import java.nio.charset.StandardCharsets;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
+import org.pragmatica.http.HttpError;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.http.HttpRoutePublisher;
 import org.pragmatica.aether.invoke.InvocationMessage.InvokeRequest;
@@ -336,12 +337,13 @@ class InvocationHandlerImpl implements InvocationHandler {
         var durationNs = System.nanoTime() - startTime;
         var errorType = cause.getClass().getSimpleName();
 
-        log.error("[requestId={}] Failed to complete invocation [{}]: {}",
+        log.error("[requestId={}] Failed to complete invocation [{}]: {} (cause chain: {})",
                   request.requestId(),
                   request.correlationId(),
-                  cause.message());
+                  cause.message(),
+                  HttpError.causeChain(cause));
         if (request.expectResponse()) {
-            sendErrorResponse(request, cause.message());
+            sendErrorResponse(request, HttpError.clientMessage(cause));
         }
 
         metricsCollector.onPresent(mc -> recordFailureMetrics(mc, request, durationNs, requestBytes, errorType));
