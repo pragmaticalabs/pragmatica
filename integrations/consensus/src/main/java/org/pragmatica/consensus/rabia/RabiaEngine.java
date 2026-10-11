@@ -1963,7 +1963,44 @@ public class RabiaEngine<C extends Command> {
         slowTaskWatchdog.set(SharedScheduler.scheduleAtFixedRate(this::watchSlowTask, SLOW_TASK_WATCHDOG_PERIOD));
     }
 
+    /// EXPERIMENT (#1117, never merged): once a second, while any batch has been pending for 2 s or more, one line
+    /// naming engine state, phase, pending count, each pending batch's age, how many correlation ids it carries and
+    /// whether the committed ledger already knows it, plus the executor backlog. Discriminates "never proposed /
+    /// proposal lost" from "decided but not answered" from "answered late".
+    private void experimentPendingLine() {
+        var now = System.nanoTime();
+        var aged = pendingBatches.values()
+                                 .stream()
+                                 .filter(batch -> now - batch.timestamp() >= 2_000_000_000L)
+                                 .toList();
+
+        if (aged.isEmpty()) {
+            return;
+        }
+
+        var detail = new StringBuilder();
+
+        for (var batch : aged) {
+            detail.append(" [id=").append(batch.id())
+                  .append(" ageMs=").append((now - batch.timestamp()) / 1_000_000L)
+                  .append(" corr=").append(batch.correlationIds().size())
+                  .append(" ledgerUnseen=").append(committedLedger.unseen(batch).isPresent())
+                  .append(']');
+        }
+
+        log.info("EXPERIMENT-PENDING node={} state={} phase={} pending={} correlations={} queueDepth={} highestObserved={}{}",
+                 self,
+                 engineState.get().getClass().getSimpleName(),
+                 currentPhase.get(),
+                 pendingBatches.size(),
+                 correlationMap.size(),
+                 applyQueueDepth(),
+                 highestObservedClusterPhase.get(),
+                 detail);
+    }
+
     private void watchSlowTask() {
+        experimentPendingLine();
         slowTaskProbe.check(System.nanoTime(), SLOW_TASK_STACK_THRESHOLD_NANOS)
                      .onPresent(stack -> slowTaskSink.accept("queueDepth=" + applyQueueDepth() + " " + stack));
     }
