@@ -2004,7 +2004,9 @@ public final class SwimProtocol implements SwimMessageHandler {
         }
 
         return resident.filter(address -> pinned.equals(address.getAddress()))
-                       .fold(() -> new InetSocketAddress(pinned, gossiped.getPort()), address -> address);
+                       .fold(() -> new InetSocketAddress(pinned,
+                                                         gossiped.getPort()),
+                             address -> address);
     }
 
     private Unit reportAddressConflict(NodeId id, InetAddress pinned, InetAddress attempted, String carrier) {
@@ -2109,7 +2111,9 @@ public final class SwimProtocol implements SwimMessageHandler {
 
         if (pages.isEmpty()) {
             // The ack is also the joiner's stop signal: a view with nothing to tell must still answer.
-            transport.send(sender, Ack.ack(selfId, SYNC_ACK_SEQUENCE, List.of()));
+            transport.send(sender,
+                           Ack.ack(selfId, SYNC_ACK_SEQUENCE, List.of()));
+
             return;
         }
 
@@ -2832,7 +2836,8 @@ public final class SwimProtocol implements SwimMessageHandler {
         var updated = SwimMember.swimMember(update.nodeId(),
                                             update.state(),
                                             update.incarnation(),
-                                            addressUnderPin(update, Option.some(existing.address())),
+                                            addressUnderPin(update,
+                                                            Option.some(existing.address())),
                                             resident.labels());
 
         if (!storeScopedMember(update.nodeId(), updated)) {
