@@ -78,7 +78,10 @@ public interface DockerNetwork {
                      .map(Option::some)
                      .orElse(() -> Promise.success(Option.<String> none()))
                      .flatMap(facts -> facts.fold(() -> Promise.success(Removal.ABSENT),
-                                                  present -> removeWhenOwnedAndEmpty(runner, name, clusterName, present.strip())));
+                                                  present -> removeWhenOwnedAndEmpty(runner,
+                                                                                     name,
+                                                                                     clusterName,
+                                                                                     present.strip())));
     }
 
     private static Promise<Removal> removeWhenOwnedAndEmpty(DockerCommandRunner runner,
