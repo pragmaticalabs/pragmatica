@@ -1776,8 +1776,8 @@ public final class LeaderReconciler {
     /// any other shape is not reaped here: the next activation's orphan replay owns it.
     @Contract
     private void reapFailedProvision(NodeId placeholder, Cause cause) {
-        Option.option(inFlightProvisioning.remove(placeholder))
-              .onPresent(entry -> settleFailedProvision(placeholder, cause));
+        Option.option(inFlightProvisioning.remove(placeholder)).onPresent(entry -> settleFailedProvision(placeholder,
+                                                                                                         cause));
     }
 
     private void settleFailedProvision(NodeId placeholder, Cause cause) {

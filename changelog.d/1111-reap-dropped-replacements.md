@@ -12,7 +12,9 @@
 - **What "confirmed" means here.** An empty listing is gone only for an instance the provider listed before (a PRESENT, CONFIRMED or FAILED report);
   twelve empty listings of an instance never listed do not confirm, because a listing lags creation and omits what it cannot attribute: that drop ends
   in `instance-termination-unconfirmed` with the "never listed" text, asking the operator to verify at the provider. A create that was deferred (circuit open, no
-  healthy peers) made no instance and reaps nothing.
+  healthy peers) made no instance and reaps nothing; neither does a create the provider rejected (quota, capacity, an API error): it is WARNed with
+  its cause, since a reap of a VM that never existed would raise a false unconfirmed event. Only a readiness timeout (the instance was made) is reaped.
+  A replacement alive in SWIM but not yet joined when its ceiling or readiness bound expires is given up on by design and can be terminated.
 - [verified: `ClusterTopologyManagerDroppedReplacementTest` (real lifecycle, fake provider: terminate with the instance id in the WARN, unconfirmed
   event, confirmed-without-event, never-listed, no-source, live node never terminated) and `LeaderReconcilerTest$InFlightInstanceState` (one test per drop
   reason, deferral and joined control, once-only).] [unverified: a real cloud run; the Ember replacement test exercises the path without a billed
