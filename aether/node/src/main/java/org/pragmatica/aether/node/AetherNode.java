@@ -3279,6 +3279,8 @@ public interface AetherNode extends ManageableNode {
         // peers + self) instead of a KV lifecycle atom. Late-bound — the pong fan + self-state holder are
         // constructed further below; this ref mirrors the late-bound supplier pattern.
         var cdmReadyNodesRef = new AtomicReference<Supplier<Set<NodeId>>>(Set::of);
+        // #2098: nodes the leader has OBSERVED reporting a non-READY state (positive evidence; absence of a report is not).
+        var cdmUnreadyObservedRef = new AtomicReference<Supplier<Set<NodeId>>>(Set::of);
         Supplier<Set<NodeId>> stableCdmReadyNodesSupplier = () -> cdmReadyNodesRef.get()
                                                                                   .get();
         // Membership-v2: CDM DRAINING set sourced from the real node-authoritative
@@ -3445,6 +3447,7 @@ public interface AetherNode extends ManageableNode {
                                                                       config.timeouts().cluster().pingInterval()));
         // B4 (membership v2 §7.5): bind the CDM readiness supplier now that the pong fan + self-state
         // holder exist (READY peers from the leader view + self when locally READY).
+        cdmUnreadyObservedRef.set(() -> observedNotReady(pongSignalFan.readinessSnapshot()));
         cdmReadyNodesRef.set(() -> nodesReporting(pongSignalFan,
                                                   nodeReportedStateHolder,
                                                   config.self(),
@@ -3658,8 +3661,11 @@ public interface AetherNode extends ManageableNode {
                                                                                                    .filter(coreAdmission::isAllowed)
                                                                                                    .collect(Collectors.toUnmodifiableSet()),
                                                                           nodeReplacements::voterSwaps,
-                                                                          clusterNode::reconfigure,
-                                                                          System::nanoTime);
+                                                                          () -> failedVoters(cdmUnreadyObservedRef.get().get(),
+                                                                                             Option.option(membershipFsmRef.get())
+                                                                                                   .map(MembershipFsm::memberStates)
+                                                                                                   .or(Map.of())),
+                                                                          clusterNode::reconfigure);
 
         periodicTasks.defer(() -> SharedScheduler.scheduleAtFixedRate(() -> coreVoterReconciler.reconcile()
                                                                                                .flatMap(_ -> retireExcludedCores(clusterNode,
@@ -4832,6 +4838,7 @@ public interface AetherNode extends ManageableNode {
                                                                             .stream()
                                                                             .collect(java.util.stream.Collectors.toUnmodifiableMap(node -> node,
                                                                                                                                    _ -> NodeReportedState.READY)));
+        cdmUnreadyObservedRef.set(() -> observedNotReady(metricsCollector.reportedStates()));
         cdmReadyNodesRef.set(() -> nodesReporting(metricsCollector.reportedStates(),
                                                   nodeReportedStateHolder,
                                                   config.self(),
@@ -7300,6 +7307,27 @@ public interface AetherNode extends ManageableNode {
     /// B4/C-1 (membership v2 §7.5): nodes the leader observes in a given reported state — peers from
     /// the readiness view PLUS self when the local holder reports that state (the leader does not pong
     /// itself, so it is absent from the aggregated pong view; its own state is authoritative locally).
+    /// #2098: the nodes a report was OBSERVED for whose state is not READY.
+    static Set<NodeId> observedNotReady(Map<NodeId, NodeReportedState> states) {
+        return states.entrySet()
+                     .stream()
+                     .filter(entry -> entry.getValue() != NodeReportedState.READY)
+                     .map(Map.Entry::getKey)
+                     .collect(Collectors.toUnmodifiableSet());
+    }
+
+    /// #2098: the voters with positive evidence of failure: observed not READY, or a membership verdict of Dead/Departing. A voter
+    /// absent from both is merely unobserved and is never removable on that account.
+    static Set<NodeId> failedVoters(Set<NodeId> observedNotReady, Map<NodeId, String> memberStates) {
+        var gone = memberStates.entrySet()
+                               .stream()
+                               .filter(entry -> !NodeReplacementWiring.alive(Option.some(entry.getValue())))
+                               .map(Map.Entry::getKey);
+
+        return Stream.concat(observedNotReady.stream(), gone)
+                     .collect(Collectors.toUnmodifiableSet());
+    }
+
     private static Set<NodeId> nodesReporting(ClusterSyncPongSignalFan fan,
                                               NodeReportedStateHolder selfHolder,
                                               NodeId self,

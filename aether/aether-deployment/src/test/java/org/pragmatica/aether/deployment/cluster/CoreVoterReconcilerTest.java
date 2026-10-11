@@ -16,8 +16,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.AtomicLong;
-import java.util.function.LongSupplier;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -29,78 +27,48 @@ class CoreVoterReconcilerTest {
     private static final NodeId E = new NodeId("e");
     private static final VoterConfiguration CURRENT = new VoterConfiguration(0, new ClusterConfig(List.of(A, B, C)));
 
-    /// A clock that has moved a whole observation grace between the leader's first tick and the selection, so the
-    /// selection sees the leader as long-observed (the pre-#2098 behaviour these tests pin).
-    private static LongSupplier pastGraceClock() {
-        var now = new AtomicLong(-CoreVoterReconciler.OBSERVATION_GRACE_NANOS);
-
-        return () -> now.addAndGet(CoreVoterReconciler.OBSERVATION_GRACE_NANOS);
-    }
-
     private static final VoterConfiguration FIVE = new VoterConfiguration(0, new ClusterConfig(List.of(A, B, C, D, E)));
     private static final NodeId F = new NodeId("f");
 
-    private static CoreVoterReconciler freshLeader(Set<NodeId> ready, Map<NodeId, NodeId> swaps, AtomicLong clock, List<List<NodeId>> requested) {
+    private static CoreVoterReconciler fiveVoterLeader(Set<NodeId> ready, Set<NodeId> failed, Map<NodeId, NodeId> swaps, List<List<NodeId>> requested) {
         return CoreVoterReconciler.coreVoterReconciler(A, () -> true, () -> Option.some(FIVE), () -> Option.some(FIVE), () -> 5,
-            () -> ready, () -> swaps, roster -> { requested.add(roster.members()); return Promise.unitPromise(); }, clock::get);
+            () -> ready, () -> swaps, () -> failed, roster -> { requested.add(roster.members()); return Promise.unitPromise(); });
     }
 
     /// #2098: a leader that has just taken over has observed readiness for itself and the new replacement only. An
-    /// unobserved healthy voter must not be dropped for the replacement: unknown is not unhealthy. Red before the grace:
-    /// the unpaired heal drops the unobserved voter E for F, and the swap never gets to choose its leaver.
+    /// unobserved healthy voter must not be dropped for the replacement: unknown is not unhealthy. Red at rc4: the
+    /// unpaired heal drops the unobserved voter E for F, and the swap never gets to choose its leaver.
     @Test
     void freshLeader_unobservedHealthyVoter_isNotDropped_andTheSwapLeaverIsTheOriginal() {
         var requested = new java.util.ArrayList<List<NodeId>>();
-        var clock = new AtomicLong();
-        var reconciler = freshLeader(Set.of(A, B, C, F), Map.of(D, F), clock, requested);
 
-        reconciler.reconcile().await();
+        fiveVoterLeader(Set.of(A, B, C, F), Set.of(), Map.of(D, F), requested).reconcile().await();
 
         assertThat(requested).containsExactly(List.of(A, B, C, F, E));
     }
 
+    /// Time does not turn unobserved into removable: however many ticks pass, a voter with no evidence of failure is kept.
     @Test
-    void freshLeader_unobservedHealthyVoter_noPairing_requestsNothing() {
+    void unobservedVoter_withoutEvidence_survivesEveryTick() {
         var requested = new java.util.ArrayList<List<NodeId>>();
-        var reconciler = freshLeader(Set.of(A, B, C, F), Map.of(), new AtomicLong(), requested);
+        var reconciler = fiveVoterLeader(Set.of(A, B, C, F), Set.of(), Map.of(), requested);
 
-        reconciler.reconcile().await();
+        for (var tick = 0; tick < 50; tick++) {
+            reconciler.reconcile().await();
+        }
 
         assertThat(requested).isEmpty();
     }
 
-    /// Bounded: a voter still unobserved after the grace is a dead voter and is healed as before.
+    /// Positive evidence (observed non-READY or a Dead/Departing verdict) makes the voter healable: D is replaced, E is kept.
     @Test
-    void unobservedVoter_afterTheGrace_isHealed() {
+    void voterWithEvidenceOfFailure_isHealed_whileTheUnobservedOneIsKept() {
         var requested = new java.util.ArrayList<List<NodeId>>();
-        var clock = new AtomicLong();
-        var reconciler = freshLeader(Set.of(A, B, C, F), Map.of(), clock, requested);
 
-        reconciler.reconcile().await();
-        clock.set(CoreVoterReconciler.OBSERVATION_GRACE_NANOS);
-        reconciler.reconcile().await();
+        fiveVoterLeader(Set.of(A, B, C, F), Set.of(D), Map.of(), requested).reconcile().await();
 
         assertThat(requested).hasSize(1);
-        assertThat(requested.getFirst()).containsExactlyInAnyOrder(A, B, C, D, F).hasSize(5).doesNotContain(E);
-    }
-
-    /// Losing leadership restarts the observation: a leader that comes back is fresh again.
-    @Test
-    void regainedLeadership_startsANewGrace() {
-        var requested = new java.util.ArrayList<List<NodeId>>();
-        var leader = new java.util.concurrent.atomic.AtomicBoolean(true);
-        var clock = new AtomicLong();
-        var reconciler = CoreVoterReconciler.coreVoterReconciler(A, leader::get, () -> Option.some(FIVE), () -> Option.some(FIVE), () -> 5,
-            () -> Set.of(A, B, C, F), Map::of, roster -> { requested.add(roster.members()); return Promise.unitPromise(); }, clock::get);
-
-        reconciler.reconcile().await();
-        leader.set(false);
-        reconciler.reconcile().await();
-        clock.set(CoreVoterReconciler.OBSERVATION_GRACE_NANOS * 10);
-        leader.set(true);
-        reconciler.reconcile().await();
-
-        assertThat(requested).as("the first tick after regaining leadership is inside a new grace").isEmpty();
+        assertThat(requested.getFirst()).containsExactlyInAnyOrder(A, B, C, E, F);
     }
 
     @Test
@@ -117,8 +85,8 @@ class CoreVoterReconcilerTest {
         var calls = new AtomicInteger();
         var pending = Promise.<Unit>promise();
         var reconciler = CoreVoterReconciler.coreVoterReconciler(A, () -> true,
-            () -> Option.some(CURRENT), () -> Option.some(CURRENT), () -> 3, () -> Set.of(A, B, D), Map::of,
-            roster -> { calls.incrementAndGet(); return pending; }, pastGraceClock());
+            () -> Option.some(CURRENT), () -> Option.some(CURRENT), () -> 3, () -> Set.of(A, B, D), Map::of, () -> Set.of(C),
+            roster -> { calls.incrementAndGet(); return pending; });
         reconciler.reconcile();
         reconciler.reconcile();
         assertThat(calls.get()).isEqualTo(1);
@@ -129,8 +97,8 @@ class CoreVoterReconcilerTest {
     void unsettledRosterWaitsInsteadOfRequestingAnotherChange() {
         var calls = new AtomicInteger();
         var reconciler = CoreVoterReconciler.coreVoterReconciler(A, () -> true,
-            () -> Option.some(CURRENT), Option::none, () -> 3, () -> Set.of(A, B, D), Map::of,
-            roster -> { calls.incrementAndGet(); return Promise.unitPromise(); }, pastGraceClock());
+            () -> Option.some(CURRENT), Option::none, () -> 3, () -> Set.of(A, B, D), Map::of, Set::of,
+            roster -> { calls.incrementAndGet(); return Promise.unitPromise(); });
         reconciler.reconcile().await();
         assertThat(calls.get()).as("a pending change or an uncaught-up added member blocks the next one").isZero();
     }
@@ -139,8 +107,8 @@ class CoreVoterReconcilerTest {
     void unchangedRosterRequestsNothing() {
         var calls = new AtomicInteger();
         var reconciler = CoreVoterReconciler.coreVoterReconciler(A, () -> true,
-            () -> Option.some(CURRENT), () -> Option.some(CURRENT), () -> 3, () -> Set.of(A, B, C), Map::of,
-            roster -> { calls.incrementAndGet(); return Promise.unitPromise(); }, pastGraceClock());
+            () -> Option.some(CURRENT), () -> Option.some(CURRENT), () -> 3, () -> Set.of(A, B, C), Map::of, Set::of,
+            roster -> { calls.incrementAndGet(); return Promise.unitPromise(); });
         reconciler.reconcile().await();
         assertThat(calls.get()).isZero();
     }
@@ -158,8 +126,8 @@ class CoreVoterReconcilerTest {
     void reconcile_pairedReadyReplacement_requestsTheSwapAsOneReconfiguration() {
         var requested = new java.util.ArrayList<List<NodeId>>();
         var reconciler = CoreVoterReconciler.coreVoterReconciler(A, () -> true,
-            () -> Option.some(CURRENT), () -> Option.some(CURRENT), () -> 3, () -> Set.of(A, B, C, D), () -> Map.of(C, D),
-            roster -> { requested.add(roster.members()); return Promise.unitPromise(); }, pastGraceClock());
+            () -> Option.some(CURRENT), () -> Option.some(CURRENT), () -> 3, () -> Set.of(A, B, C, D), () -> Map.of(C, D), Set::of,
+            roster -> { requested.add(roster.members()); return Promise.unitPromise(); });
 
         reconciler.reconcile().await();
 

@@ -9,11 +9,9 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.BooleanSupplier;
 import java.util.function.Function;
 import java.util.function.IntSupplier;
-import java.util.function.LongSupplier;
 import java.util.function.Supplier;
 import java.util.stream.Stream;
 
@@ -37,14 +35,12 @@ import org.pragmatica.lang.io.TimeSpan;
 /// replacement displace its original — one member out, one in, the voter count unchanged — once the roster is
 /// otherwise healthy. Without a pairing the selection is exactly the unpaired one.
 ///
-/// #2098: a leader that has just taken over has not yet observed readiness for the whole roster, and an unobserved voter
-/// ranks as unready. Unknown is not unhealthy: for `OBSERVATION_GRACE_NANOS` after taking leadership every current voter is
-/// treated as healthy, so no voter is dropped on missing observations and a paired swap's leaver stays the original. A
-/// voter still unready after the grace is healed as before.
+/// #2098: unknown is not unhealthy. A leader that has just taken over has observed readiness for few voters, and a voter it has
+/// not observed ranks as unready. A current voter is therefore removable only on positive evidence of failure (`failed`: a
+/// reported non-READY state, or a membership verdict of Dead/Departing), never because no readiness was seen, however long
+/// ago the leader took over; a voter without such evidence is treated as healthy, so a heal drops no healthy voter and a
+/// paired swap's leaver stays the original.
 public interface CoreVoterReconciler {
-    long NOT_LEADER = Long.MIN_VALUE;
-    long OBSERVATION_GRACE_NANOS = TimeSpan.timeSpan(15).seconds().nanos();
-
     Promise<Unit> reconcile();
 
     static CoreVoterReconciler coreVoterReconciler(NodeId self,
@@ -54,8 +50,8 @@ public interface CoreVoterReconciler {
                                                    IntSupplier desired,
                                                    Supplier<Set<NodeId>> readyCoreCandidates,
                                                    Supplier<Map<NodeId, NodeId>> voterSwaps,
-                                                   Function<ClusterConfig, Promise<Unit>> reconfigure,
-                                                   LongSupplier nanoClock) {
+                                                   Supplier<Set<NodeId>> failed,
+                                                   Function<ClusterConfig, Promise<Unit>> reconfigure) {
         record reconciler(NodeId self,
                           BooleanSupplier leader,
                           Supplier<Option<VoterConfiguration>> installed,
@@ -63,20 +59,12 @@ public interface CoreVoterReconciler {
                           IntSupplier desired,
                           Supplier<Set<NodeId>> readyCoreCandidates,
                           Supplier<Map<NodeId, NodeId>> voterSwaps,
+                          Supplier<Set<NodeId>> failed,
                           Function<ClusterConfig, Promise<Unit>> reconfigure,
-                          LongSupplier nanoClock,
-                          AtomicLong leaderSince,
                           AtomicBoolean running) implements CoreVoterReconciler {
             @Override
             public Promise<Unit> reconcile() {
-                if (!leader.getAsBoolean()) {
-                    leaderSince.set(NOT_LEADER);
-                    return Promise.unitPromise();
-                }
-
-                leaderSince.compareAndSet(NOT_LEADER, nanoClock.getAsLong());
-
-                if (!running.compareAndSet(false, true)) {
+                if (!leader.getAsBoolean() || !running.compareAndSet(false, true)) {
                     return Promise.unitPromise();
                 }
 
@@ -101,14 +89,10 @@ public interface CoreVoterReconciler {
             }
 
             private Set<NodeId> observedHealthy(VoterConfiguration current) {
-                var ready = readyCoreCandidates.get();
+                var down = failed.get();
 
-                if (nanoClock.getAsLong() - leaderSince.get() >= OBSERVATION_GRACE_NANOS) {
-                    return ready;
-                }
-
-                return Stream.concat(ready.stream(),
-                                     current.members().stream())
+                return Stream.concat(readyCoreCandidates.get().stream(),
+                                     current.members().stream().filter(node -> !down.contains(node)))
                              .collect(java.util.stream.Collectors.toUnmodifiableSet());
             }
         }
@@ -120,9 +104,8 @@ public interface CoreVoterReconciler {
                               desired,
                               readyCoreCandidates,
                               voterSwaps,
+                              failed,
                               reconfigure,
-                              nanoClock,
-                              new AtomicLong(NOT_LEADER),
                               new AtomicBoolean());
     }
 
