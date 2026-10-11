@@ -113,6 +113,23 @@ class EntityCommittedReadTest {
     }
 
     @Test
+    void theOwnersOwnWrite_afterTheFoldIsBuilt_isHeldBackFromReadsUntilItCommits() {
+        substrate.commitThrough(-1L);
+        entity.get("warm").await();
+
+        assertThat(entity.create("mine", 3).await().isSuccess()).as("the writer's own create completes (its barrier is met in this fixture)").isTrue();
+
+        var refused = entity.get("mine").await();
+
+        assertThat(refused.isFailure()).as("applied on the append path, not committed by the log").isTrue();
+        refused.onFailure(cause -> assertThat(cause).isInstanceOf(EntityLogError.NotYetCommitted.class));
+
+        substrate.commitThrough(0L);
+
+        assertThat(entity.get("mine").await().unwrap()).isEqualTo(Option.some(3));
+    }
+
+    @Test
     void aRecordLandingBehindTheFoldsBack_isHeldBackUntilItCommits() {
         substrate.commitThrough(-1L);
         entity.get("warm").await();
