@@ -1513,6 +1513,7 @@ class BootstrapPhaseDeployCloudSshRestartTest {
         final List<String> scpRemotePaths = new ArrayList<>();
         final List<String> scpContents = new ArrayList<>();
         final List<String> scpModes = new ArrayList<>();
+        final List<Path> scpLocalPaths = new ArrayList<>();
 
         Fn3<Result<String>, String, String, SshConfig> ssh() {
             return (host, command, config) -> {
@@ -1531,6 +1532,7 @@ class BootstrapPhaseDeployCloudSshRestartTest {
                     throw new AssertionError(e);
                 }
                 scpRemotePaths.add(remote);
+                scpLocalPaths.add(Path.of(local));
                 events.add("scp");
                 return Result.unitResult();
             };
@@ -1591,6 +1593,35 @@ class BootstrapPhaseDeployCloudSshRestartTest {
         wire.sshCommands.forEach(c -> assertFalse(c.contains("key-one"), () -> "#828: API key on argv: " + c));
         assertEquals("AETHER_CLUSTER_SECRET=" + CLUSTER_SECRET + "\nAETHER_API_KEYS=key-one,key-two\n",
                      wire.scpContents.get(0));
+    }
+
+    @Test
+    void deployCloudSource_leavesNoSecretTempCopyOnTheCliHost() {
+        var ctx = contextWithThreeCloudNodes(cloudSource());
+        var wire = new WireLog();
+
+        var result = BootstrapPhaseDeploy.deployCloudSource(ctx,
+                                                            ctx.config().sources().get("eu-1"),
+                                                            sourceNameOrDefault("eu-1"),
+                                                            alwaysHealthy(),
+                                                            wire.ssh(),
+                                                            wire.scp(),
+                                                            envWithKey("/home/op/.ssh/aether_id_ed25519"),
+                                                            1_000,
+                                                            10);
+
+        assertTrue(result.isSuccess(), () -> String.valueOf(result));
+        assertEquals(3, wire.scpLocalPaths.size(), "control: one secret temp copy was pushed per node");
+        wire.scpLocalPaths.forEach(path -> assertFalse(Files.exists(path), () -> "#828: secret temp copy left on the CLI host: " + path));
+    }
+
+    @Test
+    void buildJvmStartCommand_keepsCredentialClassVarsOffTheCommandLine() {
+        var cmd = BootstrapPhaseDeploy.buildJvmStartCommand("eu-1-core-0", NodeRole.CORE, SourceName.DEFAULT, Option.none(), 8090, 8091, "p",
+                                                            CLUSTER_NAME, envOf(Map.of("AETHER_API_KEY", "ak-123", "AETHER_API_KEYS", "k1,k2", "AETHER_PROVISIONED_BY", "ops")));
+
+        assertTrue(cmd.contains("'AETHER_PROVISIONED_BY=ops'"), () -> "control: a non-credential identity var is still written: " + cmd);
+        assertFalse(cmd.contains("ak-123") || cmd.contains("k1,k2"), () -> "#828: credential on the JVM launch line: " + cmd);
     }
 
     @Test

@@ -965,6 +965,30 @@ class BootstrapLaunchOnceTest {
             .containsExactlyInAnyOrderElementsOf(concat(DC, EU));
     }
 
+    /// #828 — through the production entry point: the real DEPLOY phase must hand its scp to the CLOUD path too, or the
+    /// cloud launch reads a secret file that was never pushed. Every started host (cloud and SSH source) gets one.
+    @Test
+    void deployPhase_pushesTheSecretFileToEveryStartedHost_cloudAndSsh() {
+        var ctx = multiSourceContext(RuntimeType.CONTAINER);
+
+        assertThat(BootstrapStatePersistence.save(ctx.state()).isSuccess()).isTrue();
+        var pushed = new ConcurrentLinkedQueue<String>();
+        Fn3<Result<String>, String, String, SshConfig> ssh = (host, command, cfg) -> Result.success("");
+        Fn4<Result<Unit>, String, String, String, SshConfig> scp = (local, host, remote, cfg) -> {
+            if (remote.equals(BootstrapPhaseDeploy.CONTAINER_SECRET_ENV_FILE)) {
+                pushed.add(host);
+            }
+
+            return Result.unitResult();
+        };
+
+        var result = BootstrapPhaseDeploy.execute(ctx, url -> Result.success("OK"), ssh, scp, envWithKey());
+
+        assertThat(result.isSuccess()).as(() -> "deploy: " + result).isTrue();
+        assertThat(List.copyOf(pushed)).as("one secret push per started host").containsExactlyInAnyOrderElementsOf(
+            concat(DC, EU).stream().map(id -> ctx.nodes().stream().filter(n -> n.nodeId().equals(id)).findFirst().orElseThrow().publicIp()).toList());
+    }
+
     /// R1: through `resumeFromState` itself — the resumed context handed to the phase chain must carry the
     /// rebuilt nodes, and the real DEPLOY phase run on it must start exactly the not-yet-started ones. A test
     /// of `resumeContext` alone cannot see a `resumeFromState` that stops calling it.
