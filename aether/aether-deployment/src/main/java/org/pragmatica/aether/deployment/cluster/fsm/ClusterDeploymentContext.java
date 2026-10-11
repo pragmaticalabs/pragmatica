@@ -224,6 +224,51 @@ public final class ClusterDeploymentContext {
         this.stopped = new ClusterDeploymentState.Stopped(this);
     }
 
+    /// #1109: where operator-attention conditions raised by the leader are reported. Log-only until the node binds its own sink (never a
+    /// process-wide one: Ember runs several nodes in one JVM).
+    private final java.util.concurrent.atomic.AtomicReference<org.pragmatica.utility.warning.OperatorWarningSink> operatorWarnings = new java.util.concurrent.atomic.AtomicReference<>(org.pragmatica.utility.warning.OperatorWarningSink.logOnly());
+
+    /// #1109: slices the leader's gate has refused LOAD for, until their target commits. Kept here, not in `Active`, so the bound runs across leader
+    /// FSM rebuilds on this node.
+    private final java.util.concurrent.ConcurrentMap<org.pragmatica.aether.artifact.Artifact, AwaitedTarget> awaitedTargets = new java.util.concurrent.ConcurrentHashMap<>();
+
+    /// #1109: the `SliceTargetValue` this leader last submitted per base and has not seen commit; what a re-submission puts again.
+    private final java.util.concurrent.ConcurrentMap<org.pragmatica.aether.artifact.ArtifactBase, org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue> pendingTargetPuts = new java.util.concurrent.ConcurrentHashMap<>();
+
+    private final java.util.concurrent.atomic.AtomicReference<TimeSpan> awaitedTargetBound = new java.util.concurrent.atomic.AtomicReference<>(org.pragmatica.aether.slice.SliceState.LOADING.timeout()
+                                                                                                                                                                                             .or(TimeSpan.timeSpan(2).minutes()));
+
+    /// A slice whose LOAD the gate refused since `since`; `warned` once the warning was raised, `lastResubmitMs` when its target put was last re-submitted.
+    public record AwaitedTarget(long since, boolean warned, long lastResubmitMs) {}
+
+    public org.pragmatica.utility.warning.OperatorWarningSink operatorWarnings() {
+        return operatorWarnings.get();
+    }
+
+    @Contract
+    public void setOperatorWarningSink(org.pragmatica.utility.warning.OperatorWarningSink sink) {
+        operatorWarnings.set(sink);
+    }
+
+    public java.util.concurrent.ConcurrentMap<org.pragmatica.aether.artifact.Artifact, AwaitedTarget> awaitedTargets() {
+        return awaitedTargets;
+    }
+
+    public java.util.concurrent.ConcurrentMap<org.pragmatica.aether.artifact.ArtifactBase, org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue> pendingTargetPuts() {
+        return pendingTargetPuts;
+    }
+
+    /// How long the gate may refuse LOAD for a desired slice before the operator is told and the target put is re-submitted; the same default as
+    /// the node-side parked-start bound (LOADING's 2 minutes).
+    public TimeSpan awaitedTargetBound() {
+        return awaitedTargetBound.get();
+    }
+
+    @Contract
+    public void setAwaitedTargetBound(TimeSpan bound) {
+        awaitedTargetBound.set(bound);
+    }
+
     public long nowMs() {
         return clock.getAsLong();
     }

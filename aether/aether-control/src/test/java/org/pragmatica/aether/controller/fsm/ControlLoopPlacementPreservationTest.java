@@ -190,6 +190,9 @@ class ControlLoopPlacementPreservationTest {
         }
 
         private void deliver(SliceTargetValue value) {
+            // #1109: a notification follows a commit, and the leader allocates only for a COMMITTED target.
+            ((InMemoryKvStore) active.ctx().kvStore()).process(((InMemoryKvStore) active.ctx().kvStore())
+                .createBatch(List.of(new KVCommand.Put<AetherKey, AetherValue>(SliceTargetKey.sliceTargetKey(SLICE.base()), value))));
             harness.dispatch(new SliceTargetPutReceived(valuePut(value)));
         }
     }
