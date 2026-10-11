@@ -236,7 +236,7 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
         }
 
         if (!initializing.compareAndSet(false, true)) {
-            return Causes.cause("Fleet inventory initialization in progress").promise();
+            return new FleetInventoryInitializing().promise();
         }
 
         return initializeInventory().onResultRun(() -> initializing.set(false));
@@ -490,6 +490,33 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
                                                                           ? releaseConfirmed(node, source, binding).map(_ -> instances)
                                                                           : observeBound(instances, source, binding).map(_ -> instances);
                                                                }));
+    }
+
+    @Override
+    public Promise<List<InstanceInfo>> readInstancesForNode(NodeId node, SourceName source) {
+        return reservationBinding(node, source).async()
+                                 .flatMap(binding -> delegate.instancesForNode(node, source, binding));
+    }
+
+    @Override
+    public Promise<Unit> releaseAfterOperatorClear(NodeId node, SourceName source) {
+        return leader().isEmpty()
+               ? Promise.unitPromise()
+               : reservationBinding(node, source).async()
+                                   .flatMap(binding -> releaseConfirmed(node, source, binding));
+    }
+
+    private org.pragmatica.lang.Result<String> reservationBinding(NodeId node, SourceName source) {
+        return store.getTyped(new AetherKey.CapacityReservationKey(node),
+                              CapacityReservationValue.class)
+                    .fold(() -> delegate.sourceBinding(source),
+                          value -> org.pragmatica.lang.Result.success(value.sourceBinding()));
+    }
+
+    @Override
+    public Promise<org.pragmatica.aether.environment.InstanceInfo> instanceStatus(org.pragmatica.aether.environment.InstanceId instanceId,
+                                                                                  SourceName source) {
+        return delegate.instanceStatus(instanceId, source);
     }
 
     @Override

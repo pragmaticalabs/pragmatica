@@ -626,6 +626,23 @@ class ClusterTopologyManagerActuatorTest {
                 .isEqualTo(failuresAfterTrip);
     }
 
+    /// #2098: a provision refused only because the fleet inventory is being initialized is a wait, not a provider failure, so however many
+    /// ticks hit it, it never counts toward the breaker; control: an ordinary failure does (see the test above).
+    @Test
+    void provisionReplacement_inventoryInitializing_neverTripsTheCircuit() {
+        ctm.activate();
+        lifecycleManager.failProvisionsWith(new FleetInventoryInitializing());
+        var members = Set.of(SELF, PEER_A, PEER_B);
+
+        for (var i = 0; i < 5; i++) {
+            ctm.provisionReplacement(NodeId.randomNodeId(), Option.none(), members, NodeRole.CORE).await();
+        }
+
+        assertThat(ctm.circuitBreakerState().tripped()).isFalse();
+        assertThat(ctm.circuitBreakerState().consecutiveFailures()).isZero();
+        assertThat(lifecycleManager.provisionCount.get()).as("every tick really reached the provider seam").isEqualTo(5);
+    }
+
     /// Auto-heal-wedge fix — a real boot resolves to a success-valued `Dispatched` disposition (a VM is
     /// coming), which is what the `LeaderReconciler` keys on to KEEP its in-flight placeholder.
     @Test
@@ -2424,6 +2441,13 @@ class ClusterTopologyManagerActuatorTest {
             failProvision.set(true);
         }
 
+        private volatile org.pragmatica.lang.Cause provisionFailure = org.pragmatica.lang.utils.Causes.cause("stub provision failure");
+
+        void failProvisionsWith(org.pragmatica.lang.Cause cause) {
+            provisionFailure = cause;
+            failProvision.set(true);
+        }
+
         private final java.util.concurrent.atomic.AtomicBoolean failTerminates = new java.util.concurrent.atomic.AtomicBoolean(false);
 
         void failTerminates() {
@@ -2445,7 +2469,7 @@ class ClusterTopologyManagerActuatorTest {
             var count = provisionCount.incrementAndGet();
             lastSpec.set(spec);
             if (failProvision.get()) {
-                return org.pragmatica.lang.utils.Causes.cause("stub provision failure").promise();
+                return provisionFailure.promise();
             }
             return Promise.success(InstanceInfo.instanceInfo(InstanceId.instanceId("stub-" + count).unwrap(),
                                                              InstanceStatus.RUNNING,

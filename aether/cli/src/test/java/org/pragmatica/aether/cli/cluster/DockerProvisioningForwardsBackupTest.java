@@ -37,6 +37,9 @@ class DockerProvisioningForwardsBackupTest {
             [source.local]
             type = "docker"
 
+            [source.local.core]
+            count = 1
+
             [source.local.node_config.backup]
             enabled = true
             path = "/data/backups"

@@ -66,7 +66,7 @@ done | grep OK | wc -l
 **Resolution:**
 1. Identify unreachable nodes
 2. Check network connectivity between nodes
-3. Restart unresponsive nodes
+3. Replace unresponsive nodes (`POST /api/v1/nodes/replace/<node-id>`, or CTM auto-heal); a restart under the same id is refused
 4. Verify cluster port (default: 8090) is accessible
 
 ### Node Unresponsive
@@ -89,9 +89,9 @@ ssh node1 "free -m"
 ```
 
 **Resolution:**
-1. If process is running but unresponsive, collect thread dump then restart
-2. If process crashed, check logs and restart
-3. If resource exhaustion, free resources then restart
+1. If process is running but unresponsive, collect thread dump then replace the node (`POST /api/v1/nodes/replace/<node-id>`)
+2. If process crashed, check logs; the node is replaced under a fresh id by CTM auto-heal (a crashed node id never returns)
+3. If resource exhaustion, free resources, then replace the node
 
 ### Slice Deployment Stuck
 
@@ -124,7 +124,7 @@ grep -i "slice\|artifact" /var/log/aether/aether.log | tail -100
 **Actions:**
 
 1. Read the event's `details`: `isr` lists the nodes that hold every acknowledged record; `live` lists who was alive at refusal.
-2. Restart or reconnect any node in `isr`. The leader elects it (or the old owner resumes) and a `STREAM_FAILOVER_RESOLVED` event follows.
+2. Reconnect any live node in `isr` (heal the network fault; a node that was terminally removed does not return). The leader elects it (or the old owner resumes) and a `STREAM_FAILOVER_RESOLVED` event follows.
 3. If every node in `isr` is permanently gone, the partition's acknowledged data is gone with them. There is no override to promote another replica yet (#1569). Destroy and recreate the stream.
 
 ### Stream Publishes Refused With `NOT_ENOUGH_REPLICAS` (`STREAM_ISR_BELOW_MINIMUM`)
@@ -154,7 +154,7 @@ curl http://node1:8080/metrics | jq 'to_entries | .[] | select(.key | contains("
 
 **Resolution:**
 1. If CPU high: scale out (add nodes) or reduce load
-2. If heap high: increase heap or restart nodes
+2. If heap high: increase heap, then replace the affected nodes one at a time (`POST /api/v1/nodes/replace/<node-id>`); a restart under the same id is refused
 3. If specific method slow: investigate slice implementation
 
 ## Escalation

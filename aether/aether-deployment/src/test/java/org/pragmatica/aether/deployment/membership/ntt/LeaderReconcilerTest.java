@@ -4264,6 +4264,9 @@ class LeaderReconcilerTest {
     private record DroppedReap(NodeId node, String reason, ClusterTopologyManager.DroppedInstance knowledge) {}
 
     private static final class RecordingCtm implements ClusterTopologyManager {
+        @Override public org.pragmatica.lang.Result<SourceName> sourceOfSourcelessNode(NodeRole intendedRole) {
+            return org.pragmatica.lang.Result.success(SourceName.DEFAULT);
+        }
         @Override public boolean usesExplicitCommunities() { return false; }
         @Override public void installCommunityPlacement(org.pragmatica.aether.deployment.cluster.CommunityPlacementReconciler reconciler) {}
         @Override public org.pragmatica.lang.Promise<org.pragmatica.lang.Unit> provisionPlacementNode(org.pragmatica.aether.slice.kvstore.AetherValue.CommunityPlacementOperationValue operation) {
