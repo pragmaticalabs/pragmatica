@@ -17,6 +17,7 @@ import org.pragmatica.aether.stream.CommittedStreamOwnerSource;
 import org.pragmatica.aether.stream.OffHeapRingBuffer;
 import org.pragmatica.aether.stream.OwnerActivation;
 import org.pragmatica.aether.stream.OwnerPeerReads;
+import org.pragmatica.aether.stream.StreamError;
 import org.pragmatica.aether.stream.StreamPartitionManager;
 import org.pragmatica.aether.stream.forward.StreamForwardMessage.ReadForward;
 import org.pragmatica.aether.stream.forward.StreamForwardMessage.ReadForwardResponse;
@@ -26,6 +27,7 @@ import org.pragmatica.aether.stream.replication.ReplicaRegistry;
 import org.pragmatica.aether.stream.replication.ReplicationManager;
 import org.pragmatica.aether.stream.replication.ReplicationMessage;
 import org.pragmatica.aether.stream.segment.SealedSegment;
+import org.pragmatica.aether.stream.segment.SegmentError;
 import org.pragmatica.aether.stream.segment.SegmentIndex;
 import org.pragmatica.aether.stream.segment.SegmentSink;
 import org.pragmatica.consensus.NodeId;
@@ -219,6 +221,7 @@ class ReplicaCatchupTierFallbackTest {
         var refused = client.readRemoteCatchup(OWNER, STREAM, PARTITION, 0, 10).await();
 
         assertThat(failureMessage(refused)).contains("Offset 0 of orders/0 is being sealed to storage; retry the read");
+        assertThat(failureCause(refused)).as("the typed refusal crosses the wire (#1967)").isEqualTo(new SegmentError.SealInFlight(STREAM, PARTITION, 0L));
 
         sink.release();
         awaitSealedThrough(0);
@@ -242,6 +245,7 @@ class ReplicaCatchupTierFallbackTest {
         var refused = client.readRemoteCatchup(OWNER, STREAM, PARTITION, 0, 10).await();
 
         assertThat(failureMessage(refused)).contains("Offset 1 of orders/0 is being sealed to storage; retry the read");
+        assertThat(failureCause(refused)).as("the typed refusal crosses the wire (#1967)").isEqualTo(new SegmentError.SealInFlight(STREAM, PARTITION, 1L));
 
         sink.release();
         awaitSealedThrough(1);
@@ -267,6 +271,7 @@ class ReplicaCatchupTierFallbackTest {
         var refused = backfill.backfill(STREAM, PARTITION).await();
 
         assertThat(failureMessage(refused)).contains("Offset 1 of orders/0 is being sealed to storage; retry the read");
+        assertThat(failureCause(refused)).as("the typed refusal crosses the wire (#1967)").isEqualTo(new SegmentError.SealInFlight(STREAM, PARTITION, 1L));
         assertThat(row(NEW_PEER).state()).as("no false-ready CAUGHT_UP below the head").isEqualTo(SYNCING);
         assertThat(row(NEW_PEER).confirmedOffset()).isEqualTo(-1L);
         assertThat(acksToOwner).isEmpty();
@@ -307,6 +312,7 @@ class ReplicaCatchupTierFallbackTest {
         var refused = client.readRemoteCatchup(OWNER, STREAM, PARTITION, 0, 10).await();
 
         assertThat(failureMessage(refused)).contains("Cursor at offset 0 has expired, oldest available is 1");
+        assertThat(failureCause(refused)).as("the typed refusal crosses the wire (#1967)").isEqualTo(new StreamError.CursorExpired(0L, 1L));
     }
 
     /// #1555 (v1555 R3): the owner promotion gate reads the CANDIDATE'S own window exactly as a peer's catch-up
@@ -442,6 +448,7 @@ class ReplicaCatchupTierFallbackTest {
         var refused = client.readRemoteCatchup(OWNER, STREAM, PARTITION, 0, 10).await();
 
         assertThat(failureMessage(refused)).contains("Cursor at offset 0 has expired, oldest available is 1");
+        assertThat(failureCause(refused)).as("the typed refusal crosses the wire (#1967)").isEqualTo(new StreamError.CursorExpired(0L, 1L));
     }
 
     /// Production shape (`AetherNode.assembleNode`): the HRW owner is known (members = `[OWNER]`), the probe answers
@@ -491,6 +498,10 @@ class ReplicaCatchupTierFallbackTest {
                      .onFailure(cause -> fail("catch-up read from " + fromOffset + " failed: " + cause.message()))
                      .map(result -> result.events().stream().map(RawEventDto::offset).toList())
                      .or(List.of());
+    }
+
+    private static Cause failureCause(Result<?> result) {
+        return result.fold(cause -> cause, value -> Causes.cause("succeeded with " + value));
     }
 
     private static String failureMessage(Result<?> result) {
