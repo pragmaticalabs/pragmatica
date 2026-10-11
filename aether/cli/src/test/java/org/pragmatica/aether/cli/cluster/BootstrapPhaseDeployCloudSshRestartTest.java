@@ -1633,6 +1633,12 @@ class BootstrapPhaseDeployCloudSshRestartTest {
 
         assertTrue(cmd.contains("'AETHER_PROVISIONED_BY=ops'"), () -> "control: a non-credential identity var is still written: " + cmd);
         assertFalse(cmd.contains("ak-123") || cmd.contains("k1,k2"), () -> "#828: credential on the JVM launch line: " + cmd);
+        assertTrue(cmd.contains("cat " + BootstrapPhaseDeploy.JVM_CREDENTIALS_ENV_FILE), () -> "the pushed credentials reach the unit's env file: " + cmd);
+
+        var without = BootstrapPhaseDeploy.buildJvmStartCommand("eu-1-core-0", NodeRole.CORE, SourceName.DEFAULT, Option.none(), 8090, 8091, "p",
+                                                                CLUSTER_NAME, emptyEnv());
+
+        assertFalse(without.contains("cat " + BootstrapPhaseDeploy.JVM_CREDENTIALS_ENV_FILE), () -> "control: no credentials, no cat of a file that was never pushed: " + without);
     }
 
     @Test

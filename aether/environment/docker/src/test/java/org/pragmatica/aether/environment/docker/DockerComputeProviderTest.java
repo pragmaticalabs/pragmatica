@@ -657,6 +657,20 @@ class DockerComputeProviderTest {
             return DockerComputeProvider.dockerComputeProvider(testRunner, CONFIG, env::get).unwrap();
         }
 
+        private String tarListing(byte[] archive) {
+            try {
+                var listing = new ProcessBuilder("tar", "-tvf", "-").redirectErrorStream(true).start();
+
+                try (var in = listing.getOutputStream()) {
+                    in.write(archive);
+                }
+
+                return new String(listing.getInputStream().readAllBytes());
+            } catch (java.io.IOException e) {
+                throw new AssertionError(e);
+            }
+        }
+
         private void queueSuccessfulCreateCopyStart() {
             testRunner.queuedResponses.add(Promise.success("id-0"));
             testRunner.queuedResponses.add(Promise.success(""));
@@ -669,6 +683,8 @@ class DockerComputeProviderTest {
             assertThat(testRunner.allCommands.stream().flatMap(List::stream)).as("and no env var carries it").noneMatch(arg -> arg.startsWith("AETHER_CLUSTER_SECRET="));
             assertThat(testRunner.stdins).hasSize(1);
             assertThat(new String(testRunner.stdins.getFirst(), java.nio.charset.StandardCharsets.UTF_8)).as("positive control: the sentinel reached the archive").contains(SENTINEL);
+            assertThat(tarListing(testRunner.stdins.getFirst())).as("the archive entry is read-only and owned by the node user (uid/gid 1000)")
+                                                                   .contains("-r--------").contains("1000").contains("aether-cluster-secret");
         }
 
         @Test
