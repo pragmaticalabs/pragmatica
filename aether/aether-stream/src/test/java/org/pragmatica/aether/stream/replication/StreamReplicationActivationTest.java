@@ -48,11 +48,13 @@ class StreamReplicationActivationTest {
     private StreamPartitionManager replicaManager;
     private ReplicaRegistry ownerRegistry;
     private AtomicInteger replicateSendCount;
+    private AtomicInteger commitAdvanceCount;
     private List<ReplicationMessage> acksToOwner;
 
     @BeforeEach
     void setUp() {
         replicateSendCount = new AtomicInteger(0);
+        commitAdvanceCount = new AtomicInteger(0);
         acksToOwner = new ArrayList<>();
 
         // Replica side: a manager whose appendRecovered the receive handler drives. Its acks are
@@ -67,9 +69,12 @@ class StreamReplicationActivationTest {
         ownerRegistry = replicaRegistry();
         ownerRegistry.registerReplica(STREAM, PARTITION, REPLICA);
         ReplicationTransport loopback = (target, message) -> {
-            replicateSendCount.incrementAndGet();
             if (message instanceof ReplicationMessage.ReplicateEvents events) {
+                replicateSendCount.incrementAndGet();
                 receiveHandler.onReplicateEvents(events);
+            }
+            if (message instanceof ReplicationMessage.CommitAdvance) {
+                commitAdvanceCount.incrementAndGet();
             }
         };
         var ownerReplication = replicationManager(OWNER, ownerRegistry, loopback);
@@ -125,10 +130,19 @@ class StreamReplicationActivationTest {
 
         access.publish("only".getBytes()).await();
 
-        // Exactly one ReplicateEvents send for the single owner publish. The replica applied via
+        // Exactly one ReplicateEvents send for the single owner publish (the owner's CommitAdvance announcements
+        // are a different message, counted on their own and not a replication of the event). The replica applied via
         // appendRecovered (non-replicating) so there is no second send — no replicate→apply→replicate
         // loop.
         assertThat(replicateSendCount.get()).isEqualTo(1);
+        // The owner told its replica how far the acknowledged position reaches (#2087), from the ring's notifier thread.
+        var deadline = System.nanoTime() + 5_000_000_000L;
+
+        while (commitAdvanceCount.get() == 0 && System.nanoTime() < deadline) {
+            Thread.onSpinWait();
+        }
+        assertThat(commitAdvanceCount.get()).isGreaterThanOrEqualTo(1);
+        assertThat(replicateSendCount.get()).as("announcing a position is not a second replication of the event").isEqualTo(1);
         // The replica acked the highest applied offset back to the owner.
         assertThat(acksToOwner).hasSize(1);
         assertThat(acksToOwner.getFirst()).isInstanceOf(ReplicationMessage.ReplicateAck.class);
