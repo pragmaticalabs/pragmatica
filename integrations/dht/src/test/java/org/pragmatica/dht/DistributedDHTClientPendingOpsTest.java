@@ -264,7 +264,11 @@ class DistributedDHTClientPendingOpsTest {
         requests.forEach(r -> client.onGetResponse(present().of(r.requestId(), REPLICA)));
 
         assertThat(op.await(timeSpan(2).seconds()).isSuccess()).isTrue();
-        // well inside the 600 ms window: a timer left armed would still be counted
+        // the cancel runs on a callback; give it up to 300 ms, still well inside the 600 ms window a left-armed timer
+        // would run out
+        for (var i = 0; i < 30 && client.pendingExpiries() != 0; i++) {
+            sleepQuietly(10);
+        }
         assertThat(client.pendingExpiries()).as("expiry timers armed after every reply arrived").isZero();
         assertThat(client.pendingOperations()).isZero();
     }
