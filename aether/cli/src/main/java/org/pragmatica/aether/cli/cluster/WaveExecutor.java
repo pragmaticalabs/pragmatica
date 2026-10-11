@@ -601,7 +601,7 @@ public final class WaveExecutor {
                                                                                                                        sourceName,
                                                                                                                        role,
                                                                                                                        count))
-               : dispatchDestroy(sourceName, source, clusterName, role, count, managementPort);
+               : dispatchDestroy(sourceName, source, role, count, managementPort);
     }
 
     /// Terminates the `count` newest containers of `cluster`/`source`/`role`, newest = the greatest node id (a ULID, so id order is creation
@@ -640,15 +640,17 @@ public final class WaveExecutor {
                : Result.success(ids.subList(0, count));
     }
 
-    private static Result<Unit> dispatchDestroy(SourceName sourceName,
-                                                SourceProfile source,
-                                                ClusterName cluster,
-                                                NodeRole role,
-                                                int count,
-                                                int managementPort) {
+    /// Removal for the source types addressed by their own ids. A docker node's id is its container name, which the `<source>-<role>-<index>` label
+    /// never matches (#1027), so docker removal goes through [#dispatchRemoval] and its label discovery; reaching this with a docker source is a
+    /// routing defect and is refused rather than destroying by the stale label-index ids.
+    static Result<Unit> dispatchDestroy(SourceName sourceName,
+                                        SourceProfile source,
+                                        NodeRole role,
+                                        int count,
+                                        int managementPort) {
         return switch (source.type()) {
             case CLOUD -> resolveCloudAndDestroy(source, sourceName, role, count);
-            case DOCKER -> resolveDockerAndDestroy(cluster, sourceName, role, count);
+            case DOCKER -> new ApplyError.DockerRemovalMisrouted(sourceName).result();
             case FORGE -> forgeDestroyPlaceholder(sourceName, role, count);
             case SSH -> drainAndStopSshNodes(sourceName, role, count, source, managementPort);
         };
@@ -662,16 +664,6 @@ public final class WaveExecutor {
                                                                                                  sourceName,
                                                                                                  role,
                                                                                                  count));
-    }
-
-    private static Result<Unit> resolveDockerAndDestroy(ClusterName cluster,
-                                                        SourceName sourceName,
-                                                        NodeRole role,
-                                                        int count) {
-        return ProviderResolver.resolveDockerComputeWithoutBackup(cluster).flatMap(compute -> destroyViaCompute(compute,
-                                                                                                                sourceName,
-                                                                                                                role,
-                                                                                                                count));
     }
 
     @SuppressWarnings("JBCT-EX-01")
@@ -787,6 +779,14 @@ public final class WaveExecutor {
                      + "': only " + found.size()
                      + " container(s) carry its labels (" + found
                      + "). Nothing was removed.";
+            }
+        }
+
+        record DockerRemovalMisrouted(SourceName sourceName) implements ApplyError {
+            @Override
+            public String message() {
+                return "docker source '" + sourceName
+                     + "' reached the label-index removal path; docker nodes are removed by discovering their real containers. Nothing was removed.";
             }
         }
 

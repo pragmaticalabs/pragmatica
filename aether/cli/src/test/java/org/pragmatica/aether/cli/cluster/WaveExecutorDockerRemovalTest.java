@@ -148,4 +148,15 @@ class WaveExecutorDockerRemovalTest {
             ProviderResolver.dockerFactoryOverride = null;
         }
     }
+
+    /// The label-index removal path never serves a docker source: it is refused (nothing is destroyed) instead of
+    /// addressing containers by ids that name none of them (#1027).
+    @Test
+    void theLabelIndexDestroyPath_refusesADockerSource() {
+        var source = org.pragmatica.aether.config.cluster.ClusterBootstrapConfigParser.parse(DOCKER_CLUSTER).unwrap().sources().get("local");
+        var result = WaveExecutor.dispatchDestroy(sourceNameOrDefault("local"), source, NodeRole.WORKER, 1, 8080);
+
+        assertThat(result.isFailure()).isTrue();
+        result.onFailure(cause -> assertThat(cause.message()).contains("docker").contains("Nothing was removed"));
+    }
 }
