@@ -810,6 +810,7 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
             if (ctx.parkStart(sliceKey, refusedState)) {
                 SharedScheduler.schedule(() -> escalateParkedStart(sliceKey), ctx.parkedStartBound());
             }
+
             log.warn("Node {} defers {} of {}: no committed SliceTarget names this version (#1068) — "
                     + "re-evaluated when a target arrives; if the blueprint was rolled back the leader's orphan sweep removes the entry",
                      ctx.self().id(),
@@ -834,7 +835,8 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
         }
 
         private static String parkSubject(SliceNodeKey sliceKey) {
-            return sliceKey.artifact() + "@" + sliceKey.nodeId().id();
+            return sliceKey.artifact() + "@" + sliceKey.nodeId()
+                                                       .id();
         }
 
         /// Ends a park (target arrived, entry superseded or removed). The recovery event is raised only when the warning was.
@@ -861,16 +863,18 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
         @Contract
         void escalateParkedStart(SliceNodeKey sliceKey) {
             ctx.parkedStart(sliceKey)
-               .filter(parked -> ctx.nowMs() - parked.since() >= ctx.parkedStartBound().millis())
-               .filter(parked -> !deferralIsStale(Map.entry(sliceKey, parked.state())))
+               .filter(parked -> ctx.nowMs() - parked.since() >= ctx.parkedStartBound()
+                                                                    .millis())
+               .filter(parked -> !deferralIsStale(Map.entry(sliceKey,
+                                                            parked.state())))
                .filter(_ -> ctx.markParkWarned(sliceKey))
                .onPresent(parked -> OperatorWarnings.raise(log,
                                                            ctx.operatorWarnings(),
                                                            OperatorWarningCode.SLICE_START_AWAITING_TARGET,
                                                            parkSubject(sliceKey),
                                                            "Node {} has held the {} of {} for {} ms: no committed SliceTarget names this version (#1109). "
-                                                           + "The start stays parked and is re-driven when the target arrives; if the blueprint was rolled back, "
-                                                           + "the leader's orphan sweep removes the entry",
+                                                          + "The start stays parked and is re-driven when the target arrives; if the blueprint was rolled back, "
+                                                          + "the leader's orphan sweep removes the entry",
                                                            ctx.self().id(),
                                                            parked.state(),
                                                            sliceKey.artifact(),

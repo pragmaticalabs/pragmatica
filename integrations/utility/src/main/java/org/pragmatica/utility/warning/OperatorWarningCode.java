@@ -144,7 +144,10 @@ public enum OperatorWarningCode {
     SLICE_START_AWAITING_TARGET("slice-start-awaiting-target", "deployment", WarningLevel.WARNING),
     /// The recovery of [#SLICE_START_AWAITING_TARGET], same subject (#1109): the target arrived and the start proceeded, or the parked
     /// entry was superseded or removed (an UNLOAD, the leader's orphan sweep). The message says which. Raised only when the warning was.
-    SLICE_START_DEFERRAL_ENDED("slice-start-deferral-ended", "deployment", WarningLevel.INFO, SLICE_START_AWAITING_TARGET),
+    SLICE_START_DEFERRAL_ENDED("slice-start-deferral-ended",
+                               "deployment",
+                               WarningLevel.INFO,
+                               SLICE_START_AWAITING_TARGET),
     /// A node replacement (#1543) was committed: a fresh-id node is taking over from the subject (the ORIGINAL node). Raised once,
     /// when the record is first committed. Closed by [#NODE_REPLACEMENT_COMPLETED] or [#NODE_REPLACEMENT_ROLLED_BACK].
     NODE_REPLACEMENT_STARTED("node-replacement-started", "replacement", WarningLevel.INFO),

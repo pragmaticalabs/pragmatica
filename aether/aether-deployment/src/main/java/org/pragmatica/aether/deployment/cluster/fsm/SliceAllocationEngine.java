@@ -263,8 +263,11 @@ record SliceAllocationEngine(Active active, List<NodeId> eligibleNodes) {
     boolean tryAllocate(Artifact artifact, NodeId node) {
         var sliceKey = SliceNodeKey.sliceNodeKey(artifact, node);
 
-        if (!CommittedSliceTarget.permits(active.ctx().kvStore(), artifact)) {
-            log.debug("tryAllocate: no committed SliceTarget names {} yet — not issuing LOAD on {} (#1109)", artifact, node);
+        if (!CommittedSliceTarget.permits(active.ctx().kvStore(),
+                                          artifact)) {
+            log.debug("tryAllocate: no committed SliceTarget names {} yet — not issuing LOAD on {} (#1109)",
+                      artifact,
+                      node);
 
             return false;
         }

@@ -243,11 +243,12 @@ public final class NodeDeploymentContext {
     public boolean markParkWarned(SliceNodeKey sliceKey) {
         var transitioned = new java.util.concurrent.atomic.AtomicBoolean();
 
-        parkedStarts.computeIfPresent(sliceKey, (_, parked) -> {
-            transitioned.set(!parked.warned());
+        parkedStarts.computeIfPresent(sliceKey,
+                                      (_, parked) -> {
+                                          transitioned.set(!parked.warned());
 
-            return new ParkedStart(parked.since(), parked.state(), true);
-        });
+                                          return new ParkedStart(parked.since(), parked.state(), true);
+                                      });
 
         return transitioned.get();
     }
