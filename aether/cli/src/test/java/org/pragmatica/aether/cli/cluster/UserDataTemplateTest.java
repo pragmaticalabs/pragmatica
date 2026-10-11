@@ -204,6 +204,17 @@ class UserDataTemplateTest {
     }
 
     @Test
+    void render_secretWithShellMetacharacters_isWrittenVerbatimByTheQuotedPrintf() {
+        // #828: the secret is a single-quoted printf operand now, so a quote, a dollar and a backtick in it must survive
+        // (it used to be a double-quoted shell assignment, which mangled `"`, `$` and a backtick).
+        var config = ClusterBootstrapConfigParser.parse(CLOUD_BASE).unwrap();
+        var script = UserDataTemplate.render(config, config.sources().get("eu-1"), NodeRole.CORE, "node-1", 0, "a'b$c`d\"e",
+                                             clusterName("prod-cluster").unwrap(), TomlDocument.EMPTY);
+
+        assertTrue(script.contains("printf '%s' 'a'\\''b$c`d\"e' > /opt/aether/config/cluster-secret"), script);
+    }
+
+    @Test
     void render_emitsClusterNameFromAllowList_inContainerEnv() {
         // AETHER_CLUSTER_NAME is sourced from the threaded clusterName param (not host env),
         // baked into the docker-run -e flags via the IDENTITY_VARS allow-list.

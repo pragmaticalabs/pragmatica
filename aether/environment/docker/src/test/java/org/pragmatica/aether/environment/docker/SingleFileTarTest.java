@@ -35,6 +35,15 @@ class SingleFileTarTest {
 
             assertThat(Files.readString(extracted)).isEqualTo(content);
             assertThat(PosixFilePermissions.toString(Files.getPosixFilePermissions(extracted))).isEqualTo("r--------");
+            var listing = new ProcessBuilder("tar", "-tvf", "-").redirectErrorStream(true).start();
+
+            try (var in = listing.getOutputStream()) {
+                in.write(archive);
+            }
+
+            var listed = new String(listing.getInputStream().readAllBytes());
+
+            assertThat(listed).as("owner recorded in the archive header: uid and gid 1000").contains("1000").contains("aether-cluster-secret").contains("-r--------");
             assertThat(archive.length % SingleFileTar.BLOCK).as("a tar is whole blocks").isZero();
         } finally {
             try (var files = Files.walk(dir)) {
