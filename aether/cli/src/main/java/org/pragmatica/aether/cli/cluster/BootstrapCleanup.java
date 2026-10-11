@@ -14,6 +14,8 @@ import java.util.stream.Collectors;
 import org.pragmatica.aether.environment.ClusterName;
 import org.pragmatica.aether.environment.ComputeProvider;
 import org.pragmatica.aether.environment.EnvironmentError;
+import org.pragmatica.aether.environment.docker.DockerComputeProvider;
+import org.pragmatica.aether.environment.docker.DockerNetwork;
 import org.pragmatica.aether.environment.InstanceId;
 import org.pragmatica.cloud.hetzner.HetznerClient;
 import org.pragmatica.cloud.hetzner.HetznerConfig;
@@ -761,6 +763,7 @@ sealed interface BootstrapCleanup {
             case CreatedResource.SshDeployedConfig ignored -> 0;
             case CreatedResource.ProvisionedVm ignored -> 1;
             case CreatedResource.DockerContainer ignored -> 1;
+            case CreatedResource.DockerNetwork ignored -> 2;
             case CreatedResource.FloatingIpAssignment ignored -> 2;
             case CreatedResource.CloudFirewall ignored -> 3;
             case CreatedResource.SshKeyResource ignored -> 4;
@@ -840,7 +843,8 @@ sealed interface BootstrapCleanup {
                                                                                reapedSoFar,
                                                                                sweep);
             case CreatedResource.FloatingIpAssignment ip -> detachFloatingIp(ip);
-            case CreatedResource.DockerContainer container -> removeContainer(container);
+            case CreatedResource.DockerContainer container -> removeContainer(state.clusterName(), container);
+            case CreatedResource.DockerNetwork network -> removeNetwork(state, network);
             case CreatedResource.SshDeployedConfig config -> removeRemoteConfig(config);
             case CreatedResource.SshKeyResource key -> deleteSshKey(state, key, resolvers);
         };
@@ -1118,6 +1122,10 @@ sealed interface BootstrapCleanup {
     private static Result<ComputeProvider> resolveComputeForVm(BootstrapState state,
                                                                CreatedResource.ProvisionedVm vm,
                                                                CleanupResolvers resolvers) {
+        if (DOCKER_PROVIDER.equalsIgnoreCase(vm.provider())) {
+            return ProviderResolver.resolveDockerComputeWithoutBackup(state.clusterName());
+        }
+
         var handle = state.sources().get(vm.sourceName());
 
         if (handle == null) {
@@ -1157,6 +1165,9 @@ sealed interface BootstrapCleanup {
                         .apply(handle);
     }
 
+    /// A docker VM has no credentials and no persisted handle, and the Docker socket reaches every container on the host, so it is reaped by a
+    /// provider scoped to THIS cluster (#1543 F2): an unscoped one refuses to terminate anything.
+    String DOCKER_PROVIDER = "docker";
     String NO_HANDLE_REASON = "bootstrap persisted no cleanup handle";
 
     String UNMAPPED_HANDLE_REASON = "the persisted cleanup handle names no credential env var"
@@ -1203,11 +1214,39 @@ sealed interface BootstrapCleanup {
     }
 
     @SuppressWarnings("JBCT-EX-01")
-    private static Result<Unit> removeContainer(CreatedResource.DockerContainer container) {
+    private static Result<Unit> removeContainer(ClusterName cluster, CreatedResource.DockerContainer container) {
         System.out.printf("  Removing container %s...%n", container.containerId());
 
-        return ProviderResolver.resolveDockerComputeWithoutBackup().flatMap(compute -> terminateInstance(compute,
-                                                                                                         container.containerId()));
+        return ProviderResolver.resolveDockerComputeWithoutBackup(cluster).flatMap(compute -> terminateInstance(compute,
+                                                                                                                container.containerId()));
+    }
+
+    /// Removes the docker network the LEDGER recorded (#2131), by that recorded name and no other, and only if it still carries this cluster's label
+    /// and no container is attached. A network with members stays and is reported, not failed. Containers rank below the network, so ours are gone by now.
+    @SuppressWarnings("JBCT-EX-01")
+    private static Result<Unit> removeNetwork(BootstrapState state, CreatedResource.DockerNetwork network) {
+        System.out.printf("  Removing docker network %s (created by bootstrap)...%n", network.networkName());
+
+        return ProviderResolver.resolveDockerComputeWithoutBackup(state.clusterName()).flatMap(compute -> compute instanceof DockerComputeProvider docker
+                                                                                                          ? docker.removeNetworkIfOwnedAndEmpty(network.networkName(),
+                                                                                                                                                state.clusterName()
+                                                                                                                                                     .value())
+                                                                                                                  .await()
+                                                                                                                  .map(removal -> reportNetworkRemoval(network,
+                                                                                                                                                       removal))
+                                                                                                          : Result.unitResult());
+    }
+
+    private static Unit reportNetworkRemoval(CreatedResource.DockerNetwork network, DockerNetwork.Removal removal) {
+        switch (removal) {
+            case IN_USE -> System.out.printf("  Docker network %s still has containers attached; left in place.%n",
+                                             network.networkName());
+            case NOT_OURS -> System.out.printf("  Docker network %s does not carry this cluster's label; left in place.%n",
+                                               network.networkName());
+            default -> {}
+        }
+
+        return Unit.unit();
     }
 
     private static Result<Unit> removeRemoteConfig(CreatedResource.SshDeployedConfig config) {

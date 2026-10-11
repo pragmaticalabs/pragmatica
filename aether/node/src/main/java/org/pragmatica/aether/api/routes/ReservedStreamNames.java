@@ -21,9 +21,9 @@ import static org.pragmatica.lang.Result.success;
 /// one with an operator-chosen config. The prefix list is [StreamEngineKey#RESERVED_KIND_PREFIXES], shared
 /// with the blueprint parser's `External` source check; `ReservedStreamNamesTest` pins it against the
 /// canonical owners ([DurableTopicNames], [EntityPartitionArc], the `system` namespace). Applied to the
-/// ENGINE name: a catalog address in the `system` namespace reduces to its bare name
-/// ([StreamManager#engineKey]) — the flat operator-stream spelling — and is not reserved; a
-/// `topic`/`entity` namespace yields a prefixed engine key and is.
+/// ENGINE name, which is the full catalog address ([StreamManager#engineKey]): a `system`, `topic` or
+/// `entity` namespace yields a prefixed engine key and is reserved (#1338: system streams are read-only to the
+/// Management API, so a `system`-namespace create is refused like the other kinds).
 sealed interface ReservedStreamNames {
     /// The engine name unchanged, or [ManagementServerError.ReservedStreamName] naming the prefix it uses.
     static Result<String> requireUnreserved(String engineName) {
@@ -37,10 +37,11 @@ sealed interface ReservedStreamNames {
     }
 
     /// The predicate the pre-auth path gate applies, with the SAME canonicalization in front of it
-    /// (#742 review SF-2): a body-carried name may be the bare engine key (`cluster-events`) or the
-    /// catalog spelling (`system:cluster-events:1.0.0`); the versioned gate reduces the latter through
-    /// `ResourceAddress` → `StreamManager.engineKey` before asking `SystemStreams`, and so does this.
-    /// A name that does not parse as an address is checked as the bare key it is. Shared by the
+    /// (#742 review SF-2): a body-carried name is checked as the engine key it is
+    /// (`system:cluster-events:1.0.0`), and also canonicalized through `ResourceAddress` →
+    /// `StreamManager.engineKey` before asking `SystemStreams`, as the versioned gate does. The bare name
+    /// `cluster-events` is NOT a system stream (#1338): it is an ordinary stream name, neither refused as the
+    /// system stream nor served as it. Shared by the
     /// body-carried routes the gate cannot see: `STREAM_CREATE` (#968, in [StreamApiRoutes]) and the
     /// consumer-group join/leave (in [StreamRoutes]).
     static boolean namesSystemStream(String name) {

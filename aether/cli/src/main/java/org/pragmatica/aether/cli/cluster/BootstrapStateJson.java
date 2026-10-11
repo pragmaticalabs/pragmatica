@@ -207,6 +207,7 @@ sealed interface BootstrapStateJson {
             case "FloatingIpAssignment" -> CreatedResource.FloatingIpAssignment.floatingIpAssignment(node.path("provider").asText(),
                                                                                                      node.path("floatingIp").asText(),
                                                                                                      node.path("targetNodeId").asText());
+            case "DockerNetwork" -> CreatedResource.DockerNetwork.dockerNetwork(node.path("networkName").asText());
             case "DockerContainer" -> CreatedResource.DockerContainer.dockerContainer(node.path("containerId").asText(),
                                                                                       node.path("sourceName").asText());
             case "SshDeployedConfig" -> CreatedResource.SshDeployedConfig.sshDeployedConfig(node.path("host").asText(),
@@ -317,6 +318,7 @@ sealed interface BootstrapStateJson {
             case CreatedResource.CloudFirewall firewall -> appendCloudFirewall(sb, firewall);
             case CreatedResource.FloatingIpAssignment ip -> appendFloatingIp(sb, ip);
             case CreatedResource.DockerContainer container -> appendDockerContainer(sb, container);
+            case CreatedResource.DockerNetwork network -> appendDockerNetwork(sb, network);
             case CreatedResource.SshDeployedConfig config -> appendSshConfig(sb, config);
             case CreatedResource.SshKeyResource key -> appendSshKey(sb, key);
         }
@@ -363,6 +365,12 @@ sealed interface BootstrapStateJson {
           .append(escapeJson(ip.floatingIp()))
           .append("\", \"targetNodeId\": \"")
           .append(escapeJson(ip.targetNodeId()))
+          .append("\"}");
+    }
+
+    private static void appendDockerNetwork(StringBuilder sb, CreatedResource.DockerNetwork network) {
+        sb.append("{\"type\": \"DockerNetwork\", \"networkName\": \"")
+          .append(escapeJson(network.networkName()))
           .append("\"}");
     }
 

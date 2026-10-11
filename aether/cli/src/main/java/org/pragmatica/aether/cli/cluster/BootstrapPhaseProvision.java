@@ -15,6 +15,7 @@ import org.pragmatica.aether.cli.cluster.ClusterBootstrapOrchestrator.BootstrapE
 import org.pragmatica.aether.config.cluster.CloudProviderName;
 import org.pragmatica.aether.config.cluster.ClusterBootstrapConfigParser;
 import org.pragmatica.aether.config.cluster.NodeRole;
+import org.pragmatica.aether.config.cluster.NodeUserDataRenderer;
 import org.pragmatica.aether.config.cluster.RoleSubTable;
 import org.pragmatica.aether.config.cluster.SourceProfile;
 import org.pragmatica.aether.config.cluster.SourceType;
@@ -30,7 +31,10 @@ import org.pragmatica.aether.environment.ProvisionedNode;
 import org.pragmatica.aether.environment.SourceName;
 import org.pragmatica.config.toml.TomlDocument;
 import org.pragmatica.lang.Cause;
+import org.pragmatica.aether.environment.docker.DockerComputeProvider;
+import org.pragmatica.aether.environment.docker.DockerNetwork;
 import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 
@@ -53,6 +57,13 @@ sealed interface BootstrapPhaseProvision {
         var mgmtPort = ctx.config().operations().ports().management();
         var dockerCores = DockerCores.mint(ctx.config().sources(),
                                            clusterName);
+        var networks = ensureDockerNetwork(ctx);
+
+        if (networks.isFailure()) {
+            return networks.map(_ -> ctx);
+        }
+
+        var createdNetworks = networks.or(List.of());
 
         for (var entry : ctx.config().sources().entrySet()) {
             var sourceName = sourceNameOrDefault(entry.getKey());
@@ -68,13 +79,72 @@ sealed interface BootstrapPhaseProvision {
             var _ = result.onSuccess(allNodes::addAll);
         }
 
-        var updatedState = buildUpdatedState(ctx, allNodes);
+        var updatedState = buildUpdatedState(ctx, allNodes, createdNetworks);
 
         return success(ctx.withNodes(List.copyOf(allNodes)).withState(updatedState));
     }
 
-    private static BootstrapState buildUpdatedState(BootstrapContext ctx, List<ProvisionedNode> allNodes) {
+    /// A docker source needs the network its containers join (#2131): `docker run --network <name>` fails with "network not found" when nothing created
+    /// it. Reuse it when present; create it when absent, and RECORD it (persisted now, and in the state the phase returns) only when bootstrap created
+    /// it, so destroy can later remove exactly the networks it made and never one the user provided. Nothing happens without a docker source.
+    @SuppressWarnings("JBCT-EX-01")
+    private static Result<List<CreatedResource>> ensureDockerNetwork(BootstrapContext ctx) {
+        var hasDocker = ctx.config().sources().values().stream().anyMatch(source -> source.type() == SourceType.DOCKER);
+
+        if (!hasDocker) {
+            return success(List.of());
+        }
+
+        return ProviderResolver.resolveDockerComputeWithoutBackup(ctx.state().clusterName()).flatMap(compute -> compute instanceof DockerComputeProvider docker
+                                                                                                                ? docker.ensureNetwork(ctx.state()
+                                                                                                                                          .clusterName()
+                                                                                                                                          .value())
+                                                                                                                        .await()
+                                                                                                                        .map(ensured -> recordCreatedNetwork(ctx,
+                                                                                                                                                             docker,
+                                                                                                                                                             ensured))
+                                                                                                                : success(List.<CreatedResource> of()));
+    }
+
+    @Contract
+    private static List<CreatedResource> recordCreatedNetwork(BootstrapContext ctx,
+                                                              DockerComputeProvider docker,
+                                                              DockerNetwork.Ensured ensured) {
+        var name = docker.config().networkName();
+
+        if (!ensured.owned()) {
+            System.out.printf("  Reusing docker network %s (not created by this cluster; it will not be removed)%n",
+                              name);
+
+            return List.of();
+        }
+
+        var network = CreatedResource.DockerNetwork.dockerNetwork(name);
+
+        System.out.printf(ensured == DockerNetwork.Ensured.CREATED
+                          ? "  Created docker network %s%n"
+                          : "  Reusing docker network %s (left by an earlier run of this cluster; ownership kept)%n",
+                          name);
+        var _ = BootstrapStatePersistence.appendResource(ctx.state().clusterName(),
+                                                         network)
+                                         .onFailure(cause -> System.err.printf("  WARN: docker network %s was created but NOT recorded in the cleanup ledger — %s."
+                                                                              + " Remove it with 'docker network rm %s' after destroy.%n",
+                                                                               name,
+                                                                               cause.message(),
+                                                                               name));
+
+        return List.of(network);
+    }
+
+    private static BootstrapState buildUpdatedState(BootstrapContext ctx,
+                                                    List<ProvisionedNode> allNodes,
+                                                    List<CreatedResource> createdNetworks) {
         var state = ctx.state().withProvisionedNodeIds(allNodes.stream().map(ProvisionedNode::nodeId).toList());
+
+        for (var network : createdNetworks) {
+            state = state.withResource(network);
+        }
+
         var rawToml = ctx.rawTomlContent();
 
         for (var entry : ctx.config().sources().entrySet()) {
@@ -417,7 +487,7 @@ sealed interface BootstrapPhaseProvision {
                                                          DockerCores dockerCores) {
         return switch (source.type()) {
             case CLOUD -> provisionCloudSource(ctx, sourceName, source, clusterName);
-            case DOCKER -> provisionDockerSource(sourceName, source, clusterName, dockerCores, ctx.clusterSecret());
+            case DOCKER -> provisionDockerSource(ctx, sourceName, source, clusterName, dockerCores);
             case SSH -> provisionSshSource(sourceName, source);
             case FORGE -> provisionForgeSource(sourceName, source, managementPort);
         };
@@ -441,17 +511,23 @@ sealed interface BootstrapPhaseProvision {
                                                                                                                                                   clusterName));
     }
 
+    /// #1543 F2: each role's containers boot the image its runtime profile pins at the bootstrap version, so the cluster starts on the
+    /// image an upgrade later replaces; a role pinning none boots the provider's default image, as before.
     @SuppressWarnings("JBCT-PAT-01")
-    private static Result<List<ProvisionedNode>> provisionDockerSource(SourceName sourceName,
+    private static Result<List<ProvisionedNode>> provisionDockerSource(BootstrapContext ctx,
+                                                                       SourceName sourceName,
                                                                        SourceProfile source,
                                                                        ClusterName clusterName,
-                                                                       DockerCores dockerCores,
-                                                                       String clusterSecret) {
-        return ProviderResolver.resolveDockerCompute(source, clusterSecret).flatMap(compute -> provisionWithCompute(compute,
-                                                                                                                    sourceName,
-                                                                                                                    source,
-                                                                                                                    clusterName,
-                                                                                                                    dockerCores));
+                                                                       DockerCores dockerCores) {
+        return provisionWithCompute(role -> ProviderResolver.resolveDockerCompute(source,
+                                                                                  NodeUserDataRenderer.pinnedImageFor(ctx.config(),
+                                                                                                                      source,
+                                                                                                                      role),
+                                                                                  ctx.clusterSecret()),
+                                    sourceName,
+                                    source,
+                                    clusterName,
+                                    dockerCores);
     }
 
     /// Package-visible so a test can drive the real call site with a recording provider (#2089).
@@ -472,12 +548,21 @@ sealed interface BootstrapPhaseProvision {
                                                      clusterName));
     }
 
-    @SuppressWarnings({"JBCT-PAT-01", "JBCT-EX-01"})
     static Result<List<ProvisionedNode>> provisionWithCompute(ComputeProvider compute,
                                                               SourceName sourceName,
                                                               SourceProfile source,
                                                               ClusterName clusterName,
                                                               DockerCores dockerCores) {
+        return provisionWithCompute(_ -> Result.success(compute), sourceName, source, clusterName, dockerCores);
+    }
+
+    /// The compute is chosen per role (#1543 F2: each role's profile may pin its own image).
+    @SuppressWarnings({"JBCT-PAT-01", "JBCT-EX-01"})
+    private static Result<List<ProvisionedNode>> provisionWithCompute(Fn1<Result<ComputeProvider>, NodeRole> computeFor,
+                                                                      SourceName sourceName,
+                                                                      SourceProfile source,
+                                                                      ClusterName clusterName,
+                                                                      DockerCores dockerCores) {
         var allNodes = new ArrayList<ProvisionedNode>();
         var roleOrder = List.of(NodeRole.CORE, NodeRole.WORKER, NodeRole.SPOT);
         var coreIds = dockerCores.idsFor(sourceName.value());
@@ -486,14 +571,15 @@ sealed interface BootstrapPhaseProvision {
         for (var role : roleOrder) {
             var roleTable = option(source.roles().get(role));
             var result = roleTable.flatMap(rt -> rt.count())
-                                  .map(count -> provisionRoleGroup(compute,
-                                                                   sourceName,
-                                                                   role,
-                                                                   count,
-                                                                   source,
-                                                                   clusterName,
-                                                                   coreIds,
-                                                                   peers));
+                                  .map(count -> computeFor.apply(role)
+                                                          .flatMap(compute -> provisionRoleGroup(compute,
+                                                                                                 sourceName,
+                                                                                                 role,
+                                                                                                 count,
+                                                                                                 source,
+                                                                                                 clusterName,
+                                                                                                 coreIds,
+                                                                                                 peers)));
 
             if (result.isPresent()) {
                 var provisionResult = result.unwrap();

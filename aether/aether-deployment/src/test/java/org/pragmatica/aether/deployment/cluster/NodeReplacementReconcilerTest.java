@@ -22,6 +22,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue.NodeReplacementValue;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -64,6 +65,16 @@ class NodeReplacementReconcilerTest {
         boolean commitNeverAnswers;
         Promise<EffectResult> drainPending;
         boolean provisionedSoNewJoins = true;
+        Result<String> resolution = Result.success("docker");
+        int resolutions;
+        final List<String> effectSources = new ArrayList<>();
+
+        @Override
+        public Result<String> resolveSource(NodeId original, NodeReplacementValue record) {
+            resolutions++;
+
+            return resolution;
+        }
 
         @Override public boolean isLeader() {return leader;}
         @Override public Map<NodeId, NodeReplacementValue> records() {return Map.copyOf(records);}
@@ -110,6 +121,7 @@ class NodeReplacementReconcilerTest {
         @Override
         public Promise<EffectResult> execute(Effect effect, NodeId original, NodeReplacementValue record) {
             effects.add(effect.name());
+            effectSources.add(effect.name() + ":" + record.source());
 
             switch (effect) {
                 case PROVISION -> {
@@ -153,6 +165,11 @@ class NodeReplacementReconcilerTest {
         }
 
         void begin(NodeReplacementPhase phase) {
+            records.put(OLD, new NodeReplacementValue(NEW, "core", phase, clock.get() + 10_000, "src", "", NodeReplacementValue.MODE_CTM, 0, "", 0L));
+        }
+
+        /// A record created with no source (a node of a cluster bootstrapped from static PEERS).
+        void beginWithoutSource(NodeReplacementPhase phase) {
             records.put(OLD, new NodeReplacementValue(NEW, "core", phase, clock.get() + 10_000));
         }
 
@@ -271,6 +288,92 @@ class NodeReplacementReconcilerTest {
         assertThat(model.effects).containsExactly("PROVISION");
     }
 
+    /// #1543 F2: the record's reason (what the operator event and the paused upgrade print) names the CAUSE of a refusal, not only
+    /// that one happened: "No configured source for replacement default" tells the operator which source to fix.
+    @Test
+    void provisionRefused_recordsTheCauseInTheReason_boundedInLength() {
+        var model = new Model();
+
+        model.begin(NodeReplacementPhase.PROVISIONING);
+        model.provisionResult = new EffectResult.Failed("No configured source for replacement default");
+        driver(model).reconcile().await();
+
+        assertThat(model.records.get(OLD).reason()).isEqualTo("provisioning refused: No configured source for replacement default");
+
+        var long_ = new Model();
+
+        long_.begin(NodeReplacementPhase.PROVISIONING);
+        long_.provisionResult = new EffectResult.Failed("x".repeat(5_000));
+        driver(long_).reconcile().await();
+
+        assertThat(long_.records.get(OLD).reason().length()).isLessThan(400);
+    }
+
+    /// #1543 F2: a record created with no source has it resolved ONCE, before any effect, and committed into the record. Every effect reads
+    /// the committed source; none of them sees a blank, and the source is derived exactly once however many ticks follow.
+    @Test
+    void blankSource_isResolvedOnce_committedBeforeAnyEffect_andEveryEffectReadsIt() {
+        var model = new Model();
+
+        model.beginWithoutSource(NodeReplacementPhase.PROVISIONING);
+        runToTerminal(model, driver(model));
+
+        assertThat(model.records.get(OLD).phase()).isEqualTo(NodeReplacementPhase.DONE);
+        assertThat(model.records.get(OLD).source()).isEqualTo("docker");
+        assertThat(model.resolutions).as("derived once, however many ticks").isEqualTo(1);
+        assertThat(model.effects).contains("PROVISION", "RETIRE_OLD");
+        assertThat(model.effectSources).as("every effect, provision to retirement, saw the committed source").isNotEmpty().allMatch(entry -> entry.endsWith(":docker"));
+        assertThat(model.phases.getFirst()).as("the first commit is the source, before the first effect").isEqualTo(NodeReplacementPhase.PROVISIONING);
+    }
+
+    /// A new leader reads the committed source: it does not derive it again.
+    @Test
+    void leaderChangeAfterTheSourceIsCommitted_theNewLeaderUsesTheCommittedSource() {
+        var model = new Model();
+
+        model.beginWithoutSource(NodeReplacementPhase.PROVISIONING);
+        driver(model).reconcile().await();
+
+        assertThat(model.records.get(OLD).source()).isEqualTo("docker");
+
+        model.resolution = new ReplacementSourceUnresolved("core", List.of("a", "b")).result();
+        runToTerminal(model, driver(model));
+
+        assertThat(model.resolutions).as("the second leader never derived it").isEqualTo(1);
+        assertThat(model.records.get(OLD).phase()).isEqualTo(NodeReplacementPhase.DONE);
+        assertThat(model.effectSources).allMatch(entry -> entry.endsWith(":docker"));
+    }
+
+    /// Several sources declare the role (or none): a replacement that has not begun ends, with the typed cause in its reason and no effect.
+    @Test
+    void unresolvableSource_atProvisioning_rollsBackWithTheCause_andRunsNoEffect() {
+        var model = new Model();
+
+        model.beginWithoutSource(NodeReplacementPhase.PROVISIONING);
+        model.resolution = new ReplacementSourceUnresolved("core", List.of("a", "b")).result();
+        driver(model).reconcile().await();
+
+        assertThat(model.records.get(OLD).phase()).isEqualTo(NodeReplacementPhase.ROLLED_BACK);
+        assertThat(model.records.get(OLD).reason()).startsWith("provisioning refused: ").contains("[a, b]").doesNotContain("default");
+        assertThat(model.effects).isEmpty();
+    }
+
+    /// A record that has begun and still has no source (written by an older leader) is held with the cause, once, not changed otherwise.
+    @Test
+    void unresolvableSource_afterTheReplacementBegan_isHeldWithTheCause_andCommittedOnce() {
+        var model = new Model();
+
+        model.beginWithoutSource(NodeReplacementPhase.JOINING);
+        model.resolution = new ReplacementSourceUnresolved("core", List.of("a", "b")).result();
+        driver(model).reconcile().await();
+        driver(model).reconcile().await();
+
+        assertThat(model.records.get(OLD).phase()).isEqualTo(NodeReplacementPhase.JOINING);
+        assertThat(model.records.get(OLD).reason()).contains("[a, b]");
+        assertThat(model.effects).isEmpty();
+        assertThat(model.phases).as("the reason was committed once, not on every tick").hasSize(1);
+    }
+
     @Test
     void provisionDeferred_holdsAndRetries() {
         var model = new Model();
@@ -302,7 +405,7 @@ class NodeReplacementReconcilerTest {
         var model = new Model();
 
         model.records.put(OLD,
-                          new NodeReplacementValue(NEW, "core", NodeReplacementPhase.CANARY, model.clock.get() + 500, "", "3.0.0", "CTM", 0, "", 0L));
+                          new NodeReplacementValue(NEW, "core", NodeReplacementPhase.CANARY, model.clock.get() + 500, "src", "3.0.0", "CTM", 0, "", 0L));
         model.newKnown = true;
         model.newAlive = true;
         model.newVoter = true;
@@ -530,7 +633,7 @@ class NodeReplacementReconcilerTest {
     private Model workerModel() {
         var model = new Model();
 
-        model.records.put(OLD, new NodeReplacementValue(NEW, "worker", NodeReplacementPhase.PROVISIONING, model.clock.get() + 10_000));
+        model.records.put(OLD, new NodeReplacementValue(NEW, "worker", NodeReplacementPhase.PROVISIONING, model.clock.get() + 10_000, "src", "", NodeReplacementValue.MODE_CTM, 0, "", 0L));
         model.oldVoter = false;
 
         return model;
@@ -556,7 +659,7 @@ class NodeReplacementReconcilerTest {
     void workerCanaryFailure_rollsBackWithoutReverting_andTerminatesTheReplacement() {
         var model = workerModel();
 
-        model.records.put(OLD, new NodeReplacementValue(NEW, "worker", NodeReplacementPhase.CANARY, model.clock.get() + 300, "", "3.0.0", "CTM", 0, "", 0L));
+        model.records.put(OLD, new NodeReplacementValue(NEW, "worker", NodeReplacementPhase.CANARY, model.clock.get() + 300, "src", "3.0.0", "CTM", 0, "", 0L));
         model.newKnown = true;
         model.newAlive = true;
         model.newVersion = "2.0.0";
@@ -572,7 +675,7 @@ class NodeReplacementReconcilerTest {
         for (var start : EnumSet.of(NodeReplacementPhase.JOINING, NodeReplacementPhase.CANARY, NodeReplacementPhase.DRAINING_OLD, NodeReplacementPhase.RETIRING_OLD)) {
             var model = workerModel();
 
-            model.records.put(OLD, new NodeReplacementValue(NEW, "worker", start, model.clock.get() + 10_000));
+            model.records.put(OLD, new NodeReplacementValue(NEW, "worker", start, model.clock.get() + 10_000, "src", "", NodeReplacementValue.MODE_CTM, 0, "", 0L));
             model.oldAlive = false;
             model.newKnown = true;
             model.newAlive = true;
@@ -728,7 +831,7 @@ class NodeReplacementReconcilerTest {
     void workerReplacementLostBeforeTheDrain_isRolledBack_notReverted() {
         var model = new Model();
 
-        model.records.put(OLD, new NodeReplacementValue(NEW, "worker", NodeReplacementPhase.DRAINING_OLD, model.clock.get() + 10_000));
+        model.records.put(OLD, new NodeReplacementValue(NEW, "worker", NodeReplacementPhase.DRAINING_OLD, model.clock.get() + 10_000, "src", "", NodeReplacementValue.MODE_CTM, 0, "", 0L));
         model.newKnown = true;
         model.newAlive = false;
         driver(model).reconcile().await();
@@ -742,7 +845,7 @@ class NodeReplacementReconcilerTest {
     void workerRevertingFromASettle_givesTheReplacementUp_withoutWaitingForASeat() {
         var model = new Model();
 
-        model.records.put(OLD, new NodeReplacementValue(NEW, "worker", NodeReplacementPhase.REVERTING, model.clock.get() + 10_000));
+        model.records.put(OLD, new NodeReplacementValue(NEW, "worker", NodeReplacementPhase.REVERTING, model.clock.get() + 10_000, "src", "", NodeReplacementValue.MODE_CTM, 0, "", 0L));
         model.newKnown = true;
         model.newAlive = true;
         model.oldVoter = false;
@@ -787,7 +890,7 @@ class NodeReplacementReconcilerTest {
     void workerCanaryFailure_withTheOriginalGone_keepsTheReplacement_withTheOriginalAlive_givesItUp() {
         var gone = new Model();
 
-        gone.records.put(OLD, new NodeReplacementValue(NEW, "worker", NodeReplacementPhase.CANARY, gone.clock.get() + 10_000));
+        gone.records.put(OLD, new NodeReplacementValue(NEW, "worker", NodeReplacementPhase.CANARY, gone.clock.get() + 10_000, "src", "", NodeReplacementValue.MODE_CTM, 0, "", 0L));
         gone.newKnown = true;
         gone.newAlive = false;
         gone.oldAlive = false;
@@ -798,7 +901,7 @@ class NodeReplacementReconcilerTest {
 
         var serving = new Model();
 
-        serving.records.put(OLD, new NodeReplacementValue(NEW, "worker", NodeReplacementPhase.CANARY, serving.clock.get() + 10_000));
+        serving.records.put(OLD, new NodeReplacementValue(NEW, "worker", NodeReplacementPhase.CANARY, serving.clock.get() + 10_000, "src", "", NodeReplacementValue.MODE_CTM, 0, "", 0L));
         serving.newKnown = true;
         serving.newAlive = false;
         driver(serving).reconcile().await();
@@ -811,7 +914,7 @@ class NodeReplacementReconcilerTest {
     void workerRevertingFromASettle_withTheOriginalGone_keepsTheReplacement() {
         var model = new Model();
 
-        model.records.put(OLD, new NodeReplacementValue(NEW, "worker", NodeReplacementPhase.REVERTING, model.clock.get() + 10_000));
+        model.records.put(OLD, new NodeReplacementValue(NEW, "worker", NodeReplacementPhase.REVERTING, model.clock.get() + 10_000, "src", "", NodeReplacementValue.MODE_CTM, 0, "", 0L));
         model.newKnown = true;
         model.newAlive = true;
         model.oldAlive = false;

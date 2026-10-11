@@ -4,6 +4,8 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.stream;
 
+import org.pragmatica.aether.slice.StreamConfig;
+import org.pragmatica.aether.slice.stream.StreamEngineKey;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
@@ -28,6 +30,18 @@ public sealed interface StreamCreateOutcome {
     /// loud (spec §4.5b / §6).
     static Result<Unit> tolerateAlreadyExists(Result<Unit> outcome) {
         return outcome.fold(StreamCreateOutcome::recoverAlreadyExists, Result::success);
+    }
+
+    /// What a slice-facing factory does to make `config`'s stream exist (#1338). A `system:` stream is provisioned by
+    /// the runtime alone, so a slice that binds one (a blueprint `External` system source) never creates it and
+    /// never has its own declaration compared with the committed one: it must already exist, else provisioning
+    /// fails with [StreamError.StreamNotFound]. Every other stream is created as declared.
+    static Result<Unit> ensureExists(StreamPartitionManager manager, StreamConfig config) {
+        return StreamEngineKey.isSystemStream(config.name())
+               ? manager.streamInfo(config.name())
+                        .<Result<Unit>> map(_ -> unitResult())
+                        .or(() -> new StreamError.StreamNotFound(config.name()).result())
+               : tolerateAlreadyExists(manager.createDeclaredStream(config));
     }
 
     private static Result<Unit> recoverAlreadyExists(Cause cause) {

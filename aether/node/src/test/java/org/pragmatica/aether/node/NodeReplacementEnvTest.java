@@ -62,6 +62,7 @@ class NodeReplacementEnvTest {
     private final Map<AetherKey, AetherValue> stored = new HashMap<>();
     private final Map<NodeId, String> states = new HashMap<>();
     private final NodeReplacementIndex index = NodeReplacementIndex.nodeReplacementIndex();
+    private static final org.pragmatica.aether.environment.SourceName DOCK = org.pragmatica.aether.environment.SourceName.sourceNameOrDefault("dock");
     private final ClusterTopologyManager ctm = mock(ClusterTopologyManager.class);
     private final AtomicBoolean oldDraining = new AtomicBoolean(false);
     private volatile long now = 1_000L;
@@ -72,6 +73,7 @@ class NodeReplacementEnvTest {
         states.put(OLD, "Member");
         commitSourceConfig();
         when(ctm.provisionReplacement(any(), any(), any(), any(), any())).thenReturn(Promise.success(ProvisionDisposition.dispatched()));
+        when(ctm.sourceOfSourcelessNode(any())).thenReturn(org.pragmatica.lang.Result.success(DOCK));
         when(ctm.drainNode(any(), any())).thenAnswer(call -> Promise.unitPromise());
         when(ctm.reapRetired(any(), any(), anyBoolean())).thenAnswer(call -> Promise.unitPromise());
         when(ctm.instanceListed(any(), any())).thenAnswer(call -> Promise.success(true));
@@ -141,7 +143,7 @@ class NodeReplacementEnvTest {
     }
 
     private void record(NodeReplacementPhase phase, long deadline) {
-        index.put(new AetherKey.NodeReplacementKey(OLD), new NodeReplacementValue(NEW, "core", phase, deadline));
+        index.put(new AetherKey.NodeReplacementKey(OLD), new NodeReplacementValue(NEW, "core", phase, deadline, "dock", "", NodeReplacementValue.MODE_CTM, 0, "", 0L));
     }
 
     // ---- N1: a drain under way is not a drain nobody asked for --------------------------------------------------------
@@ -418,7 +420,7 @@ class NodeReplacementEnvTest {
         record(NodeReplacementPhase.DRAINING_OLD, 999_999L);
         wiring.reconciler().reconcile().await();
 
-        verify(ctm, atLeastOnce()).instanceListed(eq(OLD), any());
+        verify(ctm, atLeastOnce()).instanceListed(eq(OLD), eq(DOCK));
 
         states.put(OLD, "Dead");
         commands.clear();
@@ -426,14 +428,59 @@ class NodeReplacementEnvTest {
         record(NodeReplacementPhase.RETIRING_OLD, 999_999L);
         wiring.reconciler().reconcile().await();
 
-        verify(ctm).reapRetired(eq(OLD), any(), eq(true));
+        verify(ctm).reapRetired(eq(OLD), eq(DOCK), eq(true));
 
         var fresh = NodeReplacementWiring.wire(inputs(NodeReplacementPlanner.Timings.parse("60000,60000,60000,60000,0,60000,60000")));
 
         commands.clear();
         fresh.reconciler().reconcile().await();
 
-        verify(ctm).reapRetired(eq(OLD), any(), eq(false));
+        verify(ctm).reapRetired(eq(OLD), eq(DOCK), eq(false));
+    }
+
+    @SuppressWarnings("unchecked")
+    private NodeReplacementValue committedAt(int index) {
+        var transaction = (KVCommand.LeaderTransaction<AetherKey, AetherValue>) commands.get(index);
+
+        return (NodeReplacementValue) transaction.mutations().getFirst().replacement().unwrap();
+    }
+
+    /// #1543 F2: a record created with no source (a node of a cluster bootstrapped from static PEERS) is resolved ONCE, the answer
+    /// committed into the record FIRST, and the provision then runs from the committed source -- never from "default".
+    @Test
+    void aBlankSourceRecord_hasItsSourceCommittedFirst_thenIsProvisionedFromIt() {
+        index.put(new AetherKey.NodeReplacementKey(OLD), new NodeReplacementValue(NEW, "core", NodeReplacementPhase.PROVISIONING, 999_999L));
+        wiring.reconciler().reconcile().await();
+
+        assertThat(commands).as("the source commit, then the provision's own").hasSize(2);
+        assertThat(committedAt(0).source()).isEqualTo("dock");
+        assertThat(committedAt(0).phase()).as("the source commit changes nothing else").isEqualTo(NodeReplacementPhase.PROVISIONING);
+        verify(ctm).provisionReplacement(any(), any(), any(), any(), eq(DOCK));
+        verify(ctm).sourceOfSourcelessNode(any());
+    }
+
+    /// Several sources declare the role (or none): a replacement that has not begun ends, with the typed cause in its reason, and nothing is
+    /// provisioned or reaped at any provider.
+    @Test
+    void anUnresolvableSource_atProvisioning_rollsBackWithTheCause_andTouchesNoProvider() {
+        when(ctm.sourceOfSourcelessNode(any())).thenReturn(Causes.cause("role core is declared by sources [a, b]").<org.pragmatica.aether.environment.SourceName> result());
+        index.put(new AetherKey.NodeReplacementKey(OLD), new NodeReplacementValue(NEW, "core", NodeReplacementPhase.PROVISIONING, 999_999L));
+        wiring.reconciler().reconcile().await();
+
+        assertThat(committedRecord().phase()).isEqualTo(NodeReplacementPhase.ROLLED_BACK);
+        assertThat(committedRecord().reason()).startsWith("provisioning refused: ").contains("[a, b]").doesNotContain("default");
+        verify(ctm, never()).provisionReplacement(any(), any(), any(), any(), any());
+        verify(ctm, never()).reapRetired(any(), any(), anyBoolean());
+    }
+
+    /// Defence in depth: a blank source that reaches an effect is refused, never read as the source "default".
+    @Test
+    void aBlankSourceReachingAnEffect_isRefused_neverReadAsDefault() {
+        var blank = new NodeReplacementValue(NEW, "core", NodeReplacementPhase.PROVISIONING, 1L);
+
+        assertThat(NodeReplacementWiring.committedSource(blank).isFailure()).isTrue();
+        assertThat(NodeReplacementWiring.provisionFor(ctm, blank, Set.of()).await().isFailure()).isTrue();
+        verify(ctm, never()).provisionReplacement(any(), any(), any(), any(), any());
     }
 
     /// A replacement that was up (the membership read it alive) and was then lost before any drain is listed while it is up, so its rollback
@@ -444,7 +491,7 @@ class NodeReplacementEnvTest {
         record(NodeReplacementPhase.CANARY, 999_999L);
         wiring.reconciler().reconcile().await();
 
-        verify(ctm).instanceListed(eq(NEW), any());
+        verify(ctm).instanceListed(eq(NEW), eq(DOCK));
 
         states.remove(NEW);
         commands.clear();
@@ -487,7 +534,7 @@ class NodeReplacementEnvTest {
         owner.onTransition(NodeReplacementWiring.announcer(() -> true, sink));
         follower.onTransition(NodeReplacementWiring.announcer(() -> false, sink));
         var key = new AetherKey.NodeReplacementKey(OLD);
-        var started = new NodeReplacementValue(NEW, "core", NodeReplacementPhase.PROVISIONING, 0L);
+        var started = new NodeReplacementValue(NEW, "core", NodeReplacementPhase.PROVISIONING, 0L, "dock", "", NodeReplacementValue.MODE_CTM, 0, "", 0L);
         var walk = List.of(started,
                            started.advanced(NodeReplacementPhase.JOINING, 1L, ""),
                            started.advanced(NodeReplacementPhase.JOINING, 1L, "").advanced(NodeReplacementPhase.SWAPPING, 1L, ""),
@@ -512,7 +559,7 @@ class NodeReplacementEnvTest {
         var follower = NodeReplacementIndex.nodeReplacementIndex();
 
         follower.onTransition(NodeReplacementWiring.announcer(() -> false, OperatorWarningSink.handingOffTo(raised::add)));
-        follower.put(new AetherKey.NodeReplacementKey(OLD), new NodeReplacementValue(NEW, "core", NodeReplacementPhase.PROVISIONING, 0L));
+        follower.put(new AetherKey.NodeReplacementKey(OLD), new NodeReplacementValue(NEW, "core", NodeReplacementPhase.PROVISIONING, 0L, "dock", "", NodeReplacementValue.MODE_CTM, 0, "", 0L));
         sleepBriefly();
 
         assertThat(raised).isEmpty();

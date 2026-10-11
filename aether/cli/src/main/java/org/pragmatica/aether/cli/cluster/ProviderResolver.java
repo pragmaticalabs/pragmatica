@@ -24,6 +24,8 @@ import org.pragmatica.aether.environment.EnvironmentIntegration;
 import org.pragmatica.aether.environment.EnvironmentIntegrationFactory;
 import org.pragmatica.aether.environment.FirewallId;
 import org.pragmatica.aether.environment.FloatingIpProvider;
+import org.pragmatica.aether.environment.ClusterSecretSource;
+import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 
@@ -158,10 +160,12 @@ public final class ProviderResolver {
                                               Map.of()));
     }
 
-    /// The Docker provider for tearing nodes down: it starts nothing, so it has no use for the source's `[backup]`. Provisioning
+    /// The Docker provider for tearing nodes down: it starts nothing, so it has no use for the source's `[backup]`. It is scoped to `cluster` (#1543 F2):
+    /// the Docker socket reaches every container on the host, and the provider terminates only this cluster's. Provisioning
     /// uses [#resolveDockerCompute(SourceProfile)], which hands the provider that backup.
-    public static Result<ComputeProvider> resolveDockerComputeWithoutBackup() {
-        return lookupFactory("docker").flatMap(factory -> factory.create(dockerCloudConfig()))
+    public static Result<ComputeProvider> resolveDockerComputeWithoutBackup(ClusterName cluster) {
+        return lookupFactory("docker").flatMap(factory -> factory.create(dockerCloudConfig(Map.of("cluster_name",
+                                                                                                  cluster.value()))))
                             .flatMap(ProviderResolver::extractCompute);
     }
 
@@ -301,22 +305,52 @@ public final class ProviderResolver {
         return resolveDockerCompute(source).flatMap(compute -> withClusterSecret(compute, clusterSecret));
     }
 
+    /// Both: the role's pinned image (#1543 F2) and the bootstrap's cluster secret (#2089).
+    static Result<ComputeProvider> resolveDockerCompute(SourceProfile source,
+                                                        Option<String> image,
+                                                        String clusterSecret) {
+        return resolveDockerCompute(source, image).flatMap(compute -> withClusterSecret(compute, clusterSecret));
+    }
+
     static final String CLUSTER_SECRET_VAR = "AETHER_CLUSTER_SECRET";
+
+    /// The provider's host environment during a bootstrap: the CLI's secret answers for the secret, and the operator's own
+    /// `AETHER_CLUSTER_SECRET_FILE` is answered as unset (#828) -- it names the operator's file, not this cluster's, and left in it
+    /// would be refused as "both set and differ". Every other name is the ambient environment.
+    static Fn1<String, String> bootstrapHostEnv(String clusterSecret, Fn1<String, String> ambient) {
+        return name -> CLUSTER_SECRET_VAR.equals(name)
+                       ? clusterSecret
+                       : ClusterSecretSource.fileVar(CLUSTER_SECRET_VAR).equals(name)
+                         ? null
+                         : ambient.apply(name);
+    }
 
     private static Result<ComputeProvider> withClusterSecret(ComputeProvider compute, String clusterSecret) {
         return compute instanceof DockerComputeProvider docker
                ? DockerComputeProvider.dockerComputeProvider(docker.runner(),
                                                              docker.config(),
-                                                             name -> CLUSTER_SECRET_VAR.equals(name)
-                                                                     ? clusterSecret
-                                                                     : System.getenv(name))
+                                                             bootstrapHostEnv(clusterSecret, System::getenv))
                                       .map(ComputeProvider.class::cast)
                : Result.success(compute);
     }
 
     public static Result<ComputeProvider> resolveDockerCompute(SourceProfile source) {
-        return lookupFactory("docker").flatMap(factory -> factory.create(dockerCloudConfig(backupEnvironment(source))))
+        return resolveDockerCompute(source, Option.empty());
+    }
+
+    /// The same provider booting `image` when the role's runtime profile pins one (#1543 F2), as `image_name` of the compute map:
+    /// without it every node the provider starts boots the one default image, whatever the profile and the cluster version say.
+    public static Result<ComputeProvider> resolveDockerCompute(SourceProfile source, Option<String> image) {
+        return lookupFactory("docker").flatMap(factory -> factory.create(dockerCloudConfig(dockerCompute(source, image))))
                             .flatMap(ProviderResolver::extractCompute);
+    }
+
+    private static Map<String, String> dockerCompute(SourceProfile source, Option<String> image) {
+        var compute = new HashMap<>(backupEnvironment(source));
+
+        image.onPresent(name -> compute.put("image_name", name));
+
+        return Map.copyOf(compute);
     }
 
     /// The source's `[backup]` as `AETHER_BACKUP_*`; empty when the source has none, it is disabled, or it has no path.

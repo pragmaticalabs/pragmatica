@@ -3,12 +3,14 @@
 // Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.environment.docker;
 
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 
 import org.pragmatica.aether.environment.ClusterName;
+import org.pragmatica.aether.environment.ClusterSecretSource;
 import org.pragmatica.aether.environment.ClusterIdentityEnv;
 import org.pragmatica.aether.environment.ComputeProvider;
 import org.pragmatica.aether.environment.EnvironmentError;
@@ -54,6 +56,17 @@ public record DockerComputeProvider(DockerCommandRunner runner, DockerConfig con
         return success(new DockerComputeProvider(runner, config, hostEnv));
     }
 
+    /// Makes sure the configured network exists before any container is started on it (#2131), creating it labelled with `clusterName` when absent.
+    public Promise<DockerNetwork.Ensured> ensureNetwork(String clusterName) {
+        return DockerNetwork.ensure(runner, config.networkName(), clusterName);
+    }
+
+    /// Removes the network named `networkName` (the one the LEDGER recorded, which can differ from the configured one today) if it carries
+    /// `clusterName`'s label and is empty; see [DockerNetwork#removeIfOwnedAndEmpty].
+    public Promise<DockerNetwork.Removal> removeNetworkIfOwnedAndEmpty(String networkName, String clusterName) {
+        return DockerNetwork.removeIfOwnedAndEmpty(runner, networkName, clusterName);
+    }
+
     @Override
     public Promise<InstanceInfo> provision(InstanceType instanceType) {
         var ctx = ProvisionContext.provisionContext(ClusterName.maybeClusterName("default"),
@@ -69,9 +82,8 @@ public record DockerComputeProvider(DockerCommandRunner runner, DockerConfig con
         return ProviderDefaults.providerDefaults("docker", "", "", "", Option.empty(), false);
     }
 
-    /// Docker is a single-image, unsized provider: it ignores the resolved instanceSize/image/zone
-    /// (there is no sizing or image-selection knob on `docker run` beyond the configured image) and
-    /// builds the container from the request context alone. A SPOT request is rejected loud —
+    /// Docker is an unsized provider: it ignores the resolved instanceSize/zone and builds the container from the request
+    /// context, booting the resolved image when the request carries one (#1543 F2) and the configured image otherwise. A SPOT request is rejected loud —
     /// Docker has no spot/preemptible concept and must never silently downgrade.
     @Override
     public Promise<InstanceInfo> createFrom(ProvisionRequest request) {
@@ -107,14 +119,46 @@ public record DockerComputeProvider(DockerCommandRunner runner, DockerConfig con
                       .or(() -> IdGenerator.generate(ProvisionContext.coreNodeNamePrefix(cluster)));
     }
 
-    private Promise<InstanceInfo> provisionWithIdentity(ProvisionRequest request, String containerName) {
-        var command = buildRunCommand(request, containerName);
+    /// Where a provider-minted node finds each credential file (#828): `/tmp/aether-<slug>`, copied in owned by the image's
+    /// `aether` user (uid/gid 1000), mode 0400, and named to the node by `<VAR>_FILE`.
+    static final String SECRET_DIRECTORY = "/tmp";
+    static final int NODE_UID = 1000;
 
-        return runner.execute(command)
-                     .map(containerId -> toProvisionedInfo(containerId, containerName, request))
-                     .flatMap(info -> confirmRunning(info,
-                                                     ReadinessPolicy.dockerDefault()))
-                     .onFailure(cause -> rollbackOnProvisionFailure(containerName, cause));
+    static String credentialFileName(String plainVar) {
+        return "aether-" + ClusterSecretSource.slug(plainVar);
+    }
+
+    static String credentialPath(String plainVar) {
+        return SECRET_DIRECTORY + "/" + credentialFileName(plainVar);
+    }
+
+    private Promise<InstanceInfo> provisionWithIdentity(ProvisionRequest request, String containerName) {
+        return resolveCredentials().async()
+                                 .flatMap(credentials -> launch(request, containerName, credentials))
+                                 .map(containerId -> toProvisionedInfo(containerId, containerName, request))
+                                 .flatMap(info -> confirmRunning(info,
+                                                                 ReadinessPolicy.dockerDefault()))
+                                 .onFailure(cause -> rollbackOnProvisionFailure(containerName, cause));
+    }
+
+    /// The credentials this node is minted with, by variable name, from the leader's environment (value or `_FILE`). The
+    /// configured `apiKey` is authoritative for `AETHER_API_KEY`. A conflicting, unreadable or empty `_FILE` fails the provision.
+    private Result<Map<String, String>> resolveCredentials() {
+        var found = new java.util.LinkedHashMap<String, String>();
+
+        for (var name : ClusterSecretSource.FILE_DELIVERED_ENVS) {
+            var resolved = ClusterSecretSource.AETHER_API_KEY_ENV.equals(name) && !config.apiKey().isBlank()
+                           ? Result.success(Option.some(config.apiKey()))
+                           : ClusterSecretSource.resolve(hostEnv, name);
+
+            if (resolved.isFailure()) {
+                return resolved.map(_ -> found);
+            }
+
+            resolved.unwrap().onPresent(value -> found.put(name, value));
+        }
+
+        return Result.success(found);
     }
 
     /// bootstrap list (3-part `nodeId:host:port` entries) so the new container can join
@@ -205,34 +249,66 @@ public record DockerComputeProvider(DockerCommandRunner runner, DockerConfig con
         return List.of("docker", "rm", "-f", containerName);
     }
 
+    /// The Docker socket reaches EVERY container on the host, so this provider acts only on its own cluster's: `terminate` reads the
+    /// target's `aether.cluster` label first and refuses, before any stop or rm, unless it equals this provider's cluster (an unlabelled
+    /// container carries none and is refused too); `list` filters on that label. With no cluster known it does neither (#1543 F2).
     @Override
     public Promise<Unit> terminate(InstanceId instanceId) {
-        var stopCommand = buildStopCommand(instanceId);
-        var removeCommand = buildRemoveCommand(instanceId);
+        return ownCluster().async(scopeUnknown(instanceId))
+                         .flatMap(cluster -> runner.execute(buildClusterLabelCommand(instanceId))
+                                                   .mapError(cause -> toTerminateError(instanceId, cause))
+                                                   .flatMap(label -> terminateIfOwn(instanceId,
+                                                                                    cluster,
+                                                                                    label.strip())));
+    }
 
-        return runner.execute(stopCommand)
-                     .flatMap(ignored -> runner.execute(removeCommand))
+    private Promise<Unit> terminateIfOwn(InstanceId instanceId, String cluster, String found) {
+        if (!cluster.equals(found)) {
+            return EnvironmentError.outOfClusterScope(instanceId, cluster, found).promise();
+        }
+
+        return runner.execute(buildStopCommand(instanceId))
+                     .flatMap(ignored -> runner.execute(buildRemoveCommand(instanceId)))
                      .mapToUnit()
                      .mapError(cause -> toTerminateError(instanceId, cause));
     }
 
     @Override
     public Promise<List<InstanceInfo>> listInstances() {
-        var command = buildListCommand();
-
-        return runner.execute(command)
-                     .map(DockerComputeProvider::parseContainerList)
-                     .mapError(DockerComputeProvider::toListInstancesError);
+        return listInstances(Map.of());
     }
 
     @Override
     public Promise<List<InstanceInfo>> listInstances(Map<String, String> tagFilter) {
-        var command = buildFilteredListCommand(tagFilter);
-
-        return runner.execute(command)
-                     .map(DockerComputeProvider::parseContainerList)
-                     .mapError(DockerComputeProvider::toListInstancesError);
+        return ownCluster().async(LIST_SCOPE_UNKNOWN)
+                         .flatMap(cluster -> runner.execute(buildFilteredListCommand(tagFilter, cluster))
+                                                   .map(DockerComputeProvider::parseContainerList)
+                                                   .map(instances -> onlyCluster(instances, cluster))
+                                                   .mapError(DockerComputeProvider::toListInstancesError));
     }
+
+    /// The daemon's `--filter` is the scope; this keeps the guarantee in the provider if a row of another cluster ever comes back.
+    private static List<InstanceInfo> onlyCluster(List<InstanceInfo> instances, String cluster) {
+        return instances.stream()
+                        .filter(info -> cluster.equals(info.tags().get("aether.cluster")))
+                        .toList();
+    }
+
+    /// The cluster this provider is scoped to: the configured one, else the host's `AETHER_CLUSTER_NAME`.
+    private Option<String> ownCluster() {
+        return Option.option(config.clusterName())
+                     .filter(name -> !name.isBlank())
+                     .orElse(() -> Option.option(hostEnv.apply("AETHER_CLUSTER_NAME")).filter(name -> !name.isBlank()));
+    }
+
+    private static Cause scopeUnknown(InstanceId instanceId) {
+        return EnvironmentError.terminateFailed(instanceId,
+                                                new IllegalStateException("no cluster scope known (neither the provider config nor AETHER_CLUSTER_NAME names one); "
+                                                                         + "refusing to touch a container on a shared Docker host"));
+    }
+
+    private static final Cause LIST_SCOPE_UNKNOWN = EnvironmentError.listInstancesFailed(new IllegalStateException("no cluster scope known (neither the provider config nor AETHER_CLUSTER_NAME names one); "
+                                                                                                                  + "refusing to list containers of a shared Docker host"));
 
     @Override
     public Promise<InstanceInfo> instanceStatus(InstanceId instanceId) {
@@ -248,7 +324,42 @@ public record DockerComputeProvider(DockerCommandRunner runner, DockerConfig con
         return EnvironmentError.operationNotSupported("applyTags (Docker labels are immutable after creation)").promise();
     }
 
-    private List<String> buildRunCommand(ProvisionRequest request, String containerName) {
+    /// Without credentials, the plain `docker run -d`. With them: `docker create`, the credential files copied in over stdin as a
+    /// tar owned by the node user (mode 0400), then `docker start`. A bind mount would name a path on the daemon's host, which
+    /// this process (usually itself a container holding the docker socket) cannot write; `docker cp` goes through the daemon.
+    /// The values are on no argv and in no container env, and the files live in the container's own layer, so they die with
+    /// the container and survive a restart of it.
+    private Promise<String> launch(ProvisionRequest request, String containerName, Map<String, String> credentials) {
+        return credentials.isEmpty()
+               ? runner.execute(buildRunCommand(request, containerName, List.of()))
+               : runner.execute(buildCreateCommand(request,
+                                                   containerName,
+                                                   List.copyOf(credentials.keySet())))
+                       .flatMap(id -> copyCredentials(containerName, credentials).flatMap(_ -> runner.execute(List.of("docker",
+                                                                                                                      "start",
+                                                                                                                      containerName)))
+                                                     .map(_ -> id));
+    }
+
+    private List<String> buildCreateCommand(ProvisionRequest request, String containerName, List<String> fileVars) {
+        var command = new ArrayList<>(buildRunCommand(request, containerName, fileVars));
+
+        command.set(1, "create");
+        command.remove(2);
+
+        return List.copyOf(command);
+    }
+
+    private Promise<String> copyCredentials(String containerName, Map<String, String> credentials) {
+        var files = new java.util.LinkedHashMap<String, byte[]>();
+
+        credentials.forEach((name, value) -> files.put(credentialFileName(name), value.getBytes(StandardCharsets.UTF_8)));
+
+        return runner.execute(List.of("docker", "cp", "-", containerName + ":" + SECRET_DIRECTORY),
+                              SingleFileTar.filesTar(files, 0400, NODE_UID, NODE_UID));
+    }
+
+    private List<String> buildRunCommand(ProvisionRequest request, String containerName, List<String> fileVars) {
         var ctx = request.context();
         var role = roleOrDefault(ctx);
         var cluster = clusterLabelValue(ctx);
@@ -259,7 +370,6 @@ public record DockerComputeProvider(DockerCommandRunner runner, DockerConfig con
         var peers = ctx.peers().or("");
         var coreMax = String.valueOf(ctx.coreMax());
         var provisionedBy = ctx.provisionedBy();
-        var apiKey = config.apiKey();
         var command = new ArrayList<>(List.of("docker",
                                               "run",
                                               "-d",
@@ -313,9 +423,7 @@ public record DockerComputeProvider(DockerCommandRunner runner, DockerConfig con
                                               "-e",
                                               "PEERS=" + peers,
                                               "-e",
-                                              "CORE_MAX=" + coreMax,
-                                              "-e",
-                                              "AETHER_API_KEY=" + apiKey));
+                                              "CORE_MAX=" + coreMax));
 
         if (!provisionedBy.isEmpty()) {
             command.add("-e");
@@ -344,10 +452,11 @@ public record DockerComputeProvider(DockerCommandRunner runner, DockerConfig con
         // loses identity vars). Dedupe (alreadyEmitted) against vars already emitted above:
         // AETHER_CLUSTER_NAME (from clusterLabelValue(ctx) — authoritative, equals the label),
         // AETHER_PROVISIONED_BY (from ctx.provisionedBy()), AETHER_API_KEY (from config.apiKey()).
-        // AETHER_CLUSTER_SECRET still rides the loop verbatim (a cluster-wide constant with no
-        // per-provision authoritative source, unlike the name).
+        // AETHER_CLUSTER_SECRET is deliberately NOT forwarded (#828): the value would sit on this process's docker argv and in the
+        // container's env (`docker inspect`). It travels as a file, see [#launch].
         ClusterIdentityEnv.IDENTITY_VARS.stream()
                                         .filter(name -> !ClusterIdentityEnv.NODE_OWN_VARS.contains(name))
+                                        .filter(name -> !ClusterSecretSource.FILE_DELIVERED_ENVS.contains(name))
                                         .forEach(name -> propagateEnvVar(command, name));
         ClusterIdentityEnv.DOCKER_INFRA_VARS.forEach(name -> propagateEnvVar(command, name));
         // #1968: the backup configuration is environment-driven for a Docker node (it has no node TOML of its own), so a
@@ -384,9 +493,23 @@ public record DockerComputeProvider(DockerCommandRunner runner, DockerConfig con
 
         addSpecLabels(command, ctx.extraTags());
         addPlacementLabels(command, request.zone());
-        command.add(config.imageName());
+        for (var name : fileVars) {
+            command.add("-e");
+            command.add(ClusterSecretSource.fileVar(name) + "=" + credentialPath(name));
+        }
+
+        command.add(imageFor(request));
 
         return List.copyOf(command);
+    }
+
+    /// #1543 F2: the image the request resolved (a docker source's runtime profile pin at the committed version) wins over the single
+    /// configured image, which stays the answer for every request that carries none (bootstrap seed, no committed TOML).
+    private String imageFor(ProvisionRequest request) {
+        return request.image()
+                      .isBlank()
+               ? config.imageName()
+               : request.image();
     }
 
     /// A per-node named volume for the backup repository, only when the backup is enabled with a path in the environment
@@ -495,24 +618,23 @@ public record DockerComputeProvider(DockerCommandRunner runner, DockerConfig con
         return List.of("docker", "rm", instanceId.value());
     }
 
-    private static List<String> buildListCommand() {
-        return List.of("docker",
-                       "ps",
-                       "-a",
-                       "--filter",
-                       "label=aether.cluster",
-                       "--format",
-                       "{{.ID}}\t{{.Names}}\t{{.State}}\t{{.Label \"aether.cluster\"}}\t{{.Label \"aether.role\"}}\t{{.Label \"aether.node-id\"}}");
-    }
-
-    private static List<String> buildFilteredListCommand(Map<String, String> tagFilter) {
-        var command = new ArrayList<>(List.of("docker", "ps", "-a"));
+    private static List<String> buildFilteredListCommand(Map<String, String> tagFilter, String cluster) {
+        var command = new ArrayList<>(List.of("docker", "ps", "-a", "--filter", "label=aether.cluster=" + cluster));
 
         tagFilter.forEach((key, value) -> addFilterArgs(command, key, value));
         command.addAll(List.of("--format",
                                "{{.ID}}\t{{.Names}}\t{{.State}}\t{{.Label \"aether.cluster\"}}\t{{.Label \"aether.role\"}}\t{{.Label \"aether.node-id\"}}"));
 
         return List.copyOf(command);
+    }
+
+    /// The target's `aether.cluster` label, empty when it carries none; fails when the container does not exist.
+    private static List<String> buildClusterLabelCommand(InstanceId instanceId) {
+        return List.of("docker",
+                       "inspect",
+                       "--format",
+                       "{{with index .Config.Labels \"aether.cluster\"}}{{.}}{{end}}",
+                       instanceId.value());
     }
 
     private static void addFilterArgs(ArrayList<String> command, String key, String value) {

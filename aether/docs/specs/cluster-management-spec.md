@@ -810,6 +810,8 @@ aether cluster upgrade --version 0.22.0 --strategy blue-green  # Override strate
 
 REQ-UPGRADE-01: Upgrade modifies `cluster.version` in the config and triggers a rolling upgrade of the Aether node software itself (not slice upgrades -- those use the existing `RollingUpdateManager`).
 
+> **Superseded by #1543 (2026-10-09):** REQ-UPGRADE-02 below (drain, update binary, restart, activate) is not how upgrades run. A node id never returns, so no node is restarted on a new binary under its own id. `aether cluster upgrade --version X.Y.Z [--wait]` stores the version and the leader replaces every node not on it, one at a time, each under a new NodeId (cores first, the current leader last, then workers). See [`../guides/rolling-upgrade.md`](../guides/rolling-upgrade.md).
+
 REQ-UPGRADE-02: Node upgrade sequence (rolling):
 1. For each node (starting with non-leader nodes):
    a. Drain the node (`POST /api/node/drain/<nodeId>`)

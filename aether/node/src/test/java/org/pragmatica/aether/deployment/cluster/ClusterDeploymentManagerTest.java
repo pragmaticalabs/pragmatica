@@ -794,6 +794,7 @@ class ClusterDeploymentManagerTest {
         var value = SliceTargetValue.sliceTargetValue(artifact.version(), 3, 0, Option.some(bpId));
         var command = new KVCommand.Put<>(key, value);
         var notification = new ValuePut<>(command, Option.none());
+        kvStore.put(key, value);
         manager.onSliceTargetPut(notification);
 
         // Verify LOAD commands were issued (owner didn't break allocation)
@@ -843,8 +844,12 @@ class ClusterDeploymentManagerTest {
             .filter(cmd -> cmd instanceof KVCommand.Put<?, ?>)
             .map(cmd -> (KVCommand.Put<AetherKey, AetherValue>) cmd)
             .filter(put -> put.key() instanceof SliceTargetKey)
-            .forEach(put -> mgr.onSliceTargetPut(
-                new ValuePut<>((KVCommand.Put<SliceTargetKey, SliceTargetValue>) (KVCommand.Put<?, ?>) put, Option.none())));
+            .forEach(put -> {
+                // #1109: the notification follows the commit; the leader allocates only for a COMMITTED target.
+                kvStore.put(put.key(), put.value());
+                mgr.onSliceTargetPut(
+                    new ValuePut<>((KVCommand.Put<SliceTargetKey, SliceTargetValue>) (KVCommand.Put<?, ?>) put, Option.none()));
+            });
         // Replay NodeArtifactKey puts so sliceStates gets populated
         replayNodeArtifactNotifications(mgr);
     }
@@ -860,7 +865,11 @@ class ClusterDeploymentManagerTest {
     }
 
     private void sendSliceTargetPut(Artifact artifact, int instanceCount) {
-        manager.onSliceTargetPut(sliceTargetPut(artifact, instanceCount));
+        var put = sliceTargetPut(artifact, instanceCount);
+
+        // #1109: a notification follows a commit, and the leader allocates only for a COMMITTED target.
+        kvStore.put(put.cause().key(), put.cause().value());
+        manager.onSliceTargetPut(put);
     }
 
     private ValuePut<SliceTargetKey, SliceTargetValue> sliceTargetPut(Artifact artifact, int instanceCount) {
@@ -904,6 +913,8 @@ class ClusterDeploymentManagerTest {
     private void sendAppBlueprintPut(ClusterDeploymentManager mgr, ExpandedBlueprint blueprint) {
         var key = new AppBlueprintKey(blueprint.id());
         var value = new AppBlueprintValue(blueprint);
+        // #1974: committed before its notification, as in production.
+        kvStore.put(key, value);
         var command = new KVCommand.Put<>(key, value);
         var notification = new ValuePut<>(command, Option.none());
         mgr.onAppBlueprintPut(notification);
@@ -912,6 +923,8 @@ class ClusterDeploymentManagerTest {
     private void sendAppBlueprintPut(ClusterDeploymentManager mgr, ExpandedBlueprint blueprint, boolean registerOnly) {
         var key = new AppBlueprintKey(blueprint.id());
         var value = new AppBlueprintValue(blueprint, registerOnly);
+        // #1974: committed before its notification, as in production.
+        kvStore.put(key, value);
         var command = new KVCommand.Put<>(key, value);
         var notification = new ValuePut<>(command, Option.none());
         mgr.onAppBlueprintPut(notification);
