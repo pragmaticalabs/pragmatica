@@ -52,6 +52,7 @@ public record GitBackupRepository(Path dir,
     /// Bound on any single git command — long enough for a push over a slow link, short enough that a
     /// hung remote cannot stall the backup worker indefinitely.
     public static final TimeSpan DEFAULT_TIMEOUT = TimeSpan.timeSpan(60).seconds();
+
     /// git's post-commit/fetch/push auto-maintenance daemonizes and keeps writing into the repository after
     /// the command returned — into the backup directory, past a stopped worker, and (through the inherited
     /// config, for a path remote) into the remote. The backup is one small file: nothing needs repacking, and
@@ -62,6 +63,7 @@ public record GitBackupRepository(Path dir,
                                                                           "gc.auto=0",
                                                                           "-c",
                                                                           "receive.autogc=false");
+
     private static final String REMOTE_NAME = "origin";
     private static final String REMOTE_REF = "refs/remotes/" + REMOTE_NAME + "/";
 
