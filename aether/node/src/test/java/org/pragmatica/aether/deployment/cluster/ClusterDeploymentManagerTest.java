@@ -904,6 +904,8 @@ class ClusterDeploymentManagerTest {
     private void sendAppBlueprintPut(ClusterDeploymentManager mgr, ExpandedBlueprint blueprint) {
         var key = new AppBlueprintKey(blueprint.id());
         var value = new AppBlueprintValue(blueprint);
+        // #1974: committed before its notification, as in production.
+        kvStore.put(key, value);
         var command = new KVCommand.Put<>(key, value);
         var notification = new ValuePut<>(command, Option.none());
         mgr.onAppBlueprintPut(notification);
@@ -912,6 +914,8 @@ class ClusterDeploymentManagerTest {
     private void sendAppBlueprintPut(ClusterDeploymentManager mgr, ExpandedBlueprint blueprint, boolean registerOnly) {
         var key = new AppBlueprintKey(blueprint.id());
         var value = new AppBlueprintValue(blueprint, registerOnly);
+        // #1974: committed before its notification, as in production.
+        kvStore.put(key, value);
         var command = new KVCommand.Put<>(key, value);
         var notification = new ValuePut<>(command, Option.none());
         mgr.onAppBlueprintPut(notification);

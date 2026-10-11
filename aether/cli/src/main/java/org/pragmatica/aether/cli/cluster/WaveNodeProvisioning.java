@@ -17,6 +17,7 @@ import org.pragmatica.aether.config.cluster.SourceProfile;
 import org.pragmatica.aether.config.cluster.SshDeploymentConfig;
 import org.pragmatica.aether.environment.CloudProviderSupport;
 import org.pragmatica.aether.environment.ClusterName;
+import org.pragmatica.aether.environment.ClusterSecretSource;
 import org.pragmatica.aether.environment.ComputeProvider;
 import org.pragmatica.aether.environment.InstanceId;
 import org.pragmatica.aether.environment.InstanceType;
@@ -27,6 +28,7 @@ import org.pragmatica.aether.environment.ProvisionedNode;
 import org.pragmatica.aether.environment.SourceName;
 import org.pragmatica.json.JsonMapper;
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
@@ -205,7 +207,13 @@ sealed interface WaveNodeProvisioning {
         return BootstrapStatePersistence.load(clusterName)
                                         .map(BootstrapState::clusterSecret)
                                         .filter(secret -> !secret.isBlank())
-                                        .orElse(() -> option(System.getenv(CLUSTER_SECRET_ENV)).filter(secret -> !secret.isBlank()));
+                                        .orElse(() -> ambientSecret(System::getenv));
+    }
+
+    /// The operator's own secret: `AETHER_CLUSTER_SECRET` or the file `AETHER_CLUSTER_SECRET_FILE` names (#828), so an operator who
+    /// adopted the file form can still join nodes. A broken file reads as absent and the caller's "no cluster secret" refusal names it.
+    static Option<String> ambientSecret(Fn1<String, String> env) {
+        return ClusterSecretSource.resolve(env).fold(_ -> Option.<String> none(), value -> value);
     }
 
     /// The live CORE members, as the `nodeId:host:port` peer entries a joining node dials.

@@ -437,6 +437,11 @@ class BlueprintStatusAggregationTest {
             @Override
             public Option<ExpandedBlueprint> get(BlueprintId id) { return getResult; }
             @Override
+            public Option<DeploymentOutcomeValue> attributedOutcome(BlueprintId id) {
+                return outcomeResult;
+            }
+
+            @Override
             public Option<DeploymentOutcomeValue> outcome(BlueprintId id) { return outcomeResult; }
             @Override
             public List<ExpandedBlueprint> list() { return unsupported("list"); }

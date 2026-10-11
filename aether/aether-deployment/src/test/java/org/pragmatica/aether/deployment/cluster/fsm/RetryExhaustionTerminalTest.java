@@ -280,7 +280,10 @@ class RetryExhaustionTerminalTest {
     /// `inFlightBlueprints` and writes SUCCEEDED — then spends the entire retry budget on SELF with
     /// an intermittent cause, leaving NODE_A untouched.
     private ClusterDeploymentState.Active deployOnBothNodesThenExhaustSelf(ExpandedBlueprint expanded) {
-        leaderHarness.dispatch(new AppBlueprintPutReceived(appBlueprintPut(expanded)));
+        // #1974: the blueprint is COMMITTED before its notification, as in production. This fixture used to
+        // dispatch the notification alone, and the first SUCCEEDED write now declines for an id whose blueprint
+        // is not the committed one.
+        applyBlueprint(expanded);
         leaderHarness.dispatch(new NodeArtifactPutReceived(replayOn(NODE_A, activeInstance())));
         leaderHarness.dispatch(new NodeArtifactPutReceived(replayOn(SELF, activeInstance())));
 
