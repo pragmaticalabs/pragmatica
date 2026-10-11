@@ -27,10 +27,12 @@ class DockerProvisionViaIdentityTest {
     /// Answers every `docker run` with a container id and every `docker inspect` as running; records the `--name` of each run.
     private static final class RecordingRunner implements DockerCommandRunner {
         final List<String> containerNames = new CopyOnWriteArrayList<>();
+        final List<List<String>> runCommands = new CopyOnWriteArrayList<>();
 
         @Override
         public Promise<String> execute(List<String> command) {
             if (command.size() > 1 && "run".equals(command.get(1))) {
+                runCommands.add(List.copyOf(command));
                 containerNames.add(command.get(command.indexOf("--name") + 1));
 
                 return Promise.success("container-" + containerNames.size());
@@ -74,5 +76,16 @@ class DockerProvisionViaIdentityTest {
 
         assertThat(new HashSet<>(ids)).as("four containers, four distinct ids: " + ids).hasSize(4);
         assertThat(ids).allMatch(id -> id.startsWith("aether-dock-node-"));
+    }
+
+    /// Scale-down finds containers by label; the source is one of them (#1027).
+    @Test
+    void theContainerCarriesItsSourceAsALabel() {
+        var runner = new RecordingRunner();
+        var provider = DockerComputeProvider.dockerComputeProvider(runner, DockerConfig.dockerConfig().unwrap()).unwrap();
+
+        provision(provider, 1);
+
+        assertThat(runner.runCommands.getFirst()).contains("aether.source=primary");
     }
 }
