@@ -81,7 +81,20 @@ public sealed interface BlueprintStreamAddresses {
         return bindings(kvStore, blueprintId).toResult(StreamAddressError.UnresolvedStreamBindings.FACTORY.apply(alias,
                                                                                                                  blueprintId))
                        .flatMap(value -> addressWithin(value, blueprintId, alias))
-                       .map(StreamEngineKey::engineKey);
+                       .map(BlueprintStreamAddresses::bindingKey);
+    }
+
+    /// The name a binding's stream exists under: the full catalog address, `system` included (#1338).
+    ///
+    /// NOT [StreamEngineKey#engineKey]: that reduces a `system` address to its bare name, but the framework
+    /// creates, publishes and consumes every system stream under `address.asString()`
+    /// (`SystemStreamFactories`, `AetherNode`'s cluster-events wiring). An External `system:` source
+    /// (spec §6.1, §11.2: reads are open) reduced that way polled a bare ring nobody writes to. The two
+    /// coincide for every other namespace, so only `system` moves. The parser's reserved-kind gate still
+    /// evaluates `engineKey` and so still admits `system:` sources, as `StreamConfigParserReservedSourceTest`
+    /// pins; the `system:` prefix it lists guards the Management-API mint paths, not this read binding.
+    private static String bindingKey(ResourceAddress address) {
+        return address.asString();
     }
 
     private static Result<ResourceAddress> addressWithin(BlueprintStreamBindingsValue value,
