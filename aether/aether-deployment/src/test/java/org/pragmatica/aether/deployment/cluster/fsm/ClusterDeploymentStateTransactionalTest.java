@@ -516,6 +516,8 @@ class ClusterDeploymentStateTransactionalTest {
             var deploying = blueprint("app", V1, "slice-a");
             var activeArtifact = artifact("slice-a", V1);
             var inflight = ClusterDeploymentState.Active.InFlightBlueprint.inFlightBlueprint(deploying.id(), deploying, Option.empty());
+            // #1974: the blueprint is committed, as it is before any apply is tracked in production.
+            kvStore.put(AppBlueprintKey.appBlueprintKey(deploying.id()), AppBlueprintValue.appBlueprintValue(deploying));
             activeState().inFlightBlueprints().put(deploying.id(), inflight);
 
             cluster.forcedApplyFailure = Causes.cause("injected: consensus write failure");
@@ -764,6 +766,8 @@ class ClusterDeploymentStateTransactionalTest {
             var expanded = blueprint("app", V1, "slice-a");
             var deployValue = AppBlueprintValue.appBlueprintValue(expanded);
             var deployCommand = new KVCommand.Put<>(AppBlueprintKey.appBlueprintKey(expanded.id()), deployValue);
+            // #1974: committed before its notification, as in production.
+            localKvStore.put(AppBlueprintKey.appBlueprintKey(expanded.id()), deployValue);
             localHarness.dispatch(new AppBlueprintPutReceived(new ValuePut<>(deployCommand, Option.none())));
 
             var activeArtifact = artifact("slice-a", V1);
