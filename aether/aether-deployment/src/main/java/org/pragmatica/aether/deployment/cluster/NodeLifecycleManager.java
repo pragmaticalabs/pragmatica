@@ -71,6 +71,66 @@ public interface NodeLifecycleManager {
         return EnvironmentError.operationNotSupported("Bound source inventory unavailable").promise();
     }
 
+    /// The compute source that owns `nodeId`'s instance, when it is known without a committed reservation (a bootstrap node is placed
+    /// by its membership descriptor). Used by retirement reaps that start from a node id alone (#2062).
+    default Option<SourceName> sourceOf(NodeId nodeId) {
+        return Option.none();
+    }
+
+    /// True when `nodeId` was admitted by an EXTERNAL admission (#1543): an operator started it, so there is no provider instance of ours
+    /// to list or terminate and its capacity reservation carries no provider binding.
+    default boolean externalNode(NodeId nodeId) {
+        return false;
+    }
+
+    /// Returns the capacity an EXTERNAL node held (slot and reservation) once it has left the cluster. Idempotent; a node with no
+    /// reservation succeeds. Never a provider call.
+    default Promise<Unit> releaseExternal(NodeId nodeId) {
+        return Promise.unitPromise();
+    }
+
+    /// A node that joins again while its EXTERNAL reservation is present is a new incarnation: its admission marker is bumped, so a [#releaseExternal] of
+    /// the previous incarnation that read the marker earlier cannot commit and delete what the new incarnation holds. If that release committed first, the
+    /// reservation is gone and the node is admitted again, as a new admission (an expected-absent reservation and, when counted, its slot); a node the
+    /// ledger cannot count again fails with [ReadmissionRefused]. A node with no EXTERNAL reservation succeeds. Never a provider call.
+    default Promise<Unit> readmitExternal(NodeId nodeId) {
+        return Promise.unitPromise();
+    }
+
+    /// Deletes the admission marker of a node that is gone for good (decommissioned, or retired by a replacement): it holds the reservation the last EXTERNAL
+    /// release deleted, so that a rejoin could be admitted again from it. Kept until then, deleted when the node can no longer rejoin, so that a node that never
+    /// returns leaves nothing behind and a reused id cannot be admitted from a stale ticket. Idempotent; never a provider call.
+    default Promise<Unit> forgetAdmission(NodeId nodeId) {
+        return Promise.unitPromise();
+    }
+
+    /// The node was retired by a replacement: its admission marker becomes a retirement tombstone naming the node that replaced it, so a later join of the same
+    /// identity is refused ([RetiredIdentityRejoined]) instead of being admitted again. Replaces the marker's ticket; idempotent; never a provider call.
+    default Promise<Unit> supersedeAdmission(NodeId nodeId, NodeId replacement) {
+        return Promise.unitPromise();
+    }
+
+    /// A superseded identity joined: it is refused and evicted, never admitted again.
+    record RetiredIdentityRejoined(String node, String replacement) implements org.pragmatica.lang.Cause {
+        @Override
+        public String message() {
+            return "node " + node + " was retired by a replacement (" + replacement + ") and its identity is superseded";
+        }
+    }
+
+    /// A node joined with no capacity reservation, no ticket and no tombstone: nothing is known to restore or to refuse. The manager decides whether that is
+    /// expected (a configured voter of the first formation) or an operator event.
+    record NoReservationOnJoin(String node) implements org.pragmatica.lang.Cause {
+        @Override
+        public String message() {
+            return "node " + node
+                 + " joined with no capacity reservation, no admission ticket and no retirement tombstone";
+        }
+    }
+
+    /// The re-admission of a node that joined again was refused (the ledger cannot count its slot): the node is not admitted and is to be evicted.
+    record ReadmissionRefused(String message) implements org.pragmatica.lang.Cause {}
+
     default Result<String> sourceBinding(SourceName source) {
         return EnvironmentError.operationNotSupported("Source identity binding unavailable").result();
     }
@@ -320,6 +380,14 @@ record SourceNodeLifecycleManager(SourceComputeRegistry registry,
     @Override
     public Result<String> sourceBinding(SourceName source) {
         return registry.binding(source);
+    }
+
+    @Override
+    public Option<SourceName> sourceOf(NodeId nodeId) {
+        // A node with no authoritative placement or descriptor source (a bootstrap node of the local harness) is reaped in the default
+        // source; the registry resolves that only for an explicitly local provider, so in a cloud it fails loudly (retried, then the
+        // unconfirmed-termination event) instead of acting through an account nobody named.
+        return Option.some(sourceForNode.apply(nodeId).or(SourceName.DEFAULT));
     }
 
     @Override

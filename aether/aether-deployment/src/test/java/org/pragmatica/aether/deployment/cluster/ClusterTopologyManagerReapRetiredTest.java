@@ -32,6 +32,7 @@ import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.consensus.topology.GenerationSnapshotSource;
+import org.pragmatica.consensus.topology.MembershipDecision;
 import org.pragmatica.consensus.topology.MembershipView;
 import org.pragmatica.consensus.topology.TopologyConfig;
 import org.pragmatica.consensus.topology.TopologyObserver;
@@ -191,15 +192,76 @@ class ClusterTopologyManagerReapRetiredTest {
         assertThat(reap().isFailure()).isTrue();
     }
 
+    /// A STOPPED machine is not gone (ruling af2acb10d): providers map an off or exited machine to STOPPING and it still bills and holds
+    /// its slot. It is terminated, then confirmed; only TERMINATED instances need no terminate.
     @Test
-    void stoppedOrTerminatedInstances_areGone_butAnUnstatedOneIsNot() {
-        providerLists(oldInstance("i-1", InstanceStatus.STOPPING), oldInstance("i-2", InstanceStatus.TERMINATED));
+    void aStoppedInstance_isTerminated_notConfirmedInPlace() {
+        providerLists(oldInstance("i-1", InstanceStatus.STOPPING));
+
+        assertThat(reap(false).isSuccess()).isTrue();
+        assertThat(terminates.get()).as("terminated, not confirmed in place").isEqualTo(1);
+    }
+
+    @Test
+    void terminatedInstances_areGone_withoutATerminate() {
+        providerLists(oldInstance("i-1", InstanceStatus.TERMINATED), oldInstance("i-2", InstanceStatus.TERMINATED));
+
         assertThat(reap().isSuccess()).isTrue();
         assertThat(terminates.get()).isZero();
+    }
 
+    @Test
+    void anUnstatedInstance_isNotGone() {
         providerLists(oldInstance("i-3", InstanceStatus.UNKNOWN));
         terminateRemoves.set(false);
+
         assertThat(reap().isFailure()).as("a status the provider cannot state is not 'gone'").isTrue();
+    }
+
+    /// B1, per INCARNATION (v-2068 F2): a reap confirmed once is idempotent for that incarnation of the node (the drain-grace backstop after
+    /// NodeRemoved asks the provider nothing); the same id joining again is a new incarnation, and its instance is terminated.
+    @Test
+    void aSecondReapOfTheSameIncarnation_makesNoProviderCall_butARejoinedIdIsReapedAgain() {
+        providerLists(oldInstance("i-1", InstanceStatus.RUNNING));
+        assertThat(reap(false).isSuccess()).isTrue();
+        var calls = terminates.get();
+
+        listing.set(EnvironmentError.operationNotSupported("provider API down").promise());
+
+        assertThat(reap(false).isSuccess()).as("already confirmed: not re-asked, so not failed by a later listing").isTrue();
+        assertThat(terminates.get()).isEqualTo(calls);
+
+        ctm.onMembershipDecision(MembershipDecision.nodeJoined(OLD, List.of(SELF, OLD)));
+        providerLists(oldInstance("i-2", InstanceStatus.RUNNING));
+
+        assertThat(reap(false).isSuccess()).as("the new incarnation is asked again").isTrue();
+        assertThat(terminates.get()).as("and its instance is terminated").isEqualTo(calls + 1);
+    }
+
+    /// What the manager saw of the previous incarnation does not make an empty listing "gone" for the new one: a replacement that has not appeared in
+    /// the provider's listing yet is not confirmed absent.
+    @Test
+    void aRejoinedId_isNotConfirmedGoneByAnEmptyListing_becauseItsPredecessorWasSeen() {
+        providerLists(oldInstance("i-1", InstanceStatus.RUNNING));
+        assertThat(reap(false).isSuccess()).isTrue();
+
+        ctm.onMembershipDecision(MembershipDecision.nodeJoined(OLD, List.of(SELF, OLD)));
+
+        assertThat(reap(false).isFailure()).as("never listed in this incarnation: not confirmed gone").isTrue();
+    }
+
+    /// B3: a provider whose listing lags its delete. The first reap saw the instance and had its terminate accepted but the relisting still
+    /// showed it (failure); the retry, whose listing is now empty, is gone because this node REMEMBERS having seen it.
+    @Test
+    void aLaggingListing_isConfirmedByTheRetry_becauseTheNodeWasSeenAndTerminated() {
+        providerLists(oldInstance("i-1", InstanceStatus.RUNNING));
+        terminateRemoves.set(false);
+
+        assertThat(reap(false).isFailure()).as("terminate accepted, listing still shows it").isTrue();
+
+        listing.set(Promise.success(List.of()));
+
+        assertThat(reap(false).isSuccess()).as("the retry's empty listing is gone: seen and terminated before").isTrue();
     }
 
     @Test
