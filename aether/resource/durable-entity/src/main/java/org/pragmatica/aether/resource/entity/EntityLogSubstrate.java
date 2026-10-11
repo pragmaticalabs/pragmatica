@@ -119,6 +119,13 @@ public interface EntityLogSubstrate {
         return TimeSpan.timeSpan(5).seconds();
     }
 
+    /// Whether this substrate records a lineage with the checkpoints it writes (#2087 B4-cut). When it does, a checkpoint WITHOUT one was
+    /// written by code that did not, cannot be validated against the log, and is discarded when a fold would seed from it. The default is
+    /// false: a substrate with no lineage (in-memory, tests) validates nothing.
+    default boolean recordsLineage() {
+        return false;
+    }
+
     /// The identity of the log record at `offset` as THIS node's copy holds it (#2087 B4-cut): a digest of the records ending there plus the
     /// owner epoch the node knows for it. A checkpoint records it when it is taken; a node seeding from the checkpoint compares it with its own,
     /// because a cut can remove acknowledged records (the bounded promotion escape) and a new lineage can then grow past the offset the

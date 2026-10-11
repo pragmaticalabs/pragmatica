@@ -115,6 +115,34 @@ class EntityCheckpointCutTest {
         assertThat(fold.get(PARTITION, "k").isPresent()).as("k, at offset 0, is shared by both lineages").isTrue();
     }
 
+    /// A checkpoint block written by code that recorded no lineage (the bare fold) is discarded when a fold would seed from it, because it cannot
+    /// be told from one taken over a lineage a cut removed: the same cut scenario, with the checkpoint saved the old way, must still rebuild from
+    /// the log.
+    @Test
+    void aCheckpointBlockWithNoLineage_isDiscarded_andTheRebuildFoldsTheNewLineage() {
+        landAcknowledged(0L, record("k", 1), E1);
+        landAcknowledged(1L, record("j", 2), E1);
+        manager.commitAdvanced(arc, PARTITION, 1L, E1);
+        var fold = EntityFold.entityFold(KEYSPACE, substrate);
+
+        fold.ready(PARTITION).await();
+        var candidate = fold.checkpointCandidate(PARTITION, -1L).unwrap();
+
+        assertThat(substrate.saveCheckpoint(KEYSPACE, PARTITION, candidate.throughOffset(), candidate.snapshot()).await().isSuccess()).as("control: saved the old way, no lineage in the block").isTrue();
+        assertThat(substrate.loadCheckpoint(KEYSPACE, PARTITION).await().unwrap().unwrap().lineage().isPresent()).isFalse();
+
+        var z = record("z", 9);
+
+        manager.appendRecovered(arc, PARTITION, 1L, z, 5L, E2);
+        assertThat(manager.repairDivergence(arc, PARTITION, _ -> true).isSuccess()).as("control: the cut").isTrue();
+        manager.appendRecovered(arc, PARTITION, 1L, z, 5L, E2);
+        manager.commitAdvanced(arc, PARTITION, 1L, E2);
+
+        assertThat(fold.ready(PARTITION).await().isSuccess()).isTrue();
+        assertThat(fold.get(PARTITION, "j").isPresent()).as("j was cut").isFalse();
+        assertThat(fold.get(PARTITION, "z").isPresent()).as("the new lineage's record").isTrue();
+    }
+
     /// The identity covers a WINDOW of records: a new lineage that reproduces the record at the claim byte for byte, but not the ones before it,
     /// still differs from what the checkpoint folded.
     @Test

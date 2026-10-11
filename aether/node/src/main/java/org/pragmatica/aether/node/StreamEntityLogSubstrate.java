@@ -644,6 +644,11 @@ public final class StreamEntityLogSubstrate implements EntityLogSubstrate {
                       .flatMap(blockId -> publishCheckpointPointer(keyspace, partition, throughOffset, blockId));
     }
 
+    @Override
+    public boolean recordsLineage() {
+        return true;
+    }
+
     /// The identity of this node's record at `offset` (#2087 B4-cut): the owner epoch it knows for it, when it knows one, and a SHA-256 digest of
     /// up to the last [CheckpointFrame#LINEAGE_WINDOW] records ending there, offsets included. A window rather than the one record: after a cut a new lineage
     /// can write byte-identical records, and a checkpoint folded over the removed records would still differ in the earlier ones.

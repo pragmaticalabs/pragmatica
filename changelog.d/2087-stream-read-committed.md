@@ -34,3 +34,4 @@
   records the identity of the log record at its claim (owner epoch when known, digest of the last 8 records); seeding compares it with the local
   log and a mismatch discards the checkpoint and rebuilds from the log. The cut's generation bracket now closes on every exit, including a failed
   ring shrink. `[verified: EntityCheckpointCutTest, CutBracketTest]`
+- A checkpoint with no recorded lineage (written by older code) is discarded when a fold would seed from it, and the fold is rebuilt from the log. `[verified: EntityCheckpointCutTest, EntityCommittedReadTest]`

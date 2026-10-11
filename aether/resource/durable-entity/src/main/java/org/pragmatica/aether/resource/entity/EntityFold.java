@@ -833,15 +833,22 @@ final class EntityFold {
     }
 
     /// #2087 B4-cut: a checkpoint is usable only over the lineage it was taken over. It records the identity of the log record at its claim
-    /// ([EntityLogSubstrate#lineageAt]); this node's record at that offset must have the same identity. A checkpoint without a recorded
-    /// lineage, or an offset this node cannot read (below the sealed floor, which a cut never crosses), is accepted as before.
+    /// ([EntityLogSubstrate#lineageAt]); this node's record at that offset must have the same identity.
+    ///   - No lineage recorded, on a substrate that records one: the checkpoint was written by code that did not, so it cannot be told from one
+    ///     taken over a lineage a cut has since removed. It is discarded and the fold is rebuilt from the log (a rebuild costs time, never state).
+    ///   - Recorded, and this node cannot read the record at the claim: it lies below the sealed floor, and a cut is refused at or below that
+    ///     floor (`requireAboveSealedFloor`), so the record cannot have been cut; the checkpoint is accepted (it is what makes the unreadable
+    ///     prefix a non-event).
+    ///   - Recorded and readable: accepted only if the identities are equal.
     private boolean lineageHolds(int partition, EntityLogSubstrate.EntityCheckpoint checkpoint) {
-        return checkpoint.lineage()
-                         .flatMap(recorded -> substrate.lineageAt(keyspace,
-                                                                  partition,
-                                                                  checkpoint.throughOffset())
-                                                       .map(local -> java.util.Arrays.equals(recorded, local)))
-                         .or(true);
+        return ! substrate.recordsLineage() || checkpoint.lineage()
+                                                         .map(recorded -> substrate.lineageAt(keyspace,
+                                                                                              partition,
+                                                                                              checkpoint.throughOffset())
+                                                                                   .map(local -> java.util.Arrays.equals(recorded,
+                                                                                                                         local))
+                                                                                   .or(true))
+                                                         .or(false);
     }
 
     private Option<SeedCheckpoint> seedable(int partition, EntityLogSubstrate.EntityCheckpoint checkpoint) {

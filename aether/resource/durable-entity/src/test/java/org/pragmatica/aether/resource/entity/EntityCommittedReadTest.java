@@ -306,6 +306,23 @@ class EntityCommittedReadTest {
         assertThat(fold.get(0, "z").isPresent()).as("z is the new lineage's record at offset 1").isTrue();
     }
 
+    /// A checkpoint written by code that recorded no lineage cannot be told from one taken over a removed lineage: it is discarded. The
+    /// log below the claim is gone here, so a seeded fold would be the only way to serve; discarding it surfaces as a refused rebuild instead.
+    @Test
+    void aCheckpointWithNoRecordedLineage_isDiscarded_notSeeded() {
+        append("k", 1);
+        append("j", 2);
+        append("z", 3);
+        substrate.commitThrough(2L);
+        var through = fold.checkpointCandidate(0, -1L).unwrap();
+
+        substrate.saveCheckpoint(KEYSPACE, 0, 1L, through.snapshot()).await();
+        substrate.earliestRetained = 2L;
+        substrate.cutGeneration += 2;
+
+        assertThat(fold.ready(0).await().isFailure()).as("the checkpoint was discarded and the log below 2 is gone: the rebuild refuses rather than seed").isTrue();
+    }
+
     /// Control: where the local record at the claim cannot be read (below the sealed floor, which a cut never crosses) the checkpoint is
     /// accepted and is what makes the unreadable prefix a non-event.
     @Test
@@ -463,6 +480,11 @@ class EntityCommittedReadTest {
         @Override
         public Promise<Option<EntityCheckpoint>> loadCheckpoint(String keyspace, int partition) {
             return Promise.success(saved);
+        }
+
+        @Override
+        public boolean recordsLineage() {
+            return true;
         }
 
         /// The identity of the records ending at `offset` as this copy holds them (a digest of the last four), none below `sealedBelow`.
