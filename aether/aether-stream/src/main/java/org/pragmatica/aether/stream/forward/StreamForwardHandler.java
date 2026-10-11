@@ -408,7 +408,7 @@ final class DefaultStreamForwardHandler implements StreamForwardHandler {
                                                request.partition())
                                  .fold(cause -> ReadForwardResponse.failureResponse(selfNodeId,
                                                                                     request.correlationId(),
-                                                                                    cause.message()),
+                                                                                    HttpError.clientMessage(cause)),
                                        answer::withHistory)
                : answer;
     }
