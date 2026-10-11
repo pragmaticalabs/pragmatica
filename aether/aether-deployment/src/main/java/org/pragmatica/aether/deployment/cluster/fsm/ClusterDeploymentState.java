@@ -3184,6 +3184,15 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         /// current version, bounded by [#MAX_OUTCOME_MERGE_ATTEMPTS]. The ALL_OR_NOTHING FAILED and ROLLED_BACK
         /// terminals get the same treatment from [#submitRollback], which rebuilds its commands on a refusal.
         private void recordSucceededOutcome(BlueprintId blueprintId, String attemptId) {
+            if (succeededOutcomeSettled(blueprintId, attemptId)) {
+                log.debug("SUCCEEDED outcome for blueprint {} not written — a terminal for attempt {} is already committed,"
+                         + " or the id no longer carries that attempt",
+                          blueprintId.asString(),
+                          attemptId);
+
+                return;
+            }
+
             submitSucceededOutcome(blueprintId, attemptId, 0);
         }
 
@@ -3218,9 +3227,16 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             submitSucceededOutcome(blueprintId, attemptId, attempt + 1);
         }
 
-        /// Nothing left to write: a terminal for this attempt is committed (its own SUCCEEDED, or a BEST_EFFORT
-        /// FAILED a retry must not regress), or the id no longer carries this attempt (a newer publish owns it,
-        /// or the blueprint is gone), so there is no apply of ours to close.
+        /// Nothing left to write, for the first SUCCEEDED write as for its retries: a terminal for this attempt is
+        /// committed, or the id no longer carries this attempt (a newer publish owns it, or the blueprint is
+        /// gone), so there is no apply of ours to close.
+        ///
+        /// The first terminal of an attempt wins. A BEST_EFFORT FAILED is not a guess written on a timeout: it is
+        /// this FSM's own decision that a slice is permanently failed (deterministic failure, or retry budget
+        /// spent), after which the artifact is refused redeployment, the operator has been told and a
+        /// `DeploymentFailed` has been emitted. A later completion (another instance of that artifact reaching
+        /// ACTIVE) must not erase its `failingSlices`, and the durable-state repair already refused to.
+        /// IN_PROGRESS (this attempt's or an earlier one's terminal) is the only state a SUCCEEDED replaces.
         private boolean succeededOutcomeSettled(BlueprintId blueprintId, String attemptId) {
             var terminalForAttempt = committedOutcome(DeploymentOutcomeKey.deploymentOutcomeKey(blueprintId)).filter(outcome -> outcome.describesAttempt(attemptId))
                                                      .filter(outcome -> outcome.status() != DeploymentOutcomeStatus.IN_PROGRESS)

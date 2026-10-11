@@ -13,6 +13,8 @@ import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.AppB
 import org.pragmatica.aether.deployment.cluster.fsm.ClusterDeploymentEvents.NodeArtifactPutReceived;
 import org.pragmatica.aether.deployment.schema.SchemaOrchestratorService;
 import org.pragmatica.aether.slice.SliceLoadingFailure.Unrecognised;
+import org.pragmatica.cluster.state.kvstore.KVStoreNotification;
+import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
 import org.pragmatica.aether.slice.blueprint.ExpandedBlueprint;
 import org.pragmatica.aether.slice.blueprint.ResolvedSlice;
@@ -426,6 +428,339 @@ class AttemptBoundOutcomeTest {
         assertThat(node.succeededPutsFor(FIRST_ATTEMPT)).as("no retry after deactivation").isEqualTo(1);
     }
 
+    /// P1: after a SUCCEEDED for the committed attempt, later reports (slice ACTIVE again, then failures past the
+    /// retry budget) must not move the record at all: same status, attempt AND version.
+    @Test
+    void terminalSurvivesLaterReports_unchanged() {
+        var expanded = blueprint(3);
+
+        applyBlueprint(leaderHarness, leaderStore, expanded, FIRST_ATTEMPT, 1L);
+        completeInFlightApplyOnly(leaderHarness);
+        var before = outcome(leaderStore, expanded.id()).unwrap();
+
+        assertThat(before.status()).isEqualTo(DeploymentOutcomeStatus.SUCCEEDED);
+        bringUp(leaderHarness);
+        exhaustRetryBudgetOn(leaderHarness, SELF, SLICE);
+        completeInFlightApplyOnly(leaderHarness);
+        var after = outcome(leaderStore, expanded.id()).unwrap();
+
+        assertThat(after).as("record untouched by later reports").isEqualTo(before);
+    }
+
+    /// P2: the store is AHEAD of the FSM: attempt 2 committed (blueprint + IN_PROGRESS v2) but its notification
+    /// has not reached the FSM, which still tracks attempt 1. Attempt 1's apply completes. Observe what lands, then
+    /// deliver attempt 2's notification and complete: the final record must be attempt 2's SUCCEEDED.
+    @Test
+    void storeAheadOfFsm_staleAttemptCompletes_thenNewerConverges() {
+        var first = blueprint(3);
+        var second = blueprint(2);
+
+        applyBlueprint(leaderHarness, leaderStore, first, FIRST_ATTEMPT, 1L);
+        seed(leaderStore,
+             new KVCommand.Put<>(AppBlueprintKey.appBlueprintKey(first.id()),
+                                 AppBlueprintValue.appBlueprintValue(second, false, SECOND_ATTEMPT)),
+             new KVCommand.Put<>(DeploymentOutcomeKey.deploymentOutcomeKey(first.id()),
+                                 DeploymentOutcomeValue.inProgress(5L, 2L, SECOND_ATTEMPT)));
+        completeInFlightApplyOnly(leaderHarness);
+        leaderHarness.dispatch(new AppBlueprintPutReceived(appBlueprintPut(second, SECOND_ATTEMPT)));
+        completeInFlightApplyOnly(leaderHarness);
+        bringUp(leaderHarness);
+
+        assertThat(outcomeStatusName(leaderStore, first.id())).isEqualTo(DeploymentOutcomeStatus.SUCCEEDED.name());
+        assertThat(outcomeAttempt(leaderStore, first.id())).isEqualTo(SECOND_ATTEMPT);
+    }
+
+    /// P2b: the store is ahead AND the newer attempt already holds a TERMINAL (FAILED v2 for attempt 2); the FSM
+    /// still tracks attempt 1, whose apply completes. Does attempt 1's SUCCEEDED regress attempt 2's terminal?
+    @Test
+    void storeAheadOfFsm_newerAttemptsTerminal_isNotRegressedByStaleSucceeded() {
+        var first = blueprint(3);
+        var second = blueprint(2);
+
+        applyBlueprint(leaderHarness, leaderStore, first, FIRST_ATTEMPT, 1L);
+        seed(leaderStore,
+             new KVCommand.Put<>(AppBlueprintKey.appBlueprintKey(first.id()),
+                                 AppBlueprintValue.appBlueprintValue(second, false, SECOND_ATTEMPT)),
+             new KVCommand.Put<>(DeploymentOutcomeKey.deploymentOutcomeKey(first.id()),
+                                 DeploymentOutcomeValue.failed(List.of(SLICE.asString()), "newer failed", 5L, 2L, SECOND_ATTEMPT)));
+        completeInFlightApplyOnly(leaderHarness);
+
+        assertThat(outcomeAttempt(leaderStore, first.id())).as("newer attempt's FAILED stands").isEqualTo(SECOND_ATTEMPT);
+        assertThat(outcomeStatusName(leaderStore, first.id())).isEqualTo(DeploymentOutcomeStatus.FAILED.name());
+    }
+
+    /// P3: leader change between apply and confirm. Old leader's SUCCEEDED is refused (IN_PROGRESS v2 own attempt
+    /// raced in) and it deactivates before confirming. A NEW leader over the same store must heal it.
+    @Test
+    void leaderChangeBetweenApplyAndConfirm_newLeaderHeals() {
+        var store = storeWithLeader();
+        var node = new SucceededRaceClusterNode(SELF, store);
+        var harness = leaderHarness(node, store, DeploymentAtomicity.ALL_OR_NOTHING);
+        var expanded = blueprint(3);
+
+        applyBlueprint(harness, store, expanded, FIRST_ATTEMPT, 1L);
+        var active = activeState(harness);
+
+        node.beforeFirstSucceededPut(() -> {
+            seed(store,
+                 new KVCommand.Put<>(DeploymentOutcomeKey.deploymentOutcomeKey(expanded.id()),
+                                     DeploymentOutcomeValue.inProgress(5L, 2L, FIRST_ATTEMPT)));
+            active.deactivated().set(true);
+        });
+        completeInFlightApplyOnly(harness);
+        assertThat(outcomeStatusName(store, expanded.id())).as("precondition: old leader left IN_PROGRESS").isEqualTo(DeploymentOutcomeStatus.IN_PROGRESS.name());
+
+        var newLeader = leaderHarness(new HoldingClusterNode(SELF, store), store, DeploymentAtomicity.ALL_OR_NOTHING);
+
+        bringUp(newLeader);
+
+        assertThat(outcomeStatusName(store, expanded.id())).as("new leader's repair writes the terminal").isEqualTo(DeploymentOutcomeStatus.SUCCEEDED.name());
+        assertThat(outcomeAttempt(store, expanded.id())).isEqualTo(FIRST_ATTEMPT);
+    }
+
+    /// P4: BEST_EFFORT terminal FAILED(own attempt) is committed, then the in-flight apply completes (every slice
+    /// ACTIVE). First submit has no terminal guard; the confirm treats a terminal-for-attempt as settled. Observe.
+    @Test
+    void bestEffortFailedOwnAttempt_thenInFlightCompletes_keepsTheFailed() {
+        var store = storeWithLeader();
+        var harness = leaderHarness(new HoldingClusterNode(SELF, store), store, DeploymentAtomicity.BEST_EFFORT);
+        var expanded = blueprint(3);
+
+        applyBlueprint(harness, store, expanded, FIRST_ATTEMPT, 1L);
+        seed(store,
+             new KVCommand.Put<>(DeploymentOutcomeKey.deploymentOutcomeKey(expanded.id()),
+                                 DeploymentOutcomeValue.failed(List.of(SLICE.asString()), "best-effort slice failed", 5L, 2L, FIRST_ATTEMPT)));
+        completeInFlightApplyOnly(harness);
+
+        assertThat(outcomeStatusName(store, expanded.id())).as("a FAILED terminal for the attempt is not overwritten").isEqualTo(DeploymentOutcomeStatus.FAILED.name());
+    }
+
+    /// P5: the blueprint is DELETED (blueprint + outcome removed) while the FSM still tracks the apply; then the
+    /// apply completes. Does the stale in-flight apply resurrect an outcome for a deleted blueprint?
+    @Test
+    void deleteWhileApplyInFlight_thenCompletes_writesNoOutcome() {
+        var expanded = blueprint(3);
+
+        applyBlueprint(leaderHarness, leaderStore, expanded, FIRST_ATTEMPT, 1L);
+        seed(leaderStore,
+             new KVCommand.Remove<AetherKey>(AppBlueprintKey.appBlueprintKey(expanded.id())),
+             new KVCommand.Remove<AetherKey>(DeploymentOutcomeKey.deploymentOutcomeKey(expanded.id())));
+        leaderHarness.dispatch(new ClusterDeploymentEvents.AppBlueprintRemoveReceived(new KVStoreNotification.ValueRemove<>(new KVCommand.Remove<>(AppBlueprintKey.appBlueprintKey(expanded.id())),
+                                                                                                                         Option.some(AppBlueprintValue.appBlueprintValue(expanded, false, FIRST_ATTEMPT)))));
+        completeInFlightApplyOnly(leaderHarness);
+
+        assertThat(outcome(leaderStore, expanded.id())).as("no outcome resurrected for a deleted blueprint").isEqualTo(Option.none());
+    }
+
+    /// P7: a rollback refused EVERY time is bounded: one submission plus MAX_OUTCOME_MERGE_ATTEMPTS (5) rebuilds.
+    @Test
+    void rollbackRefusedEveryTime_isSubmittedExactlySixTimes() {
+        var store = storeWithLeader();
+        var node = new InterferingClusterNode(SELF, store);
+        var harness = leaderHarness(node, store, DeploymentAtomicity.ALL_OR_NOTHING);
+        var expanded = blueprint(3);
+
+        applyBlueprint(harness, store, expanded, FIRST_ATTEMPT, 1L);
+        node.beforeEveryTransaction(() -> bumpOutcome(store, expanded.id(), FIRST_ATTEMPT));
+        exhaustRetryBudgetOn(harness, SELF, SLICE);
+
+        assertThat(node.transactions()).isEqualTo(6);
+        assertThat(committedBlueprint(store, expanded.id())).as("never applied").isNotEqualTo(Option.none());
+    }
+
+    /// P8: the leader deactivates between the rollback apply and its confirmation: no resubmission.
+    @Test
+    void rollbackRefusedWhileTheLeaderDeactivates_isNotResubmitted() {
+        var store = storeWithLeader();
+        var node = new InterferingClusterNode(SELF, store);
+        var harness = leaderHarness(node, store, DeploymentAtomicity.ALL_OR_NOTHING);
+        var expanded = blueprint(3);
+
+        applyBlueprint(harness, store, expanded, FIRST_ATTEMPT, 1L);
+        var active = activeState(harness);
+
+        node.beforeFirstTransaction(() -> {
+            bumpOutcome(store, expanded.id(), FIRST_ATTEMPT);
+            active.deactivated().set(true);
+        });
+        exhaustRetryBudgetOn(harness, SELF, SLICE);
+
+        assertThat(node.transactions()).as("no resubmission after deactivation").isEqualTo(1);
+    }
+
+    /// P9: the rollback is refused because the outcome record moved to a terminal of ANOTHER attempt. That is not
+    /// this rollback's terminal, so the rollback must be rebuilt and land.
+    @Test
+    void rollbackRefusedByAnotherAttemptsTerminal_isNotMistakenForLanded() {
+        var store = storeWithLeader();
+        var node = new InterferingClusterNode(SELF, store);
+        var harness = leaderHarness(node, store, DeploymentAtomicity.ALL_OR_NOTHING);
+        var expanded = blueprint(3);
+
+        applyBlueprint(harness, store, expanded, FIRST_ATTEMPT, 1L);
+        node.beforeFirstTransaction(() -> seed(store,
+                                               new KVCommand.Put<>(DeploymentOutcomeKey.deploymentOutcomeKey(expanded.id()),
+                                                                   DeploymentOutcomeValue.failed(List.of(SLICE.asString()), PREVIOUS_CAUSE, 5L, 2L, "attempt-0"))));
+        exhaustRetryBudgetOn(harness, SELF, SLICE);
+
+        assertThat(node.transactions()).isEqualTo(2);
+        assertThat(committedBlueprint(store, expanded.id())).isEqualTo(Option.none());
+        assertThat(outcomeAttempt(store, expanded.id())).isEqualTo(FIRST_ATTEMPT);
+    }
+
+    /// P10: the blueprint is deleted (blueprint + outcome removed) between the rollback build and its apply. The
+    /// rollback is superseded: it must not write a FAILED outcome for a deleted blueprint.
+    @Test
+    void rollbackRefusedByADelete_isAbandoned_notRebuiltIntoAnOrphanOutcome() {
+        var store = storeWithLeader();
+        var node = new InterferingClusterNode(SELF, store);
+        var harness = leaderHarness(node, store, DeploymentAtomicity.ALL_OR_NOTHING);
+        var expanded = blueprint(3);
+
+        applyBlueprint(harness, store, expanded, FIRST_ATTEMPT, 1L);
+        node.beforeFirstTransaction(() -> seed(store,
+                                               new KVCommand.Remove<AetherKey>(AppBlueprintKey.appBlueprintKey(expanded.id())),
+                                               new KVCommand.Remove<AetherKey>(DeploymentOutcomeKey.deploymentOutcomeKey(expanded.id()))));
+        exhaustRetryBudgetOn(harness, SELF, SLICE);
+
+        assertThat(node.transactions()).isEqualTo(1);
+        assertThat(outcome(store, expanded.id())).as("no outcome resurrected for a deleted blueprint").isEqualTo(Option.none());
+    }
+
+    /// P11: a same-id rollback restores the previous blueprint and must remove the SliceTarget of a slice only the
+    /// rolled-back attempt brought in (nothing else would: there is no Remove of the blueprint).
+    @Test
+    void sameIdRestore_removesTheSliceTargetOnlyTheRolledBackAttemptAdded() {
+        var id = BlueprintId.blueprintId("com.example:app:1.0.0").unwrap();
+        var first = ExpandedBlueprint.expandedBlueprint(id, List.of(ResolvedSlice.resolvedSlice(SLICE, 3, false).unwrap()));
+        var second = ExpandedBlueprint.expandedBlueprint(id,
+                                                         List.of(ResolvedSlice.resolvedSlice(SLICE, 3, false).unwrap(),
+                                                                 ResolvedSlice.resolvedSlice(SLICE_B, 1, false).unwrap()));
+        var targetB = AetherKey.SliceTargetKey.sliceTargetKey(SLICE_B.base());
+
+        applyBlueprint(leaderHarness, leaderStore, first, FIRST_ATTEMPT, 1L);
+        applyBlueprint(leaderHarness, leaderStore, second, SECOND_ATTEMPT, 2L);
+        assertThat(leaderStore.get(targetB).isPresent()).as("precondition: the second attempt created slice-b's target").isTrue();
+        exhaustRetryBudgetOn(leaderHarness, SELF, SLICE);
+
+        assertThat(outcomeStatusName(leaderStore, id)).as("precondition: rolled back").isEqualTo(DeploymentOutcomeStatus.ROLLED_BACK.name());
+        assertThat(committedBlueprint(leaderStore, id)).isEqualTo(Option.some(first));
+        assertThat(leaderStore.get(targetB).isPresent()).as("slice-b's target is removed with the abandoned slice").isFalse();
+    }
+
+    /// P12: the unload-path rollback lands, and THEN the instances of the blueprint's slices are told to UNLOAD.
+    @Test
+    void unloadPathRollback_deallocatesTheInstancesOnceLanded() {
+        var expanded = twoSliceBlueprint();
+
+        applyBlueprint(leaderHarness, leaderStore, expanded, FIRST_ATTEMPT, 1L);
+        leaderHarness.dispatch(new NodeArtifactPutReceived(replayOn(NODE_A, SLICE, activeInstance())));
+        exhaustRetryBudgetOn(leaderHarness, SELF, SLICE_B);
+
+        assertThat(outcomeStatusName(leaderStore, expanded.id())).as("precondition: the rollback landed").isEqualTo(DeploymentOutcomeStatus.FAILED.name());
+        assertThat(nodeArtifactState(leaderStore, NODE_A, SLICE)).as("the landed rollback deallocates the active instance").isEqualTo(SliceState.UNLOAD);
+    }
+
+    /// P13: a same-id restore lands, and THEN the slice only the rolled-back attempt added is deallocated.
+    @Test
+    void sameIdRestore_deallocatesTheAbandonedSliceOnceLanded() {
+        var id = BlueprintId.blueprintId("com.example:app:1.0.0").unwrap();
+        var first = ExpandedBlueprint.expandedBlueprint(id, List.of(ResolvedSlice.resolvedSlice(SLICE, 3, false).unwrap()));
+        var second = twoSliceBlueprint();
+
+        applyBlueprint(leaderHarness, leaderStore, first, FIRST_ATTEMPT, 1L);
+        applyBlueprint(leaderHarness, leaderStore, second, SECOND_ATTEMPT, 2L);
+        leaderHarness.dispatch(new NodeArtifactPutReceived(replayOn(NODE_A, SLICE_B, activeInstance())));
+        exhaustRetryBudgetOn(leaderHarness, SELF, SLICE);
+
+        assertThat(outcomeStatusName(leaderStore, id)).as("precondition: rolled back").isEqualTo(DeploymentOutcomeStatus.ROLLED_BACK.name());
+        assertThat(outcomeAttempt(leaderStore, id)).as("the ROLLED_BACK closes the rolled-back attempt").isEqualTo(SECOND_ATTEMPT);
+        assertThat(nodeArtifactState(leaderStore, NODE_A, SLICE_B)).as("the abandoned slice's instance is deallocated").isEqualTo(SliceState.UNLOAD);
+    }
+
+    /// P6: BEST_EFFORT failure merge. The record is bumped by an EARLIER attempt's late FAILED naming the same slice
+    /// just before this attempt's merge applies (refused by the fence). The confirmation must not read the earlier
+    /// attempt's record as "landed".
+    @Test
+    void bestEffortFailureRefusedByEarlierAttemptsRecord_isRetriedAndLandsForOwnAttempt() {
+        var store = storeWithLeader();
+        var node = new FailedRaceClusterNode(SELF, store);
+        var harness = leaderHarness(node, store, DeploymentAtomicity.BEST_EFFORT);
+        var expanded = blueprint(3);
+
+        applyBlueprint(harness, store, expanded, SECOND_ATTEMPT, 1L);
+        node.beforeFirstFailedPut(() -> seed(store,
+                                             new KVCommand.Put<>(DeploymentOutcomeKey.deploymentOutcomeKey(expanded.id()),
+                                                                 DeploymentOutcomeValue.failed(List.of(SLICE.asString()), PREVIOUS_CAUSE, 5L, 2L, FIRST_ATTEMPT))));
+        exhaustRetryBudgetOn(harness, SELF, SLICE);
+
+        assertThat(outcomeAttempt(store, expanded.id())).as("the record ends up closing the committed attempt").isEqualTo(SECOND_ATTEMPT);
+        assertThat(outcomeStatusName(store, expanded.id())).isEqualTo(DeploymentOutcomeStatus.FAILED.name());
+    }
+
+    private static void bumpOutcome(KVStore<AetherKey, AetherValue> store, BlueprintId id, String attempt) {
+        seed(store,
+             new KVCommand.Put<>(DeploymentOutcomeKey.deploymentOutcomeKey(id),
+                                 DeploymentOutcomeValue.inProgress(5L, outcomeVersion(store, id) + 1, attempt)));
+    }
+
+    private static long outcomeVersion(KVStore<AetherKey, AetherValue> store, BlueprintId id) {
+        return outcome(store, id).map(DeploymentOutcomeValue::outcomeVersion).or(-1L);
+    }
+
+    private static SliceState nodeArtifactState(KVStore<AetherKey, AetherValue> store, NodeId node, Artifact artifact) {
+        return store.get(NodeArtifactKey.nodeArtifactKey(node, artifact))
+                    .filter(value -> value instanceof NodeArtifactValue)
+                    .map(value -> ((NodeArtifactValue) value).state())
+                    .or(SliceState.LOADING);
+    }
+
+    private static ExpandedBlueprint twoSliceBlueprint() {
+        var id = BlueprintId.blueprintId("com.example:app:1.0.0").unwrap();
+
+        return ExpandedBlueprint.expandedBlueprint(id,
+                                                   List.of(ResolvedSlice.resolvedSlice(SLICE, 3, false).unwrap(),
+                                                           ResolvedSlice.resolvedSlice(SLICE_B, 1, false).unwrap()));
+    }
+
+    private static final class FailedRaceClusterNode implements ClusterNode<KVCommand<AetherKey>> {
+        private final NodeId self;
+        private final KVStore<AetherKey, AetherValue> kvStore;
+        private Runnable interference = () -> {};
+
+        private FailedRaceClusterNode(NodeId self, KVStore<AetherKey, AetherValue> kvStore) {
+            this.self = self;
+            this.kvStore = kvStore;
+        }
+
+        void beforeFirstFailedPut(Runnable interference) {
+            this.interference = interference;
+        }
+
+        @Override public NodeId self() {return self;}
+
+        @Override public TopologyManager topologyManager() {return stubTopologyManager(self);}
+
+        @Override public Promise<Unit> start() {return Promise.unitPromise();}
+
+        @Override public Promise<Unit> stop() {return Promise.unitPromise();}
+
+        @Override public <R> Promise<List<R>> apply(List<KVCommand<AetherKey>> batch) {
+            var failedForSecond = batch.stream().anyMatch(command -> command instanceof KVCommand.Put<AetherKey, ?> put
+                                                                      && put.value() instanceof DeploymentOutcomeValue outcome
+                                                                      && outcome.status() == DeploymentOutcomeStatus.FAILED
+                                                                      && outcome.attemptId().equals(SECOND_ATTEMPT));
+            if (failedForSecond) {
+                var once = interference;
+                interference = () -> {};
+                once.run();
+            }
+            kvStore.process(kvStore.createBatch(batch));
+
+            return Promise.success(Collections.emptyList());
+        }
+    }
+
     /// Runs `interference` once, just before the first batch that carries a SUCCEEDED outcome Put is applied, as
     /// a competing writer committed ahead of it would.
     private static final class SucceededRaceClusterNode implements ClusterNode<KVCommand<AetherKey>> {
@@ -497,6 +832,13 @@ class AttemptBoundOutcomeTest {
             this.interference = interference;
         }
 
+        private boolean repeating;
+
+        void beforeEveryTransaction(Runnable interference) {
+            this.interference = interference;
+            this.repeating = true;
+        }
+
         int transactions() {
             return transactions;
         }
@@ -513,7 +855,7 @@ class AttemptBoundOutcomeTest {
             if (batch.stream().anyMatch(KVCommand.LeaderTransaction.class::isInstance)) {
                 transactions++;
                 var once = interference;
-                interference = () -> {};
+                interference = repeating ? once : () -> {};
                 once.run();
             }
             kvStore.process(kvStore.createBatch(batch));
