@@ -192,6 +192,11 @@ public interface ClusterDeploymentManager {
     /// `ClusterDeploymentContext`, not a new contract.
     SchemaOrchestratorService schemaOrchestrator();
 
+    /// #1109: binds the sink the leader raises its operator warnings to (a LOAD the committed-target gate has refused past the bound).
+    /// Log-only until bound; never a process-wide sink.
+    @Contract
+    void setOperatorWarningSink(org.pragmatica.utility.warning.OperatorWarningSink sink);
+
     /// #731 round 3: re-runs the dead-worker sweep as soon as a governor's reannouncement commits,
     /// instead of relying solely on the one-shot `deferredTopologyRecheck` timer to catch a worker
     /// that was absent from every roster only transiently.
@@ -503,6 +508,12 @@ public interface ClusterDeploymentManager {
 
         public ClusterDeploymentContext context() {
             return ctx;
+        }
+
+        @Contract
+        @Override
+        public void setOperatorWarningSink(org.pragmatica.utility.warning.OperatorWarningSink sink) {
+            ctx.setOperatorWarningSink(sink);
         }
 
         @Override

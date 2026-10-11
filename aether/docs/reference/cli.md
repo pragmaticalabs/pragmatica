@@ -1821,8 +1821,8 @@ aether stream show orders:order-events:1.0.0
 Show per-node replica state for a stream partition — the replication/backfill-health sensor for the stream-replication class (#260/#261/#333). Renders a per-replica table (each replica's `STATE` — `SYNCING`/`CAUGHT_UP`/`LAGGING` — its `CONFIRMED` acked offset, and whether it is the partition's HRW owner) and surfaces the partition-level fields (`hrwOwner`, `servedByOwner`, `ownerHeadOffset`, `earliestRetainedOffset`, `ownerActivationBlock`) in `--format json`. A non-empty `ownerActivationBlock` names why the owner's promotion waits for an operator (#1555: a divergent peer, or members unreachable past the alarm window). Compare a `CAUGHT_UP` replica's `CONFIRMED` against `ownerHeadOffset` to spot the #333 write-idle residual (a replica that reports caught-up but lags the owner's true tail).
 
 **`<stream>` means something different depending on `--local` (#753):**
-- **Without `--local`** (default): `<stream>` must be a full `namespace:stream:version` catalog address — there is no bare-name-defaults-to-`system` convenience here (unlike `streams status/publish/read/delete`), because the raw engine key a `--local` query needs and the catalog address this path needs are two different shapes for a non-`system` stream, and silently guessing between them is worse than requiring the caller to say which one. Dispatches to the catalog-form `STREAM_REPLICAS` route.
-- **With `--local`**: `<stream>` is the partition manager's raw *engine key* (`StreamManager#engineKey` — bare name for `system`-namespace streams, e.g. `cluster-events`; the full `namespace:stream:version` triple for any other namespace), passed through unparsed. Dispatches to `STREAM_REPLICAS_LOCAL`, keyed on that engine key rather than the catalog address.
+- **Without `--local`** (default): `<stream>` must be a full `namespace:stream:version` catalog address — there is no bare-name-defaults-to-`system` convenience here (unlike `streams status/publish/read/delete`), because a bare name would silently mean a different stream than the one the caller intends (#1044), so the caller must say which one. Dispatches to the catalog-form `STREAM_REPLICAS` route.
+- **With `--local`**: `<stream>` is the partition manager's raw *engine key* (`StreamManager#engineKey` — the full `namespace:stream:version` triple in every namespace, `system` included, e.g. `system:cluster-events:1.0.0`), passed through unparsed. Dispatches to `STREAM_REPLICAS_LOCAL`, keyed on that engine key rather than the catalog address.
 
 **Owner authority:** the answering node's `ReplicaRegistry` holds the complete per-peer watermark view only when that node IS the partition's HRW owner (`servedByOwner: true`). Since #1039 the default query is **owner-forwarded**: whichever node you address resolves the partition's HRW owner and forwards there, so a successful answer is the authoritative set (`servedByOwner: true`) from any management port. Before #1039 it was served by an arbitrary STREAMING-capable delegate, which reported `servedByOwner: false` with an empty replica table on every port — indistinguishable from a partition that holds nothing.
 
@@ -1837,7 +1837,7 @@ aether stream replicas system:cluster-events:1.0.0 0
 aether stream replicas system:cluster-events:1.0.0 0 --format json
 
 # Per-node view: what THIS node's registry holds, never forwarded, engine key form (#490)
-aether stream replicas cluster-events 0 --local
+aether stream replicas system:cluster-events:1.0.0 0 --local
 aether stream replicas orders:order-events:1.0.0 0 --local
 ```
 
