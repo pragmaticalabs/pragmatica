@@ -3374,7 +3374,6 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
 
                 return;
             }
-
             // An absent blueprint was deleted while its apply was in flight. The deletion supersedes the rollback,
             // and an outcome written for a deleted id is an orphan record the status route would report.
             if (rolledBack.isEmpty()) {
