@@ -96,16 +96,19 @@ import org.slf4j.LoggerFactory;
 ///
 /// **At-least-once delivery per partition, conditional on the slice being ACTIVE on at least one live
 /// node.** Duplicates arise from redelivery after a handler failure under `RETRY`; from resuming at the
-/// last checkpoint (≤1000 events or ≤1s of progress — 500ms for durable-topic groups) rather than the
-/// last delivered offset after an UNGRACEFUL move — a graceful detach flushes the exact cursor; and from
+/// last checkpoint (≤1000 events or ≤1s of progress — 500ms for durable-topic groups, while the partition
+/// keeps receiving events) rather than the last delivered offset after an UNGRACEFUL move — a graceful
+/// detach flushes the exact cursor; and from
 /// the BOUNDED reassignment overlap below. This is NOT effectively-once, and it is NOT a guarantee of a
 /// single deliverer at every instant.
 ///
-/// Replay after an ungraceful move is bounded by that checkpoint cadence, and the cadence is
-/// DELIVERY-driven, not timer-driven: `ConsumerRuntimeState.checkpointIfNeeded` runs only from
-/// `advanceCursor`, so the time half is evaluated when the NEXT delivery lands. A lone trailing event
-/// stays un-checkpointed until then, and a loser that detaches without a final flush (below) hands it to
-/// the successor again (#1385).
+/// Replay after an ungraceful move is bounded by that checkpoint cadence only while the partition keeps
+/// receiving events, because the cadence is DELIVERY-driven, not timer-driven:
+/// `ConsumerRuntimeState.checkpointIfNeeded` runs only from `advanceCursor`, so the time half is
+/// evaluated when the NEXT delivery lands. A lone trailing event stays un-checkpointed until then, and a
+/// loser that detaches without a final flush (below) hands it to the successor again. A partition whose
+/// events all land inside its first interval after attach and then goes quiet never commits a checkpoint,
+/// so an ungraceful move replays it from offset 0; at-least-once holds, the bound does not (#1385).
 ///
 /// **Assignment fencing (#1271).** Which node delivers a `(group, partition)` is decided by a COMMITTED
 /// record ([ConsumerAssignmentWriter], leader-only), not by each node's own view:
