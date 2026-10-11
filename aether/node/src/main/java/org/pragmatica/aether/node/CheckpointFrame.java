@@ -72,30 +72,25 @@ final class CheckpointFrame {
                                                             .orElse(-1L) == offset;
     }
 
-    /// Epoch (when known) and the SHA-256 of the records' offsets and bytes, oldest first.
-    static Option<byte[]> lineageOf(List<RawEvent> events, Option<Epoch> epoch) {
+    /// The owner epoch and the SHA-256 of the records' offsets and bytes, oldest first.
+    static Option<byte[]> lineageOf(List<RawEvent> events, Epoch epoch) {
         return Result.lift(() -> MessageDigest.getInstance("SHA-256"))
                      .map(digest -> digestOf(digest, events, epoch))
                      .option();
     }
 
-    private static byte[] digestOf(MessageDigest digest, List<RawEvent> events, Option<Epoch> epoch) {
+    private static byte[] digestOf(MessageDigest digest, List<RawEvent> events, Epoch epoch) {
         events.forEach(event -> {
             digest.update(ByteBuffer.allocate(Long.BYTES).putLong(event.offset()).array());
             digest.update(event.data());
         });
         var identity = digest.digest();
 
-        return epoch.map(known -> ByteBuffer.allocate(1 + 3 * Long.BYTES + identity.length)
-                                            .put((byte) 1)
-                                            .putLong(known.incarnation())
-                                            .putLong(known.rabiaTerm())
-                                            .putLong(known.localCounter())
-                                            .put(identity)
-                                            .array())
-                    .or(() -> ByteBuffer.allocate(1 + identity.length)
-                                        .put((byte) 0)
-                                        .put(identity)
-                                        .array());
+        return ByteBuffer.allocate(3 * Long.BYTES + identity.length)
+                         .putLong(epoch.incarnation())
+                         .putLong(epoch.rabiaTerm())
+                         .putLong(epoch.localCounter())
+                         .put(identity)
+                         .array();
     }
 }

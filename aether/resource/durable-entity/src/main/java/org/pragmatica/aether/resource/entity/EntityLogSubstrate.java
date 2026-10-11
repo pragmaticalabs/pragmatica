@@ -126,10 +126,23 @@ public interface EntityLogSubstrate {
         return false;
     }
 
+    /// The identity [#lineageAt] answers when this copy holds the record but cannot vouch for the owner epoch it was written under (a copy
+    /// that keeps no epoch history). Empty: it is never the same lineage as anything, itself included ([#sameLineage]), so a checkpoint
+    /// recorded or checked under it is discarded rather than trusted on a digest alone.
+    byte[] UNVOUCHED = new byte[0];
+
+    /// Whether two identities name the same lineage: equal, and neither [#UNVOUCHED].
+    static boolean sameLineage(byte[] recorded, byte[] local) {
+        return recorded.length > 0
+               && local.length > 0
+               && java.util.Arrays.equals(recorded, local);
+    }
+
     /// The identity of the log record at `offset` as THIS node's copy holds it (#2087 B4-cut): a digest of the records ending there plus the
     /// owner epoch the node knows for it. A checkpoint records it when it is taken; a node seeding from the checkpoint compares it with its own,
     /// because a cut can remove acknowledged records (the bounded promotion escape) and a new lineage can then grow past the offset the
-    /// checkpoint claims, so "the claim is within my log" does not mean "my log holds what the claim folded". None when the record cannot be
+    /// checkpoint claims, so "the claim is within my log" does not mean "my log holds what the claim folded". [#UNVOUCHED] when the owner epoch of the
+    /// record is not known here. None when the record cannot be
     /// read here (evicted or sealed: below the sealed floor, which a cut never crosses) or the substrate keeps no lineage. The default keeps none.
     default Option<byte[]> lineageAt(String keyspace, int partition, long offset) {
         return Option.none();

@@ -663,10 +663,9 @@ public final class StreamEntityLogSubstrate implements EntityLogSubstrate {
                                              (int)(offset - from + 1L))
                                .option()
                                .filter(events -> CheckpointFrame.coversWindow(events, from, offset))
-                               .flatMap(events -> CheckpointFrame.lineageOf(events,
-                                                                            partitionManager.epochAt(stream,
-                                                                                                     partition,
-                                                                                                     offset)));
+                               .flatMap(events -> partitionManager.epochAt(stream, partition, offset)
+                                                                  .fold(() -> Option.some(UNVOUCHED),
+                                                                        epoch -> CheckpointFrame.lineageOf(events, epoch)));
     }
 
     public Promise<Unit> saveCheckpoint(String keyspace, int partition, long throughOffset, byte[] snapshot) {

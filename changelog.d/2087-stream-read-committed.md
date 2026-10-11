@@ -35,3 +35,4 @@
   log and a mismatch discards the checkpoint and rebuilds from the log. The cut's generation bracket now closes on every exit, including a failed
   ring shrink. `[verified: EntityCheckpointCutTest, CutBracketTest]`
 - A checkpoint with no recorded lineage (written by older code) is discarded when a fold would seed from it, and the fold is rebuilt from the log. `[verified: EntityCheckpointCutTest, EntityCommittedReadTest]`
+- A checkpoint's lineage identity includes the owner epoch, and a copy that cannot supply the epoch of the claim record (it keeps no epoch history) discards the checkpoint instead of trusting a digest alone. `[verified: EntityCheckpointCutTest, EntityCommittedReadTest]`

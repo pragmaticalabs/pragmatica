@@ -839,14 +839,16 @@ final class EntityFold {
     ///   - Recorded, and this node cannot read the record at the claim: it lies below the sealed floor, and a cut is refused at or below that
     ///     floor (`requireAboveSealedFloor`), so the record cannot have been cut; the checkpoint is accepted (it is what makes the unreadable
     ///     prefix a non-event).
-    ///   - Recorded and readable: accepted only if the identities are equal.
+    ///   - Recorded and readable: accepted only if the identities are equal and both are vouched for. A copy that cannot supply the owner
+    ///     epoch of the claim record answers [EntityLogSubstrate#UNVOUCHED], and the digest alone can false-match there (a new lineage that
+    ///     rewrote a record before the window and reproduced the window), so such a checkpoint is discarded like a lineage-less one.
     private boolean lineageHolds(int partition, EntityLogSubstrate.EntityCheckpoint checkpoint) {
         return ! substrate.recordsLineage() || checkpoint.lineage()
                                                          .map(recorded -> substrate.lineageAt(keyspace,
                                                                                               partition,
                                                                                               checkpoint.throughOffset())
-                                                                                   .map(local -> java.util.Arrays.equals(recorded,
-                                                                                                                         local))
+                                                                                   .map(local -> EntityLogSubstrate.sameLineage(recorded,
+                                                                                                                                local))
                                                                                    .or(true))
                                                          .or(false);
     }

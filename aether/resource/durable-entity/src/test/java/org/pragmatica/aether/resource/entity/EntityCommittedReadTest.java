@@ -323,6 +323,37 @@ class EntityCommittedReadTest {
         assertThat(fold.ready(0).await().isFailure()).as("the checkpoint was discarded and the log below 2 is gone: the rebuild refuses rather than seed").isTrue();
     }
 
+    /// A cut between the contents read and the lineage read would pair contents folded from the removed records with the new lineage's identity;
+    /// the candidate is refused when the fold is no longer the current one after the lineage was read.
+    @Test
+    void aCutDuringTheLineageRead_refusesTheCandidate() {
+        append("k", 1);
+        append("j", 2);
+        substrate.commitThrough(1L);
+        assertThat(fold.checkpointCandidate(0, -1L).isPresent()).as("control: no cut, a candidate").isTrue();
+
+        substrate.duringLineageRead = () -> substrate.cutTo(0L);
+
+        assertThat(fold.checkpointCandidate(0, -1L).isPresent()).as("the contents hold j, cut while the lineage was read").isFalse();
+    }
+
+    /// A copy that cannot vouch for the owner epoch of the claim record (it holds the record, keeps no epoch history) cannot validate a checkpoint:
+    /// it is discarded, whatever the digest says. The snapshot lacks `j`, so a seeded fold is observably wrong.
+    @Test
+    void aCheckpointOverARecordWhoseEpochThisCopyCannotVouchFor_isDiscarded() {
+        append("k", 1);
+        var withoutJ = fold.checkpointCandidate(0, -1L).unwrap();
+
+        append("j", 2);
+        substrate.commitThrough(1L);
+        substrate.unvouched = true;
+        substrate.saveCheckpoint(KEYSPACE, 0, 1L, withoutJ.snapshot(), substrate.lineageAt(KEYSPACE, 0, 1L)).await();
+        substrate.cutGeneration += 2;
+
+        assertThat(fold.ready(0).await().isSuccess()).isTrue();
+        assertThat(fold.get(0, "j").isPresent()).as("discarded and rebuilt from the log; seeded, j would be missing").isTrue();
+    }
+
     /// Control: where the local record at the claim cannot be read (below the sealed floor, which a cut never crosses) the checkpoint is
     /// accepted and is what makes the unreadable prefix a non-event.
     @Test
@@ -487,9 +518,20 @@ class EntityCommittedReadTest {
             return true;
         }
 
+        /// Runs inside every `lineageAt`: a cut that lands while a checkpoint candidate is being assembled.
+        volatile Runnable duringLineageRead = () -> {};
+        /// A copy that holds the record but cannot vouch for its owner epoch.
+        volatile boolean unvouched;
+
         /// The identity of the records ending at `offset` as this copy holds them (a digest of the last four), none below `sealedBelow`.
         @Override
         public Option<byte[]> lineageAt(String keyspace, int partition, long offset) {
+            duringLineageRead.run();
+
+            if (unvouched && offset >= sealedBelow && offset < log.size()) {
+                return Option.some(UNVOUCHED);
+            }
+
             if (offset < sealedBelow || offset >= log.size()) {
                 return Option.none();
             }
