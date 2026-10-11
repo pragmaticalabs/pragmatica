@@ -36,6 +36,7 @@ import org.pragmatica.aether.deployment.membership.fsm.MembershipFsm;
 import org.pragmatica.aether.environment.ClusterName;
 import org.pragmatica.aether.environment.ProvisionContext;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.io.TimeSpan;
@@ -1763,7 +1764,23 @@ public final class LeaderReconciler {
                                  currentMembers,
                                  NodeRole.CORE)
            .onSuccess(disposition -> reconcileInFlightForDisposition(placeholder, disposition))
-           .onFailure(_ -> inFlightProvisioning.remove(placeholder));
+           .onFailure(cause -> reapFailedProvision(placeholder, cause));
+    }
+
+    /// #1111 — a create that failed after the provider may have made the instance (a readiness timeout) is a drop like the other
+    /// three: the entry goes, and so does whatever the provider holds under the placeholder. Only the call that actually removes the
+    /// entry reaps, so a placeholder the ceiling already dropped is not reaped twice.
+    @Contract
+    private void reapFailedProvision(NodeId placeholder, Cause cause) {
+        Option.option(inFlightProvisioning.remove(placeholder))
+              .onPresent(entry -> reapDropped(placeholder, "its create failed: " + cause.message(), false));
+    }
+
+    /// #1111 — every drop of an in-flight replacement hands its instance to the manager's confirmed reap (bounded, confirmed, operator-visible
+    /// when unconfirmed), which never terminates a node that shows life. `seenBefore` is true only when the provider has listed the instance.
+    @Contract
+    private void reapDropped(NodeId id, String reason, boolean seenBefore) {
+        ctm.reapDroppedReplacement(id, reason, seenBefore);
     }
 
     /// Keep the in-flight placeholder only for a real [`ProvisionDisposition.Dispatched`] boot; a
@@ -1813,7 +1830,7 @@ public final class LeaderReconciler {
                                                                    entry.getValue()));
     }
 
-    private static boolean isPastCeilingLogged(long nowNanos, NodeId id, InFlightEntry entry) {
+    private boolean isPastCeilingLogged(long nowNanos, NodeId id, InFlightEntry entry) {
         if (!entry.isPastCeiling(nowNanos)) {
             return false;
         }
@@ -1822,6 +1839,9 @@ public final class LeaderReconciler {
                  id,
                  entry.ceiling().millis(),
                  entry.state());
+        reapDropped(id,
+                    "still unjoined after its " + entry.ceiling().millis() + " ms replacement ceiling (state=" + entry.state() + ")",
+                    entry.state() == InFlightState.CONFIRMED);
 
         return true;
     }
@@ -1955,6 +1975,9 @@ public final class LeaderReconciler {
         log.info("LeaderReconciler dropping in-flight replacement {}: provider reports {} — the deficit re-opens and re-dispatches after the deficit debounce",
                  id,
                  state);
+        reapDropped(id,
+                    "the provider reports " + state,
+                    state == ReplacementInstanceState.FAILED || polled.state() == InFlightState.CONFIRMED);
         triggerReconcile(ReconcileTrigger.NTT_FIRE);
     }
 

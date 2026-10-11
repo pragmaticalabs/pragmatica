@@ -1800,6 +1800,154 @@ class LeaderReconcilerTest {
             return ctm.instanceStateQueries().size();
         }
 
+        /// #1111 — a dropped in-flight replacement is handed to the manager's confirmed reap, whatever the reason it was dropped for.
+        private DroppedReap onlyDroppedReap(NodeId minted) {
+            assertThat(reconciler.inFlightProvisioningKeys()).as("dropped").doesNotContain(minted);
+            assertThat(ctm.droppedReaps()).as("exactly one reap request, for the dropped placeholder").hasSize(1);
+            assertThat(ctm.droppedReaps().getFirst().node()).isEqualTo(minted);
+
+            return ctm.droppedReaps().getFirst();
+        }
+
+        @Test
+        void inFlightEntry_droppedAtTheCeiling_isReaped_andSaysSoWhenTheInstanceWasSeen() {
+            ctm.setReplacementCeiling(timeSpan(2).minutes());
+            var minted = dispatchOneReplacement();
+
+            ctm.reportInstanceState(minted, ReplacementInstanceState.PRESENT);
+            advancePollIntervals(10);
+
+            var reap = onlyDroppedReap(minted);
+
+            assertThat(reap.reason()).contains("replacement ceiling").contains("CONFIRMED");
+            assertThat(reap.seenBefore()).as("the provider listed it (PRESENT) before the ceiling").isTrue();
+        }
+
+        @Test
+        void inFlightEntry_droppedAtTheCeiling_neverListed_isReapedAsNeverSeen() {
+            ctm.setReplacementCeiling(timeSpan(2).minutes());
+            var minted = dispatchOneReplacement();
+
+            ctm.reportInstanceState(minted, ReplacementInstanceState.UNKNOWN);
+            advancePollIntervals(10);
+
+            assertThat(onlyDroppedReap(minted).seenBefore()).as("UNKNOWN is no sighting").isFalse();
+        }
+
+        @Test
+        void inFlightEntry_droppedAfterTwelveAbsentListings_isReaped_asNeverSeen() {
+            var minted = dispatchOneReplacement();
+
+            ctm.reportInstanceState(minted, ReplacementInstanceState.ABSENT);
+            advancePollIntervals(EXPECTED_ABSENT_LISTINGS);
+
+            var reap = onlyDroppedReap(minted);
+
+            assertThat(reap.reason()).contains("ABSENT");
+            assertThat(reap.seenBefore()).as("twelve empty listings are not a sighting: a lagging listing may still hold the VM").isFalse();
+        }
+
+        @Test
+        void inFlightEntry_droppedAsAbsentAfterBeingSeen_isReaped_asSeen() {
+            var minted = dispatchOneReplacement();
+
+            ctm.reportInstanceState(minted, ReplacementInstanceState.PRESENT);
+            advanceOnePollInterval();
+            ctm.reportInstanceState(minted, ReplacementInstanceState.ABSENT);
+            advanceOnePollInterval();
+
+            assertThat(onlyDroppedReap(minted).seenBefore()).as("it was listed PRESENT before").isTrue();
+        }
+
+        @Test
+        void inFlightEntry_droppedAsFailed_isReaped_asSeen() {
+            var minted = dispatchOneReplacement();
+
+            ctm.reportInstanceState(minted, ReplacementInstanceState.FAILED);
+            advanceOnePollInterval();
+
+            var reap = onlyDroppedReap(minted);
+
+            assertThat(reap.reason()).contains("FAILED");
+            assertThat(reap.seenBefore()).as("FAILED is stated about instances the provider listed").isTrue();
+        }
+
+        @Test
+        void inFlightEntry_droppedWhenItsCreateFails_isReaped_withTheFailureAsTheReason() {
+            ctm.failNextProvision(Causes.cause("instance did not become ready within the readiness timeout"));
+            configuredCoreCount.set(5);
+            seedClusterWithPeers(PEER_A, PEER_B, PEER_C, PEER_D);
+            reconciler.activate();
+            scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
+            removePeers(PEER_D);
+            triggerAndFireReconcile();
+            advancePastProvisioningGates();
+            triggerAndFireReconcile();
+
+            var reap = onlyDroppedReap(ctm.provisionReplacementCalls().getFirst());
+
+            assertThat(reap.reason()).contains("create failed").contains("readiness timeout");
+            assertThat(reap.seenBefore()).isFalse();
+        }
+
+        /// A create that was refused or deferred made no instance: nothing to reap, and no unconfirmed event to raise for it.
+        @Test
+        void inFlightEntry_removedByADeferral_isNotReaped() {
+            ctm.deferNextProvision(ProvisionDisposition.DeferralReason.CIRCUIT_OPEN);
+            configuredCoreCount.set(5);
+            seedClusterWithPeers(PEER_A, PEER_B, PEER_C, PEER_D);
+            reconciler.activate();
+            scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
+            removePeers(PEER_D);
+            triggerAndFireReconcile();
+            advancePastProvisioningGates();
+            triggerAndFireReconcile();
+
+            assertThat(ctm.provisionReplacementCalls()).as("arming: a provision was attempted").hasSize(1);
+            assertThat(reconciler.inFlightProvisioningCount()).isZero();
+            assertThat(ctm.droppedReaps()).isEmpty();
+        }
+
+        /// Control: a replacement that joined is cleared by membership, never dropped, so it is never handed to a reap.
+        @Test
+        void inFlightEntry_thatJoined_isNeverReaped() {
+            var minted = dispatchOneReplacement();
+
+            ctm.reportInstanceState(minted, ReplacementInstanceState.PRESENT);
+            advanceOnePollInterval();
+            seedClusterWithPeers(minted);
+            triggerAndFireReconcile();
+            advancePollIntervals(12);
+
+            assertThat(reconciler.inFlightProvisioningKeys()).doesNotContain(minted);
+            assertThat(ctm.droppedReaps()).as("a joined replacement is never terminated").isEmpty();
+            assertThat(ctm.drainNodeCalls()).doesNotContain(minted);
+        }
+
+        /// A dropped entry is reaped once: the ceiling dropping it first leaves the later create failure with nothing to remove.
+        @Test
+        void inFlightEntry_droppedByTheCeilingWhileCreating_thenFailing_isReapedOnce() {
+            var create = Promise.<ProvisionDisposition> promise();
+
+            ctm.setReplacementCeiling(timeSpan(2).minutes());
+            ctm.holdNextProvision(create);
+            configuredCoreCount.set(5);
+            seedClusterWithPeers(PEER_A, PEER_B, PEER_C, PEER_D);
+            reconciler.activate();
+            scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
+            removePeers(PEER_D);
+            triggerAndFireReconcile();
+            advancePastProvisioningGates();
+            triggerAndFireReconcile();
+            var minted = ctm.provisionReplacementCalls().getFirst();
+
+            advancePollIntervals(10);
+            assertThat(ctm.droppedReaps()).as("arming: the ceiling dropped the DISPATCHING entry").hasSize(1);
+            create.fail(Causes.cause("readiness timeout, late"));
+
+            assertThat(onlyDroppedReap(minted).reason()).contains("replacement ceiling");
+        }
+
         @Test
         void inFlightEntry_providerReportsBooting_isNotReDispatched_pastSplitTimeoutTimesThree() {
             var minted = dispatchOneReplacement();
@@ -3783,6 +3931,8 @@ class LeaderReconcilerTest {
 
     /// Recording `ClusterTopologyManager` stub. Phase 1.5 verification surface for
     /// `provisionReplacement` / `drainNode` / `reconcile` v2 calls.
+    private record DroppedReap(NodeId node, String reason, boolean seenBefore) {}
+
     private static final class RecordingCtm implements ClusterTopologyManager {
         @Override public boolean usesExplicitCommunities() { return false; }
         @Override public void installCommunityPlacement(org.pragmatica.aether.deployment.cluster.CommunityPlacementReconciler reconciler) {}
@@ -3842,6 +3992,19 @@ class LeaderReconcilerTest {
 
         List<NodeId> drainNodeCalls() {
             return List.copyOf(drainNodeCalls);
+        }
+
+        private final List<DroppedReap> droppedReaps = new CopyOnWriteArrayList<>();
+
+        @Override
+        public Unit reapDroppedReplacement(NodeId node, String reason, boolean seenBefore) {
+            droppedReaps.add(new DroppedReap(node, reason, seenBefore));
+
+            return Unit.unit();
+        }
+
+        List<DroppedReap> droppedReaps() {
+            return List.copyOf(droppedReaps);
         }
 
         @Contract
