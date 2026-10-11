@@ -1944,7 +1944,12 @@ class LeaderReconcilerTest {
             advancePollIntervals(10);
             assertThat(ctm.droppedReaps()).as("arming: the ceiling dropped the DISPATCHING entry").hasSize(1);
             create.fail(Causes.cause("readiness timeout, late"));
+            create.await();
 
+            // The failure callback runs off this thread; an absence needs a window, so a second reap would have to land inside it.
+            await().during(java.time.Duration.ofMillis(500))
+                   .atMost(java.time.Duration.ofSeconds(5))
+                   .untilAsserted(() -> assertThat(ctm.droppedReaps()).hasSize(1));
             assertThat(onlyDroppedReap(minted).reason()).contains("replacement ceiling");
         }
 
