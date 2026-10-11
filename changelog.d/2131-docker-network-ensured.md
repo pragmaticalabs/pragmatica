@@ -12,5 +12,6 @@
   network really does not exist.
 - Label contract: any network carrying `aether.created-by-cluster=<this cluster>` is treated as owned (recorded and, when empty, removed); putting our label on
   your own network hands it to us.
+- Known limit: any failed `docker network inspect` counts as "absent", because the runner cannot tell "no such network" from "daemon down"; a daemon that dies just before destroy reaches the network can leave it unreported.
 - Known limit: two clusters sharing one network leave it in place when the creating cluster is destroyed first; leaking is the safe direction.
 - [verified: `DockerNetworkTest`, `DockerNetworkBootstrapTest`]
