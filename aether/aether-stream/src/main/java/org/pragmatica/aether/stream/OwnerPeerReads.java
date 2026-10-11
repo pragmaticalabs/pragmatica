@@ -25,8 +25,8 @@ import org.pragmatica.lang.Promise;
 ///
 /// Both start where the peer's log starts, not at a fixed offset: a peer whose ring and tier no longer hold the
 /// requested start answers `CursorExpired` naming its oldest available offset, and the read resumes there. A
-/// remote failure travels as its message only, so the refusal is recognised by message and the oldest offset
-/// parsed from it. A probe that paged from offset 0 treated every long-lived peer whose offset 0 had aged out as
+/// remote refusal a read is known to raise arrives typed (#1967); one that does not travels as its message only. The
+/// oldest offset is parsed from the cause's text either way, which a typed `CursorExpired` renders identically. A probe that paged from offset 0 treated every long-lived peer whose offset 0 had aged out as
 /// unreachable, blocking promotion for good; a range read that dropped the whole window on one expiry compared
 /// nothing, and the gate trusted a source it had not checked.
 ///
