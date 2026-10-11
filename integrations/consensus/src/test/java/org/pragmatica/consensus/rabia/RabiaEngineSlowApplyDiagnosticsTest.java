@@ -101,6 +101,33 @@ class RabiaEngineSlowApplyDiagnosticsTest {
     }
 
     @Test
+    void theWatchdogReportsARunningSlowTaskOnItsOwn_withoutAnyoneAskingForTheCheck() throws Exception {
+        engine(ProtocolConfig.testConfig());
+        var reports = new java.util.concurrent.CopyOnWriteArrayList<String>();
+        var entered = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+
+        engine.slowTaskSinkForTesting(reports::add);
+        engine.safeExecuteForTesting(() -> blockedInTheCallUnderTest(entered, release));
+        assertThat(entered.await(5, TimeUnit.SECONDS)).isTrue();
+
+        try {
+            var deadline = System.nanoTime() + timeSpan(8).seconds().nanos();
+
+            while (reports.isEmpty() && System.nanoTime() < deadline) {
+                Thread.sleep(50);
+            }
+
+            assertThat(reports)
+                .as("the scheduled watchdog must find the task once it has run past one second")
+                .hasSize(1);
+            assertThat(reports.getFirst()).contains("blockedInTheCallUnderTest").contains("queueDepth=");
+        } finally {
+            release.countDown();
+        }
+    }
+
+    @Test
     void aYoungTask_isNotReported() throws Exception {
         engine(ProtocolConfig.testConfig());
         var entered = new CountDownLatch(1);

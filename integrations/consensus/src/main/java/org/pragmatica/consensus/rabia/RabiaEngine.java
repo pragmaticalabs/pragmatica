@@ -733,6 +733,7 @@ public class RabiaEngine<C extends Command> {
 
     private final SlowTaskProbe slowTaskProbe = new SlowTaskProbe();
     private final AtomicReference<ScheduledFuture<?>> slowTaskWatchdog = new AtomicReference<>();
+    private volatile Consumer<String> slowTaskSink = report -> log.warn("SLOW-APPLY-RUNNING {}", report);
 
     /// #2011: committed (batch id, correlation ids), so a delivery that trails its slot's Decision is not re-queued.
     private final CommittedBatchLedger committedLedger = new CommittedBatchLedger(CommittedBatchLedger.DEFAULT_CAPACITY);
@@ -1964,7 +1965,12 @@ public class RabiaEngine<C extends Command> {
 
     private void watchSlowTask() {
         slowTaskProbe.check(System.nanoTime(), SLOW_TASK_STACK_THRESHOLD_NANOS)
-                     .onPresent(stack -> log.warn("SLOW-APPLY-RUNNING queueDepth={} {}", applyQueueDepth(), stack));
+                     .onPresent(stack -> slowTaskSink.accept("queueDepth=" + applyQueueDepth() + " " + stack));
+    }
+
+    /// Test hook: where the watchdog's report goes instead of the log.
+    void slowTaskSinkForTesting(Consumer<String> sink) {
+        slowTaskSink = sink;
     }
 
     /// Test hook: one watchdog pass at a chosen clock reading; the report it would log, if any.
