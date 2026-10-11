@@ -13,6 +13,7 @@ import org.pragmatica.aether.artifact.Version;
 import org.pragmatica.aether.deployment.node.fsm.NodeDeploymentEvents.NodeArtifactPutReceived;
 import org.pragmatica.aether.deployment.node.fsm.NodeDeploymentEvents.SliceTargetPutReceived;
 import org.pragmatica.aether.deployment.node.fsm.NodeDeploymentEvents.VersionRoutingPutReceived;
+import org.pragmatica.aether.metrics.deployment.DeploymentEvent;
 import org.pragmatica.aether.slice.MethodName;
 import org.pragmatica.aether.slice.Slice;
 import org.pragmatica.aether.slice.SliceActionConfig;
@@ -92,6 +93,7 @@ class NodeDeploymentStateRollbackOrphanTest {
     private static final Artifact ARTIFACT = BASE.withVersion(V1);
     private static final Duration SETTLE = Duration.ofSeconds(2);
 
+    private MessageRouter.MutableRouter router;
     private KVStore<AetherKey, AetherValue> kvStore;
     private RecordingSliceStore sliceStore;
     private RecordingClusterNode cluster;
@@ -100,7 +102,7 @@ class NodeDeploymentStateRollbackOrphanTest {
 
     @BeforeEach
     void setUp() {
-        var router = MessageRouter.mutable();
+        router = MessageRouter.mutable();
         kvStore = new KVStore<>(router, stubSerializer(), stubDeserializer());
         sliceStore = new RecordingSliceStore();
         cluster = new RecordingClusterNode(SELF);
@@ -454,6 +456,67 @@ class NodeDeploymentStateRollbackOrphanTest {
             assertThat(cluster.commands)
                     .as("the unload chain must never write an ACTIVE claim for the slice it is unloading")
                     .noneMatch(command -> putsState(command, SliceState.ACTIVE));
+        }
+    }
+
+    /// #1109 H4: a LOAD parked for a target that never arrives. `SliceState.LOAD` carries no timeout, so it is not
+    /// transitional and the leader's stuck-transitional sweep never sees it; the node's only signal is the single WARN
+    /// at parking time (`committedTargetPermits`). Nothing is written, no failure event is raised, nothing resolves it.
+    @Nested
+    class ParkedStartNeverResolved {
+        private final List<Object> failures = Collections.synchronizedList(new ArrayList<>());
+        private final List<Object> completions = Collections.synchronizedList(new ArrayList<>());
+        private final List<Object> transitions = Collections.synchronizedList(new ArrayList<>());
+
+        @BeforeEach
+        void tap() {
+            router.addRoute(DeploymentEvent.DeploymentFailed.class, failures::add);
+            router.addRoute(DeploymentEvent.DeploymentCompleted.class, completions::add);
+            router.addRoute(DeploymentEvent.StateTransition.class, transitions::add);
+        }
+
+        private void parkLoadForATargetThatNeverArrives() {
+            harness.dispatch(new QuorumEstablished());
+            dispatchNodeArtifactPut(SELF, ARTIFACT, SliceState.LOAD);
+            settle();
+        }
+
+        /// TRIPWIRE: asserts the CURRENT behaviour at the rc4 tip (H4 is real). It goes red when a parked start
+        /// escalates (WARN beyond parking, event, counter, or a timeout on LOAD): delete it and enable
+        /// [#parkedLoadWhoseTargetNeverArrives_escalates] beside it.
+        @Test
+        void tripwire_parkedLoadWhoseTargetNeverArrives_isSilentAfterParkingToday() {
+            parkLoadForATargetThatNeverArrives();
+
+            var why = "#1109 H4 fixed: a parked LOAD now escalates. Delete this tripwire and enable parkedLoadWhoseTargetNeverArrives_escalates";
+
+            assertThat(SliceState.LOAD.timeout().isPresent()).as(why + " (LOAD has a timeout)").isFalse();
+            assertThat(SliceState.LOAD.isTransitional()).as(why + " (LOAD is transitional)").isFalse();
+            assertThat(SliceState.ACTIVATE.timeout().isPresent()).as(why + " (ACTIVATE has a timeout)").isFalse();
+            assertThat(cluster.commands)
+                    .as(why + " (the node wrote a transition or removal for the parked slice)")
+                    .noneMatch(command -> command instanceof KVCommand.Put<AetherKey, ?> put
+                                          && put.key() instanceof NodeArtifactKey key && key.artifact().equals(ARTIFACT)
+                                          || command instanceof KVCommand.Remove<AetherKey> remove
+                                             && remove.key() instanceof NodeArtifactKey removedKey && removedKey.artifact().equals(ARTIFACT));
+            assertThat(failures).as(why + " (a DeploymentFailed event was raised)").isEmpty();
+            assertThat(completions).as(why + " (a DeploymentCompleted event was raised)").isEmpty();
+            assertThat(transitions).as(why + " (only the applied LOAD's own StateTransition is expected)").hasSize(1);
+            assertThat(sliceStore.loadRequests).as(why + " (the slice was loaded)").isEmpty();
+
+            // Control: the start is parked, not discarded, so the silence above is a parked LOAD and not a dropped one.
+            targetArrives(BASE, V1);
+            await().atMost(SETTLE).untilAsserted(() -> assertThat(sliceStore.loadRequests).containsExactly(ARTIFACT));
+        }
+
+        /// The issue's pin: "a dropped put fails loud". The mechanism (throttled WARN, event, counter, bounded park)
+        /// is the Stage 1 H4 decision; an operator-visible failure event stands in for it here.
+        @org.junit.jupiter.api.Disabled("#1109 H4: enable when a parked LOAD escalates; the event assertion stands in for the chosen mechanism")
+        @Test
+        void parkedLoadWhoseTargetNeverArrives_escalates() {
+            parkLoadForATargetThatNeverArrives();
+
+            assertThat(failures).as("a LOAD parked for a target that never arrives must raise an operator-visible failure").isNotEmpty();
         }
     }
 
