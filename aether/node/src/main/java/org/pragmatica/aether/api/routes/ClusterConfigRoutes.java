@@ -843,6 +843,10 @@ public final class ClusterConfigRoutes implements RouteSource {
     // Package-private (matching the #335/#835 handleScale precedent) so
     // ClusterConfigRoutesNoConfigTest can drive the real route handler directly.
     Promise<UpgradeResponse> handleUpgrade(UpgradeRequest request) {
+        if (!ClusterUpgradeToml.isUpgradeVersion(request.targetVersion())) {
+            return new ClusterConfigError.InvalidUpgradeVersion(request.targetVersion()).promise();
+        }
+
         return storedClusterConfig().fold(() -> noConfigForUpgrade(request), stored -> initiateUpgrade(stored, request));
     }
 
@@ -995,6 +999,18 @@ public final class ClusterConfigRoutes implements RouteSource {
     }
 
     private static Result<Unit> pinnedRefusal(ClusterBootstrapConfig config, String targetVersion) {
+        return dockerImageRefusal(config, targetVersion).flatMap(_ -> literalPinRefusal(config, targetVersion));
+    }
+
+    private static Result<Unit> dockerImageRefusal(ClusterBootstrapConfig config, String targetVersion) {
+        var unversioned = ClusterUpgradeToml.dockerSourcesWithoutVersionedImage(config);
+
+        return unversioned.isEmpty()
+               ? Result.unitResult()
+               : new ClusterConfigError.UpgradeDockerImageUnversioned(targetVersion, unversioned).result();
+    }
+
+    private static Result<Unit> literalPinRefusal(ClusterBootstrapConfig config, String targetVersion) {
         var pinned = ClusterUpgradeToml.pinnedRuntimeProfiles(config);
 
         return pinned.isEmpty()

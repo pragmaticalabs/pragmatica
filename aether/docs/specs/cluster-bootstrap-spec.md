@@ -884,7 +884,7 @@ The bootstrap command `aether cluster bootstrap --config <file>` executes six se
 | Runtime Type       | Deployment Steps                                              |
 |--------------------|---------------------------------------------------------------|
 | `container`        | Pull image on target host. Start container with peer list, database URLs from source, port bindings, JVM args. |
-| `docker`           | Start containers via `DockerComputeProvider` with peer list, database URLs from source, port bindings, environment variables. Each node is a separate container on the same Docker network. |
+| `docker`           | Start containers via `DockerComputeProvider` with peer list, database URLs from source, port bindings, environment variables. Each node is a separate container on the same Docker network. Bootstrap ensures that network (default `aether-network`, overridable with `AETHER_DOCKER_NETWORK` or the provider setting `network_name`): it is reused when present and created, labelled `aether.created-by-cluster=<cluster>`, when absent. Ownership is that label: a network carrying this cluster's own label (left by an earlier run) is owned again, one with no label or another cluster's is reused and never owned. Only owned networks are recorded in the cleanup ledger, and `aether cluster destroy` removes exactly the recorded name, only if it still carries the label and is empty, so a network you provided is never removed (#2131). Label contract: any network carrying `aether.created-by-cluster=<this cluster>` is treated as owned, recorded and, when empty, removed, so a user who puts our label on their own network hands it to us. Two clusters sharing one network leave it in place when the creating cluster is destroyed first. |
 | `ember`            | Start Ember nodes in-process (forge source). Configure peer list, database URLs, ports within the single JVM. |
 | `jvm`              | Transfer Aether JAR to target via SSH. Start JVM process with args and peer list. |
 | `managed-container`| Apply Kubernetes manifests. (FUTURE)                          |
@@ -987,6 +987,8 @@ The diff operates at `(source, role)` granularity. Changes are classified, order
 **REQ-9.3.4**: Runtime changes that alter the wire protocol between Aether versions cannot use rolling restart — they require a full-cluster replacement via source-level change. The diff engine flags cross-major-version runtime upgrades and forces the replace-before-retire path.
 
 **REQ-9.3.5**: `apply --resume` reads the last wave state and continues from the first unfinished wave, re-running pre-flight before each resumption. `apply --rollback` reverses completed waves in LIFO order: re-provision drained nodes, re-join cluster, destroy nodes that were added, restore prior firewall rules.
+
+> **Superseded by #1543 (2026-10-09):** the runtime-change and source-level rolling restarts described in this section (drain and destroy a node, then start another in its place, the SSH branch under the same id) are no longer executed: `apply` refuses a runtime change with an error naming the supported ways. Nodes move onto new software by replacement under a fresh id (`aether cluster upgrade --version X.Y.Z --wait`, `POST /api/v1/nodes/replace/{id}`). There is no supported way today to change a source role's runtime profile on a running cluster.
 
 ### 9.4 Plan Output Format
 

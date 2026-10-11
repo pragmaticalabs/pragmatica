@@ -149,6 +149,101 @@ class ClusterUpgradeTomlTest {
         result.onFailure(cause -> assertThat(cause.message()).contains("CRLF"));
     }
 
+    private static final String DOCKER_BASE = """
+            config_version = "1.0.0"
+
+            [cluster]
+            name = "prod-cluster"
+            version = "1.0.0"
+
+            %s
+
+            [source.dock]
+            type = "docker"
+
+            [source.dock.core]
+            count = 3
+            %s
+            """;
+
+    private static String dockerToml(String runtimeTable, String coreRuntimeRef) {
+        return DOCKER_BASE.formatted(runtimeTable, coreRuntimeRef);
+    }
+
+    @Test
+    void dockerSourcesWithoutVersionedImage_namesTheDockerSourceWhoseProfileDeclaresNoRuntime() {
+        assertThat(unversionedDocker(dockerToml("", ""))).containsExactly("dock");
+    }
+
+    @Test
+    void dockerSourcesWithoutVersionedImage_namesTheDockerSourceWhoseProfilePinsNoImage() {
+        assertThat(unversionedDocker(dockerToml("[runtime.app]\ntype = \"docker\"", "runtime = \"app\""))).containsExactly("dock");
+    }
+
+    @Test
+    void dockerSourcesWithoutVersionedImage_namesTheDockerSourceWhoseImageIsALiteral() {
+        var runtime = "[runtime.app]\ntype = \"docker\"\nimage = \"registry/aether-node:1.0.0\"";
+
+        assertThat(unversionedDocker(dockerToml(runtime, "runtime = \"app\""))).containsExactly("dock");
+    }
+
+    @Test
+    void dockerSourcesWithoutVersionedImage_acceptsAnImageCarryingThePlaceholder() {
+        var runtime = "[runtime.app]\ntype = \"docker\"\nimage = \"registry/aether-node:{version}\"";
+
+        assertThat(unversionedDocker(dockerToml(runtime, "runtime = \"app\""))).isEmpty();
+    }
+
+    @Test
+    void dockerSourcesWithoutVersionedImage_ignoresACloudSourceWithNoPin() {
+        assertThat(unversionedDocker(toml("", ""))).isEmpty();
+    }
+
+    @Test
+    void pinnedImageFor_resolvesThePlaceholderAtTheClusterVersion() {
+        var runtime = "[runtime.app]\ntype = \"docker\"\nimage = \"registry/aether-node:{version}\"";
+        var config = ClusterBootstrapConfigParser.parse(dockerToml(runtime, "runtime = \"app\"")).unwrap();
+
+        assertThat(NodeUserDataRenderer.pinnedImageFor(config, config.sources().get("dock"), NodeRole.CORE).or("<none>"))
+                .isEqualTo("registry/aether-node:1.0.0");
+    }
+
+    @Test
+    void pinnedImageFor_isEmptyWhenTheRoleNamesNoProfile() {
+        var config = ClusterBootstrapConfigParser.parse(dockerToml("", "")).unwrap();
+
+        assertThat(NodeUserDataRenderer.pinnedImageFor(config, config.sources().get("dock"), NodeRole.CORE).isEmpty()).isTrue();
+    }
+
+    @Test
+    void isUpgradeVersion_acceptsSemVerWithAnOptionalPreRelease_asOurOwnReleasesAre() {
+        for (var version : List.of("1.0.0", "1.0.0-rc4", "1.0.0-rc5", "10.20.30", "1.2.3-alpha.1", "1.0.0-0", "1.0.0-x-y.7")) {
+            assertThat(ClusterUpgradeToml.isUpgradeVersion(version)).as(version).isTrue();
+        }
+    }
+
+    @Test
+    void isUpgradeVersion_refusesAnythingElse() {
+        for (var version : List.of("", " 1.0.0", "1.0", "v1.0.0", "1.0.0-", "1.0.0-01", "01.0.0", "1.0.0+build", "1.0.0-rc5+b", "abc", "1.0.0.0", "1.0.0-rc..5", "../1.0.0", "1.0.0 ")) {
+            assertThat(ClusterUpgradeToml.isUpgradeVersion(version)).as("'" + version + "'").isFalse();
+        }
+
+        assertThat(ClusterUpgradeToml.isUpgradeVersion(null)).isFalse();
+    }
+
+    @Test
+    void withVersion_rc4ToRc5_rewritesTheClusterVersion_andRendersTheRc5Tag() {
+        var original = toml("[runtime.node]\ntype = \"container\"\nimage = \"registry/x:{version}\"", "runtime = \"node\"").replace("version = \"1.0.0\" # operator note", "version = \"1.0.0-rc4\"");
+        var rewritten = ClusterUpgradeToml.withVersion(original, "1.0.0-rc5").unwrap();
+
+        assertThat(ClusterBootstrapConfigParser.parse(rewritten).unwrap().cluster().version()).isEqualTo("1.0.0-rc5");
+        assertThat(render(rewritten)).contains("registry/x:1.0.0-rc5").doesNotContain("1.0.0-rc4");
+    }
+
+    private static List<String> unversionedDocker(String toml) {
+        return ClusterUpgradeToml.dockerSourcesWithoutVersionedImage(ClusterBootstrapConfigParser.parse(toml).unwrap());
+    }
+
     private static List<String> pinned(String toml) {
         return ClusterUpgradeToml.pinnedRuntimeProfiles(ClusterBootstrapConfigParser.parse(toml).unwrap());
     }

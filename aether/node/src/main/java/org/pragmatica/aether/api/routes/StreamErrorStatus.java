@@ -36,6 +36,7 @@ public final class StreamErrorStatus {
             case StreamError.General general -> general(general);
             case StreamError.EventTooLarge _, StreamError.PartitionOutOfRange _, StreamError.PartitionCeilingExceeded _, StreamError.RetentionCountUnindexable _, StreamError.RetentionBoundInvalid _, StreamError.PartitionCapExceeded _ -> HttpStatus.BAD_REQUEST;
             case StreamError.StreamNotFound _ -> HttpStatus.NOT_FOUND;
+            case StreamError.SystemStreamWriteRefused _ -> HttpStatus.METHOD_NOT_ALLOWED;
             case StreamError.ReplicationRefused _, StreamError.EpochDiverged _ -> HttpStatus.CONFLICT;
             case StreamError.CursorExpired _ -> HttpStatus.GONE;
             case StreamError.StreamConfigNotYetVisible _, StreamError.MaterializeBudgetExceeded _, StreamError.ReshufflePaced _, StreamError.PartitionHeldNotMaterialized _, StreamError.StaleEpochAppend _, StreamError.StaleEpochRead _, StreamError.NotCurrentOwner _, StreamError.ReplicaQuarantined _, StreamError.NotOwnerAppend _, StreamError.OwnerNotActivated _, StreamError.OwnerCatchupPending _, StreamError.LinearizableRoundTimeout _, StreamError.ReplicaNotVerified _, StreamError.RepairNotAuthorized _, StreamError.RepairWitnessFailed _, StreamError.RepairPreserveFailed _ -> HttpStatus.SERVICE_UNAVAILABLE;

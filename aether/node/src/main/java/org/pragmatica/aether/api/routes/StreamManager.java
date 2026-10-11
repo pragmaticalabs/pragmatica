@@ -13,10 +13,9 @@ import org.pragmatica.lang.Result;
 /// Catalog &lt;-&gt; engine identity mapping for streams (management-api-versioning-spec.md §3.2).
 ///
 /// The catalog addresses every stream as `(namespace, stream, version)`. The engine
-/// (`StreamPartitionManager`/`StreamReadRouter`/`StreamWriteRouter`) keys operator-created flat
-/// streams — minted into the `system` namespace at the default version — by their bare name, and
-/// keys app-blueprint streams by the full `namespace:name:version` address. This interface is the
-/// single resolution point between the two, so no route handler encodes the distinction itself.
+/// (`StreamPartitionManager`/`StreamReadRouter`/`StreamWriteRouter`) keys every stream, `system` included, by
+/// the full `namespace:name:version` address (#1338). This interface is the single resolution point from the catalog
+/// address to that key, so no route handler computes it itself.
 ///
 /// Not to be confused with the private `streamManager()` accessor on `StreamApiRoutes` /
 /// `StreamRoutes`, which returns a `StreamPartitionManager` instance — an unrelated type. The name
@@ -25,8 +24,7 @@ import org.pragmatica.lang.Result;
 public sealed interface StreamManager {
     String SYSTEM_NAMESPACE = "system";
 
-    /// The engine-level key for the given catalog address: the bare stream name for `system`
-    /// streams, the full catalog address otherwise.
+    /// The engine-level key for the given catalog address: the full catalog address, in every namespace.
     ///
     /// Delegates to [StreamEngineKey#engineKey] rather than recomputing (#1040). The reduction used
     /// to be written out here AND in `SystemStreams.isForbiddenEngineKey`, while the slice/engine

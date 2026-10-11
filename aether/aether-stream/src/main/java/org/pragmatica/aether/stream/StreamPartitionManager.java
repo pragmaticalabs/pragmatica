@@ -1906,35 +1906,53 @@ public final class StreamPartitionManager implements AutoCloseable {
                                          byte[] payload,
                                          long timestamp,
                                          int minAcks) {
-        return writableAppend(streamName, partition, payload, timestamp, minAcks).fold(cause -> recoverForwardedPublish(cause,
-                                                                                                                        streamName,
-                                                                                                                        partition,
-                                                                                                                        payload,
-                                                                                                                        timestamp),
-                                                                                       Result::success);
+        return publishForwarded(streamName, partition, payload, timestamp, minAcks, false);
+    }
+
+    /// `systemWriter` is true only for a publish that the sending node's own system publisher forwarded (#1338): the
+    /// owner refuses a forwarded write to a `system:` stream without it, so the origin-side check is not the only one.
+    public Result<Long> publishForwarded(String streamName,
+                                         int partition,
+                                         byte[] payload,
+                                         long timestamp,
+                                         int minAcks,
+                                         boolean systemWriter) {
+        return writableAppend(streamName, partition, payload, timestamp, minAcks, systemWriter).fold(cause -> recoverForwardedPublish(cause,
+                                                                                                                                      streamName,
+                                                                                                                                      partition,
+                                                                                                                                      payload,
+                                                                                                                                      timestamp,
+                                                                                                                                      systemWriter),
+                                                                                                     Result::success);
     }
 
     private Result<Long> recoverForwardedPublish(Cause cause,
                                                  String streamName,
                                                  int partition,
                                                  byte[] payload,
-                                                 long timestamp) {
+                                                 long timestamp,
+                                                 boolean systemWriter) {
         return cause instanceof StreamError.StreamNotFound
-               ? materializeThenRetryPublish(streamName, partition, payload, timestamp)
+               ? materializeThenRetryPublish(streamName, partition, payload, timestamp, systemWriter)
                : cause.result();
     }
 
     /// Lazily materialize from the locally-visible committed config, then retry the append once. When the
     /// committed config is not yet visible on this node the append cannot be recovered here, so the
     /// retryable {@link StreamError.StreamConfigNotYetVisible} is returned for the forwarder to back off on.
-    private Result<Long> materializeThenRetryPublish(String streamName, int partition, byte[] payload, long timestamp) {
+    private Result<Long> materializeThenRetryPublish(String streamName,
+                                                     int partition,
+                                                     byte[] payload,
+                                                     long timestamp,
+                                                     boolean systemWriter) {
         return committedConfigSource.committedConfig(streamName)
                                     .fold(() -> new StreamError.StreamConfigNotYetVisible(streamName).result(),
                                           config -> materializeThenPublish(config,
                                                                            streamName,
                                                                            partition,
                                                                            payload,
-                                                                           timestamp));
+                                                                           timestamp,
+                                                                           systemWriter));
     }
 
     /// The retry's replica floor is the committed config's own `CF - 1`: the caller's floor was read
@@ -1943,20 +1961,28 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                 String streamName,
                                                 int partition,
                                                 byte[] payload,
-                                                long timestamp) {
+                                                long timestamp,
+                                                boolean systemWriter) {
         return ensureStreamMaterialized(config).flatMap(_ -> writableAppend(streamName,
                                                                             partition,
                                                                             payload,
                                                                             timestamp,
-                                                                            config.confirmationFactor() - 1));
+                                                                            config.confirmationFactor() - 1,
+                                                                            systemWriter));
     }
 
-    private Result<Long> writableAppend(String streamName, int partition, byte[] payload, long timestamp, int minAcks) {
+    private Result<Long> writableAppend(String streamName,
+                                        int partition,
+                                        byte[] payload,
+                                        long timestamp,
+                                        int minAcks,
+                                        boolean systemWriter) {
         return ensureWritableConsistency(streamName).flatMap(_ -> publishLocalAtFloor(streamName,
                                                                                       partition,
                                                                                       payload,
                                                                                       timestamp,
-                                                                                      minAcks));
+                                                                                      minAcks,
+                                                                                      systemWriter));
     }
 
     public Result<Long> publishLocal(String streamName, int partition, byte[] payload, long timestamp) {
@@ -1977,12 +2003,24 @@ public final class StreamPartitionManager implements AutoCloseable {
                                             byte[] payload,
                                             long timestamp,
                                             int minAcks) {
+        return publishLocalAtFloor(streamName, partition, payload, timestamp, minAcks, false);
+    }
+
+    /// The owner append of a system publisher passes `systemWriter = true` (#1338); every other caller is refused a
+    /// `system:` stream here, at the one append, whatever checks ran before it.
+    public Result<Long> publishLocalAtFloor(String streamName,
+                                            int partition,
+                                            byte[] payload,
+                                            long timestamp,
+                                            int minAcks,
+                                            boolean systemWriter) {
         return publishLocal(streamName,
                             partition,
                             payload,
                             timestamp,
                             ownerEpochSource.currentOwnerEpoch(streamName, partition),
-                            minAcks);
+                            minAcks,
+                            systemWriter);
     }
 
     /// Owner-local publish stamped with an explicit `ownerEpoch` fencing token (#345 item 1d-ii). The
@@ -2018,7 +2056,7 @@ public final class StreamPartitionManager implements AutoCloseable {
                                      byte[] payload,
                                      long timestamp,
                                      Epoch ownerEpoch) {
-        return publishLocal(streamName, partition, payload, timestamp, ownerEpoch, NO_REPLICA_FLOOR);
+        return publishLocal(streamName, partition, payload, timestamp, ownerEpoch, NO_REPLICA_FLOOR, false);
     }
 
     private Result<Long> publishLocal(String streamName,
@@ -2026,7 +2064,24 @@ public final class StreamPartitionManager implements AutoCloseable {
                                       byte[] payload,
                                       long timestamp,
                                       Epoch ownerEpoch,
-                                      int minAcks) {
+                                      int minAcks,
+                                      boolean systemWriter) {
+        return StreamWriteRouter.systemWriteRefusal(streamName, systemWriter)
+                                .<Result<Long>> map(Cause::result)
+                                .or(() -> admittedPublishLocal(streamName,
+                                                               partition,
+                                                               payload,
+                                                               timestamp,
+                                                               ownerEpoch,
+                                                               minAcks));
+    }
+
+    private Result<Long> admittedPublishLocal(String streamName,
+                                              int partition,
+                                              byte[] payload,
+                                              long timestamp,
+                                              Epoch ownerEpoch,
+                                              int minAcks) {
         return resolveWritableEntry(streamName).flatMap(entry -> publishInSection(entry,
                                                                                   streamName,
                                                                                   partition,
@@ -3300,6 +3355,26 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                  List<byte[]> payloads,
                                                  long timestamp,
                                                  int minAcks) {
+        return publishLocalBatchAtFloor(streamName, partition, payloads, timestamp, minAcks, false);
+    }
+
+    /// See [#publishLocalAtFloor(String, int, byte[], long, int, boolean)]: the batch owner append is gated the same way.
+    public Result<Long> publishLocalBatchAtFloor(String streamName,
+                                                 int partition,
+                                                 List<byte[]> payloads,
+                                                 long timestamp,
+                                                 int minAcks,
+                                                 boolean systemWriter) {
+        return StreamWriteRouter.systemWriteRefusal(streamName, systemWriter)
+                                .<Result<Long>> map(Cause::result)
+                                .or(() -> admittedBatch(streamName, partition, payloads, timestamp, minAcks));
+    }
+
+    private Result<Long> admittedBatch(String streamName,
+                                       int partition,
+                                       List<byte[]> payloads,
+                                       long timestamp,
+                                       int minAcks) {
         var ownerEpoch = ownerEpochSource.currentOwnerEpoch(streamName, partition);
 
         return resolveWritableEntry(streamName).flatMap(entry -> publishBatchInSection(entry,

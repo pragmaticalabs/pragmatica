@@ -60,7 +60,7 @@ class StreamRoutesGroupSystemStreamTest {
 
     @Test
     void joinGroup_reservedSystemStreamName_isRejectedBeforeTheCoordinatorIsReached() {
-        var result = routes().joinGroup(new JoinGroupRequest("g1", "cluster-events", 4, "c1"));
+        var result = routes().joinGroup(new JoinGroupRequest("g1", "system:cluster-events:1.0.0", 4, "c1"));
 
         assertThat(failureMessage(result)).as("the guard must refuse in its own words, BEFORE the coordinator — a "
                                              + "NOT_LEADER here would mean the call reached rebalance")
@@ -70,7 +70,7 @@ class StreamRoutesGroupSystemStreamTest {
 
     @Test
     void leaveGroup_reservedSystemStreamName_isRejectedBeforeTheCoordinatorIsReached() {
-        var result = routes().leaveGroup(new LeaveGroupRequest("g1", "cluster-events", "c1"));
+        var result = routes().leaveGroup(new LeaveGroupRequest("g1", "system:cluster-events:1.0.0", "c1"));
 
         assertThat(failureMessage(result)).containsIgnoringCase("system stream")
                   .doesNotContainIgnoringCase(COORDINATOR_REACHED);
@@ -95,7 +95,7 @@ class StreamRoutesGroupSystemStreamTest {
     /// versioned gate answers 405. The guard's refusal must carry the same status.
     @Test
     void guardRefusal_carriesTheVersionedGatesStatus_notA500() {
-        var result = routes().joinGroup(new JoinGroupRequest("g1", "cluster-events", 4, "c1"));
+        var result = routes().joinGroup(new JoinGroupRequest("g1", "system:cluster-events:1.0.0", 4, "c1"));
 
         result.onSuccess(_ -> fail("must be refused"));
         result.onFailure(cause -> {
@@ -113,6 +113,14 @@ class StreamRoutesGroupSystemStreamTest {
 
         assertThat(failureMessage(join)).containsIgnoringCase("missing stream name");
         assertThat(failureMessage(leave)).containsIgnoringCase("missing stream name");
+    }
+
+    /// #1338: the bare name of a system stream is an ordinary name; it must not be refused as the system stream.
+    @Test
+    void joinAndLeave_bareNameOfASystemStream_isAUserStream_andReachesTheCoordinator() {
+        var join = routes().joinGroup(new JoinGroupRequest("g1", "cluster-events", 4, "c1"));
+
+        assertThat(failureMessage(join)).containsIgnoringCase(COORDINATOR_REACHED);
     }
 
     @Test

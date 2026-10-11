@@ -102,6 +102,7 @@ class ActivationRaceNotFatalTest {
     private static final Version V1 = Version.version("1.0.0").unwrap();
     private static final Artifact SLICE = Artifact.artifact("com.example:slice-a:1.0.0").unwrap();
 
+    private KVStore<AetherKey, AetherValue> leaderStore;
     private RecordingClusterNode nodeSideCluster;
     private RecordingClusterNode leaderSideCluster;
     private FsmTestHarness<NodeDeploymentState, ClusterFsmEvent> nodeHarness;
@@ -112,7 +113,8 @@ class ActivationRaceNotFatalTest {
         nodeSideCluster = new RecordingClusterNode(SELF);
         leaderSideCluster = new RecordingClusterNode(SELF);
         nodeHarness = nodeHarness(nodeSideCluster);
-        leaderHarness = leaderHarness(leaderSideCluster);
+        leaderStore = new KVStore<AetherKey, AetherValue>(MessageRouter.mutable(), stubSerializer(), stubDeserializer());
+        leaderHarness = leaderHarness(leaderSideCluster, leaderStore);
     }
 
     @Test
@@ -155,6 +157,9 @@ class ActivationRaceNotFatalTest {
                     + "itself did not go away, and this control fails the moment that arm is flipped")
                 .isTrue();
 
+        // #1974: committed before its notification, as in production; a rollback of a deleted blueprint writes nothing.
+        leaderStore.process(leaderStore.createBatch(List.of(new KVCommand.Put<>(AppBlueprintKey.appBlueprintKey(expanded.id()),
+                                                                              AppBlueprintValue.appBlueprintValue(expanded)))));
         leaderHarness.dispatch(new AppBlueprintPutReceived(appBlueprintPut(expanded)));
         leaderHarness.dispatch(new NodeArtifactPutReceived(replayOf(unclassified)));
 
@@ -322,9 +327,9 @@ class ActivationRaceNotFatalTest {
         return FsmTestHarness.harness("activation-race-node-" + SELF.id(), factory);
     }
 
-    private static FsmTestHarness<ClusterDeploymentState, ClusterFsmEvent> leaderHarness(ClusterNode<KVCommand<AetherKey>> cluster) {
+    private static FsmTestHarness<ClusterDeploymentState, ClusterFsmEvent> leaderHarness(ClusterNode<KVCommand<AetherKey>> cluster,
+                                                                                         KVStore<AetherKey, AetherValue> kvStore) {
         var router = MessageRouter.mutable();
-        var kvStore = new KVStore<AetherKey, AetherValue>(router, stubSerializer(), stubDeserializer());
         LongSupplier clock = () -> 10_000_000L;
         Function<Fsm<ClusterDeploymentState, ClusterFsmEvent>, ClusterDeploymentState> factory =
                 fsm -> new ClusterDeploymentContext(fsm,

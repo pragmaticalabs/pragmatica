@@ -205,7 +205,7 @@ class ManagementClientErrorSiblingsStatusTest {
     void blueprintStatus_answers404_whenNoOutcomeAndNoBlueprintExist() {
         var service = mock(BlueprintService.class);
 
-        when(service.outcome(org.mockito.ArgumentMatchers.any())).thenReturn(Option.none());
+        when(service.attributedOutcome(org.mockito.ArgumentMatchers.any())).thenReturn(Option.none());
         when(service.get(org.mockito.ArgumentMatchers.any())).thenReturn(Option.none());
 
         var routes = SliceRoutes.sliceRoutes(() -> node(Map.of("blueprintService", service)));

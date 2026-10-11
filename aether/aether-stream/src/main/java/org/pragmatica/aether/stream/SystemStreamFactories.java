@@ -66,11 +66,11 @@ public final class SystemStreamFactories {
                                                                                 Serializer serializer,
                                                                                 StreamConfig config) {
         ensureLocalPartition(partitionManager, config);
-        var transport = DefaultStreamPublisher.<T> streamPublisher(partitionManager,
-                                                                   serializer,
-                                                                   config.name(),
-                                                                   config.partitions(),
-                                                                   Option.none());
+        var transport = DefaultStreamPublisher.<T> systemStreamPublisher(partitionManager,
+                                                                         serializer,
+                                                                         config.name(),
+                                                                         config.partitions(),
+                                                                         Option.none());
 
         return FrameworkStreamPublishers.systemStreamPublisher(address, transport);
     }
@@ -90,17 +90,16 @@ public final class SystemStreamFactories {
                                                                                 NodeId self,
                                                                                 Option<Function<Integer, Option<NodeId>>> partitionOwnerResolver) {
         ensureLocalPartition(partitionManager, config);
-        var transport = DefaultStreamPublisher.<T> streamPublisher(partitionManager,
-                                                                   serializer,
-                                                                   config.name(),
-                                                                   config.partitions(),
-                                                                   Option.none(),
-                                                                   ConsistencyMode.EVENTUAL,
-                                                                   Option.none(),
-                                                                   forwardClient,
-                                                                   Option.none(),
-                                                                   partitionOwnerResolver,
-                                                                   Option.some(self));
+        var transport = DefaultStreamPublisher.<T> systemStreamPublisher(partitionManager,
+                                                                         serializer,
+                                                                         config.name(),
+                                                                         config.partitions(),
+                                                                         Option.none(),
+                                                                         ConsistencyMode.EVENTUAL,
+                                                                         Option.none(),
+                                                                         forwardClient,
+                                                                         partitionOwnerResolver,
+                                                                         Option.some(self));
 
         return FrameworkStreamPublishers.systemStreamPublisher(address, transport);
     }
@@ -173,11 +172,11 @@ public final class SystemStreamFactories {
                                                                                 int partitions,
                                                                                 RetentionPolicy retention) {
         ensureLocalPartition(address, partitionManager, partitions, retention);
-        var transport = DefaultStreamPublisher.<T> streamPublisher(partitionManager,
-                                                                   serializer,
-                                                                   address.asString(),
-                                                                   partitions,
-                                                                   Option.none());
+        var transport = DefaultStreamPublisher.<T> systemStreamPublisher(partitionManager,
+                                                                         serializer,
+                                                                         address.asString(),
+                                                                         partitions,
+                                                                         Option.none());
 
         return FrameworkStreamPublishers.systemStreamPublisher(address, transport);
     }

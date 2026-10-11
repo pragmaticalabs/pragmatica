@@ -49,7 +49,8 @@ class DockerComputeProviderTest {
     @BeforeEach
     void setUp() {
         testRunner = new TestDockerCommandRunner();
-        provider = DockerComputeProvider.dockerComputeProvider(testRunner, CONFIG).unwrap();
+        // The build machine may export the cluster secret; a test must state its environment, not inherit one (SF4).
+        provider = DockerComputeProvider.dockerComputeProvider(testRunner, CONFIG, DockerComputeProviderTest::hostEnvWithoutSecret).unwrap();
     }
 
     @Nested
@@ -68,6 +69,42 @@ class DockerComputeProviderTest {
                     .onFailure(DockerComputeProviderTest::assertProvisionFailedError);
 
             assertThat(testRunner.allCommands).as("spot request must not issue any docker command").isEmpty();
+        }
+    }
+
+    @Nested
+    class ImageTests {
+
+        @Test
+        void provision_specCarriesAnImage_runsThatImageNotTheConfiguredOne() {
+            testRunner.queuedResponses.add(Promise.success("container-id-img"));
+            testRunner.queuedResponses.add(Promise.success(RUNNING_INSPECT));
+
+            provider.provision(specWith(Option.some("registry/aether-node:1.1.0")))
+                    .await()
+                    .onFailure(cause -> fail("Expected success but got: " + cause.message()));
+
+            assertThat(testRunner.allCommands.getFirst().getLast()).isEqualTo("registry/aether-node:1.1.0");
+        }
+
+        @Test
+        void provision_specCarriesNoImage_runsTheConfiguredImage() {
+            testRunner.queuedResponses.add(Promise.success("container-id-img"));
+            testRunner.queuedResponses.add(Promise.success(RUNNING_INSPECT));
+
+            provider.provision(specWith(Option.empty()))
+                    .await()
+                    .onFailure(cause -> fail("Expected success but got: " + cause.message()));
+
+            assertThat(testRunner.allCommands.getFirst().getLast()).isEqualTo(CONFIG.imageName());
+        }
+
+        private ProvisionSpec specWith(Option<String> image) {
+            var ctx = ProvisionContext.provisionContext(maybeClusterName("test-cluster"), "core", sourceNameOrDefault("default"),
+                                                         ProvisionContext.PROVISIONED_BY_BOOTSTRAP);
+            var spec = ProvisionSpec.provisionSpec(InstanceType.ON_DEMAND, "docker", "default", ctx).unwrap();
+
+            return image.fold(() -> spec, spec::withImage);
         }
     }
 
@@ -101,7 +138,7 @@ class DockerComputeProviderTest {
             var exposingRunner = new TestDockerCommandRunner();
             exposingRunner.queuedResponses.add(Promise.success("container-id-0"));
             exposingRunner.queuedResponses.add(Promise.success(RUNNING_INSPECT));
-            var exposingProvider = DockerComputeProvider.dockerComputeProvider(exposingRunner, exposingConfig).unwrap();
+            var exposingProvider = DockerComputeProvider.dockerComputeProvider(exposingRunner, exposingConfig, DockerComputeProviderTest::hostEnvWithoutSecret).unwrap();
 
             exposingProvider.provision(InstanceType.ON_DEMAND)
                             .await()
@@ -138,7 +175,7 @@ class DockerComputeProviderTest {
         @Test
         void buildRunCommand_twoProvisions_mintDistinctKsuidNames() {
             var exposingRunner = new TestDockerCommandRunner();
-            var exposingProvider = DockerComputeProvider.dockerComputeProvider(exposingRunner, CONFIG).unwrap();
+            var exposingProvider = DockerComputeProvider.dockerComputeProvider(exposingRunner, CONFIG, DockerComputeProviderTest::hostEnvWithoutSecret).unwrap();
 
             exposingRunner.queuedResponses.add(Promise.success("container-id-0"));
             exposingRunner.queuedResponses.add(Promise.success(RUNNING_INSPECT));
@@ -338,9 +375,8 @@ class DockerComputeProviderTest {
     class IdentityEnvPropagationTests {
 
         @Test
-        void buildRunCommand_emitsApiKeyExactlyOnce_noDoubleEmissionFromAllowList() {
-            // AETHER_API_KEY is emitted from config.apiKey() AND is a member of the
-            // IDENTITY_VARS allow-list. The dedupe guard must keep it to a single emission.
+        void buildRunCommand_neverEmitsTheApiKeyAsAnEnvArg_whateverTheHostHolds() {
+            // #828: AETHER_API_KEY is a credential; it rides a file like the cluster secret, never `-e AETHER_API_KEY=...`.
             testRunner.queuedResponses.add(Promise.success("id-0"));
             testRunner.queuedResponses.add(Promise.success(RUNNING_INSPECT));
 
@@ -348,8 +384,7 @@ class DockerComputeProviderTest {
                     .onFailure(cause -> fail("Expected success but got: " + cause.message()));
 
             var command = testRunner.allCommands.getFirst();
-            var apiKeyCount = command.stream().filter(arg -> arg.startsWith("AETHER_API_KEY=")).count();
-            assertThat(apiKeyCount).isEqualTo(1);
+            assertThat(command.stream().filter(arg -> arg.startsWith("AETHER_API_KEY=") || arg.startsWith("AETHER_API_KEYS=")).count()).isZero();
         }
 
         @Test
@@ -449,6 +484,8 @@ class DockerComputeProviderTest {
                                  "AETHER_CLUSTER_SECRET", "host-secret");
             var hostileProvider = DockerComputeProvider.dockerComputeProvider(testRunner, CONFIG, hostEnv::get).unwrap();
             testRunner.queuedResponses.add(Promise.success("id-0"));
+            testRunner.queuedResponses.add(Promise.success(""));
+            testRunner.queuedResponses.add(Promise.success(""));
             testRunner.queuedResponses.add(Promise.success(RUNNING_INSPECT));
             var ctx = ProvisionContext.provisionContext(maybeClusterName("test-cluster"), "worker", sourceNameOrDefault("eu-west"),
                                                          ProvisionContext.PROVISIONED_BY_BOOTSTRAP);
@@ -458,7 +495,8 @@ class DockerComputeProviderTest {
                            .onFailure(cause -> fail("Expected success but got: " + cause.message()));
 
             var command = testRunner.allCommands.getFirst();
-            assertThat(command).as("CONTROL: the injected host env is consulted").contains("AETHER_CLUSTER_SECRET=host-secret");
+            assertThat(command).as("CONTROL: the injected host env is consulted").contains("AETHER_CLUSTER_SECRET_FILE=" + DockerComputeProvider.credentialPath("AETHER_CLUSTER_SECRET"));
+            assertThat(testRunner.allCommands.stream().flatMap(List::stream)).as("#828: the secret value is on no argv").noneMatch(arg -> arg.contains("host-secret"));
             assertThat(command.stream().filter(arg -> arg.startsWith("AETHER_SOURCE=")).toList()).containsExactly("AETHER_SOURCE=eu-west");
             assertThat(command).noneMatch(arg -> arg.startsWith("AETHER_ZONE="));
         }
@@ -620,7 +658,7 @@ class DockerComputeProviderTest {
                     .onFailure(cause -> fail("Expected success but got: " + cause.message()));
 
             var command = testRunner.allCommands.getFirst();
-            assertEnvPropagatedIfSet(command, "AETHER_CLUSTER_SECRET");
+            assertThat(command).as("#828: the cluster secret is never forwarded as an env var").noneMatch(arg -> arg.startsWith("AETHER_CLUSTER_SECRET="));
             assertEnvPropagatedIfSet(command, "AETHER_DOCKER_NETWORK");
             assertEnvPropagatedIfSet(command, "DOCKER_GID");
             assertEnvPropagatedIfSet(command, "AETHER_INSECURE_DEV_MODE");
@@ -634,32 +672,323 @@ class DockerComputeProviderTest {
         }
     }
 
+    /// #828 — a provider-minted node gets the secret as a file copied in over stdin, never on any argv and never in the
+    /// container's environment. The sentinel is a value no other field can contain; the positive control is that it DID reach
+    /// the archive piped to `docker cp`.
     @Nested
-    class TerminateTests {
+    class SecretFileTests {
+        private static final String SENTINEL = "sentinel-secret-7f3a9c";
 
-        @Test
-        void terminate_success_returnsUnit() {
-            testRunner.nextResponse = Promise.success("container-id");
+        private ProvisionSpec spec() {
+            var ctx = ProvisionContext.provisionContext(maybeClusterName("test-cluster"), "core", sourceNameOrDefault("eu-west"),
+                                                         ProvisionContext.PROVISIONED_BY_BOOTSTRAP);
 
-            provider.terminate(new InstanceId("container-id"))
-                    .await()
-                    .onFailure(cause -> fail("Expected success but got: " + cause.message()))
-                    .onSuccess(unit -> assertThat(unit).isNotNull());
+            return ProvisionSpec.provisionSpec(InstanceType.ON_DEMAND, "docker", "core-pool", ctx).unwrap();
+        }
+
+        private DockerComputeProvider providerWith(Map<String, String> env) {
+            return DockerComputeProvider.dockerComputeProvider(testRunner, CONFIG, env::get).unwrap();
+        }
+
+        private String tarListing(byte[] archive) {
+            try {
+                var listing = new ProcessBuilder("tar", "-tvf", "-").redirectErrorStream(true).start();
+
+                try (var in = listing.getOutputStream()) {
+                    in.write(archive);
+                }
+
+                return new String(listing.getInputStream().readAllBytes());
+            } catch (java.io.IOException e) {
+                throw new AssertionError(e);
+            }
+        }
+
+        private void queueSuccessfulCreateCopyStart() {
+            testRunner.queuedResponses.add(Promise.success("id-0"));
+            testRunner.queuedResponses.add(Promise.success(""));
+            testRunner.queuedResponses.add(Promise.success(""));
+            testRunner.queuedResponses.add(Promise.success(RUNNING_INSPECT));
+        }
+
+        private void assertSecretOnNoArgvButInTheArchive() {
+            assertThat(testRunner.allCommands.stream().flatMap(List::stream)).as("the secret value is on no argv").noneMatch(arg -> arg.contains(SENTINEL));
+            assertThat(testRunner.allCommands.stream().flatMap(List::stream)).as("and no env var carries it").noneMatch(arg -> arg.startsWith("AETHER_CLUSTER_SECRET="));
+            assertThat(testRunner.stdins).hasSize(1);
+            assertThat(new String(testRunner.stdins.getFirst(), java.nio.charset.StandardCharsets.UTF_8)).as("positive control: the sentinel reached the archive").contains(SENTINEL);
+            assertThat(tarListing(testRunner.stdins.getFirst())).as("the archive entry is read-only and owned by the node user (uid/gid 1000)")
+                                                                   .contains("-r--------").contains("1000").contains("aether-cluster-secret");
         }
 
         @Test
-        void terminate_failure_mapsToEnvironmentError() {
-            testRunner.nextResponse = new DockerError.CommandExecutionFailed(new RuntimeException("no such container")).promise();
+        void secretFromAFile_isCopiedInOverStdin_afterCreate_andBeforeStart() throws Exception {
+            var secretFile = java.nio.file.Files.createTempFile("provider-secret-", ".txt");
 
-            provider.terminate(new InstanceId("nonexistent"))
+            try {
+                java.nio.file.Files.writeString(secretFile, SENTINEL + "\n");
+                queueSuccessfulCreateCopyStart();
+
+                providerWith(Map.of("AETHER_CLUSTER_SECRET_FILE", secretFile.toString())).provision(spec()).await()
+                                                                                         .onFailure(cause -> fail("Expected success but got: " + cause.message()));
+
+                var commands = testRunner.allCommands;
+
+                assertThat(commands.get(0)).startsWith("docker", "create").doesNotContain("run").doesNotContain("-d")
+                                           .contains("AETHER_CLUSTER_SECRET_FILE=" + DockerComputeProvider.credentialPath("AETHER_CLUSTER_SECRET"));
+                assertThat(commands.get(1)).startsWith("docker", "cp", "-");
+                assertThat(commands.get(1).getLast()).as("the copy target is the directory the _FILE variable points into")
+                                                     .endsWith(":" + java.nio.file.Path.of(DockerComputeProvider.credentialPath("AETHER_CLUSTER_SECRET")).getParent());
+                assertThat(commands.get(2)).startsWith("docker", "start");
+                assertSecretOnNoArgvButInTheArchive();
+            } finally {
+                java.nio.file.Files.deleteIfExists(secretFile);
+            }
+        }
+
+        @Test
+        void secretFromThePlainEnvVar_alsoTravelsAsAFile_notAsAnEnvArg() {
+            queueSuccessfulCreateCopyStart();
+
+            providerWith(Map.of("AETHER_CLUSTER_SECRET", SENTINEL)).provision(spec()).await()
+                                                                    .onFailure(cause -> fail("Expected success but got: " + cause.message()));
+
+            assertThat(testRunner.allCommands.getFirst()).startsWith("docker", "create");
+            assertSecretOnNoArgvButInTheArchive();
+        }
+
+        @Test
+        void fileAndPlainVarThatDiffer_failProvisioning_beforeAnyDockerCommand() throws Exception {
+            var secretFile = java.nio.file.Files.createTempFile("provider-secret-", ".txt");
+
+            try {
+                java.nio.file.Files.writeString(secretFile, SENTINEL);
+
+                var result = providerWith(Map.of("AETHER_CLUSTER_SECRET_FILE", secretFile.toString(), "AETHER_CLUSTER_SECRET", "other")).provision(spec()).await();
+
+                assertThat(result.isFailure()).isTrue();
+                assertThat(testRunner.allCommands).as("a refused configuration launches nothing (only the rollback sweep may run)")
+                                                  .noneMatch(command -> command.contains("run") || command.contains("create") || command.contains("cp"));
+                assertThat(testRunner.stdins).isEmpty();
+            } finally {
+                java.nio.file.Files.deleteIfExists(secretFile);
+            }
+        }
+
+        @Test
+        void clusterSecretAndBothApiKeyVariables_allTravelAsFiles_noneOnArgvOrInTheEnv() {
+            var secret = "sentinel-secret-7f3a9c";
+            var keys = "sentinel-keys-5d2e81:ops:ADMIN";
+            var key = "sentinel-key-9b4c70";
+            queueSuccessfulCreateCopyStart();
+
+            providerWith(Map.of("AETHER_CLUSTER_SECRET", secret, "AETHER_API_KEYS", keys, "AETHER_API_KEY", key)).provision(spec()).await()
+                                                                                                                  .onFailure(cause -> fail("Expected success but got: " + cause.message()));
+
+            var create = testRunner.allCommands.getFirst();
+
+            assertThat(create).contains("AETHER_CLUSTER_SECRET_FILE=/tmp/aether-cluster-secret", "AETHER_API_KEYS_FILE=/tmp/aether-api-keys",
+                                        "AETHER_API_KEY_FILE=/tmp/aether-api-key");
+            assertThat(testRunner.allCommands.stream().flatMap(List::stream)).as("no sentinel on any argv")
+                                                                              .noneMatch(arg -> arg.contains(secret) || arg.contains(keys) || arg.contains(key));
+            assertThat(testRunner.allCommands.stream().flatMap(List::stream)).as("and no credential variable carries a value")
+                                                                              .noneMatch(arg -> arg.startsWith("AETHER_API_KEY=") || arg.startsWith("AETHER_API_KEYS=")
+                                                                                                || arg.startsWith("AETHER_CLUSTER_SECRET="));
+            var archive = new String(testRunner.stdins.getFirst(), java.nio.charset.StandardCharsets.UTF_8);
+
+            assertThat(archive).as("positive control: every sentinel reached the archive").contains(secret).contains(keys).contains(key);
+            assertThat(tarListing(testRunner.stdins.getFirst())).contains("aether-cluster-secret", "aether-api-keys", "aether-api-key");
+        }
+
+        @Test
+        void apiKeysFromAFile_areDelivered_andADifferingPlainVariableFailsProvisioning() throws Exception {
+            var file = java.nio.file.Files.createTempFile("provider-keys-", ".txt");
+
+            try {
+                java.nio.file.Files.writeString(file, "sentinel-keys-5d2e81:ops:ADMIN\n");
+                queueSuccessfulCreateCopyStart();
+
+                providerWith(Map.of("AETHER_API_KEYS_FILE", file.toString())).provision(spec()).await().onFailure(cause -> fail("Expected success but got: " + cause.message()));
+                assertThat(new String(testRunner.stdins.getFirst(), java.nio.charset.StandardCharsets.UTF_8)).contains("sentinel-keys-5d2e81:ops:ADMIN");
+
+                var before = testRunner.allCommands.size();
+                var conflict = providerWith(Map.of("AETHER_API_KEYS_FILE", file.toString(), "AETHER_API_KEYS", "other:x:y")).provision(spec()).await();
+
+                assertThat(conflict.isFailure()).isTrue();
+                assertThat(testRunner.allCommands.subList(before, testRunner.allCommands.size())).noneMatch(c -> c.contains("create") || c.contains("run"));
+            } finally {
+                java.nio.file.Files.deleteIfExists(file);
+            }
+        }
+
+        @Test
+        void theConfiguredApiKey_isTheAuthoritativeAetherApiKey_deliveredByFile() {
+            var configured = DockerConfig.dockerConfig("aether-node:local", "aether-network", 5160, 8080, 6000, "/var/run/docker.sock", "sentinel-cfgkey-6e1f", "").unwrap();
+            var configuredProvider = DockerComputeProvider.dockerComputeProvider(testRunner, configured, Map.of("AETHER_API_KEY", "sentinel-hostkey-0a9b")::get).unwrap();
+            queueSuccessfulCreateCopyStart();
+
+            configuredProvider.provision(spec()).await().onFailure(cause -> fail("Expected success but got: " + cause.message()));
+
+            var archive = new String(testRunner.stdins.getFirst(), java.nio.charset.StandardCharsets.UTF_8);
+
+            assertThat(archive).contains("sentinel-cfgkey-6e1f").doesNotContain("sentinel-hostkey-0a9b");
+            assertThat(testRunner.allCommands.stream().flatMap(List::stream)).noneMatch(arg -> arg.contains("sentinel-cfgkey-6e1f") || arg.contains("sentinel-hostkey-0a9b"));
+        }
+
+        @Test
+        void noSecretAnywhere_keepsThePlainDockerRun() {
+            testRunner.queuedResponses.add(Promise.success("id-0"));
+            testRunner.queuedResponses.add(Promise.success(RUNNING_INSPECT));
+
+            providerWith(Map.of()).provision(spec()).await().onFailure(cause -> fail("Expected success but got: " + cause.message()));
+
+            assertThat(testRunner.allCommands.getFirst()).startsWith("docker", "run", "-d");
+            assertThat(testRunner.stdins).isEmpty();
+        }
+    }
+
+    /// #1543 F2: the Docker socket reaches every container on the host, so the provider acts only on its OWN cluster's.
+    @Nested
+    class ClusterScopeTests {
+        private static final String INSPECT = "inspect";
+
+        private DockerComputeProvider scoped() {
+            return DockerComputeProvider.dockerComputeProvider(testRunner, CONFIG.withClusterName("prod"), _ -> null).unwrap();
+        }
+
+        private DockerComputeProvider unscoped() {
+            return DockerComputeProvider.dockerComputeProvider(testRunner, CONFIG, _ -> null).unwrap();
+        }
+
+        private void assertRefusal(org.pragmatica.lang.Cause cause, String... parts) {
+            assertThat(cause).isInstanceOf(EnvironmentError.OutOfClusterScope.class);
+            for (var part : parts) {
+                assertThat(cause.message()).contains(part);
+            }
+        }
+
+        private List<String> verbs() {
+            return testRunner.allCommands.stream().map(command -> command.get(1)).toList();
+        }
+
+        @Test
+        void terminate_ownClusterContainer_inspectsItsLabelThenStopsAndRemoves() {
+            testRunner.queuedResponses.add(Promise.success("prod\n"));
+            testRunner.queuedResponses.add(Promise.success("container-id"));
+            testRunner.queuedResponses.add(Promise.success("container-id"));
+
+            scoped().terminate(new InstanceId("container-id"))
+                    .await()
+                    .onFailure(cause -> fail("Expected success but got: " + cause.message()));
+
+            assertThat(verbs()).containsExactly(INSPECT, "stop", "rm");
+        }
+
+        @Test
+        void terminate_anotherClustersContainer_isRefused_andNothingIsStoppedOrRemoved() {
+            testRunner.queuedResponses.add(Promise.success("other\n"));
+
+            scoped().terminate(new InstanceId("their-node"))
+                    .await()
+                    .onSuccess(unit -> fail("a container of another cluster must not be terminated"))
+                    .onFailure(cause -> assertRefusal(cause, "'other'", "'prod'"));
+
+            assertThat(verbs()).as("only the label read ran: no stop, no rm").containsExactly(INSPECT);
+        }
+
+        @Test
+        void terminate_unlabelledContainer_isRefused_andNothingIsStoppedOrRemoved() {
+            testRunner.queuedResponses.add(Promise.success(""));
+
+            scoped().terminate(new InstanceId("ticketing-cleanroom"))
+                    .await()
+                    .onSuccess(unit -> fail("a container with no aether.cluster label must not be terminated"))
+                    .onFailure(cause -> assertRefusal(cause, "no aether cluster", "'prod'"));
+
+            assertThat(verbs()).containsExactly(INSPECT);
+        }
+
+        @Test
+        void terminate_unknownContainer_inspectFailure_mapsToTerminateFailed() {
+            testRunner.queuedResponses.add(new DockerError.CommandExecutionFailed(new RuntimeException("no such object")).promise());
+
+            scoped().terminate(new InstanceId("nonexistent"))
                     .await()
                     .onSuccess(unit -> assertThat(unit).isNull())
                     .onFailure(DockerComputeProviderTest::assertTerminateFailedError);
+
+            assertThat(verbs()).containsExactly(INSPECT);
+        }
+
+        @Test
+        void terminate_stopFailure_afterTheScopeCheck_mapsToTerminateFailed() {
+            testRunner.queuedResponses.add(Promise.success("prod"));
+            testRunner.queuedResponses.add(new DockerError.CommandExecutionFailed(new RuntimeException("cannot stop")).promise());
+
+            scoped().terminate(new InstanceId("container-id"))
+                    .await()
+                    .onSuccess(unit -> assertThat(unit).isNull())
+                    .onFailure(DockerComputeProviderTest::assertTerminateFailedError);
+        }
+
+        @Test
+        void terminate_noClusterKnown_refusesWithoutRunningAnyDockerCommand() {
+            unscoped().terminate(new InstanceId("container-id"))
+                      .await()
+                      .onSuccess(unit -> fail("an unscoped provider must not terminate"))
+                      .onFailure(DockerComputeProviderTest::assertTerminateFailedError);
+
+            assertThat(testRunner.allCommands).isEmpty();
+        }
+
+        @Test
+        void terminate_scopeFromTheHostEnvironment_whenTheConfigNamesNone() {
+            var fromEnv = DockerComputeProvider.dockerComputeProvider(testRunner, CONFIG, name -> "AETHER_CLUSTER_NAME".equals(name) ? "prod" : null).unwrap();
+            testRunner.queuedResponses.add(Promise.success("other"));
+
+            fromEnv.terminate(new InstanceId("their-node"))
+                   .await()
+                   .onFailure(cause -> assertThat(cause).isInstanceOf(EnvironmentError.OutOfClusterScope.class));
+
+            assertThat(verbs()).containsExactly(INSPECT);
+        }
+
+        @Test
+        void listInstances_alwaysFiltersOnTheOwnClustersLabel() {
+            testRunner.nextResponse = Promise.success("");
+
+            scoped().listInstances().await().onFailure(cause -> fail(cause.message()));
+
+            assertThat(testRunner.lastCommand).containsSequence("--filter", "label=aether.cluster=prod");
+            assertThat(testRunner.lastCommand).doesNotContain("label=aether.cluster");
+        }
+
+        @Test
+        void listInstances_excludesContainersOfOtherClusters_evenIfTheDaemonReturnsThem() {
+            testRunner.nextResponse = Promise.success("a1\tmine\trunning\tprod\tcore\tn1\nb2\ttheirs\trunning\tother\tcore\tn2\nc3\tstray\trunning\t\t\t");
+
+            scoped().listInstances()
+                    .await()
+                    .onFailure(cause -> fail(cause.message()))
+                    .onSuccess(instances -> assertThat(instances).extracting(info -> info.id().value()).containsExactly("a1"));
+        }
+
+        @Test
+        void listInstances_noClusterKnown_failsWithoutRunningAnyDockerCommand() {
+            unscoped().listInstances()
+                      .await()
+                      .onSuccess(list -> fail("an unscoped provider must not list the host's containers"))
+                      .onFailure(DockerComputeProviderTest::assertListInstancesFailedError);
+
+            assertThat(testRunner.allCommands).isEmpty();
         }
     }
 
     @Nested
     class ListInstancesTests {
+
+        private DockerComputeProvider scoped() {
+            return DockerComputeProvider.dockerComputeProvider(testRunner, CONFIG.withClusterName("default"), _ -> null).unwrap();
+        }
 
         @Test
         void listInstances_success_returnsMappedList() {
@@ -667,7 +996,7 @@ class DockerComputeProviderTest {
                 "abc123\taether-default-node-0\trunning\tdefault\tcore\tnode-0\n" +
                 "def456\taether-default-node-1\texited\tdefault\tworker\tnode-1");
 
-            provider.listInstances()
+            scoped().listInstances()
                     .await()
                     .onFailure(cause -> fail("Expected success but got: " + cause.message()))
                     .onSuccess(DockerComputeProviderTest::assertTwoInstanceList);
@@ -677,7 +1006,7 @@ class DockerComputeProviderTest {
         void listInstances_empty_returnsEmptyList() {
             testRunner.nextResponse = Promise.success("");
 
-            provider.listInstances()
+            scoped().listInstances()
                     .await()
                     .onFailure(cause -> fail("Expected success but got: " + cause.message()))
                     .onSuccess(instances -> assertThat(instances).isEmpty());
@@ -687,22 +1016,22 @@ class DockerComputeProviderTest {
         void listInstances_failure_mapsToEnvironmentError() {
             testRunner.nextResponse = new DockerError.CommandExecutionFailed(new RuntimeException("daemon not running")).promise();
 
-            provider.listInstances()
+            scoped().listInstances()
                     .await()
                     .onSuccess(list -> assertThat(list).isNull())
                     .onFailure(DockerComputeProviderTest::assertListInstancesFailedError);
         }
 
         @Test
-        void listInstances_withTagFilter_usesFilterArgs() {
-            testRunner.nextResponse = Promise.success("abc123\taether-node-0\trunning\tprod\tcore\tnode-0");
+        void listInstances_withTagFilter_addsItsFilterArgsToTheClusterScope() {
+            testRunner.nextResponse = Promise.success("abc123\taether-node-0\trunning\tdefault\tcore\tnode-0");
 
-            provider.listInstances(Map.of("aether.cluster", "prod"))
+            scoped().listInstances(Map.of("aether.role", "core"))
                     .await()
                     .onFailure(cause -> fail("Expected success but got: " + cause.message()))
                     .onSuccess(instances -> assertThat(instances).hasSize(1));
 
-            assertThat(testRunner.lastCommand).contains("--filter", "label=aether.cluster=prod");
+            assertThat(testRunner.lastCommand).containsSequence("--filter", "label=aether.cluster=default", "--filter", "label=aether.role=core");
         }
     }
 
@@ -940,7 +1269,23 @@ class DockerComputeProviderTest {
     }
 
     /// Test stub for DockerCommandRunner that returns canned responses and captures arguments.
+    private static String hostEnvWithoutSecret(String name) {
+        return org.pragmatica.aether.environment.ClusterSecretSource.FILE_DELIVERED_ENVS.stream()
+                                                                                        .anyMatch(var -> name.equals(var) || name.equals(var + "_FILE"))
+               ? null
+               : System.getenv(name);
+    }
+
     static final class TestDockerCommandRunner implements DockerCommandRunner {
+        List<byte[]> stdins = new ArrayList<>();
+
+        @Override
+        public Promise<String> execute(List<String> command, byte[] stdin) {
+            stdins.add(stdin);
+
+            return execute(command);
+        }
+
         Promise<String> nextResponse = Promise.success("");
         List<String> lastCommand = List.of();
         List<List<String>> allCommands = new ArrayList<>();

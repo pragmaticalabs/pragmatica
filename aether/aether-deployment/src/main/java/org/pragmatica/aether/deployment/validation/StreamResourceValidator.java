@@ -64,6 +64,8 @@ public sealed interface StreamResourceValidator {
     String RULE_NAMESPACE_RESERVED = "namespace-reserved";
     /// #1282: a blueprint `External` source naming a stream kind only the runtime provisions.
     String RULE_SOURCE_RESERVED_KIND = "source-reserved-kind";
+    /// #1338: a `system` External source declared with a role that writes; system streams are read-only to blueprints.
+    String RULE_SOURCE_SYSTEM_NOT_CONSUMER = "source-system-not-consumer";
     String RULE_RESOURCES_PARSE = "resources-toml-parse";
     /// Per-section rule ids, one per parser cause TYPE ([#ruleFor]).
     String RULE_VERSION_AND_SOURCE_EXCLUSIVE = "version-and-source-mutually-exclusive";
@@ -94,7 +96,7 @@ public sealed interface StreamResourceValidator {
     /// #1336: per-section rules whose violation refuses the deploy instead of dropping the one alias —
     /// see [#partition]. Data, so a ruling flips one line. [#RULE_UNSUPPORTED_CONSISTENCY] is not listed
     /// because [#ensureHonourableConsistency] refuses it before any partition runs.
-    Set<String> GATING_SECTION_RULES = Set.of(RULE_SOURCE_RESERVED_KIND);
+    Set<String> GATING_SECTION_RULES = Set.of(RULE_SOURCE_RESERVED_KIND, RULE_SOURCE_SYSTEM_NOT_CONSUMER);
 
     /// Run the full validation pass for a deploy attempt.
     ///
@@ -367,6 +369,7 @@ public sealed interface StreamResourceValidator {
     private static String ruleFor(Cause cause) {
         return switch (cause) {
             case StreamSourceError.ReservedKindSource _ -> RULE_SOURCE_RESERVED_KIND;
+            case StreamSourceError.SystemSourceNotConsumer _ -> RULE_SOURCE_SYSTEM_NOT_CONSUMER;
             case StreamDeclarationError.VersionAndSourceBothSet _ -> RULE_VERSION_AND_SOURCE_EXCLUSIVE;
             case StreamDeclarationError.ProducerVersionLatest _ -> RULE_PRODUCER_VERSION_EXACT;
             case StreamDeclarationError.PartitionsOverCeiling _ -> RULE_PARTITIONS_OVER_CEILING;

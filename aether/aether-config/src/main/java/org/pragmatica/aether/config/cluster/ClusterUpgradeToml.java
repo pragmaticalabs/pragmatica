@@ -22,11 +22,24 @@ import static org.pragmatica.lang.Result.success;
 public sealed interface ClusterUpgradeToml {
     record unused() implements ClusterUpgradeToml {}
 
+    /// SemVer 2.0 `MAJOR.MINOR.PATCH` with an optional pre-release (`1.0.0`, `1.0.0-rc5`, `1.0.0-alpha.1`): the shape of our own release
+    /// versions. Build metadata (`+...`) is deliberately not accepted: the version becomes an image tag, and `+` is not a legal tag
+    /// character. Numeric parts and numeric pre-release identifiers carry no leading zeros, as SemVer requires.
+    Pattern UPGRADE_VERSION = Pattern.compile("^(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)"
+                                             + "(-(0|[1-9]\\d*|\\d*[A-Za-z-][0-9A-Za-z-]*)(\\.(0|[1-9]\\d*|\\d*[A-Za-z-][0-9A-Za-z-]*))*)?$");
+
     Pattern SAFE_VERSION = Pattern.compile("^[A-Za-z0-9][A-Za-z0-9._+-]*$");
     Pattern SECTION_HEADER = Pattern.compile("^\\s*\\[([^\\[\\]]*)\\]\\s*(#.*)?$");
     Pattern ANY_TABLE_HEADER = Pattern.compile("^\\s*\\[.*$");
     Pattern VERSION_LINE = Pattern.compile("^(\\s*version\\s*=\\s*)\"[^\"]*\"(.*)$");
     String CLUSTER_SECTION = "cluster";
+
+    /// Whether `version` is a version an upgrade may target: SemVer 2.0 with an optional pre-release, no build metadata.
+    static boolean isUpgradeVersion(String version) {
+        return Option.option(version)
+                     .filter(candidate -> UPGRADE_VERSION.matcher(candidate).matches())
+                     .isPresent();
+    }
 
     /// Rewrites the `version` line of the `[cluster]` table. The result is re-parsed and must read back
     /// exactly `targetVersion`: a TOML whose version is not a plain `version = "…"` line in `[cluster]`
@@ -53,6 +66,31 @@ public sealed interface ClusterUpgradeToml {
                                     .filter(ref -> isPinned(config, ref))
                                     .sorted()
                                     .toList();
+    }
+
+    /// Names (sorted) of the DOCKER sources with a role whose image does not follow the cluster version: the role's runtime profile
+    /// is missing, pins no image, or pins one without [NodeUserDataRenderer#VERSION_PLACEHOLDER]. A replacement of such a role boots
+    /// the provider's one configured image, so the upgrade would roll nodes onto the SAME image; it is refused instead (#1543 F2).
+    static List<String> dockerSourcesWithoutVersionedImage(ClusterBootstrapConfig config) {
+        return config.sources()
+                     .values()
+                     .stream()
+                     .filter(source -> source.type() == SourceType.DOCKER)
+                     .filter(source -> source.roles()
+                                             .values()
+                                             .stream()
+                                             .anyMatch(role -> !followsVersion(config, role)))
+                     .map(source -> source.name()
+                                          .value())
+                     .sorted()
+                     .toList();
+    }
+
+    private static boolean followsVersion(ClusterBootstrapConfig config, RoleSubTable role) {
+        return Option.option(config.runtimes().get(role.runtimeRef()))
+                     .flatMap(RuntimeProfile::image)
+                     .filter(image -> image.contains(NodeUserDataRenderer.VERSION_PLACEHOLDER))
+                     .isPresent();
     }
 
     private static Set<String> referencedRuntimeRefs(ClusterBootstrapConfig config) {

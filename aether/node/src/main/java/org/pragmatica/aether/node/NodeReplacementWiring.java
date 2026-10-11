@@ -47,6 +47,7 @@ import org.pragmatica.consensus.rabia.VoterConfiguration;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.utility.warning.OperatorWarningSink;
@@ -305,6 +306,30 @@ public final class NodeReplacementWiring {
         return Unit.unit();
     }
 
+    /// The provision of a replacement, from the source COMMITTED in its record. A record created with no source (a node of a cluster
+    /// bootstrapped from static PEERS has no source label) has it resolved once by the reconciler and committed back before any effect, so a
+    /// blank here is a defect, refused, and never read as the source "default" (#1543 F2).
+    static Promise<ProvisionDisposition> provisionFor(ClusterTopologyManager ctm,
+                                                      NodeReplacementValue record,
+                                                      Set<NodeId> members) {
+        var role = NodeRole.nodeRole(record.role()).or(NodeRole.CORE);
+
+        return committedSource(record).async()
+                              .flatMap(source -> ctm.provisionReplacement(record.replacement(),
+                                                                          Option.none(),
+                                                                          members,
+                                                                          role,
+                                                                          source));
+    }
+
+    /// The source a record's node is addressed by at the provider: the one committed in the record. Blank is refused, never "default".
+    static Result<SourceName> committedSource(NodeReplacementValue record) {
+        return record.source()
+                     .isBlank()
+               ? Causes.cause("the replacement record carries no committed source yet").result()
+               : SourceName.sourceName(record.source());
+    }
+
     private static final class Env implements NodeReplacementReconciler.Environment {
         private final Inputs in;
         private final Set<NodeId> drainRequested = ConcurrentHashMap.newKeySet();
@@ -343,6 +368,13 @@ public final class NodeReplacementWiring {
                                           AetherValue.CapacityReservationValue.class);
 
             return cas(in, original, Option.some(expected), next, settleReservation(next, reservation));
+        }
+
+        @Override
+        public Result<String> resolveSource(NodeId original, NodeReplacementValue record) {
+            return in.ctm()
+                     .sourceOfSourcelessNode(NodeRole.nodeRole(record.role()).or(NodeRole.CORE))
+                     .map(SourceName::value);
         }
 
         @Override
@@ -434,17 +466,14 @@ public final class NodeReplacementWiring {
             var members = Option.option(in.membership().get()).map(fsm -> fsm.memberStates()
                                                                              .keySet()).or(Set.of());
 
-            return in.ctm()
-                     .provisionReplacement(record.replacement(),
-                                           Option.none(),
-                                           Set.copyOf(members),
-                                           NodeRole.nodeRole(record.role()).or(NodeRole.CORE),
-                                           SourceName.sourceNameOrDefault(record.source()))
-                     .<EffectResult> map(disposition -> switch (disposition) {
+            return NodeReplacementWiring.provisionFor(in.ctm(),
+                                                      record,
+                                                      Set.copyOf(members))
+                                        .<EffectResult> map(disposition -> switch (disposition) {
                 case ProvisionDisposition.Dispatched _ -> new EffectResult.Done();
                 case ProvisionDisposition.Deferred deferred -> new EffectResult.Deferred("provisioning deferred: " + deferred.reason());
             })
-                     .recover(cause -> new EffectResult.Failed(cause.message()));
+                                        .recover(cause -> new EffectResult.Failed(cause.message()));
         }
 
         /// Done only when the provider's own listing, taken after the terminate, shows the instance gone. A refusal, a listing that
@@ -458,14 +487,14 @@ public final class NodeReplacementWiring {
 
             reapSince.putIfAbsent(node,
                                   in.clock().getAsLong());
-            var source = SourceName.sourceNameOrDefault(record.source());
 
             return in.ctm()
                      .drainNode(node, DrainReason.REPLACED)
-                     .flatMap(_ -> in.ctm()
-                                     .reapRetired(node,
-                                                  source,
-                                                  seen.contains(node)))
+                     .flatMap(_ -> committedSource(record).async()
+                                                  .flatMap(source -> in.ctm()
+                                                                       .reapRetired(node,
+                                                                                    source,
+                                                                                    seen.contains(node))))
                      .<EffectResult> map(_ -> confirmedGone(node,
                                                             record.replacement()))
                      .recover(cause -> notConfirmed(node, cause, boundedByRetiring));
@@ -507,8 +536,11 @@ public final class NodeReplacementWiring {
         /// safely call gone (the old node self-halts after its drain). A listing that fails or lists nothing observes nothing and
         /// never blocks the drain; external-kind reservations have no provider instance to list.
         private Promise<Unit> observeInstances(NodeId original, NodeReplacementValue record) {
-            var source = SourceName.sourceNameOrDefault(record.source());
+            return committedSource(record).fold(_ -> Promise.unitPromise(),
+                                                source -> observeInstances(original, record, source));
+        }
 
+        private Promise<Unit> observeInstances(NodeId original, NodeReplacementValue record, SourceName source) {
             return Stream.of(original,
                              record.replacement())
                          .map(node -> in.ctm()
@@ -534,15 +566,23 @@ public final class NodeReplacementWiring {
                 return;
             }
 
-            in.ctm()
-              .instanceListed(node,
-                              SourceName.sourceNameOrDefault(record.source()))
-              .onSuccess(listed -> {
-                  if (listed) {
-                  seen.add(node);
-              }
-              })
-              .onResultRun(() -> observing.remove(node));
+            committedSource(record).fold(_ -> {
+                                             observing.remove(node);
+
+                                             return Unit.unit();
+                                         },
+                                         source -> {
+                                             in.ctm()
+                                               .instanceListed(node, source)
+                                               .onSuccess(listed -> {
+                                             if (listed) {
+                                             seen.add(node);
+                                         }
+                                         })
+                                               .onResultRun(() -> observing.remove(node));
+
+                                             return Unit.unit();
+                                         });
         }
 
         private EffectResult drained(NodeId original, DrainOutcome outcome) {
