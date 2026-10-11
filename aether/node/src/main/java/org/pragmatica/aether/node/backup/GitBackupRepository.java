@@ -53,16 +53,14 @@ public record GitBackupRepository(Path dir,
     /// hung remote cannot stall the backup worker indefinitely.
     public static final TimeSpan DEFAULT_TIMEOUT = TimeSpan.timeSpan(60).seconds();
 
-    /// git's post-commit/fetch/push auto-maintenance daemonizes and keeps writing into the repository after
-    /// the command returned — into the backup directory, past a stopped worker, and (through the inherited
-    /// config, for a path remote) into the remote. The backup is one small file: nothing needs repacking, and
-    /// nothing may write after a git command has returned (#2095).
-    private static final List<String> NO_BACKGROUND_MAINTENANCE = List.of("-c",
-                                                                          "maintenance.auto=false",
-                                                                          "-c",
-                                                                          "gc.auto=0",
-                                                                          "-c",
-                                                                          "receive.autogc=false");
+    /// git's auto-maintenance after a commit or fetch daemonizes and keeps writing into the repository after the
+    /// command returned — past a stopped worker (#2095). Kept in the foreground it still compacts the repository
+    /// (a commit adds ~23 KB of loose objects), but inside the git command, so nothing writes after it returns.
+    /// This reaches the local repository only: a path remote's `receive-pack` does not inherit the client's `-c`.
+    private static final List<String> FOREGROUND_MAINTENANCE = List.of("-c",
+                                                                       "gc.autoDetach=false",
+                                                                       "-c",
+                                                                       "maintenance.autoDetach=false");
 
     private static final String REMOTE_NAME = "origin";
     private static final String REMOTE_REF = "refs/remotes/" + REMOTE_NAME + "/";
@@ -309,7 +307,7 @@ public record GitBackupRepository(Path dir,
         var command = new ArrayList<String>();
 
         command.add("git");
-        command.addAll(NO_BACKGROUND_MAINTENANCE);
+        command.addAll(FOREGROUND_MAINTENANCE);
         command.add("-C");
         command.add(dir.toString());
         command.addAll(args);

@@ -1,2 +1,0 @@
-### Fixed
-- The KV backup's git commands no longer start git's detached auto-maintenance (`maintenance.auto=false`, `gc.auto=0`): a commit or fetch used to spawn a background `git maintenance` that kept writing into the backup directory after the command returned, past a stopped worker. Test remotes disable `receive.autogc`, which ended the `@TempDir` cleanup race of `KvBackupServiceTest$Push.anUnreachableRemote_queuesLocally_warnsOnce_andRecovers` (#2095). A remote's own `receive-pack` maintenance is the remote's config, not the client's.
