@@ -46,6 +46,7 @@ import org.pragmatica.consensus.net.NetworkServiceMessage.ConnectionEstablished;
 import org.pragmatica.consensus.net.NetworkServiceMessage.ConnectionFailed;
 import org.pragmatica.consensus.net.NetworkServiceMessage.DisconnectNode;
 import org.pragmatica.consensus.net.NetworkServiceMessage.ListConnectedNodes;
+import org.pragmatica.consensus.net.NetworkServiceMessage.OfflineFramesExpired;
 import org.pragmatica.consensus.net.NetworkServiceMessage.Send;
 import org.pragmatica.consensus.net.quic.QuicClusterNetwork;
 import org.pragmatica.consensus.net.quic.QuicTlsProvider;
@@ -620,6 +621,11 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
         // (AetherNode.attachQuicPeerStateListener -> swimDetector.recordTransportHint).
         // The router routes are retained only to satisfy sealed-hierarchy coverage.
         route(ConnectionFailed.class,
+              _ -> {}),
+
+        // #1996: a dropped-frame notification is an operator event, delivered by the node's own route to its event
+        // aggregator; here the route only satisfies sealed-hierarchy coverage.
+        route(OfflineFramesExpired.class,
               _ -> {}),
                                                                                          route(ConnectionEstablished.class,
                                                                                                _ -> {}),

@@ -262,11 +262,13 @@ final class DefaultStreamForwardClient implements StreamForwardClient {
         // The wait for the ack — not the write itself — is capped by the ambient request budget:
         // a client-driven publish stops waiting when its caller stops waiting, while background
         // callers (no bound scope) keep the configured timeout unchanged.
-        SharedScheduler.schedule(() -> timeoutRequest(correlationId),
-                                 Deadline.current().bounded(publishTimeout));
-        var message = publishForward(selfNodeId, correlationId, streamName, partition, payload, timestamp);
+        var publishWait = Deadline.current().bounded(publishTimeout);
 
-        transport.send(governorId, message);
+        SharedScheduler.schedule(() -> timeoutRequest(correlationId), publishWait);
+        var message = publishForward(selfNodeId, correlationId, streamName, partition, payload, timestamp);
+        // The frame must not outlive the wait that just started (#1996): delivered later it would publish an event
+        // whose caller was already told the outcome is unknown.
+        transport.send(governorId, message, publishWait);
         log.trace("Sent PublishForward to {} for {}[{}] correlationId={}",
                   governorId,
                   streamName,
@@ -344,9 +346,10 @@ final class DefaultStreamForwardClient implements StreamForwardClient {
         Promise<ReadForwardResult> promise = Promise.promise();
 
         pendingReads.put(message.correlationId(), promise);
-        SharedScheduler.schedule(() -> timeoutRead(message.correlationId()),
-                                 Deadline.current().bounded(readTimeout));
-        transport.send(target, message);
+        var readWait = Deadline.current().bounded(readTimeout);
+
+        SharedScheduler.schedule(() -> timeoutRead(message.correlationId()), readWait);
+        transport.send(target, message, readWait);
         log.trace("Sent ReadForward to {} for {}[{}] fromOffset={} maxEvents={} correlationId={} preference={}",
                   target,
                   message.streamName(),

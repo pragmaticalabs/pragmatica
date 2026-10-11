@@ -644,7 +644,7 @@ class BlueprintPublishOwnershipTest {
                               .orElseGet(Option::none);
     }
 
-    private static final class TestClusterNode implements ClusterNode<KVCommand<AetherKey>> {
+    static final class TestClusterNode implements ClusterNode<KVCommand<AetherKey>> {
         private final TestKVStore store;
         // #759 review round 2, BLOCKING 3: tracks each apply() call's batch verbatim (mirrors
         // ClusterDeploymentStateTransactionalTest's RecordingClusterNode) so a test can pin that a
@@ -723,7 +723,7 @@ class BlueprintPublishOwnershipTest {
         }
     }
 
-    private static final class TestKVStore extends KVStore<AetherKey, AetherValue> {
+    static final class TestKVStore extends KVStore<AetherKey, AetherValue> {
         private final Map<AetherKey, AetherValue> storage = new HashMap<>();
 
         TestKVStore() {

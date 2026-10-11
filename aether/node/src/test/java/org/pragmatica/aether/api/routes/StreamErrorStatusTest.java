@@ -92,6 +92,7 @@ class StreamErrorStatusTest {
         all.put(new StreamError.ReplicaNotVerified("s", 0, 3L), HttpStatus.SERVICE_UNAVAILABLE);
         all.put(new StreamError.RepairNotAuthorized("s", 0, 3L), HttpStatus.SERVICE_UNAVAILABLE);
         all.put(new StreamError.RepairWitnessFailed("s", 0, "r"), HttpStatus.SERVICE_UNAVAILABLE);
+        all.put(new StreamError.RepairPreserveFailed("s", 0, "r"), HttpStatus.SERVICE_UNAVAILABLE);
         all.put(new StreamError.DivergenceNotEstablished("s", 0, 3L), HttpStatus.INTERNAL_SERVER_ERROR);
         all.put(new StreamError.TruncateBelowRetained("s", 0, 1L, 5L), HttpStatus.INTERNAL_SERVER_ERROR);
 

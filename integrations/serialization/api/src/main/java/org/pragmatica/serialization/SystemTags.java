@@ -593,6 +593,9 @@ public interface SystemTags {
         // a scheduled fire still in flight while its ticks are skipped / its resolution (#1930)
         pin(table, 1753, "org.pragmatica.aether.api.ClusterEvent.ScheduledTaskFireHeld");
         pin(table, 1754, "org.pragmatica.aether.api.ClusterEvent.ScheduledTaskFireReleased");
+        // two artifacts serving one HTTP route / the collision cleared (#1206)
+        pin(table, 1755, "org.pragmatica.aether.api.ClusterEvent.RoutePrefixCollision");
+        pin(table, 1756, "org.pragmatica.aether.api.ClusterEvent.RoutePrefixCollisionCleared");
         pin(table, 2112, "org.pragmatica.aether.slice.kvstore.AetherKey.CommunityPlacementAvailabilityKey");
         pin(table, 2113, "org.pragmatica.aether.slice.kvstore.AetherValue.CommunityPlacementAvailabilityValue");
         // built-in artifact store versions index in consensus (#1778)

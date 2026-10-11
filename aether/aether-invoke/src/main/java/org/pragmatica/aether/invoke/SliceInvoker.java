@@ -564,7 +564,8 @@ class SliceInvokerImpl implements SliceInvoker {
                                                         InvocationContext.currentDepth() + 1,
                                                         1,
                                                         InvocationContext.isSampled());
-
+        // Nobody waits for a fire-and-forget call, so there is no caller deadline to hand over: plain send, which the
+        // transport bounds by the cluster-wide offline-buffer cap (#1996).
         network.send(endpoint.nodeId(), invokeRequest);
         if (log.isDebugEnabled()) {
             log.debug("[requestId={}] Sent fire-and-forget invocation to {}: {}.{}",
@@ -670,8 +671,9 @@ class SliceInvokerImpl implements SliceInvoker {
 
         pendingInvocations.put(correlationId, pending);
         pendingInvocationsByNode.computeIfAbsent(targetNode, _ -> ConcurrentHashMap.newKeySet()).add(correlationId);
-        pendingPromise.timeout(deadline.bounded(timeSpan(boundMs).millis()))
-                      .onResult(result -> settlePendingInvocation(correlationId, pending, result));
+        var callerWait = deadline.bounded(timeSpan(boundMs).millis());
+
+        pendingPromise.timeout(callerWait).onResult(result -> settlePendingInvocation(correlationId, pending, result));
         var invokeRequest = InvokeRequest.invokeRequest(self,
                                                         correlationId,
                                                         requestId,
@@ -682,8 +684,9 @@ class SliceInvokerImpl implements SliceInvoker {
                                                         InvocationContext.currentDepth() + 1,
                                                         1,
                                                         InvocationContext.isSampled());
-
-        network.send(targetNode, invokeRequest);
+        // The frame must not outlive the wait that just started: a call delivered after its caller timed out ("may
+        // have run") would run minutes later on reattach (#1996).
+        network.send(targetNode, invokeRequest, callerWait);
         if (log.isDebugEnabled()) {
             log.debug("[requestId={}] Sent InvokeRequest to {}: {}.{} [{}]",
                       requestId,
@@ -854,8 +857,9 @@ class SliceInvokerImpl implements SliceInvoker {
 
         pendingInvocations.put(correlationId, pending);
         pendingInvocationsByNode.computeIfAbsent(targetNode, _ -> ConcurrentHashMap.newKeySet()).add(correlationId);
-        pendingPromise.timeout(ctx.deadline().bounded(timeSpan(timeoutMs).millis()))
-                      .onResult(_ -> removePendingInvocation(correlationId, targetNode));
+        var callerWait = ctx.deadline().bounded(timeSpan(timeoutMs).millis());
+
+        pendingPromise.timeout(callerWait).onResult(_ -> removePendingInvocation(correlationId, targetNode));
         var invokeRequest = InvokeRequest.invokeRequest(self,
                                                         correlationId,
                                                         ctx.requestId,
@@ -866,8 +870,8 @@ class SliceInvokerImpl implements SliceInvoker {
                                                         InvocationContext.currentDepth() + 1,
                                                         1,
                                                         InvocationContext.isSampled());
-
-        network.send(targetNode, invokeRequest);
+        // Same bound as the primary send: a failover attempt delivered after its wait ended would run a third time (#1996).
+        network.send(targetNode, invokeRequest, callerWait);
         if (log.isDebugEnabled()) {
             log.debug("[requestId={}] Sent failover invocation to {}: {}.{} [{}] (attempt {})",
                       ctx.requestId,

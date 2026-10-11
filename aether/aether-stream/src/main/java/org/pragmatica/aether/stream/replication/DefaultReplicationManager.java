@@ -46,7 +46,10 @@ import static org.pragmatica.lang.Unit.unit;
 
 final class DefaultReplicationManager implements ReplicationManager {
     private static final Logger log = LoggerFactory.getLogger(DefaultReplicationManager.class);
-    private static final TimeSpan DEFAULT_ACK_TIMEOUT = TimeSpan.timeSpan(5).seconds();
+    /// How long the owner waits for a replica's ack. Replication does not retransmit on its own: a replica that misses a
+    /// chunk is repaired by catch-up, so this wait is the only deadline a replicate frame has, and the offline buffer
+    /// must not hold the frame past it (#1996).
+    static final TimeSpan DEFAULT_ACK_TIMEOUT = TimeSpan.timeSpan(5).seconds();
     private static final Runnable NO_OP = DefaultReplicationManager::noOp;
 
     private final NodeId governorId;
@@ -510,7 +513,7 @@ final class DefaultReplicationManager implements ReplicationManager {
 
     @Contract
     private void sendChunk(List<NodeId> replicas, ReplicationMessage.ReplicateEvents message) {
-        replicas.forEach(replica -> transport.send(replica, message));
+        replicas.forEach(replica -> transport.send(replica, message, DEFAULT_ACK_TIMEOUT));
     }
 
     /// Exclusive end of the chunk starting at `start`: as many events as fit the accounting budget, and at least

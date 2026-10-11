@@ -426,21 +426,9 @@ public sealed interface AetherKey extends StructuredKey permits AetherKey.Cluste
         }
 
         private static String normalizePrefix(String path) {
-            if (!Verify.Is.present(path)) {
-                return "/";
-            }
-
-            var normalized = path.strip();
-
-            if (!normalized.startsWith("/")) {
-                normalized = "/" + normalized;
-            }
-
-            if (!normalized.endsWith("/")) {
-                normalized = normalized + "/";
-            }
-
-            return normalized;
+            return Verify.Is.present(path)
+                   ? org.pragmatica.aether.http.handler.RouteIdentity.normalizePrefix(path)
+                   : "/";
         }
     }
 

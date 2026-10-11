@@ -29,7 +29,9 @@ import org.pragmatica.aether.slice.blueprint.BlueprintId;
 import org.pragmatica.aether.slice.blueprint.BlueprintParser;
 import org.pragmatica.aether.slice.blueprint.ExpandedBlueprint;
 import org.pragmatica.aether.slice.blueprint.MigrationEntry;
+import org.pragmatica.aether.slice.blueprint.ExpanderError;
 import org.pragmatica.aether.slice.blueprint.PubSubValidator;
+import org.pragmatica.aether.slice.blueprint.RoutePrefixCollisionValidator;
 import org.pragmatica.aether.slice.blueprint.ResolvedSlice;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.AppBlueprintKey;
@@ -183,12 +185,25 @@ public interface BlueprintService {
                                              ArtifactStore artifactStore,
                                              Option<ConfigurationProvider> nodeComposite,
                                              OperatorWarningSink operatorWarnings) {
+        return blueprintService(cluster, store, repository, artifactStore, nodeComposite, operatorWarnings, false);
+    }
+
+    /// `routeVersionInHeader`: the cluster mounts versioned routes in HEADER mode (#198), where a route's `/v{N}` path segment is
+    /// not part of its mounted path; blueprint admission needs it to tell the same route from different ones (#1206).
+    static BlueprintService blueprintService(ClusterNode<KVCommand<AetherKey>> cluster,
+                                             KVStore<AetherKey, AetherValue> store,
+                                             Repository repository,
+                                             ArtifactStore artifactStore,
+                                             Option<ConfigurationProvider> nodeComposite,
+                                             OperatorWarningSink operatorWarnings,
+                                             boolean routeVersionInHeader) {
         return new BlueprintServiceInstance(cluster,
                                             store,
                                             repository,
                                             Option.some(artifactStore),
                                             nodeComposite,
-                                            operatorWarnings);
+                                            operatorWarnings,
+                                            routeVersionInHeader);
     }
 
     static BlueprintService blueprintService(ClusterNode<KVCommand<AetherKey>> cluster,
@@ -247,6 +262,7 @@ class BlueprintServiceInstance implements BlueprintService {
     private final Option<ArtifactStore> artifactStore;
     private final Option<ConfigurationProvider> nodeComposite;
     private final OperatorWarningSink operatorWarnings;
+    private final boolean routeVersionInHeader;
 
     BlueprintServiceInstance(ClusterNode<KVCommand<AetherKey>> cluster,
                              KVStore<AetherKey, AetherValue> store,
@@ -254,6 +270,17 @@ class BlueprintServiceInstance implements BlueprintService {
                              Option<ArtifactStore> artifactStore,
                              Option<ConfigurationProvider> nodeComposite,
                              OperatorWarningSink operatorWarnings) {
+        this(cluster, store, repository, artifactStore, nodeComposite, operatorWarnings, false);
+    }
+
+    BlueprintServiceInstance(ClusterNode<KVCommand<AetherKey>> cluster,
+                             KVStore<AetherKey, AetherValue> store,
+                             Repository repository,
+                             Option<ArtifactStore> artifactStore,
+                             Option<ConfigurationProvider> nodeComposite,
+                             OperatorWarningSink operatorWarnings,
+                             boolean routeVersionInHeader) {
+        this.routeVersionInHeader = routeVersionInHeader;
         this.cluster = cluster;
         this.store = store;
         this.repository = repository;
@@ -800,11 +827,52 @@ class BlueprintServiceInstance implements BlueprintService {
     }
 
     private Promise<Preflighted> validateSliceJars(ExpandedBlueprint expanded, List<SliceJar> sliceJars) {
+        return storedBlueprintSlices(expanded).flatMap(stored -> validateSliceJars(expanded, sliceJars, stored));
+    }
+
+    /// The slices of every OTHER stored blueprint, per blueprint: a route collision between the blueprint being published and
+    /// a blueprint stored earlier is only visible when both slice sets are read (#1206), and the refusal names the stored
+    /// blueprint. The blueprint's own previous version is excluded (a republish replaces it).
+    /// A newer VERSION of a blueprint replaces it, so the two are one blueprint: compared by artifact base (group and artifact
+    /// id), as datasource ownership already treats them (#1206).
+    private static boolean sameBlueprint(BlueprintId stored, BlueprintId published) {
+        return stored.artifact()
+                     .base()
+                     .equals(published.artifact().base());
+    }
+
+    private Promise<List<RoutePrefixCollisionValidator.StoredSlices>> storedBlueprintSlices(ExpandedBlueprint expanded) {
+        return Promise.allOf(list().stream()
+                                 .filter(other -> !sameBlueprint(other.id(),
+                                                                 expanded.id()))
+                                 .map(other -> loadAllSliceJars(other.loadOrder()).map(jars -> RoutePrefixCollisionValidator.StoredSlices.storedSlices(other.id()
+                                                                                                                                                            .asString(),
+                                                                                                                                                       topologiesOf(jars))))
+                                 .toList()).map(results -> results.stream()
+                                                                  .flatMap(result -> result.option()
+                                                                                           .stream())
+                                                                  .toList());
+    }
+
+    /// #1206: a collision among the blueprint's own slices is a malformed request (400); one with an already-stored blueprint is a
+    /// conflict with current state (409).
+    private static Cause routeRefusal(Cause cause) {
+        return cause instanceof ExpanderError.RoutePrefixConflictsWithStored
+               ? BlueprintConflict.FACTORY.apply(cause)
+               : BlueprintRejected.FACTORY.apply(cause);
+    }
+
+    private Promise<Preflighted> validateSliceJars(ExpandedBlueprint expanded,
+                                                   List<SliceJar> sliceJars,
+                                                   List<RoutePrefixCollisionValidator.StoredSlices> stored) {
         var topologies = topologiesOf(sliceJars);
 
         noteConfigSectionPreflightSkipIfBlind(topologies);
 
         return PubSubValidator.validate(topologies)
+                              .flatMap(_ -> RoutePrefixCollisionValidator.validate(topologies,
+                                                                                   stored,
+                                                                                   routeVersionInHeader).mapError(BlueprintServiceInstance::routeRefusal))
                               .flatMap(_ -> ConfigSectionPreflightValidator.validate(sliceJars, nodeComposite))
                               .flatMap(_ -> replicationContext())
                               .flatMap(replication -> ReplicationPreflight.validate(sliceJars,

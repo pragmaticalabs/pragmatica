@@ -39,6 +39,7 @@ public final class QuicTransportMetrics {
     private final LongAdder messagesReceived = new LongAdder();
     private final LongAdder writeFailures = new LongAdder();
     private final LongAdder backpressureDrops = new LongAdder();
+    private final LongAdder offlineExpired = new LongAdder();
     private final LongAdder backpressureQueued = new LongAdder();
     private final LongAdder backpressureRetries = new LongAdder();
     private final AtomicInteger backpressureQueueDepth = new AtomicInteger(0);
@@ -146,6 +147,12 @@ public final class QuicTransportMetrics {
     @Contract
     public void onBackpressureDrop() {
         backpressureDrops.increment();
+    }
+
+    /// Records request frames dropped at the offline-buffer flush because their caller had already given up (#1996).
+    @Contract
+    public void onOfflineExpired(long frames) {
+        offlineExpired.add(frames);
     }
 
     /// Records that a CONSENSUS send hit the write high-watermark and was handed to the
@@ -273,6 +280,7 @@ public final class QuicTransportMetrics {
         metrics.put("quic_messages_received_total", messagesReceived.sum());
         metrics.put("quic_write_failures_total", writeFailures.sum());
         metrics.put("quic_backpressure_drops_total", backpressureDrops.sum());
+        metrics.put("quic_offline_expired_total", offlineExpired.sum());
         metrics.put("quic_backpressure_queued_total", backpressureQueued.sum());
         metrics.put("quic_backpressure_retries_total", backpressureRetries.sum());
         metrics.put("quic_backpressure_queue_depth", backpressureQueueDepth.get());
@@ -327,6 +335,10 @@ public final class QuicTransportMetrics {
 
     public long writeFailureCount() {
         return writeFailures.sum();
+    }
+
+    public long offlineExpiredCount() {
+        return offlineExpired.sum();
     }
 
     public long backpressureDropCount() {

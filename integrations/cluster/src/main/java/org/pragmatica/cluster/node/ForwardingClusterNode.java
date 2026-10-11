@@ -16,6 +16,7 @@ import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
+import org.pragmatica.lang.io.TimeSpan;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -27,6 +28,8 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// Used by worker nodes that cannot participate in consensus directly.
 public final class ForwardingClusterNode<C extends Command> implements ClusterNode<C> {
     private static final Logger log = LoggerFactory.getLogger(ForwardingClusterNode.class);
+    /// How long `apply` waits for the core's answer; also the longest the request frame may sit in an offline buffer.
+    private static final TimeSpan FORWARD_APPLY_TIMEOUT = timeSpan(30).seconds();
 
     private final ClusterNode<C> underlying;
     private final ClusterNetwork network;
@@ -109,9 +112,10 @@ public final class ForwardingClusterNode<C extends Command> implements ClusterNo
         var promise = Promise.<List<R>> promise();
 
         pendingRequests.put(correlationId, promise);
-        network.send(target, new ForwardApplyRequest<>(self(), correlationId, commands));
+        // The caller stops waiting at FORWARD_APPLY_TIMEOUT, so the frame must not outlive it in an offline buffer (#1996).
+        network.send(target, new ForwardApplyRequest<>(self(), correlationId, commands), FORWARD_APPLY_TIMEOUT);
 
-        return promise.timeout(timeSpan(30).seconds())
+        return promise.timeout(FORWARD_APPLY_TIMEOUT)
                       .onResultRun(() -> pendingRequests.remove(correlationId));
     }
 

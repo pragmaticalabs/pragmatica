@@ -1812,9 +1812,35 @@ public sealed interface AetherValue {
                                  String security,
                                  String declaredSecurity,
                                  int pathArity,
-                                 List<String> spacers) {
+                                 List<String> spacers,
+                                 List<Integer> spacerSlots) {
             public RouteEntry {
                 spacers = List.copyOf(spacers);
+                spacerSlots = List.copyOf(spacerSlots);
+            }
+
+            /// An entry that does not carry where its literals sit (every shape before #1206 knew only that they exist).
+            public RouteEntry(String httpMethod,
+                              String pathPrefix,
+                              String sliceMethod,
+                              String state,
+                              int weight,
+                              long registeredAt,
+                              String security,
+                              String declaredSecurity,
+                              int pathArity,
+                              List<String> spacers) {
+                this(httpMethod,
+                     pathPrefix,
+                     sliceMethod,
+                     state,
+                     weight,
+                     registeredAt,
+                     security,
+                     declaredSecurity,
+                     pathArity,
+                     spacers,
+                     List.of());
             }
 
             public static RouteEntry activeRoute(String httpMethod,
@@ -1842,6 +1868,26 @@ public sealed interface AetherValue {
                                                  String declaredSecurity,
                                                  int pathArity,
                                                  List<String> spacers) {
+                return activeRoute(httpMethod,
+                                   pathPrefix,
+                                   sliceMethod,
+                                   security,
+                                   declaredSecurity,
+                                   pathArity,
+                                   spacers,
+                                   List.of());
+            }
+
+            /// #1206: `spacerSlots` says WHERE each literal sits among the trailing segments, so two routes that differ only in
+            /// the position of a literal are told apart by whoever reads the committed table (the collision announcer).
+            public static RouteEntry activeRoute(String httpMethod,
+                                                 String pathPrefix,
+                                                 String sliceMethod,
+                                                 String security,
+                                                 String declaredSecurity,
+                                                 int pathArity,
+                                                 List<String> spacers,
+                                                 List<Integer> spacerSlots) {
                 return new RouteEntry(httpMethod,
                                       pathPrefix,
                                       sliceMethod,
@@ -1851,7 +1897,8 @@ public sealed interface AetherValue {
                                       security,
                                       declaredSecurity,
                                       pathArity,
-                                      spacers);
+                                      spacers,
+                                      spacerSlots);
             }
 
             public static RouteEntry activeRoute(String httpMethod, String pathPrefix, String sliceMethod) {
@@ -2644,6 +2691,13 @@ public sealed interface AetherValue {
         /// fences it again. That fight is unreachable while the core has [#FENCED_MAX] or fewer members (the registry
         /// holds at most the replication factor, which never exceeds the core size) and perpetual beyond it.
         public static final int FENCED_MAX = 16;
+
+        /// Whether `node` is named in this record's COMMITTED in-sync set: the set is real (`isrVersion > 0`, a record minted before
+        /// #1730 carries only its owner) and contains `node`. Such a node holds every acknowledged record the set was
+        /// acknowledging, which is what both promotion gates' bounded escape (#2080) and the divergent-peer relaxation rest on.
+        public boolean committedIsrNames(NodeId node) {
+            return isrVersion > 0 && isr.contains(node);
+        }
 
         /// Ownership fence (#345 piece 1a): the owner's `ownerEpoch` is the fencing token, so the Rabia
         /// applier rejects a deposed owner's strictly-older-epoch ownership write for free (it fences

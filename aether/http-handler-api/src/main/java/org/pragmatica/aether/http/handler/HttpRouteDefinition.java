@@ -151,19 +151,6 @@ public record HttpRouteDefinition(String httpMethod,
     }
 
     private static String normalizePrefix(String path) {
-        Objects.requireNonNull(path, "path");
-        var normalized = path.isBlank()
-                         ? "/"
-                         : path.strip();
-
-        if (!normalized.startsWith("/")) {
-            normalized = "/" + normalized;
-        }
-
-        if (!normalized.endsWith("/")) {
-            normalized = normalized + "/";
-        }
-
-        return normalized;
+        return RouteIdentity.normalizePrefix(path);
     }
 }

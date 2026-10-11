@@ -10,6 +10,11 @@ on:
 jobs:
   build-and-test:
     runs-on: ubuntu-latest
+    env:
+      # Anonymous Docker Hub pulls from shared runner IPs hit "toomanyrequests: unauthenticated pull rate limit".
+      # Testcontainers prepends this to every Docker Hub image (postgres, mysql, localstack, testcontainers/ryuk); the
+      # trailing slash is required. mirror.gcr.io is Google's auth-free Docker Hub cache. CI only: developer machines pull from Hub.
+      TESTCONTAINERS_HUB_IMAGE_NAME_PREFIX: mirror.gcr.io/
 
     steps:
       - name: Checkout code

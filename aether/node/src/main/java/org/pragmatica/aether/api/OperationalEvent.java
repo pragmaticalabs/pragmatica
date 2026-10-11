@@ -266,6 +266,38 @@ public sealed interface OperationalEvent extends Message.Local {
         }
     }
 
+    /// #1206: two slices of DIFFERENT artifacts are serving the same HTTP route in the committed route table, so one of them
+    /// serves nothing ([ClusterEvent.RoutePrefixCollision]). A collision blueprint admission cannot see (the jar was
+    /// unavailable at admission, concurrent publishes, a slice deployed another way). `artifacts` are the artifact bases
+    /// claiming the route, sorted.
+    record RoutePrefixCollision(String method, String prefix, List<String> artifacts, String eventId, long timestamp) implements OperationalEvent {
+        public static RoutePrefixCollision routePrefixCollision(String method,
+                                                                String prefix,
+                                                                List<String> artifacts,
+                                                                String eventId) {
+            return new RoutePrefixCollision(method, prefix, List.copyOf(artifacts), eventId, System.currentTimeMillis());
+        }
+    }
+
+    /// #1206: the route no longer has two artifacts claiming it ([ClusterEvent.RoutePrefixCollisionCleared]). `artifacts` are the
+    /// bases that had been claiming it.
+    record RoutePrefixCollisionCleared(String method,
+                                       String prefix,
+                                       List<String> artifacts,
+                                       String eventId,
+                                       long timestamp) implements OperationalEvent {
+        public static RoutePrefixCollisionCleared routePrefixCollisionCleared(String method,
+                                                                              String prefix,
+                                                                              List<String> artifacts,
+                                                                              String eventId) {
+            return new RoutePrefixCollisionCleared(method,
+                                                   prefix,
+                                                   List.copyOf(artifacts),
+                                                   eventId,
+                                                   System.currentTimeMillis());
+        }
+    }
+
     /// #1930: a scheduled task's fire is still in flight when its next tick arrives, so the tick (and each one after it, up to
     /// the completion bound) is skipped ([ClusterEvent.ScheduledTaskFireHeld]). Raised ONCE per in-flight fire, by the node
     /// whose scheduler holds it: `node`, `fireAt` (when that fire started), `inFlightMs` (how long it had been in flight at

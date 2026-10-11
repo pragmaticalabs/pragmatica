@@ -109,7 +109,8 @@ class LivePlacementMembersWiringTest {
         // window is still the argument after it — `OwnerActivation`'s `unreachableAlarmAfter`. #1873: the gate's constructor then
         // takes the ring incarnation and the lineage commit (see EpochFetchWiringTest).
         assertThat(code).contains("ownerPromotionAlarm(operatorWarningSink),ownerPromotionAlarmWindow(config.timeouts().swim().suspectTimeout()),(stream,partition)->");
-        assertThat(code).contains("returnsuspectTimeout.plus(suspectTimeout);");
+        assertThat(code).contains("returnStreamingConfig.ownerPromotionAlarmWindow(suspectTimeout);");
+        assertThat(code).as("#2080: the owner gate is told its escape bound").contains("ownerActivation.promotionEscapeAfter(streamingConfig.promotionEscapeAfter());");
         assertThat(code).as("v1555 F1: the overlap read is the production OwnerPeerReads.ownerRange the gate tests exercise")
                         .contains("OwnerPeerReads.ownerRange(config.self(),streamPartitionManager,streamTieredReader,streamForwardClient::readRemoteCatchup,STREAM_CATCHUP_BATCH_SIZE),ownerPromotionAlarm(operatorWarningSink)");
     }
@@ -141,7 +142,15 @@ class LivePlacementMembersWiringTest {
     /// the unbounded factory is for tests only.
     @Test
     void backfillSingleFlight_isBoundedByTheConfiguredIdleBound() {
-        assertThat(assemblyCode()).contains("streamPartitionManager.quarantineView(),Option.some(streamingConfig.backfillFlightIdleBound()));");
+        assertThat(assemblyCode()).contains("streamPartitionManager.quarantineView(),Option.some(streamingConfig.backfillFlightIdleBound()))");
+    }
+
+    /// #2077: the promotion decision's ISR evidence is the RAW committed record read from the store, never the liveness-filtered
+    /// routing view (`streamCommittedOwnerSource`), which hides a dead owner. Binding the routing view here would let a node's own
+    /// membership view vouch for itself.
+    @Test
+    void backfillIsrEvidence_isTheRawCommittedRecord_notTheRoutingView() {
+        assertThat(assemblyCode()).contains(".withCommittedIsr(KvCommittedStreamOwnerSource.kvCommittedStreamOwnerSource(kvStore));");
     }
 
     /// #1339 / #1732: `AetherNodeReplicaSetTriggersTest` drives the trigger helpers through wiring it builds itself, so

@@ -50,6 +50,11 @@ class StreamFailoverAnnouncerWiringTest {
         assertThat(code).contains(".onPut(AetherKey.ScheduledTaskStateKey.class,scheduledTaskOutcomeAnnouncer::onStatePut)");
         assertThat(code).contains("MessageRouter.Entry.route(MembershipDecision.NodeRemoved.class,scheduledTaskManager::onNodeRemoved)");
         assertThat(code).contains("MessageRouter.Entry.route(MembershipDecision.NodeDecommissioned.class,scheduledTaskManager::onNodeDecommissioned)");
+        // #1206: two artifacts serving one route, derived from the committed route table on every node.
+        assertThat(code).contains("RouteCollisionAnnouncer.routeCollisionAnnouncer(delegateRouter::route);");
+        assertThat(code).contains(".onPut(AetherKey.NodeRoutesKey.class,routeCollisionAnnouncer::onRoutesPut).onRemove(AetherKey.NodeRoutesKey.class,routeCollisionAnnouncer::onRoutesRemove)");
+        assertThat(code).contains("MessageRouter.Entry.route(OperationalEvent.RoutePrefixCollision.class,eventAggregator::onRoutePrefixCollision)");
+        assertThat(code).contains("MessageRouter.Entry.route(OperationalEvent.RoutePrefixCollisionCleared.class,eventAggregator::onRoutePrefixCollisionCleared)");
         // #1930: the scheduler's in-flight observer feeds the aggregator through the operational-event path.
         assertThat(code).contains("ScheduledFireAnnouncer.scheduledFireAnnouncer(config.self(),delegateRouter::route)");
         assertThat(code).contains("MessageRouter.Entry.route(OperationalEvent.ScheduledTaskFireHeld.class,eventAggregator::onScheduledTaskFireHeld)");

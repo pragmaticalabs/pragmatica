@@ -339,7 +339,7 @@ class QuicClusterNetworkStreamZombieTest {
             assertThat(network.offlineBufferSizeForTests(peerId))
                 .as("the dead-connection path must not buffer a NoOfflineBuffering frame")
                 .isZero();
-            assertThat(network.peerStateForTests(peerId).drainOfflineBuffer())
+            assertThat(network.peerStateForTests(peerId).drainOfflineBuffer(System.nanoTime()).live())
                 .as("so a reattach (the drain) has nothing to deliver late")
                 .isEmpty();
         }

@@ -6,6 +6,7 @@ package org.pragmatica.aether.stream.replication;
 
 import java.util.Comparator;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
@@ -15,6 +16,7 @@ import java.util.function.Supplier;
 
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.aether.slice.generation.Epoch;
+import org.pragmatica.aether.stream.CommittedStreamIsrSource;
 import org.pragmatica.aether.stream.CommittedStreamOwnerSource;
 import org.pragmatica.aether.stream.OwnerActivation;
 import org.pragmatica.aether.stream.OwnerPeerReads;
@@ -79,9 +81,17 @@ import static org.pragmatica.aether.stream.replication.ReplicationMessage.Replic
 ///        - EVERY other registered replica must be REACHABLE (a probe success). An UNREACHABLE replica
 ///          might be caught-up with newer state, so promoting past it could serve stale events — the
 ///          node stays SYNCING instead ({@link BackfillError.General#UNREACHABLE_REPLICA_BLOCKS_PROMOTION}).
+///          The one exception is the bounded escape (#2080): a replica that stayed unreachable for
+///          {@link #promotionEscapeAfter} (continuously, EACH unreachable replica on its own clock; `[streaming] promotion_escape_after`, 120 s by default, never below the source wait) is not waited for when self is named in the partition's
+///          COMMITTED in-sync set, because every acknowledged record is on every member of that set; the escape is
+///          reported as an operator event and the contest runs over the replicas that answered.
 ///        - self's own watermark must be `>= max(seen peer watermarks)`; on an exact tie the
-///          deterministic tie-break (lowest {@link NodeId}) elects exactly ONE promoter, so the cluster
-///          cannot promote two divergent replicas.
+///          deterministic tie-break (lowest {@link NodeId}) elects exactly ONE promoter among the replicas that can
+///          see each other. Two replicas that cannot reach each other do not see the tie, so under the bounded escape
+///          (below) BOTH may promote (#2084, accepted): each holds every acknowledged record (it is named in the committed
+///          in-sync set), write ownership stays fenced by the committed owner epoch, and neither serves a tail it has not
+///          compared with the committed owner of the current epoch (`StreamPartitionManager#servedIfVerified`, independent
+///          of the registry state this promotion sets).
 ///   The promotion is logged at WARN with every watermark seen (an operator-visible bootstrap decision).
 ///
 /// ## Flow
@@ -122,6 +132,9 @@ public final class PartitionBackfill {
     /// byte-identical to the original (no owner-immediate promotion).
     private final Supplier<List<NodeId>> membersSupplier;
 
+    /// The RAW committed ISR (#2077): the evidence a non-live peer may be ignored on. See [#withCommittedIsr].
+    private volatile CommittedStreamIsrSource committedIsrSource = CommittedStreamIsrSource.none();
+
     /// #491 F4: the COMMITTED `StreamPartitionOwnershipValue.owner` source. Gates HRW self-election
     /// ({@link #isSelfOwner}) so a node with a diverged/empty ring that HRW-ranks ITSELF owner does NOT
     /// self-promote while a DIFFERENT node is the committed owner (the m1 empty-ring self-election loop).
@@ -148,6 +161,18 @@ public final class PartitionBackfill {
     /// #1555 sticky ownership owner source; default: no committed owner, pure HRW (see [#hrwOwner]).
     private volatile OwnerResolver ownerResolver = (_, _) -> Option.none();
     private volatile OwnerActivation.BlockAlarm blockAlarm = _ -> Unit.unit();
+    /// Whether a node is named in a partition's COMMITTED in-sync set (#2080); default: never, so no escape (see [#committedIsr]).
+    private volatile CommittedIsr committedIsr = (_, _, _) -> false;
+    /// How long a co-replica must stay unreachable before an ISR-named candidate goes ahead without it (#2080, `[streaming]
+    /// promotion_escape_after`); never until wired.
+    private volatile TimeSpan promotionEscapeAfter = TimeSpan.timeSpan(Long.MAX_VALUE).nanos();
+    /// Per unreachable co-replica, the first instant (ms) of its CONTINUOUS run of contest rounds without an answer, per partition (#2080):
+    /// the escape bound is per member. A round in which a co-replica answers ends only its run (a member that left the replica set loses its
+    /// entry); any promotion of the partition drops them all ([#forgetNoSource]).
+    private final ConcurrentHashMap<PartitionKey, ConcurrentHashMap<NodeId, Silence>> unreachableSinceMs;
+
+    /// A peer's current run of silence in contest rounds: its first instant and the last round that saw it silent (ms).
+    private record Silence(long since, long last) {}
 
     /// The oversized-peer block last reported per partition, so a redrive of the same condition is silent (#1937).
     private final ConcurrentHashMap<PartitionKey, OwnerActivation.ActivationBlock> reportedOversized;
@@ -215,6 +240,7 @@ public final class PartitionBackfill {
         this.quarantine = quarantine;
         this.flightBound = flightBound;
         this.firstNoSourceMs = new ConcurrentHashMap<>();
+        this.unreachableSinceMs = new ConcurrentHashMap<>();
         this.reverifiedAtOffset = new ConcurrentHashMap<>();
         this.lastReverifyMs = new ConcurrentHashMap<>();
         this.inFlight = new ConcurrentHashMap<>();
@@ -235,11 +261,15 @@ public final class PartitionBackfill {
         this.sourceWaitBound = shared.sourceWaitBound;
         this.clock = shared.clock;
         this.membersSupplier = shared.membersSupplier;
+        this.committedIsrSource = shared.committedIsrSource;
         this.committedOwnerSource = shared.committedOwnerSource;
         this.durability = shared.durability;
         this.quarantine = shared.quarantine;
         this.flightBound = shared.flightBound;
         this.firstNoSourceMs = shared.firstNoSourceMs;
+        this.unreachableSinceMs = shared.unreachableSinceMs;
+        this.committedIsr = shared.committedIsr;
+        this.promotionEscapeAfter = shared.promotionEscapeAfter;
         this.reverifiedAtOffset = shared.reverifiedAtOffset;
         this.lastReverifyMs = shared.lastReverifyMs;
         this.inFlight = shared.inFlight;
@@ -1088,7 +1118,7 @@ public final class PartitionBackfill {
                    : handleNoSource(streamName, partition, replicas);
         }
 
-        firstNoSourceMs.remove(partitionKey(streamName, partition));
+        forgetNoSource(partitionKey(streamName, partition));
 
         return applyAndPromote(streamName, partition, -1L, response);
     }
@@ -1096,7 +1126,7 @@ public final class PartitionBackfill {
     private Promise<Long> backfillFromCaughtUpSource(String streamName, int partition, ReplicaDescriptor source) {
         // A caught-up source exists: this is the normal path. Clear any cold-start wait memory so a
         // later transient no-source observation re-arms the bound from scratch (no false fast-promote).
-        firstNoSourceMs.remove(partitionKey(streamName, partition));
+        forgetNoSource(partitionKey(streamName, partition));
 
         return backfillFrom(streamName, partition, source, selfWatermark.localWatermark(streamName, partition));
     }
@@ -1217,7 +1247,7 @@ public final class PartitionBackfill {
         // elapsed rule then applies only to rows that became CAUGHT_UP WITHOUT a pull (restart-loaded /
         // cold-start self-promote), which still earn one re-verify.
         lastReverifyMs.put(partitionKey(streamName, partition), clock.getAsLong());
-        firstNoSourceMs.remove(partitionKey(streamName, partition));
+        forgetNoSource(partitionKey(streamName, partition));
         log.info("Backfill {}[{}] complete: applied {} events, self CAUGHT_UP at offset {}",
                  streamName,
                  partition,
@@ -1418,6 +1448,26 @@ public final class PartitionBackfill {
         this.blockAlarm = alarm;
     }
 
+    /// Whether `node` is named in the COMMITTED in-sync set of `(stream, partition)` (`isrVersion > 0` and the set contains it).
+    @FunctionalInterface
+    public interface CommittedIsr {
+        boolean names(String streamName, int partition, NodeId node);
+    }
+
+    /// Late-bind the escape bound (#2080); the configuration validates that it is at least the alarm bounds. Set once at wiring.
+    @Contract
+    public void promotionEscapeAfter(TimeSpan bound) {
+        this.promotionEscapeAfter = bound;
+    }
+
+    /// Late-bind where the committed in-sync set is read (#2080): the cold-start contest may proceed past co-replicas that stayed
+    /// unreachable for `promotionEscapeAfter` only for a node this names. Until wired nothing is named, so the contest never proceeds
+    /// past an unreachable co-replica. Set once at wiring.
+    @Contract
+    public void committedIsr(CommittedIsr isr) {
+        this.committedIsr = isr;
+    }
+
     /// Owner promotion is LOSSLESS (#336 phase-2). A freshly HRW-elected owner can be BEHIND a surviving
     /// replica when `replicas > confirmationFactor`: different client-acked writes were confirmed by different
     /// peers, so the promoted owner's local watermark may trail the highest survivor. Self-promoting at the
@@ -1589,9 +1639,11 @@ public final class PartitionBackfill {
 
         return Promise.allOf(blind.stream().map(peer -> probe.probe(peer, streamName, partition)).toList()).flatMap(results -> decideOwnerCatchup(streamName,
                                                                                                                                                   partition,
-                                                                                                                                                  blind,
-                                                                                                                                                  localWatermark,
-                                                                                                                                                  results));
+                                                                                                                                                  settle(streamName,
+                                                                                                                                                         partition,
+                                                                                                                                                         blind,
+                                                                                                                                                         results),
+                                                                                                                                                  localWatermark));
     }
 
     /// The non-self survivors whose LOCAL watermark is unknown (registration default `-1`, i.e. blind under
@@ -1615,11 +1667,9 @@ public final class PartitionBackfill {
     ///     ahead, so route to the bounded-wait {@link #escapeOwnerCatchup} (never self-promote empty past a
     ///     possibly-ahead peer; never wedge — self stays SYNCING so the redrive retries, then degrades),
     ///   - every peer reachable and none ahead → genuinely nothing ahead → {@link #ownerSelfPromote}.
-    private Promise<Long> decideOwnerCatchup(String streamName,
-                                             int partition,
-                                             List<NodeId> peers,
-                                             long localWatermark,
-                                             List<Result<Long>> results) {
+    private Promise<Long> decideOwnerCatchup(String streamName, int partition, Probed probed, long localWatermark) {
+        var peers = probed.peers();
+        var results = probed.results();
         var bestTail = results.stream().mapToLong(result -> result.or(-1L)).max().orElse(-1L);
 
         if (bestTail > localWatermark) {
@@ -1777,7 +1827,7 @@ public final class PartitionBackfill {
                  partition,
                  watermark);
         updateWatermark(streamName, partition, self, watermark);
-        firstNoSourceMs.remove(partitionKey(streamName, partition));
+        forgetNoSource(partitionKey(streamName, partition));
 
         return Promise.success(0L);
     }
@@ -1906,12 +1956,14 @@ public final class PartitionBackfill {
         var peers = peerNodeIds(replicas);
         var selfLocal = selfWatermark.localWatermark(streamName, partition);
 
-        return Promise.allOf(peers.stream().map(peer -> probe.probe(peer, streamName, partition)).toList()).flatMap(results -> decidePromotion(streamName,
-                                                                                                                                               partition,
-                                                                                                                                               peers,
-                                                                                                                                               selfLocal,
-                                                                                                                                               results,
-                                                                                                                                               tieBreak));
+        return Promise.allOf(peers.stream().map(peer -> probe.probe(peer, streamName, partition)).toList()).flatMap(results -> decideSettled(streamName,
+                                                                                                                                             partition,
+                                                                                                                                             settle(streamName,
+                                                                                                                                                    partition,
+                                                                                                                                                    peers,
+                                                                                                                                                    results),
+                                                                                                                                             selfLocal,
+                                                                                                                                             tieBreak));
     }
 
     /// Whether the cold-start contest must ELECT a single winner. The lowest-NodeId tie-break exists to pick
@@ -1943,17 +1995,35 @@ public final class PartitionBackfill {
                                                                            tieBreak));
     }
 
-    /// Promotion predicate. Promote self iff (a) EVERY peer probe succeeded (all reachable) AND (b)
+    /// Promotion predicate. Promote self iff (a) EVERY peer probe succeeded AND (b)
     /// self's watermark wins the highest-watermark contest with the deterministic lowest-NodeId
     /// tie-break. Any unreachable peer, or a peer with a strictly higher watermark, or a tie lost to a
     /// lower NodeId, leaves self SYNCING.
+    ///
+    /// The one exception to (a) is the bounded escape (#2080): peers that EACH stayed unreachable, continuously and on their own
+    /// clock, for [#promotionEscapeAfter] are not waited for when self is named in the partition's COMMITTED in-sync set, because
+    /// every acknowledged record is on every member of that set. (b) then runs over the peers that answered. The escape is reported
+    /// through the [OwnerActivation.BlockAlarm] once per promotion that took it (there is no dedupe: a later promotion of the same
+    /// partition that escapes again reports again), after the contest has actually promoted self; a self outside the set, or a record
+    /// with no set, keeps waiting.
     private Promise<Long> decidePromotionUnquarantined(String streamName,
                                                        int partition,
                                                        List<NodeId> peers,
                                                        long selfWm,
                                                        List<Result<Long>> results,
                                                        TieBreak tieBreak) {
-        if (results.stream().anyMatch(Result::isFailure)) {
+        var key = partitionKey(streamName, partition);
+        var silent = silentPeers(peers, results);
+
+        if (silent.isEmpty()) {
+            unreachableSinceMs.remove(key);
+
+            return decideAmongAnswering(streamName, partition, peers, selfWm, results, tieBreak);
+        }
+
+        var escapeAfter = mayProceedWithout(streamName, partition, key, silent);
+
+        if (escapeAfter.isEmpty()) {
             log.warn("Backfill {}[{}]: cold-start self-promotion BLOCKED — a co-replica is unreachable "
                     + "(self watermark {}, peers {}) — staying SYNCING to avoid serving stale state",
                      streamName,
@@ -1964,6 +2034,81 @@ public final class PartitionBackfill {
             return UNREACHABLE_REPLICA_BLOCKS_PROMOTION.promise();
         }
 
+        var answering = answeringPeers(peers, results);
+
+        return decideAmongAnswering(streamName, partition, answering.nodes(), selfWm, answering.results(), tieBreak).onSuccessRun(() -> escapeAfter.onPresent(elapsed -> reportEscape(streamName,
+                                                                                                                                                                                      partition,
+                                                                                                                                                                                      silent,
+                                                                                                                                                                                      elapsed)));
+    }
+
+    private record Answering(List<NodeId> nodes, List<Result<Long>> results) {}
+
+    private static List<NodeId> silentPeers(List<NodeId> peers, List<Result<Long>> results) {
+        return java.util.stream.IntStream.range(0,
+                                                peers.size())
+                                         .filter(index -> results.get(index)
+                                                                 .isFailure())
+                                         .mapToObj(peers::get)
+                                         .toList();
+    }
+
+    private static Answering answeringPeers(List<NodeId> peers, List<Result<Long>> results) {
+        var indexes = java.util.stream.IntStream.range(0,
+                                                       peers.size())
+                                                .filter(index -> results.get(index)
+                                                                        .isSuccess())
+                                                .boxed()
+                                                .toList();
+
+        return new Answering(indexes.stream().map(peers::get).toList(),
+                             indexes.stream().map(results::get).toList());
+    }
+
+    /// Arms each silent peer's own run of unreachability on its first round and answers how long the SHORTEST of them has lasted when that passed [#promotionEscapeAfter]
+    /// AND self is named in the COMMITTED in-sync set (the raw record, not the routing view); none otherwise.
+    private Option<TimeSpan> mayProceedWithout(String streamName,
+                                               int partition,
+                                               PartitionKey key,
+                                               List<NodeId> silent) {
+        var now = clock.getAsLong();
+        var clocks = unreachableSinceMs.computeIfAbsent(key, _ -> new ConcurrentHashMap<>());
+
+        clocks.keySet().retainAll(silent);
+        silent.forEach(peer -> clocks.merge(peer, new Silence(now, now), (known, _) -> continued(known, now)));
+        var shortest = clocks.values().stream().mapToLong(silence -> now - silence.since()).min().orElse(0L);
+
+        return shortest >= promotionEscapeAfter.millis() && committedIsr.names(streamName, partition, self)
+               ? Option.some(TimeSpan.timeSpan(shortest).millis())
+               : Option.none();
+    }
+
+    /// Observed continuity (#2084): a peer last seen silent by a contest round more than [#sourceWaitBound] ago starts a new run at
+    /// this observation, so rounds that never reached the contest do not count as silence. THE THRESHOLD IS A GUESS, the contest's own
+    /// "too long to be one continuous look" measure; redrive rounds come every few seconds.
+    private Silence continued(Silence known, long now) {
+        return now - known.last() > sourceWaitBound.millis()
+               ? new Silence(now, now)
+               : new Silence(known.since(), now);
+    }
+
+    private void reportEscape(String streamName, int partition, List<NodeId> silent, TimeSpan elapsed) {
+        blockAlarm.escaped(new OwnerActivation.PromotionEscape(streamName,
+                                                               partition,
+                                                               OwnerActivation.EscapeGate.REPLICA_CONTEST,
+                                                               self,
+                                                               silent,
+                                                               promotionEscapeAfter,
+                                                               elapsed));
+    }
+
+    /// The contest proper, over the peers that answered.
+    private Promise<Long> decideAmongAnswering(String streamName,
+                                               int partition,
+                                               List<NodeId> peers,
+                                               long selfWm,
+                                               List<Result<Long>> results,
+                                               TieBreak tieBreak) {
         var maxPeerWatermark = results.stream().mapToLong(result -> result.or(-1L)).max().orElse(-1L);
 
         if (selfWm < maxPeerWatermark || (tieBreak == TieBreak.ELECT_ONE && losesTieBreak(peers,
@@ -1982,16 +2127,22 @@ public final class PartitionBackfill {
         }
 
         log.warn("Backfill {}[{}]: BREAKING cold-start deadlock — self-promoting to CAUGHT_UP at watermark {} "
-                + "(all {} co-replicas reachable, max peer watermark {}) [operator bootstrap decision]",
+                + "({} co-replicas answered, max peer watermark {}) [operator bootstrap decision]",
                  streamName,
                  partition,
                  selfWm,
                  peers.size(),
                  maxPeerWatermark);
         updateWatermark(streamName, partition, self, selfWm);
-        firstNoSourceMs.remove(partitionKey(streamName, partition));
+        forgetNoSource(partitionKey(streamName, partition));
 
         return Promise.success(0L);
+    }
+
+    /// The partition is promoted (or its source appeared): the wait for a source and the run of unreachability both start over.
+    private void forgetNoSource(PartitionKey key) {
+        firstNoSourceMs.remove(key);
+        unreachableSinceMs.remove(key);
     }
 
     /// #559 — "the owner is empty" vs "I am at the owner's tail". Both produce an EMPTY
@@ -2103,6 +2254,76 @@ public final class PartitionBackfill {
                        .filter(nodeId -> !nodeId.equals(self))
                        .sorted()
                        .toList();
+    }
+
+    private Promise<Long> decideSettled(String streamName,
+                                        int partition,
+                                        Probed probed,
+                                        long selfWm,
+                                        TieBreak tieBreak) {
+        return decidePromotion(streamName, partition, probed.peers(), selfWm, probed.results(), tieBreak);
+    }
+
+    /// The peers a promotion decision is made over, each with its probe outcome.
+    private record Probed(List<NodeId> peers, List<Result<Long>> results) {}
+
+    /// Drops from a decision the peers that are both unreachable AND absent from this node's live placement members, when the RAW
+    /// committed ISR vouches for the candidate (#2077). The registry keeps a committed-ISR member until the leader commits a shrink,
+    /// so a peer this node's membership view has already dropped can sit in the replica set for tens of seconds; the activation gate
+    /// already stops waiting for exactly such a peer.
+    ///
+    /// Local membership is not consensus, so the view alone never licenses ignoring a peer that might hold acked records. Acks at
+    /// confirmation factor 2 or more reached every member of the ISR in force, so the evidence is: this node, or a REACHABLE probed
+    /// peer, is named in the raw committed ISR (`committedIsrSource`, not the routing view, which hides a dead owner). Without that
+    /// evidence, or with an empty member view (which means "cannot judge", never "nobody is alive"), the decision is the one made
+    /// before the refinement: an unreachable peer blocks.
+    private Probed settle(String streamName, int partition, List<NodeId> peers, List<Result<Long>> results) {
+        var live = liveMembers();
+
+        if (live.isEmpty() || !isrVouches(committedIsrSource.committedIsr(streamName, partition), peers, results)) {
+            return new Probed(peers, results);
+        }
+
+        var keptPeers = new java.util.ArrayList<NodeId>();
+        var keptResults = new java.util.ArrayList<Result<Long>>();
+
+        for (var i = 0; i < peers.size(); i++) {
+            if (results.get(i).isSuccess() || live.contains(peers.get(i))) {
+                keptPeers.add(peers.get(i));
+                keptResults.add(results.get(i));
+            }
+        }
+
+        return new Probed(List.copyOf(keptPeers), List.copyOf(keptResults));
+    }
+
+    private boolean isrVouches(List<NodeId> isr, List<NodeId> peers, List<Result<Long>> results) {
+        if (isr.contains(self)) {
+            return true;
+        }
+
+        for (var i = 0; i < peers.size(); i++) {
+            if (results.get(i).isSuccess() && isr.contains(peers.get(i))) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// Binds the RAW committed ISR source (#2077). Without it no ISR evidence exists, and a peer that is unreachable blocks
+    /// promotion whether or not this node's membership view still lists it, as before the live-member refinement.
+    public PartitionBackfill withCommittedIsr(CommittedStreamIsrSource source) {
+        this.committedIsrSource = source;
+
+        return this;
+    }
+
+    /// The live placement members, read once per decision (#2077): the same member view the owner-activation gate reads. An EMPTY
+    /// view means "cannot judge liveness", never "nobody is alive" (self is always a member of a wired view); [#settle] then
+    /// ignores no peer.
+    private Set<NodeId> liveMembers() {
+        return Set.copyOf(membersSupplier.get());
     }
 
     private long selfConfirmedOffset(List<ReplicaDescriptor> replicas) {

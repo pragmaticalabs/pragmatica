@@ -158,7 +158,8 @@ public final class TopologyParser {
                                                    path,
                                                    handler != null
                                                    ? handler
-                                                   : ""));
+                                                   : "",
+                                                   intProp(props, prefix + "version")));
             }
         }
 
