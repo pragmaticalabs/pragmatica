@@ -10,6 +10,7 @@ import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Predicate;
 
+import org.pragmatica.http.HttpError;
 import org.pragmatica.aether.node.entityforward.EntityForwardMessage.EntityCancelTimerForward;
 import org.pragmatica.aether.node.entityforward.EntityForwardMessage.EntityCreateForward;
 import org.pragmatica.aether.node.entityforward.EntityForwardMessage.EntityDeleteForward;
@@ -502,10 +503,20 @@ public final class EntityForwardService implements EntityOwnerForward, EntityFor
                  .onSuccess(value -> answer(requester,
                                             correlationId,
                                             success.apply(value)))
-                 .onFailure(cause -> answer(requester,
-                                            correlationId,
-                                            failure.apply(cause.getClass().getSimpleName(),
-                                                          cause.message())));
+                 .onFailure(cause -> answerFailure(requester, correlationId, failure, cause));
+    }
+
+    private void answerFailure(NodeId requester,
+                               String correlationId,
+                               Fn2<EntityForwardMessage, String, String> failure,
+                               Cause cause) {
+        log.warn("Entity owner-forward failure correlationId={} (cause chain: {})",
+                 correlationId,
+                 HttpError.causeChain(cause));
+        answer(requester,
+               correlationId,
+               failure.apply(cause.getClass().getSimpleName(),
+                             HttpError.clientMessage(cause)));
     }
 
     /// No local target. Whether that is a handoff or a mistake is decided from COMMITTED state, never from

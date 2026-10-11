@@ -108,6 +108,36 @@ public enum OperatorWarningCode {
     /// earlier refused by the slice floor has now been admitted (the floor cleared, or the operator forced it). INFO,
     /// published only after a published refusal for that target, and it clears the refusal's throttle window (#752).
     SLICE_FLOOR_DRAIN_ADMITTED("slice-floor-drain-admitted", "deployment", WarningLevel.INFO, SLICE_FLOOR_DRAIN_REFUSED),
+    /// The cluster retired a node (scale-down, departure, drain, replacement) and could NOT confirm that its instance is terminated at the
+    /// compute provider after every bounded retry (#2062): the instance may still be running, and billing. The subject is the node; the
+    /// message names the node, the last cause and what to do. Its recovery is [#INSTANCE_TERMINATION_CONFIRMED].
+    INSTANCE_TERMINATION_UNCONFIRMED("instance-termination-unconfirmed", "deployment", WarningLevel.WARNING),
+    /// The recovery of [#INSTANCE_TERMINATION_UNCONFIRMED], same subject (#2062): a later reap of the node was confirmed by a provider
+    /// listing (or the operator removed the instance and a repeat reap found none it had listed). The warning it closes is open in the
+    /// cluster (a replicated mark), not only in the aggregator of the node that raised it, so a later leader's confirmation closes it too.
+    INSTANCE_TERMINATION_CONFIRMED("instance-termination-confirmed",
+                                   "deployment",
+                                   WarningLevel.INFO,
+                                   INSTANCE_TERMINATION_UNCONFIRMED,
+                                   true),
+    /// The other recovery of [#INSTANCE_TERMINATION_UNCONFIRMED], same subject (#2062): the node joined the cluster again, a new incarnation, so the
+    /// warning about its previous incarnation no longer applies. NOTHING was terminated: this is not a confirmation. Like the confirmation it closes a
+    /// warning another node may have raised.
+    INSTANCE_TERMINATION_REJOINED("instance-termination-rejoined",
+                                  "deployment",
+                                  WarningLevel.INFO,
+                                  INSTANCE_TERMINATION_UNCONFIRMED,
+                                  true),
+    /// A node that had a pending operator drain joined the cluster again (#2062): a new incarnation, so the pending drain was cancelled and its grace will
+    /// not terminate it. The subject is the node. Re-issue the drain if it is still intended.
+    NODE_DRAIN_CANCELLED_REJOINED("node-drain-cancelled-rejoined", "deployment", WarningLevel.WARNING),
+    /// A node that a replacement retired (#2062) joined the cluster again - a restart of a supposedly gone instance. Its identity is superseded by the node that
+    /// replaced it, so it is refused and is being drained: re-admitting it would add a node beside its replacement. The subject is the retired node.
+    NODE_RETIRED_IDENTITY_REJOINED("node-retired-identity-rejoined", "deployment", WarningLevel.WARNING),
+    /// An operator-started (EXTERNAL) node joined the cluster again while the release of its previous incarnation's capacity reservation was being committed
+    /// (#2062), and its capacity reservation could not be reconciled: either the ledger cannot count its slot (the node is refused and is being drained), or the
+    /// reconciliation failed and the node's reservation is not known to be in step with the ledger. Never log-only. The subject is the node.
+    EXTERNAL_REJOIN_UNRECONCILED("external-rejoin-unreconciled", "deployment", WarningLevel.WARNING),
     /// A node replacement (#1543) was committed: a fresh-id node is taking over from the subject (the ORIGINAL node). Raised once,
     /// when the record is first committed. Closed by [#NODE_REPLACEMENT_COMPLETED] or [#NODE_REPLACEMENT_ROLLED_BACK].
     NODE_REPLACEMENT_STARTED("node-replacement-started", "replacement", WarningLevel.INFO),
@@ -293,17 +323,31 @@ public enum OperatorWarningCode {
     private final String subsystem;
     private final WarningLevel level;
     private final Option<OperatorWarningCode> recoveryOf;
+    private final boolean closesAcrossNodes;
     OperatorWarningCode(String code, String subsystem, WarningLevel level) {
         this.code = code;
         this.subsystem = subsystem;
         this.level = level;
         this.recoveryOf = Option.none();
+        this.closesAcrossNodes = false;
     }
     OperatorWarningCode(String code, String subsystem, WarningLevel level, OperatorWarningCode recoveryOf) {
         this.code = code;
         this.subsystem = subsystem;
         this.level = level;
         this.recoveryOf = Option.some(recoveryOf);
+        this.closesAcrossNodes = false;
+    }
+    OperatorWarningCode(String code,
+                        String subsystem,
+                        WarningLevel level,
+                        OperatorWarningCode recoveryOf,
+                        boolean closesAcrossNodes) {
+        this.code = code;
+        this.subsystem = subsystem;
+        this.level = level;
+        this.recoveryOf = Option.some(recoveryOf);
+        this.closesAcrossNodes = closesAcrossNodes;
     }
     /// The stable kebab-case identifier of the condition.
     public String code() {
@@ -319,6 +363,12 @@ public enum OperatorWarningCode {
     /// condition an operator has seen, so the event layer publishes it exactly then (#752).
     public Option<OperatorWarningCode> recoveryOf() {
         return recoveryOf;
+    }
+    /// Whether this recovery may be published by a node that did not raise the warning it closes (#2062): the warning's open state is held
+    /// by the cluster, not by the raising node's event layer, so the layer need not have seen it. The raiser of such a recovery owns the
+    /// "is it open" decision.
+    public boolean closesAcrossNodes() {
+        return closesAcrossNodes;
     }
     /// Whether some other code is the recovery of this one.
     public boolean hasRecovery() {

@@ -19,6 +19,7 @@ import org.pragmatica.aether.node.ManageableNode;
 import org.pragmatica.http.ContentCategory;
 import org.pragmatica.http.CommonContentType;
 import org.pragmatica.http.ContentType;
+import org.pragmatica.http.HttpError;
 import org.pragmatica.http.HttpStatus;
 import org.pragmatica.http.HttpRequest;
 import org.pragmatica.http.JsonCodec;
@@ -366,14 +367,14 @@ public final class MavenProtocolRoutes implements RouteHandler {
 
     private void sendFailureResponse(ResponseWriter response, Cause cause) {
         if (cause instanceof CoreError.Timeout) {
-            response.error(HttpStatus.GATEWAY_TIMEOUT, cause.message());
+            response.error(HttpStatus.GATEWAY_TIMEOUT, HttpError.clientMessage(cause));
 
             return;
         }
 
         if (cause instanceof StorageError.TierNotAdmitted) {
             response.header("Retry-After", String.valueOf(RETRY_AFTER_SECONDS));
-            response.error(HttpStatus.SERVICE_UNAVAILABLE, cause.message());
+            response.error(HttpStatus.SERVICE_UNAVAILABLE, HttpError.clientMessage(cause));
 
             return;
         }

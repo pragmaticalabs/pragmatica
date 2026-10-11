@@ -626,7 +626,13 @@ public interface SystemTags {
         pin(table, 2137, "org.pragmatica.aether.slice.kvstore.AetherValue.UpgradeRunValue");
         pin(table, 2134, "org.pragmatica.aether.slice.kvstore.AetherValue.UpgradeRunState");
         pin(table, 2135, "org.pragmatica.aether.slice.kvstore.AetherValue.UpgradeStop");
-        // ---- 2138..16383 RESERVED ----
+        // #2062: the persisted "termination not confirmed" mark — next free after 2131
+        pin(table, 2132, "org.pragmatica.aether.slice.kvstore.AetherKey.UnconfirmedTerminationKey");
+        pin(table, 2133, "org.pragmatica.aether.slice.kvstore.AetherValue.UnconfirmedTerminationValue");
+        // #2062: the admission marker of an EXTERNAL capacity reservation — 2134..2137 belong to the rolling-upgrade run state (#1543 F1/F2, open PRs)
+        pin(table, 2138, "org.pragmatica.aether.slice.kvstore.AetherKey.CapacityAdmissionKey");
+        pin(table, 2139, "org.pragmatica.aether.slice.kvstore.AetherValue.CapacityAdmissionValue");
+        // ---- 2140..16383 RESERVED ----
         rejectDuplicateTags(table);
 
         return Map.copyOf(table);
