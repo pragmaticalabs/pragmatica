@@ -131,11 +131,10 @@ public interface EntityLogSubstrate {
     /// recorded or checked under it is discarded rather than trusted on a digest alone.
     byte[] UNVOUCHED = new byte[0];
 
-    /// Whether two identities name the same lineage: equal, and neither [#UNVOUCHED].
+    /// Whether two identities name the same lineage: equal, and not [#UNVOUCHED] (equal and non-empty, so a vouched identity never equals an
+    /// unvouched one and two unvouched ones are not the same).
     static boolean sameLineage(byte[] recorded, byte[] local) {
-        return recorded.length > 0
-               && local.length > 0
-               && java.util.Arrays.equals(recorded, local);
+        return recorded.length > 0 && java.util.Arrays.equals(recorded, local);
     }
 
     /// The identity of the log record at `offset` as THIS node's copy holds it (#2087 B4-cut): a digest of the records ending there plus the
