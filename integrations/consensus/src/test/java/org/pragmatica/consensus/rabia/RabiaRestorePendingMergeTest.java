@@ -65,6 +65,7 @@ class RabiaRestorePendingMergeTest {
     private TestClusterNetwork network;
     private TestStateMachine stateMachine;
     private RabiaEngine<TestCommand> engine;
+    private final java.util.concurrent.atomic.AtomicReference<java.util.function.LongSupplier> ageProbe = new java.util.concurrent.atomic.AtomicReference<>();
 
     private enum SourceCopy { FOREIGN, MERGED, EMPTY }
 
@@ -80,7 +81,28 @@ class RabiaRestorePendingMergeTest {
                                                                  100,
                                                                  ProtocolConfig.DEFAULT_MAX_PENDING_BATCHES,
                                                                  timeSpan(2).seconds())
-                                                 .unwrap());
+                                                 .unwrap(),
+                                   new ConsensusMetrics() {
+                                       @Override public void registerOldestPendingBatchAgeProbe(NodeId nodeId, java.util.function.LongSupplier ageMs) {
+                                           ageProbe.set(ageMs);
+                                       }
+
+                                       @Override public void recordDecision(NodeId nodeId, Phase phase, StateValue stateValue, long durationNs) {}
+
+                                       @Override public void recordProposal(NodeId nodeId, Phase phase) {}
+
+                                       @Override public void recordVoteRound1(NodeId nodeId, Phase phase, StateValue stateValue) {}
+
+                                       @Override public void recordVoteRound2(NodeId nodeId, Phase phase, StateValue stateValue) {}
+
+                                       @Override public void recordSyncAttempt(NodeId nodeId, boolean success) {}
+
+                                       @Override public void updatePendingBatches(NodeId nodeId, int count) {}
+
+                                       @Override public void recordFastPath(NodeId nodeId, Phase phase, StateValue value) {}
+                                   },
+                                   false,
+                                   RabiaPersistence.inMemory());
     }
 
     @AfterEach
@@ -125,6 +147,21 @@ class RabiaRestorePendingMergeTest {
         outcome.onFailure(cause -> assertThat(cause).isInstanceOf(ConsensusError.SnapshotOutcomeUnknown.class));
         assertThat(engine.pendingBatchCountForTesting()).as("the request is not re-proposed").isZero();
         assertThat(stateMachine.getProcessedCommands()).as("nothing re-applied the dropped request").isEmpty();
+    }
+
+    /// The pending-age gauge must follow the discard: a batch dropped because the snapshot may already hold it is no
+    /// longer pending, so no arrival stamp (and no age) may remain for it.
+    @Test
+    void aDiscardedPendingBatch_leavesNoOrphanArrivalAge() throws Exception {
+        var local = restoreAcrossResync(new TestCommand("identical"), SourceCopy.EMPTY);
+
+        local.await(timeSpan(5).seconds());
+        Thread.sleep(100);
+
+        assertThat(engine.pendingBatchCountForTesting()).as("precondition: the batch was discarded").isZero();
+        assertThat(ageProbe.get().getAsLong())
+            .as("the discarded batch's arrival stamp must go with it; a leftover reads as an ever-growing age for nothing")
+            .isZero();
     }
 
     /// `apply()` → far-future `Propose` (past `MAX_PHASE_AHEAD`) → resync from ACTIVE with the local batch

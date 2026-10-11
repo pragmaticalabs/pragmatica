@@ -306,6 +306,32 @@ class MetricsRoutesTest {
             assertEquals(0, response.consensus().fastPathCount());
         }
 
+        /// #1117: the two new fields ride the consensus block of the comprehensive response.
+        @Test
+        void comprehensive_carriesThePendingAgeAndTheApplyTimeoutCount() {
+            var rabia = RabiaMetricsCollector.rabiaMetricsCollector();
+
+            rabia.registerOldestPendingBatchAgeProbe(LOCAL_NODE, () -> 4_321L);
+            rabia.recordApplyTimeout(LOCAL_NODE);
+            rabia.recordApplyTimeout(LOCAL_NODE);
+
+            var snapshotCollector = ComprehensiveSnapshotCollector.comprehensiveSnapshotCollector(
+                GCMetricsCollector.gcMetricsCollector(),
+                EventLoopMetricsCollector.eventLoopMetricsCollector(),
+                rabia,
+                InvocationMetricsCollector.invocationMetricsCollector(),
+                MinuteAggregator.minuteAggregator());
+            var routes = MetricsRoutes.metricsRoutes(() -> nodeWithSnapshotCollector(snapshotCollector),
+                                                     ObservabilityRegistry.prometheus(),
+                                                     timeouts,
+                                                     () -> false);
+
+            var response = routes.buildComprehensiveMetricsResponseForTest();
+
+            assertEquals(4_321L, response.consensus().oldestPendingBatchAgeMs());
+            assertEquals(2L, response.consensus().applyTimeoutCount());
+        }
+
         private ManageableNode nodeWithSnapshotCollector(ComprehensiveSnapshotCollector snapshotCollector) {
             return (ManageableNode) Proxy.newProxyInstance(
                 ManageableNode.class.getClassLoader(),

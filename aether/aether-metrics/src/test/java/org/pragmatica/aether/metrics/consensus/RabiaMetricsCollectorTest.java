@@ -96,8 +96,48 @@ class RabiaMetricsCollectorTest {
                                          "consensus_fast_path_total",
                                          "consensus_sync_success_total",
                                          "consensus_sync_failure_total",
-                                         "consensus_pending_batches");
+                                         "consensus_pending_batches",
+                                         "consensus_oldest_pending_batch_age_ms",
+                                         "consensus_apply_timeouts_total");
         assertThat(map.get("consensus_vote_round1_total").longValue()).isEqualTo(1);
         assertThat(map.get("consensus_pending_batches").intValue()).isEqualTo(3);
+    }
+
+    /// #1117: the age is read from the engine's probe when the snapshot is taken, so a batch that is stuck keeps
+    /// reading older with no event to push it; the sink starts with a probe that reads 0.
+    @Test
+    void oldestPendingBatchAge_isReadFromTheRegisteredProbeAtSnapshotTime() {
+        var collector = RabiaMetricsCollector.rabiaMetricsCollector();
+        var age = new java.util.concurrent.atomic.AtomicLong(0L);
+
+        assertThat(collector.snapshot().oldestPendingBatchAgeMs()).as("no probe registered yet").isZero();
+
+        collector.registerOldestPendingBatchAgeProbe(NODE, age::get);
+        age.set(12_345L);
+
+        assertThat(collector.snapshot().oldestPendingBatchAgeMs()).isEqualTo(12_345L);
+        assertThat(collector.snapshot().counterMap().get("consensus_oldest_pending_batch_age_ms").longValue())
+            .as("the Prometheus vocabulary carries the same level")
+            .isEqualTo(12_345L);
+
+        age.set(20_000L);
+
+        assertThat(collector.snapshotAndReset().oldestPendingBatchAgeMs())
+            .as("a level is read, never reset")
+            .isEqualTo(20_000L);
+        assertThat(collector.snapshot().oldestPendingBatchAgeMs()).isEqualTo(20_000L);
+    }
+
+    @Test
+    void applyTimeouts_areCounted_andReset() {
+        var collector = RabiaMetricsCollector.rabiaMetricsCollector();
+
+        collector.recordApplyTimeout(NODE);
+        collector.recordApplyTimeout(NODE);
+
+        assertThat(collector.snapshot().applyTimeoutCount()).isEqualTo(2);
+        assertThat(collector.snapshot().counterMap().get("consensus_apply_timeouts_total").longValue()).isEqualTo(2);
+        assertThat(collector.snapshotAndReset().applyTimeoutCount()).isEqualTo(2);
+        assertThat(collector.snapshot().applyTimeoutCount()).as("a total, differenced by the consumer, resets like its siblings").isZero();
     }
 }

@@ -16,6 +16,7 @@ Each entry below is a **deliberate boundary with a rationale**, not an apology. 
 | Overload / backpressure | Not yet characterized; system-level rate limiting deferred | Deferred **pending performance numbers** — see below | #365, #200 |
 | Hierarchical scale | Multi-community barrier designed, **under validation** | The one barrier Aether has not yet crossed | #367 |
 | Performance numbers | Single-machine / simulated | Multi-node benchmark not yet run | #365 |
+| Stream reference counts | One count per stream, no per-holder record; a recovery re-drive can leave one reference too many | Per-holder reference entries are the structural fix, scheduled for rc5 | #2160 |
 
 ## Release maturity — rc series toward GA
 
@@ -131,6 +132,10 @@ The **~100 per-community figure is a design target under validation, stated here
 ## Performance numbers are single-machine / simulated
 
 Every performance figure Aether currently publishes — the cold-start, re-election, failover, throughput, and latency numbers in [`../architecture/00-overview.md`](../architecture/00-overview.md#performance-characteristics-v0200) and the demos — was measured on a **single machine with a simulated (Forge) cluster**, not a multi-node deployment. They are labeled as such at the source and are useful for relative comparison, not as production capacity planning. The multi-node benchmark that replaces them is part of #365; when it lands, these numbers are superseded, not appended.
+
+## Stream reference counts are a bare counter
+
+A slice instance acquires its stream references in the same consensus batch that writes its ACTIVE state; the stream registry holds one `refCount` per stream, written as an absolute value (applied mirror + 1), with no record of who holds it. When a node's activation write is never answered and the node's stuck-slice timer re-drives it (#1117), the re-drive rebuilds the count from the current applied mirror. If the lost original write also lands late, the instance holds **one reference too many**: the stream outlives its holders (kept alive, never released under a holder). Concurrent acquirers writing absolute values can likewise overwrite each other's count; that race predates the re-drive. **Recovery:** delete the stream explicitly (`aether stream delete`) once no slice uses it. **Tracked as #2160** (per-holder reference entries, rc5). `[mechanism: absolute Put of mirror + 1 in KvBackedStreamRegistry.acquireCommand]`
 
 ## Consistency and durability boundaries
 

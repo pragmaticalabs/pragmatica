@@ -279,8 +279,9 @@ public sealed interface ManagementApiResponses {
     /// boundary, leaving no external observer able to measure coordination load on a core node.
     /// LIVE monotonic totals (not minute aggregates): a differencing consumer needs raw totals over
     /// its own window, the same contract `/metrics/transport` serves. NODE-LOCAL scope — each core
-    /// answers for itself. `pendingBatches` is a level; `avgDecisionLatencyMs` is derived over the
-    /// cumulative counts.
+    /// answers for itself. `pendingBatches` and `oldestPendingBatchAgeMs` are levels (the age is 0 when
+    /// nothing is pending, #1117); `applyTimeoutCount` is the monotonic total of applies never answered
+    /// within the apply timeout; `avgDecisionLatencyMs` is derived over the cumulative counts.
     record ConsensusMetricsResponse(String role,
                                     Option<String> leaderId,
                                     int pendingBatches,
@@ -291,7 +292,9 @@ public sealed interface ManagementApiResponses {
                                     long fastPathCount,
                                     long syncSuccessCount,
                                     long syncFailureCount,
-                                    double avgDecisionLatencyMs) {}
+                                    double avgDecisionLatencyMs,
+                                    long oldestPendingBatchAgeMs,
+                                    long applyTimeoutCount) {}
 
     record DerivedMetricsResponse(double requestRate,
                                   double errorRate,

@@ -547,7 +547,7 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
         /// in ROUTING indefinitely (the 2/3-active signature). This arm schedules a single one-shot
         /// at [`SliceState#ROUTING`]'s own timeout; if the slice is STILL ROUTING when it fires, the
         /// routes are already published and serving locally, so the cross-node ack is a confirmation
-        /// optimization — NOT a local-serving correctness gate. Force ROUTING → ACTIVE rather than
+        /// optimization — NOT a local-serving correctness gate. Reconcile ROUTING → ACTIVE with the committed state rather than
         /// leaving the cluster-side stuck-remediator to UNLOAD-and-redeploy (which re-enters the same
         /// ack wait and can wedge again). Idempotent: the fire is guarded on the slice still being in
         /// ROUTING, and an ack that lands first clears the tracker and transitions to ACTIVE, so the
@@ -559,7 +559,8 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
         }
 
         /// ROUTING-timeout fire: if the slice is still ROUTING (no ack-driven transition happened),
-        /// force it to ACTIVE and clear the now-moot ack expectation. No-op when the slice already
+        /// clear the now-moot ack expectation and reconcile with the committed state ([#reconcileWithCommitted]:
+        /// adopt a committed ACTIVE, else re-drive the chain's last write). No-op when the slice already
         /// left ROUTING (acked through, failed, or was removed). Package-private so the
         /// remediation contract is unit-testable without waiting out the real routing timeout
         /// (mirrors the package-private [#routingEpochAckTracker] test accessor on this record).
@@ -571,11 +572,136 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
                 return;
             }
 
-            log.warn("Slice {} still ROUTING after the routing timeout — cross-node acks not received; "
-                    + "force-transitioning ROUTING → ACTIVE (routes are published and serving locally)",
-                     sliceKey.artifact());
             routingEpochAckTracker.clear(sliceKey);
-            transitionTo(sliceKey, SliceState.ACTIVE);
+            reconcileWithCommitted(sliceKey, SliceState.ROUTING, "the routing timeout");
+        }
+
+        /// #1117 — what BOTH remediation timers do once they have decided the slice is stuck. They used to write a
+        /// bare ACTIVE on the local view alone, and the local view moves only when this node's own apply delivers
+        /// its notification. So a node whose last write had COMMITTED but whose local state still read ROUTING or
+        /// ACTIVATING wrote a second ACTIVE over the committed one, and the extra put is what moved a durable
+        /// group's assignee (#1333, #1385: 7-19 events redelivered).
+        ///
+        /// "Committed" here is this node's APPLIED mirror of its own `NodeArtifactKey` (`ctx.kvStore()`), NOT a
+        /// consensus read. It removes the case "applied but the notification never reached the FSM"; it does not
+        /// remove "committed by consensus but not yet applied here", where the mirror is as stale as the local view and
+        /// the re-drive still happens. The read, the adopt and the write are not atomic against the notification path:
+        /// a notification landing in between runs the ACTIVE handler twice, which is idempotent.
+        ///
+        /// Decision by the mirror's value for this node's deployment of the artifact:
+        ///  - ACTIVE: adopt it into local state exactly as the missed notification would (record, then drive the
+        ///    handler). No write.
+        ///  - EARLIER in the activation chain (LOAD through ROUTING): the chain's last write was never answered, so
+        ///    re-drive it IN FULL ([#transitionToActiveWithStreamRefs]: ACTIVE with its endpoints plus the stream-ref
+        ///    commands), never a bare ACTIVE, which would leave the stream refcounts unacquired; but only while a
+        ///    committed `SliceTarget` still names this version, because a rolled-back or replaced version must not be
+        ///    started again (#1068). The stream-ref commands are rebuilt from the CURRENT applied mirror: `acquireCommand` is
+        ///    an absolute Put (refCount = mirror + 1), so replaying the original's snapshot could overwrite another holder's
+        ///    acquire and let a later release delete the entry under it. Rebuilt, the failure direction flips: if the
+        ///    original write also lands late, this instance holds one reference too many and the stream outlives its
+        ///    holders (a leak, the safe direction). Per-holder reference entries would remove both cases (rc5).
+        ///  - anything else (DEACTIVATE, DEACTIVATING, FAILED, UNLOAD, UNLOADING, UNKNOWN, or no entry): the slice has
+        ///    left the activation chain, so ACTIVE is never written over it. The mirror's value is adopted into local
+        ///    state as its own notification would have been (an absent entry is handled as the removal it is), and the
+        ///    remediation stops.
+        /// Every line names the node, the local state and the committed state, because the lines carried none and
+        /// four reports could not say which node was stuck.
+        @Contract
+        private void reconcileWithCommitted(SliceNodeKey sliceKey, SliceState localState, String timer) {
+            var committed = committedStateOf(sliceKey);
+
+            committed.onEmpty(() -> adoptAbsentEntry(sliceKey, localState, timer))
+                     .onPresent(state -> reconcileWithPresent(sliceKey, localState, timer, state));
+        }
+
+        private void reconcileWithPresent(SliceNodeKey sliceKey,
+                                          SliceState localState,
+                                          String timer,
+                                          SliceState committed) {
+            if (committed == SliceState.ACTIVE) {
+                log.warn("Node {} slice {} still {} locally after {}, but its COMMITTED state is ACTIVE — adopting the "
+                        + "committed ACTIVE into local state, no write (the local view missed its own notification)",
+                         ctx.self().id(),
+                         sliceKey.artifact(),
+                         localState,
+                         timer);
+                adoptCommitted(sliceKey, committed);
+
+                return;
+            }
+
+            if (isEarlierInActivationChain(committed)) {
+                redriveLastWrite(sliceKey, localState, timer, committed);
+
+                return;
+            }
+
+            log.warn("Node {} slice {} still {} locally after {}, but its COMMITTED state is {}, which is not earlier in "
+                    + "the activation chain — NOT writing ACTIVE over it; adopting the committed state into local state",
+                     ctx.self().id(),
+                     sliceKey.artifact(),
+                     localState,
+                     timer,
+                     committed);
+            adoptCommitted(sliceKey, committed);
+        }
+
+        private void redriveLastWrite(SliceNodeKey sliceKey,
+                                      SliceState localState,
+                                      String timer,
+                                      SliceState committed) {
+            if (!CommittedSliceTarget.permits(ctx.kvStore(), sliceKey.artifact())) {
+                log.warn("Node {} slice {} still {} locally after {}; committed state is {}, but no committed SliceTarget "
+                        + "names this version any more (#1068) — NOT re-driving ACTIVE",
+                         ctx.self().id(),
+                         sliceKey.artifact(),
+                         localState,
+                         timer,
+                         committed);
+
+                return;
+            }
+
+            log.warn("Node {} slice {} still {} locally after {}; committed state is {} — re-driving the chain's last "
+                    + "write (ACTIVE with its stream refs). The remaining chain steps are publication and "
+                    + "confirmation, not local-serving correctness gates.",
+                     ctx.self().id(),
+                     sliceKey.artifact(),
+                     localState,
+                     timer,
+                     committed);
+            transitionToActiveWithStreamRefs(sliceKey);
+        }
+
+        private void adoptAbsentEntry(SliceNodeKey sliceKey, SliceState localState, String timer) {
+            log.warn("Node {} slice {} still {} locally after {}, but its committed entry is ABSENT — the slice was removed; "
+                    + "NOT writing ACTIVE, handling it as the removal it is",
+                     ctx.self().id(),
+                     sliceKey.artifact(),
+                     localState,
+                     timer);
+            handleSliceValueRemove(sliceKey);
+        }
+
+        /// What this node's own notification would have done for `state`: record it, then drive its handler.
+        private void adoptCommitted(SliceNodeKey sliceKey, SliceState state) {
+            recordDeployment(sliceKey, SliceNodeValue.sliceNodeValue(state));
+            processStateTransition(sliceKey, state);
+        }
+
+        private static boolean isEarlierInActivationChain(SliceState state) {
+            return switch (state) {
+                case LOAD, LOADING, LOADED, ACTIVATE, ACTIVATING, ROUTING -> true;
+                case ACTIVE, DEACTIVATE, DEACTIVATING, FAILED, UNLOAD, UNLOADING, UNKNOWN -> false;
+            };
+        }
+
+        private Option<SliceState> committedStateOf(SliceNodeKey sliceKey) {
+            return ctx.kvStore()
+                      .getTyped(NodeArtifactKey.nodeArtifactKey(ctx.self(),
+                                                                sliceKey.artifact()),
+                                NodeArtifactValue.class)
+                      .map(NodeArtifactValue::state);
         }
 
         /// #601 — ACTIVATING had no node-local remediation at all, only a `case ACTIVATING -> {}` no-op
@@ -584,7 +710,7 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
         /// which judges by a projection and, until `d9b37e180`, force-UNLOADed a slice that had been
         /// serving traffic 35 seconds earlier.
         ///
-        /// Mirrors [#scheduleRoutingRemediation], with ONE deliberate difference: forcing ACTIVE is gated
+        /// Mirrors [#scheduleRoutingRemediation], with ONE deliberate difference: progressing to ACTIVE is gated
         /// on positive local proof that the slice can actually serve.
         @Contract
         private void scheduleActivationRemediation(SliceNodeKey sliceKey) {
@@ -620,21 +746,15 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
 
             ctx.invocationHandler()
                .localSlice(sliceKey.artifact())
-               .onPresent(_ -> forceActivatingToActive(sliceKey))
-               .onEmpty(() -> log.warn("Slice {} still ACTIVATING after the activation timeout and is NOT registered for "
-                                      + "invocation — NOT forcing ACTIVE, because a slice the cluster routes to but which "
-                                      + "cannot serve is worse than one stuck activating. Leaving it to the activation "
-                                      + "chain's own timeout and the cluster-side remediator.",
-                                       sliceKey.artifact()));
-        }
-
-        @Contract
-        private void forceActivatingToActive(SliceNodeKey sliceKey) {
-            log.warn("Slice {} still ACTIVATING after the activation timeout but IS registered for invocation and serving "
-                    + "locally — force-transitioning ACTIVATING → ACTIVE. The remaining chain steps are publication and "
-                    + "confirmation, not local-serving correctness gates.",
-                     sliceKey.artifact());
-            transitionTo(sliceKey, SliceState.ACTIVE);
+               .onPresent(_ -> reconcileWithCommitted(sliceKey, SliceState.ACTIVATING, "the activation timeout"))
+               .onEmpty(() -> log.warn("Node {} slice {} still ACTIVATING locally after the activation timeout (committed "
+                                      + "state {}) and is NOT registered for invocation — NOT forcing ACTIVE, because a "
+                                      + "slice the cluster routes to but which cannot serve is worse than one stuck "
+                                      + "activating. Leaving it to the activation chain's own timeout and the "
+                                      + "cluster-side remediator.",
+                                       ctx.self().id(),
+                                       sliceKey.artifact(),
+                                       committedStateOf(sliceKey).map(SliceState::name).or("absent")));
         }
 
         private Set<NodeId> collectTargetNodesForArtifact(SliceNodeKey sliceKey) {

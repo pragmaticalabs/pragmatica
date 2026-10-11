@@ -415,8 +415,8 @@ InFlightBlueprint:
 
 - Created when `AppBlueprintValue` is received (unless `BEST_EFFORT` or restoring)
 - `pendingSlices` initialized from all slices in `expanded.loadOrder()`
-- As slices reach `ACTIVE`, moved from `pendingSlices` to `activeSlices`
-- When `pendingSlices` is empty: blueprint fully deployed, removed from tracking
+- As slices reach `ACTIVE`, moved from `pendingSlices` to `activeSlices`: the FIRST ACTIVE instance of a slice moves it, so "reached ACTIVE" means "has at least one ACTIVE instance" (#1117)
+- When `pendingSlices` is empty: every declared slice has at least one ACTIVE instance (the leader logs it with the per-slice "n of m instances ACTIVE"), and the blueprint is removed from tracking. This is not "every instance ACTIVE" and says nothing about any node's local state
 
 #### 8.3 Rollback Protocol
 

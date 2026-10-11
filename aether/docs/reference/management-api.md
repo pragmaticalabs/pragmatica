@@ -1349,7 +1349,9 @@ individual request latencies. `errorRate` is the failed/completed invocation rat
     "fastPathCount": 812,
     "syncSuccessCount": 3,
     "syncFailureCount": 0,
-    "avgDecisionLatencyMs": 4.7
+    "avgDecisionLatencyMs": 4.7,
+    "oldestPendingBatchAgeMs": 0,
+    "applyTimeoutCount": 0
   }
 }
 ```
@@ -1386,9 +1388,13 @@ Get Prometheus-format metrics for scraping.
 
 Includes the consensus-load gauges (#674): `consensus_decisions_total`, `consensus_proposals_total`,
 `consensus_vote_round1_total`, `consensus_vote_round2_total`, `consensus_fast_path_total`,
-`consensus_sync_success_total`, `consensus_sync_failure_total` (monotonic totals) and
-`consensus_pending_batches` (a level) — the same names and values as the comprehensive response's
-`consensus` block.
+`consensus_sync_success_total`, `consensus_sync_failure_total`, `consensus_apply_timeouts_total` (monotonic
+totals), `consensus_pending_batches` and `consensus_oldest_pending_batch_age_ms` (levels) — the same names
+and values as the comprehensive response's `consensus` block (`oldestPendingBatchAgeMs`, `applyTimeoutCount`).
+The age is 0 when no batch is pending (#1117): a value that keeps growing is a submission the cluster has not
+decided, and `consensus_apply_timeouts_total` counts the applies that were never answered within the apply
+timeout (30 s by default). The engine also logs `SLOW-APPLY-RUNNING` with the worker's stack once a consensus
+task has run longer than one second.
 
 ### GET /api/v1/metrics/transport
 
