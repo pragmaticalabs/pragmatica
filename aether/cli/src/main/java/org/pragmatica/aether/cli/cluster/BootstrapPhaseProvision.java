@@ -30,6 +30,8 @@ import org.pragmatica.aether.environment.ProvisionedNode;
 import org.pragmatica.aether.environment.SourceName;
 import org.pragmatica.config.toml.TomlDocument;
 import org.pragmatica.lang.Cause;
+import org.pragmatica.aether.environment.docker.DockerComputeProvider;
+import org.pragmatica.aether.environment.docker.DockerNetwork;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
@@ -53,6 +55,13 @@ sealed interface BootstrapPhaseProvision {
         var mgmtPort = ctx.config().operations().ports().management();
         var dockerCores = DockerCores.mint(ctx.config().sources(),
                                            clusterName);
+        var networks = ensureDockerNetwork(ctx);
+
+        if (networks.isFailure()) {
+            return networks.map(_ -> ctx);
+        }
+
+        var createdNetworks = networks.or(List.of());
 
         for (var entry : ctx.config().sources().entrySet()) {
             var sourceName = sourceNameOrDefault(entry.getKey());
@@ -68,13 +77,58 @@ sealed interface BootstrapPhaseProvision {
             var _ = result.onSuccess(allNodes::addAll);
         }
 
-        var updatedState = buildUpdatedState(ctx, allNodes);
+        var updatedState = buildUpdatedState(ctx, allNodes, createdNetworks);
 
         return success(ctx.withNodes(List.copyOf(allNodes)).withState(updatedState));
     }
 
-    private static BootstrapState buildUpdatedState(BootstrapContext ctx, List<ProvisionedNode> allNodes) {
+    /// A docker source needs the network its containers join (#2131): `docker run --network <name>` fails with "network not found" when nothing created
+    /// it. Reuse it when present; create it when absent, and RECORD it (persisted now, and in the state the phase returns) only when bootstrap created
+    /// it, so destroy can later remove exactly the networks it made and never one the user provided. Nothing happens without a docker source.
+    @SuppressWarnings("JBCT-EX-01")
+    private static Result<List<CreatedResource>> ensureDockerNetwork(BootstrapContext ctx) {
+        var hasDocker = ctx.config().sources().values().stream().anyMatch(source -> source.type() == SourceType.DOCKER);
+
+        if (!hasDocker) {
+            return success(List.of());
+        }
+
+        return ProviderResolver.resolveDockerComputeWithoutBackup()
+                               .flatMap(compute -> compute instanceof DockerComputeProvider docker
+                                                  ? docker.ensureNetwork().await().map(ensured -> recordCreatedNetwork(ctx, docker, ensured))
+                                                  : success(List.<CreatedResource> of()));
+    }
+
+    @Contract
+    private static List<CreatedResource> recordCreatedNetwork(BootstrapContext ctx, DockerComputeProvider docker, DockerNetwork.Ensured ensured) {
+        var name = docker.config().networkName();
+
+        if (ensured == DockerNetwork.Ensured.EXISTING) {
+            System.out.printf("  Reusing docker network %s%n", name);
+
+            return List.of();
+        }
+
+        var network = CreatedResource.DockerNetwork.dockerNetwork(name);
+
+        System.out.printf("  Created docker network %s%n", name);
+        var _ = BootstrapStatePersistence.appendResource(ctx.state().clusterName(), network)
+                                         .onFailure(cause -> System.err.printf("  WARN: docker network %s was created but NOT recorded in the cleanup ledger — %s."
+                                                                              + " Remove it with 'docker network rm %s' after destroy.%n",
+                                                                               name,
+                                                                               cause.message(),
+                                                                               name));
+
+        return List.of(network);
+    }
+
+    private static BootstrapState buildUpdatedState(BootstrapContext ctx, List<ProvisionedNode> allNodes, List<CreatedResource> createdNetworks) {
         var state = ctx.state().withProvisionedNodeIds(allNodes.stream().map(ProvisionedNode::nodeId).toList());
+
+        for (var network : createdNetworks) {
+            state = state.withResource(network);
+        }
+
         var rawToml = ctx.rawTomlContent();
 
         for (var entry : ctx.config().sources().entrySet()) {

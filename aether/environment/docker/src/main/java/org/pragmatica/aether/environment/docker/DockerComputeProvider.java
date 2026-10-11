@@ -54,6 +54,16 @@ public record DockerComputeProvider(DockerCommandRunner runner, DockerConfig con
         return success(new DockerComputeProvider(runner, config, hostEnv));
     }
 
+    /// Makes sure the configured network exists before any container is started on it (#2131).
+    public Promise<DockerNetwork.Ensured> ensureNetwork() {
+        return DockerNetwork.ensure(runner, config.networkName());
+    }
+
+    /// Removes the configured network if no container is attached; see [DockerNetwork#removeIfEmpty].
+    public Promise<DockerNetwork.Removal> removeNetworkIfEmpty() {
+        return DockerNetwork.removeIfEmpty(runner, config.networkName());
+    }
+
     @Override
     public Promise<InstanceInfo> provision(InstanceType instanceType) {
         var ctx = ProvisionContext.provisionContext(ClusterName.maybeClusterName("default"),

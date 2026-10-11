@@ -111,6 +111,29 @@ public sealed interface CreatedResource {
         }
     }
 
+    /// A docker network BOOTSTRAP created because none existed (#2131). Recorded only when we created it: a network that was already there is
+    /// never in the ledger, so destroy cannot remove one the user provided.
+    record DockerNetwork(String networkName) implements CreatedResource {
+        static DockerNetwork dockerNetwork(String networkName) {
+            return new DockerNetwork(networkName);
+        }
+
+        @Override
+        public String provider() {
+            return "docker";
+        }
+
+        @Override
+        public String resourceId() {
+            return networkName;
+        }
+
+        @Override
+        public String description() {
+            return "Docker network " + networkName + " (created by bootstrap)";
+        }
+    }
+
     record SshKeyResource(String provider, long sshKeyId, String name) implements CreatedResource {
         public static SshKeyResource sshKeyResource(String provider, long sshKeyId, String name) {
             return new SshKeyResource(provider, sshKeyId, name);

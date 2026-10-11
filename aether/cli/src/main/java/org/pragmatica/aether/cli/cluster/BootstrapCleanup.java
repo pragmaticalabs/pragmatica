@@ -14,6 +14,8 @@ import java.util.stream.Collectors;
 import org.pragmatica.aether.environment.ClusterName;
 import org.pragmatica.aether.environment.ComputeProvider;
 import org.pragmatica.aether.environment.EnvironmentError;
+import org.pragmatica.aether.environment.docker.DockerComputeProvider;
+import org.pragmatica.aether.environment.docker.DockerNetwork;
 import org.pragmatica.aether.environment.InstanceId;
 import org.pragmatica.cloud.hetzner.HetznerClient;
 import org.pragmatica.cloud.hetzner.HetznerConfig;
@@ -761,6 +763,7 @@ sealed interface BootstrapCleanup {
             case CreatedResource.SshDeployedConfig ignored -> 0;
             case CreatedResource.ProvisionedVm ignored -> 1;
             case CreatedResource.DockerContainer ignored -> 1;
+            case CreatedResource.DockerNetwork ignored -> 2;
             case CreatedResource.FloatingIpAssignment ignored -> 2;
             case CreatedResource.CloudFirewall ignored -> 3;
             case CreatedResource.SshKeyResource ignored -> 4;
@@ -841,6 +844,7 @@ sealed interface BootstrapCleanup {
                                                                                sweep);
             case CreatedResource.FloatingIpAssignment ip -> detachFloatingIp(ip);
             case CreatedResource.DockerContainer container -> removeContainer(container);
+            case CreatedResource.DockerNetwork network -> removeNetwork(network);
             case CreatedResource.SshDeployedConfig config -> removeRemoteConfig(config);
             case CreatedResource.SshKeyResource key -> deleteSshKey(state, key, resolvers);
         };
@@ -1208,6 +1212,27 @@ sealed interface BootstrapCleanup {
 
         return ProviderResolver.resolveDockerComputeWithoutBackup().flatMap(compute -> terminateInstance(compute,
                                                                                                          container.containerId()));
+    }
+
+    /// Removes a docker network bootstrap created, and only while no container is attached (#2131). A network that still has members (a user's
+    /// containers joined it) stays, and that is reported rather than failed: cleanup did what it may. Containers rank below the network, so ours
+    /// are already gone by now.
+    @SuppressWarnings("JBCT-EX-01")
+    private static Result<Unit> removeNetwork(CreatedResource.DockerNetwork network) {
+        System.out.printf("  Removing docker network %s (created by bootstrap)...%n", network.networkName());
+
+        return ProviderResolver.resolveDockerComputeWithoutBackup()
+                               .flatMap(compute -> compute instanceof DockerComputeProvider docker
+                                                  ? docker.removeNetworkIfEmpty().await().map(removal -> reportNetworkRemoval(network, removal))
+                                                  : Result.unitResult());
+    }
+
+    private static Unit reportNetworkRemoval(CreatedResource.DockerNetwork network, DockerNetwork.Removal removal) {
+        if (removal == DockerNetwork.Removal.IN_USE) {
+            System.out.printf("  Docker network %s still has containers attached; left in place.%n", network.networkName());
+        }
+
+        return Unit.unit();
     }
 
     private static Result<Unit> removeRemoteConfig(CreatedResource.SshDeployedConfig config) {
