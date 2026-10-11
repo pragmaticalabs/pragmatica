@@ -70,6 +70,13 @@ class OperatorWarningWiringTest {
         assertThat(code).contains("replicationNetwork.send(target,message,callerWait);");
     }
 
+    /// #1734: the entity-ownership reconciler's first-mint ceiling warning reaches this node's sink only if the assembly hands
+    /// it over; the reconciler tests pass their own sink, so un-binding it here left them green.
+    @Test
+    void assembly_givesTheSinkToTheEntityOwnershipReconciler() {
+        assertThat(assemblyCode()).contains("EntityOwnershipReconciler.SETTLE_TICKS,EntityOwnershipReconciler.FIRST_MINT_CEILING_TICKS,operatorWarningSink);");
+    }
+
     /// A certificate rotation the HTTP listeners refuse is an operator event; un-binding the sink here would leave the
     /// listener tests (which hand in their own sink) green while the node reported nothing.
     @Test

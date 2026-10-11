@@ -7,8 +7,10 @@ package org.pragmatica.aether.node;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.Executor;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
 import java.util.stream.IntStream;
 
@@ -32,12 +34,17 @@ import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Option;
+import org.pragmatica.hlc.HlcClock;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
+import org.pragmatica.utility.warning.OperatorWarning;
+import org.pragmatica.utility.warning.OperatorWarningCode;
+import org.pragmatica.utility.warning.OperatorWarningSink;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.awaitility.Awaitility.await;
 import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.junit.jupiter.api.Assertions.fail;
 
@@ -340,12 +347,17 @@ class EntityOwnershipReconcilerTest {
             var store = storeRegisteredOn(HOSTS);
             var observed = new ArrayList<Option<NodeId>>();
             var applied = new ArrayList<List<KVCommand<AetherKey>>>();
+            // Settle gate off (0 ticks): this test pins the snapshot ORDER, not the gate (see SettleGate).
             var reconciler = EntityOwnershipReconciler.entityOwnershipReconciler(store,
                                                                                  N1,
                                                                                  () -> MEMBERS,
                                                                                  () -> true,
                                                                                  hrwOwner -> observingWriter(hrwOwner, observed),
-                                                                                 recordingApplier(applied), Runnable::run);
+                                                                                 recordingApplier(applied),
+                                                                                 Runnable::run,
+                                                                                 0,
+                                                                                 EntityOwnershipReconciler.FIRST_MINT_CEILING_TICKS,
+                                                                                 OperatorWarningSink.logOnly());
 
             reconciler.declare(KEYSPACE, PARTITIONS);
             reconciler.tick();
@@ -601,6 +613,372 @@ class EntityOwnershipReconcilerTest {
                     return Option.none();
                 }
             };
+        }
+    }
+
+
+    /// #1734: the settle gate. Driven through the real basic ownership writer over a store the applier commits to, so a
+    /// "Put" here is a genuine ownership record (term and owner) and a second Put on an arc is a genuine owner change.
+    /// Time is the pass count: registrations are sequenced between explicit `tick()` calls.
+    @Nested
+    class SettleGate {
+        private static final int K = EntityOwnershipReconciler.SETTLE_TICKS;
+        private static final int M = EntityOwnershipReconciler.FIRST_MINT_CEILING_TICKS;
+
+        /// Test 1. The first mint waits for a quiet hosting set. Today (red on the base) the first tick over {N1,N2}
+        /// mints all eight arcs, and N3's registration then moves some of them.
+        @Test
+        void firstMint_waitsForSettledHostingSet() {
+            var cluster = new Cluster(K, M);
+
+            cluster.register(N1);
+            cluster.register(N2);
+
+            assertThat(cluster.tick()).as("first sight of {N1,N2}: nothing may be minted").isZero();
+
+            cluster.register(N3);
+
+            assertThat(cluster.tick()).as("the set just changed").isZero();
+            assertThat(cluster.tick()).as("unchanged for one pass: still short of %d", K).isZero();
+            assertThat(cluster.tick()).as("unchanged for %d passes: the settled set is minted, once", K).isEqualTo(PARTITIONS);
+            assertThat(cluster.owners()).as("every arc is placed over all three hosts, exactly as HRW says")
+                                        .isEqualTo(hrwOver(cluster, List.of(N1, N2, N3)));
+            assertThat(cluster.tick()).as("steady state").isZero();
+        }
+
+        /// Test 4, the arming control: with the gate off the SAME scenario mints on the first tick — so test 1's zero
+        /// is produced by the gate, not by an empty store, a missing leader or an unreachable writer.
+        @Test
+        void firstMint_mintsOnTheFirstPass_whenTheGateIsOff() {
+            var cluster = new Cluster(0, M);
+
+            cluster.register(N1);
+            cluster.register(N2);
+
+            assertThat(cluster.tick()).as("control: the pre-#1734 behaviour mints at once").isEqualTo(PARTITIONS);
+        }
+
+        /// Test 2. A late host (a flap that registers and goes away inside the window) moves nothing: the live committed
+        /// owners are kept, no term is bumped. Armed: HRW over four hosts WOULD move an arc, so zero Puts is the gate.
+        @Test
+        void lateHost_doesNotMoveMaterializingArcs() {
+            var cluster = settledOn(N1, N2, N3);
+            var before = cluster.owners();
+
+            assertThat(hrwOver(cluster, List.of(N1, N2, N3, N4))).as("arming: HRW over the flap set differs from the committed owners")
+                                                                 .isNotEqualTo(before);
+
+            cluster.register(N4);
+
+            assertThat(cluster.tick()).as("the flapping host just registered").isZero();
+
+            cluster.unregister(N4);
+
+            assertThat(cluster.tick()).as("and went away again before the set settled").isZero();
+            assertThat(cluster.tick()).isZero();
+            assertThat(cluster.tick()).isZero();
+            assertThat(cluster.owners()).as("no owner changed").isEqualTo(before);
+            assertThat(cluster.maxTerm()).as("no fence bump: every term is still 1").isEqualTo(1L);
+        }
+
+        /// Convergence half of the guarantee: a host that STAYS registered is rebalanced to HRW once the set is quiet
+        /// for K passes — and not before.
+        @Test
+        void lateHost_registeredPermanently_rebalancesOnceSettled() {
+            var cluster = settledOn(N1, N2, N3);
+
+            cluster.register(N4);
+
+            assertThat(cluster.tick()).isZero();
+            assertThat(cluster.tick()).isZero();
+
+            var moved = cluster.tick();
+
+            assertThat(moved).as("settled on four hosts: the arcs HRW prefers on N4 move").isPositive();
+            assertThat(cluster.owners()).isEqualTo(hrwOver(cluster, List.of(N1, N2, N3, N4)));
+            assertThat(cluster.maxTerm()).as("a moved arc is one fence bump").isEqualTo(2L);
+        }
+
+        /// Test 3. Failover is never gated: the set is unsettled (N4 just registered), yet an owner that left the live
+        /// members is replaced on that very pass — and only its arcs move.
+        @Test
+        void failover_bypassesTheGate_whenOwnerLeavesTheMembers() {
+            var cluster = settledOn(N1, N2, N3);
+            var before = cluster.owners();
+            var departed = before.get(0);
+
+            cluster.register(N4);
+            cluster.members.set(without(MEMBERS, departed));
+
+            var moved = cluster.tick();
+
+            assertThat(moved).as("exactly the departed owner's arcs are re-minted, on the pass the set changed")
+                             .isEqualTo((int) before.stream().filter(departed::equals).count());
+            assertThat(cluster.owners()).allSatisfy(owner -> assertThat(owner).isNotEqualTo(departed));
+            assertThat(cluster.ownersOtherThan(before, departed)).as("arcs of live owners were kept").isTrue();
+        }
+
+        /// Failover by retraction: the owner stays a member but its registration is gone, so it is no longer a host.
+        @Test
+        void failover_bypassesTheGate_whenOwnerRegistrationIsRetracted() {
+            var cluster = settledOn(N1, N2, N3);
+            var before = cluster.owners();
+            var retracted = before.get(0);
+
+            cluster.register(N4);
+            cluster.unregister(retracted);
+
+            assertThat(cluster.tick()).as("the retracted host's arcs move at once")
+                                      .isEqualTo((int) before.stream().filter(retracted::equals).count());
+            assertThat(cluster.owners()).allSatisfy(owner -> assertThat(owner).isNotEqualTo(retracted));
+        }
+
+        /// A1. A set that never settles must not starve the first mint: exactly one mint at pass M, one operator warning
+        /// naming the keyspace and the ceiling, and no owner moves after it. A non-committing applier re-asks every pass,
+        /// which is what pins the once-per-run announcement.
+        @Test
+        void firstMint_atTheCeiling_whenTheSetNeverSettles_mintsOnceAndWarns() {
+            var cluster = new Cluster(K, M);
+
+            cluster.register(N1);
+            cluster.register(N2);
+
+            IntStream.range(1, M)
+                     .forEach(pass -> assertThat(flap(cluster, pass)).as("pass %d is under the ceiling", pass).isZero());
+
+            assertThat(cluster.drainedWarnings()).as("no warning under the ceiling").isEmpty();
+            assertThat(flap(cluster, M)).as("pass %d is the ceiling: every arc is minted, once", M).isEqualTo(PARTITIONS);
+
+            var owners = cluster.owners();
+
+            IntStream.rangeClosed(M + 1, 2 * M)
+                     .forEach(pass -> assertThat(flap(cluster, pass)).as("after the ceiling mint nothing moves").isZero());
+
+            assertThat(cluster.owners()).isEqualTo(owners);
+            assertThat(cluster.maxTerm()).isEqualTo(1L);
+
+            var warnings = cluster.drainedWarnings();
+
+            assertThat(warnings).as("exactly one warning for the run").hasSize(1);
+            assertThat(warnings.getFirst().code()).isEqualTo(OperatorWarningCode.ENTITY_OWNERSHIP_UNSETTLED_MINT);
+            assertThat(warnings.getFirst().subject()).isEqualTo(KEYSPACE);
+            assertThat(warnings.getFirst().message()).contains("ceiling " + M);
+            assertThat(warnings.getFirst().message()).as("passes 2..%d each changed the set", M)
+                                                     .contains((M - 1) + " change(s) seen in " + M + " reconcile passes");
+        }
+
+        /// The announcement is once per unsettled run even when the mint is re-asked: the applier here commits nothing,
+        /// so every pass from the ceiling on asks again, and eight Puts per pass reach it.
+        @Test
+        void firstMint_atTheCeiling_announcesOncePerRun_evenWhenTheApplyIsLost() {
+            var cluster = new Cluster(K, M, false);
+
+            cluster.register(N1);
+            cluster.register(N2);
+            IntStream.range(1, M)
+                     .forEach(pass -> flap(cluster, pass));
+
+            assertThat(flap(cluster, M)).isEqualTo(PARTITIONS);
+            assertThat(flap(cluster, M + 1)).as("the lost apply is re-asked").isEqualTo(PARTITIONS);
+            assertThat(flap(cluster, M + 2)).isEqualTo(PARTITIONS);
+            assertThat(cluster.drainedWarnings()).as("one announcement for the whole run").hasSize(1);
+        }
+
+        /// A host that comes back as a member is a change of the hosting set (hosts that are also LIVE members): its
+        /// arcs, failed over while it was away, do not return until the set has been quiet again.
+        @Test
+        void memberReturn_isAChangeOfTheHostingSet_andDoesNotMoveArcsBackAtOnce() {
+            var cluster = settledOn(N1, N2, N3);
+            var away = cluster.owners().get(0);
+
+            cluster.members.set(without(MEMBERS, away));
+
+            assertThat(cluster.tick()).as("the member left: failover").isPositive();
+
+            var failedOver = cluster.owners();
+
+            cluster.members.set(MEMBERS);
+
+            assertThat(cluster.tick()).as("the member is back: a new hosting set, not yet settled").isZero();
+            assertThat(cluster.owners()).isEqualTo(failedOver);
+            assertThat(cluster.tick()).isZero();
+            assertThat(cluster.tick()).as("quiet for %d passes: HRW again, the returned host reclaims its arcs", K).isPositive();
+        }
+
+        /// A changed arc span is a change of the hosting set too: arcs 8..15 appear unminted, and are minted only once
+        /// the set is quiet.
+        @Test
+        void partitionCountChange_isAChangeOfTheHostingSet() {
+            var cluster = settledOn(N1, N2, N3);
+
+            seedRegistration(cluster.store, KEYSPACE, N3, 2 * PARTITIONS);
+
+            assertThat(cluster.tick()).as("the span grew: new arcs wait for a quiet set").isZero();
+            assertThat(cluster.tick()).isZero();
+            assertThat(cluster.tick()).as("quiet again: the %d new arcs are minted", PARTITIONS).isEqualTo(PARTITIONS);
+        }
+
+        /// The ceiling is per unsettled RUN: once the set settles the pass count and the announcement re-arm, so a later
+        /// run gets its own full ceiling and its own warning. The non-committing applier keeps arcs unminted across runs.
+        @Test
+        void ceiling_rearmsAfterTheSetSettles() {
+            var cluster = new Cluster(K, M, false);
+
+            cluster.register(N1);
+            cluster.register(N2);
+            IntStream.rangeClosed(1, M)
+                     .forEach(pass -> flap(cluster, pass));
+
+            assertThat(cluster.drainedWarnings()).as("first run announced").hasSize(1);
+
+            IntStream.rangeClosed(1, K + 1)
+                     .forEach(_ -> cluster.tick());
+
+            IntStream.rangeClosed(1, M - 1)
+                     .forEach(pass -> assertThat(flap(cluster, pass)).as("second run, pass %d: under its own ceiling", pass).isZero());
+
+            assertThat(flap(cluster, M)).as("second run reaches its own ceiling").isEqualTo(PARTITIONS);
+            assertThat(cluster.drainedWarnings()).as("second run announced again").hasSize(2);
+        }
+
+        /// One pass of a hosting set that never settles: N3's registration alternates every pass, absent on even passes —
+        /// so at the ceiling pass N3 is not a host and owns nothing, and its later flaps are not failovers.
+        private static int flap(Cluster cluster, int pass) {
+            if (pass % 2 == 0) {
+                cluster.unregister(N3);
+            } else {
+                cluster.register(N3);
+            }
+
+            return cluster.tick();
+        }
+
+        private static Cluster settledOn(NodeId... hosts) {
+            var cluster = new Cluster(K, M);
+
+            List.of(hosts).forEach(cluster::register);
+            IntStream.rangeClosed(1, K + 1)
+                     .forEach(_ -> cluster.tick());
+
+            assertThat(cluster.owners()).as("precondition: the initial set was minted").hasSize(PARTITIONS);
+
+            return cluster;
+        }
+
+        private static List<NodeId> hrwOver(Cluster cluster, List<NodeId> hosts) {
+            var store = emptyStore();
+
+            hosts.forEach(host -> seedRegistration(store, KEYSPACE, host, PARTITIONS));
+
+            return IntStream.range(0, PARTITIONS)
+                            .mapToObj(partition -> ownerOf(store, cluster.members.get(), partition))
+                            .toList();
+        }
+    }
+
+    /// A reconciler over a seeded store with the REAL basic writer; the applier commits ownership Puts into the store.
+    private static final class Cluster {
+        final KVStore<AetherKey, AetherValue> store = emptyStore();
+        final AtomicReference<List<NodeId>> members = new AtomicReference<>(MEMBERS);
+        private final List<OperatorWarning> warnings = new CopyOnWriteArrayList<>();
+        private final OperatorWarningSink sink = OperatorWarningSink.handingOffTo(warnings::add);
+        private final List<KVCommand<AetherKey>> applied = new ArrayList<>();
+        private final EntityOwnershipReconciler reconciler;
+
+        Cluster(int settleTicks, int ceilingTicks) {
+            this(settleTicks, ceilingTicks, true);
+        }
+
+        Cluster(int settleTicks, int ceilingTicks, boolean commits) {
+            this.reconciler = EntityOwnershipReconciler.entityOwnershipReconciler(store,
+                                                                                  N1,
+                                                                                  members::get,
+                                                                                  () -> false,
+                                                                                  hrwOwner -> writer(hrwOwner),
+                                                                                  commands -> apply(commands, commits),
+                                                                                  Runnable::run,
+                                                                                  settleTicks,
+                                                                                  ceilingTicks,
+                                                                                  sink);
+        }
+
+        private StreamPartitionOwnershipWriter writer(StreamPartitionOwnershipWriter.HrwOwner hrwOwner) {
+            return StreamPartitionOwnershipWriter.streamPartitionOwnershipWriter(() -> true,
+                                                                                 () -> Epoch.epoch(0L, 1L, 0L),
+                                                                                 HlcClock.hlcClock(N1),
+                                                                                 (stream, partition) -> committed(stream, partition),
+                                                                                 hrwOwner);
+        }
+
+        private Option<StreamPartitionOwnershipValue> committed(String stream, int partition) {
+            return store.getTyped(StreamPartitionOwnershipKey.streamPartitionOwnershipKey(stream, partition),
+                                  StreamPartitionOwnershipValue.class);
+        }
+
+        private Promise<List<Object>> apply(List<KVCommand<AetherKey>> commands, boolean commits) {
+            applied.addAll(commands);
+
+            if (commits) {
+                store.process(store.createBatch(commands));
+            }
+
+            return Promise.success(List.of());
+        }
+
+        void register(NodeId node) {
+            seedRegistration(store, KEYSPACE, node, PARTITIONS);
+        }
+
+        void unregister(NodeId node) {
+            store.process(store.createBatch(List.<KVCommand<AetherKey>>of(new KVCommand.Remove<>(registrationKey(KEYSPACE, node)))));
+        }
+
+        /// One pass; the number of ownership Puts it handed to the applier.
+        int tick() {
+            var before = applied.size();
+
+            reconciler.tick();
+
+            return applied.size() - before;
+        }
+
+        /// The committed owner of every arc, by partition; an absent record fails loudly.
+        List<NodeId> owners() {
+            return IntStream.range(0, PARTITIONS)
+                            .mapToObj(partition -> committed(ARC, partition).map(StreamPartitionOwnershipValue::owner))
+                            .flatMap(Option::stream)
+                            .toList();
+        }
+
+        long maxTerm() {
+            return IntStream.range(0, PARTITIONS)
+                            .mapToObj(partition -> committed(ARC, partition))
+                            .flatMap(Option::stream)
+                            .mapToLong(StreamPartitionOwnershipValue::ownershipTerm)
+                            .max()
+                            .orElse(0L);
+        }
+
+        /// True when every arc whose owner was not `departed` kept its owner.
+        boolean ownersOtherThan(List<NodeId> before, NodeId departed) {
+            var now = owners();
+
+            return IntStream.range(0, PARTITIONS)
+                            .filter(partition -> !before.get(partition).equals(departed))
+                            .allMatch(partition -> before.get(partition).equals(now.get(partition)));
+        }
+
+        /// Everything the sink has delivered so far. The sink is a FIFO hand-off drained by one thread, so a sentinel
+        /// that arrives proves every earlier warning has too — no sleep, no timeout guess.
+        List<OperatorWarning> drainedWarnings() {
+            var sentinel = OperatorWarning.operatorWarning(OperatorWarningCode.DEPLOY_WARNING, "sentinel", "sentinel-" + System.nanoTime());
+
+            sink.accept(sentinel);
+            await().until(() -> warnings.contains(sentinel));
+
+            return warnings.stream()
+                           .filter(warning -> !warning.code().equals(sentinel.code()))
+                           .toList();
         }
     }
 
