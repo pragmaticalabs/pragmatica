@@ -2144,7 +2144,9 @@ final class ConsumerRuntimeState implements StreamConsumerRuntime {
         /// safe to honor because #576's validator rejects non-default declarative values, so only
         /// the 1s factory default and explicit programmatic values exist). The event half stays at
         /// the class constant: a cadence-dominated bound, tightened per durable-pubsub-spec §7 for
-        /// durable-topic groups by their 500ms attach-time interval.
+        /// durable-topic groups by their 500ms attach-time interval. Evaluated only from
+        /// `ConsumerRuntimeState.advanceCursor`, so the bound holds while deliveries keep arriving; no timer starts a commit on
+        /// a quiet partition (#1385).
         boolean shouldCheckpoint() {
             return eventsSinceCheckpoint.get() >= CHECKPOINT_EVENT_THRESHOLD || (System.currentTimeMillis() - lastCheckpointTime.get()) >= config.checkpointInterval()
                                                                                                                                                  .millis();

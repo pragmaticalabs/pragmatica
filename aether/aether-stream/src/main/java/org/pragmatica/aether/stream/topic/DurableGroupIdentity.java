@@ -51,7 +51,8 @@ public sealed interface DurableGroupIdentity {
     record GroupIdentity(ArtifactBase subscriber, String method) {}
 
     /// The durable group's consumer configuration (durable-pubsub-spec §6/§7): 5 attempts, serial
-    /// ORDERED dispatch, RETRY-then-dead-letter, 500ms checkpoint interval (§7's time bound). Batch
+    /// ORDERED dispatch, RETRY-then-dead-letter, 500ms checkpoint interval (§7's time bound, evaluated on
+    /// each delivery, so it bounds replay only while the partition keeps receiving events; #1385). Batch
     /// size 1 keeps the ack-by-ack contract visible in the config itself. Cadence deltas from the
     /// spec's normative defaults (backoff base/cap, checkpoint event-count) ride the consumer
     /// runtime's constants and are stated where the dispatch attaches, not hidden.

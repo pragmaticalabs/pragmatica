@@ -1476,6 +1476,8 @@ Write StreamCursorCheckpointValue to consensus KV-Store
 Update lastCheckpointedOffset
 ```
 
+**Design versus shipped (#1385).** The diagram is the timer-driven design. The shipped consumer evaluates the checkpoint trigger only on a delivery (`ConsumerRuntimeState.advanceCursor` -> `checkpointIfNeeded`), so no timer starts a commit on a partition that has gone quiet; a partition whose events all arrive inside its first interval after attach holds no checkpoint, and an ungraceful move replays it from offset 0. At-least-once is preserved; the bound in §10.3 and §10.4 is not, for such a partition.
+
 **Consensus checkpoint is a standard KV mutation** -- forwarded through the existing worker -> governor -> core -> consensus path. At a 1-second checkpoint interval, this adds ~1 KV mutation per consumer-partition pair per second.
 
 ### 10.3 Checkpoint Interval Configuration
