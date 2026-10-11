@@ -192,13 +192,14 @@ class EmberReadCommittedFailoverTest {
         assertThat(payloads(newOwner, "new owner")).as("the new lineage extends what was read").startsWith("acked-0", "acked-1", "acked-2").endsWith("after-failover");
     }
 
-    /// The tail an owner holds above its acknowledged position commits WITHOUT a new publish once the cut heals (#2087): the far member
-    /// never received the two records, so no acknowledgement can arrive for them; the owner's tick re-offers them, the far member lands
-    /// and acknowledges them, and the committed position moves to cover them on the owner AND on both replicas. Before the retransmit
-    /// existed they stayed uncommitted until some later publish.
+    /// The tail an owner holds above its acknowledged position commits WITHOUT a new publish (#2087). Both replicas receive and hold the
+    /// two records, but every acknowledgement is lost on its way to the owner, so the owner's committed position stays at the third
+    /// record and the publishers time out. Nothing else re-sends an acknowledgement for a replica that already holds everything (it is
+    /// CAUGHT_UP, so no backfill runs): only the owner's tick, re-offering the tail, makes the replicas acknowledge it again. Removing
+    /// the retransmit leaves the tail uncommitted for good (the mutation run in the PR).
     @Test
     @Timeout(600)
-    void unacknowledgedTail_commitsAfterTheCutHeals_withoutANewPublish() {
+    void unacknowledgedTail_commitsAfterTheAcknowledgementsAreLost_withoutANewPublish() {
         cluster = EmberTestPorts.startedCluster(PORTS, this::fiveNodes, START_BOUND);
         awaitLeader();
         assertThat(post(leaderPort(), "/api/v1/streams/" + NAMESPACE + "/rcfailover/" + VERSION, "{\"partitions\":1}").acked()).isTrue();
@@ -206,30 +207,32 @@ class EmberReadCommittedFailoverTest {
         var record = awaitFullIsr();
         var owner = cluster.getNode(record.owner().id()).unwrap();
         var replicas = record.isr().stream().filter(member -> !member.equals(record.owner())).toList();
-        var far = replicas.getLast();
-        var others = cluster.allNodes().stream().map(AetherNode::self).filter(id -> !id.equals(far)).collect(Collectors.toSet());
 
         for (var i = 0; i < ACKED; i++) {
             assertThat(publishAcked(owner, "acked-" + i).acked()).isTrue();
         }
 
-        cut(Set.of(far), others);
+        var acknowledgementsLost = new AtomicBoolean(true);
+
+        owner.setInboundFaultFilter((_, message) -> !(acknowledgementsLost.get() && message instanceof ReplicationMessage.ReplicateAck));
         var unacked = startPublishes(owner, UNACKED, 12);
 
-        awaitUntil(() -> owner.streamPartitionManager().partitionBuffer(ENGINE_KEY, PARTITION).map(ring -> ring.headOffset()).or(-1L) >= ACKED + UNACKED - 1,
-                   REPLICA_VISIBLE_BUDGET_MS,
-                   "the owner appended the two records");
-        assertThat(payloads(owner, "owner while cut")).as("control: the owner serves only the acknowledged records while the far member is cut off")
-                                                      .containsExactly("acked-0", "acked-1", "acked-2");
-        unacked.forEach(CompletableFuture::join);
-        cluster.allNodes().forEach(node -> node.partitionFrom(Set.of()));
-
-        // No publish from here on: only the owner's tick can move the committed position.
-        awaitUntil(() -> payloads(owner, "owner after heal").size() == ACKED + UNACKED, 60_000L, "the tail committed on the owner without a new publish");
         for (var member : replicas) {
             var node = cluster.getNode(member.id()).unwrap();
 
-            awaitUntil(() -> payloads(node, "replica after heal").size() == ACKED + UNACKED, 60_000L, member.id() + " serves the tail");
+            awaitHolds(node, ACKED + UNACKED);
+        }
+        unacked.forEach(CompletableFuture::join);
+        assertThat(payloads(owner, "owner, acknowledgements lost")).as("control: every replica holds the two records, the owner has no acknowledgement and serves only the acknowledged ones")
+                                                                   .containsExactly("acked-0", "acked-1", "acked-2");
+        acknowledgementsLost.set(false);
+
+        // No publish from here on: only the owner's tick can move the committed position.
+        awaitUntil(() -> payloads(owner, "owner after the loss ended").size() == ACKED + UNACKED, 60_000L, "the tail committed on the owner without a new publish");
+        for (var member : replicas) {
+            var node = cluster.getNode(member.id()).unwrap();
+
+            awaitUntil(() -> payloads(node, "replica after the loss ended").size() == ACKED + UNACKED, 60_000L, member.id() + " serves the tail");
         }
         assertThat(payloads(owner, "owner")).containsExactly("acked-0", "acked-1", "acked-2", "unacked-0", "unacked-1");
     }
