@@ -314,6 +314,27 @@ class NodeReplacementEnvTest {
         assertThat(committed.reason()).contains("provisioning deadline").contains("Fleet inventory initialization in progress");
     }
 
+    /// F5: the remembered wait is forgotten once the provision is dispatched, so a later provisioning deadline of that replacement does not
+    /// cite an initialization that long since finished.
+    @Test
+    void theRememberedInventoryWait_isForgottenOnceTheProvisionIsDispatched() {
+        when(ctm.provisionReplacement(any(), any(), any(), any(), any()))
+            .thenReturn(new org.pragmatica.aether.deployment.cluster.FleetInventoryInitializing().<ProvisionDisposition> promise())
+            .thenReturn(Promise.success(ProvisionDisposition.dispatched()));
+        record(NodeReplacementPhase.PROVISIONING, 999_999L);
+        wiring.reconciler().reconcile().await();
+        wiring.reconciler().reconcile().await();
+        assertThat(committedRecord().phase()).isEqualTo(NodeReplacementPhase.JOINING);
+
+        commands.clear();
+        index.remove(new AetherKey.NodeReplacementKey(OLD));
+        record(NodeReplacementPhase.PROVISIONING, 500L);
+        now = 2_000L;
+        wiring.reconciler().reconcile().await();
+
+        assertThat(committedRecord().reason()).isEqualTo("provisioning deadline");
+    }
+
     /// Control: any other provisioning cause still fails the provision.
     @Test
     void anyOtherProvisioningCause_stillFailsTheProvision() {
