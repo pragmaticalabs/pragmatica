@@ -1221,15 +1221,18 @@ sealed interface BootstrapCleanup {
     private static Result<Unit> removeNetwork(CreatedResource.DockerNetwork network) {
         System.out.printf("  Removing docker network %s (created by bootstrap)...%n", network.networkName());
 
-        return ProviderResolver.resolveDockerComputeWithoutBackup()
-                               .flatMap(compute -> compute instanceof DockerComputeProvider docker
-                                                  ? docker.removeNetworkIfEmpty().await().map(removal -> reportNetworkRemoval(network, removal))
-                                                  : Result.unitResult());
+        return ProviderResolver.resolveDockerComputeWithoutBackup().flatMap(compute -> compute instanceof DockerComputeProvider docker
+                                                                                       ? docker.removeNetworkIfEmpty()
+                                                                                               .await()
+                                                                                               .map(removal -> reportNetworkRemoval(network,
+                                                                                                                                    removal))
+                                                                                       : Result.unitResult());
     }
 
     private static Unit reportNetworkRemoval(CreatedResource.DockerNetwork network, DockerNetwork.Removal removal) {
         if (removal == DockerNetwork.Removal.IN_USE) {
-            System.out.printf("  Docker network %s still has containers attached; left in place.%n", network.networkName());
+            System.out.printf("  Docker network %s still has containers attached; left in place.%n",
+                              network.networkName());
         }
 
         return Unit.unit();

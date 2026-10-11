@@ -37,19 +37,23 @@ public interface DockerNetwork {
     private static Promise<Ensured> create(DockerCommandRunner runner, String name) {
         return runner.execute(List.of("docker", "network", "create", name))
                      .map(_ -> Ensured.CREATED)
-                     .orElse(() -> runner.execute(inspect(name)).map(_ -> Ensured.EXISTING));
+                     .orElse(() -> runner.execute(inspect(name))
+                                         .map(_ -> Ensured.EXISTING));
     }
 
     /// Removes the network only when no container is attached. Never forces: a network with members is left in place.
     static Promise<Removal> removeIfEmpty(DockerCommandRunner runner, String name) {
         return runner.execute(List.of("docker", "network", "inspect", "--format", "{{len .Containers}}", name))
-                     .flatMap(attached -> removeWhenEmpty(runner, name, attached.strip()))
+                     .flatMap(attached -> removeWhenEmpty(runner,
+                                                          name,
+                                                          attached.strip()))
                      .orElse(() -> Promise.success(Removal.ABSENT));
     }
 
     private static Promise<Removal> removeWhenEmpty(DockerCommandRunner runner, String name, String attached) {
         return "0".equals(attached)
-               ? runner.execute(List.of("docker", "network", "rm", name)).map(_ -> Removal.REMOVED)
+               ? runner.execute(List.of("docker", "network", "rm", name))
+                       .map(_ -> Removal.REMOVED)
                : Promise.success(Removal.IN_USE);
     }
 

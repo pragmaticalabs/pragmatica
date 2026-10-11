@@ -93,14 +93,19 @@ sealed interface BootstrapPhaseProvision {
             return success(List.of());
         }
 
-        return ProviderResolver.resolveDockerComputeWithoutBackup()
-                               .flatMap(compute -> compute instanceof DockerComputeProvider docker
-                                                  ? docker.ensureNetwork().await().map(ensured -> recordCreatedNetwork(ctx, docker, ensured))
-                                                  : success(List.<CreatedResource> of()));
+        return ProviderResolver.resolveDockerComputeWithoutBackup().flatMap(compute -> compute instanceof DockerComputeProvider docker
+                                                                                       ? docker.ensureNetwork()
+                                                                                               .await()
+                                                                                               .map(ensured -> recordCreatedNetwork(ctx,
+                                                                                                                                    docker,
+                                                                                                                                    ensured))
+                                                                                       : success(List.<CreatedResource> of()));
     }
 
     @Contract
-    private static List<CreatedResource> recordCreatedNetwork(BootstrapContext ctx, DockerComputeProvider docker, DockerNetwork.Ensured ensured) {
+    private static List<CreatedResource> recordCreatedNetwork(BootstrapContext ctx,
+                                                              DockerComputeProvider docker,
+                                                              DockerNetwork.Ensured ensured) {
         var name = docker.config().networkName();
 
         if (ensured == DockerNetwork.Ensured.EXISTING) {
@@ -112,7 +117,8 @@ sealed interface BootstrapPhaseProvision {
         var network = CreatedResource.DockerNetwork.dockerNetwork(name);
 
         System.out.printf("  Created docker network %s%n", name);
-        var _ = BootstrapStatePersistence.appendResource(ctx.state().clusterName(), network)
+        var _ = BootstrapStatePersistence.appendResource(ctx.state().clusterName(),
+                                                         network)
                                          .onFailure(cause -> System.err.printf("  WARN: docker network %s was created but NOT recorded in the cleanup ledger — %s."
                                                                               + " Remove it with 'docker network rm %s' after destroy.%n",
                                                                                name,
@@ -122,7 +128,9 @@ sealed interface BootstrapPhaseProvision {
         return List.of(network);
     }
 
-    private static BootstrapState buildUpdatedState(BootstrapContext ctx, List<ProvisionedNode> allNodes, List<CreatedResource> createdNetworks) {
+    private static BootstrapState buildUpdatedState(BootstrapContext ctx,
+                                                    List<ProvisionedNode> allNodes,
+                                                    List<CreatedResource> createdNetworks) {
         var state = ctx.state().withProvisionedNodeIds(allNodes.stream().map(ProvisionedNode::nodeId).toList());
 
         for (var network : createdNetworks) {
