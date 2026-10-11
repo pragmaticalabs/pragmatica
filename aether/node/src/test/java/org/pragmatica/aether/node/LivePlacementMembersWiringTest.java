@@ -67,7 +67,7 @@ class LivePlacementMembersWiringTest {
     void entityReconcile_isTriggeredByRetractAndByACommittedRegistrationRemoval() {
         var code = assemblyCode();
 
-        assertThat(code).contains("clusterCommandApplier,ENTITY_RECONCILE_KICK);");
+        assertThat(code).contains("clusterCommandApplier,ENTITY_RECONCILE_KICK,EntityOwnershipReconciler.SETTLE_TICKS,EntityOwnershipReconciler.FIRST_MINT_CEILING_TICKS,operatorWarningSink);");
         assertThat(code).contains("MessageRouter.Entry.route(KVStoreNotification.ValueRemove.class,entityOwnershipReconciler::onRegistrationRemoved)");
     }
 
