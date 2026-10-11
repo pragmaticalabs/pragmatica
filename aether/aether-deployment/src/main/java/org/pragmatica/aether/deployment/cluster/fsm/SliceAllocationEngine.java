@@ -268,10 +268,12 @@ record SliceAllocationEngine(Active active, List<NodeId> eligibleNodes) {
             log.debug("tryAllocate: no committed SliceTarget names {} yet — not issuing LOAD on {} (#1109)",
                       artifact,
                       node);
+            active.awaitedTargetWatch().refused(artifact);
 
             return false;
         }
 
+        active.awaitedTargetWatch().ended(artifact, "the committed target now names it");
         var alreadyExists = active.sliceStates().containsKey(sliceKey);
 
         log.debug("tryAllocate: artifact={}, node={}, sliceKey={}, alreadyExists={}",

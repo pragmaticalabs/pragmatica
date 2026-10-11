@@ -893,6 +893,167 @@ class ClusterDeploymentStateActiveTest {
         }
     }
 
+    /// #1109 (round 2): the gate moved the stall from the node to the leader. A target put that is LOST (never applied, never notified) left the
+    /// leader refusing LOAD forever with nothing to say about it (probe v-2128 P2: 360 ticks, 0 LOADs, 1 queued put, no signal). Past the bound the
+    /// leader now raises `slice-start-awaiting-target` and re-submits the put, each at most once per bound; the commit ends it with the recovery.
+    @Nested
+    class LostTargetPut {
+        private static final BlueprintId OWNER = BlueprintId.blueprintId("org.example:orders-app:1.0.0").unwrap();
+        private static final SliceTargetKey TARGET_KEY = SliceTargetKey.sliceTargetKey(ARTIFACT.base());
+        private final List<org.pragmatica.utility.warning.OperatorWarning> warnings = Collections.synchronizedList(new ArrayList<>());
+        private org.pragmatica.utility.warning.OperatorWarningSink sink;
+
+        @org.junit.jupiter.api.BeforeEach
+        void bindSink() {
+            harness.dispatch(new Activate());
+            sink = org.pragmatica.utility.warning.OperatorWarningSink.handingOffTo(warnings::add);
+            activeState().ctx().setOperatorWarningSink(sink);
+            cluster.commands.clear();
+            var slice = org.pragmatica.aether.slice.blueprint.ResolvedSlice.resolvedSlice(ARTIFACT, 1, 1, false, Set.of()).unwrap();
+            var blueprintValue = AetherValue.AppBlueprintValue.appBlueprintValue(
+                    org.pragmatica.aether.slice.blueprint.ExpandedBlueprint.expandedBlueprint(OWNER, List.of(slice), Option.none()));
+
+            harness.dispatch(new ClusterDeploymentEvents.AppBlueprintPutReceived(
+                    new ValuePut<>(new KVCommand.Put<>(AetherKey.AppBlueprintKey.appBlueprintKey(OWNER), blueprintValue), Option.none())));
+            assertThat(targetPuts()).as("control: the target put is queued once and lost (the double never applies it)").hasSize(1);
+        }
+
+        private long bound() {
+            return activeState().ctx().awaitedTargetBound().millis();
+        }
+
+        private List<SliceTargetValue> targetPuts() {
+            return cluster.commands.stream()
+                                   .filter(KVCommand.Put.class::isInstance)
+                                   .map(KVCommand.Put.class::cast)
+                                   .filter(put -> TARGET_KEY.equals(put.key()))
+                                   .map(put -> (SliceTargetValue) put.value())
+                                   .toList();
+        }
+
+        private List<String> codes() {
+            synchronized (warnings) {
+                return warnings.stream().map(w -> w.code().code()).toList();
+            }
+        }
+
+        /// Everything the sink was handed before this call has been delivered once the sentinel is: the sink drains FIFO.
+        private void drainSink() {
+            var sentinel = org.pragmatica.utility.warning.OperatorWarning.operatorWarning(
+                    org.pragmatica.utility.warning.OperatorWarningCode.DEPLOY_WARNING, "sentinel", "sentinel");
+
+            sink.accept(sentinel);
+            org.awaitility.Awaitility.await().atMost(java.time.Duration.ofSeconds(5)).until(() -> warnings.contains(sentinel));
+            warnings.remove(sentinel);
+        }
+
+        private void tick(long advanceMs) {
+            injectedClock.addAndGet(advanceMs);
+            activeState().reconcile();
+        }
+
+        private List<KVCommand<AetherKey>> loadPuts() {
+            return cluster.commands.stream()
+                                   .filter(command -> command instanceof KVCommand.Put<AetherKey, ?> put
+                                                      && put.key() instanceof NodeArtifactKey
+                                                      && put.value() instanceof NodeArtifactValue value
+                                                      && value.state() == SliceState.LOAD)
+                                   .toList();
+        }
+
+        private void commitTheTarget() {
+            var value = targetPuts().getFirst();
+
+            kvStore.put(TARGET_KEY, value);
+            harness.dispatch(new SliceTargetPutReceived(new ValuePut<>(new KVCommand.Put<>(TARGET_KEY, value), Option.none())));
+        }
+
+        @Test
+        void defaultBoundIsTwoMinutes() {
+            assertThat(activeState().ctx().awaitedTargetBound().millis()).isEqualTo(120_000L);
+        }
+
+        @Test
+        void lostPut_isReportedAndResubmittedPastTheBound_thenExactlyOneLoadAndTheRecoveryOnceItCommits() {
+            tick(0);
+            tick(bound() - 1);
+            drainSink();
+            assertThat(codes()).as("one millisecond short of the bound: silent").isEmpty();
+            assertThat(targetPuts()).as("and no re-submission yet").hasSize(1);
+
+            tick(1);
+            drainSink();
+            assertThat(codes()).as("at the bound: one warning").containsExactly("slice-start-awaiting-target");
+            assertThat(warnings.getFirst().subject()).isEqualTo(ARTIFACT + "@leader");
+            assertThat(warnings.getFirst().message()).contains(ARTIFACT.toString()).contains(ARTIFACT.version().toString()).contains(Long.toString(bound()));
+            assertThat(targetPuts()).as("at the bound: the target put is re-submitted, the same value").hasSize(2);
+            assertThat(targetPuts().get(1)).isEqualTo(targetPuts().get(0));
+            assertThat(loadPuts()).as("still no LOAD: nothing committed").isEmpty();
+
+            tick(bound() - 1);
+            drainSink();
+            assertThat(codes()).as("within the next bound: no second warning").hasSize(1);
+            assertThat(targetPuts()).as("within the next bound: no second re-submission").hasSize(2);
+
+            tick(1);
+            assertThat(targetPuts()).as("a lost put is re-submitted once per bound, not per tick").hasSize(3);
+
+            commitTheTarget();
+            tick(0);
+            drainSink();
+            assertThat(loadPuts()).as("exactly one LOAD once the target commits").hasSize(1);
+            assertThat(codes()).containsExactly("slice-start-awaiting-target", "slice-start-deferral-ended");
+            assertThat(warnings.get(1).subject()).isEqualTo(ARTIFACT + "@leader");
+            tick(bound());
+            drainSink();
+            assertThat(codes()).as("committed: no more warnings, no more re-submissions").hasSize(2);
+            assertThat(targetPuts()).hasSize(3);
+        }
+
+        @Test
+        void commitBeforeTheBound_neverWarnsAndRaisesNoRecovery() {
+            tick(0);
+            tick(bound() - 1);
+            commitTheTarget();
+            tick(0);
+            tick(bound() * 2);
+            drainSink();
+
+            assertThat(codes()).isEmpty();
+            assertThat(targetPuts()).hasSize(1);
+            assertThat(loadPuts()).hasSize(1);
+        }
+
+        @Test
+        void blueprintNoLongerDesired_endsTheWaitWithTheRecovery_andResubmitsNothing() {
+            tick(0);
+            tick(bound());
+            drainSink();
+            assertThat(codes()).containsExactly("slice-start-awaiting-target");
+
+            activeState().blueprints().remove(ARTIFACT);
+            tick(0);
+            tick(bound());
+            drainSink();
+
+            assertThat(codes()).containsExactly("slice-start-awaiting-target", "slice-start-deferral-ended");
+            assertThat(targetPuts()).as("only the first re-submission: the blueprint is gone").hasSize(2);
+        }
+
+        @Test
+        void aNewLeaderWithoutThePendingValue_resubmitsOneRebuiltFromTheMirror() {
+            activeState().ctx().pendingTargetPuts().clear();
+            tick(0);
+            tick(bound());
+
+            var resubmitted = targetPuts().getLast();
+
+            assertThat(targetPuts()).hasSize(2);
+            assertThat(resubmitted.currentVersion()).isEqualTo(ARTIFACT.version());
+            assertThat(resubmitted.owningBlueprint()).isEqualTo(Option.some(OWNER));
+        }
+    }
+
     // --- test fixtures ---
 
     private static SchemaOrchestratorService stubSchemaOrchestrator() {

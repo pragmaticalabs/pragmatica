@@ -3770,6 +3770,8 @@ public interface AetherNode extends ManageableNode {
         var operatorWarningSink = OperatorWarningSink.handingOffTo(eventAggregator::onOperatorWarning);
         // #2062: an instance whose termination the CTM cannot confirm after its bounded retries is an operator event.
         clusterTopologyManager.setOperatorWarningSink(operatorWarningSink);
+        // #1109: the leader's committed-target gate reports a LOAD it has refused past the bound to THIS node's event log.
+        clusterDeploymentManager.setOperatorWarningSink(operatorWarningSink);
         // #2062: the marks of retired nodes whose termination is unconfirmed live in the replicated store, so a new leader inherits them.
         clusterTopologyManager.setUnconfirmedMarks(() -> {
             var marks = new HashMap<NodeId, AetherValue.UnconfirmedTerminationValue>();

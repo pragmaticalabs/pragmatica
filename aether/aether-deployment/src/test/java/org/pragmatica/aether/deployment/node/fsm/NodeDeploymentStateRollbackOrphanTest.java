@@ -496,6 +496,11 @@ class NodeDeploymentStateRollbackOrphanTest {
         }
 
         @Test
+        void defaultBoundIsTwoMinutes() {
+            assertThat(ctxRef.get().parkedStartBound().millis()).isEqualTo(120_000L);
+        }
+
+        @Test
         void beforeTheBound_silent_atTheBound_oneWarning_andNoRepeat() {
             park(SliceState.LOAD);
 

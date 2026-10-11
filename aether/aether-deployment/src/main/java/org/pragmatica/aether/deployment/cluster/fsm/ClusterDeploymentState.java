@@ -290,6 +290,10 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             return new SliceAllocationEngine(this);
         }
 
+        AwaitedTargetWatch awaitedTargetWatch() {
+            return new AwaitedTargetWatch(this);
+        }
+
         StaleEntryCleaner staleEntryCleaner() {
             return new StaleEntryCleaner(this);
         }
@@ -1646,6 +1650,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                                                    schemaRequired));
                 consensusCommands.add(new KVCommand.Put<>(SliceTargetKey.sliceTargetKey(artifact.base()),
                                                           target));
+                ctx.pendingTargetPuts().put(artifact.base(), target);
             }
 
             submitBatch(consensusCommands);
@@ -2621,7 +2626,8 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                                              cause.message()));
         }
 
-        private void submitBatch(List<KVCommand<AetherKey>> commands) {
+        @Contract
+        void submitBatch(List<KVCommand<AetherKey>> commands) {
             if (commands.isEmpty()) {
                 return;
             }
@@ -2820,6 +2826,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                 return;
             }
 
+            awaitedTargetWatch().sweep();
             log.debug("Performing cluster reconciliation with {} blueprints and {} active nodes",
                       blueprints.size(),
                       activeNodes().size());
