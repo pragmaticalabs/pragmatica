@@ -25,15 +25,12 @@ public final class CloudProviderSupport {
         return Promise.allOf(provisions).flatMap(CloudProviderSupport::aggregateResults);
     }
 
-    /// The returned node's id is the id the provider was given in the spec's context when there is one, so the caller's record and the node's
-    /// identity are the same string; `fallbackNodeId` names the node only when the context carried none (#1027).
-    public static Promise<ProvisionedNode> provisionOne(ComputeProvider compute,
-                                                        String fallbackNodeId,
-                                                        ProvisionSpec spec) {
-        var plannedId = spec.context().nodeId().or(fallbackNodeId);
-
+    /// The returned node is keyed by `nodeId`, the caller's own attribution key (the bootstrap's `<source>-<role>-<index>` label, parsed back by deploy,
+    /// post and the cleanup ledger). It is NOT the provider-side identity: that is the id the caller put in `spec.context()`, which the provider
+    /// uses (#1027). [#provisionVia] has no such key and records the planned id itself.
+    public static Promise<ProvisionedNode> provisionOne(ComputeProvider compute, String nodeId, ProvisionSpec spec) {
         return compute.provision(spec)
-                      .map(info -> toProvisionedNode(plannedId, info));
+                      .map(info -> toProvisionedNode(nodeId, info));
     }
 
     public static Promise<Unit> destroyVia(ComputeProvider compute, List<String> nodeIds) {
