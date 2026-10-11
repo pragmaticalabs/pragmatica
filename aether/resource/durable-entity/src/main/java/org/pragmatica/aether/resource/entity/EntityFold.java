@@ -49,6 +49,7 @@ import static org.pragmatica.lang.Unit.unit;
 final class EntityFold {
     private static final Logger LOG = LoggerFactory.getLogger(EntityFold.class);
     private static final int REPLAY_BATCH = 512;
+    private static final int PENDING_SWEEP_AT = 1024;
 
     private final String keyspace;
     private final EntityLogSubstrate substrate;
@@ -129,6 +130,11 @@ final class EntityFold {
         private final ConcurrentHashMap<String, Long> keyApplied = new ConcurrentHashMap<>();
         private final ConcurrentSkipListSet<Long> appliedAhead = new ConcurrentSkipListSet<>();
         private final AtomicLong appliedThrough = new AtomicLong(-1L);
+        /// #2087: per key, the newest offset applied that was NOT yet committed when it was applied (above the log's visible
+        /// position). A client read of such a key waits for that offset to commit ([#getCommitted]); the owner's own sequencing
+        /// reads the state directly and ignores this map. Entries leave when a read finds them committed, or in the sweep that
+        /// runs whenever the map outgrows [#PENDING_SWEEP_AT], so the map tracks the unacknowledged window, not every key.
+        private final ConcurrentHashMap<String, Long> pending = new ConcurrentHashMap<>();
     }
 
     /// Resolve once `partition` is serving. Callers gate every read and write on this.
@@ -193,6 +199,44 @@ final class EntityFold {
     /// The current encoded state of `key`, or [Option#none] when it is absent. Only valid after [#ready].
     Option<byte[]> get(int partition, String key) {
         return Option.option(publishedFold(partition).state.get(key));
+    }
+
+    /// #2087: record that `key` holds an applied record at `offset` the log has not committed yet. Called after every successful
+    /// apply (append, catch-up, replay), so a promoted owner's inherited tail and a replica's unacknowledged records are tracked
+    /// the same way as the owner's own writes. An offset already committed is not recorded.
+    @Contract
+    private void notePending(int partition, FoldedPartition data, String key, long offset) {
+        if (offset > substrate.committedOffset(keyspace, partition)) {
+            data.pending.merge(key, offset, Math::max);
+            if (data.pending.size() > PENDING_SWEEP_AT) {
+                var committed = substrate.committedOffset(keyspace, partition);
+
+                data.pending.values().removeIf(recorded -> recorded <= committed);
+            }
+        }
+    }
+
+    /// The state of `key` a CLIENT read may see (#2087): only what the log has committed. A key whose newest applied record is
+    /// still above the committed position waits, bounded by [EntityLogSubstrate#commitWait], for that record to commit and is
+    /// then answered; if it does not commit in time the read fails [EntityLogError.NotYetCommitted] (transient) rather than
+    /// reveal a value a failover could still replace. Every other key is answered at once. Only valid after [#ready].
+    Promise<Option<byte[]>> getCommitted(int partition, String key) {
+        var data = publishedFold(partition);
+        var offset = data.pending.get(key);
+
+        if (offset == null) {
+            return Promise.success(get(partition, key));
+        }
+
+        if (offset <= substrate.committedOffset(keyspace, partition)) {
+            data.pending.remove(key, offset);
+
+            return Promise.success(get(partition, key));
+        }
+
+        return substrate.awaitCommitted(keyspace, partition, offset, substrate.commitWait())
+                        .fold(result -> result.fold(_ -> new EntityLogError.NotYetCommitted(keyspace, partition, offset).<Option<byte[]>> promise(),
+                                                    _ -> getCommitted(partition, key)));
     }
 
     /// Whether `token` is STILL pending on `key`. Two callers, one question: a cancel appends a record
@@ -267,6 +311,7 @@ final class EntityFold {
                        .onSuccess(_ -> forgetCovered(data,
                                                      record.key(),
                                                      offset))
+                       .onSuccess(_ -> notePending(partition, data, record.key(), offset))
                        .onFailure(cause -> logUnapplicable(offset, record, cause));
     }
 
@@ -469,7 +514,13 @@ final class EntityFold {
 
         drain(data);
 
-        return data.appliedThrough.get();
+        return committedClaim(partition, data);
+    }
+
+    /// A checkpoint may claim only COMMITTED offsets (#2087): the contents may run ahead of the claim (replay is idempotent), but a
+    /// claim above the committed position would pin retention above records a failover may still replace.
+    private long committedClaim(int partition, FoldedPartition data) {
+        return Math.min(data.appliedThrough.get(), substrate.committedOffset(keyspace, partition));
     }
 
     /// The two halves of a checkpoint, both read from ONE published fold.
@@ -512,9 +563,11 @@ final class EntityFold {
 
         data.keyApplied.values().removeIf(applied -> applied <= through);
 
-        return through < 0L || through <= notAbove
+        var claim = committedClaim(partition, data);
+
+        return claim < 0L || claim <= notAbove
                ? Option.none()
-               : Option.some(new CheckpointCandidate(through, encodedFold(data)));
+               : Option.some(new CheckpointCandidate(claim, encodedFold(data)));
     }
 
     /// Apply every log record past the watermark, so the fold reflects the log's CURRENT head — records
@@ -612,7 +665,8 @@ final class EntityFold {
 
         for (var raw : records) {
             var applyAt = offset;
-            var applied = EntityLogRecord.decode(raw).flatMap(record -> applyCaughtUp(data, record, applyAt));
+            var applied = EntityLogRecord.decode(raw)
+                                         .flatMap(record -> applyCaughtUp(data, record, applyAt).onSuccess(_ -> notePending(partition, data, record.key(), applyAt)));
 
             if (applied instanceof Result.Failure<Unit>(var cause)) {
                 return new EntityLogError.FoldFailed(keyspace, partition, cause).result();
@@ -847,7 +901,8 @@ final class EntityFold {
 
         for (var raw : records) {
             var applyAt = offset;
-            var applied = EntityLogRecord.decode(raw).flatMap(record -> applyReplayed(building, record, applyAt));
+            var applied = EntityLogRecord.decode(raw)
+                                         .flatMap(record -> applyReplayed(building, record, applyAt).onSuccess(_ -> notePending(partition, building, record.key(), applyAt)));
 
             if (applied instanceof Result.Failure<Unit>(var cause)) {
                 return new EntityLogError.FoldFailed(keyspace, partition, cause).result();

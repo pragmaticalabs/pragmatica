@@ -535,6 +535,48 @@ public final class StreamEntityLogSubstrate implements EntityLogSubstrate {
         return partitionManager.nextExpectedOffset(EntityPartitionArc.arcName(keyspace), partition) - 1;
     }
 
+    /// The log's COMMITTED position (#2087): the ring's visible position, i.e. durable here AND acknowledged by the keyspace's
+    /// confirmation peers on an owner, or reported visible by the owner on a replica. Never above the appended head.
+    @Override
+    public long committedOffset(String keyspace, int partition) {
+        return partitionManager.partitionBuffer(EntityPartitionArc.arcName(keyspace), partition)
+                               .map(ring -> Math.min(ring.headOffset(), ring.visibleOffset()))
+                               .or(-1L);
+    }
+
+    /// Resolves once the committed position reaches `offset`, woken by the ring's own visible-advance listener (which runs on
+    /// the ring's notifier, never under its append lock); fails after `timeout`. The listener is registered BEFORE the position
+    /// is re-read, so an advance between the first check and the registration is not missed.
+    @Override
+    public Promise<Unit> awaitCommitted(String keyspace, int partition, long offset, TimeSpan timeout) {
+        if (committedOffset(keyspace, partition) >= offset) {
+            return Promise.unitPromise();
+        }
+
+        return partitionManager.partitionBuffer(EntityPartitionArc.arcName(keyspace), partition)
+                               .fold(() -> Causes.cause("partition " + partition + " of '" + keyspace + "' is not held here").<Unit> promise(),
+                                     ring -> awaitVisible(ring, () -> committedOffset(keyspace, partition) >= offset, timeout));
+    }
+
+    private static Promise<Unit> awaitVisible(org.pragmatica.aether.stream.OffHeapRingBuffer ring,
+                                              java.util.function.BooleanSupplier reached,
+                                              TimeSpan timeout) {
+        var committed = Promise.<Unit> promise();
+        java.util.function.LongConsumer listener = _ -> {
+            if (reached.getAsBoolean()) {
+                committed.resolve(Result.unitResult());
+            }
+        };
+
+        ring.addAppendListener(listener);
+        if (reached.getAsBoolean()) {
+            committed.resolve(Result.unitResult());
+        }
+
+        return committed.timeout(timeout)
+                        .onResultRun(() -> ring.removeAppendListener(listener));
+    }
+
     /// The earliest offset [#read] can serve here (#1240): the lowest of the offsets this node sealed, the
     /// offsets its sealer still holds in flight, and the ring's earliest. A hole between those tiers is not
     /// hidden by this answer: the read that reaches it fails `SealedRangeMissing`, which refuses the fold.

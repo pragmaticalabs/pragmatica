@@ -10,6 +10,7 @@ import org.pragmatica.aether.slice.ReplicationFactors;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.io.TimeSpan;
 
 
 /// The durable substrate an entity keyspace runs on (#345 I3): a fenced, fsync-durable, replicated log
@@ -92,6 +93,24 @@ public interface EntityLogSubstrate {
     /// therefore waits, reporting [EntityLogError.FoldInProgress], until the node's own copy is complete —
     /// which is exactly what the catch-up machinery already establishes for a replica.
     boolean localLogComplete(String keyspace, int partition);
+    /// The highest offset of `(keyspace, partition)` the log has COMMITTED (#2087): at or below it every record is acknowledged to
+    /// the keyspace's declared durability, so a client may be shown state derived from it. The default is the head, for a
+    /// substrate with no acknowledgement step (in-memory, tests).
+    default long committedOffset(String keyspace, int partition) {
+        return headOffset(keyspace, partition);
+    }
+
+    /// Resolves once [#committedOffset] reaches `offset`, or fails once `timeout` passes (#2087). The default resolves at once.
+    default Promise<Unit> awaitCommitted(String keyspace, int partition, long offset, TimeSpan timeout) {
+        return Promise.unitPromise();
+    }
+
+    /// How long a client read waits for a pending record to commit: the replication barrier's own wait, so a read never waits
+    /// longer than the write whose acknowledgement it is waiting for (#2087).
+    default TimeSpan commitWait() {
+        return TimeSpan.timeSpan(5).seconds();
+    }
+
     /// Whether this node holds `(keyspace, partition)` locally at all.
     ///
     /// Distinct from [#localLogComplete], and the distinction is the difference between a transient state
