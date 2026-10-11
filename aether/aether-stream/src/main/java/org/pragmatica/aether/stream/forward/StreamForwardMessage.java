@@ -224,6 +224,11 @@ public sealed interface StreamForwardMessage extends ProtocolMessage {
     /// is what a node the source does not yet list as a replica gets (#1235) -- is not vouched, so an empty `history`
     /// there means "not answered as a replica", never "keeps no history". The receiver of a catch-up refuses records it
     /// cannot attribute from an unvouched answer and pulls again.
+    ///
+    /// `refusal` (#1967) is the typed refusal of a failed read -- the code and the values the cause is built from, so
+    /// the caller rebuilds the cause a local read of the same partition would have produced instead of parsing
+    /// `errorMessage`. Empty on a success, on a divergence (own slots) and on a failure no read is known to raise, which
+    /// travels as `errorMessage` alone. Widened onto this record for the same reason as the slots above.
     record ReadForwardResponse(NodeId sender,
                                String correlationId,
                                boolean success,
@@ -236,7 +241,8 @@ public sealed interface StreamForwardMessage extends ProtocolMessage {
                                boolean historyVouched,
                                Epoch ownerEpoch,
                                long divergenceResumeAt,
-                               long divergenceLossFrom) implements StreamForwardMessage {
+                               long divergenceLossFrom,
+                               Option<ReadRefusal> refusal) implements StreamForwardMessage {
         public ReadForwardResponse {
             events = List.copyOf(events);
             history = List.copyOf(history);
@@ -264,7 +270,8 @@ public sealed interface StreamForwardMessage extends ProtocolMessage {
                                            false,
                                            Epoch.ZERO,
                                            NO_DIVERGENCE,
-                                           NO_DIVERGENCE);
+                                           NO_DIVERGENCE,
+                                           Option.none());
         }
 
         public static ReadForwardResponse truncatedResponse(NodeId sender,
@@ -289,7 +296,8 @@ public sealed interface StreamForwardMessage extends ProtocolMessage {
                                            false,
                                            Epoch.ZERO,
                                            NO_DIVERGENCE,
-                                           NO_DIVERGENCE);
+                                           NO_DIVERGENCE,
+                                           Option.none());
         }
 
         public static ReadForwardResponse failureResponse(NodeId sender, String correlationId, String errorMessage) {
@@ -305,7 +313,30 @@ public sealed interface StreamForwardMessage extends ProtocolMessage {
                                            false,
                                            Epoch.ZERO,
                                            NO_DIVERGENCE,
-                                           NO_DIVERGENCE);
+                                           NO_DIVERGENCE,
+                                           Option.none());
+        }
+
+        /// A failed read whose cause the caller rebuilds from `refusal`; `errorMessage` stays the client-safe text, for a
+        /// caller that does not know the code.
+        public static ReadForwardResponse refusalResponse(NodeId sender,
+                                                          String correlationId,
+                                                          ReadRefusal refusal,
+                                                          String errorMessage) {
+            return new ReadForwardResponse(sender,
+                                           correlationId,
+                                           false,
+                                           List.of(),
+                                           false,
+                                           errorMessage,
+                                           VisibleBounds.NONE,
+                                           VisibleBounds.NONE,
+                                           List.of(),
+                                           false,
+                                           Epoch.ZERO,
+                                           NO_DIVERGENCE,
+                                           NO_DIVERGENCE,
+                                           Option.some(refusal));
         }
 
         /// This answer carrying the serving node's owner-epoch history (#1596): a replica catch-up read's.
@@ -322,7 +353,8 @@ public sealed interface StreamForwardMessage extends ProtocolMessage {
                                            true,
                                            ownerEpoch,
                                            divergenceResumeAt,
-                                           divergenceLossFrom);
+                                           divergenceLossFrom,
+                                           refusal);
         }
 
         /// This answer stamped with the owner epoch the serving node answered under (#1730 phase 2 / #1873): the epoch a
@@ -340,7 +372,8 @@ public sealed interface StreamForwardMessage extends ProtocolMessage {
                                            historyVouched,
                                            epoch,
                                            divergenceResumeAt,
-                                           divergenceLossFrom);
+                                           divergenceLossFrom,
+                                           refusal);
         }
 
         /// A consumer read refused because its cursor belongs to a replaced lineage (#1730 phase 2 / #1873): the serving
@@ -364,7 +397,8 @@ public sealed interface StreamForwardMessage extends ProtocolMessage {
                                            false,
                                            ownerEpoch,
                                            resumeAt,
-                                           lossFrom);
+                                           lossFrom,
+                                           Option.none());
         }
 
         /// Whether this is the typed divergence answer.

@@ -26,6 +26,7 @@ import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.storage.AppendLog;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 
@@ -123,7 +124,10 @@ class HeldNotMaterializedProbeTest {
 
         return response.success()
                ? Promise.success(StreamForwardClient.ReadForwardResult.readForwardResult(response.events(), response.truncated()))
-               : new StreamForwardError.ReadForwardFailed(response.errorMessage()).promise();
+               : response.refusal()
+                         .<Cause> map(refusal -> refusal.toCause(response.errorMessage()))
+                         .or(() -> new StreamForwardError.ReadForwardFailed(response.errorMessage()))
+                         .promise();
     }
 
     @Test

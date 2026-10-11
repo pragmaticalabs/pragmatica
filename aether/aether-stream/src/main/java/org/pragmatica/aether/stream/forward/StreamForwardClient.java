@@ -400,13 +400,17 @@ final class DefaultStreamForwardClient implements StreamForwardClient {
     }
 
     /// The typed divergence of a validated read survives the wire as itself (#1730 phase 2 / #1873): the consumer re-seeks
-    /// on it, so it is never rebuilt from a message.
+    /// on it, so it is never rebuilt from a message. So does every other refusal a read is known to raise (#1967): it is
+    /// rebuilt as the cause a local read of the same partition gives, so the route that maps that cause maps this one the
+    /// same way. Only a failure outside that set is a [StreamForwardError.ReadForwardFailed] carrying the owner's text.
     private static Cause readFailureCause(ReadForwardResponse response) {
         return response.epochDiverged()
                ? new StreamError.EpochDiverged(response.ownerEpoch(),
                                                response.divergenceResumeAt(),
                                                response.divergenceLossFrom())
-               : new StreamForwardError.ReadForwardFailed(response.errorMessage());
+               : response.refusal()
+                         .<Cause> map(refusal -> refusal.toCause(response.errorMessage()))
+                         .or(() -> new StreamForwardError.ReadForwardFailed(response.errorMessage()));
     }
 
     private void resolveFromReadResponse(Promise<ReadForwardResult> promise, ReadForwardResponse response) {
