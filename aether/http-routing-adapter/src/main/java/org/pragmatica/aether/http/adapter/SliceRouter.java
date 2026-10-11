@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.http.adapter;
 
 import java.nio.charset.StandardCharsets;
@@ -228,7 +227,7 @@ public interface SliceRouter {
                              ? HttpStatus.BAD_REQUEST
                              : HttpStatus.NOT_FOUND;
 
-                return problemResponse(status, cause.message(), request);
+                return problemResponse(status, HttpError.clientMessage(cause), request);
             }
 
             private Promise<HttpResponseData> handleVersionedRoute(Route<?> route, HttpRequestContext request) {
@@ -325,17 +324,18 @@ public interface SliceRouter {
             private HttpResponseData errorToResponse(Cause cause, HttpRequestContext request) {
                 var httpError = resolveHttpError(cause);
 
-                log.warn("[requestId={}] SliceRouter error: {} {} -> {} {}",
+                log.warn("[requestId={}] SliceRouter error: {} {} -> {} {} (cause chain: {})",
                          request.requestId(),
                          request.method(),
                          request.path(),
                          httpError.status().code(),
-                         cause.message());
+                         cause.message(),
+                         HttpError.causeChain(cause));
                 var problemDetail = ProblemDetail.fromHttpError(httpError, request.path(), request.requestId());
 
                 return jsonMapper.writeAsBytes(problemDetail)
                                  .fold(_ -> plainErrorResponse(httpError.status(),
-                                                               httpError.message()),
+                                                               httpError.status().message()),
                                        body -> HttpResponseData.httpResponseData(httpError.status().code(),
                                                                                  JSON_HEADERS,
                                                                                  body));

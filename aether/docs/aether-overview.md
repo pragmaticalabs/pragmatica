@@ -254,7 +254,7 @@ This is closer to how a well-designed monolith works internally, except the runt
 
 ### License
 
-Aether uses the **Business Source License 1.1 (BSL)**. In practice, this is nearly as permissive as open source:
+Aether is **Apache-2.0 by default**. The runtime core is under the **Business Source License 1.1 (BSL)**: `node`, `aether-deployment`, `aether-control`, `aether-ttm`, `aether-ttm-onnx`, `aether-stream`, `aether-invoke`, `ember`, `forge-api`, `forge-core` (the list lives in `tools/license/bsl-modules.txt`; each carries its own `LICENSE`). Slice API, resources, CLI and tooling are Apache-2.0, and no Apache module depends on a BSL one. In practice, the BSL is nearly as permissive as open source:
 
 **Permitted without any license:**
 - Internal use within your organization at any scale
@@ -439,4 +439,4 @@ aether metrics
 
 ---
 
-*Pragmatica Aether is developed by Pragmatica Labs. Licensed under BSL 1.1 — free for all use except managed service offerings. Converts to Apache 2.0 on January 1, 2030.*
+*Pragmatica Aether is developed by Pragmatica Labs. Apache-2.0, except the runtime core modules, which are BSL 1.1 — free for all use except managed service offerings, converting to Apache 2.0 on January 1, 2030.*

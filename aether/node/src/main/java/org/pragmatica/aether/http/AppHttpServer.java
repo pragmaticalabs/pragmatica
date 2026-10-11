@@ -59,6 +59,7 @@ import org.pragmatica.consensus.topology.ClusterStateNotification;
 import org.pragmatica.consensus.topology.MembershipDecision;
 import org.pragmatica.consensus.topology.TransportObservation;
 import org.pragmatica.http.CommonContentType;
+import org.pragmatica.http.HttpError;
 import org.pragmatica.http.HttpStatus;
 import org.pragmatica.http.ProblemDetail;
 import org.pragmatica.http.server.HttpServer;
@@ -1456,20 +1457,20 @@ class AppHttpServerAdapter implements AppHttpServer {
         switch (cause) {
             case org.pragmatica.aether.invoke.InvocationAdmission.Error ignored -> sendProblem(response,
                                                                                                HttpStatus.SERVICE_UNAVAILABLE,
-                                                                                               cause.message(),
+                                                                                               HttpError.clientMessage(cause),
                                                                                                path,
                                                                                                requestId);
             case RateGuardError.LimitExceeded exceeded -> sendRateLimitResponse(response, path, requestId, exceeded);
             case Cause transientCause when transientCause.isTransient() -> sendProblem(response,
                                                                                        HttpStatus.SERVICE_UNAVAILABLE,
-                                                                                       transientCause.message(),
+                                                                                       HttpError.clientMessage(transientCause),
                                                                                        path,
                                                                                        requestId);
             default -> {
                 log.error("Failed to handle local route [{}]: {}", requestId, cause.message());
                 sendProblem(response,
                             HttpStatus.INTERNAL_SERVER_ERROR,
-                            "Request processing failed: " + cause.message(),
+                            "Request processing failed: " + HttpError.clientMessage(cause),
                             path,
                             requestId);
             }
@@ -1528,7 +1529,7 @@ class AppHttpServerAdapter implements AppHttpServer {
                      .onSuccess(responseData -> sendResponse(response, responseData, requestId))
                      .onFailure(cause -> sendProblem(response,
                                                      HttpStatus.GATEWAY_TIMEOUT,
-                                                     cause.message(),
+                                                     HttpError.clientMessage(cause),
                                                      request.path(),
                                                      requestId));
     }
@@ -1557,8 +1558,12 @@ class AppHttpServerAdapter implements AppHttpServer {
                                         HttpForwardRequest request,
                                         String prefix,
                                         Cause cause) {
-        log.error("{} [{}]: {}", prefix, request.requestId(), cause.message());
-        sendForwardError(network, request, prefix + ": " + cause.message());
+        log.error("{} [{}]: {} (cause chain: {})",
+                  prefix,
+                  request.requestId(),
+                  cause.message(),
+                  HttpError.causeChain(cause));
+        sendForwardError(network, request, prefix + ": " + HttpError.clientMessage(cause));
     }
 
     @Contract
@@ -1775,7 +1780,8 @@ class AppHttpServerAdapter implements AppHttpServer {
                                       long startTime,
                                       HttpRequestContext httpCtx) {
         routeInfo.onPresent(info -> recordMetricsFailure(info, startTime, httpCtx.body().length, cause));
-        sendForwardError(network, request, cause.message());
+        log.warn("[{}] Forwarded request failed (cause chain: {})", request.requestId(), HttpError.causeChain(cause));
+        sendForwardError(network, request, HttpError.clientMessage(cause));
     }
 
     private void sendForwardSuccess(ClusterNetwork network,

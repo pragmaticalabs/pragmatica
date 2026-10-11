@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.cli;
 
 import java.io.BufferedReader;
@@ -342,7 +341,7 @@ public class AetherCli implements Runnable {
     }
 
     @Contract
-    private void readConfigFromPath(Path path) {
+    void readConfigFromPath(Path path) {
         ConfigLoader.load(path).onSuccess(this::setAddressFromConfig).onFailure(this::onConfigLoadFailure);
         configPath = path;
     }
@@ -382,8 +381,14 @@ public class AetherCli implements Runnable {
     }
 
     private void onConfigLoadFailure(Cause cause) {
-        System.err.println("Warning: Failed to load config: " + cause.message());
+        System.err.println(configLoadWarning(cause));
         nodeAddress = DEFAULT_ADDRESS;
+    }
+
+    /// The CLI keeps going on its default address when a config file fails to load (it is a client, not a node), but the warning carries the
+    /// CAUSE: a bare "failed to load" hides which setting was refused (#909).
+    static String configLoadWarning(Cause cause) {
+        return "Warning: Failed to load config: " + cause.message();
     }
 
     @Contract
