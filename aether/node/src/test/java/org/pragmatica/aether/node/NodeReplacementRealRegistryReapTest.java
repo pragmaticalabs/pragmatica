@@ -2426,6 +2426,32 @@ class NodeReplacementRealRegistryReapTest {
         assertThat(anyCleared()).isFalse();
     }
 
+    /// The incarnation fence at the commit matters for a mark held only in memory (its persist failed): there is no stored value to fail the delete's
+    /// compare-and-set, so only the incarnation tells the clear that the mark it read is the previous incarnation's.
+    @Test
+    void clearUnconfirmed_aMemoryOnlyMark_ofANodeThatRejoinedDuringTheProviderReads_isNotCleared() throws Exception {
+        put(AetherKey.CapacityLedgerKey.INSTANCE, new CapacityLedgerValue(3, 1, true));
+        assertThat(ctmUnderTest.reapRetired(OLD, WEST, false).await().isFailure()).isTrue();
+        ctmUnderTest.setHierarchyStateWriter(org.pragmatica.aether.deployment.cluster.HierarchyStateWriter.unavailable());
+        ctmUnderTest.markUnconfirmed(OLD, "persist failed");
+        ctmUnderTest.setHierarchyStateWriter(org.pragmatica.aether.deployment.cluster.HierarchyStateWriter.hierarchyStateWriter(() -> store.getTyped(LeaderKey.INSTANCE, LeaderValue.class),
+                                                                                                                                key -> store.get(key),
+                                                                                                                                this::process));
+        assertThat(persistedMark(OLD).isEmpty()).as("only in memory").isTrue();
+        Promise<List<InstanceInfo>> held = Promise.promise();
+
+        oneShotListing.set(held);
+        var clear = ctmUnderTest.clearUnconfirmed(OLD, "alice", "unknown");
+
+        joins(OLD);
+        states.remove(OLD);
+        held.succeed(List.of());
+
+        assertThat(refusalOf(clear)).isInstanceOf(ClusterTopologyManager.UnconfirmedClearRefusal.Changed.class);
+        settle();
+        assertThat(anyCleared()).isFalse();
+    }
+
     /// The node rejoined while the provider was being read: a new incarnation, nothing of the old one is cleared (and the new one's mark is not touched).
     @Test
     void clearUnconfirmed_aNodeThatRejoinedDuringTheProviderReads_isNotCleared() throws Exception {
