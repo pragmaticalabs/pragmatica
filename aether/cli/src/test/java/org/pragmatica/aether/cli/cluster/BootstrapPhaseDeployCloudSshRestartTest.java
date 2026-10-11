@@ -1605,6 +1605,9 @@ class BootstrapPhaseDeployCloudSshRestartTest {
                                                           && c.contains("--mount type=bind,src=/opt/aether/config/api-keys,dst=/run/secrets/aether-api-keys,readonly")),
                    "the launch mounts the keys file read-only and names it");
         wire.sshCommands.forEach(c -> assertFalse(c.contains("--env-file") || c.contains("AETHER_API_KEYS="), () -> "#828: no credential in the container environment: " + c));
+        assertTrue(wire.sshCommands.stream().anyMatch(c -> c.contains("install -m 0400 -o 1000 -g 1000 " + BootstrapPhaseDeploy.stagedPath("AETHER_API_KEYS", false) + " /opt/aether/config/api-keys")
+                                                          && c.contains("rm -f ") && c.contains(BootstrapPhaseDeploy.stagedPath("AETHER_API_KEYS", false))),
+                   "the keys are installed from their staged copy, and the staged copy is removed on exit");
     }
 
     @Test
