@@ -2072,6 +2072,30 @@ class NodeReplacementRealRegistryReapTest {
         assertThat(unconfirmedWarnings()).as("no second unconfirmed warning after the clear").isEqualTo(1);
     }
 
+    /// v-2125 F1, incarnation fence: a re-check of the FIRST incarnation is still in flight when the node rejoins and is retired again; its late result
+    /// belongs to the incarnation that is gone and must not warn about, or rewrite, the second incarnation's mark.
+    @Test
+    void aRecheckOfAnEarlierIncarnation_isFencedOut_whenItsListingReturnsLate() throws Exception {
+        markWhileListingFails(OLD, "first incarnation");
+        Promise<List<InstanceInfo>> inFlight = Promise.promise();
+
+        oneShotListing.set(inFlight);
+        within(10, () -> assertThat(oneShotListing.get()).as("a re-check listing is in flight").isNull());
+        joins(OLD);
+        within(5, () -> assertThat(persistedMark(OLD).isEmpty()).isTrue());
+        states.remove(OLD);
+        ctmUnderTest.markUnconfirmed(OLD, "second incarnation");
+        within(10, () -> assertThat(persistedMark(OLD).map(AetherValue.UnconfirmedTerminationValue::cause).or("")).isEqualTo("second incarnation"));
+        settle();
+        var before = unconfirmedWarnings();
+
+        inFlight.succeed(List.of());
+        Thread.sleep(1000);
+
+        assertThat(unconfirmedWarnings()).as("the earlier incarnation's late listing raises nothing").isEqualTo(before);
+        assertThat(persistedMark(OLD).map(AetherValue.UnconfirmedTerminationValue::cause).or("")).isEqualTo("second incarnation");
+    }
+
     /// The node rejoins and is retired again between the clear's commit and its in-memory removal: the later incarnation's in-memory mark stays.
     @Test
     void clearUnconfirmed_keepsALaterIncarnationsInMemoryMark() throws Exception {
