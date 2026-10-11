@@ -783,6 +783,20 @@ class DockerComputeProviderTest {
         }
 
         @Test
+        void theConfiguredApiKey_isTheAuthoritativeAetherApiKey_deliveredByFile() {
+            var configured = DockerConfig.dockerConfig("aether-node:local", "aether-network", 5160, 8080, 6000, "/var/run/docker.sock", "sentinel-cfgkey-6e1f", "").unwrap();
+            var configuredProvider = DockerComputeProvider.dockerComputeProvider(testRunner, configured, Map.of("AETHER_API_KEY", "sentinel-hostkey-0a9b")::get).unwrap();
+            queueSuccessfulCreateCopyStart();
+
+            configuredProvider.provision(spec()).await().onFailure(cause -> fail("Expected success but got: " + cause.message()));
+
+            var archive = new String(testRunner.stdins.getFirst(), java.nio.charset.StandardCharsets.UTF_8);
+
+            assertThat(archive).contains("sentinel-cfgkey-6e1f").doesNotContain("sentinel-hostkey-0a9b");
+            assertThat(testRunner.allCommands.stream().flatMap(List::stream)).noneMatch(arg -> arg.contains("sentinel-cfgkey-6e1f") || arg.contains("sentinel-hostkey-0a9b"));
+        }
+
+        @Test
         void noSecretAnywhere_keepsThePlainDockerRun() {
             testRunner.queuedResponses.add(Promise.success("id-0"));
             testRunner.queuedResponses.add(Promise.success(RUNNING_INSPECT));
