@@ -26,6 +26,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.StateMachine.Batch;
 import org.pragmatica.consensus.rabia.RabiaEngineApplyContainmentTest.PoisonStateMachine;
 import org.pragmatica.consensus.rabia.RabiaEngineApplyContainmentTest.TestClusterNetwork;
 import org.pragmatica.consensus.rabia.RabiaEngineApplyContainmentTest.TestCommand;
@@ -46,6 +47,8 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// task's stack, the oldest pending batch's age, and the apply-timeout count.
 class RabiaEngineSlowApplyDiagnosticsTest {
     private static final NodeId NODE_1 = nodeId("node-1").unwrap();
+    private static final org.pragmatica.serialization.SliceCodec SERIALIZER =
+        TestSerializers.stringCommandSerializer(TestCommand.class, TestCommand::value, TestCommand::new);
     private static final NodeId NODE_2 = nodeId("node-2").unwrap();
     private static final NodeId NODE_3 = nodeId("node-3").unwrap();
     private static final int CLUSTER_SIZE = 3;
@@ -124,7 +127,7 @@ class RabiaEngineSlowApplyDiagnosticsTest {
             assertThat(reports)
                 .as("the scheduled watchdog must find the task once it has run past one second")
                 .hasSize(1);
-            assertThat(reports.getFirst()).contains("blockedInTheCallUnderTest").contains("queueDepth=");
+            assertThat(reports.getFirst()).contains("blockedInTheCallUnderTest").containsPattern("queueDepth=\\d+ ms=\\d+ thread=");
         } finally {
             release.countDown();
         }
@@ -139,6 +142,45 @@ class RabiaEngineSlowApplyDiagnosticsTest {
 
         assertThat(engine.slowTaskCheckForTesting(System.nanoTime() + timeSpan(10).seconds().nanos()).isPresent())
             .as("a task that ended long ago must not be reported as still running")
+            .isFalse();
+    }
+
+    @Test
+    void theThresholdIsOneSecond_aTaskIsReportedJustPastItAndNotJustBefore() throws Exception {
+        assertThat(RabiaEngine.SLOW_TASK_STACK_THRESHOLD_NANOS).isEqualTo(1_000_000_000L);
+        engine(ProtocolConfig.testConfig());
+        var entered = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        var beforeSubmit = System.nanoTime();
+
+        engine.safeExecuteForTesting(() -> blockedInTheCallUnderTest(entered, release));
+        assertThat(entered.await(5, TimeUnit.SECONDS)).isTrue();
+        var afterEntered = System.nanoTime();
+
+        try {
+            assertThat(engine.slowTaskCheckForTesting(beforeSubmit + 900_000_000L).isPresent())
+                .as("running for at most 0.9 s: not slow yet")
+                .isFalse();
+            assertThat(engine.slowTaskCheckForTesting(afterEntered + 1_100_000_000L).isPresent())
+                .as("running for at least 1.1 s: reported")
+                .isTrue();
+        } finally {
+            release.countDown();
+        }
+    }
+
+    @Test
+    void stoppingTheEngine_cancelsTheWatchdog() throws Exception {
+        engine(ProtocolConfig.testConfig());
+        engine.safeExecuteForTesting(() -> {});
+        awaitIdle();
+
+        assertThat(engine.slowTaskWatchdogRunningForTesting()).as("armed by the first task").isTrue();
+
+        engine.stop().await();
+
+        assertThat(engine.slowTaskWatchdogRunningForTesting())
+            .as("a stopped engine must not keep a 250 ms fixed-rate task alive")
             .isFalse();
     }
 
@@ -189,7 +231,35 @@ class RabiaEngineSlowApplyDiagnosticsTest {
 
         assertThat(metrics.oldestPendingAgeMs.get().getAsLong())
             .as("the OLDEST pending batch is reported; the younger one is about 50 ms old, the older about 550 ms")
-            .isGreaterThanOrEqualTo(450L);
+            .isGreaterThanOrEqualTo(450L)
+            .as("milliseconds, not microseconds or seconds: about 550 ms, nowhere near 5 s")
+            .isLessThan(5_000L);
+    }
+
+    @Test
+    void aBatchLearnedFromAPeer_ageCountsFromLocalReceipt_notFromTheOriginatorsClock() throws Exception {
+        engine(ProtocolConfig.testConfig());
+        activate();
+        var local = Batch.create(SERIALIZER, List.of(new TestCommand("foreign-clock")));
+        // The originator's nanoTime has another origin: a stamp from an hour "ago" (or in the future) is what a peer's
+        // JVM produces relative to this one.
+        var fromAPeer = new Batch<>(local.id(), local.correlationIds(), System.nanoTime() - 3_600_000_000_000L, local.commands());
+
+        engine.handleNewBatch(new RabiaProtocolMessage.Asynchronous.NewBatch<>(NODE_2, fromAPeer));
+        Thread.sleep(300);
+
+        assertThat(metrics.oldestPendingAgeMs.get().getAsLong())
+            .as("received 300 ms ago, whatever the sender's clock said; the creation stamp would read an hour")
+            .isBetween(250L, 5_000L);
+
+        var future = Batch.create(SERIALIZER, List.of(new TestCommand("future-clock")));
+        var fromTheFuture = new Batch<>(future.id(), future.correlationIds(), System.nanoTime() + 3_600_000_000_000L, future.commands());
+
+        engine.handleNewBatch(new RabiaProtocolMessage.Asynchronous.NewBatch<>(NODE_3, fromTheFuture));
+
+        assertThat(metrics.oldestPendingAgeMs.get().getAsLong())
+            .as("a stamp from the future must neither hide the older batch nor poison the reading")
+            .isBetween(250L, 5_000L);
     }
 
     @Test

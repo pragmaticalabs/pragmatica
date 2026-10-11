@@ -102,7 +102,7 @@ public class RabiaEngine<C extends Command> {
     /// the single consensus apply worker are logged as `SLOW-APPLY` with the executor queue depth.
     private static final long SLOW_APPLY_THRESHOLD_NANOS = 5_000_000L;
     /// A task still running after this long has its worker's stack logged once (#1117).
-    private static final long SLOW_TASK_STACK_THRESHOLD_NANOS = 1_000_000_000L;
+    static final long SLOW_TASK_STACK_THRESHOLD_NANOS = 1_000_000_000L;
     private static final TimeSpan SLOW_TASK_WATCHDOG_PERIOD = TimeSpan.timeSpan(250).millis();
     /// One stuck-in-`Syncing` WARN per this many unsatisfied sync rounds (#660) — roughly every 30s at
     /// the default 5s `syncRetryInterval`.
@@ -730,7 +730,10 @@ public class RabiaEngine<C extends Command> {
                                                                     new ThreadPoolExecutor.DiscardPolicy());
 
     private final ConcurrentNavigableMap<Id, Batch<C>> pendingBatches = new ConcurrentSkipListMap<>();
-
+    /// #1117: LOCAL `System.nanoTime()` at which each batch in `pendingBatches` first arrived here, whether submitted
+    /// by this node or learned from a peer. `Batch.timestamp` is the ORIGINATOR's `nanoTime`, whose origin differs per
+    /// JVM, so subtracting it on another host yields an arbitrary age; the pending-age gauge reads this map instead.
+    private final Map<Id, Long> pendingSinceNanos = new ConcurrentHashMap<>();
     private final SlowTaskProbe slowTaskProbe = new SlowTaskProbe();
     private final AtomicReference<ScheduledFuture<?>> slowTaskWatchdog = new AtomicReference<>();
     private volatile Consumer<String> slowTaskSink = report -> log.warn("SLOW-APPLY-RUNNING {}", report);
@@ -1567,6 +1570,7 @@ public class RabiaEngine<C extends Command> {
         stateMachine.reset();
         startPromise.set(Promise.promise());
         pendingBatches.clear();
+        pendingSinceNanos.clear();
         bufferedDecisions.clear();
         bufferedDecisionCount.set(0);
         correlationMap.forEach((_, promise) -> promise.fail(new ConsensusError.NodeInactive(self)));
@@ -1690,19 +1694,19 @@ public class RabiaEngine<C extends Command> {
         return cause;
     }
 
-    /// #1117: age of the oldest batch still awaiting a decision, read when the metrics sink is read. `Batch.timestamp`
-    /// is `System.nanoTime()` at creation (the earliest one survives a merge), so the age is a monotonic difference.
+    /// #1117: age of the oldest batch still awaiting a decision, read when the metrics sink is read, from the LOCAL arrival
+    /// times in [#pendingSinceNanos] (see there for why `Batch.timestamp` cannot be used). 0 when nothing is pending.
     private long oldestPendingBatchAgeMs() {
         var now = System.nanoTime();
 
-        return pendingBatches.values()
-                             .stream()
-                             .mapToLong(batch -> now - batch.timestamp())
-                             .max()
-                             .stream()
-                             .map(nanos -> Math.max(0L, nanos) / 1_000_000L)
-                             .findFirst()
-                             .orElse(0L);
+        return pendingSinceNanos.values()
+                                .stream()
+                                .mapToLong(since -> now - since)
+                                .max()
+                                .stream()
+                                .map(nanos -> nanos / 1_000_000L)
+                                .findFirst()
+                                .orElse(0L);
     }
 
     @Contract
@@ -1792,6 +1796,12 @@ public class RabiaEngine<C extends Command> {
                                (_, existing) -> Option.option(existing).fold(() -> incoming,
                                                                              current -> stateMachine.merge(current,
                                                                                                            incoming)));
+        noteArrival(incoming.id());
+    }
+
+    /// Records the local arrival time of a pending batch; a merge into an existing entry keeps the earlier time.
+    private void noteArrival(Id batchId) {
+        pendingSinceNanos.putIfAbsent(batchId, System.nanoTime());
     }
 
     private void broadcastBatch(Batch<C> batch) {
@@ -1964,13 +1974,16 @@ public class RabiaEngine<C extends Command> {
     }
 
     private void watchSlowTask() {
-        slowTaskProbe.check(System.nanoTime(), SLOW_TASK_STACK_THRESHOLD_NANOS)
+        slowTaskProbe.check(System.nanoTime(),
+                            SLOW_TASK_STACK_THRESHOLD_NANOS)
                      .onPresent(stack -> slowTaskSink.accept("queueDepth=" + applyQueueDepth() + " " + stack));
     }
 
     /// Test hook: where the watchdog's report goes instead of the log.
-    void slowTaskSinkForTesting(Consumer<String> sink) {
+    Unit slowTaskSinkForTesting(Consumer<String> sink) {
         slowTaskSink = sink;
+
+        return Unit.unit();
     }
 
     /// Test hook: one watchdog pass at a chosen clock reading; the report it would log, if any.
@@ -1978,9 +1991,18 @@ public class RabiaEngine<C extends Command> {
         return slowTaskProbe.check(nowNanos, SLOW_TASK_STACK_THRESHOLD_NANOS);
     }
 
+    /// Test hook: whether the watchdog is scheduled and not cancelled.
+    boolean slowTaskWatchdogRunningForTesting() {
+        var watchdog = slowTaskWatchdog.get();
+
+        return watchdog != null && !watchdog.isCancelled();
+    }
+
     /// Test hook: run `task` through the same containment boundary as every apply task.
-    void safeExecuteForTesting(Runnable task) {
+    Unit safeExecuteForTesting(Runnable task) {
         safeExecute(task);
+
+        return Unit.unit();
     }
 
     /// Diagnostic helper: backlog of the single-thread apply executor. The executor is always a
@@ -2065,6 +2087,7 @@ public class RabiaEngine<C extends Command> {
                                                                                                     Math.min(current.timestamp(),
                                                                                                              incoming.timestamp()),
                                                                                                     current.commands())));
+        noteArrival(incoming.id());
     }
 
     /// Broadcasts own proposal for pending batch if not already proposed in current phase.
@@ -2660,6 +2683,7 @@ public class RabiaEngine<C extends Command> {
         for (var batch : List.copyOf(pendingBatches.values())) {
             if (!retained.contains(batch.id())) {
                 pendingBatches.remove(batch.id());
+                pendingSinceNanos.remove(batch.id());
                 failPendingCorrelations(batch, cause);
             }
         }
@@ -3740,6 +3764,7 @@ public class RabiaEngine<C extends Command> {
         // The decision.value() may have partial IDs if the proposer hadn't received all batches yet.
         var localBatch = Option.option(pendingBatches.remove(decision.value().id()));
 
+        pendingSinceNanos.remove(decision.value().id());
         metrics.updatePendingBatches(self, pendingBatches.size());
         // Use correlationIds from our local pendingBatches (fully merged) rather than
         // from decision.value() (which may have partial IDs from early proposals)

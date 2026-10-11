@@ -59,8 +59,17 @@ import org.pragmatica.serialization.SliceCodec;
 import org.pragmatica.statemachine.Fsm;
 import org.pragmatica.statemachine.FsmTestHarness;
 
+import org.apache.logging.log4j.Level;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.core.LogEvent;
+import org.apache.logging.log4j.core.LoggerContext;
+import org.apache.logging.log4j.core.appender.AbstractAppender;
+import org.apache.logging.log4j.core.config.Property;
+import org.apache.logging.log4j.core.layout.PatternLayout;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
 
 import io.netty.buffer.ByteBuf;
 
@@ -72,9 +81,13 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// had committed but whose view still read ROUTING/ACTIVATING wrote a second ACTIVE over the committed one; the extra
 /// put is what moved a durable group's assignee (#1333, #1385).
 ///
-/// The timers now read the node's own COMMITTED `NodeArtifactKey` first:
+/// The timers now read the node's own COMMITTED `NodeArtifactKey` (this node's applied mirror) first:
 ///  - committed ACTIVE: adopt it locally, write NOTHING;
-///  - lower or absent: re-drive the chain's FULL last write (ACTIVE plus the stream-ref commands, in ONE batch).
+///  - EARLIER in the activation chain (LOAD..ROUTING): re-drive the chain's FULL last write (ACTIVE plus the stream-ref
+///    commands, in ONE batch), while a committed SliceTarget still names this version;
+///  - DEACTIVATE, DEACTIVATING, FAILED, UNLOAD, UNLOADING, UNKNOWN or no entry: the slice has left the chain, so ACTIVE
+///    is NEVER written over it; the value is adopted and the remediation stops.
+/// Every line carries the node id, the local state and the committed state; the log tests below pin that.
 ///
 /// The slice here declares one stream access (`ReconcileStreamMarkerSlice.manifest`) with a committed binding, so the
 /// full write is distinguishable from a bare ACTIVE put: only it carries a `StreamRegistryKey` command.
@@ -90,6 +103,8 @@ class NodeDeploymentStateStuckReconcileTest {
     private StreamStubStore store;
     private KVStore<AetherKey, AetherValue> kvStore;
     private FsmTestHarness<NodeDeploymentState, ClusterFsmEvent> harness;
+    private final List<String> warnings = Collections.synchronizedList(new ArrayList<>());
+    private Runnable detachLog = () -> {};
 
     @BeforeEach
     void setUp() {
@@ -113,6 +128,12 @@ class NodeDeploymentStateStuckReconcileTest {
         harness.dispatch(new QuorumEstablished());
         store.loaded.add(StreamStubStore.loadedSlice(ARTIFACT));
         cluster.batches.clear();
+        detachLog = capturingWarnings(warnings);
+    }
+
+    @org.junit.jupiter.api.AfterEach
+    void tearDown() {
+        detachLog.run();
     }
 
     @Test
@@ -163,16 +184,6 @@ class NodeDeploymentStateStuckReconcileTest {
     }
 
     @Test
-    void stuckActivating_nothingCommitted_redrivesTheFullLastWrite() {
-        serving.add(ARTIFACT);
-        var key = seed(SliceState.ACTIVATING);
-
-        activeState().remediateStuckActivating(key);
-
-        assertFullLastWrite();
-    }
-
-    @Test
     void stuckActivating_notServing_writesNothingEvenWhenCommittedIsLower() {
         commit(SliceState.ACTIVATING);
         var key = seed(SliceState.ACTIVATING);
@@ -180,6 +191,149 @@ class NodeDeploymentStateStuckReconcileTest {
         activeState().remediateStuckActivating(key);
 
         assertThat(cluster.batches).as("the serving gate still holds: no phantom ACTIVE").isEmpty();
+    }
+
+
+    @ParameterizedTest
+    @EnumSource(value = SliceState.class, names = {"DEACTIVATE", "DEACTIVATING", "FAILED", "UNLOAD", "UNLOADING", "UNKNOWN"})
+    void stuckRouting_committedStateBeyondTheChain_neverWritesActive_andAdoptsIt(SliceState beyond) {
+        commit(beyond);
+        var key = seed(SliceState.ROUTING);
+
+        activeState().remediateStuckRouting(key);
+
+        assertThat(activePuts()).as("ACTIVE must never be written over a committed %s", beyond).isEmpty();
+        assertThat(localState(key)).as("the committed %s is adopted into the local view", beyond).isEqualTo(beyond);
+        assertThat(warnings).anySatisfy(line -> assertThat(line).contains("Node self")
+                                                                .contains("still ROUTING")
+                                                                .contains("COMMITTED state is " + beyond)
+                                                                .contains("NOT writing ACTIVE"));
+    }
+
+    @ParameterizedTest
+    @EnumSource(value = SliceState.class, names = {"DEACTIVATE", "DEACTIVATING", "FAILED", "UNLOAD", "UNLOADING", "UNKNOWN"})
+    void stuckActivating_committedStateBeyondTheChain_neverWritesActive_andAdoptsIt(SliceState beyond) {
+        commit(beyond);
+        serving.add(ARTIFACT);
+        var key = seed(SliceState.ACTIVATING);
+
+        activeState().remediateStuckActivating(key);
+
+        assertThat(activePuts()).as("ACTIVE must never be written over a committed %s", beyond).isEmpty();
+        assertThat(localState(key)).isEqualTo(beyond);
+    }
+
+    @Test
+    void stuckRouting_noCommittedEntry_writesNothing_andHandlesItAsTheRemovalItIs() {
+        var key = seed(SliceState.ROUTING);
+
+        activeState().remediateStuckRouting(key);
+
+        assertThat(cluster.batches).as("an absent entry is a removed slice: nothing may be written").isEmpty();
+        assertThat(activeState().deployments()).as("the local entry goes with it").doesNotContainKey(key);
+        assertThat(warnings).anySatisfy(line -> assertThat(line).contains("Node self")
+                                                                .contains("still ROUTING")
+                                                                .contains("ABSENT"));
+    }
+
+    @Test
+    void stuckActivating_noCommittedEntry_writesNothing() {
+        serving.add(ARTIFACT);
+        var key = seed(SliceState.ACTIVATING);
+
+        activeState().remediateStuckActivating(key);
+
+        assertThat(cluster.batches).isEmpty();
+        assertThat(activeState().deployments()).doesNotContainKey(key);
+    }
+
+    @Test
+    void stuckRouting_committedRouting_butNoTargetNamesThisVersion_doesNotRedrive() {
+        commit(SliceState.ROUTING);
+        applyToKv(new KVCommand.Remove<>(SliceTargetKey.sliceTargetKey(ARTIFACT.base())));
+        var key = seed(SliceState.ROUTING);
+
+        activeState().remediateStuckRouting(key);
+
+        assertThat(cluster.batches).as("a rolled-back or replaced version must not be started again (#1068)").isEmpty();
+        assertThat(warnings).anySatisfy(line -> assertThat(line).contains("Node self")
+                                                                .contains("still ROUTING")
+                                                                .contains("committed state is ROUTING")
+                                                                .contains("NOT re-driving"));
+    }
+
+    @Test
+    void remediationLines_nameTheNodeTheLocalStateAndTheCommittedState() {
+        commit(SliceState.ACTIVE);
+        activeState().remediateStuckRouting(seed(SliceState.ROUTING));
+        commit(SliceState.ROUTING);
+        activeState().remediateStuckRouting(seed(SliceState.ROUTING));
+        commit(SliceState.ACTIVATING);
+        activeState().remediateStuckActivating(servingSeed(SliceState.ACTIVATING));
+
+        assertThat(warnings).anySatisfy(line -> assertThat(line).contains("Node self")
+                                                                .contains("still ROUTING locally")
+                                                                .contains("COMMITTED state is ACTIVE"));
+        assertThat(warnings).anySatisfy(line -> assertThat(line).contains("Node self")
+                                                                .contains("still ROUTING locally")
+                                                                .contains("committed state is ROUTING — re-driving"));
+        assertThat(warnings).anySatisfy(line -> assertThat(line).contains("Node self")
+                                                                .contains("still ACTIVATING locally")
+                                                                .contains("committed state is ACTIVATING — re-driving"));
+    }
+
+    @Test
+    void stuckActivating_notServing_lineNamesTheNodeAndTheCommittedState() {
+        commit(SliceState.ACTIVATING);
+        var key = seed(SliceState.ACTIVATING);
+
+        activeState().remediateStuckActivating(key);
+
+        assertThat(warnings).anySatisfy(line -> assertThat(line).contains("Node self")
+                                                                .contains("still ACTIVATING locally")
+                                                                .contains("committed state ACTIVATING")
+                                                                .contains("NOT registered for invocation"));
+    }
+
+    private SliceNodeKey servingSeed(SliceState state) {
+        serving.add(ARTIFACT);
+
+        return seed(state);
+    }
+
+    private List<NodeArtifactValue> activePuts() {
+        return cluster.batches.stream()
+                              .flatMap(List::stream)
+                              .filter(command -> command instanceof KVCommand.Put<AetherKey, ?> put
+                                                 && put.key() instanceof NodeArtifactKey
+                                                 && put.value() instanceof NodeArtifactValue value
+                                                 && value.state() == SliceState.ACTIVE)
+                              .map(command -> (NodeArtifactValue) ((KVCommand.Put<AetherKey, ?>) command).value())
+                              .toList();
+    }
+
+    /// Capture the WARN lines of the ACTIVE state's logger; the returned runnable detaches the appender.
+    private static Runnable capturingWarnings(List<String> sink) {
+        var context = (LoggerContext) LogManager.getContext(false);
+        var loggerConfig = context.getConfiguration().getLoggerConfig(NodeDeploymentState.Active.class.getName());
+        var appender = new AbstractAppender("stuck-reconcile-capture", null, PatternLayout.createDefaultLayout(), true, Property.EMPTY_ARRAY) {
+            @Override
+            public void append(LogEvent event) {
+                if (event.getLevel() == Level.WARN && NodeDeploymentState.Active.class.getName().equals(event.getLoggerName())) {
+                    sink.add(event.getMessage().getFormattedMessage());
+                }
+            }
+        };
+
+        appender.start();
+        loggerConfig.addAppender(appender, Level.WARN, null);
+        context.updateLoggers();
+
+        return () -> {
+            loggerConfig.removeAppender(appender.getName());
+            context.updateLoggers();
+            appender.stop();
+        };
     }
 
     private void assertFullLastWrite() {

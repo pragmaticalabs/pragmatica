@@ -582,29 +582,79 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
         /// ACTIVATING wrote a second ACTIVE over the committed one, and the extra put is what moved a durable
         /// group's assignee (#1333, #1385: 7-19 events redelivered).
         ///
-        /// The COMMITTED `NodeArtifactKey` of this node is read first:
-        ///  - ACTIVE: adopt it into local state exactly as the missed notification would have (record, then drive
-        ///    the ACTIVE handler). No write.
-        ///  - anything lower or absent: the chain's last write was never answered, so re-drive that write IN FULL
-        ///    ([#transitionToActiveWithStreamRefs]: ACTIVE with its endpoints plus the stream-ref commands), never
-        ///    a bare ACTIVE, which would leave the stream refcounts unacquired. A late answer to the original write
-        ///    would acquire a second time; that exposure is stated on the PR and is the price of not leaving the
-        ///    refs missing.
+        /// "Committed" here is this node's APPLIED mirror of its own `NodeArtifactKey` (`ctx.kvStore()`), NOT a
+        /// consensus read. It removes the case "applied but the notification never reached the FSM"; it does not
+        /// remove "committed by consensus but not yet applied here", where the mirror is as stale as the local view and
+        /// the re-drive still happens. The read, the adopt and the write are not atomic against the notification path:
+        /// a notification landing in between runs the ACTIVE handler twice, which is idempotent.
+        ///
+        /// Decision by the mirror's value for this node's deployment of the artifact:
+        ///  - ACTIVE: adopt it into local state exactly as the missed notification would (record, then drive the
+        ///    handler). No write.
+        ///  - EARLIER in the activation chain (LOAD through ROUTING): the chain's last write was never answered, so
+        ///    re-drive it IN FULL ([#transitionToActiveWithStreamRefs]: ACTIVE with its endpoints plus the stream-ref
+        ///    commands), never a bare ACTIVE, which would leave the stream refcounts unacquired; but only while a
+        ///    committed `SliceTarget` still names this version, because a rolled-back or replaced version must not be
+        ///    started again (#1068). A late answer to the original write would acquire the refs a second time; that
+        ///    exposure is the price of not leaving them missing.
+        ///  - anything else (DEACTIVATE, DEACTIVATING, FAILED, UNLOAD, UNLOADING, UNKNOWN, or no entry): the slice has
+        ///    left the activation chain, so ACTIVE is never written over it. The mirror's value is adopted into local
+        ///    state as its own notification would have been (an absent entry is handled as the removal it is), and the
+        ///    remediation stops.
         /// Every line names the node, the local state and the committed state, because the lines carried none and
         /// four reports could not say which node was stuck.
         @Contract
         private void reconcileWithCommitted(SliceNodeKey sliceKey, SliceState localState, String timer) {
             var committed = committedStateOf(sliceKey);
 
-            if (committed.map(state -> state == SliceState.ACTIVE).or(false)) {
+            committed.onEmpty(() -> adoptAbsentEntry(sliceKey, localState, timer))
+                     .onPresent(state -> reconcileWithPresent(sliceKey, localState, timer, state));
+        }
+
+        private void reconcileWithPresent(SliceNodeKey sliceKey,
+                                          SliceState localState,
+                                          String timer,
+                                          SliceState committed) {
+            if (committed == SliceState.ACTIVE) {
                 log.warn("Node {} slice {} still {} locally after {}, but its COMMITTED state is ACTIVE — adopting the "
                         + "committed ACTIVE into local state, no write (the local view missed its own notification)",
                          ctx.self().id(),
                          sliceKey.artifact(),
                          localState,
                          timer);
-                recordDeployment(sliceKey, SliceNodeValue.sliceNodeValue(SliceState.ACTIVE));
-                processStateTransition(sliceKey, SliceState.ACTIVE);
+                adoptCommitted(sliceKey, committed);
+
+                return;
+            }
+
+            if (isEarlierInActivationChain(committed)) {
+                redriveLastWrite(sliceKey, localState, timer, committed);
+
+                return;
+            }
+
+            log.warn("Node {} slice {} still {} locally after {}, but its COMMITTED state is {}, which is not earlier in "
+                    + "the activation chain — NOT writing ACTIVE over it; adopting the committed state into local state",
+                     ctx.self().id(),
+                     sliceKey.artifact(),
+                     localState,
+                     timer,
+                     committed);
+            adoptCommitted(sliceKey, committed);
+        }
+
+        private void redriveLastWrite(SliceNodeKey sliceKey,
+                                      SliceState localState,
+                                      String timer,
+                                      SliceState committed) {
+            if (!CommittedSliceTarget.permits(ctx.kvStore(), sliceKey.artifact())) {
+                log.warn("Node {} slice {} still {} locally after {}; committed state is {}, but no committed SliceTarget "
+                        + "names this version any more (#1068) — NOT re-driving ACTIVE",
+                         ctx.self().id(),
+                         sliceKey.artifact(),
+                         localState,
+                         timer,
+                         committed);
 
                 return;
             }
@@ -616,8 +666,31 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
                      sliceKey.artifact(),
                      localState,
                      timer,
-                     committed.map(SliceState::name).or("absent"));
+                     committed);
             transitionToActiveWithStreamRefs(sliceKey);
+        }
+
+        private void adoptAbsentEntry(SliceNodeKey sliceKey, SliceState localState, String timer) {
+            log.warn("Node {} slice {} still {} locally after {}, but its committed entry is ABSENT — the slice was removed; "
+                    + "NOT writing ACTIVE, handling it as the removal it is",
+                     ctx.self().id(),
+                     sliceKey.artifact(),
+                     localState,
+                     timer);
+            handleSliceValueRemove(sliceKey);
+        }
+
+        /// What this node's own notification would have done for `state`: record it, then drive its handler.
+        private void adoptCommitted(SliceNodeKey sliceKey, SliceState state) {
+            recordDeployment(sliceKey, SliceNodeValue.sliceNodeValue(state));
+            processStateTransition(sliceKey, state);
+        }
+
+        private static boolean isEarlierInActivationChain(SliceState state) {
+            return switch (state) {
+                case LOAD, LOADING, LOADED, ACTIVATE, ACTIVATING, ROUTING -> true;
+                case ACTIVE, DEACTIVATE, DEACTIVATING, FAILED, UNLOAD, UNLOADING, UNKNOWN -> false;
+            };
         }
 
         private Option<SliceState> committedStateOf(SliceNodeKey sliceKey) {

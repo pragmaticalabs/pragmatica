@@ -77,7 +77,9 @@ public interface ConsensusMetrics {
     /// Hand the metrics sink a probe for the age, in milliseconds, of the OLDEST batch still awaiting a decision
     /// on this node, `0` when none is pending (#1117). A probe rather than a pushed value: the age grows with no
     /// event to push it, so a gauge fed only on batch arrival and commit would read stale exactly when a batch is
-    /// stuck. Called once, at engine construction; the sink calls the probe when it is read.
+    /// stuck. The age counts from this node's LOCAL receipt of the batch (its own submission or a peer's), never from the
+    /// batch's creation stamp, which is the originator's `nanoTime` and meaningless on another JVM. Called once, at engine
+    /// construction; the sink calls the probe when it is read.
     ///
     /// @param nodeId The node
     /// @param ageMs  Age of the oldest pending batch in milliseconds, 0 when nothing is pending
