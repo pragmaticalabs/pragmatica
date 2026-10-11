@@ -165,13 +165,15 @@ class ReadCommittedStreamTest {
         /// A node that is the owner takes no position from anyone: it is the authority.
         @Test
         void ownerIgnoresAReportedPosition() {
-            manager = streamPartitionManager(Long.MAX_VALUE, EvictionListener.NOOP, ReplicationManager.NONE);
-            manager.placementRoleSupplier((_, _) -> ReplicaSetController.Role.OWNER);
+            var replication = replicationManager(SELF, registryWithPeers());
+
+            manager = streamPartitionManager(Long.MAX_VALUE, EvictionListener.NOOP, replication);
             createStream(manager, 3, 3);
+            publish(manager, "e0");
 
             manager.commitAdvanced(STREAM, PARTITION, 5L, EPOCH_1);
 
-            assertThat(visibleOffset(manager)).isEqualTo(-1L);
+            assertThat(readLocal(manager)).as("the owner's own acknowledgements decide, not a position reported to it").isEmpty();
         }
     }
 

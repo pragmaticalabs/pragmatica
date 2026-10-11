@@ -2203,9 +2203,6 @@ public final class StreamPartitionManager implements AutoCloseable {
         if (offset >= ring.headOffset()) {
             unverifiedReplicas.remove(key);
             verifiedPrefix.remove(key);
-            if (replica) {
-                exposeReplicaCommitted(streamName, partition, ring);
-            }
         }
     }
 
