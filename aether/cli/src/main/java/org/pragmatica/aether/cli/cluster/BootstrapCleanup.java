@@ -844,7 +844,7 @@ sealed interface BootstrapCleanup {
                                                                                sweep);
             case CreatedResource.FloatingIpAssignment ip -> detachFloatingIp(ip);
             case CreatedResource.DockerContainer container -> removeContainer(container);
-            case CreatedResource.DockerNetwork network -> removeNetwork(network);
+            case CreatedResource.DockerNetwork network -> removeNetwork(state, network);
             case CreatedResource.SshDeployedConfig config -> removeRemoteConfig(config);
             case CreatedResource.SshKeyResource key -> deleteSshKey(state, key, resolvers);
         };
@@ -1214,25 +1214,25 @@ sealed interface BootstrapCleanup {
                                                                                                          container.containerId()));
     }
 
-    /// Removes a docker network bootstrap created, and only while no container is attached (#2131). A network that still has members (a user's
-    /// containers joined it) stays, and that is reported rather than failed: cleanup did what it may. Containers rank below the network, so ours
-    /// are already gone by now.
+    /// Removes the docker network the LEDGER recorded (#2131), by that recorded name and no other, and only if it still carries this cluster's label
+    /// and no container is attached. A network with members stays and is reported, not failed. Containers rank below the network, so ours are gone by now.
     @SuppressWarnings("JBCT-EX-01")
-    private static Result<Unit> removeNetwork(CreatedResource.DockerNetwork network) {
+    private static Result<Unit> removeNetwork(BootstrapState state, CreatedResource.DockerNetwork network) {
         System.out.printf("  Removing docker network %s (created by bootstrap)...%n", network.networkName());
 
-        return ProviderResolver.resolveDockerComputeWithoutBackup().flatMap(compute -> compute instanceof DockerComputeProvider docker
-                                                                                       ? docker.removeNetworkIfEmpty()
-                                                                                               .await()
-                                                                                               .map(removal -> reportNetworkRemoval(network,
-                                                                                                                                    removal))
-                                                                                       : Result.unitResult());
+        return ProviderResolver.resolveDockerComputeWithoutBackup()
+                               .flatMap(compute -> compute instanceof DockerComputeProvider docker
+                                                  ? docker.removeNetworkIfOwnedAndEmpty(network.networkName(), state.clusterName().value())
+                                                          .await()
+                                                          .map(removal -> reportNetworkRemoval(network, removal))
+                                                  : Result.unitResult());
     }
 
     private static Unit reportNetworkRemoval(CreatedResource.DockerNetwork network, DockerNetwork.Removal removal) {
-        if (removal == DockerNetwork.Removal.IN_USE) {
-            System.out.printf("  Docker network %s still has containers attached; left in place.%n",
-                              network.networkName());
+        switch (removal) {
+            case IN_USE -> System.out.printf("  Docker network %s still has containers attached; left in place.%n", network.networkName());
+            case NOT_OURS -> System.out.printf("  Docker network %s does not carry this cluster's label; left in place.%n", network.networkName());
+            default -> {}
         }
 
         return Unit.unit();

@@ -94,7 +94,7 @@ sealed interface BootstrapPhaseProvision {
         }
 
         return ProviderResolver.resolveDockerComputeWithoutBackup().flatMap(compute -> compute instanceof DockerComputeProvider docker
-                                                                                       ? docker.ensureNetwork()
+                                                                                       ? docker.ensureNetwork(ctx.state().clusterName().value())
                                                                                                .await()
                                                                                                .map(ensured -> recordCreatedNetwork(ctx,
                                                                                                                                     docker,
@@ -108,15 +108,18 @@ sealed interface BootstrapPhaseProvision {
                                                               DockerNetwork.Ensured ensured) {
         var name = docker.config().networkName();
 
-        if (ensured == DockerNetwork.Ensured.EXISTING) {
-            System.out.printf("  Reusing docker network %s%n", name);
+        if (!ensured.owned()) {
+            System.out.printf("  Reusing docker network %s (not created by this cluster; it will not be removed)%n", name);
 
             return List.of();
         }
 
         var network = CreatedResource.DockerNetwork.dockerNetwork(name);
 
-        System.out.printf("  Created docker network %s%n", name);
+        System.out.printf(ensured == DockerNetwork.Ensured.CREATED
+                          ? "  Created docker network %s%n"
+                          : "  Reusing docker network %s (left by an earlier run of this cluster; ownership kept)%n",
+                          name);
         var _ = BootstrapStatePersistence.appendResource(ctx.state().clusterName(),
                                                          network)
                                          .onFailure(cause -> System.err.printf("  WARN: docker network %s was created but NOT recorded in the cleanup ledger — %s."

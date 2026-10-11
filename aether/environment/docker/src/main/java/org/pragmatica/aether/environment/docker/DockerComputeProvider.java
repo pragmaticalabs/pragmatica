@@ -54,14 +54,15 @@ public record DockerComputeProvider(DockerCommandRunner runner, DockerConfig con
         return success(new DockerComputeProvider(runner, config, hostEnv));
     }
 
-    /// Makes sure the configured network exists before any container is started on it (#2131).
-    public Promise<DockerNetwork.Ensured> ensureNetwork() {
-        return DockerNetwork.ensure(runner, config.networkName());
+    /// Makes sure the configured network exists before any container is started on it (#2131), creating it labelled with `clusterName` when absent.
+    public Promise<DockerNetwork.Ensured> ensureNetwork(String clusterName) {
+        return DockerNetwork.ensure(runner, config.networkName(), clusterName);
     }
 
-    /// Removes the configured network if no container is attached; see [DockerNetwork#removeIfEmpty].
-    public Promise<DockerNetwork.Removal> removeNetworkIfEmpty() {
-        return DockerNetwork.removeIfEmpty(runner, config.networkName());
+    /// Removes the network named `networkName` (the one the LEDGER recorded, which can differ from the configured one today) if it carries
+    /// `clusterName`'s label and is empty; see [DockerNetwork#removeIfOwnedAndEmpty].
+    public Promise<DockerNetwork.Removal> removeNetworkIfOwnedAndEmpty(String networkName, String clusterName) {
+        return DockerNetwork.removeIfOwnedAndEmpty(runner, networkName, clusterName);
     }
 
     @Override

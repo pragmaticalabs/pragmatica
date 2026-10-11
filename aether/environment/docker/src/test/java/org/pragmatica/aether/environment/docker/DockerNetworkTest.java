@@ -4,8 +4,9 @@
 package org.pragmatica.aether.environment.docker;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
-import java.util.function.Function;
+import java.util.Map;
 
 import org.junit.jupiter.api.Test;
 import org.pragmatica.lang.Promise;
@@ -13,86 +14,159 @@ import org.pragmatica.lang.utils.Causes;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-/// #2131: the network a docker cluster joins is reused when present, created when absent, and removed only when empty.
+/// #2131: the network a docker cluster joins is reused when present, created (labelled with its cluster) when absent, owned again only when it carries
+/// THIS cluster's label, and removed only when owned and empty.
 class DockerNetworkTest {
-    private static final class ScriptedRunner implements DockerCommandRunner {
+    /// A tiny docker: networks by name with their owner label and attached-container count.
+    private static class Docker implements DockerCommandRunner {
         final List<String> commands = new ArrayList<>();
-        final Function<List<String>, Promise<String>> answer;
-
-        ScriptedRunner(Function<List<String>, Promise<String>> answer) {
-            this.answer = answer;
-        }
+        final Map<String, String> labels = new HashMap<>();
+        final Map<String, Integer> attached = new HashMap<>();
+        boolean createFails;
 
         @Override
         public Promise<String> execute(List<String> command) {
             commands.add(String.join(" ", command));
+            var name = command.getLast();
 
-            return answer.apply(command);
+            return switch (command.get(2)) {
+                case "inspect" -> inspect(command, name);
+                case "create" -> create(command, name);
+                case "rm" -> {
+                    labels.remove(name);
+                    yield Promise.success(name);
+                }
+                default -> Causes.cause("unexpected " + command).promise();
+            };
+        }
+
+        private Promise<String> inspect(List<String> command, String name) {
+            if (!labels.containsKey(name)) {
+                return Causes.cause("No such network").promise();
+            }
+
+            var format = command.get(command.indexOf("--format") + 1);
+
+            return Promise.success(format.contains("len .Containers") ? labels.get(name) + "|" + attached.getOrDefault(name, 0) : labels.get(name));
+        }
+
+        private Promise<String> create(List<String> command, String name) {
+            if (createFails) {
+                return Causes.cause("create failed").promise();
+            }
+
+            var label = command.get(command.indexOf("--label") + 1);
+
+            labels.put(name, label.substring(label.indexOf('=') + 1));
+
+            return Promise.success("id");
         }
     }
 
-    private static Promise<String> fail() {
-        return Causes.cause("exit 1").promise();
+    @Test
+    void anAbsentNetwork_isCreatedWithTheClustersLabel() {
+        var docker = new Docker();
+
+        assertThat(DockerNetwork.ensure(docker, "net", "c1").await().unwrap()).isEqualTo(DockerNetwork.Ensured.CREATED);
+        assertThat(docker.commands).last().isEqualTo("docker network create --label aether.created-by-cluster=c1 net");
     }
 
     @Test
-    void anExistingNetwork_isReused_andNothingIsCreated() {
-        var runner = new ScriptedRunner(_ -> Promise.success("[{}]"));
+    void aNetworkWithoutOurLabel_isForeign_reusedAndNeverOwned() {
+        var docker = new Docker();
 
-        assertThat(DockerNetwork.ensure(runner, "net").await().unwrap()).isEqualTo(DockerNetwork.Ensured.EXISTING);
-        assertThat(runner.commands).containsExactly("docker network inspect net");
+        docker.labels.put("net", "");
+
+        assertThat(DockerNetwork.ensure(docker, "net", "c1").await().unwrap()).isEqualTo(DockerNetwork.Ensured.FOREIGN);
+        assertThat(docker.commands).noneMatch(command -> command.contains(" create "));
     }
 
     @Test
-    void anAbsentNetwork_isCreated() {
-        var runner = new ScriptedRunner(command -> command.contains("create") ? Promise.success("id") : fail());
+    void aNetworkWithAnotherClustersLabel_isForeign() {
+        var docker = new Docker();
 
-        assertThat(DockerNetwork.ensure(runner, "net").await().unwrap()).isEqualTo(DockerNetwork.Ensured.CREATED);
-        assertThat(runner.commands).containsExactly("docker network inspect net", "docker network create net");
+        docker.labels.put("net", "c2");
+
+        assertThat(DockerNetwork.ensure(docker, "net", "c1").await().unwrap()).isEqualTo(DockerNetwork.Ensured.FOREIGN);
     }
 
-    /// A concurrent creator won the race: the create fails, the re-check finds the network, and that is a reuse.
+    /// A re-run over a network an earlier run of THIS cluster left in place: it is ours again, so it is recorded and will not leak.
     @Test
-    void aCreateThatLosesARace_isAReuse_notAFailure() {
-        var inspects = new int[]{0};
-        var runner = new ScriptedRunner(command -> {
-            if (command.contains("create")) {
-                return fail();
+    void aNetworkCarryingOurOwnLabel_isOwnedAgain() {
+        var docker = new Docker();
+
+        docker.labels.put("net", "c1");
+
+        assertThat(DockerNetwork.ensure(docker, "net", "c1").await().unwrap()).isEqualTo(DockerNetwork.Ensured.OWN);
+        assertThat(DockerNetwork.Ensured.OWN.owned()).isTrue();
+        assertThat(DockerNetwork.Ensured.CREATED.owned()).isTrue();
+        assertThat(DockerNetwork.Ensured.FOREIGN.owned()).isFalse();
+    }
+
+    /// A concurrent creator won the race: our create fails, the re-check finds the network, and ownership follows its label.
+    @Test
+    void aCreateThatLosesARace_followsTheWinnersLabel() {
+        var docker = new Docker() {
+            @Override
+            public Promise<String> execute(List<String> command) {
+                if (command.get(2).equals("create")) {
+                    labels.put("net", "someone-else");
+                    commands.add(String.join(" ", command));
+
+                    return Causes.cause("already exists").promise();
+                }
+
+                return super.execute(command);
             }
+        };
 
-            return inspects[0]++ == 0 ? fail() : Promise.success("[{}]");
-        });
-
-        assertThat(DockerNetwork.ensure(runner, "net").await().unwrap()).isEqualTo(DockerNetwork.Ensured.EXISTING);
+        assertThat(DockerNetwork.ensure(docker, "net", "c1").await().unwrap()).isEqualTo(DockerNetwork.Ensured.FOREIGN);
     }
 
     @Test
     void aCreateThatFailsForReal_isReported() {
-        var runner = new ScriptedRunner(_ -> fail());
+        var docker = new Docker();
 
-        assertThat(DockerNetwork.ensure(runner, "net").await().isFailure()).isTrue();
+        docker.createFails = true;
+
+        assertThat(DockerNetwork.ensure(docker, "net", "c1").await().isFailure()).isTrue();
     }
 
     @Test
-    void anEmptyNetwork_isRemoved() {
-        var runner = new ScriptedRunner(command -> command.contains("--format") ? Promise.success("0") : Promise.success("net"));
+    void anOwnedEmptyNetwork_isRemoved_byTheNameGiven() {
+        var docker = new Docker();
 
-        assertThat(DockerNetwork.removeIfEmpty(runner, "net").await().unwrap()).isEqualTo(DockerNetwork.Removal.REMOVED);
-        assertThat(runner.commands).last().isEqualTo("docker network rm net");
+        docker.labels.put("net", "c1");
+
+        assertThat(DockerNetwork.removeIfOwnedAndEmpty(docker, "net", "c1").await().unwrap()).isEqualTo(DockerNetwork.Removal.REMOVED);
+        assertThat(docker.commands).last().isEqualTo("docker network rm net");
     }
 
     @Test
-    void aNetworkWithContainers_isLeftInPlace() {
-        var runner = new ScriptedRunner(_ -> Promise.success("2"));
+    void anOwnedNetworkWithContainers_isLeftInPlace() {
+        var docker = new Docker();
 
-        assertThat(DockerNetwork.removeIfEmpty(runner, "net").await().unwrap()).isEqualTo(DockerNetwork.Removal.IN_USE);
-        assertThat(runner.commands).noneMatch(command -> command.contains(" rm "));
+        docker.labels.put("net", "c1");
+        docker.attached.put("net", 2);
+
+        assertThat(DockerNetwork.removeIfOwnedAndEmpty(docker, "net", "c1").await().unwrap()).isEqualTo(DockerNetwork.Removal.IN_USE);
+        assertThat(docker.commands).noneMatch(command -> command.contains(" rm "));
+    }
+
+    @Test
+    void aNetworkWithoutOurLabel_isNeverRemoved_evenWhenEmpty() {
+        var docker = new Docker();
+
+        docker.labels.put("net", "c2");
+        docker.labels.put("unlabelled", "");
+
+        assertThat(DockerNetwork.removeIfOwnedAndEmpty(docker, "net", "c1").await().unwrap()).isEqualTo(DockerNetwork.Removal.NOT_OURS);
+        assertThat(DockerNetwork.removeIfOwnedAndEmpty(docker, "unlabelled", "c1").await().unwrap()).isEqualTo(DockerNetwork.Removal.NOT_OURS);
+        assertThat(docker.commands).noneMatch(command -> command.contains(" rm "));
     }
 
     @Test
     void aNetworkThatIsAlreadyGone_isNotAnError() {
-        var runner = new ScriptedRunner(_ -> fail());
-
-        assertThat(DockerNetwork.removeIfEmpty(runner, "net").await().unwrap()).isEqualTo(DockerNetwork.Removal.ABSENT);
+        assertThat(DockerNetwork.removeIfOwnedAndEmpty(new Docker(), "net", "c1").await().unwrap()).isEqualTo(DockerNetwork.Removal.ABSENT);
     }
 }
