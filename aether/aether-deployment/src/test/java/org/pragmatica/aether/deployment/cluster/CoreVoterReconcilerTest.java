@@ -249,4 +249,10 @@ class CoreVoterReconcilerTest {
         assertThat(requested).hasSize(1);
         assertThat(requested.getFirst()).containsExactlyInAnyOrder(A, B, C, E, F);
     }
+
+    /// A newcomer never displaces an unobserved voter, even when its id sorts first (the ranking, not the id, decides).
+    @Test
+    void aNewcomerWhoseIdSortsFirst_neverDisplacesAnUnobservedVoter() {
+        assertThat(requestsOf(FIVE, 5, Set.of(A, B, C, D, new NodeId("0-newcomer")), Set.of(), Map.of())).isEmpty();
+    }
 }
