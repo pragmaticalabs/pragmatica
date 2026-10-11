@@ -36,3 +36,4 @@
   ring shrink. `[verified: EntityCheckpointCutTest, CutBracketTest]`
 - A checkpoint with no recorded lineage (written by older code) is discarded when a fold would seed from it, and the fold is rebuilt from the log. `[verified: EntityCheckpointCutTest, EntityCommittedReadTest]`
 - A checkpoint's lineage identity includes the owner epoch, and a copy that cannot supply the epoch of the claim record (it keeps no epoch history) discards the checkpoint instead of trusting a digest alone. `[verified: EntityCheckpointCutTest, EntityCommittedReadTest]`
+- A checkpoint claim is accepted without validation only at or below the sealed floor; above it, a copy whose ring evicted the start of the claim's window still validates over the records it holds, and discards the checkpoint if the claim record itself is unreadable. `[verified: EntityCheckpointCutTest]`

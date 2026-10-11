@@ -147,6 +147,14 @@ public interface EntityLogSubstrate {
         return Option.none();
     }
 
+    /// Whether this node's copy of the log still holds the lineage a checkpoint recorded at `offset` (#2087 B4-cut). The default compares with
+    /// [#lineageAt] and treats a record this copy cannot read as untouched (a substrate whose unreadable records all lie below the sealed
+    /// floor); a substrate that can keep a readable record without the rest of its window overrides it.
+    default boolean lineageHolds(String keyspace, int partition, long offset, byte[] recorded) {
+        return lineageAt(keyspace, partition, offset).map(local -> sameLineage(recorded, local))
+                        .or(true);
+    }
+
     /// [#saveCheckpoint(String, int, long, byte[])] recording `lineage` with the checkpoint. The default drops it.
     default Promise<Unit> saveCheckpoint(String keyspace,
                                          int partition,

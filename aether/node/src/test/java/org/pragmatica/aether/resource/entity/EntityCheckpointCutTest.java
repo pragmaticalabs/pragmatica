@@ -34,6 +34,7 @@ import org.pragmatica.storage.MetadataStore;
 import org.pragmatica.storage.StorageInstance;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.fail;
 import static org.pragmatica.aether.node.StreamEntityLogSubstrate.streamEntityLogSubstrate;
 import static org.pragmatica.aether.stream.StreamPartitionManager.streamPartitionManager;
 
@@ -56,6 +57,7 @@ class EntityCheckpointCutTest {
     private EntityLogSubstrate substrate;
     private KVStore<AetherKey, AetherValue> kv;
     private String arc;
+    private volatile long sealedFloor = -1L;
 
     @BeforeEach
     void setUp() {
@@ -69,7 +71,7 @@ class EntityCheckpointCutTest {
                                          EvictionListener.NOOP,
                                          org.pragmatica.aether.stream.replication.ReplicationManager.NONE,
                                          walBaseDir,
-                                         LastSealedOffsetSource.none());
+                                         (_, _) -> sealedFloor);
         manager.placementRoleSupplier((_, _) -> ReplicaSetController.Role.REPLICA);
         storage = StorageInstance.storageInstance("entity-ckpt",
                                                   List.of(MemoryTier.memoryTier(ONE_GB), LocalDiskTier.localDiskTier(storageDir.resolve("blocks"), ONE_GB).unwrap()),
@@ -251,6 +253,83 @@ class EntityCheckpointCutTest {
         assertThat(fold.get(PARTITION, "a2").isPresent()).as("the new lineage's record at offset 0").isTrue();
     }
 
+    private static final int RECORDS = 8;
+    private static final long NOW = System.currentTimeMillis();
+
+    /// Records 0..7 under E1, offsets 0..4 old (evictable) and 5..7 recent; committed through 7, checkpoint claim 7 with its full window. Returns the fold.
+    private EntityFold checkpointedAtSeven() {
+        for (int i = 0; i < RECORDS; i++) {
+            landAcknowledged(i, record("r" + i, i + 1), E1, i < 5 ? 1000L + i : NOW);
+        }
+
+        commit(7L, E1);
+        var fold = EntityFold.entityFold(KEYSPACE, substrate);
+
+        fold.ready(PARTITION).await();
+        var candidate = fold.checkpointCandidate(PARTITION, -1L).unwrap();
+
+        assertThat(candidate.throughOffset()).as("control: the claim is offset 7").isEqualTo(7L);
+        assertThat(substrate.saveCheckpoint(KEYSPACE, PARTITION, 7L, candidate.snapshot(), candidate.lineage()).await().isSuccess()).isTrue();
+
+        return fold;
+    }
+
+    /// Retention evicts the START of the claim's window (offsets 0..4) but the claim record (7) is still in the ring, above the sealed floor (-1): the
+    /// checkpoint is still validated, over the records both copies hold (5..7). Control: an untouched log validates and seeds.
+    @Test
+    void aClaimWhoseWindowStartWasEvicted_isValidatedOverTheRecordsStillHeld_andSeeds() {
+        var fold = checkpointedAtSeven();
+
+        evictOld();
+        assertThat(manager.earliestRetainedOffset(arc, PARTITION)).as("control: the window start is gone, the claim record is not").isEqualTo(5L);
+        assertThat(substrate.lineageAt(KEYSPACE, PARTITION, 7L).isPresent()).as("an identity over offsets 5..7").isTrue();
+        assertThat(EntityFold.entityFold(KEYSPACE, substrate).ready(PARTITION).await().isSuccess())
+            .as("the log below 5 is gone: only a checkpoint that validated can seed").isTrue();
+    }
+
+    /// The same eviction, then a cut that rewrites the claim record: the retained part of the window differs, so the checkpoint is discarded -- and
+    /// the rebuild, with the log below 5 gone, refuses rather than seed the removed record.
+    @Test
+    void aClaimWhoseWindowStartWasEvicted_andWhoseRecordWasCut_isDiscarded() {
+        var fold = checkpointedAtSeven();
+
+        evictOld();
+        var z = record("z", 9);
+
+        assertThat(manager.appendRecovered(arc, PARTITION, 7L, z, NOW, E2).isFailure()).as("control: a divergence at offset 7").isTrue();
+        assertThat(manager.repairDivergence(arc, PARTITION, _ -> true).isSuccess()).as("control: the cut").isTrue();
+        assertThat(manager.appendRecovered(arc, PARTITION, 7L, z, NOW, E2).isSuccess()).as("control: a different record lands at 7").isTrue();
+        commit(7L, E2);
+
+        assertThat(fold.ready(PARTITION).await().isFailure()).as("not seeded from the stale checkpoint; the log below 5 is gone, so the rebuild refuses").isTrue();
+    }
+
+    /// A claim at or below the sealed floor is the one region no cut can reach (`requireAboveSealedFloor`): accepted with no record to compare.
+    @Test
+    void aClaimAtOrBelowTheSealedFloor_whoseRecordIsGone_isAcceptedWithoutValidation() {
+        for (int i = 0; i < RECORDS; i++) {
+            landAcknowledged(i, record("r" + i, i + 1), E1);
+        }
+
+        commit(7L, E1);
+        var fold = EntityFold.entityFold(KEYSPACE, substrate);
+
+        fold.ready(PARTITION).await();
+        var candidate = fold.checkpointCandidate(PARTITION, -1L).unwrap();
+
+        substrate.saveCheckpoint(KEYSPACE, PARTITION, 7L, candidate.snapshot(), candidate.lineage()).await();
+        evictOld();
+        assertThat(manager.earliestRetainedOffset(arc, PARTITION)).as("control: every record is gone").isEqualTo(8L);
+        assertThat(substrate.lineageAt(KEYSPACE, PARTITION, 7L).isEmpty()).as("control: the claim record is unreadable").isTrue();
+        assertThat(EntityFold.entityFold(KEYSPACE, substrate).ready(PARTITION).await().isFailure())
+            .as("control: above the floor an unreadable claim record cannot be validated, so it is discarded").isTrue();
+
+        sealedFloor = 7L;
+
+        assertThat(EntityFold.entityFold(KEYSPACE, substrate).ready(PARTITION).await().isSuccess())
+            .as("at the sealed floor the checkpoint is what makes the unreadable prefix a non-event").isTrue();
+    }
+
     /// Control: the validation does not discard a checkpoint whose lineage still holds -- a cut ABOVE the claim leaves it valid, and the
     /// rebuild seeds from it (the log below the claim is not needed).
     @Test
@@ -294,7 +373,16 @@ class EntityCheckpointCutTest {
     }
 
     private void landAcknowledged(long offset, byte[] record, Epoch epoch) {
-        assertThat(manager.appendRecovered(arc, PARTITION, offset, record, 1000L + offset, epoch).isSuccess()).isTrue();
+        landAcknowledged(offset, record, epoch, 1000L + offset);
+    }
+
+    private void landAcknowledged(long offset, byte[] record, Epoch epoch, long timestamp) {
+        assertThat(manager.appendRecovered(arc, PARTITION, offset, record, timestamp, epoch).isSuccess()).isTrue();
+    }
+
+    /// Retention evicts the records whose timestamp is old: the ones landed with timestamp 1000+.
+    private void evictOld() {
+        manager.partitionBuffer(arc, PARTITION).or(() -> fail("no ring")).evictByAge(3_600_000L);
     }
 
     private static byte[] record(String key, int value) {

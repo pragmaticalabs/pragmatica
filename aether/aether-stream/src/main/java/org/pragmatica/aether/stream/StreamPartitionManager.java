@@ -2561,6 +2561,12 @@ public final class StreamPartitionManager implements AutoCloseable {
 
     /// Offsets at or below the last sealed offset were durably sealed into segments: what this copy holds there is not a tail
     /// it may discard, so a divergence at or below the sealed floor is refused (the quarantine and the flag stand).
+    /// The highest offset sealed history holds for the partition (`-1` for none). A cut is refused below it ([#requireAboveSealedFloor]), so no
+    /// record at or below it can ever be cut.
+    public long sealedFloor(String streamName, int partition) {
+        return lastSealedOffset.lastSealedOffset(streamName, partition);
+    }
+
     private Result<Unit> requireAboveSealedFloor(String streamName, int partition, long keep) {
         var floor = lastSealedOffset.lastSealedOffset(streamName, partition);
 

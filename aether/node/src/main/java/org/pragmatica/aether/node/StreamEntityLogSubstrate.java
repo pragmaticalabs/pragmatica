@@ -649,23 +649,52 @@ public final class StreamEntityLogSubstrate implements EntityLogSubstrate {
         return true;
     }
 
-    /// The identity of this node's record at `offset` (#2087 B4-cut): the owner epoch it knows for it, when it knows one, and a SHA-256 digest of
-    /// up to the last [CheckpointFrame#LINEAGE_WINDOW] records ending there, offsets included. A window rather than the one record: after a cut a new lineage
-    /// can write byte-identical records, and a checkpoint folded over the removed records would still differ in the earlier ones.
+    /// The identity of this node's records ending at `offset` (#2087 B4-cut): the owner epoch it knows for it and, for each of up to the last
+    /// [CheckpointFrame#LINEAGE_WINDOW] records ending there (those it still retains), its offset and a hash of its bytes. A window rather than the one
+    /// record: after a cut a new lineage can write byte-identical records, and a checkpoint folded over the removed records would still differ in the
+    /// earlier ones. [#UNVOUCHED] when the epoch is not known here; none when the claim record is not readable.
     @Override
     public Option<byte[]> lineageAt(String keyspace, int partition, long offset) {
         var stream = EntityPartitionArc.arcName(keyspace);
         var from = Math.max(0L, offset - CheckpointFrame.LINEAGE_WINDOW + 1L);
 
+        return readableWindow(stream, partition, from, offset).filter(events -> CheckpointFrame.endsAt(events, offset))
+                             .flatMap(events -> partitionManager.epochAt(stream, partition, offset)
+                                                                .fold(() -> Option.some(UNVOUCHED),
+                                                                      epoch -> CheckpointFrame.lineageOf(events, epoch)));
+    }
+
+    /// The records of `[from, offset]` this copy still retains: the whole window, or -- when its start was evicted -- the part from the ring's
+    /// tail. None when the claim record itself is not readable.
+    private Option<List<RawEvent>> readableWindow(String stream, int partition, long from, long offset) {
         return partitionManager.readAppended(stream,
                                              partition,
                                              from,
                                              (int)(offset - from + 1L))
-                               .option()
-                               .filter(events -> CheckpointFrame.coversWindow(events, from, offset))
-                               .flatMap(events -> partitionManager.epochAt(stream, partition, offset)
-                                                                  .fold(() -> Option.some(UNVOUCHED),
-                                                                        epoch -> CheckpointFrame.lineageOf(events, epoch)));
+                               .fold(cause -> retainedPart(cause, stream, partition, offset),
+                                     Option::some);
+    }
+
+    private Option<List<RawEvent>> retainedPart(Cause cause, String stream, int partition, long offset) {
+        return cause instanceof StreamError.CursorExpired expired && expired.tailOffset() <= offset
+               ? partitionManager.readAppended(stream,
+                                               partition,
+                                               expired.tailOffset(),
+                                               (int)(offset - expired.tailOffset() + 1L))
+                                 .option()
+               : Option.none();
+    }
+
+    /// A claim at or below the sealed floor is accepted without validation: a cut is refused at or below that floor, so nothing there can have
+    /// been cut. Above it the copy validates over the records of the window it still holds, the claim record included; if it holds none, or
+    /// cannot vouch for the owner epoch, the answer is no.
+    @Override
+    public boolean lineageHolds(String keyspace, int partition, long offset, byte[] recorded) {
+        return offset <= partitionManager.sealedFloor(EntityPartitionArc.arcName(keyspace), partition) || lineageAt(keyspace,
+                                                                                                                    partition,
+                                                                                                                    offset).map(local -> CheckpointFrame.agree(recorded,
+                                                                                                                                                               local))
+                                                                                                                   .or(false);
     }
 
     public Promise<Unit> saveCheckpoint(String keyspace, int partition, long throughOffset, byte[] snapshot) {

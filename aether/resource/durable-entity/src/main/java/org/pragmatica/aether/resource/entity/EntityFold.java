@@ -832,24 +832,20 @@ final class EntityFold {
                         .recover(cause -> unreadableCheckpoint(partition, cause));
     }
 
-    /// #2087 B4-cut: a checkpoint is usable only over the lineage it was taken over. It records the identity of the log record at its claim
-    /// ([EntityLogSubstrate#lineageAt]); this node's record at that offset must have the same identity.
+    /// #2087 B4-cut: a checkpoint is usable only over the lineage it was taken over. It records the identity of the log records ending at its
+    /// claim ([EntityLogSubstrate#lineageAt]); [EntityLogSubstrate#lineageHolds] compares this node's copy with it.
     ///   - No lineage recorded, on a substrate that records one: the checkpoint was written by code that did not, so it cannot be told from one
     ///     taken over a lineage a cut has since removed. It is discarded and the fold is rebuilt from the log (a rebuild costs time, never state).
-    ///   - Recorded, and this node cannot read the record at the claim: it lies below the sealed floor, and a cut is refused at or below that
-    ///     floor (`requireAboveSealedFloor`), so the record cannot have been cut; the checkpoint is accepted (it is what makes the unreadable
-    ///     prefix a non-event).
-    ///   - Recorded and readable: accepted only if the identities are equal and both are vouched for. A copy that cannot supply the owner
-    ///     epoch of the claim record answers [EntityLogSubstrate#UNVOUCHED], and the digest alone can false-match there (a new lineage that
-    ///     rewrote a record before the window and reproduced the window), so such a checkpoint is discarded like a lineage-less one.
+    ///   - Recorded: the substrate decides. A claim at or below the sealed floor is accepted without validation, because a cut is refused at or
+    ///     below that floor (`requireAboveSealedFloor`), so the region cannot have been cut. Anywhere above it the copy validates over whatever
+    ///     records of the window it still holds, the claim record included, and a copy that cannot vouch for the owner epoch (it keeps no epoch
+    ///     history) or holds no such record discards the checkpoint: the digest alone can false-match there.
     private boolean lineageHolds(int partition, EntityLogSubstrate.EntityCheckpoint checkpoint) {
         return ! substrate.recordsLineage() || checkpoint.lineage()
-                                                         .map(recorded -> substrate.lineageAt(keyspace,
-                                                                                              partition,
-                                                                                              checkpoint.throughOffset())
-                                                                                   .map(local -> EntityLogSubstrate.sameLineage(recorded,
-                                                                                                                                local))
-                                                                                   .or(true))
+                                                         .map(recorded -> substrate.lineageHolds(keyspace,
+                                                                                                 partition,
+                                                                                                 checkpoint.throughOffset(),
+                                                                                                 recorded))
                                                          .or(false);
     }
 
