@@ -123,6 +123,12 @@ class GateTest(unittest.TestCase):
         write(self.root, "extra/pom.xml", pom("extra", parent="root", deps=(("core", None),)))   # listed in no <modules>
         self.assertEqual(1, len(self.violations("(a)")))
 
+    def test_profile_scoped_dependency_on_bsl_is_refused(self):
+        profile = ("<profiles><profile><id>p</id><dependencies><dependency><groupId>g</groupId><artifactId>core</artifactId>"
+                   "</dependency></dependencies></profile></profiles>")
+        write(self.root, "lib/pom.xml", pom("lib", parent="root").replace("</project>", profile + "</project>"))
+        self.assertEqual(1, len(self.violations("(a)")))
+
     def test_pom_fixture_under_src_is_not_a_module(self):
         write(self.root, "lib/src/test/resources/fixture/pom.xml", pom("fixture", deps=(("core", None),)))
         self.assertEqual([], self.violations("(a)"))

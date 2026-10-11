@@ -4,7 +4,7 @@
 **Scope:** `aether/aether-stream`, `aether/node`
 **Author:** spec-writer (unsupervised; assumptions documented inline as `[ASSUMPTION]` / `[DECISION]`)
 **Version target:** `1.0.0-rc1`
-**License:** BUSL-1.1 (all touched files under `aether/**`; carry the standard SPDX header)
+**License:** BUSL-1.1 (`aether/aether-stream` and `aether/node` are BSL modules; touched files there carry the standard SPDX header)
 
 ---
 

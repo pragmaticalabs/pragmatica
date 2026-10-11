@@ -6,7 +6,7 @@
 The BSL modules are the paths in tools/license/bsl-modules.txt; everything else is Apache-2.0. Three checks, exit 1 on any violation:
   (a) NO APACHE MODULE DEPENDS ON A BSL MODULE: not by a compile/runtime/provided dependency, not through its parent pom, and not by any
       edge (test scope included) from a PUBLISHED module. Every pom in the tree is examined, not only the default reactor (forge-tests sits
-      behind a profile). A test-scope edge from an unpublished module (skipPublishing, e.g. dead-surface-gate) is reported as info only.
+      behind a profile), and so are dependencies declared inside a <profile>. A test-scope edge from an unpublished module (skipPublishing, e.g. dead-surface-gate) is reported as info only.
   (b) EVERY HEADER MATCHES ITS MODULE: a .java file in a BSL module starts with `// SPDX-License-Identifier: BUSL-1.1`; no file outside
       them carries it (.java, .sh and .md alike, apart from files that discuss the licence).
   (c) THE LIST AND THE LICENSE MAP AGREE: the root LICENSE names exactly the listed paths; each BSL module has a LICENSE holding the BSL text
@@ -58,6 +58,14 @@ def under(path, entry):
     return path == entry or path.startswith(entry + "/")
 
 
+def all_dependencies(module):
+    """(group, artifact, declared scope, optional) for each <dependencies> entry, profile-scoped ones included."""
+    yield from module.dependencies()
+    for dependency in module.root.findall("m:profiles/m:profile/m:dependencies/m:dependency", pc.NS):
+        yield (module.resolve(pc.text(dependency, "m:groupId") or ""), pc.text(dependency, "m:artifactId"),
+               pc.text(dependency, "m:scope"), pc.text(dependency, "m:optional"))
+
+
 def declares_bsl(pom):
     return any((pc.text(l, "m:name") or "").startswith("Business Source License") for l in pc.ET.parse(pom).getroot().findall("m:licenses/m:license", pc.NS))
 
@@ -81,7 +89,7 @@ def analyse(root):
         parent = pc.parent_of(module, poms)
         if parent is not None and is_bsl(rel(parent.pom)):
             found.append(f"(a) {rel(pom) or '.'} (Apache) has a BSL parent pom {rel(parent.pom)}")
-        for group, artifact, declared_scope, _optional in module.dependencies():
+        for group, artifact, declared_scope, _optional in all_dependencies(module):
             if (group, artifact) not in bsl_coordinates:
                 continue
             managed_scope, _ = pc.managed_entry(module, poms, (group, artifact))
