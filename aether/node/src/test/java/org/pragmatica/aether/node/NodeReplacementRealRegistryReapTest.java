@@ -2349,6 +2349,37 @@ class NodeReplacementRealRegistryReapTest {
         assertThat(allocated()).isEqualTo(2);
     }
 
+    /// The node rejoins between the clear's commit and the return of its capacity: the new incarnation keeps its reservation.
+    @Test
+    void clearUnconfirmed_aNodeThatRejoinsAfterTheCommit_keepsItsReservation() throws Exception {
+        absentMark();
+        confirmedReservation();
+        afterProcessHook.set(() -> {
+            joins(OLD);
+            states.remove(OLD);
+        });
+
+        assertThat(ctmUnderTest.clearUnconfirmed(OLD, "alice", "i-77").await().isSuccess()).isTrue();
+
+        settle();
+        assertThat(reservation(OLD).isPresent()).as("the next incarnation's reservation is not returned by the old incarnation's clear").isTrue();
+        assertThat(allocated()).isEqualTo(3);
+    }
+
+    /// The node shows life after the commit: its capacity is not returned.
+    @Test
+    void clearUnconfirmed_aNodeThatShowsLifeAfterTheCommit_keepsItsReservation() throws Exception {
+        absentMark();
+        confirmedReservation();
+        afterProcessHook.set(() -> states.put(OLD, "Member"));
+
+        assertThat(ctmUnderTest.clearUnconfirmed(OLD, "alice", "i-77").await().isSuccess()).isTrue();
+
+        settle();
+        assertThat(reservation(OLD).isPresent()).isTrue();
+        assertThat(allocated()).isEqualTo(3);
+    }
+
     /// A forced clear over an instance that is still listed does not return its capacity: a read showed it live.
     @Test
     void clearUnconfirmed_aForcedClearOverALiveInstance_doesNotReturnTheCapacity() {
