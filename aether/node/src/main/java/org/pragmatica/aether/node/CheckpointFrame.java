@@ -77,6 +77,30 @@ final class CheckpointFrame {
         return last == offset && events.size() == last - first + 1L;
     }
 
+    /// An identity led by the sealed floor the writer saw when it took the checkpoint, then `body` (empty when the claim was at or below that
+    /// floor and nothing needs comparing). The floor is recorded because a claim at or below the floor AT WRITE TIME can never be cut later (the
+    /// floor only rises, and a cut is refused at or below it); a claim the floor merely reaches afterwards may already have been cut and rewritten.
+    static byte[] withFloor(long floor, byte[] body) {
+        return ByteBuffer.allocate(Long.BYTES + body.length)
+                         .putLong(floor)
+                         .put(body)
+                         .array();
+    }
+
+    /// The sealed floor recorded in `identity`, none when it records none (an unvouched or older identity).
+    static Option<Long> floorOf(byte[] identity) {
+        return identity.length < Long.BYTES
+               ? Option.none()
+               : Option.some(ByteBuffer.wrap(identity).getLong());
+    }
+
+    /// `identity` without its leading floor.
+    static byte[] bodyOf(byte[] identity) {
+        return identity.length < Long.BYTES
+               ? identity
+               : Arrays.copyOfRange(identity, Long.BYTES, identity.length);
+    }
+
     /// The owner epoch, then for each record (oldest first) its offset and the first [#HASH_BYTES] bytes of the SHA-256 of its bytes. Per
     /// record, so two copies that retain different parts of the window can still be compared over the records both hold ([#agree]).
     static Option<byte[]> lineageOf(List<RawEvent> events, Epoch epoch) {

@@ -304,9 +304,10 @@ class EntityCheckpointCutTest {
         assertThat(fold.ready(PARTITION).await().isFailure()).as("not seeded from the stale checkpoint; the log below 5 is gone, so the rebuild refuses").isTrue();
     }
 
-    /// A claim at or below the sealed floor is the one region no cut can reach (`requireAboveSealedFloor`): accepted with no record to compare.
+    /// A claim at or below the sealed floor the checkpoint's WRITER saw is the one region no cut can reach (the floor only rises, and a cut is
+    /// refused at or below it): accepted with no record to compare. The floor is read at WRITE time and recorded in the checkpoint.
     @Test
-    void aClaimAtOrBelowTheSealedFloor_whoseRecordIsGone_isAcceptedWithoutValidation() {
+    void aClaimAtOrBelowTheSealedFloorTheWriterSaw_whoseRecordIsGone_isAcceptedWithoutValidation() {
         for (int i = 0; i < RECORDS; i++) {
             landAcknowledged(i, record("r" + i, i + 1), E1);
         }
@@ -320,14 +321,36 @@ class EntityCheckpointCutTest {
         substrate.saveCheckpoint(KEYSPACE, PARTITION, 7L, candidate.snapshot(), candidate.lineage()).await();
         evictOld();
         assertThat(manager.earliestRetainedOffset(arc, PARTITION)).as("control: every record is gone").isEqualTo(8L);
-        assertThat(substrate.lineageAt(KEYSPACE, PARTITION, 7L).isEmpty()).as("control: the claim record is unreadable").isTrue();
         assertThat(EntityFold.entityFold(KEYSPACE, substrate).ready(PARTITION).await().isFailure())
-            .as("control: above the floor an unreadable claim record cannot be validated, so it is discarded").isTrue();
+            .as("control: written when the claim was above the floor, an unreadable claim record cannot be validated, so it is discarded").isTrue();
 
         sealedFloor = 7L;
+        var sealedFold = EntityFold.entityFold(KEYSPACE, substrate);
+
+        sealedFold.ready(PARTITION).await();
+        substrate.saveCheckpoint(KEYSPACE, PARTITION, 7L, candidate.snapshot(), substrate.lineageAt(KEYSPACE, PARTITION, 7L)).await();
 
         assertThat(EntityFold.entityFold(KEYSPACE, substrate).ready(PARTITION).await().isSuccess())
-            .as("at the sealed floor the checkpoint is what makes the unreadable prefix a non-event").isTrue();
+            .as("written at the sealed floor: the checkpoint is what makes the unreadable prefix a non-event").isTrue();
+    }
+
+    /// The floor RISING over a rewritten claim proves nothing. The checkpoint is written at claim 7 while the floor is below it; a cut rewrites
+    /// offset 7 under a new owner epoch; then the floor rises over the new lineage to 9. The checkpoint's claim is now at or below the CURRENT floor,
+    /// but not the floor its writer saw: it is validated, found stale, and discarded -- the rebuilt fold holds the new record, not the cut one.
+    @Test
+    void aFloorThatRoseOverTheNewLineage_doesNotMakeAStaleCheckpointValid() {
+        var fold = checkpointedAtSeven();
+        var z = record("z", 9);
+
+        assertThat(manager.appendRecovered(arc, PARTITION, 7L, z, NOW, E2).isFailure()).as("control: a divergence at offset 7").isTrue();
+        assertThat(manager.repairDivergence(arc, PARTITION, _ -> true).isSuccess()).as("control: the cut").isTrue();
+        assertThat(manager.appendRecovered(arc, PARTITION, 7L, z, NOW, E2).isSuccess()).as("control: a different record lands at 7").isTrue();
+        commit(7L, E2);
+        sealedFloor = 9L;
+
+        assertThat(fold.ready(PARTITION).await().isSuccess()).isTrue();
+        assertThat(fold.get(PARTITION, "r7").isPresent()).as("r7 was cut: it must not be served from the stale checkpoint").isFalse();
+        assertThat(fold.get(PARTITION, "z").isPresent()).as("the new lineage's record at 7").isTrue();
     }
 
     /// Control: the validation does not discard a checkpoint whose lineage still holds -- a cut ABOVE the claim leaves it valid, and the

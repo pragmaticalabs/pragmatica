@@ -655,6 +655,18 @@ public final class StreamEntityLogSubstrate implements EntityLogSubstrate {
     /// earlier ones. [#UNVOUCHED] when the epoch is not known here; none when the claim record is not readable.
     @Override
     public Option<byte[]> lineageAt(String keyspace, int partition, long offset) {
+        var floor = partitionManager.sealedFloor(EntityPartitionArc.arcName(keyspace), partition);
+
+        return offset <= floor
+               ? Option.some(CheckpointFrame.withFloor(floor, new byte[0]))
+               : windowIdentity(keyspace, partition, offset).map(body -> body.length == 0
+                                                                         ? body
+                                                                         : CheckpointFrame.withFloor(floor, body));
+    }
+
+    /// The owner epoch this copy knows for the claim record and, for each of the records it still retains of the window ending there, its offset
+    /// and a hash of its bytes ([UNVOUCHED], empty, when the epoch is not known here; none when the claim record is not readable).
+    private Option<byte[]> windowIdentity(String keyspace, int partition, long offset) {
         var stream = EntityPartitionArc.arcName(keyspace);
         var from = Math.max(0L, offset - CheckpointFrame.LINEAGE_WINDOW + 1L);
 
@@ -685,16 +697,17 @@ public final class StreamEntityLogSubstrate implements EntityLogSubstrate {
                : Option.none();
     }
 
-    /// A claim at or below the sealed floor is accepted without validation: a cut is refused at or below that floor, so nothing there can have
-    /// been cut. Above it the copy validates over the records of the window it still holds, the claim record included; if it holds none, or
-    /// cannot vouch for the owner epoch, the answer is no.
+    /// A claim at or below the sealed floor the checkpoint's WRITER saw is accepted without validation: that region was sealed before the
+    /// checkpoint was taken, the floor only rises, and a cut is refused at or below it, so it was never cut. The CURRENT floor proves nothing: a
+    /// cut can rewrite the claim record and the floor can then rise over the new lineage. Otherwise the copy validates over the records of the
+    /// window it still holds, the claim record included; if it holds none, or cannot vouch for the owner epoch, the answer is no.
     @Override
     public boolean lineageHolds(String keyspace, int partition, long offset, byte[] recorded) {
-        return offset <= partitionManager.sealedFloor(EntityPartitionArc.arcName(keyspace), partition) || lineageAt(keyspace,
-                                                                                                                    partition,
-                                                                                                                    offset).map(local -> CheckpointFrame.agree(recorded,
-                                                                                                                                                               local))
-                                                                                                                   .or(false);
+        return CheckpointFrame.floorOf(recorded)
+                              .filter(written -> offset <= written)
+                              .isPresent() || windowIdentity(keyspace, partition, offset).map(local -> CheckpointFrame.agree(CheckpointFrame.bodyOf(recorded),
+                                                                                                                             local))
+                                                            .or(false);
     }
 
     public Promise<Unit> saveCheckpoint(String keyspace, int partition, long throughOffset, byte[] snapshot) {
