@@ -293,6 +293,20 @@ class ClusterTopologyManagerDroppedReplacementTest {
         assertThat(warned("12 of 12 consecutive failures") || warned("whether it exists is not known")).isTrue();
     }
 
+    /// The failure retry belongs to a create that may never have made an instance. A drop whose instance a create RETURNED goes straight to the
+    /// confirmed reap on the first failed lookup: one lookup, then that chain's own attempts (the first plus 12 retries), not twelve more lookups first.
+    @Test
+    void droppedCreatedInstance_whoseLookupFails_goesStraightToTheConfirmedReap() {
+        listing.set(EnvironmentError.operationNotSupported("provider API down").promise());
+
+        ctm.reapDroppedReplacement(DROPPED, "still unjoined after its ceiling", DroppedInstance.CREATED);
+
+        await().atMost(Duration.ofSeconds(10)).until(() -> warned("instance-termination-unconfirmed", DROPPED.id()));
+        settle();
+        assertThat(listings.get()).as("one lookup, then the confirmed reap's own attempts (16 measured); twelve more lookups first would be 28 or more")
+                                  .isLessThan(ClusterTopologyManagerRecord.LOOKUP_FAILURES_TO_GIVE_UP + 12);
+    }
+
     @Test
     void droppedFailedCreate_whoseInstanceIsFound_isTerminated_andNamedInTheWarn() {
         providerLists(instance("i-boot-crash-4", InstanceStatus.RUNNING));
