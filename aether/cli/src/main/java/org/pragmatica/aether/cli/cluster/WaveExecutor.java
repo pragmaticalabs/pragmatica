@@ -403,19 +403,21 @@ public final class WaveExecutor {
                                                             CreatedNodes created) {
         logAction("~", "  draining " + nodeId + "...");
 
-        return drainAndDestroyNode(desired.cluster().name(), nodeId, sourceName, role, source, managementPort).flatMap(_ -> reprovisionNode(sourceName,
-                                                                                                                  role,
-                                                                                                                  desired,
-                                                                                                                  created))
+        return drainAndDestroyNode(desired.cluster().name(),
+                                   nodeId,
+                                   sourceName,
+                                   role,
+                                   source,
+                                   managementPort).flatMap(_ -> reprovisionNode(sourceName, role, desired, created))
                                   .map(_ -> logAndCount("~", "  " + nodeId + " restarted with new runtime", 1));
     }
 
     static Result<Unit> drainAndDestroyNode(ClusterName clusterName,
-                                                    String nodeId,
-                                                    SourceName sourceName,
-                                                    NodeRole role,
-                                                    SourceProfile source,
-                                                    int managementPort) {
+                                            String nodeId,
+                                            SourceName sourceName,
+                                            NodeRole role,
+                                            SourceProfile source,
+                                            int managementPort) {
         return switch (source.type()) {
             case SSH -> drainSshNode(nodeId, sourceName, source, managementPort);
             case CLOUD -> drainAndDestroyComputeNode(nodeId, sourceName, role, source, managementPort);
@@ -459,27 +461,47 @@ public final class WaveExecutor {
     /// nor destroyed by that name (#1027). The node to restart is the OLDEST container of the cluster/source/role: each restart replaces a node with
     /// a NEWER one (ULID ids sort by creation), so "oldest" walks the original nodes in turn and never re-selects a replacement. The drain dials the
     /// container's PUBLISHED management port, the only address the operator's host can reach.
-    private static Result<Unit> drainAndDestroyDockerNode(ClusterName clusterName, SourceName sourceName, NodeRole role) {
-        return ProviderResolver.resolveDockerComputeWithoutBackup().flatMap(compute -> oldestDockerNodeId(compute, clusterName, sourceName, role).flatMap(realId -> drainDockerNode(realId).flatMap(_ -> CloudProviderSupport.destroyVia(compute,
-                                                                                                                                                                                                                  List.of(realId))
-                                                                                                                                                                                                       .await())));
+    private static Result<Unit> drainAndDestroyDockerNode(ClusterName clusterName,
+                                                          SourceName sourceName,
+                                                          NodeRole role) {
+        return ProviderResolver.resolveDockerComputeWithoutBackup().flatMap(compute -> oldestDockerNodeId(compute,
+                                                                                                          clusterName,
+                                                                                                          sourceName,
+                                                                                                          role).flatMap(realId -> drainDockerNode(realId).flatMap(_ -> CloudProviderSupport.destroyVia(compute,
+                                                                                                                                                                                                       List.of(realId))
+                                                                                                                                                                                           .await())));
     }
 
     @SuppressWarnings("JBCT-EX-01")
-    private static Result<String> oldestDockerNodeId(ComputeProvider compute, ClusterName clusterName, SourceName sourceName, NodeRole role) {
-        return compute.listInstances(Map.of("aether.cluster", clusterName.value(), "aether.role", role.value(), "aether.source", sourceName.value()))
+    private static Result<String> oldestDockerNodeId(ComputeProvider compute,
+                                                     ClusterName clusterName,
+                                                     SourceName sourceName,
+                                                     NodeRole role) {
+        return compute.listInstances(Map.of("aether.cluster",
+                                            clusterName.value(),
+                                            "aether.role",
+                                            role.value(),
+                                            "aether.source",
+                                            sourceName.value()))
                       .await()
                       .flatMap(instances -> instances.stream()
-                                                     .map(info -> info.nodeId().or(info.id().value()))
+                                                     .map(info -> info.nodeId()
+                                                                      .or(info.id().value()))
                                                      .sorted()
                                                      .findFirst()
                                                      .<Result<String>> map(Result::success)
-                                                     .orElseGet(() -> new ApplyError.ScaleDownShort(sourceName, role, 1, List.<String> of()).result()));
+                                                     .orElseGet(() -> new ApplyError.ScaleDownShort(sourceName,
+                                                                                                    role,
+                                                                                                    1,
+                                                                                                    List.<String> of()).result()));
     }
 
     private static Result<String> drainDockerNode(String nodeId) {
         return DockerHostPorts.managementPort(nodeId)
-                              .flatMap(port -> ClusterHttpClient.drainNodeAndAwait("127.0.0.1", port, nodeId, DRAIN_TIMEOUT_MS))
+                              .flatMap(port -> ClusterHttpClient.drainNodeAndAwait("127.0.0.1",
+                                                                                   port,
+                                                                                   nodeId,
+                                                                                   DRAIN_TIMEOUT_MS))
                               .map(_ -> nodeId);
     }
 
