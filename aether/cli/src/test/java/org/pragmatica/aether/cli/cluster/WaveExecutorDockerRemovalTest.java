@@ -68,7 +68,7 @@ class WaveExecutorDockerRemovalTest {
 
     private static FakeDocker docker() {
         return new FakeDocker(List.of(container("aether-dock-node-009", "dock", "other", "worker"),
-                                      container("aether-else-node-008", "else", "local", "worker"),
+                                      container("aether-aaa-node-008", "else", "local", "worker"),
                                       container("aether-dock-node-007", "dock", "local", "core"),
                                       container("aether-dock-node-01a", "dock", "local", "worker"),
                                       container("aether-dock-node-01b", "dock", "local", "worker"),
