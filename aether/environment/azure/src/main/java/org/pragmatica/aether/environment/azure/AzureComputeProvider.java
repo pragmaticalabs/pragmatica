@@ -415,6 +415,11 @@ public record AzureComputeProvider(AzureClient client, AzureEnvironmentConfig co
     /// (where the incident that motivated this was measured), so a rejection has to name what was
     /// asked for — `SkuNotAvailable` names the sku but not the region it was refused in.
     private static EnvironmentError toProvisionError(String instanceType, String zone, Cause cause) {
+        // #1111: the VM EXISTS (it was created, then failed readiness): the typed cause reaches the caller, never flattened into a rejection.
+        if (cause instanceof EnvironmentError.ProvisionReadinessTimeout timeout) {
+            return timeout;
+        }
+
         return EnvironmentError.provisionFailed(instanceType, zone, new RuntimeException(cause.message()));
     }
 

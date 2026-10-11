@@ -6559,7 +6559,12 @@ public interface AetherNode extends ManageableNode {
                                                                                                                                                                             () -> kvStore.getTyped(LeaderKey.INSTANCE,
                                                                                                                                                                                                    LeaderValue.class)),
                                                                                             clusterCommandApplier,
-                                                                                            ENTITY_RECONCILE_KICK);
+                                                                                            ENTITY_RECONCILE_KICK,
+                                                                                            EntityOwnershipReconciler.SETTLE_TICKS,
+                                                                                            EntityOwnershipReconciler.FIRST_MINT_CEILING_TICKS,
+                                                                                            ENTITY_OWNERSHIP_RECONCILE_INTERVAL,
+                                                                                            System::nanoTime,
+                                                                                            operatorWarningSink);
         // A committed registration REMOVAL is a hosting-set shrink, which is the one edge the leader's mint
         // must not wait a tick for: until it re-mints, the retracting node is still the committed owner of
         // arcs it can no longer serve. Every node sees the notification; the writer's own leader gate
