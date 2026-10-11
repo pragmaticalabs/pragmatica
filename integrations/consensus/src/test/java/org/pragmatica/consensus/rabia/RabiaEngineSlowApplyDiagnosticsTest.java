@@ -294,6 +294,21 @@ class RabiaEngineSlowApplyDiagnosticsTest {
     }
 
     @Test
+    void aSecondSubmissionOfTheSameCommands_keepsTheEarlierArrival() throws Exception {
+        engine(ProtocolConfig.testConfig());
+        activate();
+        engine.apply(List.of(new TestCommand("identical")));
+        Thread.sleep(500);
+        engine.apply(List.of(new TestCommand("identical")));
+        Thread.sleep(50);
+
+        assertThat(engine.pendingBatchCountForTesting()).as("precondition: the two submissions merged into one pending batch").isEqualTo(1);
+        assertThat(metrics.oldestPendingAgeMs.get().getAsLong())
+            .as("a merge keeps the earlier arrival: the batch has been waiting about 550 ms, not 50")
+            .isGreaterThanOrEqualTo(450L);
+    }
+
+    @Test
     void aBatchThatWasDecided_noLongerAges() throws Exception {
         engine(ProtocolConfig.testConfig());
         activate();
