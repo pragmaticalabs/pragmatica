@@ -6272,7 +6272,10 @@ namespace address would otherwise make the slice's stream factories mint that st
 validator rejects such a section under rule `source-reserved-kind`, so the stream is never minted, and
 since #1336 the deploy refuses the blueprint with `422` naming that rule and section — the same typed
 refusal as the routes above, instead of the earlier silent empty-bindings publish. A
-`system`-namespace source is unaffected, because its engine key is the bare name.
+`system`-namespace source is exempt: it is a read-only reference to a stream the runtime already provisioned (#1338).
+System streams are read-only to blueprints, slices and the Management API: a write to a `system:` stream from
+anything but the node's own system publisher is refused with `405` (`SystemStreamWriteRefused`), and a catalog
+create in the `system` namespace is refused as a reserved kind.
 
 Without the refusal, a stream minted ahead of the real resource would plant an operator-chosen config
 (partitions, replication factors, retention) that the resource later finds already in place. For

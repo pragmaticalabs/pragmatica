@@ -325,13 +325,14 @@ public interface StreamConfigParser {
     }
 
     /// #1282: an External source whose engine key carries a reserved stream-kind prefix is refused — see
-    /// [StreamSourceError.ReservedKindSource].
+    /// [StreamSourceError.ReservedKindSource]. A `system`-namespace source is exempt: it is a READ-ONLY reference to a
+    /// stream the runtime already provisioned (#1338), and every write path into it is refused at the stream layer.
     private static Result<ResourceAddress> refuseReservedKind(String streamName, String source, ResourceAddress addr) {
-        return StreamEngineKey.reservedKindPrefixOf(StreamEngineKey.engineKey(addr))
-                              .map(prefix -> StreamSourceError.ReservedKindSource.FACTORY.apply(streamName,
-                                                                                                source,
-                                                                                                prefix).<ResourceAddress> result())
-                              .or(() -> success(addr));
+        return Option.some(addr)
+                     .filter(a -> !a.isSystem())
+                     .flatMap(a -> StreamEngineKey.reservedKindPrefixOf(StreamEngineKey.engineKey(a)))
+                     .map(prefix -> StreamSourceError.ReservedKindSource.FACTORY.apply(streamName, source, prefix).<ResourceAddress> result())
+                     .or(() -> success(addr));
     }
 
     private static Result<StreamResource> parseOwnedResource(TomlDocument doc,

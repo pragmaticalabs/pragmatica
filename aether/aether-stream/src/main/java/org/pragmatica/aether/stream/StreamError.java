@@ -249,6 +249,16 @@ public sealed interface StreamError extends Cause {
         }
     }
 
+    /// A write to a `system:` stream from a writer that does not hold [SystemWriteGrant] (#1338): system streams are
+    /// read-only to blueprints, slices and the Management API.
+    record SystemStreamWriteRefused(String streamName) implements StreamError {
+        @Override
+        public String message() {
+            return "Stream '" + streamName
+                 + "' is a system stream: it is read-only to slices, blueprints and the Management API";
+        }
+    }
+
     record StreamNotFound(String streamName) implements StreamError {
         @Override
         public String message() {

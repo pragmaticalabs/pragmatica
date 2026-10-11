@@ -10,40 +10,34 @@ import org.pragmatica.aether.slice.resource.ResourceAddress;
 import org.pragmatica.lang.Option;
 
 
-/// The ONE reduction from a catalog [ResourceAddress] to the string the stream engine keys by.
+/// The ONE mapping from a catalog [ResourceAddress] to the string the stream engine keys by: the full
+/// `namespace:stream:version` address, in every namespace.
 ///
-/// `system` streams reduce to their bare name; everything else keys by the full
-/// `namespace:name:version` address. The rule itself is unchanged — what changed (#1040) is that it
-/// now has exactly one implementation instead of three.
+/// `system` streams used to reduce to their bare name here, but the framework creates, publishes and consumes
+/// every system stream under `address.asString()` (`SystemStreamFactories`), so the management routes and a
+/// blueprint `External` source addressed a ring that did not exist, and a user stream named `cluster-events`
+/// would have been taken for the system one (#1338). The mapping is still a single shared function (#1040) so
+/// the management path, the write-gate ([SystemStreams#isForbiddenEngineKey]) and the slice/engine
+/// materialization path cannot drift apart again; it lives in `slice-api` because those consumers sit in
+/// modules that cannot see each other.
 ///
-/// It lives here, in `slice-api`, because all three consumers sit in modules that cannot see each
-/// other: `StreamManager` (aether-node, the management/API routes), [SystemStreams#isForbiddenEngineKey]
-/// (this module, the management write-gate), and the slice/engine materialization path
-/// (aether-stream's resource factories, aether-deployment's subscription registration). Before #1040
-/// the first two each recomputed the reduction locally and the third did not apply it at all, so one
-/// blueprint declaration produced two live rings under two spellings — the management path addressing
-/// `ns:stream:version` while the engine materialized the bare `resources.toml` section name, with the
-/// declared durability contract silently void on the catalog path.
-///
-/// WHY A SHARED FUNCTION IS THE FIX AND A SHARED CONVENTION IS NOT. The two spellings agreed for
-/// `system:cluster-events` — the one address whose reduction is its own bare name — which is exactly
-/// the stream every diagnostic reaches for as a positive control. A control drawn from the one case
-/// where both branches coincide cannot observe a divergence between them, whatever else it proves.
-/// Any test of this reduction must use a NON-`system` namespace.
+/// Any test of this mapping must cover a `system` address AND a non-`system` address with the same stream name.
 public sealed interface StreamEngineKey {
-    /// The engine-level key for the given catalog address: the bare stream name for `system`
-    /// streams, the full catalog address otherwise.
+    /// The engine-level key for the given catalog address: the full `namespace:stream:version` address.
     static String engineKey(ResourceAddress address) {
-        return address.isSystem()
-               ? address.name()
-                        .value()
-               : address.asString();
+        return address.asString();
+    }
+
+    /// Whether `engineKey` names a system stream: it carries the `system:` kind prefix. Writes to such a stream
+    /// are the node's own system publishers' alone (#1338).
+    static boolean isSystemStream(String engineKey) {
+        return engineKey.startsWith(ResourceAddress.SYSTEM_NAMESPACE + ":");
     }
 
     /// Engine-key prefixes marking a stream KIND that only internal provisioning creates (#1282): `system:`
     /// (system streams, named from their `system`-namespace address), `topic:` (durable topics and their
     /// DLQs) and `entity:` (entity keyspace logs). Runtime rules key off these prefixes, so no user input —
-    /// a Management-API write or a blueprint `External` source — may mint under one. Declared here because
+    /// a Management-API write or a Management-API write — may mint under one; a blueprint `External` source in the `system` namespace is a read-only reference, not a mint, and is the one exception. Declared here because
     /// the blueprint parser (aether/slice) cannot see the canonical owners (`DurableTopicNames` in
     /// aether-stream, `EntityPartitionArc` in aether-dht); `ReservedStreamNamesTest` in aether/node pins
     /// this list against them.

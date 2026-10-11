@@ -1,16 +1,28 @@
-### Fixed (2026-10-11 — #1338: a blueprint External `system:` source resolved to a bare name no stream exists under)
-- **A blueprint that consumed a system stream bound to a stream that never existed.** A `[streams.X]` section with
-  `source = "system:cluster-events:1.0.0"` resolved (`BlueprintStreamAddresses.engineKeyFor`) to the bare name
-  `cluster-events`, while the framework creates, publishes and consumes the system stream under its full address
-  `system:cluster-events:1.0.0`. The consumer polled a ring nobody writes to, with no error. It now resolves to the
-  full address. Every other namespace is unchanged: the two spellings only ever differed for `system`.
+### Fixed (2026-10-11 — #1338: system streams were addressed by a name they are not created under, and were writable from a slice once that was fixed)
+- **A stream engine key is now the full `namespace:stream:version` address in every namespace, `system` included.**
+  `StreamEngineKey.engineKey` used to reduce a `system` address to its bare name (`cluster-events`), but the
+  framework creates, publishes and consumes the system stream as `system:cluster-events:1.0.0`. Two consequences
+  followed: a blueprint `External` `system:` source bound a consumer to a ring nobody writes to, and the
+  Management-API reads of a system stream (`/streams/system/cluster-events/1.0.0/info`, metadata) answered
+  "Stream not found". Both now resolve to the real stream. A user stream that is merely named `cluster-events` is an
+  ordinary stream: it is no longer served at the system address and no longer refused as the system stream.
   [mechanism: `BlueprintPublishOwnershipTest$StreamBindings#publish_externalSystemSource_resolvesToTheNameTheSystemStreamIsCreatedUnder`
-  publishes a real blueprint and looks the resolved key up in a real `StreamPartitionManager` holding the stream
-  created under `SystemStreams.CLUSTER_EVENTS.asString()`]
-- **Decision: a `system:` External source stays allowed.** Spec `event-stream-namespaces-spec.md` §6.1 and §11.2 make
-  system-stream reads open to slices, and `StreamConfigParserReservedSourceTest#externalSource_systemNamespace_stillParses`
-  pins that the #1282/#1336 reserved-kind gate admits it. The `system:` entry in `RESERVED_KIND_PREFIXES` guards the
-  Management-API mint paths, not this read binding. The gate is unchanged.
-- Not changed, and still divergent: `StreamEngineKey.engineKey` (Management-API routes and the system write gate)
-  still reduces a `system` address to its bare name, so those routes address a name the system stream is not created
-  under. That is a wider question than this fix.
+  and `SystemStreamManagementReadTest`; reverting `engineKey` turns both red]
+- **System streams are READ-ONLY to blueprints, slices and the Management API** (owner ruling, #1338). A `system:`
+  `External` source stays allowed (spec `event-stream-namespaces-spec.md` §6.1, §11.2) and binds read-only. Every
+  write into a `system:` stream through `StreamWriteRouter` (slice `StreamAccess.publish`, `StreamPublisher`
+  `publish`/`publishBatch`, the Management-API publish) or `DefaultStreamPublisher` is refused with
+  `StreamError.SystemStreamWriteRefused` (HTTP `405`) unless the writer holds `SystemWriteGrant`, a package-private
+  capability only `SystemStreamFactories` hands to the node's own system publisher. Before this, binding the
+  stream (the fix above) would have let a slice append to the real system ring.
+  [mechanism: `SystemStreamWriteGateTest`; making the refusal a no-op turns its three refusal tests red, withholding
+  the grant from the system publisher turns its control red]
+- **A slice never creates a `system:` stream.** Binding one that the runtime has not provisioned fails with
+  `StreamNotFound` instead of minting it under a reserved name or comparing the slice's replication declaration with
+  the committed one.
+- **Behaviour changes.** A catalog create in the `system` namespace (`POST /streams/system/<name>/<version>`) used to mint
+  a flat bare-named operator stream; it is now refused `400` as a reserved kind. A body-carried bare name equal to a
+  system stream's bare name is no longer treated as the system stream (it still cannot be created, being not a catalog
+  address).
+- Not changed: the inter-node forward handler (`StreamForwardHandler`) trusts the sending node; the gate sits at the
+  originating writer.

@@ -11,6 +11,7 @@ import java.util.Collections;
 import java.util.stream.LongStream;
 
 import org.pragmatica.aether.slice.stream.PublishOutcome;
+import org.pragmatica.aether.slice.stream.StreamEngineKey;
 import org.pragmatica.aether.slice.StreamPublisher.StreamPublisherError;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.aether.slice.PublishOutcomeUnknown;
@@ -58,11 +59,14 @@ public final class StreamWriteRouter {
     private final Option<StreamForwardClient> forwardClient;
     private final Option<NodeId> selfNodeId;
     private final OwnerResolver ownerResolver;
+    private final Option<SystemWriteGrant> systemWrites;
 
     private StreamWriteRouter(StreamPartitionManager partitionManager,
                               Option<StreamForwardClient> forwardClient,
                               Option<NodeId> selfNodeId,
-                              OwnerResolver ownerResolver) {
+                              OwnerResolver ownerResolver,
+                              Option<SystemWriteGrant> systemWrites) {
+        this.systemWrites = systemWrites;
         this.partitionManager = partitionManager;
         this.forwardClient = forwardClient;
         this.selfNodeId = selfNodeId;
@@ -73,7 +77,11 @@ public final class StreamWriteRouter {
                                                       Option<StreamForwardClient> forwardClient,
                                                       NodeId selfNodeId,
                                                       OwnerResolver ownerResolver) {
-        return new StreamWriteRouter(partitionManager, forwardClient, Option.some(selfNodeId), ownerResolver);
+        return new StreamWriteRouter(partitionManager,
+                                     forwardClient,
+                                     Option.some(selfNodeId),
+                                     ownerResolver,
+                                     Option.none());
     }
 
     /// Entry-point overload for the typed publishers, whose self identity may be unknown (#1263).
@@ -81,13 +89,37 @@ public final class StreamWriteRouter {
                                                       Option<StreamForwardClient> forwardClient,
                                                       Option<NodeId> selfNodeId,
                                                       OwnerResolver ownerResolver) {
-        return new StreamWriteRouter(partitionManager, forwardClient, selfNodeId, ownerResolver);
+        return new StreamWriteRouter(partitionManager, forwardClient, selfNodeId, ownerResolver, Option.none());
+    }
+
+    /// The router of a node's own system publisher: the only kind that may write a `system:` stream (#1338).
+    static StreamWriteRouter systemWriter(StreamPartitionManager partitionManager,
+                                          Option<StreamForwardClient> forwardClient,
+                                          Option<NodeId> selfNodeId,
+                                          OwnerResolver ownerResolver) {
+        return new StreamWriteRouter(partitionManager,
+                                     forwardClient,
+                                     selfNodeId,
+                                     ownerResolver,
+                                     Option.some(SystemWriteGrant.INSTANCE));
+    }
+
+    /// The refusal for a write to `streamName` by a router holding no [SystemWriteGrant], or none. Shared so the
+    /// typed publishers' consensus path, which does not pass through the router, applies the same gate.
+    static Option<Cause> systemWriteRefusal(String streamName, boolean granted) {
+        return granted || !StreamEngineKey.isSystemStream(streamName)
+               ? Option.none()
+               : Option.some(new StreamError.SystemStreamWriteRefused(streamName));
     }
 
     /// Minimal-runtime / test writer: no forward client, always appends locally. Mirrors
     /// {@link StreamReadRouter#localOnly}.
     public static StreamWriteRouter localOnly(StreamPartitionManager partitionManager) {
-        return new StreamWriteRouter(partitionManager, Option.none(), Option.none(), (_, _) -> Option.none());
+        return new StreamWriteRouter(partitionManager,
+                                     Option.none(),
+                                     Option.none(),
+                                     (_, _) -> Option.none(),
+                                     Option.none());
     }
 
     /// The typed publishers' owner rule (#47/#467), once: prefer the partition-aware HRW resolver (the SAME
@@ -112,6 +144,12 @@ public final class StreamWriteRouter {
     /// **STRONG (#1262):** a stream declared `STRONG` is refused with `CONSENSUS_PATH_UNAVAILABLE` before
     /// routing — see {@link StreamPartitionManager#ensureWritableConsistency}.
     public Promise<Long> publish(String streamName, int partition, byte[] payload, long timestamp) {
+        return systemWriteRefusal(streamName,
+                                  systemWrites.isPresent()).<Promise<Long>> map(Cause::promise)
+                                 .or(() -> admittedPublish(streamName, partition, payload, timestamp));
+    }
+
+    private Promise<Long> admittedPublish(String streamName, int partition, byte[] payload, long timestamp) {
         return partitionManager.ensureWritableConsistency(streamName)
                                .async()
                                .flatMap(_ -> routePublish(streamName, partition, payload, timestamp));
@@ -126,6 +164,13 @@ public final class StreamWriteRouter {
                                                       long timestamp) {
         if (payloads.isEmpty()) {
             return Promise.success(List.of());
+        }
+
+        var refusal = systemWriteRefusal(streamName, systemWrites.isPresent());
+
+        if (refusal.isPresent()) {
+            return Promise.success(Collections.nCopies(payloads.size(),
+                                                       (PublishOutcome) new PublishOutcome.NotAttempted(refusal.unwrap())));
         }
 
         if (ownerResolver.resolve(streamName, partition).filter(this::isRemote).isPresent() && forwardClient.isPresent()) {

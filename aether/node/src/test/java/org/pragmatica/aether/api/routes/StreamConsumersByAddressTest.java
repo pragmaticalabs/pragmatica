@@ -58,18 +58,17 @@ class StreamConsumersByAddressTest {
         }
     }
 
-    /// The engine key differs from the address string only in the `system` namespace, where it is the BARE name
-    /// (`StreamManager#engineKey`). A lookup by `address.asString()` finds nothing there, and no other test addresses a system stream
-    /// through this route.
+    /// #1338: a system stream is created under its full address, which is its engine key, so the route finds it there. Before,
+    /// the engine key was the bare name and this test had to create a ring the framework never creates.
     @Test
-    void streamConsumers_findsASystemStream_underItsBareEngineKey() {
+    void streamConsumers_findsASystemStream_underItsFullAddress() {
         var manager = StreamPartitionManager.streamPartitionManager();
 
         try {
             var address = ResourceAddress.resourceAddress(ResourceAddress.SYSTEM_NAMESPACE, "cluster-events", "1.0.0").unwrap();
 
-            assertThat(StreamManager.engineKey(address)).isEqualTo("cluster-events");
-            manager.createStream(StreamConfig.streamConfig("cluster-events",
+            assertThat(StreamManager.engineKey(address)).isEqualTo(address.asString());
+            manager.createStream(StreamConfig.streamConfig(address.asString(),
                                                            1,
                                                            RetentionPolicy.retentionPolicy(10_000, 1024 * 1024, 600_000),
                                                            "earliest"))
@@ -82,6 +81,29 @@ class StreamConsumersByAddressTest {
                       .onFailure(cause -> fail("a system stream must be reachable by its address, got: " + cause.message()))
                       .onSuccess(value -> assertThat(value).isInstanceOfSatisfying(StreamRoutes.StreamConsumersResponse.class,
                                                                                    response -> assertThat(response.partitions()).hasSize(1)));
+        } finally {
+            manager.close();
+        }
+    }
+
+    /// #1338 (bare-name confusion): a user stream that is merely NAMED `cluster-events` is not served at the system address.
+    @Test
+    void streamConsumers_systemAddress_doesNotServeAUserStreamWithTheSameBareName() {
+        var manager = StreamPartitionManager.streamPartitionManager();
+
+        try {
+            manager.createStream(StreamConfig.streamConfig("cluster-events",
+                                                           1,
+                                                           RetentionPolicy.retentionPolicy(10_000, 1024 * 1024, 600_000),
+                                                           "earliest"))
+                   .onFailure(cause -> fail(cause.message()));
+
+            var failure = RouteProbe.failureOf(routes(manager),
+                                               ManagementRoute.STREAM_CONSUMERS,
+                                               List.of(ResourceAddress.SYSTEM_NAMESPACE, "cluster-events", VERSION, "consumers"),
+                                               Map.of());
+
+            assertThat(RouteProbe.problemStatus(failure)).isEqualTo(HttpStatus.NOT_FOUND);
         } finally {
             manager.close();
         }

@@ -30,8 +30,8 @@ class StreamConfigParserReservedSourceTest {
         assertRefused("entity:orders:1.0.0", "entity:");
     }
 
-    /// Spec §11.2: a consumer may reference the `system` namespace. Its engine key is the bare name, so it
-    /// carries no reserved kind prefix and must still parse.
+    /// Spec §11.2: a consumer may reference the `system` namespace. Its engine key carries the `system:` kind prefix, but the
+    /// gate exempts the system namespace: the source is a READ-ONLY reference (#1338), so it must still parse.
     @Test
     void externalSource_systemNamespace_stillParses() {
         assertParses("system:cluster-events:1.0.0");
