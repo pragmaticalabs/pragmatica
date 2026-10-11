@@ -1942,15 +1942,20 @@ class LeaderReconcilerTest {
             var minted = ctm.provisionReplacementCalls().getFirst();
 
             advancePollIntervals(10);
-            assertThat(ctm.droppedReaps()).as("arming: the ceiling dropped the DISPATCHING entry").hasSize(1);
+            assertThat(reapsOf(minted)).as("arming: the ceiling dropped the DISPATCHING entry").hasSize(1);
             create.fail(Causes.cause("readiness timeout, late"));
             create.await();
 
-            // The failure callback runs off this thread; an absence needs a window, so a second reap would have to land inside it.
+            // The failure callback runs off this thread; an absence needs a window, so a second reap of the same placeholder would have to land inside it.
+            // (The re-dispatch the drop re-opened shares the held promise, so it fails too: its reap is its own, hence the filter.)
             await().during(java.time.Duration.ofMillis(500))
                    .atMost(java.time.Duration.ofSeconds(5))
-                   .untilAsserted(() -> assertThat(ctm.droppedReaps()).hasSize(1));
-            assertThat(onlyDroppedReap(minted).reason()).contains("replacement ceiling");
+                   .untilAsserted(() -> assertThat(reapsOf(minted)).hasSize(1));
+            assertThat(reapsOf(minted).getFirst().reason()).contains("replacement ceiling");
+        }
+
+        private List<DroppedReap> reapsOf(NodeId node) {
+            return ctm.droppedReaps().stream().filter(reap -> reap.node().equals(node)).toList();
         }
 
         @Test
