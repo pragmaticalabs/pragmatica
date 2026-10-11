@@ -202,11 +202,18 @@ public interface ClusterTopologyManager extends TopologyManager {
     }
 
     /// #2062 (owner ruling 28992d91b): an OPERATOR clears ONE mark, by node id, after verifying at the provider and terminating the instance by hand.
-    /// `attestedInstance` is the provider instance id the operator terminated (or `unknown`). Refused, with nothing cleared, when there is no mark,
-    /// when the node shows life (a live node is never cleared), or when the mark changed or this manager is not the active leader. A clear writes
-    /// the exact mark it read, so a mark of a later incarnation survives it, and closes the open warning cluster-wide. Default: not the active leader.
-    default Promise<Unit> clearUnconfirmed(NodeId node, String operator, String attestedInstance) {
+    /// `attestedInstance` is the provider instance id the operator terminated (or `unknown`). Before it clears, the manager looks the node's instance(s)
+    /// up at the node's source provider (selected by the node's labels, so a wrong or `unknown` id does not hide a listed instance): an instance still
+    /// listed and not terminated, or a provider that cannot answer, REFUSES the clear (fail closed) unless `force`, which overrides both and is recorded
+    /// in the event with the provider state seen. Also refused, with nothing cleared: no mark, a node that shows life, a mark that changed since it was
+    /// read, a manager that is not the active leader. A clear writes the exact mark it read, so a mark of a later incarnation survives it, and closes the
+    /// open warning cluster-wide. Default: not the active leader.
+    default Promise<Unit> clearUnconfirmed(NodeId node, String operator, String attestedInstance, boolean force) {
         return new UnconfirmedClearRefusal.NotActive().promise();
+    }
+
+    default Promise<Unit> clearUnconfirmed(NodeId node, String operator, String attestedInstance) {
+        return clearUnconfirmed(node, operator, attestedInstance, false);
     }
 
     /// Why [#clearUnconfirmed] cleared nothing.
@@ -233,11 +240,32 @@ public interface ClusterTopologyManager extends TopologyManager {
             }
         }
 
+        /// The provider still lists an instance of the node that is not terminated: clearing would hide a paid orphan.
+        record InstanceStillListed(NodeId node, String instance, String state) implements UnconfirmedClearRefusal {
+            @Override
+            public String message() {
+                return "The provider still lists instance " + instance
+                     + " of " + node.id()
+                     + " (" + state
+                     + "); terminate it first, or clear with force if you accept that it stays running";
+            }
+        }
+
+        /// The provider could not be asked: the clear fails closed.
+        record ProviderUnreachable(NodeId node, String cause) implements UnconfirmedClearRefusal {
+            @Override
+            public String message() {
+                return "The provider could not be asked about the instance of " + node.id()
+                     + " (" + cause
+                     + "); nothing was cleared, retry, or clear with force if you verified it yourself";
+            }
+        }
+
         record Changed(NodeId node) implements UnconfirmedClearRefusal {
             @Override
             public String message() {
                 return "The unconfirmed-termination mark of " + node.id()
-                     + " changed or was not committed; nothing was cleared, read the mark again";
+                     + " changed or the clear was not confirmed committed; read the mark again before retrying";
             }
         }
     }

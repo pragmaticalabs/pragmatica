@@ -23,7 +23,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 
 /// #2062: `aether cluster clear-unconfirmed <node> --instance <id|unknown>` and its exit codes: 0 cleared, 3 no such mark (the server's 404), 1 any other
-/// refusal (a live node is the server's 409) or failure, 64 a missing or blank `--instance`. The request seam is replaced so the exit code is the
+/// refusal (a live node, or an instance the provider still lists, is the server's 409) or failure, 64 a missing or blank `--instance` (`ExitCode.USAGE`, as
+/// `cluster bootstrap` and `cluster destroy` return for their own argument checks). The request seam is replaced so the exit code is the
 /// command's, not a socket's; the route and body shape are pinned by the node's route test.
 class ClusterClearUnconfirmedCommandTest {
     private final ByteArrayOutputStream out = new ByteArrayOutputStream();
@@ -50,8 +51,8 @@ class ClusterClearUnconfirmedCommandTest {
     }
 
     private int run(Result<String> answer, String... args) {
-        ClusterClearUnconfirmedCommand.requester = (node, instance) -> {
-            requests.add(node + "|" + instance);
+        ClusterClearUnconfirmedCommand.requester = (node, body) -> {
+            requests.add(node + "|" + body);
 
             return answer;
         };
@@ -68,7 +69,7 @@ class ClusterClearUnconfirmedCommandTest {
         var code = run(Result.success("{}"), "core-old", "--instance", " i-42 ");
 
         assertThat(code).isEqualTo(ExitCode.SUCCESS);
-        assertThat(requests).containsExactly("core-old|i-42");
+        assertThat(requests).containsExactly("core-old|{\"instance\":\"i-42\",\"force\":false}");
         assertThat(out.toString(StandardCharsets.UTF_8)).contains("core-old").contains("i-42");
     }
 
@@ -103,11 +104,27 @@ class ClusterClearUnconfirmedCommandTest {
         assertThat(requests).isEmpty();
     }
 
+    /// A missing `--instance` is the same usage error as a blank one (64, the convention of `cluster bootstrap` / `cluster destroy`), not picocli's 2.
     @Test
-    void aMissingInstance_isAUsageError_andSendsNothing() {
+    void aMissingInstance_exitsUsage_andSendsNothing() {
         var code = run(Result.success("{}"), "core-old");
 
-        assertThat(code).isNotEqualTo(ExitCode.SUCCESS);
+        assertThat(code).isEqualTo(ExitCode.USAGE);
         assertThat(requests).isEmpty();
+    }
+
+    @Test
+    void force_isSentInTheBody() {
+        var code = run(Result.success("{}"), "core-old", "--instance", "unknown", "--force");
+
+        assertThat(code).isEqualTo(ExitCode.SUCCESS);
+        assertThat(requests).containsExactly("core-old|{\"instance\":\"unknown\",\"force\":true}");
+    }
+
+    /// The literals the node's `UnconfirmedMarkRoutesTest#theRequestBodyKeys_areInstanceAndForce` parses into `ClearRequest(instance, force)`.
+    @Test
+    void body_isTheJsonThisRouteReads() {
+        assertThat(ClusterClearUnconfirmedCommand.body("i-42", true).unwrap()).isEqualTo("{\"instance\":\"i-42\",\"force\":true}");
+        assertThat(ClusterClearUnconfirmedCommand.body("i-42", false).unwrap()).isEqualTo("{\"instance\":\"i-42\",\"force\":false}");
     }
 }

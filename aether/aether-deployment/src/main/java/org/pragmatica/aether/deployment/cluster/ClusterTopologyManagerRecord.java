@@ -2233,7 +2233,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     }
 
     @Override
-    public Promise<Unit> clearUnconfirmed(NodeId nodeId, String operator, String attestedInstance) {
+    public Promise<Unit> clearUnconfirmed(NodeId nodeId, String operator, String attestedInstance, boolean force) {
         if (!active.get()) {
             return new UnconfirmedClearRefusal.NotActive().promise();
         }
@@ -2252,12 +2252,71 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         var cause = persisted.map(AetherValue.UnconfirmedTerminationValue::cause).or("mark not persisted");
         var known = Option.option(knownInstanceIds.get(nodeId)).or("never listed");
 
-        return deleteExactMark(nodeId, persisted).flatMap(_ -> afterClear(nodeId,
-                                                                          generation,
-                                                                          operator,
-                                                                          attestedInstance,
-                                                                          known,
-                                                                          cause));
+        return providerState(nodeId, force).flatMap(state -> deleteExactMark(nodeId, persisted).flatMap(_ -> afterClear(nodeId,
+                                                                                                                        generation,
+                                                                                                                        new Cleared(operator,
+                                                                                                                                    attestedInstance,
+                                                                                                                                    force,
+                                                                                                                                    state,
+                                                                                                                                    known,
+                                                                                                                                    cause))));
+    }
+
+    /// What the operator's clear is audited with: who, what they attest, whether they overrode the provider check and what the provider showed.
+    private record Cleared(String operator,
+                           String attested,
+                           boolean forced,
+                           String providerState,
+                           String known,
+                           String cause) {}
+
+    /// Looks the node's instances up at its source provider, by the node's labels (a wrong or `unknown` attested id cannot hide a listed instance).
+    /// A listed instance that is not terminated, or a provider that cannot answer, refuses the clear unless forced; the state seen is returned for the event.
+    private Promise<String> providerState(NodeId nodeId, boolean force) {
+        return lifecycleManager.instancesForNode(nodeId,
+                                                 lifecycleManager.sourceOf(nodeId).or(SourceName.DEFAULT))
+                               .fold(result -> result.fold(failure -> providerUnreachable(nodeId, failure, force),
+                                                           listed -> judgeListed(nodeId, listed, force)));
+    }
+
+    private static Promise<String> providerUnreachable(NodeId nodeId, Cause failure, boolean force) {
+        return force
+               ? Promise.success("provider unreachable: " + failure.message())
+               : new UnconfirmedClearRefusal.ProviderUnreachable(nodeId, failure.message()).promise();
+    }
+
+    private static Promise<String> judgeListed(NodeId nodeId,
+                                               List<org.pragmatica.aether.environment.InstanceInfo> listed,
+                                               boolean force) {
+        var running = listed.stream()
+                            .filter(instance -> !(instance.status() instanceof InstanceStatus.Terminated))
+                            .toList();
+
+        if (running.isEmpty() || force) {
+            return Promise.success(listed.isEmpty()
+                                   ? "no instance listed"
+                                   : describe(listed));
+        }
+
+        var first = running.getFirst();
+
+        return new UnconfirmedClearRefusal.InstanceStillListed(nodeId,
+                                                               first.id().value(),
+                                                               statusName(first)).promise();
+    }
+
+    private static String describe(List<org.pragmatica.aether.environment.InstanceInfo> listed) {
+        return listed.stream()
+                     .map(instance -> instance.id()
+                                              .value() + "=" + statusName(instance))
+                     .collect(java.util.stream.Collectors.joining(","));
+    }
+
+    private static String statusName(org.pragmatica.aether.environment.InstanceInfo instance) {
+        return instance.status()
+                       .getClass()
+                       .getSimpleName()
+                       .toUpperCase();
     }
 
     /// The delete carries the exact value read, so a mark replaced since (a later incarnation's) fails the commit and survives.
@@ -2271,12 +2330,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                                      .mapError(_ -> new UnconfirmedClearRefusal.Changed(nodeId)));
     }
 
-    private Promise<Unit> afterClear(NodeId nodeId,
-                                     long generation,
-                                     String operator,
-                                     String attestedInstance,
-                                     String known,
-                                     String cause) {
+    private Promise<Unit> afterClear(NodeId nodeId, long generation, Cleared cleared) {
         if (sameIncarnation(nodeId, generation)) {
             unconfirmedReaps.remove(nodeId);
         }
@@ -2285,12 +2339,14 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                                               warningSink.get(),
                                                               org.pragmatica.utility.warning.OperatorWarningCode.INSTANCE_TERMINATION_CLEARED,
                                                               nodeId.id(),
-                                                              "Operator {} cleared the unconfirmed termination of retired node {}: the operator attests instance {} was verified and terminated by hand (the cluster knew instance: {}; the mark said: {})",
-                                                              operator,
+                                                              "Operator {} cleared the unconfirmed termination of retired node {}: the operator attests instance {} was verified and terminated by hand (forced={}; provider state: {}; the cluster knew instance: {}; the mark said: {})",
+                                                              cleared.operator(),
                                                               nodeId.id(),
-                                                              attestedInstance,
-                                                              known,
-                                                              cause);
+                                                              cleared.attested(),
+                                                              cleared.forced(),
+                                                              cleared.providerState(),
+                                                              cleared.known(),
+                                                              cleared.cause());
 
         return Promise.unitPromise();
     }
@@ -2305,8 +2361,17 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     /// Writes (or, with an empty value, removes) the replicated mark for `nodeId`. A failed write is logged: the in-memory mark and the event stand,
     /// and the next leader simply does not inherit it.
     private void writeMark(NodeId nodeId, Option<AetherValue.UnconfirmedTerminationValue> value) {
+        writeMark(nodeId,
+                  Option.option(persistedMarks.get().get().get(nodeId)).map(mark -> (AetherValue) mark),
+                  value);
+    }
+
+    /// The write carries the value the caller READ as its expected previous value: a mark cleared (or replaced) since fails the commit instead of being
+    /// re-created or overwritten by a decision made on a stale read.
+    private void writeMark(NodeId nodeId,
+                           Option<AetherValue> existing,
+                           Option<AetherValue.UnconfirmedTerminationValue> value) {
         var key = new AetherKey.UnconfirmedTerminationKey(nodeId);
-        var existing = Option.option(persistedMarks.get().get().get(nodeId)).map(mark -> (AetherValue) mark);
 
         hierarchyWriter.get()
                        .commit(List.of(new KVCommand.Mutation<AetherKey, AetherValue>(key,
@@ -2357,14 +2422,22 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
             return;
         }
 
+        var generation = incarnation(nodeId);
+
         reapRetired(nodeId,
                     lifecycleManager.sourceOf(nodeId).or(SourceName.DEFAULT),
-                    seen).onFailure(_ -> operatorOnlyOnceAbsent(nodeId, persisted));
+                    seen).onFailure(_ -> operatorOnlyOnceAbsent(nodeId, persisted, generation));
     }
 
     /// A mark that met only failed listings is re-checked; the first re-check whose listing SUCCEEDS and shows no instance turns it into the operator
     /// warning it would have been had that listing come first: the mark is rewritten and the event raised again, with the text that asks for a hand.
-    private void operatorOnlyOnceAbsent(NodeId nodeId, Option<AetherValue.UnconfirmedTerminationValue> persisted) {
+    private void operatorOnlyOnceAbsent(NodeId nodeId,
+                                        Option<AetherValue.UnconfirmedTerminationValue> persisted,
+                                        long generation) {
+        if (!unconfirmedReaps.contains(nodeId) || !sameIncarnation(nodeId, generation)) {
+            return;
+        }
+
         var wasAbsent = persisted.map(AetherValue.UnconfirmedTerminationValue::absent).or(false);
 
         if (wasAbsent || seenInstances.contains(nodeId) || !listedAbsent.contains(nodeId)) {
@@ -2376,6 +2449,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
 
         raiseUnconfirmedEvent(nodeId, cause, false, true);
         writeMark(nodeId,
+                  persisted.map(mark -> (AetherValue) mark),
                   Option.some(new AetherValue.UnconfirmedTerminationValue(cause, false, true)));
     }
 

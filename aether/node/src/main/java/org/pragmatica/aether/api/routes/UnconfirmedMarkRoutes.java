@@ -27,9 +27,10 @@ import static org.pragmatica.http.routing.PathParameter.aString;
 /// the server authenticated, and refused (nothing cleared) for a node that shows life.
 public final class UnconfirmedMarkRoutes implements RouteSource {
     /// `instance` is the provider instance id the operator verified and terminated, or `unknown`. It is required: the audit event names it.
-    public record ClearRequest(String instance) {}
+    /// `force` overrides the provider check (an instance still listed, a provider that cannot answer) and is recorded in the audit event.
+    public record ClearRequest(String instance, Boolean force) {}
 
-    public record ClearResponse(String node, String instance, String operator) {}
+    public record ClearResponse(String node, String instance, String operator, boolean forced) {}
 
     private final Supplier<ManageableNode> nodeSupplier;
 
@@ -46,12 +47,12 @@ public final class UnconfirmedMarkRoutes implements RouteSource {
         return Stream.of(ManagementRoutes.<ClearResponse> route(ManagementRoute.NODE_UNCONFIRMED_CLEAR)
                                          .withPath(aString())
                                          .withBody(ClearRequest.class)
-                                         .toJson((id, request) -> clear(id,
-                                                                        request,
-                                                                        operator())));
+                                         .toJson(this::clear));
     }
 
-    Promise<ClearResponse> clear(String nodeId, ClearRequest request, String operator) {
+    /// The operator is read here, on the request's own thread, where the server bound the authenticated principal.
+    Promise<ClearResponse> clear(String nodeId, ClearRequest request) {
+        var operator = operator();
         var instance = Option.option(request.instance()).map(String::trim).filter(value -> !value.isEmpty());
 
         if (instance.isEmpty()) {
@@ -62,18 +63,20 @@ public final class UnconfirmedMarkRoutes implements RouteSource {
                            .async()
                            .flatMap(node -> clearOn(node,
                                                     operator,
-                                                    instance.unwrap()))
+                                                    instance.unwrap(),
+                                                    Boolean.TRUE.equals(request.force())))
                            .mapError(UnconfirmedMarkRoutes::asManagementError);
     }
 
-    private Promise<ClearResponse> clearOn(NodeId node, String operator, String instance) {
+    private Promise<ClearResponse> clearOn(NodeId node, String operator, String instance, boolean force) {
         return nodeSupplier.get()
                            .clusterTopologyManager()
                            .fold(() -> new UnconfirmedClearRefusal.NotActive().<ClearResponse> promise(),
-                                 manager -> manager.clearUnconfirmed(node, operator, instance)
+                                 manager -> manager.clearUnconfirmed(node, operator, instance, force)
                                                    .map(_ -> new ClearResponse(node.id(),
                                                                                instance,
-                                                                               operator)));
+                                                                               operator,
+                                                                               force)));
     }
 
     /// The authenticated management principal bound by the server for this request, or `unknown` when none is bound (a test, or security off).

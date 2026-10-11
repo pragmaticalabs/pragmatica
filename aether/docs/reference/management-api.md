@@ -4690,12 +4690,21 @@ Authorization OPERATOR, route target `LEADER`. `404` there is no run; `409` the 
 ### POST /api/v1/nodes/unconfirmed/clear/{id}
 
 Clears ONE `instance-termination-unconfirmed` mark, by retired node id, after the operator verified at the compute provider and terminated the
-instance by hand. Body `{"instance": "<provider-instance-id>"}`; `unknown` is accepted, an absent or blank `instance` is refused. Route target is
-`LEADER`, authorization OPERATOR. The clear is audited: the cluster raises `instance-termination-cleared` naming the node, the authenticated operator, the
-instance the operator attests, the instance id the cluster itself had listed for the node (or `never listed`) and the mark's cause; the event closes the
-open warning cluster-wide, like a confirmation. `400` for a missing `instance` or an id that does not parse; `404` when the node has no mark; `409` when the
-node shows life in the membership (nothing is cleared: a live node's instance must not be terminated), the mark changed while the clear was committing, or the
-node is not the leader; `401`/`403` when the caller is not authorized. CLI: `aether cluster clear-unconfirmed <node> --instance <id|unknown>`.
+instance by hand. Body `{"instance": "<provider-instance-id>", "force": false}`; `unknown` is accepted for `instance`, an absent or blank `instance` is
+refused, `force` is optional and defaults to false. Route target is `LEADER`, authorization OPERATOR.
+
+Before it clears, the cluster asks the node's source provider for the node's instances (selected by the node's labels, so a wrong or `unknown` id does
+not hide a listed instance). An instance still listed and not terminated refuses the clear (`409`, naming the instance and its state), and so does a
+provider that cannot be asked (`409`, fail closed). `force: true` overrides both (an EXTERNAL node's own re-check confirms its mark when it has left the membership, so it rarely needs a clear).
+
+The clear is audited: the cluster raises `instance-termination-cleared` naming the node, the authenticated operator, the instance the operator
+attests, whether the provider check was forced, the provider state seen, the instance id the cluster itself had listed for the node (or `never listed`)
+and the mark's cause; the event closes the open warning cluster-wide, like a confirmation. `400` for a missing `instance` or an id that does not parse;
+`404` when the node has no mark; `409` when the node shows life in the membership (nothing is cleared, forced or not: a live node's instance must not be
+terminated), the provider still lists the instance or cannot be asked, the mark changed or the clear was not confirmed committed (read the mark again
+before retrying), or the node is not the leader; `401`/`403` when the caller is not authorized.
+CLI: `aether cluster clear-unconfirmed <node> --instance <id|unknown> [--force]`; exit 0 cleared, 3 no such mark, 1 any other refusal or failure,
+64 a missing or blank `--instance`.
 
 ### POST /api/v1/nodes/promote/{id}
 

@@ -4,7 +4,7 @@
 package org.pragmatica.aether.cli.cluster;
 
 import java.util.List;
-import java.util.Map;
+import java.util.LinkedHashMap;
 import java.util.concurrent.Callable;
 import java.util.function.BiFunction;
 
@@ -24,21 +24,25 @@ import static org.pragmatica.aether.management.route.ManagementRoute.NODE_UNCONF
 
 
 /// #2062: clears ONE unconfirmed-termination mark, by node id, after the operator verified at the provider and terminated the instance by hand.
-/// The cluster refuses (nothing cleared) for a node that shows life and for a node with no mark. Exit codes: 0 cleared, 3 no such mark, 1 any other
-/// refusal or failure, 64 missing/blank `--instance`.
+/// The cluster refuses (nothing cleared) for a node that shows life, for a node with no mark, and, unless `--force`, while the provider still lists the
+/// node's instance or cannot be asked. Exit codes: 0 cleared, 3 no such mark, 1 any other refusal or failure, 64 (`ExitCode.USAGE`, as `cluster bootstrap`
+/// and `cluster destroy` use for their own argument checks) for a missing or blank `--instance`.
 @Command(name = "clear-unconfirmed", description = "Clear the unconfirmed-termination warning of a retired node after you verified and terminated its instance by hand")
 @SuppressWarnings({"JBCT-RET-01", "JBCT-PAT-01"})
 class ClusterClearUnconfirmedCommand implements Callable<Integer> {
     private static final int HTTP_NOT_FOUND = 404;
     private static final JsonMapper MAPPER = JsonMapper.defaultJsonMapper();
-    /// The request seam (node id, instance) -> response body; tests replace it, the default is the management route.
+    /// The request seam (node id, JSON request body) -> response body; tests replace it, the default is the management route.
     static BiFunction<String, String, Result<String>> requester = ClusterClearUnconfirmedCommand::request;
 
     @Parameters(index = "0", description = "Retired node ID whose mark to clear")
     private String nodeId;
 
-    @Option(names = "--instance", required = true, description = "The provider instance id you verified and terminated, or 'unknown'")
+    @Option(names = "--instance", description = "The provider instance id you verified and terminated, or 'unknown'")
     private String instance;
+
+    @Option(names = "--force", description = "Clear even if the provider still lists the instance or cannot be asked (recorded in the audit event as forced=true)")
+    private boolean force;
 
     @CommandLine.ParentCommand
     private ClusterCommand parent;
@@ -55,15 +59,24 @@ class ClusterClearUnconfirmedCommand implements Callable<Integer> {
         }
 
         return clusterTarget.applyOverrides()
-                            .flatMap(_ -> requester.apply(nodeId,
-                                                          instance.trim()))
+                            .flatMap(_ -> body(instance.trim(),
+                                               force))
+                            .flatMap(body -> requester.apply(nodeId, body))
                             .fold(this::onFailure, this::onCleared);
     }
 
-    private static Result<String> request(String node, String instance) {
-        return MAPPER.writeAsString(Map.of("instance", instance)).flatMap(body -> ClusterHttpClient.post(NODE_UNCONFIRMED_CLEAR,
-                                                                                                         List.of(node),
-                                                                                                         body));
+    /// The request body the route reads as `ClearRequest(instance, force)`; the keys are the route's contract.
+    static Result<String> body(String instance, boolean force) {
+        var fields = new LinkedHashMap<String, Object>();
+
+        fields.put("instance", instance);
+        fields.put("force", force);
+
+        return MAPPER.writeAsString(fields);
+    }
+
+    private static Result<String> request(String node, String body) {
+        return ClusterHttpClient.post(NODE_UNCONFIRMED_CLEAR, List.of(node), body);
     }
 
     private int onCleared(String body) {
