@@ -101,6 +101,9 @@ public class RabiaEngine<C extends Command> {
     /// Apply-task duration probe threshold (5 ms). Diagnostic only — tasks at or above this on
     /// the single consensus apply worker are logged as `SLOW-APPLY` with the executor queue depth.
     private static final long SLOW_APPLY_THRESHOLD_NANOS = 5_000_000L;
+    /// A task still running after this long has its worker's stack logged once (#1117).
+    private static final long SLOW_TASK_STACK_THRESHOLD_NANOS = 1_000_000_000L;
+    private static final TimeSpan SLOW_TASK_WATCHDOG_PERIOD = TimeSpan.timeSpan(250).millis();
     /// One stuck-in-`Syncing` WARN per this many unsatisfied sync rounds (#660) — roughly every 30s at
     /// the default 5s `syncRetryInterval`.
     private static final int WARN_EVERY_N_SYNC_ROUNDS = 6;
@@ -728,6 +731,9 @@ public class RabiaEngine<C extends Command> {
 
     private final ConcurrentNavigableMap<Id, Batch<C>> pendingBatches = new ConcurrentSkipListMap<>();
 
+    private final SlowTaskProbe slowTaskProbe = new SlowTaskProbe();
+    private final AtomicReference<ScheduledFuture<?>> slowTaskWatchdog = new AtomicReference<>();
+
     /// #2011: committed (batch id, correlation ids), so a delivery that trails its slot's Decision is not re-queued.
     private final CommittedBatchLedger committedLedger = new CommittedBatchLedger(CommittedBatchLedger.DEFAULT_CAPACITY);
 
@@ -983,6 +989,7 @@ public class RabiaEngine<C extends Command> {
         this.config = config;
         this.participationMarker = config.participationMarker().or(ParticipationMarker::unknown);
         this.metrics = Option.option(metrics).or(ConsensusMetrics.noop());
+        this.metrics.registerOldestPendingBatchAgeProbe(self, this::oldestPendingBatchAgeMs);
         this.activationGated = activationGated;
         this.activationAuthorized = !activationGated;
         this.persistence = persistence;
@@ -1673,9 +1680,28 @@ public class RabiaEngine<C extends Command> {
     /// Replaces the generic `CoreError.Timeout` produced by `Promise.timeout` with the
     /// domain-specific `ConsensusError.ApplyTimeout`, leaving every other cause untouched.
     private Cause toApplyTimeout(Cause cause) {
-        return cause instanceof CoreError.Timeout
-               ? new ConsensusError.ApplyTimeout(config.applyTimeout().millis())
-               : cause;
+        if (cause instanceof CoreError.Timeout) {
+            metrics.recordApplyTimeout(self);
+
+            return new ConsensusError.ApplyTimeout(config.applyTimeout().millis());
+        }
+
+        return cause;
+    }
+
+    /// #1117: age of the oldest batch still awaiting a decision, read when the metrics sink is read. `Batch.timestamp`
+    /// is `System.nanoTime()` at creation (the earliest one survives a merge), so the age is a monotonic difference.
+    private long oldestPendingBatchAgeMs() {
+        var now = System.nanoTime();
+
+        return pendingBatches.values()
+                             .stream()
+                             .mapToLong(batch -> now - batch.timestamp())
+                             .max()
+                             .stream()
+                             .map(nanos -> Math.max(0L, nanos) / 1_000_000L)
+                             .findFirst()
+                             .orElse(0L);
     }
 
     @Contract
@@ -1844,6 +1870,7 @@ public class RabiaEngine<C extends Command> {
         Option.option(cleanupTask.getAndSet(null)).onPresent(task -> task.cancel(false));
         Option.option(quietSlotProbeTask.getAndSet(null)).onPresent(task -> task.cancel(false));
         Option.option(decisionGapTask.getAndSet(null)).onPresent(task -> task.cancel(false));
+        Option.option(slowTaskWatchdog.getAndSet(null)).onPresent(task -> task.cancel(false));
         var oldState = engineState.getAndSet(new EngineState.Stopped());
 
         exitState(oldState);
@@ -1893,6 +1920,7 @@ public class RabiaEngine<C extends Command> {
         }
 
         participationStarted = true;
+        armSlowTaskWatchdog();
         executor.execute(() -> {
             if (stopping.get()) {
                 onStopped.run();
@@ -1906,6 +1934,7 @@ public class RabiaEngine<C extends Command> {
 
             var start = System.nanoTime();
 
+            slowTaskProbe.begin();
             Result.lift(org.pragmatica.lang.utils.Causes::fromThrowable,
                         () -> {
                             task.run();
@@ -1913,12 +1942,39 @@ public class RabiaEngine<C extends Command> {
                             return Unit.unit();
                         })
                   .onFailure(cause -> log.error("Consensus apply boundary failed: {}", cause));
+            slowTaskProbe.end();
             var elapsed = System.nanoTime() - start;
 
             if (elapsed >= SLOW_APPLY_THRESHOLD_NANOS) {
                 log.warn("SLOW-APPLY ms={} queueDepth={}", elapsed / 1_000_000, applyQueueDepth());
             }
         });
+    }
+
+    /// #1117: `SLOW-APPLY` is logged when a task FINISHES, so a task that runs for ten seconds says nothing until it is
+    /// over and never says WHERE it spent them. The watchdog looks at the worker while the task is still running and
+    /// logs its stack once, which is what names the call that holds the single consensus worker.
+    private synchronized void armSlowTaskWatchdog() {
+        if (slowTaskWatchdog.get() != null) {
+            return;
+        }
+
+        slowTaskWatchdog.set(SharedScheduler.scheduleAtFixedRate(this::watchSlowTask, SLOW_TASK_WATCHDOG_PERIOD));
+    }
+
+    private void watchSlowTask() {
+        slowTaskProbe.check(System.nanoTime(), SLOW_TASK_STACK_THRESHOLD_NANOS)
+                     .onPresent(stack -> log.warn("SLOW-APPLY-RUNNING queueDepth={} {}", applyQueueDepth(), stack));
+    }
+
+    /// Test hook: one watchdog pass at a chosen clock reading; the report it would log, if any.
+    Option<String> slowTaskCheckForTesting(long nowNanos) {
+        return slowTaskProbe.check(nowNanos, SLOW_TASK_STACK_THRESHOLD_NANOS);
+    }
+
+    /// Test hook: run `task` through the same containment boundary as every apply task.
+    void safeExecuteForTesting(Runnable task) {
+        safeExecute(task);
     }
 
     /// Diagnostic helper: backlog of the single-thread apply executor. The executor is always a
