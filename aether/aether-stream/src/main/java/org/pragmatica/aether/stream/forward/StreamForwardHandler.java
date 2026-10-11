@@ -207,14 +207,7 @@ final class DefaultStreamForwardHandler implements StreamForwardHandler {
         }
 
         serveRead(request).onSuccess(events -> sendReadSuccess(request, events, Epoch.ZERO))
-                 .onFailure(cause -> sendPlainReadFailure(request, cause));
-    }
-
-    private void sendPlainReadFailure(ReadForward request, Cause cause) {
-        log.warn("Forwarded read failure correlationId={} (cause chain: {})",
-                 request.correlationId(),
-                 HttpError.causeChain(cause));
-        sendReadFailure(request, HttpError.clientMessage(cause));
+                 .onFailure(cause -> sendReadFailure(request, cause));
     }
 
     /// A plain consumer read: not a replica's catch-up, not a linearizable one. It is the read that carries the owner
@@ -450,8 +443,9 @@ final class DefaultStreamForwardHandler implements StreamForwardHandler {
                   capped.truncated());
     }
 
-    /// The typed divergence of a validated read goes out as itself (#1730 phase 2 / #1873); every other failure as its
-    /// message.
+    /// The typed divergence of a validated read goes out as itself (#1730 phase 2 / #1873), and every other refusal a read is
+    /// known to raise goes out as its typed code (#1967), so the caller rebuilds the cause a local read would have produced.
+    /// A failure outside that set goes out as its message.
     @Contract
     private void sendReadFailure(ReadForward request, Cause cause) {
         if (cause instanceof StreamError.EpochDiverged diverged) {
@@ -472,23 +466,28 @@ final class DefaultStreamForwardHandler implements StreamForwardHandler {
             return;
         }
 
+        var clientText = HttpError.clientMessage(cause);
+
         log.warn("Forwarded read failure correlationId={} (cause chain: {})",
                  request.correlationId(),
                  HttpError.causeChain(cause));
-        sendReadFailure(request, HttpError.clientMessage(cause));
-    }
-
-    @Contract
-    private void sendReadFailure(ReadForward request, String errorMessage) {
-        var response = ReadForwardResponse.failureResponse(selfNodeId, request.correlationId(), errorMessage);
-
-        transport.send(request.sender(), response);
+        transport.send(request.sender(), failureAnswer(request, cause, clientText));
         log.warn("Forwarded read failed for {}[{}] fromOffset={} correlationId={}: {}",
                  request.streamName(),
                  request.partition(),
                  request.fromOffset(),
                  request.correlationId(),
-                 errorMessage);
+                 clientText);
+    }
+
+    private ReadForwardResponse failureAnswer(ReadForward request, Cause cause, String clientText) {
+        return ReadRefusal.readRefusal(cause).fold(() -> ReadForwardResponse.failureResponse(selfNodeId,
+                                                                                             request.correlationId(),
+                                                                                             clientText),
+                                                   refusal -> ReadForwardResponse.refusalResponse(selfNodeId,
+                                                                                                  request.correlationId(),
+                                                                                                  refusal,
+                                                                                                  clientText));
     }
 
     /// #1431: the FIRST event of a page is always admitted, even when it alone exceeds the cap — the rule the

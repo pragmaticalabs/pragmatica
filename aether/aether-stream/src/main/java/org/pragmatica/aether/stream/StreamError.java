@@ -344,8 +344,9 @@ public sealed interface StreamError extends Cause {
     /// ring to read. The node is REACHABLE and knows what it durably holds: `watermark` is its durable local head
     /// (WAL or sealed tier; `-1` when none). DISTINCT from {@link General#PARTITION_NOT_LOCAL}, a genuine
     /// non-holder: a prober treats this as an answer, that as no information. A remote failure travels as its
-    /// message only, so the prober recovers `watermark` from the message ([#watermarkOf]), the way a
-    /// `CursorExpired` refusal names the oldest available offset. Still a failure to a CATCH-UP pull, which has
+    /// message only until #1967 and now arrives typed, but the prober still reads `watermark` from the cause's text
+    /// ([#watermarkOf]), which the typed cause renders identically, the way a `CursorExpired` refusal names the oldest available
+    /// offset. Still a failure to a CATCH-UP pull, which has
     /// nothing to pull from a partition with no ring and redrives.
     record PartitionHeldNotMaterialized(String streamName, int partition, long watermark, boolean budgetExhausted) implements StreamError {
         private static final String BUDGET_SUFFIX = " (off-heap budget exhausted)";

@@ -50,6 +50,8 @@ record RawEventDto(long offset, long timestamp, byte[] data) {}
 
 **§3.1 DTO vs RawEvent.** `OffHeapRingBuffer.RawEvent` is tightly coupled to buffer ownership and may wrap ByteBuffer slices. `RawEventDto` is a plain wire value — one-way conversion `RawEvent → RawEventDto` via helper `RawEventDto.fromRawEvent(RawEvent)`. Keeps wire format stable across buffer implementation changes.
 
+**§3.3 Typed refusal (#1967).** A failed read does not travel as `errorMessage` alone: `ReadForwardResponse` also carries `refusal`, a `ReadRefusal` -- a typed code (`ReadRefusal.Kind`) and the values the cause is built from. The caller rebuilds the cause a local read of the same partition gives (`CursorExpired`, `StreamNotFound`, `PartitionOutOfRange`, `PARTITION_NOT_LOCAL`, and the rest of the set `ReadRefusal` lists), so the route that maps a local refusal to a status maps the forwarded one identically. Only a failure outside that set is a `ReadForwardFailed` carrying the owner's client-safe text. The owner's cause chain never crosses the wire.
+
 **§3.2 `truncated` flag.** Server sets this to `true` when the defensive size cap (§10.5) trimmed the event list. Caller propagates the flag to observability but otherwise treats the response as a normal successful read with fewer events than requested.
 
 ## §4. Caller side — `StreamForwardClient`

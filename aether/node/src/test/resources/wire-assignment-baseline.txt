@@ -42,6 +42,7 @@ ENUM org.pragmatica.aether.slice.kvstore.AetherValue$UpgradeRunState RUNNING=0,P
 ENUM org.pragmatica.aether.slice.kvstore.AetherValue$UpgradeStop NONE=0,PAUSE=1,ABORT=2,UNKNOWN=3
 ENUM org.pragmatica.aether.slice.kvstore.CommunityState FORMING=0,ACTIVE=1,DEGRADED=2,DISSOLVING=3,DISSOLVED=4,UNKNOWN=5
 ENUM org.pragmatica.aether.slice.stream.StreamRegistryEntry$RegisteredByKind FRAMEWORK=0,BLUEPRINT=1,OPERATOR=2,UNKNOWN=3
+ENUM org.pragmatica.aether.stream.forward.ReadRefusal$Kind STREAM_NOT_FOUND=0,PARTITION_OUT_OF_RANGE=1,PARTITION_NOT_LOCAL=2,BUFFER_CLOSED=3,CURSOR_EXPIRED=4,OWNER_NOT_ACTIVATED=5,REPLICA_NOT_VERIFIED=6,STALE_EPOCH_READ=7,NOT_CURRENT_OWNER=8,OWNER_CATCHUP_PENDING=9,LINEARIZABLE_ROUND_TIMEOUT=10,PARTITION_HELD_NOT_MATERIALIZED=11,RING_INDEX_CORRUPTED=12,SEAL_IN_FLIGHT=13,SEALED_RANGE_MISSING=14,UNKNOWN=15
 ENUM org.pragmatica.aether.stream.provenance.ProvenanceEntry$ProvenanceKind OWNED=0,UNATTRIBUTED=1,BASE=2,UNKNOWN=3
 ENUM org.pragmatica.cluster.metrics.ConnectivityState CONNECTED=0,DISCONNECTED=1,STALE=2,UNKNOWN=3
 ENUM org.pragmatica.cluster.metrics.HealthHintWire HEALTHY=0,SUSPECTED=1,FAULTY=2,UNKNOWN=3
@@ -284,10 +285,11 @@ SHAPE org.pragmatica.aether.slice.kvstore.AetherValue$WorkerSliceDirectiveValue 
 SHAPE org.pragmatica.aether.slice.stream.StreamRegistryEntry (address:org.pragmatica.aether.slice.resource.ResourceAddress,retention:org.pragmatica.aether.slice.RetentionPolicy,registeredAtEpochMillis:long,registeredBy:org.pragmatica.aether.slice.stream.StreamRegistryEntry$RegisteredByKind,refCount:int)
 SHAPE org.pragmatica.aether.stream.consensus.StreamConsensusCommand (streamName:java.lang.String,partition:int,payload:byte[],timestamp:long)
 SHAPE org.pragmatica.aether.stream.forward.RawEventDto (offset:long,timestamp:long,data:byte[])
+SHAPE org.pragmatica.aether.stream.forward.ReadRefusal (kind:org.pragmatica.aether.stream.forward.ReadRefusal$Kind,stream:java.lang.String,partition:int,first:long,second:long,flag:boolean,detail:java.lang.String,peerFirst:java.lang.String,peerSecond:java.lang.String,epochFirst:org.pragmatica.aether.slice.generation.Epoch,epochSecond:org.pragmatica.aether.slice.generation.Epoch)
 SHAPE org.pragmatica.aether.stream.forward.StreamForwardMessage$PublishForward (sender:org.pragmatica.consensus.NodeId,correlationId:java.lang.String,streamName:java.lang.String,partition:int,payload:byte[],timestamp:long)
 SHAPE org.pragmatica.aether.stream.forward.StreamForwardMessage$PublishForwardResponse (sender:org.pragmatica.consensus.NodeId,correlationId:java.lang.String,success:boolean,offset:long,errorMessage:java.lang.String,retryable:boolean,outcomeUnknown:boolean)
 SHAPE org.pragmatica.aether.stream.forward.StreamForwardMessage$ReadForward (sender:org.pragmatica.consensus.NodeId,correlationId:java.lang.String,streamName:java.lang.String,partition:int,fromOffset:long,maxEvents:int,linearizable:boolean,catchup:boolean,consumerEpoch:org.pragmatica.aether.slice.generation.Epoch)
-SHAPE org.pragmatica.aether.stream.forward.StreamForwardMessage$ReadForwardResponse (sender:org.pragmatica.consensus.NodeId,correlationId:java.lang.String,success:boolean,events:java.util.List<org.pragmatica.aether.stream.forward.RawEventDto>,truncated:boolean,errorMessage:java.lang.String,earliestRetained:long,visibleHead:long,history:java.util.List<org.pragmatica.aether.stream.provenance.ProvenanceEntry>,historyVouched:boolean,ownerEpoch:org.pragmatica.aether.slice.generation.Epoch,divergenceResumeAt:long,divergenceLossFrom:long)
+SHAPE org.pragmatica.aether.stream.forward.StreamForwardMessage$ReadForwardResponse (sender:org.pragmatica.consensus.NodeId,correlationId:java.lang.String,success:boolean,events:java.util.List<org.pragmatica.aether.stream.forward.RawEventDto>,truncated:boolean,errorMessage:java.lang.String,earliestRetained:long,visibleHead:long,history:java.util.List<org.pragmatica.aether.stream.provenance.ProvenanceEntry>,historyVouched:boolean,ownerEpoch:org.pragmatica.aether.slice.generation.Epoch,divergenceResumeAt:long,divergenceLossFrom:long,refusal:org.pragmatica.lang.Option<org.pragmatica.aether.stream.forward.ReadRefusal>)
 SHAPE org.pragmatica.aether.stream.provenance.ProvenanceEntry (kind:org.pragmatica.aether.stream.provenance.ProvenanceEntry$ProvenanceKind,rank:org.pragmatica.aether.slice.generation.Epoch,id:org.pragmatica.lang.Option<java.lang.String>,startOffset:long)
 SHAPE org.pragmatica.aether.stream.replication.ReplicationMessage$BatchSync (governorId:org.pragmatica.consensus.NodeId,streamName:java.lang.String,partition:int,fromOffset:long,toOffset:long,compressedBatch:byte[])
 SHAPE org.pragmatica.aether.stream.replication.ReplicationMessage$CatchupRequest (replicaId:org.pragmatica.consensus.NodeId,streamName:java.lang.String,partition:int,fromOffset:long)
@@ -679,6 +681,8 @@ TAG  org.pragmatica.aether.slice.stream.StreamRegistryEntry 1071062
 TAG  org.pragmatica.aether.slice.stream.StreamRegistryEntry$RegisteredByKind 1762131
 TAG  org.pragmatica.aether.stream.consensus.StreamConsensusCommand 91
 TAG  org.pragmatica.aether.stream.forward.RawEventDto 92
+TAG  org.pragmatica.aether.stream.forward.ReadRefusal 2140
+TAG  org.pragmatica.aether.stream.forward.ReadRefusal$Kind 2141
 TAG  org.pragmatica.aether.stream.forward.StreamForwardMessage$PublishForward 93
 TAG  org.pragmatica.aether.stream.forward.StreamForwardMessage$PublishForwardResponse 94
 TAG  org.pragmatica.aether.stream.forward.StreamForwardMessage$ReadForward 95

@@ -12,6 +12,7 @@ import org.pragmatica.aether.slice.fence.OwnershipEpochHighWater;
 import org.pragmatica.aether.stream.CommittedStreamOwnerSource.CommittedOwner;
 import org.pragmatica.aether.stream.forward.RawEventDto;
 import org.pragmatica.aether.stream.forward.StreamForwardClient;
+import org.pragmatica.aether.stream.forward.StreamForwardError;
 import org.pragmatica.aether.stream.forward.StreamReadForwardMetrics;
 import org.pragmatica.aether.stream.replication.ReplicaDescriptor;
 import org.pragmatica.aether.stream.replication.ReplicaRegistry;
@@ -380,8 +381,27 @@ public final class ForwardingReadRouter<E> {
         return client.readRemote(owner, streamName, partition, fromOffset, maxEvents)
                      .map(result -> remoteDecoder.decode(result.events(),
                                                          partition))
-                     .fold(result -> result.fold(_ -> localReader.read(streamName, partition, fromOffset, maxEvents),
+                     .fold(result -> result.fold(cause -> afterForwardFailure(cause,
+                                                                              streamName,
+                                                                              partition,
+                                                                              fromOffset,
+                                                                              maxEvents),
                                                  Promise::success));
+    }
+
+    /// The forward degrades to a local read when the owner could not be asked or does not hold the partition: a timeout, an
+    /// unavailable forwarder, a failure the owner reported only as text, or `PARTITION_NOT_LOCAL` (an ownership view that
+    /// disagrees with this node's, #1108). Any other cause is the owner's typed answer (#1967) -- an expired cursor, an
+    /// unknown stream, a partition out of range, an owner not yet activated -- and is returned as it is: a local read here
+    /// could only repeat a `PARTITION_NOT_LOCAL`, and would hide the status the owner's refusal maps to.
+    private Promise<List<E>> afterForwardFailure(Cause cause,
+                                                 String streamName,
+                                                 int partition,
+                                                 long fromOffset,
+                                                 int maxEvents) {
+        return cause instanceof StreamForwardError || isPartitionNotLocal(cause)
+               ? localReader.read(streamName, partition, fromOffset, maxEvents)
+               : cause.promise();
     }
 
     private Promise<List<E>> attemptPrimary(StreamForwardClient client,
