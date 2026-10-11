@@ -22,3 +22,7 @@
   position (inherited at a promotion, or left by a lost acknowledgement) is acknowledged again by `PartitionBackfill`'s periodic re-verify of
   CAUGHT_UP replicas (5 s redrive, 20 s gate with the defaults: about 25 s plus a round trip); it does not run for a SYNCING, quarantined or
   unreachable replica, or on the HRW owner itself. `[verified: EmberReadCommittedFailoverTest]`
+- **A divergent-tail cut invalidates the entity fold.** The fold built before a cut could keep serving (and sequencing on) a record the cut
+  removed. The log counts its cuts (`StreamPartitionManager.cutGeneration`); a fold built under an older count is dropped and rebuilt from
+  the surviving log, a client read waits on the rebuild or refuses `FoldInProgress`, and a stale fold is never checkpointed.
+  `[verified: EntityCutInvalidatesFoldTest]`
