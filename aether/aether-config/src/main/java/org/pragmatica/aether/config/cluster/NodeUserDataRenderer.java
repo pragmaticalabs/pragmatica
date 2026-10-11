@@ -60,6 +60,8 @@ public sealed interface NodeUserDataRenderer {
     String JVM_SECRET_FILE = ClusterSecretSource.jvmFile(ClusterSecretSource.SECRET_ENV);
     String JVM_LAUNCHER_PATH = "/opt/aether/run-node.sh";
 
+    /// A non-`X.Y.Z` version maps to its moving `-candidate` tag (what release.yml publishes while a release is under test); a RELEASED rc is tagged
+    /// without the suffix, so pin `jar_url = ".../v{version}/aether-node.jar"` for it (derivation vs release tagging is filed for rc5).
     static String deriveJarTag(String version) {
         if (!Verify.Is.present(version)) {
             return "vunknown";
@@ -83,6 +85,13 @@ public sealed interface NodeUserDataRenderer {
     static Option<String> pinnedImage(RuntimeProfile profile, String clusterVersion) {
         return profile.image()
                       .map(image -> withVersion(image, clusterVersion));
+    }
+
+    /// The image a node of `role` in `source` boots from, taken from the role's runtime profile pin with [#VERSION_PLACEHOLDER]
+    /// replaced by the cluster version (#1543 F2); empty when the role names no profile or the profile pins no image.
+    static Option<String> pinnedImageFor(ClusterBootstrapConfig config, SourceProfile source, NodeRole role) {
+        return resolveRuntimeProfile(config, source, role).flatMap(profile -> pinnedImage(profile,
+                                                                                          config.cluster().version()));
     }
 
     static String resolveJarUrl(Option<RuntimeProfile> profile, String version) {

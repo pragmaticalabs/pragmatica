@@ -15,6 +15,7 @@ import org.pragmatica.aether.cli.cluster.ClusterBootstrapOrchestrator.BootstrapE
 import org.pragmatica.aether.config.cluster.CloudProviderName;
 import org.pragmatica.aether.config.cluster.ClusterBootstrapConfigParser;
 import org.pragmatica.aether.config.cluster.NodeRole;
+import org.pragmatica.aether.config.cluster.NodeUserDataRenderer;
 import org.pragmatica.aether.config.cluster.RoleSubTable;
 import org.pragmatica.aether.config.cluster.SourceProfile;
 import org.pragmatica.aether.config.cluster.SourceType;
@@ -33,6 +34,7 @@ import org.pragmatica.lang.Cause;
 import org.pragmatica.aether.environment.docker.DockerComputeProvider;
 import org.pragmatica.aether.environment.docker.DockerNetwork;
 import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 
@@ -93,15 +95,15 @@ sealed interface BootstrapPhaseProvision {
             return success(List.of());
         }
 
-        return ProviderResolver.resolveDockerComputeWithoutBackup().flatMap(compute -> compute instanceof DockerComputeProvider docker
-                                                                                       ? docker.ensureNetwork(ctx.state()
-                                                                                                                 .clusterName()
-                                                                                                                 .value())
-                                                                                               .await()
-                                                                                               .map(ensured -> recordCreatedNetwork(ctx,
-                                                                                                                                    docker,
-                                                                                                                                    ensured))
-                                                                                       : success(List.<CreatedResource> of()));
+        return ProviderResolver.resolveDockerComputeWithoutBackup(ctx.state().clusterName()).flatMap(compute -> compute instanceof DockerComputeProvider docker
+                                                                                                                ? docker.ensureNetwork(ctx.state()
+                                                                                                                                          .clusterName()
+                                                                                                                                          .value())
+                                                                                                                        .await()
+                                                                                                                        .map(ensured -> recordCreatedNetwork(ctx,
+                                                                                                                                                             docker,
+                                                                                                                                                             ensured))
+                                                                                                                : success(List.<CreatedResource> of()));
     }
 
     @Contract
@@ -485,7 +487,7 @@ sealed interface BootstrapPhaseProvision {
                                                          DockerCores dockerCores) {
         return switch (source.type()) {
             case CLOUD -> provisionCloudSource(ctx, sourceName, source, clusterName);
-            case DOCKER -> provisionDockerSource(sourceName, source, clusterName, dockerCores, ctx.clusterSecret());
+            case DOCKER -> provisionDockerSource(ctx, sourceName, source, clusterName, dockerCores);
             case SSH -> provisionSshSource(sourceName, source);
             case FORGE -> provisionForgeSource(sourceName, source, managementPort);
         };
@@ -509,17 +511,23 @@ sealed interface BootstrapPhaseProvision {
                                                                                                                                                   clusterName));
     }
 
+    /// #1543 F2: each role's containers boot the image its runtime profile pins at the bootstrap version, so the cluster starts on the
+    /// image an upgrade later replaces; a role pinning none boots the provider's default image, as before.
     @SuppressWarnings("JBCT-PAT-01")
-    private static Result<List<ProvisionedNode>> provisionDockerSource(SourceName sourceName,
+    private static Result<List<ProvisionedNode>> provisionDockerSource(BootstrapContext ctx,
+                                                                       SourceName sourceName,
                                                                        SourceProfile source,
                                                                        ClusterName clusterName,
-                                                                       DockerCores dockerCores,
-                                                                       String clusterSecret) {
-        return ProviderResolver.resolveDockerCompute(source, clusterSecret).flatMap(compute -> provisionWithCompute(compute,
-                                                                                                                    sourceName,
-                                                                                                                    source,
-                                                                                                                    clusterName,
-                                                                                                                    dockerCores));
+                                                                       DockerCores dockerCores) {
+        return provisionWithCompute(role -> ProviderResolver.resolveDockerCompute(source,
+                                                                                  NodeUserDataRenderer.pinnedImageFor(ctx.config(),
+                                                                                                                      source,
+                                                                                                                      role),
+                                                                                  ctx.clusterSecret()),
+                                    sourceName,
+                                    source,
+                                    clusterName,
+                                    dockerCores);
     }
 
     /// Package-visible so a test can drive the real call site with a recording provider (#2089).
@@ -540,12 +548,21 @@ sealed interface BootstrapPhaseProvision {
                                                      clusterName));
     }
 
-    @SuppressWarnings({"JBCT-PAT-01", "JBCT-EX-01"})
     static Result<List<ProvisionedNode>> provisionWithCompute(ComputeProvider compute,
                                                               SourceName sourceName,
                                                               SourceProfile source,
                                                               ClusterName clusterName,
                                                               DockerCores dockerCores) {
+        return provisionWithCompute(_ -> Result.success(compute), sourceName, source, clusterName, dockerCores);
+    }
+
+    /// The compute is chosen per role (#1543 F2: each role's profile may pin its own image).
+    @SuppressWarnings({"JBCT-PAT-01", "JBCT-EX-01"})
+    private static Result<List<ProvisionedNode>> provisionWithCompute(Fn1<Result<ComputeProvider>, NodeRole> computeFor,
+                                                                      SourceName sourceName,
+                                                                      SourceProfile source,
+                                                                      ClusterName clusterName,
+                                                                      DockerCores dockerCores) {
         var allNodes = new ArrayList<ProvisionedNode>();
         var roleOrder = List.of(NodeRole.CORE, NodeRole.WORKER, NodeRole.SPOT);
         var coreIds = dockerCores.idsFor(sourceName.value());
@@ -554,14 +571,15 @@ sealed interface BootstrapPhaseProvision {
         for (var role : roleOrder) {
             var roleTable = option(source.roles().get(role));
             var result = roleTable.flatMap(rt -> rt.count())
-                                  .map(count -> provisionRoleGroup(compute,
-                                                                   sourceName,
-                                                                   role,
-                                                                   count,
-                                                                   source,
-                                                                   clusterName,
-                                                                   coreIds,
-                                                                   peers));
+                                  .map(count -> computeFor.apply(role)
+                                                          .flatMap(compute -> provisionRoleGroup(compute,
+                                                                                                 sourceName,
+                                                                                                 role,
+                                                                                                 count,
+                                                                                                 source,
+                                                                                                 clusterName,
+                                                                                                 coreIds,
+                                                                                                 peers)));
 
             if (result.isPresent()) {
                 var provisionResult = result.unwrap();

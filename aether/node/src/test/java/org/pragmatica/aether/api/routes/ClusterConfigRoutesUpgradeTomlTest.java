@@ -152,6 +152,37 @@ class ClusterConfigRoutesUpgradeTomlTest {
         assertThat(render(committed(store))).contains("registry/aether-node:1.1.0");
     }
 
+    /// #1543 F2: our own release versions carry a pre-release part; the route, the TOML rewrite and the render all take it.
+    @Test
+    void upgrade_rc4ToRc5_succeeds_andTheReplacementRendersTheRc5Image() {
+        var rc4 = UNPINNED.replace("name = \"prod\"\nversion = \"1.0.0\"", "name = \"prod\"\nversion = \"1.0.0-rc4\"");
+        var store = storeWith(committedAt(rc4, "1.0.0-rc4", 1));
+
+        var result = upgrade(store, "1.0.0-rc5", 1);
+
+        assertThat(result.isSuccess()).as(String.valueOf(result)).isTrue();
+        assertThat(committed(store).version()).isEqualTo("1.0.0-rc5");
+        assertThat(tomlVersion(committed(store))).isEqualTo("1.0.0-rc5");
+        assertThat(render(committed(store))).contains("aether-node:1.0.0-rc5").doesNotContain("1.0.0-rc4");
+    }
+
+    @Test
+    void upgrade_withAnInvalidVersion_isRefusedWith400_beforeAnyReadOrWrite() {
+        var store = storeWith(committed(UNPINNED, 1));
+
+        for (var version : java.util.List.of("", "1.0", "v1.1.0", "1.1.0+build", "../1.1.0", "abc")) {
+            var result = upgrade(store, version, 1);
+
+            assertThat(result.isFailure()).as("'" + version + "'").isTrue();
+            result.onFailure(cause -> {
+                assertThat(cause).isInstanceOf(ClusterConfigError.InvalidUpgradeVersion.class);
+                assertThat(((HttpStatusAware) cause).httpStatus()).isEqualTo(HttpStatus.BAD_REQUEST);
+            });
+        }
+
+        assertUnchanged(store, UNPINNED);
+    }
+
     @Test
     void upgrade_whenTheJarPinCarriesThePlaceholder_succeeds_andTheReplacementRendersTheTargetJar() {
         var toml = JAR_PINNED.replace("aether-node-1.0.0.jar", "v{version}/aether-node.jar");
@@ -177,6 +208,65 @@ class ClusterConfigRoutesUpgradeTomlTest {
 
         assertRefusedAsPinned(result, "node");
         assertUnchanged(store, JAR_PINNED);
+    }
+
+    /// A docker-only cluster: docker sources require a `docker` runtime profile; `imageLine` is the profile's image pin (or none).
+    private static String dockerToml(String imageLine) {
+        return """
+               config_version = "1.0.0"
+
+               [cluster]
+               name = "prod"
+               version = "1.0.0"
+
+               [runtime.dock]
+               type = "docker"
+               %s
+
+               [source.dock]
+               type = "docker"
+
+               [source.dock.core]
+               count = 3
+               runtime = "dock"
+               """.formatted(imageLine);
+    }
+
+    /// #1543 F2 (ruling 7f2f9d772): a docker replacement boots the image its profile pins, so a docker role pinning no image, or one
+    /// without `{version}`, would replace every node with the SAME image. Refused at the start, typed 409, before any write.
+    @Test
+    void upgrade_whenADockerSourceRolePinsNoImage_isRefusedWith409NamingTheSource_andWritesNothing() {
+        var toml = dockerToml("");
+        var store = storeWith(committed(toml, 1));
+
+        assertRefusedAsDockerUnversioned(upgrade(store, "1.1.0", 1), "dock");
+        assertUnchanged(store, toml);
+    }
+
+    @Test
+    void upgrade_whenADockerSourceRolePinsALiteralImage_isRefusedWith409NamingTheSource_andWritesNothing() {
+        var toml = dockerToml("image = \"registry/aether-node:1.0.0\"");
+        var store = storeWith(committed(toml, 1));
+
+        assertRefusedAsDockerUnversioned(upgrade(store, "1.1.0", 1), "dock");
+        assertUnchanged(store, toml);
+    }
+
+    @Test
+    void upgrade_whenTheDockerSourceImageCarriesThePlaceholder_succeeds_andTheCommittedTomlCarriesTheTarget() {
+        var store = storeWith(committed(dockerToml("image = \"registry/aether-node:{version}\""), 1));
+
+        assertThat(upgrade(store, "1.1.0", 1).isSuccess()).isTrue();
+        assertThat(tomlVersion(committed(store))).isEqualTo("1.1.0");
+    }
+
+    private static void assertRefusedAsDockerUnversioned(org.pragmatica.lang.Result<?> result, String source) {
+        assertThat(result.isFailure()).as("a docker upgrade that would replace nodes with the same image must be refused, got: " + result).isTrue();
+        result.onFailure(cause -> {
+            assertThat(cause).isInstanceOf(ClusterConfigError.UpgradeDockerImageUnversioned.class);
+            assertThat(((HttpStatusAware) cause).httpStatus()).isEqualTo(HttpStatus.CONFLICT);
+            assertThat(cause.message()).contains(source).contains("{version}");
+        });
     }
 
     /// A seed carries no TOML and renders no replacement user data, so only the stored version moves (the behaviour
@@ -239,9 +329,13 @@ class ClusterConfigRoutesUpgradeTomlTest {
     }
 
     private static ClusterConfigValue committed(String toml, long configVersion) {
+        return committedAt(toml, "1.0.0", configVersion);
+    }
+
+    private static ClusterConfigValue committedAt(String toml, String version, long configVersion) {
         return ClusterConfigValue.clusterConfigValue(toml,
                                                      "prod",
-                                                     "1.0.0",
+                                                     version,
                                                      List.of(new TopologyEntry("hetzner", "core", 3), new TopologyEntry("hetzner", "worker", 2)),
                                                      3,
                                                      9,

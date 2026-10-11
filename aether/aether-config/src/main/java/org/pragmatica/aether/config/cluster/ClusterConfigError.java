@@ -300,6 +300,21 @@ public sealed interface ClusterConfigError extends Cause, HttpStatusAware {
         }
     }
 
+    /// #1543 F2: an upgrade target must be a SemVer 2.0 version with an optional pre-release (`1.0.0`, `1.0.0-rc5`); anything else
+    /// is refused before any read or write. Our own release versions carry a pre-release part, so a strict `X.Y.Z` rule refused them.
+    record InvalidUpgradeVersion(String version) implements ClusterConfigError {
+        @Override
+        public String message() {
+            return "Invalid upgrade version '" + version
+                 + "': expected SemVer MAJOR.MINOR.PATCH with an optional pre-release, e.g. 1.0.0 or 1.0.0-rc5 (no build metadata: the version becomes an image tag)";
+        }
+
+        @Override
+        public HttpStatus httpStatus() {
+            return HttpStatus.BAD_REQUEST;
+        }
+    }
+
     /// #837: `POST /api/cluster/upgrade` against a cluster with no stored config (same
     /// post-volume-wipe state #335/#835 fixed for scale) used to route through
     /// `ClusterConfigRoutes.lookupClusterConfig()`, which folded absence into the bare,
@@ -337,6 +352,27 @@ public sealed interface ClusterConfigError extends Cause, HttpStatusAware {
                  + "version. Use {version} in the pin (image = \"registry/aether-node:{version}\") to let it follow upgrades. "
                  + "The pin must be declared that way in the config the cluster was bootstrapped with: 'aether cluster apply' "
                  + "does not currently change runtime-profile content";
+        }
+
+        @Override
+        public HttpStatus httpStatus() {
+            return HttpStatus.CONFLICT;
+        }
+    }
+
+    /// #1543 F2 (ruling 7f2f9d772): a DOCKER source replaces a node with a container of the image its runtime profile pins at the
+    /// committed version. A docker role whose profile pins no image, or one without `{version}`, would be replaced by the provider's one
+    /// configured image, so a rolling upgrade would replace every node with the SAME image. Refused at the upgrade start, before any
+    /// node is touched, naming the sources and the fix; never rolled back node by node.
+    record UpgradeDockerImageUnversioned(String targetVersion, List<String> sources) implements ClusterConfigError {
+        @Override
+        public String message() {
+            return "Refusing to upgrade to " + targetVersion
+                 + ": docker source(s) " + sources
+                 + " have a role whose runtime profile pins no image carrying {version}, so replacements would boot the same image and the "
+                 + "upgrade would change nothing. Declare the image with the placeholder in the config the cluster was bootstrapped with "
+                 + "(runtime = \"app\" on the role, [runtime.app] type = \"docker\", image = \"registry/aether-node:{version}\"). "
+                 + "'aether cluster apply' does not currently change runtime-profile content";
         }
 
         @Override
