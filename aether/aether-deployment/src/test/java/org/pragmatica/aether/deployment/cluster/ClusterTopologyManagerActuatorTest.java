@@ -2084,7 +2084,7 @@ class ClusterTopologyManagerActuatorTest {
             manager.activate();
             removed(manager, DEAD);
             await().atMost(Duration.ofSeconds(10))
-                   .until(() -> appender.capturedWarns().stream().anyMatch(msg -> msg.contains("giving up")));
+                   .until(() -> appender.capturedWarns().stream().anyMatch(msg -> msg.contains("instance-termination-unconfirmed") && msg.contains("refused:")));
             voters.set(Set.of());
             settleFor(Duration.ofMillis(300));
 
@@ -2173,7 +2173,7 @@ class ClusterTopologyManagerActuatorTest {
             assertThat(ticks).as("one chain logs each retries-left figure once").doesNotHaveDuplicates();
         }
 
-        /// A provider failure at terminate is visible at WARN with the provider's error, not buried at DEBUG.
+        /// A provider failure at terminate is visible at WARN with the provider's error and is RETRIED (#2062: no longer log-and-drop).
         @Test
         void terminateFailure_isLoggedAtWarnWithTheProviderError() {
             var manager = voterAwareCtm(GRACE);
@@ -2183,7 +2183,8 @@ class ClusterTopologyManagerActuatorTest {
             removed(manager, DEAD);
 
             assertThat(appender.capturedWarns()).anyMatch(msg -> msg.contains(DEAD.id())
-                                                                 && msg.contains("FAILED")
+                                                                 && msg.contains("not confirmed")
+                                                                 && msg.contains("retries left")
                                                                  && msg.contains("stub provider refused terminate"));
         }
 

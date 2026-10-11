@@ -376,6 +376,13 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
     private Promise<Boolean> mutate(Option<CapacityLedgerValue> before,
                                     CapacityLedgerValue after,
                                     List<KVCommand.Mutation<AetherKey, AetherValue>> changes) {
+        return mutate(before, after, List.of(), changes);
+    }
+
+    private Promise<Boolean> mutate(Option<CapacityLedgerValue> before,
+                                    CapacityLedgerValue after,
+                                    List<KVCommand.ReadWitness<AetherKey>> guards,
+                                    List<KVCommand.Mutation<AetherKey, AetherValue>> changes) {
         return leader().fold(() -> Promise.success(false),
                              currentLeader -> {
                                  var mutations = new ArrayList<>(changes);
@@ -387,7 +394,7 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
                                  var command = new KVCommand.LeaderTransaction<AetherKey, AetherValue>(AetherKey.CapacityLedgerKey.INSTANCE,
                                                                                                        id,
                                                                                                        currentLeader,
-                                                                                                       List.of(),
+                                                                                                       guards,
                                                                                                        mutations);
 
                                  return apply.apply(List.of(command))
@@ -505,11 +512,229 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
         return binding.isEmpty() || UNCOUNTED_BINDING.equals(binding);
     }
 
-    private boolean externalNode(NodeId node) {
+    @Override
+    public boolean externalNode(NodeId node) {
         return store.getTyped(new AetherKey.CapacityReservationKey(node),
                               CapacityReservationValue.class)
                     .filter(value -> isExternalBinding(value.sourceBinding()))
                     .isPresent();
+    }
+
+    @Override
+    public Option<SourceName> sourceOf(NodeId node) {
+        return source(node).orElse(() -> delegate.sourceOf(node));
+    }
+
+    private static final int READMISSION_ATTEMPTS = 3;
+
+    @Override
+    public Promise<Unit> readmitExternal(NodeId node) {
+        var key = new AetherKey.CapacityReservationKey(node);
+
+        return store.getTyped(key, CapacityReservationValue.class)
+                    .fold(() -> admitReleased(node, key),
+                          reservation -> isExternalBinding(reservation.sourceBinding())
+                                         ? restamp(node, reservation, READMISSION_ATTEMPTS)
+                                         : Promise.unitPromise());
+    }
+
+    /// The node joined and has NO reservation. A node retired by a replacement is SUPERSEDED (its tombstone): it is refused. When a release deleted an EXTERNAL reservation
+    /// (the marker remembers it, whoever released it) the node is admitted again as a new admission, never left a member without a reservation and a slot. Anything
+    /// else - no marker, or a marker with neither - is reported to the manager ([NoReservationOnJoin]); it is never silently left alone.
+    private Promise<Unit> admitReleased(NodeId node, AetherKey.CapacityReservationKey key) {
+        return admission(node).fold(() -> new NoReservationOnJoin(node.id()).<Unit> promise(),
+                                    marker -> marker.supersededBy()
+                                                    .fold(() -> marker.released()
+                                                                      .fold(() -> new NoReservationOnJoin(node.id()).<Unit> promise(),
+                                                                            released -> admitAgain(node, key, released)),
+                                                          replacement -> new RetiredIdentityRejoined(node.id(),
+                                                                                                     replacement).<Unit> promise()));
+    }
+
+    @Override
+    public Promise<Unit> supersedeAdmission(NodeId node, NodeId replacement) {
+        var key = new AetherKey.CapacityAdmissionKey(node);
+        var before = marker(node);
+        var admissions = before.map(AetherValue.CapacityAdmissionValue.class::cast)
+                               .map(AetherValue.CapacityAdmissionValue::admissions)
+                               .or(0L);
+        var tombstone = new AetherValue.CapacityAdmissionValue(admissions,
+                                                               Option.none(),
+                                                               Option.some(replacement.id()));
+
+        return transact(key,
+                        List.of(new KVCommand.Mutation<AetherKey, AetherValue>(key, before, Option.some(tombstone)))).flatMap(done -> done
+                                                                                                                                      ? Promise.unitPromise()
+                                                                                                                                      : Causes.cause("The retirement tombstone of " + node.id()
+                                                                                                                                                    + " conflicted").promise());
+    }
+
+    @Override
+    public Promise<Unit> forgetAdmission(NodeId node) {
+        var key = new AetherKey.CapacityAdmissionKey(node);
+
+        return marker(node).fold(Promise::unitPromise,
+                                 present -> transact(key,
+                                                     List.of(new KVCommand.Mutation<AetherKey, AetherValue>(key,
+                                                                                                            Option.some(present),
+                                                                                                            Option.none()))).flatMap(done -> done
+                                                                                                                                             ? Promise.unitPromise()
+                                                                                                                                             : Causes.cause("The admission marker of " + node.id()
+                                                                                                                                                           + " changed while it was being deleted").promise()));
+    }
+
+    private Option<AetherValue.CapacityAdmissionValue> admission(NodeId node) {
+        return store.getTyped(new AetherKey.CapacityAdmissionKey(node), AetherValue.CapacityAdmissionValue.class);
+    }
+
+    private Option<AetherValue> marker(NodeId node) {
+        return store.getTyped(new AetherKey.CapacityAdmissionKey(node),
+                              AetherValue.CapacityAdmissionValue.class)
+                    .map(value -> (AetherValue) value);
+    }
+
+    private static KVCommand.Mutation<AetherKey, AetherValue> bumpMarker(NodeId node, Option<AetherValue> before) {
+        var next = before.map(AetherValue.CapacityAdmissionValue.class::cast)
+                         .map(AetherValue.CapacityAdmissionValue::admissions)
+                         .or(0L) + 1;
+
+        return new KVCommand.Mutation<>(new AetherKey.CapacityAdmissionKey(node),
+                                        before,
+                                        Option.some(new AetherValue.CapacityAdmissionValue(next,
+                                                                                           Option.none(),
+                                                                                           Option.none())));
+    }
+
+    /// The marker as the release leaves it: the same admission count, remembering the reservation it deleted.
+    private static KVCommand.Mutation<AetherKey, AetherValue> rememberReleased(NodeId node,
+                                                                               Option<AetherValue> before,
+                                                                               CapacityReservationValue released) {
+        var admissions = before.map(AetherValue.CapacityAdmissionValue.class::cast)
+                               .map(AetherValue.CapacityAdmissionValue::admissions)
+                               .or(0L);
+
+        return new KVCommand.Mutation<>(new AetherKey.CapacityAdmissionKey(node),
+                                        before,
+                                        Option.some(new AetherValue.CapacityAdmissionValue(admissions,
+                                                                                           Option.some(released))));
+    }
+
+    /// The node joined while its EXTERNAL reservation `reservation` is present: bump the admission marker, guarded by a read witness that the reservation is
+    /// still exactly what was read. A release that read the marker earlier then fails; a release that committed first removed the reservation, which
+    /// fails THIS transaction, and the node is then re-admitted as new ([#admitAgain]).
+    private Promise<Unit> restamp(NodeId node, CapacityReservationValue reservation, int attemptsLeft) {
+        var key = new AetherKey.CapacityReservationKey(node);
+        var guard = new KVCommand.ReadWitness<AetherKey>(key, Option.some(reservation));
+
+        return transact(key, List.of(guard), List.of(bumpMarker(node, marker(node)))).flatMap(done -> done
+                                                                                                      ? Promise.unitPromise()
+                                                                                                      : afterRestampConflict(node,
+                                                                                                                             key,
+                                                                                                                             reservation,
+                                                                                                                             attemptsLeft));
+    }
+
+    private Promise<Unit> afterRestampConflict(NodeId node,
+                                               AetherKey.CapacityReservationKey key,
+                                               CapacityReservationValue read,
+                                               int attemptsLeft) {
+        var current = store.getTyped(key, CapacityReservationValue.class);
+
+        if (current.isEmpty()) {
+            return admission(node).flatMap(AetherValue.CapacityAdmissionValue::released)
+                            .fold(() -> admitAgain(node, key, read),
+                                  released -> admitAgain(node, key, released));
+        }
+
+        return attemptsLeft > 1
+               ? restamp(node, current.unwrap(), attemptsLeft - 1)
+               : Causes.cause("The re-stamp of the reservation of " + node.id() + " kept conflicting").promise();
+    }
+
+    /// The release of the previous incarnation committed first: the node is a member with no reservation and no slot. It is admitted again, as a new
+    /// admission (an expected-absent reservation and, when counted, its slot in the ledger), keeping the invariant that the ledger counts the live
+    /// reservations. A counted reservation the ledger cannot count again is a REFUSAL.
+    private Promise<Unit> admitAgain(NodeId node,
+                                     AetherKey.CapacityReservationKey key,
+                                     CapacityReservationValue released) {
+        var reservation = new KVCommand.Mutation<AetherKey, AetherValue>(key, Option.none(), Option.some(released));
+        var bump = bumpMarker(node, marker(node));
+        var counted = !UNCOUNTED_BINDING.equals(released.sourceBinding());
+        var accepted = counted
+                       ? ledger().filter(CapacityLedgerValue::inventoryComplete)
+                               .fold(() -> new ReadmissionRefused("The capacity ledger cannot count the slot of " + node.id()).<Boolean> promise(),
+                                     current -> mutate(Option.some(current),
+                                                       new CapacityLedgerValue(current.allocated() + 1,
+                                                                               current.version() + 1,
+                                                                               current.inventoryComplete()),
+                                                       List.of(reservation, bump)))
+                       : transact(key, List.of(), List.of(reservation, bump));
+
+        return accepted.flatMap(done -> done
+                                        ? Promise.unitPromise()
+                                        : Causes.cause("The re-admission of " + node.id() + " conflicted").promise());
+    }
+
+    @Override
+    public Promise<Unit> releaseExternal(NodeId node) {
+        var key = new AetherKey.CapacityReservationKey(node);
+
+        return store.getTyped(key, CapacityReservationValue.class)
+                    .filter(value -> isExternalBinding(value.sourceBinding()))
+                    .fold(Promise::unitPromise,
+                          reservation -> releaseExternal(key, reservation));
+    }
+
+    /// A counted reservation returns its slot with the delete; an uncounted one (no ledger could count it) is dropped without touching the
+    /// counter, ledger or not.
+    private Promise<Unit> releaseExternal(AetherKey.CapacityReservationKey key, CapacityReservationValue reservation) {
+        var drop = new KVCommand.Mutation<AetherKey, AetherValue>(key, Option.some(reservation), Option.none());
+        // The release commits only if the admission marker is still what it read - the marker mutation is a compare-and-set - and it leaves the marker
+        // remembering the reservation it deleted. A join since the read bumped the marker, so a release that began before a rejoin cannot delete what the
+        // new incarnation holds; a rejoin that finds the reservation already gone admits the node again from the remembered one.
+        var remember = rememberReleased(key.nodeId(), marker(key.nodeId()), reservation);
+        var counted = !UNCOUNTED_BINDING.equals(reservation.sourceBinding());
+        var accepted = counted
+                       ? ledger().fold(() -> transact(key, List.of(drop, remember)),
+                                       current -> current.allocated() <= 0
+                                                  ? Causes.cause("Capacity ledger is inconsistent with its reservation").<Boolean> promise()
+                                                  : mutate(Option.some(current),
+                                                           new CapacityLedgerValue(current.allocated() - 1,
+                                                                                   current.version() + 1,
+                                                                                   current.inventoryComplete()),
+                                                           List.of(drop, remember)))
+                       : transact(key, List.of(drop, remember));
+
+        return accepted.flatMap(done -> done
+                                        ? Promise.unitPromise()
+                                        : Causes.cause("The release of the reservation of " + key.nodeId()
+                                                                                                 .id()
+                                                      + " conflicted; retry").promise());
+    }
+
+    private Promise<Boolean> transact(AetherKey key, List<KVCommand.Mutation<AetherKey, AetherValue>> changes) {
+        return transact(key, List.of(), changes);
+    }
+
+    private Promise<Boolean> transact(AetherKey key,
+                                      List<KVCommand.ReadWitness<AetherKey>> guards,
+                                      List<KVCommand.Mutation<AetherKey, AetherValue>> changes) {
+        return leader().fold(() -> Promise.success(false),
+                             currentLeader -> {
+                                 var id = UUID.randomUUID().toString();
+                                 var command = new KVCommand.LeaderTransaction<AetherKey, AetherValue>(key,
+                                                                                                       id,
+                                                                                                       currentLeader,
+                                                                                                       guards,
+                                                                                                       changes);
+
+                                 return apply.apply(List.of(command))
+                                             .map(results -> results.stream()
+                                                                    .filter(KVCommand.TransactionResult.class::isInstance)
+                                                                    .map(KVCommand.TransactionResult.class::cast)
+                                                                    .anyMatch(result -> result.transactionId()
+                                                                                              .equals(id) && result.accepted()));
+                             });
     }
 
     @Override

@@ -34,6 +34,9 @@ class MainConfigGivenBootTest {
     private static final String MALFORMED = "[cluster\nnodes = \n";
     private static final String FAILS_VALIDATION = "[cluster]\nenvironment = \"docker\"\nnodes = 2\n";
 
+    private static final String JWT_WITHOUT_JWKS = "[cluster]\nenvironment = \"docker\"\n\n[app-http]\nenabled = true\nsecurity_mode = \"jwt\"\n";
+    private static final String JWT_WITH_JWKS = JWT_WITHOUT_JWKS + "jwks_url = \"https://issuer.example/.well-known/jwks.json\"\n";
+
     private record Run(int exit, String out, String err) {}
 
     @Test
@@ -57,6 +60,20 @@ class MainConfigGivenBootTest {
         var file = write(dir, "invalid.toml", FAILS_VALIDATION);
 
         assertRefused(boot(dir, "--config=" + file), file.toString());
+    }
+
+    /// #909: `security_mode = "jwt"` on an enabled server with no `jwks_url` is a contradiction the node cannot enforce. It fails validation
+    /// with a message naming the missing setting, so the given file refuses the boot (exit 65). The same file WITH a `jwks_url` is not refused.
+    @Test
+    void aGivenConfigWithJwtButNoJwksUrl_refusesToStart_namingTheMissingSetting(@TempDir Path dir) throws Exception {
+        assertThat(ConfigLoader.loadFromString(JWT_WITH_JWKS).isSuccess()).as("CONTROL: the same file with jwks_url loads").isTrue();
+        assertThat(ConfigLoader.loadFromString(JWT_WITHOUT_JWKS).isFailure()).as("CONTROL: without jwks_url it does not").isTrue();
+        var file = write(dir, "jwt-no-jwks.toml", JWT_WITHOUT_JWKS);
+        var run = boot(dir, "--config=" + file);
+
+        assertRefused(run, file.toString());
+        assertThat(run.err()).contains("jwks_url");
+        assertPastConfigStage(boot(dir, "--config=" + write(dir, "jwt-jwks.toml", JWT_WITH_JWKS)));
     }
 
     @Test
