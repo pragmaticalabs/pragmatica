@@ -1869,7 +1869,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         }
 
         var epoch = activationEpoch.get();
-        var start = (Runnable) () -> reapUnlessLive(node, epoch, REAP_LIVENESS_RECHECKS);
+        var start = (Runnable)() -> reapUnlessLive(node, epoch, REAP_LIVENESS_RECHECKS);
 
         lifecycleManager.sourceOf(node)
                         .fold(() -> {
@@ -1877,6 +1877,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                            node,
                                            reason);
                                   start.run();
+
                                   return unit();
                               },
                               source -> announceDroppedReplacement(node, source, reason, start));
@@ -1892,9 +1893,8 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                                       node,
                                                       reason,
                                                       source,
-                                                      listed.stream()
-                                                            .map(instance -> instance.id().value())
-                                                            .toList()))
+                                                      listed.stream().map(instance -> instance.id()
+                                                                                              .value()).toList()))
                         .onFailure(cause -> log.warn("CTM: in-flight replacement {} dropped ({}); source={}, instance id unknown (listing failed: {}); terminating by node id",
                                                      node,
                                                      reason,

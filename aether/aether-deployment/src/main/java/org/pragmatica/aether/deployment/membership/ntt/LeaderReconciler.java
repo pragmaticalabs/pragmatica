@@ -1772,8 +1772,9 @@ public final class LeaderReconciler {
     /// entry reaps, so a placeholder the ceiling already dropped is not reaped twice.
     @Contract
     private void reapFailedProvision(NodeId placeholder, Cause cause) {
-        Option.option(inFlightProvisioning.remove(placeholder))
-              .onPresent(entry -> reapDropped(placeholder, "its create failed: " + cause.message(), false));
+        Option.option(inFlightProvisioning.remove(placeholder)).onPresent(entry -> reapDropped(placeholder,
+                                                                                               "its create failed: " + cause.message(),
+                                                                                               false));
     }
 
     /// #1111 — every drop of an in-flight replacement hands its instance to the manager's confirmed reap (bounded, confirmed, operator-visible
@@ -1840,7 +1841,9 @@ public final class LeaderReconciler {
                  entry.ceiling().millis(),
                  entry.state());
         reapDropped(id,
-                    "still unjoined after its " + entry.ceiling().millis() + " ms replacement ceiling (state=" + entry.state() + ")",
+                    "still unjoined after its " + entry.ceiling().millis()
+                   + " ms replacement ceiling (state=" + entry.state()
+                   + ")",
                     entry.state() == InFlightState.CONFIRMED);
 
         return true;
