@@ -86,6 +86,10 @@ class DockerNetworkBootstrapTest {
                 return Promise.success("container-" + ++containers);
             }
 
+            if (command.size() > 3 && "inspect".equals(command.get(1)) && command.get(3).startsWith("{{with index .Config.Labels \"aether.cluster\"}}")) {
+                return Promise.success(CLUSTER);
+            }
+
             return Promise.success("running\t/x\tx\tabc");
         }
 
@@ -126,7 +130,7 @@ class DockerNetworkBootstrapTest {
     private DockerComputeProvider provider;
 
     private void useProvider(ScriptedDocker runner) {
-        provider = DockerComputeProvider.dockerComputeProvider(runner, DockerConfig.dockerConfig().unwrap()).unwrap();
+        provider = DockerComputeProvider.dockerComputeProvider(runner, DockerConfig.dockerConfig().unwrap().withClusterName(CLUSTER)).unwrap();
         ProviderResolver.dockerFactoryOverride = new EnvironmentIntegrationFactory() {
             @Override
             public String providerName() {
