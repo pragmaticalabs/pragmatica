@@ -263,6 +263,28 @@ class RabiaEngineSlowApplyDiagnosticsTest {
     }
 
     @Test
+    void aBatchThatWasDecided_noLongerAges() throws Exception {
+        engine(ProtocolConfig.testConfig());
+        activate();
+        var batch = Batch.create(SERIALIZER, List.of(new TestCommand("decided")));
+
+        engine.processPropose(new RabiaProtocolMessage.Synchronous.Propose<>(NODE_1, Phase.ZERO, batch));
+        engine.processPropose(new RabiaProtocolMessage.Synchronous.Propose<>(NODE_2, Phase.ZERO, batch));
+        Thread.sleep(50);
+        engine.processVoteRound1(new RabiaProtocolMessage.Synchronous.VoteRound1(NODE_2, Phase.ZERO, StateValue.V1));
+        engine.processVoteRound1(new RabiaProtocolMessage.Synchronous.VoteRound1(NODE_3, Phase.ZERO, StateValue.V1));
+        Thread.sleep(50);
+        engine.processVoteRound2(new RabiaProtocolMessage.Synchronous.VoteRound2(NODE_2, Phase.ZERO, StateValue.V1));
+        engine.processVoteRound2(new RabiaProtocolMessage.Synchronous.VoteRound2(NODE_3, Phase.ZERO, StateValue.V1));
+        Thread.sleep(150);
+
+        assertThat(engine.pendingBatchCountForTesting()).as("precondition: the batch was decided and left pending").isZero();
+        assertThat(metrics.oldestPendingAgeMs.get().getAsLong())
+            .as("a decided batch must stop counting; a leaked arrival stamp would keep the age growing for ever")
+            .isZero();
+    }
+
+    @Test
     void anApplyThatIsNeverAnswered_countsOneApplyTimeout() throws Exception {
         var shortApply = ProtocolConfig.protocolConfig(timeSpan(60).seconds(),
                                                        timeSpan(5).seconds(),
