@@ -266,7 +266,7 @@ class SystemStreamManagementReadTest {
 
     private void publish(int partition, int events) {
         for (var i = 0; i < events; i++) {
-            ownerPartitions.publishLocal(engineKey, partition, new byte[]{(byte) i}, 1_000L + i)
+            ownerPartitions.publishLocalAtFloor(engineKey, partition, new byte[]{(byte) i}, 1_000L + i, 0, true)
                            .onFailure(cause -> fail(cause.message()));
         }
     }
