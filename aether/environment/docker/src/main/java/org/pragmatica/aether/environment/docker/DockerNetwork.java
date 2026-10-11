@@ -24,7 +24,6 @@ public interface DockerNetwork {
         CREATED,
         /// It already existed carrying THIS cluster's label: an earlier run of this cluster made it, so it is ours again.
         OWN;
-
         public boolean owned() {
             return this != FOREIGN;
         }
@@ -52,8 +51,15 @@ public interface DockerNetwork {
     }
 
     private static Promise<Ensured> ownerOf(DockerCommandRunner runner, String name, String clusterName) {
-        return runner.execute(List.of("docker", "network", "inspect", "--format", "{{index .Labels \"" + OWNER_LABEL + "\"}}", name))
-                     .map(label -> clusterName.equals(label.strip()) ? Ensured.OWN : Ensured.FOREIGN);
+        return runner.execute(List.of("docker",
+                                      "network",
+                                      "inspect",
+                                      "--format",
+                                      "{{index .Labels \"" + OWNER_LABEL + "\"}}",
+                                      name))
+                     .map(label -> clusterName.equals(label.strip())
+                                   ? Ensured.OWN
+                                   : Ensured.FOREIGN);
     }
 
     /// Removes exactly the network named, only if it carries `clusterName`'s label and no container is attached. Never forces.
@@ -64,21 +70,32 @@ public interface DockerNetwork {
                                       "--format",
                                       "{{index .Labels \"" + OWNER_LABEL + "\"}}|{{len .Containers}}",
                                       name))
-                     .flatMap(facts -> removeWhenOwnedAndEmpty(runner, name, clusterName, facts.strip()))
+                     .flatMap(facts -> removeWhenOwnedAndEmpty(runner,
+                                                               name,
+                                                               clusterName,
+                                                               facts.strip()))
                      .orElse(() -> Promise.success(Removal.ABSENT));
     }
 
-    private static Promise<Removal> removeWhenOwnedAndEmpty(DockerCommandRunner runner, String name, String clusterName, String facts) {
+    private static Promise<Removal> removeWhenOwnedAndEmpty(DockerCommandRunner runner,
+                                                            String name,
+                                                            String clusterName,
+                                                            String facts) {
         var bar = facts.lastIndexOf('|');
-        var label = bar < 0 ? "" : facts.substring(0, bar);
-        var attached = bar < 0 ? facts : facts.substring(bar + 1);
+        var label = bar < 0
+                    ? ""
+                    : facts.substring(0, bar);
+        var attached = bar < 0
+                       ? facts
+                       : facts.substring(bar + 1);
 
         if (!clusterName.equals(label)) {
             return Promise.success(Removal.NOT_OURS);
         }
 
         return "0".equals(attached)
-               ? runner.execute(List.of("docker", "network", "rm", name)).map(_ -> Removal.REMOVED)
+               ? runner.execute(List.of("docker", "network", "rm", name))
+                       .map(_ -> Removal.REMOVED)
                : Promise.success(Removal.IN_USE);
     }
 }

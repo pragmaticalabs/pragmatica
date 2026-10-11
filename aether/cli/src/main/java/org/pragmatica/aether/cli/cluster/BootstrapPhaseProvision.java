@@ -94,7 +94,9 @@ sealed interface BootstrapPhaseProvision {
         }
 
         return ProviderResolver.resolveDockerComputeWithoutBackup().flatMap(compute -> compute instanceof DockerComputeProvider docker
-                                                                                       ? docker.ensureNetwork(ctx.state().clusterName().value())
+                                                                                       ? docker.ensureNetwork(ctx.state()
+                                                                                                                 .clusterName()
+                                                                                                                 .value())
                                                                                                .await()
                                                                                                .map(ensured -> recordCreatedNetwork(ctx,
                                                                                                                                     docker,
@@ -109,7 +111,8 @@ sealed interface BootstrapPhaseProvision {
         var name = docker.config().networkName();
 
         if (!ensured.owned()) {
-            System.out.printf("  Reusing docker network %s (not created by this cluster; it will not be removed)%n", name);
+            System.out.printf("  Reusing docker network %s (not created by this cluster; it will not be removed)%n",
+                              name);
 
             return List.of();
         }

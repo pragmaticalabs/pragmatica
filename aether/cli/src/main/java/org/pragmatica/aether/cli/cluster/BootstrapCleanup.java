@@ -1220,18 +1220,22 @@ sealed interface BootstrapCleanup {
     private static Result<Unit> removeNetwork(BootstrapState state, CreatedResource.DockerNetwork network) {
         System.out.printf("  Removing docker network %s (created by bootstrap)...%n", network.networkName());
 
-        return ProviderResolver.resolveDockerComputeWithoutBackup()
-                               .flatMap(compute -> compute instanceof DockerComputeProvider docker
-                                                  ? docker.removeNetworkIfOwnedAndEmpty(network.networkName(), state.clusterName().value())
-                                                          .await()
-                                                          .map(removal -> reportNetworkRemoval(network, removal))
-                                                  : Result.unitResult());
+        return ProviderResolver.resolveDockerComputeWithoutBackup().flatMap(compute -> compute instanceof DockerComputeProvider docker
+                                                                                       ? docker.removeNetworkIfOwnedAndEmpty(network.networkName(),
+                                                                                                                             state.clusterName()
+                                                                                                                                  .value())
+                                                                                               .await()
+                                                                                               .map(removal -> reportNetworkRemoval(network,
+                                                                                                                                    removal))
+                                                                                       : Result.unitResult());
     }
 
     private static Unit reportNetworkRemoval(CreatedResource.DockerNetwork network, DockerNetwork.Removal removal) {
         switch (removal) {
-            case IN_USE -> System.out.printf("  Docker network %s still has containers attached; left in place.%n", network.networkName());
-            case NOT_OURS -> System.out.printf("  Docker network %s does not carry this cluster's label; left in place.%n", network.networkName());
+            case IN_USE -> System.out.printf("  Docker network %s still has containers attached; left in place.%n",
+                                             network.networkName());
+            case NOT_OURS -> System.out.printf("  Docker network %s does not carry this cluster's label; left in place.%n",
+                                               network.networkName());
             default -> {}
         }
 
