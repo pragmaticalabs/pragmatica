@@ -2252,14 +2252,29 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         var cause = persisted.map(AetherValue.UnconfirmedTerminationValue::cause).or("mark not persisted");
         var known = Option.option(knownInstanceIds.get(nodeId)).or("never listed");
 
-        return providerState(nodeId, attestedInstance, force).flatMap(state -> deleteExactMark(nodeId, persisted).flatMap(_ -> afterClear(nodeId,
-                                                                                                                                          generation,
-                                                                                                                                          new Cleared(operator,
-                                                                                                                                                      attestedInstance,
-                                                                                                                                                      force,
-                                                                                                                                                      state,
-                                                                                                                                                      known,
-                                                                                                                                                      cause))));
+        return providerState(nodeId, attestedInstance, force).flatMap(seen -> stillClearable(nodeId, generation).flatMap(_ -> deleteExactMark(nodeId,
+                                                                                                                                              persisted))
+                                                                                            .flatMap(_ -> afterClear(nodeId,
+                                                                                                                     generation,
+                                                                                                                     new Cleared(operator,
+                                                                                                                                 attestedInstance,
+                                                                                                                                 force,
+                                                                                                                                 seen.state(),
+                                                                                                                                 known,
+                                                                                                                                 cause),
+                                                                                                                     seen.nothingLive())));
+    }
+
+    /// The provider reads took time: a node that rejoined while they ran is a new incarnation (nothing to clear), and one that shows life now is never cleared.
+    /// Asked again at the commit, after the reads, fenced by the incarnation read before them.
+    private Promise<Unit> stillClearable(NodeId nodeId, long generation) {
+        if (!sameIncarnation(nodeId, generation)) {
+            return new UnconfirmedClearRefusal.Changed(nodeId).promise();
+        }
+
+        return liveness.demonstrablyLive(nodeId)
+               ? new UnconfirmedClearRefusal.NodeLive(nodeId).promise()
+               : Promise.unitPromise();
     }
 
     /// What the operator's clear is audited with: who, what they attest, whether they overrode the provider check and what the provider showed.
@@ -2274,21 +2289,24 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     /// hide a listed instance) and, when the operator names an id, by that ID (an instance the operator names that the provider shows without the node's
     /// labels is refused too). A listed instance that is not terminated, or a read that fails (a not-found for the id is an answer, not a failure), refuses
     /// the clear unless forced; the state seen is returned for the event. An EXTERNAL node has no provider of ours to ask: refused unless forced.
-    private Promise<String> providerState(NodeId nodeId, String attested, boolean force) {
+    private Promise<ProviderSeen> providerState(NodeId nodeId, String attested, boolean force) {
         if (lifecycleManager.externalNode(nodeId)) {
             return force
-                   ? Promise.success(EXTERNAL_STATE)
+                   ? Promise.success(new ProviderSeen(EXTERNAL_STATE, false))
                    : new UnconfirmedClearRefusal.ExternalNodeUnchecked(nodeId).promise();
         }
 
         var source = lifecycleManager.sourceOf(nodeId).or(SourceName.DEFAULT);
 
-        return lifecycleManager.instancesForNode(nodeId, source)
+        return lifecycleManager.readInstancesForNode(nodeId, source)
                                .fold(labelled -> readById(attested, source).flatMap(byId -> judge(nodeId,
                                                                                                   labelled,
                                                                                                   byId,
                                                                                                   force)));
     }
+
+    /// What the provider reads showed: the state for the event, and whether NO read showed the instance live or failed (only then may the clear return the capacity).
+    private record ProviderSeen(String state, boolean nothingLive) {}
 
     private static final String EXTERNAL_STATE = "external node: no provider to check";
     private static final String UNKNOWN_INSTANCE = "unknown";
@@ -2321,10 +2339,10 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                : new ByIdRead.Failed(attested, cause);
     }
 
-    private static Promise<String> judge(NodeId nodeId,
-                                         org.pragmatica.lang.Result<List<org.pragmatica.aether.environment.InstanceInfo>> labelled,
-                                         ByIdRead byId,
-                                         boolean force) {
+    private static Promise<ProviderSeen> judge(NodeId nodeId,
+                                               org.pragmatica.lang.Result<List<org.pragmatica.aether.environment.InstanceInfo>> labelled,
+                                               ByIdRead byId,
+                                               boolean force) {
         var labelledInstances = labelled.fold(_ -> List.<org.pragmatica.aether.environment.InstanceInfo> of(),
                                               listed -> listed);
         var found = byId instanceof ByIdRead.Found(var info)
@@ -2348,7 +2366,8 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
             return new UnconfirmedClearRefusal.ProviderUnreachable(nodeId, unreachable.unwrap()).promise();
         }
 
-        return Promise.success(stateSeen(labelled, byId));
+        return Promise.success(new ProviderSeen(stateSeen(labelled, byId),
+                                                running.isEmpty() && unreachable.isEmpty()));
     }
 
     private static Option<String> unreachableCause(org.pragmatica.lang.Result<List<org.pragmatica.aether.environment.InstanceInfo>> labelled,
@@ -2405,11 +2424,12 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                                      .mapError(_ -> new UnconfirmedClearRefusal.Changed(nodeId)));
     }
 
-    private Promise<Unit> afterClear(NodeId nodeId, long generation, Cleared cleared) {
+    private Promise<Unit> afterClear(NodeId nodeId, long generation, Cleared cleared, boolean nothingLive) {
         if (sameIncarnation(nodeId, generation)) {
             unconfirmedReaps.remove(nodeId);
         }
 
+        releaseIfGone(nodeId, generation, nothingLive);
         org.pragmatica.utility.warning.OperatorWarnings.raise(log,
                                                               warningSink.get(),
                                                               org.pragmatica.utility.warning.OperatorWarningCode.INSTANCE_TERMINATION_CLEARED,
@@ -2424,6 +2444,18 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                                               cleared.cause());
 
         return Promise.unitPromise();
+    }
+
+    /// Only a clear that committed, after reads that showed no instance live (and none failed), returns the node's capacity: the cluster stops counting
+    /// an instance the operator verified gone. A node that shows life again, or a new incarnation, keeps what it holds.
+    private void releaseIfGone(NodeId nodeId, long generation, boolean nothingLive) {
+        if (nothingLive && sameIncarnation(nodeId, generation) && !liveness.demonstrablyLive(nodeId)) {
+            lifecycleManager.releaseAfterOperatorClear(nodeId,
+                                                       lifecycleManager.sourceOf(nodeId).or(SourceName.DEFAULT))
+                            .onFailure(cause -> log.warn("CTM: the capacity of cleared node {} was not returned: {}",
+                                                         nodeId,
+                                                         cause.message()));
+        }
     }
 
     private static String instanceIds(List<org.pragmatica.aether.environment.InstanceInfo> listed) {

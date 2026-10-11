@@ -156,6 +156,19 @@ public interface NodeLifecycleManager {
         return instancesForNode(nodeId);
     }
 
+    /// The instances the provider lists for `nodeId`, as a PURE READ (#2062: the operator clear asks before it commits, and a refused clear must leave
+    /// every reservation and the ledger exactly as they were). Unlike [#instancesForNode], an empty listing releases nothing and a non-empty one
+    /// observes nothing. Default: the same read, for a manager whose reads have no effects.
+    default Promise<List<InstanceInfo>> readInstancesForNode(NodeId nodeId, SourceName source) {
+        return instancesForNode(nodeId, source);
+    }
+
+    /// Returns the capacity the node's CONFIRMED reservation holds, after an operator's clear committed and every provider read showed no live instance of
+    /// the node. Idempotent; a node with no matching reservation succeeds. Never a provider call. Default: nothing to release.
+    default Promise<Unit> releaseAfterOperatorClear(NodeId nodeId, SourceName source) {
+        return Promise.unitPromise();
+    }
+
     /// The provider's own read of ONE instance by its id (#2062: the operator clear checks the instance the operator names, as well as the node's labelled
     /// instances). A read only: no reservation is observed or released. Default refusal, for the reason [#instancesForNode] has one.
     default Promise<InstanceInfo> instanceStatus(InstanceId instanceId, SourceName source) {

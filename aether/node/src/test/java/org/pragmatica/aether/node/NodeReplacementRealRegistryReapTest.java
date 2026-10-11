@@ -2314,6 +2314,105 @@ class NodeReplacementRealRegistryReapTest {
         within(5, () -> assertThat(clearedWarning("(forced=true; provider state: external node: no provider to check; ")).isTrue());
     }
 
+    private void confirmedReservation() {
+        put(new AetherKey.CapacityReservationKey(OLD), new CapacityReservationValue("west", realBinding, "core", CapacityReservationPhase.OBSERVED));
+        put(AetherKey.CapacityLedgerKey.INSTANCE, new CapacityLedgerValue(3, 1, true));
+    }
+
+    private int allocated() {
+        return store.getTyped(AetherKey.CapacityLedgerKey.INSTANCE, CapacityLedgerValue.class).unwrap().allocated();
+    }
+
+    /// Round 3 (v-2125 D1/D2): the clear's checks are READS. The label lookup finds nothing (the named instance carries other labels), the by-id read finds it
+    /// running and the clear is refused: the node's confirmed reservation and the ledger are exactly as they were, while the instance runs.
+    @Test
+    void clearUnconfirmed_aRefusedClear_leavesTheReservationAndTheLedgerUntouched() {
+        absentMark();
+        confirmedReservation();
+        listing.set(Promise.success(List.of(instance(new NodeId("some-other-node"), "i-77", InstanceStatus.RUNNING))));
+
+        assertThat(refusalOf(ctmUnderTest.clearUnconfirmed(OLD, "alice", "i-77"))).isInstanceOf(ClusterTopologyManager.UnconfirmedClearRefusal.InstanceStillListed.class);
+
+        assertThat(reservation(OLD).isPresent()).as("the reservation of a node whose instance runs is kept").isTrue();
+        assertThat(allocated()).as("and the ledger still counts it").isEqualTo(3);
+    }
+
+    /// The capacity is returned by the clear that commits, once every read shows nothing live.
+    @Test
+    void clearUnconfirmed_aCommittedClear_whenNoReadShowsTheInstanceLive_returnsTheCapacity() {
+        absentMark();
+        confirmedReservation();
+
+        assertThat(ctmUnderTest.clearUnconfirmed(OLD, "alice", "i-77").await().isSuccess()).isTrue();
+
+        within(5, () -> assertThat(reservation(OLD).isEmpty()).as("the reservation is released by the committed clear").isTrue());
+        assertThat(allocated()).isEqualTo(2);
+    }
+
+    /// A forced clear over an instance that is still listed does not return its capacity: a read showed it live.
+    @Test
+    void clearUnconfirmed_aForcedClearOverALiveInstance_doesNotReturnTheCapacity() {
+        absentMark();
+        confirmedReservation();
+        listing.set(Promise.success(List.of(instance(OLD, "i-1", InstanceStatus.RUNNING))));
+
+        assertThat(ctmUnderTest.clearUnconfirmed(OLD, "alice", "i-1", true).await().isSuccess()).isTrue();
+
+        settle();
+        assertThat(reservation(OLD).isPresent()).isTrue();
+        assertThat(allocated()).isEqualTo(3);
+    }
+
+    /// A forced clear that could not read the provider does not return the capacity either.
+    @Test
+    void clearUnconfirmed_aForcedClear_whenAReadFailed_doesNotReturnTheCapacity() {
+        absentMark();
+        confirmedReservation();
+        listing.set(EnvironmentError.operationNotSupported("provider API down").promise());
+
+        assertThat(ctmUnderTest.clearUnconfirmed(OLD, "alice", "unknown", true).await().isSuccess()).isTrue();
+
+        settle();
+        assertThat(reservation(OLD).isPresent()).isTrue();
+        assertThat(allocated()).isEqualTo(3);
+    }
+
+    /// Round 3 (v-2125 D5): the node shows life while the provider is being read. Liveness is asked again at the commit, and the clear is refused.
+    @Test
+    void clearUnconfirmed_aNodeThatShowsLifeDuringTheProviderReads_isNotCleared() throws Exception {
+        absentMark();
+        Promise<List<InstanceInfo>> held = Promise.promise();
+
+        oneShotListing.set(held);
+        var clear = ctmUnderTest.clearUnconfirmed(OLD, "alice", "unknown");
+
+        states.put(OLD, "Member");
+        held.succeed(List.of());
+
+        assertThat(refusalOf(clear)).isInstanceOf(ClusterTopologyManager.UnconfirmedClearRefusal.NodeLive.class);
+        assertThat(persistedMark(OLD).isPresent()).as("nothing cleared").isTrue();
+        settle();
+        assertThat(anyCleared()).isFalse();
+    }
+
+    /// The node rejoined while the provider was being read: a new incarnation, nothing of the old one is cleared (and the new one's mark is not touched).
+    @Test
+    void clearUnconfirmed_aNodeThatRejoinedDuringTheProviderReads_isNotCleared() throws Exception {
+        absentMark();
+        Promise<List<InstanceInfo>> held = Promise.promise();
+
+        oneShotListing.set(held);
+        var clear = ctmUnderTest.clearUnconfirmed(OLD, "alice", "unknown");
+
+        joins(OLD);
+        states.remove(OLD);
+        held.succeed(List.of());
+
+        assertThat(refusalOf(clear)).isInstanceOf(ClusterTopologyManager.UnconfirmedClearRefusal.Changed.class);
+        settle();
+        assertThat(anyCleared()).isFalse();
+    }
+
     /// An instance the provider lists as TERMINATED is gone: the clear goes through unforced, and the event names what the provider showed.
     @Test
     void clearUnconfirmed_aTerminatedInstanceDoesNotRefuse() {

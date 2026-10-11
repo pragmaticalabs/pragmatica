@@ -493,6 +493,27 @@ public record CapacityControlledLifecycle(NodeLifecycleManager delegate,
     }
 
     @Override
+    public Promise<List<InstanceInfo>> readInstancesForNode(NodeId node, SourceName source) {
+        return reservationBinding(node, source).async()
+                                 .flatMap(binding -> delegate.instancesForNode(node, source, binding));
+    }
+
+    @Override
+    public Promise<Unit> releaseAfterOperatorClear(NodeId node, SourceName source) {
+        return leader().isEmpty()
+               ? Promise.unitPromise()
+               : reservationBinding(node, source).async()
+                                   .flatMap(binding -> releaseConfirmed(node, source, binding));
+    }
+
+    private org.pragmatica.lang.Result<String> reservationBinding(NodeId node, SourceName source) {
+        return store.getTyped(new AetherKey.CapacityReservationKey(node),
+                              CapacityReservationValue.class)
+                    .fold(() -> delegate.sourceBinding(source),
+                          value -> org.pragmatica.lang.Result.success(value.sourceBinding()));
+    }
+
+    @Override
     public Promise<org.pragmatica.aether.environment.InstanceInfo> instanceStatus(org.pragmatica.aether.environment.InstanceId instanceId,
                                                                                   SourceName source) {
         return delegate.instanceStatus(instanceId, source);
