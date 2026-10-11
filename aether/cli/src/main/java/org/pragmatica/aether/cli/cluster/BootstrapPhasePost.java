@@ -157,7 +157,7 @@ sealed interface BootstrapPhasePost {
                ? scheme + "://localhost:" + port
                : scheme + "://" + ctx.addresses()
                                      .getFirst()
-                                     .publicIp() + ":" + port;
+                                     .managementHostPort(port);
     }
 
     @Contract

@@ -202,20 +202,27 @@ public sealed interface ClusterBootstrapOrchestrator permits ClusterBootstrapOrc
 
         var nodes = IntStream.range(0,
                                     ids.size())
-                             .mapToObj(i -> ProvisionedNode.provisionedNode(ids.get(i),
-                                                                            serverTag(ctx.config(),
-                                                                                      ids.get(i)),
-                                                                            ips.get(i)))
+                             .mapToObj(i -> provisionedFromPersisted(ctx,
+                                                                     ids.get(i),
+                                                                     ips.get(i)))
                              .toList();
         var addresses = IntStream.range(0,
                                         ids.size())
-                                 .mapToObj(i -> NodeAddress.nodeAddress(ids.get(i),
-                                                                        ips.get(i),
-                                                                        none()))
+                                 .mapToObj(i -> NodeAddress.fromPersisted(ids.get(i),
+                                                                          ips.get(i)))
                                  .toList();
 
         return ctx.withNodes(nodes)
                   .withAddresses(addresses);
+    }
+
+    private static ProvisionedNode provisionedFromPersisted(BootstrapContext ctx, String nodeId, String persisted) {
+        var address = NodeAddress.fromPersisted(nodeId, persisted);
+
+        return ProvisionedNode.provisionedNode(nodeId,
+                                               serverTag(ctx.config(), nodeId),
+                                               address.publicIp(),
+                                               address.managementPort());
     }
 
     private static String serverTag(ClusterBootstrapConfig config, String nodeId) {
@@ -720,6 +727,34 @@ public sealed interface ClusterBootstrapOrchestrator permits ClusterBootstrapOrc
             @Override
             public String message() {
                 return "Provisioning failed for source '" + sourceName + "': " + detail;
+            }
+        }
+
+        /// A DOCKER source with management TLS declared (`[operations.tls] auto_generate = true`, the default) (#2089).
+        /// A docker node is created by `docker run` from the image's baked configuration, which serves the management API over plain
+        /// HTTP (`[cluster] tls = false`) and has no channel to receive TLS material, so the declared setting could not be honoured. Bootstrap
+        /// refuses before any container exists instead of quietly speaking HTTP to a cluster the config says is TLS.
+        record DockerSourceDeclaresTls(String sourceName) implements BootstrapError {
+            @Override
+            public String message() {
+                return "Source '" + sourceName
+                     + "' is a docker source, but the config declares management TLS ([operations.tls] auto_generate"
+                     + " is true, the default). Docker nodes serve the management API over plain HTTP and cannot honour it. Set"
+                     + " `[operations.tls] auto_generate = false` explicitly to bootstrap a docker cluster over HTTP.";
+            }
+        }
+
+        /// A docker source beside a non-docker source of any role (#2089). Docker nodes name each other by container
+        /// name on the docker network; cloud and ssh cores by address. The two kinds cannot share one reachable peer list, a list per
+        /// kind would silently form two clusters, and docker workers would boot with an empty core list, so bootstrap refuses the config.
+        record DockerCoresMixedWithOtherCores(String dockerSource, String otherSource) implements BootstrapError {
+            @Override
+            public String message() {
+                return "Docker source '" + dockerSource
+                     + "' cannot be combined with source '" + otherSource
+                     + "'. Docker nodes reach each other by"
+                     + " container name and the others by address, so they cannot share one cluster peer list. Put the whole cluster in"
+                     + " docker sources, or use no docker source.";
             }
         }
 

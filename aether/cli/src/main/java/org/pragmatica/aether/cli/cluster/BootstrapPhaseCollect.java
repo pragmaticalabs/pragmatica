@@ -22,13 +22,13 @@ sealed interface BootstrapPhaseCollect {
                                               "Collecting addresses from %d provisioned node(s)",
                                               ctx.nodes().size());
         var addresses = ctx.nodes().stream().map(BootstrapPhaseCollect::nodeToAddress).toList();
-        var addressStrings = addresses.stream().map(NodeAddress::publicIp).toList();
+        var addressStrings = addresses.stream().map(NodeAddress::persisted).toList();
         var updatedState = ctx.state().withCollectedAddresses(addressStrings);
 
         return success(ctx.withAddresses(addresses).withState(updatedState));
     }
 
     private static NodeAddress nodeToAddress(ProvisionedNode node) {
-        return NodeAddress.nodeAddress(node.nodeId(), node.publicIp(), none());
+        return NodeAddress.nodeAddress(node.nodeId(), node.publicIp(), none(), node.managementPort());
     }
 }
