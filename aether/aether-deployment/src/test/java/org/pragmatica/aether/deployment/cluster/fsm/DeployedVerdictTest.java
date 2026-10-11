@@ -130,6 +130,36 @@ class DeployedVerdictTest {
     }
 
     @Test
+    void aTwoSliceBlueprint_withOnlyOneSliceActive_hasNoSucceededOutcomeYet() {
+        var sliceC = Artifact.artifact("com.example:slice-c:1.0.0").unwrap();
+        var sliceD = Artifact.artifact("com.example:slice-d:1.0.0").unwrap();
+        var two = ExpandedBlueprint.expandedBlueprint(BlueprintId.blueprintId("com.example:app2:1.0.0").unwrap(),
+                                                      List.of(ResolvedSlice.resolvedSlice(sliceC, 1, false).unwrap(),
+                                                              ResolvedSlice.resolvedSlice(sliceD, 1, false).unwrap()));
+        KVCommand<AetherKey> put = new KVCommand.Put<>(AppBlueprintKey.appBlueprintKey(two.id()), AppBlueprintValue.appBlueprintValue(two));
+        KVCommand<AetherKey> started = new KVCommand.Put<>(DeploymentOutcomeKey.deploymentOutcomeKey(two.id()),
+                                                           AetherValue.DeploymentOutcomeValue.inProgress(1L));
+
+        leaderStore.process(leaderStore.createBatch(List.of(put, started)));
+        leaderHarness.dispatch(new AppBlueprintPutReceived(appBlueprintPut(two)));
+        leaderHarness.dispatch(new NodeArtifactPutReceived(new ValuePut<>(new KVCommand.Put<>(NodeArtifactKey.nodeArtifactKey(SELF, sliceC),
+                                                                                              activeInstance()),
+                                                                          Option.none())));
+
+        assertThat(recorder.outcomeFor(two.id()).stream().filter(o -> o.status() == DeploymentOutcomeStatus.SUCCEEDED))
+                .as("slice D has no ACTIVE instance yet: the apply has not completed, whatever slice C did")
+                .isEmpty();
+
+        leaderHarness.dispatch(new NodeArtifactPutReceived(new ValuePut<>(new KVCommand.Put<>(NodeArtifactKey.nodeArtifactKey(NODE_A, sliceD),
+                                                                                              activeInstance()),
+                                                                          Option.none())));
+
+        assertThat(recorder.outcomeFor(two.id()).stream().filter(o -> o.status() == DeploymentOutcomeStatus.SUCCEEDED))
+                .as("both slices now have an ACTIVE instance")
+                .isNotEmpty();
+    }
+
+    @Test
     void anInstanceThatIsOnlyActivating_isNotCountedAsActive() {
         leaderHarness.dispatch(new NodeArtifactPutReceived(replayOn(SELF, activeInstance())));
         leaderHarness.dispatch(new NodeArtifactPutReceived(replayOn(NODE_A, NodeArtifactValue.nodeArtifactValue(SliceState.ACTIVATING))));

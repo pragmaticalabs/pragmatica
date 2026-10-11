@@ -263,6 +263,21 @@ class RabiaEngineSlowApplyDiagnosticsTest {
     }
 
     @Test
+    void aBatchLearnedFromAPeersProposal_ageCountsFromLocalReceipt_too() throws Exception {
+        engine(ProtocolConfig.testConfig());
+        activate();
+        var local = Batch.create(SERIALIZER, List.of(new TestCommand("proposed-by-a-peer")));
+        var fromAPeer = new Batch<>(local.id(), local.correlationIds(), System.nanoTime() - 3_600_000_000_000L, local.commands());
+
+        engine.processPropose(new RabiaProtocolMessage.Synchronous.Propose<>(NODE_2, Phase.ZERO, fromAPeer));
+        Thread.sleep(300);
+
+        assertThat(metrics.oldestPendingAgeMs.get().getAsLong())
+            .as("learned from a Propose 300 ms ago; the peer's creation stamp would read an hour")
+            .isBetween(250L, 5_000L);
+    }
+
+    @Test
     void aBatchThatWasDecided_noLongerAges() throws Exception {
         engine(ProtocolConfig.testConfig());
         activate();

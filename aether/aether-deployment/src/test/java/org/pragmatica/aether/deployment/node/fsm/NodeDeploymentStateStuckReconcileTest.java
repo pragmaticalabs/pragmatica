@@ -273,7 +273,7 @@ class NodeDeploymentStateStuckReconcileTest {
 
         assertThat(warnings).anySatisfy(line -> assertThat(line).contains("Node self")
                                                                 .contains("still ROUTING locally")
-                                                                .contains("COMMITTED state is ACTIVE"));
+                                                                .contains("COMMITTED state is ACTIVE — adopting the committed ACTIVE into local state, no write"));
         assertThat(warnings).anySatisfy(line -> assertThat(line).contains("Node self")
                                                                 .contains("still ROUTING locally")
                                                                 .contains("committed state is ROUTING — re-driving"));
