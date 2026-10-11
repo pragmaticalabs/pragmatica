@@ -1056,6 +1056,19 @@ public final class DistributedDHTClient implements DHTClient {
         return HEX.formatHex(key);
     }
 
+    /// Register the request so its reply finds the collector, and drop the entry when the operation times out: a
+    /// peer that never answers and never leaves the ring would otherwise leave it in the shared map for good. A reply
+    /// arriving after the timeout finds no entry and is ignored.
+    private <T> void track(String correlationId, QuorumCollector<T> collector) {
+        pendingOps.put(correlationId, new PendingOperation<>(collector));
+        collector.onTimeout(() -> pendingOps.remove(correlationId));
+    }
+
+    /// Requests awaiting a reply, across this client and every instance derived from it. Test seam.
+    int pendingOperations() {
+        return pendingOps.size();
+    }
+
     private Option<PendingOperation<?>> removePending(String correlationId) {
         return Option.option(pendingOps.remove(correlationId));
     }
@@ -1138,7 +1151,7 @@ public final class DistributedDHTClient implements DHTClient {
                                byte[] key,
                                QuorumCollector<Option<DHTMessage.KeyValue>> collector,
                                String correlationId) {
-        pendingOps.put(correlationId, new PendingOperation<>(collector));
+        track(correlationId, collector);
         dispatchTracked(target,
                         new DHTMessage.GetRequest(correlationId, node.nodeId(), key),
                         correlationId,
@@ -1152,7 +1165,7 @@ public final class DistributedDHTClient implements DHTClient {
                                QuorumCollector<Unit> collector) {
         var correlationId = IdGenerator.generate();
 
-        pendingOps.put(correlationId, new PendingOperation<>(collector));
+        track(correlationId, collector);
         dispatchTracked(target,
                         new DHTMessage.PutRequest(correlationId,
                                                   node.nodeId(),
@@ -1170,7 +1183,7 @@ public final class DistributedDHTClient implements DHTClient {
     private void sendRemoteRemove(NodeId target, byte[] key, WriteStamp stamp, QuorumCollector<Boolean> collector) {
         var correlationId = IdGenerator.generate();
 
-        pendingOps.put(correlationId, new PendingOperation<>(collector));
+        track(correlationId, collector);
         dispatchTracked(target,
                         new DHTMessage.RemoveRequest(correlationId,
                                                      node.nodeId(),
@@ -1187,7 +1200,7 @@ public final class DistributedDHTClient implements DHTClient {
     private void sendRemoteExists(NodeId target, byte[] key, QuorumCollector<Option<DHTMessage.KeyValue>> collector) {
         var correlationId = IdGenerator.generate();
 
-        pendingOps.put(correlationId, new PendingOperation<>(collector));
+        track(correlationId, collector);
         dispatchTracked(target,
                         new DHTMessage.ExistsRequest(correlationId, node.nodeId(), key),
                         correlationId,
