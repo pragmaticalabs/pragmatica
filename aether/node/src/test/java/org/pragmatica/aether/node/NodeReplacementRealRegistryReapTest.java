@@ -2413,6 +2413,54 @@ class NodeReplacementRealRegistryReapTest {
         assertThat(anyCleared()).isFalse();
     }
 
+
+    // ---- v-2125 round-3 probes D1, D2, D5, shipped as red-first tests (red on 54d671e98) ----
+    private void reservationFor(NodeId node) {
+        put(new AetherKey.CapacityReservationKey(node), new CapacityReservationValue("west", realBinding, "core", CapacityReservationPhase.OBSERVED));
+    }
+
+    /// D1: the by-id read finds the instance RUNNING, the labels show none: the clear is refused. Is the node's capacity reservation still held afterwards?
+    @Test
+    void v2125d_byIdFoundRunning_labelsNone_refused_reservationAndLedgerUntouched() {
+        absentMark();
+        reservationFor(OLD);
+        var before = allocated();
+        statusOverride.set(Promise.success(instance(OLD, "i-1", InstanceStatus.RUNNING)));
+
+        var refusal = refusalOf(ctmUnderTest.clearUnconfirmed(OLD, "alice", "i-1"));
+        assertThat(refusal).isInstanceOf(ClusterTopologyManager.UnconfirmedClearRefusal.InstanceStillListed.class);
+        assertThat(reservation(OLD).isPresent()).as("a refused clear must not release the reservation of a running instance").isTrue();
+        assertThat(allocated()).as("ledger untouched by a refused clear").isEqualTo(before);
+    }
+
+    /// D2: same with the by-id read FAILING (fail-closed refusal): reservation untouched?
+    @Test
+    void v2125d_byIdFails_labelsNone_refused_reservationAndLedgerUntouched() {
+        absentMark();
+        reservationFor(OLD);
+        var before = allocated();
+        statusOverride.set(EnvironmentError.operationNotSupported("status API down").promise());
+
+        var refusal = refusalOf(ctmUnderTest.clearUnconfirmed(OLD, "alice", "i-1"));
+        assertThat(reservation(OLD).isPresent()).isTrue();
+        assertThat(allocated()).isEqualTo(before);
+    }
+
+    /// D5: the node shows life while the provider read is in flight (no join decision yet): is it still cleared?
+    @Test
+    void v2125d_nodeShowsLifeDuringTheProviderRead_isNotCleared() {
+        absentMark();
+        Promise<InstanceInfo> gate = Promise.promise();
+        statusOverride.set(gate);
+
+        var clear = ctmUnderTest.clearUnconfirmed(OLD, "alice", "i-1");
+
+        states.put(OLD, "Member");
+        gate.succeed(instance(OLD, "i-1", InstanceStatus.TERMINATED));
+        var r = clear.await();
+        assertThat(r.isFailure()).as("a node that shows life is never cleared").isTrue();
+    }
+
     /// An instance the provider lists as TERMINATED is gone: the clear goes through unforced, and the event names what the provider showed.
     @Test
     void clearUnconfirmed_aTerminatedInstanceDoesNotRefuse() {
