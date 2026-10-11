@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.cli.cluster.init;
 
 import org.junit.jupiter.api.Nested;
@@ -276,11 +275,19 @@ class ClusterConfigGeneratorTest {
         }
 
         @Test
-        void generate_docker_omitsTlsAndFirewall() {
+        void generate_docker_declaresPlainHttpExplicitly_andOmitsFirewall() {
             var toml = ClusterConfigGenerator.generate(dockerAnswers());
-            // TLS section is fully commented out for Docker (no live [operations.tls] header).
-            assertThat(toml).doesNotContain("\n[operations.tls]\n");
+            // #2089: a docker source cannot serve management TLS and bootstrap refuses one that declares it, so the generated config
+            // says "no TLS" out loud; the earlier fully-commented section left the default (true) in force.
+            assertThat(toml).contains("\n[operations.tls]\nauto_generate = false\n");
             assertThat(toml).doesNotContain("[[source.primary.firewall.allow_ingress]]");
+        }
+
+        @Test
+        void generate_docker_isNotRefusedByBootstrapValidation() {
+            var config = ClusterBootstrapConfigParser.parse(ClusterConfigGenerator.generate(dockerAnswers())).unwrap();
+
+            assertThat(config.operations().tls().autoGenerate()).isFalse();
         }
 
         @Test

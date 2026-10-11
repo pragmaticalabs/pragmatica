@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.cli.cluster;
 
 import java.io.PrintStream;
@@ -59,8 +58,13 @@ class ClusterBootstrapCommand implements Callable<Integer> {
     @CommandLine.Option(names = "--wait", description = "Wait for cluster to become healthy after bootstrap")
     private boolean waitForCompletion;
 
-    @CommandLine.Option(names = "--timeout", description = "Timeout in seconds when waiting", defaultValue = "300")
+    @CommandLine.Option(names = "--timeout", description = "Timeout in seconds for EACH wait stage of --wait: node health, quorum formation and the final cluster"
+                                                         + " status. When omitted, node health and quorum formation use [operations.timeouts] from the config"
+                                                         + " and the final status wait uses 300.", defaultValue = "300")
     private int timeoutSeconds;
+
+    @CommandLine.Spec
+    private CommandLine.Model.CommandSpec spec;
 
     /// Raw picocli-bound text, deliberately NOT a [ClusterName]: picocli assigns it before any Aether
     /// code runs, and `ClusterBootstrapConfig.withClusterName` re-parses it through `ClusterIdentity`.
@@ -153,12 +157,45 @@ class ClusterBootstrapCommand implements Callable<Integer> {
             return AbortedError.INSTANCE.result();
         }
 
-        return SshKeyResolver.resolveOrFailIfCloud(config, option(sshPublicKeyPath)).flatMap(keys -> ClusterBootstrapOrchestrator.bootstrap(config,
-                                                                                                                                            resume,
-                                                                                                                                            fullCheck,
-                                                                                                                                            keys,
-                                                                                                                                            keepOnFailure,
-                                                                                                                                            parsed.rawToml()));
+        return SshKeyResolver.resolveOrFailIfCloud(config, option(sshPublicKeyPath)).flatMap(keys -> invokeBootstrap(parsed,
+                                                                                                                     keys));
+    }
+
+    private Result<ClusterBootstrapOrchestrator.BootstrapResult> invokeBootstrap(ParsedConfig parsed,
+                                                                                 List<SshPublicKey> keys) {
+        BootstrapWaitCap.seconds = timeoutGiven()
+                                   ? option(timeoutSeconds)
+                                   : Option.none();
+        try {
+            return bootstrapInvoker.invoke(parsed.config(), resume, fullCheck, keys, keepOnFailure, parsed.rawToml());
+        } finally {
+            BootstrapWaitCap.seconds = Option.none();
+        }
+    }
+
+    /// Test seam: the orchestrator call, so a test can see exactly which config is handed over (and therefore hashed).
+    @FunctionalInterface
+    interface BootstrapInvoker {
+        Result<ClusterBootstrapOrchestrator.BootstrapResult> invoke(ClusterBootstrapConfig config,
+                                                                    boolean resume,
+                                                                    boolean fullCheck,
+                                                                    List<SshPublicKey> keys,
+                                                                    boolean keepOnFailure,
+                                                                    String rawToml);
+    }
+
+    static volatile BootstrapInvoker bootstrapInvoker = ClusterBootstrapOrchestrator::bootstrap;
+
+    /// `--timeout` given explicitly on a `--wait` bootstrap bounds the formation waits too, not only the final status poll: an operator reads
+    /// `--wait --timeout 60` as "give up after 60 seconds", and the formation waits otherwise ran on the config's own 300 s / 600 s. It is a RUNTIME
+    /// cap ([BootstrapWaitCap]) and never enters the config: the config is hashed, and a resume with a
+    /// different `--timeout` must still match the stored hash.
+    boolean timeoutGiven() {
+        return waitForCompletion
+               && spec != null
+               && spec.commandLine()
+                      .getParseResult()
+                      .hasMatchedOption("--timeout");
     }
 
     record ParsedConfig(ClusterBootstrapConfig config, String rawToml) {}

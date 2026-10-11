@@ -1,0 +1,15 @@
+# The BSL 1.1 modules: the single source of truth for tools/license/relicense.py and tools/check-licence-closure.py.
+# One repo-relative directory per line. Everything NOT under one of these paths is Apache-2.0.
+# The root LICENSE map must list exactly these paths (the closure gate checks it).
+aether/node
+aether/aether-deployment
+aether/aether-control
+aether/aether-ttm
+aether/aether-ttm-onnx
+aether/ember
+aether/forge/forge-api
+aether/forge/forge-core
+aether/aether-stream
+aether/aether-invoke
+# Outside the default reactor (with-e2e profile): a test harness that compile-depends on forge-core.
+aether/forge/forge-tests
