@@ -37,6 +37,8 @@ class CapacityControlledLifecycleTest {
         @Override public <T> T read(ByteBuf buffer) { return null; }
     });
     private final AtomicInteger creates = new AtomicInteger();
+    /// What the provider's listing answers while a fleet inventory is being initialized; a test holds it pending to keep the initialization in flight.
+    private final java.util.concurrent.atomic.AtomicReference<Promise<List<InstanceInfo>>> listing = new java.util.concurrent.atomic.AtomicReference<>(Promise.success(List.of()));
     private final java.util.concurrent.atomic.AtomicReference<List<InstanceInfo>> inventory = new java.util.concurrent.atomic.AtomicReference<>(List.of());
     private final NodeLifecycleManager provider = new NodeLifecycleManager() {
         @Override public Promise<InstanceInfo> provisionNode(ProvisionSpec spec) {
@@ -52,6 +54,8 @@ class CapacityControlledLifecycleTest {
         @Override public org.pragmatica.lang.Result<String> sourceBinding(SourceName source) { return org.pragmatica.lang.Result.success("binding"); }
         @Override public boolean isCloudManaged() { return true; }
         @Override public Promise<List<InstanceInfo>> instancesForNode(NodeId node, SourceName source) { return Promise.success(inventory.get()); }
+        @Override public Promise<List<InstanceInfo>> listInstances(Map<String, String> tagFilter) { return listing.get(); }
+        @Override public Promise<List<InstanceInfo>> listInstances(Map<String, String> filter, SourceName source, String binding) { return listing.get(); }
     };
     private final NodeLifecycleManager lifecycle = CapacityControlledLifecycle.capacityControlledLifecycle(provider, CORE, store,
         commands -> Promise.success(store.process(store.createBatch(commands))), () -> true, () -> 1);
@@ -146,6 +150,36 @@ class CapacityControlledLifecycleTest {
         assertThat(observed.intendedRole()).isEmpty();
         assertThat(observed.phase()).isEqualTo(AetherValue.CapacityReservationPhase.OBSERVED);
         assertThat(ledger().allocated()).isEqualTo(1);
+    }
+
+    private void commitSourceConfig() {
+        seed(new KVCommand.Put<>(LeaderKey.INSTANCE, LEADER));
+        seed(new KVCommand.Put<>(AetherKey.ClusterConfigKey.CURRENT,
+                                 new AetherValue.ClusterConfigValue(Option.none(), "test", "1.0.0", List.of(), 3, 3, "", 1L, 0L)));
+    }
+
+    /// A second provision that arrives while the first is still initializing the fleet inventory fails with the TYPED transient cause, which is
+    /// what lets a caller that can wait (the replacement reconciler) defer instead of treating it as a refusal (#2098). Once the initialization
+    /// finishes the same call is not refused for it.
+    @Test
+    void aProvisionDuringInventoryInitialization_failsWithTheTypedTransientCause() {
+        commitSourceConfig();
+        var pending = Promise.<List<InstanceInfo>>promise();
+
+        listing.set(pending);
+        var first = lifecycle.provisionNode(spec("first", "east"));
+        var second = lifecycle.provisionNode(spec("second", "east")).await();
+
+        assertThat(second.isFailure()).isTrue();
+        second.onFailure(cause -> assertThat(cause).isInstanceOf(FleetInventoryInitializing.class));
+        assertThat(creates.get()).as("nothing was dispatched while the inventory was being initialized").isZero();
+
+        pending.succeed(List.of());
+        first.await();
+        var third = lifecycle.provisionNode(spec("third", "east")).await();
+
+        assertThat(ledger().inventoryComplete()).isTrue();
+        third.onFailure(cause -> assertThat(cause).isNotInstanceOf(FleetInventoryInitializing.class));
     }
 
     private static InstanceInfo observedCore(String node) {
