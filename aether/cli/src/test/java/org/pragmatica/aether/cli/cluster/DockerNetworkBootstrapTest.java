@@ -72,6 +72,8 @@ class DockerNetworkBootstrapTest {
         final List<String> commands = new ArrayList<>();
         final Map<String, String> labels = new HashMap<>();
         final Map<String, Integer> attached = new HashMap<>();
+        /// The `aether.cluster` label of each container the scripted host holds; a container not listed carries this test's cluster.
+        final Map<String, String> containerCluster = new HashMap<>();
         int containers;
         boolean rmFails;
 
@@ -87,7 +89,7 @@ class DockerNetworkBootstrapTest {
             }
 
             if (command.size() > 3 && "inspect".equals(command.get(1)) && command.get(3).startsWith("{{with index .Config.Labels \"aether.cluster\"}}")) {
-                return Promise.success(CLUSTER);
+                return Promise.success(containerCluster.getOrDefault(command.getLast(), CLUSTER));
             }
 
             return Promise.success("running\t/x\tx\tabc");
@@ -128,9 +130,12 @@ class DockerNetworkBootstrapTest {
 
     private ScriptedDocker docker;
     private DockerComputeProvider provider;
+    /// The `cluster_name` of every docker provider the code under test asked the resolver for (null: it asked for none).
+    private final List<String> requestedScopes = new ArrayList<>();
 
     private void useProvider(ScriptedDocker runner) {
         provider = DockerComputeProvider.dockerComputeProvider(runner, DockerConfig.dockerConfig().unwrap().withClusterName(CLUSTER)).unwrap();
+        requestedScopes.clear();
         ProviderResolver.dockerFactoryOverride = new EnvironmentIntegrationFactory() {
             @Override
             public String providerName() {
@@ -139,7 +144,14 @@ class DockerNetworkBootstrapTest {
 
             @Override
             public Result<EnvironmentIntegration> create(CloudConfig config) {
-                return Result.success(EnvironmentIntegration.withCompute(provider));
+                var scope = config.compute().get("cluster_name");
+
+                requestedScopes.add(scope);
+
+                var scoped = DockerConfig.dockerConfig().unwrap();
+
+                return DockerComputeProvider.dockerComputeProvider(runner, scope == null ? scoped : scoped.withClusterName(scope))
+                                            .map(EnvironmentIntegration::withCompute);
             }
         };
     }
@@ -375,5 +387,43 @@ class DockerNetworkBootstrapTest {
                 throw new IllegalStateException(e);
             }
         }
+    }
+
+    /// Cluster scoping is the safety property of docker teardown on a shared host: every resolver call that touches a container or a network
+    /// names THIS cluster. The fixture honours `cluster_name`, so a call that names another cluster (or none) is visible here, and the provider
+    /// it gets refuses containers of any other cluster.
+    @Test
+    void everyScopedResolverCall_namesThisCluster() {
+        var state = bootstrap(CLUSTER_TOML, initial()).unwrap();
+
+        assertThat(requestedScopes).as("bootstrap asked for the network provider by this cluster").contains(CLUSTER);
+        assertThat(requestedScopes).filteredOn(scope -> scope != null).as("and by no other cluster").containsOnly(CLUSTER);
+
+        requestedScopes.clear();
+        BootstrapCleanup.cleanup(state);
+
+        assertThat(requestedScopes).as("cleanup asked for a provider for the containers and the network").hasSizeGreaterThanOrEqualTo(2);
+        assertThat(requestedScopes).as("every one scoped to this cluster, none unscoped, none another").containsOnly(CLUSTER);
+    }
+
+    /// A second cluster shares the host: its network and containers survive this cluster's cleanup, even when a ledger names them.
+    @Test
+    void anotherClustersNetworkAndContainers_areLeftUntouched() {
+        docker.labels.put("other-net", "other");
+        docker.containerCluster.put("other-container", "other");
+        docker.labels.put("aether-network", CLUSTER);
+        var state = initial().withResource(CreatedResource.DockerNetwork.dockerNetwork("aether-network"))
+                             .withResource(CreatedResource.DockerNetwork.dockerNetwork("other-net"))
+                             .withResource(CreatedResource.DockerContainer.dockerContainer("our-container", "local"))
+                             .withResource(CreatedResource.DockerContainer.dockerContainer("other-container", "local"));
+
+        BootstrapCleanup.cleanup(state);
+
+        assertThat(docker.commands).as("our container and network went").anyMatch(command -> command.contains("our-container") && !command.contains("inspect"))
+                                   .contains("docker network rm aether-network");
+        assertThat(docker.commands).as("the other cluster's container was inspected, then left alone: no stop, no rm")
+                                   .noneMatch(command -> command.contains("other-container") && !command.contains("inspect"));
+        assertThat(docker.commands).as("the other cluster's network was not removed").doesNotContain("docker network rm other-net");
+        assertThat(docker.labels).containsKey("other-net");
     }
 }

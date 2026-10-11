@@ -1122,6 +1122,10 @@ sealed interface BootstrapCleanup {
     private static Result<ComputeProvider> resolveComputeForVm(BootstrapState state,
                                                                CreatedResource.ProvisionedVm vm,
                                                                CleanupResolvers resolvers) {
+        if (DOCKER_PROVIDER.equalsIgnoreCase(vm.provider())) {
+            return ProviderResolver.resolveDockerComputeWithoutBackup(state.clusterName());
+        }
+
         var handle = state.sources().get(vm.sourceName());
 
         if (handle == null) {
@@ -1161,6 +1165,9 @@ sealed interface BootstrapCleanup {
                         .apply(handle);
     }
 
+    /// A docker VM has no credentials and no persisted handle, and the Docker socket reaches every container on the host, so it is reaped by a
+    /// provider scoped to THIS cluster (#1543 F2): an unscoped one refuses to terminate anything.
+    String DOCKER_PROVIDER = "docker";
     String NO_HANDLE_REASON = "bootstrap persisted no cleanup handle";
 
     String UNMAPPED_HANDLE_REASON = "the persisted cleanup handle names no credential env var"
