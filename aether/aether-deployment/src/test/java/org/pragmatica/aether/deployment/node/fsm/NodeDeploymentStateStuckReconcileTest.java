@@ -203,7 +203,7 @@ class NodeDeploymentStateStuckReconcileTest {
         activeState().remediateStuckRouting(key);
 
         assertThat(activePuts()).as("ACTIVE must never be written over a committed %s", beyond).isEmpty();
-        assertThat(localState(key)).as("the committed %s is adopted into the local view", beyond).isEqualTo(beyond);
+        assertAdopted(key, beyond);
         assertThat(warnings).anySatisfy(line -> assertThat(line).contains("Node self")
                                                                 .contains("still ROUTING")
                                                                 .contains("COMMITTED state is " + beyond)
@@ -220,7 +220,7 @@ class NodeDeploymentStateStuckReconcileTest {
         activeState().remediateStuckActivating(key);
 
         assertThat(activePuts()).as("ACTIVE must never be written over a committed %s", beyond).isEmpty();
-        assertThat(localState(key)).isEqualTo(beyond);
+        assertAdopted(key, beyond);
     }
 
     @Test
@@ -293,6 +293,20 @@ class NodeDeploymentStateStuckReconcileTest {
                                                                 .contains("still ACTIVATING locally")
                                                                 .contains("committed state ACTIVATING")
                                                                 .contains("NOT registered for invocation"));
+    }
+
+    /// The committed state is adopted into the local view; UNLOAD is the one whose handler runs the unload to completion
+    /// (the stub store succeeds at once) and drops the entry, which is the adopted state's own effect.
+    private void assertAdopted(SliceNodeKey key, SliceState beyond) {
+        var local = activeState().deployments().get(key);
+
+        if (local == null) {
+            assertThat(beyond).as("only UNLOAD's handler removes the entry").isEqualTo(SliceState.UNLOAD);
+
+            return;
+        }
+
+        assertThat(local.state()).as("the committed %s is adopted into the local view", beyond).isEqualTo(beyond);
     }
 
     private SliceNodeKey servingSeed(SliceState state) {
