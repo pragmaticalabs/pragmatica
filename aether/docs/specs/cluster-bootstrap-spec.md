@@ -988,6 +988,8 @@ The diff operates at `(source, role)` granularity. Changes are classified, order
 
 **REQ-9.3.5**: `apply --resume` reads the last wave state and continues from the first unfinished wave, re-running pre-flight before each resumption. `apply --rollback` reverses completed waves in LIFO order: re-provision drained nodes, re-join cluster, destroy nodes that were added, restore prior firewall rules.
 
+> **Superseded by #1543 (2026-10-09):** the runtime-change and source-level rolling restarts described in this section (drain and destroy a node, then start another in its place, the SSH branch under the same id) are no longer executed: `apply` refuses a runtime change with an error naming the supported ways. Nodes move onto new software by replacement under a fresh id (`aether cluster upgrade --version X.Y.Z --wait`, `POST /api/v1/nodes/replace/{id}`). There is no supported way today to change a source role's runtime profile on a running cluster.
+
 ### 9.4 Plan Output Format
 
 ```

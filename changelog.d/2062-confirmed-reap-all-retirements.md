@@ -29,8 +29,8 @@
 - **A mark no listing can confirm is an operator warning, not a pending check.** When a listing SUCCEEDED and has never shown an instance of the node
   (an unlabelled VM), no listing can confirm the mark: it is not re-checked, and its event says the cluster cannot confirm it and the operator must verify at
   the provider and terminate it by hand. A listing that FAILED proves nothing: a mark that only ever met failing listings keeps being re-checked at the normal
-  cadence, says that listing is failing, and becomes the permanent warning only if a later listing succeeds and shows nothing. An operator clear path is a
-  follow-up. A mark whose instance WAS listed keeps being re-checked.
+  cadence, says that listing is failing, and becomes the permanent warning only if a later listing succeeds and shows nothing. The operator clears such a mark with
+  `aether cluster clear-unconfirmed <node> --instance <id|unknown>` after verifying and terminating the instance by hand. A mark whose instance WAS listed keeps being re-checked.
 - **A node that joins again is a new incarnation.** What the manager remembered of the previous one (its reap was confirmed, its instance was seen, its
   termination was unconfirmed) is dropped on its join, so a reused id is reaped, not "confirmed gone" while it is a member. The release of a counted EXTERNAL
   reservation against an empty ledger is refused as inconsistent, as the release of a provider reservation is, instead of clamping at zero. The replacement wiring's own "already reaped" memory is dropped when the node is seen up again. A rejoin that drops

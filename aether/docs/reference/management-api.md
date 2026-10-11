@@ -56,6 +56,7 @@ Roles are hierarchical: ADMIN has all OPERATOR permissions, and OPERATOR has all
 | Node drain | OPERATOR | `POST /api/v1/nodes/drain/{id}` |
 | Node replacement | OPERATOR | `POST /api/v1/nodes/replace/{id}`, `POST /api/v1/nodes/replacements/settle/{id}` |
 | Rolling upgrade run (pause/resume/abort) | OPERATOR | `POST /api/v1/upgrade/pause`, `POST /api/v1/upgrade/resume`, `POST /api/v1/upgrade/abort` |
+| Unconfirmed-termination clear | OPERATOR | `POST /api/v1/nodes/unconfirmed/clear/{id}` |
 | Scaling | OPERATOR | `POST /api/v1/scale` |
 | Schema operations | OPERATOR | `POST /api/v1/schema/*` |
 | Deployment strategies | OPERATOR | `POST /api/v1/deploy`, `POST /api/v1/deploy/promote/*`, `POST /api/v1/deploy/rollback/*`, `POST /api/v1/deploy/complete/*`, `POST /api/v1/ab-tests/*` |
@@ -2440,7 +2441,7 @@ the view actionable (see recovery below).
 | `wal.lastCompactedUpto` | Last offset physically reclaimed by a compaction rewrite (`-1` when the file was never compacted) |
 | `wal.fsyncCount` | Group commits completed since the WAL was opened |
 | `wal.fsyncMeanMicros` / `fsyncMaxMicros` | Mean / slowest single fsync since open, in microseconds |
-| `wal.failStopped` | `true` when this partition's WAL refused further appends after a failed fsync (#634-7 fail-stop — a retried fsync can falsely succeed after the OS drops the dirty pages, so the WAL stops instead). Every publish on the partition fails until the recovery action: **restart the node** — reopen re-scans the file and trims to the valid prefix; nothing acked is lost |
+| `wal.failStopped` | `true` when this partition's WAL refused further appends after a failed fsync (#634-7 fail-stop — a retried fsync can falsely succeed after the OS drops the dirty pages, so the WAL stops instead). Every publish on the partition fails until the recovery action: **replace the node** (`POST /api/v1/nodes/replace/{id}`). A fail-stopped node is not restarted: under terminal removal a dead owner never returns and nothing reads its WAL again, so what survives is what reached the surviving replicas (see `confirmation_factor`); a refused append was never acked |
 | `ringTail` | Earliest offset still in the in-memory ring (`-1` when the materialized ring is EMPTY — has never held a record, e.g. right after a restart; a partition with no ring at all appears only as a segment-only row or not at all) |
 | `sealedThrough` | The durable sealed bound — what WAL truncation chases (`-1` when nothing is sealed) |
 | `reclaimedThrough` | The persisted reclaimed-through floor (#1278): the highest offset retention reclaimed for this partition, `-1` when it never reclaimed any. Written durably before the segment refs it licenses are dropped; after a restart the sealed bound is rebuilt from it, so a WAL starting at `reclaimedThrough + 1` is reclaimed history, not a lost head |
@@ -3576,7 +3577,7 @@ The toggle is a durable cluster fact (#685): it is stored as a typed record (`Au
 
 Provisioned nodes whose advertised role label disagrees with the role the leader provisioned them with (#689). A node's role is a self-asserted SWIM label (`AETHER_ROLE` → `aether-role` → `NodeInfo` `role` label); a blank or unknown label is classified **CORE** by every peer, deliberately — acting on an unresolved view is the dangerous direction for the core tier. So an intended worker whose label never arrived (env not threaded, user-data lost it, image booted without it) silently joins the core set, and every community-tier mechanism gated on "positively not a core" — the core-absence fence first — is suppressed on it. This route is where that becomes visible without log access; the same fact is logged at WARN by the leader when the node is first observed.
 
-**Scope, stated:** leader-scoped and intent-based. The leader compares only nodes it provisioned itself (auto-heal replacements and worker reconcile); bootstrap nodes, nodes provisioned by an earlier leader and hand-started nodes have no intent on record and are never listed — absence of intent is not a mismatch. The intent is retained for the node id until the node is **decommissioned**, and every join of that id is compared: an in-place restart (crash, OOM, operator restart — same id) that is still mislabelled is re-reported (the WARN fires again) and stays listed; a rejoin that now carries the right label clears the entry. A listed node that departs (`NodeRemoved`) **stays listed** — a restart may follow — until it is decommissioned or leadership changes; a replacement provisioned under a fresh id gets its own comparison. On re-activation of the same leader the ledger is re-derived from membership's current view for every still-tracked provisioned node. `advertisedRole` is the role membership holds for the node (`MemberDescriptor.role`, the self-asserted label after the blank-downgrade merge — never the observer's first sighting, which can be label-less when the node was learned by gossip), `""` when no label ever arrived; `classifiedAs` is what membership made of it. The classification itself is unchanged.
+**Scope, stated:** leader-scoped and intent-based. The leader compares only nodes it provisioned itself (auto-heal replacements and worker reconcile); bootstrap nodes, nodes provisioned by an earlier leader and hand-started nodes have no intent on record and are never listed — absence of intent is not a mismatch. The intent is retained for the node id until the node is **decommissioned**, and every join of that id is compared: a rejoin of that id that is still mislabelled is re-reported (the WARN fires again) and stays listed; a rejoin that now carries the right label clears the entry. A listed node that departs (`NodeRemoved`) **stays listed** until it is decommissioned or leadership changes; a replacement provisioned under a fresh id gets its own comparison. *Superseded by #1543 (2026-10-09): a node id never returns, so the same-id rejoin cases above (crash, OOM, operator restart) are not live under terminal removal; recovery is a replacement under a fresh id, which the leader compares as a new node.* On re-activation of the same leader the ledger is re-derived from membership's current view for every still-tracked provisioned node. `advertisedRole` is the role membership holds for the node (`MemberDescriptor.role`, the self-asserted label after the blank-downgrade merge — never the observer's first sighting, which can be label-less when the node was learned by gossip), `""` when no label ever arrived; `classifiedAs` is what membership made of it. The classification itself is unchanged.
 
 CLI: `aether cluster topology role-mismatches`.
 
@@ -3660,7 +3661,7 @@ version the cluster is already at answers "already at version" regardless of `ex
 re-read `GET /api/v1/cluster/config` and re-issue with the fresh `expectedVersion`. The store-level
 RFC-0018 successor fence still rejects a write built on a stale read.
 
-**Conflicts (HTTP 409, #1543 part C — `UpgradeVersionPinned`).** A runtime profile referenced by a source role pins the launch artifact LITERALLY: `image` on a container runtime, or `jar_url` on a JVM runtime. Replacements would keep booting the pinned artifact and ignore the version, so the upgrade is refused before any write and the message names the profile(s). A pin written with the `{version}` placeholder (`image = "registry/aether-node:{version}"`, `jar_url = ".../v{version}/aether-node.jar"`) follows `[cluster] version` at render time and is not refused. The placeholder must already be in the committed config: `POST /api/v1/cluster/config` does not currently change runtime-profile content. A config whose `[cluster] version` is not a plain `version = "..."` line, or that uses CRLF line endings, is refused with a typed parse failure rather than half-rewritten.
+**Conflicts (HTTP 409, #1543 part C — `UpgradeVersionPinned`).** A runtime profile referenced by a source role pins the launch artifact LITERALLY: `image` on a container runtime, or `jar_url` on a JVM runtime. Replacements would keep booting the pinned artifact and ignore the version, so the upgrade is refused before any write and the message names the profile(s). A pin written with the `{version}` placeholder (`image = "registry/aether-node:{version}"`, `jar_url = ".../v{version}/aether-node.jar"`) follows `[cluster] version` at render time and is not refused. The placeholder must already be in the committed config: `POST /api/v1/cluster/config` does not currently change runtime-profile content. **`UpgradeDockerImageUnversioned`** is the same refusal for a `docker` source: a docker replacement boots the `image` its runtime profile pins at the committed version (the provider's configured image otherwise), so a docker role whose profile pins no image, or one without `{version}`, would be replaced by the same image; the message names the source(s). A config whose `[cluster] version` is not a plain `version = "..."` line, or that uses CRLF line endings, is refused with a typed parse failure rather than half-rewritten.
 
 **Version changes through apply (HTTP 409, #1543 part C — `VersionChangeViaApply`).** `POST /api/v1/cluster/config` refuses a TOML whose `[cluster] version` differs from the committed one (previously a generic 501 "escalate"); the message points at this route.
 
@@ -3768,7 +3769,9 @@ the cluster key store — so a tombstone would sit in the store while the key ke
 Reporting success there would tell an operator a live credential was dead.
 
 To retire a `config` key, remove its `[app-http.api-keys.<key>]` table (or its `AETHER_API_KEYS`
-entry) and restart the node.
+entry) from the node configuration and roll the change out by replacing the node
+(`POST /api/v1/nodes/replace/{id}`): a node id never returns, so restarting the node in place is not
+a supported way to apply it.
 
 **Request:**
 ```json
@@ -4483,6 +4486,7 @@ separate, still in-flight consolidation effort (spec §3.2–§3.3) owns that su
 | POST | `/api/v1/upgrade/pause` | Node Lifecycle |
 | POST | `/api/v1/upgrade/resume` | Node Lifecycle |
 | POST | `/api/v1/upgrade/abort` | Node Lifecycle |
+| POST | `/api/v1/nodes/unconfirmed/clear/{id}` | Node Lifecycle |
 | GET | `/api/v1/scheduled-tasks` | Scheduled Tasks |
 | GET | `/api/v1/scheduled-tasks/{section}` | Scheduled Tasks |
 | POST | `/api/v1/scheduled-tasks/pause/{section}/{artifact}/{methodName}` | Scheduled Tasks |
@@ -4698,6 +4702,31 @@ pauses the run again, naming it. Authorization OPERATOR, route target `LEADER`. 
 End the run. Like a pause it is a request that waits for the replacement in flight to reach a terminal state, then the run is `ABORTED`;
 nodes already replaced stay replaced, the others stay as they are. Not resumable: a new `POST /api/v1/cluster/upgrade` starts a new run.
 Authorization OPERATOR, route target `LEADER`. `404` there is no run; `409` the run has already ended.
+
+### POST /api/v1/nodes/unconfirmed/clear/{id}
+
+Clears ONE `instance-termination-unconfirmed` mark, by retired node id, after the operator verified at the compute provider and terminated the
+instance by hand. Body `{"instance": "<provider-instance-id>", "force": false}`; `unknown` is accepted for `instance`, an absent or blank `instance` is
+refused, `force` is optional and defaults to false. Route target is `LEADER`, authorization OPERATOR.
+
+Before it clears, the cluster asks the node's source provider twice: for the node's instances by the node's labels (so a wrong or `unknown` id does not hide
+a listed instance) and, when `instance` is an id, for that instance by id (so an instance the provider shows without the node's labels is not missed). Either
+showing an instance that is not terminated refuses the clear (`409`, naming the instance and its state), and so does either read failing (`409`, fail closed;
+a not-found for the id is an answer, not a failure). `force: true` overrides both. An EXTERNAL node has no provider of ours to ask: its clear is refused (`409`,
+"no provider to check this external node; use --force after confirming it is gone") unless `force` is given (an external node's own re-check normally confirms
+its mark once it has left the membership).
+
+The provider checks are reads with no effect on capacity: a refused clear leaves the node's reservation and the ledger as they were, and a clear that commits returns the
+capacity only when every read showed the instance not live. A node that shows life, or rejoins, while the provider is read is refused at the commit.
+
+The clear is audited: the cluster raises `instance-termination-cleared` naming the node, the authenticated operator, the instance the operator
+attests, whether the provider check was forced, the provider state seen, the instance id the cluster itself had listed for the node (or `never listed`)
+and the mark's cause; the event closes the open warning cluster-wide, like a confirmation. `400` for a missing `instance` or an id that does not parse;
+`404` when the node has no mark; `409` when the node shows life in the membership (nothing is cleared, forced or not: a live node's instance must not be
+terminated), the provider still lists the instance or cannot be asked, the mark changed or the clear was not confirmed committed (read the mark again
+before retrying), or the node is not the leader; `401`/`403` when the caller is not authorized.
+CLI: `aether cluster clear-unconfirmed <node> --instance <id|unknown> [--force]`; exit 0 cleared, 3 no such mark, 1 any other refusal or failure,
+64 a missing or blank `--instance`.
 
 ### POST /api/v1/nodes/promote/{id}
 

@@ -263,5 +263,11 @@ class RoutePermissionRegistryTest {
         void listingReplacements_isARead() {
             assertThat(RoutePermissionRegistry.resolve("GET", "/api/v1/nodes/replacements")).isEqualTo(ALL_AUTHENTICATED);
         }
+
+        /// #2062: without the prefix entry the operator clear would fall through to ADMIN_ONLY.
+        @Test
+        void clearUnconfirmed_isAnOperatorMutation() {
+            assertThat(RoutePermissionRegistry.resolve("POST", "/api/v1/nodes/unconfirmed/clear/node-1")).isEqualTo(OPERATOR_AND_ABOVE);
+        }
     }
 }

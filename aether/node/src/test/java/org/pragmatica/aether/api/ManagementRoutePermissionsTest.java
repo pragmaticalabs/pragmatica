@@ -136,5 +136,11 @@ class ManagementRoutePermissionsTest {
             assertThat(ManagementRoutePermissions.permissionFor(ManagementRoute.UPGRADE_RESUME)).isEqualTo(OPERATOR_AND_ABOVE);
             assertThat(ManagementRoutePermissions.permissionFor(ManagementRoute.UPGRADE_ABORT)).isEqualTo(OPERATOR_AND_ABOVE);
         }
+
+        /// #2062: clearing an unconfirmed-termination mark is an operator operation, on the path-prefix table too.
+        @Test
+        void clearUnconfirmed_isOperator() {
+            assertThat(ManagementRoutePermissions.permissionFor(ManagementRoute.NODE_UNCONFIRMED_CLEAR)).isEqualTo(OPERATOR_AND_ABOVE);
+        }
     }
 }

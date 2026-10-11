@@ -68,7 +68,8 @@ public final class NodeReplacementPlanner {
                               boolean handoffSettled,
                               String drainRefusal,
                               boolean oldInstanceGone,
-                              String reapFailure) {}
+                              String reapFailure,
+                              String provisionBlocker) {}
 
     /// Phase budgets. Every phase is bounded, so every replacement ends in a terminal phase.
     public record Timings(long provisioningMs,
@@ -156,7 +157,7 @@ public final class NodeReplacementPlanner {
 
     private static Plan provisioning(NodeReplacementValue r, Observation o, Timings t) {
         if (o.now() > r.phaseDeadlineMs()) {
-            return rollBack(r, o, "provisioning deadline");
+            return rollBack(r, o, provisioningDeadline(o));
         }
 
         if (isExternal(r) || o.replacementKnown()) {
@@ -170,6 +171,15 @@ public final class NodeReplacementPlanner {
                                    o.now() + t.joiningMs(),
                                    ""),
                         r.advanced(NodeReplacementPhase.ROLLED_BACK, o.now(), "provisioning refused"));
+    }
+
+    /// The deadline's cause names what kept provisioning from starting when the observation knows it (#2098: the committed
+    /// source configuration the fleet inventory is built from never appeared), so the operator is not left with a bare deadline.
+    private static String provisioningDeadline(Observation o) {
+        return o.provisionBlocker()
+                .isEmpty()
+               ? "provisioning deadline"
+               : "provisioning deadline: " + o.provisionBlocker();
     }
 
     private static Plan joining(NodeReplacementValue r, Observation o, Timings t) {

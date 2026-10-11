@@ -13,7 +13,9 @@ import org.pragmatica.aether.deployment.cluster.NodeReplacementPlanner.Timings;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeReplacementPhase;
 import org.pragmatica.aether.slice.kvstore.AetherValue.NodeReplacementValue;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 
@@ -26,6 +28,7 @@ import org.pragmatica.lang.io.TimeSpan;
 /// No lock is taken here and none is held across a callback: the driver is called from a scheduler thread, never from
 /// an FSM listener (#1946's rule).
 public interface NodeReplacementReconciler {
+    int MAX_CAUSE_CHARS = 300;
     Promise<Unit> reconcile();
 
     /// The outcome of an effect.
@@ -50,6 +53,9 @@ public interface NodeReplacementReconciler {
         Promise<Boolean> commit(NodeId original, NodeReplacementValue expected, NodeReplacementValue next);
         /// The current facts for this record.
         Observation observe(NodeId original, NodeReplacementValue record);
+        /// The source of a record that was created with none (a node of a cluster bootstrapped from static PEERS has no source label): the
+        /// config's sole declaring source, else a typed refusal. Called once per record; the answer is committed into the record.
+        Result<String> resolveSource(NodeId original, NodeReplacementValue record);
         /// Run `effect` for this record. Idempotent.
         Promise<EffectResult> execute(Effect effect, NodeId original, NodeReplacementValue record);
     }
@@ -119,6 +125,10 @@ public interface NodeReplacementReconciler {
                     return Promise.unitPromise();
                 }
 
+                if (record.source().isBlank()) {
+                    return resolveOnce(original, record);
+                }
+
                 var plan = NodeReplacementPlanner.plan(record, environment.observe(original, record), timings);
 
                 if (plan.effect() == Effect.NONE) {
@@ -138,6 +148,48 @@ public interface NodeReplacementReconciler {
                                   .flatMap(result -> settle(original, record, plan, result));
             }
 
+            /// A blank source is resolved ONCE, before any effect: the answer is committed into the record (compare-and-set on the record
+            /// as read) and the tick goes on with it. No later effect, and no later leader, derives it again or reads a blank as "default".
+            /// A refusal (no source declares the role, or several do) ends a replacement that has not begun and holds one that has,
+            /// with the reason in the record.
+            private Promise<Unit> resolveOnce(NodeId original, NodeReplacementValue record) {
+                return environment.resolveSource(original, record)
+                                  .fold(cause -> refuseUnresolved(original, record, cause),
+                                        name -> commitSource(original,
+                                                             record,
+                                                             record.withSource(name)));
+            }
+
+            private Promise<Unit> commitSource(NodeId original,
+                                               NodeReplacementValue before,
+                                               NodeReplacementValue resolved) {
+                return environment.commit(original, before, resolved)
+                                  .timeout(commitBound)
+                                  .recover(_ -> false)
+                                  .flatMap(committed -> committed
+                                                        ? advance(original, resolved)
+                                                        : Promise.unitPromise());
+            }
+
+            private Promise<Unit> refuseUnresolved(NodeId original, NodeReplacementValue record, Cause cause) {
+                var why = cause.message().length() > MAX_CAUSE_CHARS
+                          ? cause.message().substring(0, MAX_CAUSE_CHARS)
+                          : cause.message();
+
+                if (record.phase() == NodeReplacementPhase.PROVISIONING) {
+                    return commit(original,
+                                  record,
+                                  record.advanced(NodeReplacementPhase.ROLLED_BACK,
+                                                  environment.observe(original, record).now(),
+                                                  "provisioning refused: " + why));
+                }
+
+                return record.reason()
+                             .equals(why)
+                       ? Promise.unitPromise()
+                       : commit(original, record, record.withReason(why));
+            }
+
             private Promise<Unit> settle(NodeId original,
                                          NodeReplacementValue record,
                                          NodeReplacementPlanner.Plan plan,
@@ -145,10 +197,24 @@ public interface NodeReplacementReconciler {
                 return switch (result) {
                     case EffectResult.Done _ -> plan.next().fold(Promise::unitPromise,
                                                                  next -> commit(original, record, next));
-                    case EffectResult.Failed _ -> plan.onFailure().fold(Promise::unitPromise,
-                                                                        next -> commit(original, record, next));
+                    case EffectResult.Failed failed -> plan.onFailure().fold(Promise::unitPromise,
+                                                                             next -> commit(original,
+                                                                                            record,
+                                                                                            withCause(next, failed)));
                     case EffectResult.Deferred _ -> Promise.unitPromise();
                 };
+            }
+
+            /// The record's reason is what the operator event and the upgrade run print: a refusal says WHY ("No configured source for
+            /// replacement default"), not only that it happened. Bounded, because the record is replicated.
+            private static NodeReplacementValue withCause(NodeReplacementValue next, EffectResult.Failed failed) {
+                var cause = failed.reason().length() > MAX_CAUSE_CHARS
+                            ? failed.reason().substring(0, MAX_CAUSE_CHARS)
+                            : failed.reason();
+
+                return cause.isBlank()
+                       ? next
+                       : next.withReason(next.reason() + ": " + cause);
             }
 
             private Promise<Unit> commit(NodeId original, NodeReplacementValue before, NodeReplacementValue next) {

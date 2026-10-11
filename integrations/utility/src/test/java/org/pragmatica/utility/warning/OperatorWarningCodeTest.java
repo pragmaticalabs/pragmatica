@@ -39,6 +39,14 @@ class OperatorWarningCodeTest {
             .isEmpty();
     }
 
+    /// #2062: the operator clear is a RECOVERY of the unconfirmed warning, announced at INFO; a higher level would open a new alert while closing one.
+    @Test
+    void instanceTerminationCleared_isAnInfoRecoveryThatClosesAcrossNodes() {
+        assertThat(OperatorWarningCode.INSTANCE_TERMINATION_CLEARED.level()).isEqualTo(WarningLevel.INFO);
+        assertThat(OperatorWarningCode.INSTANCE_TERMINATION_CLEARED.code()).isEqualTo("instance-termination-cleared");
+        assertThat(OperatorWarningCode.INSTANCE_TERMINATION_CLEARED.closesAcrossNodes()).isTrue();
+    }
+
     @Test
     void codes_areKebabCase() {
         assertThat(Arrays.stream(OperatorWarningCode.values())

@@ -1512,7 +1512,8 @@ class ClusterEventAggregatorTest {
 
         assertThat(successor.events()).isEmpty();
         assertThat(java.util.Arrays.stream(OperatorWarningCode.values()).filter(OperatorWarningCode::closesAcrossNodes).toList())
-            .containsExactlyInAnyOrder(OperatorWarningCode.INSTANCE_TERMINATION_CONFIRMED, OperatorWarningCode.INSTANCE_TERMINATION_REJOINED);
+            .containsExactlyInAnyOrder(OperatorWarningCode.INSTANCE_TERMINATION_CONFIRMED, OperatorWarningCode.INSTANCE_TERMINATION_REJOINED,
+                                  OperatorWarningCode.INSTANCE_TERMINATION_CLEARED);
     }
 
     /// Amendment B: the rejoin resolution closes the previous leader's warning the same way, and is a different event from a confirmation.
@@ -1523,6 +1524,16 @@ class ClusterEventAggregatorTest {
         successor.aggregator().onOperatorWarning(OperatorWarning.operatorWarning(OperatorWarningCode.INSTANCE_TERMINATION_REJOINED, "core-old", "rejoined"));
 
         assertThat(codes(successor)).containsExactly("instance-termination-rejoined");
+    }
+
+    /// An operator clear closes the open warning cluster-wide: a node that never raised the warning publishes the clear, and it is its own event.
+    @Test
+    void onOperatorWarning_theOperatorClear_isPublishedByANodeThatDidNotRaiseTheWarning() {
+        var successor = Harness.create();
+
+        successor.aggregator().onOperatorWarning(OperatorWarning.operatorWarning(OperatorWarningCode.INSTANCE_TERMINATION_CLEARED, "core-old", "cleared by alice"));
+
+        assertThat(codes(successor)).containsExactly("instance-termination-cleared");
     }
 
     private static final String CRON_TASK = "cache/org.example:my-slice:1.0.0/cleanup";
@@ -2227,6 +2238,7 @@ class ClusterEventAggregatorTest {
                              OperatorWarningCode.BACKUP_RESTORE_UNBLOCKED,
                              OperatorWarningCode.INSTANCE_TERMINATION_CONFIRMED,
                              OperatorWarningCode.INSTANCE_TERMINATION_REJOINED,
+                             OperatorWarningCode.INSTANCE_TERMINATION_CLEARED,
                              OperatorWarningCode.SLICE_START_DEFERRAL_ENDED);
         assertThat(java.util.Arrays.stream(OperatorWarningCode.values()).filter(OperatorWarningCode::hasRecovery).toList())
             .containsExactlyInAnyOrder(OperatorWarningCode.NODE_REPLACEMENT_STARTED,

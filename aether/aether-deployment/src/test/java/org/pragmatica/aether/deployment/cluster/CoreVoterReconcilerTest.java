@@ -27,6 +27,50 @@ class CoreVoterReconcilerTest {
     private static final NodeId E = new NodeId("e");
     private static final VoterConfiguration CURRENT = new VoterConfiguration(0, new ClusterConfig(List.of(A, B, C)));
 
+    private static final VoterConfiguration FIVE = new VoterConfiguration(0, new ClusterConfig(List.of(A, B, C, D, E)));
+    private static final NodeId F = new NodeId("f");
+
+    private static CoreVoterReconciler fiveVoterLeader(Set<NodeId> ready, Set<NodeId> failed, Map<NodeId, NodeId> swaps, List<List<NodeId>> requested) {
+        return CoreVoterReconciler.coreVoterReconciler(A, () -> true, () -> Option.some(FIVE), () -> Option.some(FIVE), () -> 5,
+            () -> ready, () -> swaps, () -> failed, roster -> { requested.add(roster.members()); return Promise.unitPromise(); });
+    }
+
+    /// #2098: a leader that has just taken over has observed readiness for itself and the new replacement only. An
+    /// unobserved healthy voter must not be dropped for the replacement: unknown is not unhealthy. Red at rc4: the
+    /// unpaired heal drops the unobserved voter E for F, and the swap never gets to choose its leaver.
+    @Test
+    void freshLeader_unobservedHealthyVoter_isNotDropped_andTheSwapLeaverIsTheOriginal() {
+        var requested = new java.util.ArrayList<List<NodeId>>();
+
+        fiveVoterLeader(Set.of(A, B, C, F), Set.of(), Map.of(D, F), requested).reconcile().await();
+
+        assertThat(requested).containsExactly(List.of(A, B, C, F, E));
+    }
+
+    /// Time does not turn unobserved into removable: however many ticks pass, a voter with no evidence of failure is kept.
+    @Test
+    void unobservedVoter_withoutEvidence_survivesEveryTick() {
+        var requested = new java.util.ArrayList<List<NodeId>>();
+        var reconciler = fiveVoterLeader(Set.of(A, B, C, F), Set.of(), Map.of(), requested);
+
+        for (var tick = 0; tick < 50; tick++) {
+            reconciler.reconcile().await();
+        }
+
+        assertThat(requested).isEmpty();
+    }
+
+    /// Positive evidence (observed non-READY or a Dead/Departing verdict) makes the voter healable: D is replaced, E is kept.
+    @Test
+    void voterWithEvidenceOfFailure_isHealed_whileTheUnobservedOneIsKept() {
+        var requested = new java.util.ArrayList<List<NodeId>>();
+
+        fiveVoterLeader(Set.of(A, B, C, F), Set.of(D), Map.of(), requested).reconcile().await();
+
+        assertThat(requested).hasSize(1);
+        assertThat(requested.getFirst()).containsExactlyInAnyOrder(A, B, C, E, F);
+    }
+
     @Test
     void replacesMissingVoterWithReadyCandidateButDoesNotInventCapacity() {
         assertThat(CoreVoterReconciler.selectVoters(A, CURRENT, Set.of(A, B, D), 3))
@@ -41,7 +85,7 @@ class CoreVoterReconcilerTest {
         var calls = new AtomicInteger();
         var pending = Promise.<Unit>promise();
         var reconciler = CoreVoterReconciler.coreVoterReconciler(A, () -> true,
-            () -> Option.some(CURRENT), () -> Option.some(CURRENT), () -> 3, () -> Set.of(A, B, D), Map::of,
+            () -> Option.some(CURRENT), () -> Option.some(CURRENT), () -> 3, () -> Set.of(A, B, D), Map::of, () -> Set.of(C),
             roster -> { calls.incrementAndGet(); return pending; });
         reconciler.reconcile();
         reconciler.reconcile();
@@ -53,7 +97,7 @@ class CoreVoterReconcilerTest {
     void unsettledRosterWaitsInsteadOfRequestingAnotherChange() {
         var calls = new AtomicInteger();
         var reconciler = CoreVoterReconciler.coreVoterReconciler(A, () -> true,
-            () -> Option.some(CURRENT), Option::none, () -> 3, () -> Set.of(A, B, D), Map::of,
+            () -> Option.some(CURRENT), Option::none, () -> 3, () -> Set.of(A, B, D), Map::of, Set::of,
             roster -> { calls.incrementAndGet(); return Promise.unitPromise(); });
         reconciler.reconcile().await();
         assertThat(calls.get()).as("a pending change or an uncaught-up added member blocks the next one").isZero();
@@ -63,7 +107,7 @@ class CoreVoterReconcilerTest {
     void unchangedRosterRequestsNothing() {
         var calls = new AtomicInteger();
         var reconciler = CoreVoterReconciler.coreVoterReconciler(A, () -> true,
-            () -> Option.some(CURRENT), () -> Option.some(CURRENT), () -> 3, () -> Set.of(A, B, C), Map::of,
+            () -> Option.some(CURRENT), () -> Option.some(CURRENT), () -> 3, () -> Set.of(A, B, C), Map::of, Set::of,
             roster -> { calls.incrementAndGet(); return Promise.unitPromise(); });
         reconciler.reconcile().await();
         assertThat(calls.get()).isZero();
@@ -82,7 +126,7 @@ class CoreVoterReconcilerTest {
     void reconcile_pairedReadyReplacement_requestsTheSwapAsOneReconfiguration() {
         var requested = new java.util.ArrayList<List<NodeId>>();
         var reconciler = CoreVoterReconciler.coreVoterReconciler(A, () -> true,
-            () -> Option.some(CURRENT), () -> Option.some(CURRENT), () -> 3, () -> Set.of(A, B, C, D), () -> Map.of(C, D),
+            () -> Option.some(CURRENT), () -> Option.some(CURRENT), () -> 3, () -> Set.of(A, B, C, D), () -> Map.of(C, D), Set::of,
             roster -> { requested.add(roster.members()); return Promise.unitPromise(); });
 
         reconciler.reconcile().await();
@@ -141,5 +185,74 @@ class CoreVoterReconcilerTest {
 
         assertThat(CoreVoterReconciler.selectVoters(A, five, Set.of(A, B, C, D, E, f), 5, Map.of(D, f)))
             .containsExactly(A, B, C, f, E);
+    }
+
+    private static List<List<NodeId>> requestsOf(VoterConfiguration roster, int desired, Set<NodeId> ready, Set<NodeId> failed, Map<NodeId, NodeId> swaps) {
+        var requested = new java.util.ArrayList<List<NodeId>>();
+
+        CoreVoterReconciler.coreVoterReconciler(A, () -> true, () -> Option.some(roster), () -> Option.some(roster), () -> desired,
+            () -> ready, () -> swaps, () -> failed, config -> { requested.add(config.members()); return Promise.unitPromise(); }).reconcile().await();
+
+        return requested;
+    }
+
+    private static final NodeId G = new NodeId("g");
+    private static final VoterConfiguration SEVEN = new VoterConfiguration(0, new ClusterConfig(List.of(A, B, C, D, E, F, G)));
+
+    /// F2: a Dead or Departing voter that still has a READY entry (stale) is healed: `ready - failed`.
+    @Test
+    void deadVoterWithAStaleReadyEntry_isHealed() {
+        var requested = requestsOf(FIVE, 5, Set.of(A, B, C, D, F), Set.of(D), Map.of());
+
+        assertThat(requested).hasSize(1);
+        assertThat(requested.getFirst()).containsExactlyInAnyOrder(A, B, C, E, F);
+    }
+
+    /// F3: a surplus trim (7 voters, desired 5) is a size reduction. Failed voters go first.
+    @Test
+    void surplusTrim_removesTheFailedVoterFirst() {
+        var requested = requestsOf(SEVEN, 5, Set.of(A, B, C, D), Set.of(G), Map.of());
+
+        assertThat(requested).hasSize(1);
+        assertThat(requested.getFirst()).containsExactlyInAnyOrder(A, B, C, D, E);
+    }
+
+    /// F3: then never-observed voters, before any observed-healthy one, whatever the ids: the healthy F and G stay, the unobserved D and E go.
+    @Test
+    void surplusTrim_removesNeverObservedVotersBeforeObservedHealthyOnes() {
+        var requested = requestsOf(SEVEN, 5, Set.of(A, F, G), Set.of(), Map.of());
+
+        assertThat(requested).hasSize(1);
+        assertThat(requested.getFirst()).containsExactlyInAnyOrder(A, B, C, F, G);
+    }
+
+    /// F3: id order is only the final tie-break among equals.
+    @Test
+    void surplusTrim_amongEquals_breaksTiesById() {
+        var requested = requestsOf(SEVEN, 5, Set.of(A, B, C, D, E, F, G), Set.of(), Map.of());
+
+        assertThat(requested.getFirst()).containsExactlyInAnyOrder(A, B, C, D, E);
+    }
+
+    /// F3: never while a swap is in progress (Mode 1's trigger); control: the same trim without a swap goes through.
+    @Test
+    void surplusTrim_isRefusedWhileASwapIsInProgress() {
+        assertThat(requestsOf(SEVEN, 5, Set.of(A, B, C, D, E, F), Set.of(G), Map.of(F, new NodeId("h")))).isEmpty();
+        assertThat(requestsOf(SEVEN, 5, Set.of(A, B, C, D, E, F), Set.of(G), Map.of())).hasSize(1);
+    }
+
+    /// The guard is on SHRINKING only: replacing a failed voter keeps the size, so it proceeds even while a swap is in progress.
+    @Test
+    void healOfAFailedVoter_isNotATrim_soItProceedsDuringASwap() {
+        var requested = requestsOf(FIVE, 5, Set.of(A, B, C, E, F), Set.of(D), Map.of(B, new NodeId("h")));
+
+        assertThat(requested).hasSize(1);
+        assertThat(requested.getFirst()).containsExactlyInAnyOrder(A, B, C, E, F);
+    }
+
+    /// A newcomer never displaces an unobserved voter, even when its id sorts first (the ranking, not the id, decides).
+    @Test
+    void aNewcomerWhoseIdSortsFirst_neverDisplacesAnUnobservedVoter() {
+        assertThat(requestsOf(FIVE, 5, Set.of(A, B, C, D, new NodeId("0-newcomer")), Set.of(), Map.of())).isEmpty();
     }
 }

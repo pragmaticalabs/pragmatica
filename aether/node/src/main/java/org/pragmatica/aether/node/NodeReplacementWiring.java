@@ -47,6 +47,7 @@ import org.pragmatica.consensus.rabia.VoterConfiguration;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.utility.warning.OperatorWarningSink;
@@ -153,6 +154,21 @@ public final class NodeReplacementWiring {
     /// The ledger, when it is in a state that can count a slot (it exists and its inventory is complete, as CTM requires).
     static Option<AetherValue.CapacityLedgerValue> countable(Option<AetherValue.CapacityLedgerValue> ledger) {
         return ledger.filter(AetherValue.CapacityLedgerValue::inventoryComplete);
+    }
+
+    /// #2098: why the fleet inventory cannot be initialized yet, when it cannot. CTM builds the inventory from the committed source
+    /// configuration on the first provision; a replacement that starts before the bootstrap configuration is committed would be refused
+    /// for a startup ordering, not for a cause of its own, and rolled back. `none()` when the ledger already counts or the configuration is
+    /// committed, so the first provision can initialize the inventory.
+    static Option<String> inventoryBlocker(KVStore<AetherKey, AetherValue> store) {
+        if (countable(store.getTyped(AetherKey.CapacityLedgerKey.INSTANCE, AetherValue.CapacityLedgerValue.class)).isPresent()) {
+            return Option.none();
+        }
+
+        return store.getTyped(AetherKey.ClusterConfigKey.CURRENT, AetherValue.ClusterConfigValue.class)
+                    .isPresent()
+               ? Option.none()
+               : Option.some("committed source configuration is missing, so the fleet inventory cannot be initialized");
     }
 
     /// What is committed in the same transaction as an EXTERNAL replacement's record: the admission intent the operator-started node
@@ -305,6 +321,30 @@ public final class NodeReplacementWiring {
         return Unit.unit();
     }
 
+    /// The provision of a replacement, from the source COMMITTED in its record. A record created with no source (a node of a cluster
+    /// bootstrapped from static PEERS has no source label) has it resolved once by the reconciler and committed back before any effect, so a
+    /// blank here is a defect, refused, and never read as the source "default" (#1543 F2).
+    static Promise<ProvisionDisposition> provisionFor(ClusterTopologyManager ctm,
+                                                      NodeReplacementValue record,
+                                                      Set<NodeId> members) {
+        var role = NodeRole.nodeRole(record.role()).or(NodeRole.CORE);
+
+        return committedSource(record).async()
+                              .flatMap(source -> ctm.provisionReplacement(record.replacement(),
+                                                                          Option.none(),
+                                                                          members,
+                                                                          role,
+                                                                          source));
+    }
+
+    /// The source a record's node is addressed by at the provider: the one committed in the record. Blank is refused, never "default".
+    static Result<SourceName> committedSource(NodeReplacementValue record) {
+        return record.source()
+                     .isBlank()
+               ? Causes.cause("the replacement record carries no committed source yet").result()
+               : SourceName.sourceName(record.source());
+    }
+
     private static final class Env implements NodeReplacementReconciler.Environment {
         private final Inputs in;
         private final Set<NodeId> drainRequested = ConcurrentHashMap.newKeySet();
@@ -315,6 +355,8 @@ public final class NodeReplacementWiring {
         // seen up again is forgotten ([#forgetReapOfLiveNode]).
         private final Set<NodeId> reaped = ConcurrentHashMap.newKeySet();
         private final Map<NodeId, String> reapFailure = new ConcurrentHashMap<>();
+        /// Why a provision of this replacement last waited (#2098), shown by the provisioning deadline if the wait never ends.
+        private final Map<NodeId, String> provisionWait = new ConcurrentHashMap<>();
         private final Map<NodeId, Long> reapSince = new ConcurrentHashMap<>();
         // Nodes whose instance a provider listing showed while they were still up: only for these does a later EMPTY listing mean gone.
         private final Set<NodeId> seen = ConcurrentHashMap.newKeySet();
@@ -343,6 +385,13 @@ public final class NodeReplacementWiring {
                                           AetherValue.CapacityReservationValue.class);
 
             return cas(in, original, Option.some(expected), next, settleReservation(next, reservation));
+        }
+
+        @Override
+        public Result<String> resolveSource(NodeId original, NodeReplacementValue record) {
+            return in.ctm()
+                     .sourceOfSourcelessNode(NodeRole.nodeRole(record.role()).or(NodeRole.CORE))
+                     .map(SourceName::value);
         }
 
         @Override
@@ -383,7 +432,8 @@ public final class NodeReplacementWiring {
                                    drainRefused.getOrDefault(original, ""),
                                    reaped.contains(original),
                                    reapFailure.getOrDefault(original,
-                                                            reapFailure.getOrDefault(record.replacement(), "")));
+                                                            reapFailure.getOrDefault(record.replacement(), "")),
+                                   inventoryBlocker(in.kvStore()).or(provisionWait.getOrDefault(record.replacement(), "")));
         }
 
         /// A node that is up under an id whose reap was confirmed is a new incarnation of the id (ruling e9959fa6d(2)): the confirmation described the
@@ -431,20 +481,41 @@ public final class NodeReplacementWiring {
                                        : new EffectResult.Done());
             }
 
+            var blocker = inventoryBlocker(in.kvStore());
+
+            if (blocker.isPresent()) {
+                return Promise.success(new EffectResult.Deferred("provisioning deferred: " + blocker.unwrap()));
+            }
+
             var members = Option.option(in.membership().get()).map(fsm -> fsm.memberStates()
                                                                              .keySet()).or(Set.of());
 
-            return in.ctm()
-                     .provisionReplacement(record.replacement(),
-                                           Option.none(),
-                                           Set.copyOf(members),
-                                           NodeRole.nodeRole(record.role()).or(NodeRole.CORE),
-                                           SourceName.sourceNameOrDefault(record.source()))
-                     .<EffectResult> map(disposition -> switch (disposition) {
-                case ProvisionDisposition.Dispatched _ -> new EffectResult.Done();
+            return NodeReplacementWiring.provisionFor(in.ctm(),
+                                                      record,
+                                                      Set.copyOf(members))
+                                        .<EffectResult> map(disposition -> switch (disposition) {
+                case ProvisionDisposition.Dispatched _ -> provisionDispatched(record);
                 case ProvisionDisposition.Deferred deferred -> new EffectResult.Deferred("provisioning deferred: " + deferred.reason());
             })
-                     .recover(cause -> new EffectResult.Failed(cause.message()));
+                                        .recover(cause -> provisionFailed(record, cause));
+        }
+
+        /// A provision refused because the fleet inventory is being initialized is a wait, not a refusal (#2098): it defers and is
+        /// tried again on the next tick, bounded by the provisioning deadline, whose cause then names it. Any other cause fails the provision.
+        private EffectResult provisionFailed(NodeReplacementValue record, Cause cause) {
+            if (cause instanceof org.pragmatica.aether.deployment.cluster.FleetInventoryInitializing) {
+                provisionWait.put(record.replacement(), cause.message());
+
+                return new EffectResult.Deferred("provisioning deferred: " + cause.message());
+            }
+
+            return new EffectResult.Failed(cause.message());
+        }
+
+        private EffectResult provisionDispatched(NodeReplacementValue record) {
+            provisionWait.remove(record.replacement());
+
+            return new EffectResult.Done();
         }
 
         /// Done only when the provider's own listing, taken after the terminate, shows the instance gone. A refusal, a listing that
@@ -458,14 +529,14 @@ public final class NodeReplacementWiring {
 
             reapSince.putIfAbsent(node,
                                   in.clock().getAsLong());
-            var source = SourceName.sourceNameOrDefault(record.source());
 
             return in.ctm()
                      .drainNode(node, DrainReason.REPLACED)
-                     .flatMap(_ -> in.ctm()
-                                     .reapRetired(node,
-                                                  source,
-                                                  seen.contains(node)))
+                     .flatMap(_ -> committedSource(record).async()
+                                                  .flatMap(source -> in.ctm()
+                                                                       .reapRetired(node,
+                                                                                    source,
+                                                                                    seen.contains(node))))
                      .<EffectResult> map(_ -> confirmedGone(node,
                                                             record.replacement()))
                      .recover(cause -> notConfirmed(node, cause, boundedByRetiring));
@@ -507,8 +578,11 @@ public final class NodeReplacementWiring {
         /// safely call gone (the old node self-halts after its drain). A listing that fails or lists nothing observes nothing and
         /// never blocks the drain; external-kind reservations have no provider instance to list.
         private Promise<Unit> observeInstances(NodeId original, NodeReplacementValue record) {
-            var source = SourceName.sourceNameOrDefault(record.source());
+            return committedSource(record).fold(_ -> Promise.unitPromise(),
+                                                source -> observeInstances(original, record, source));
+        }
 
+        private Promise<Unit> observeInstances(NodeId original, NodeReplacementValue record, SourceName source) {
             return Stream.of(original,
                              record.replacement())
                          .map(node -> in.ctm()
@@ -534,15 +608,23 @@ public final class NodeReplacementWiring {
                 return;
             }
 
-            in.ctm()
-              .instanceListed(node,
-                              SourceName.sourceNameOrDefault(record.source()))
-              .onSuccess(listed -> {
-                  if (listed) {
-                  seen.add(node);
-              }
-              })
-              .onResultRun(() -> observing.remove(node));
+            committedSource(record).fold(_ -> {
+                                             observing.remove(node);
+
+                                             return Unit.unit();
+                                         },
+                                         source -> {
+                                             in.ctm()
+                                               .instanceListed(node, source)
+                                               .onSuccess(listed -> {
+                                             if (listed) {
+                                             seen.add(node);
+                                         }
+                                         })
+                                               .onResultRun(() -> observing.remove(node));
+
+                                             return Unit.unit();
+                                         });
         }
 
         private EffectResult drained(NodeId original, DrainOutcome outcome) {
