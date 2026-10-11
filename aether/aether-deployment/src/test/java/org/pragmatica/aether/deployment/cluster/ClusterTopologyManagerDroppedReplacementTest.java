@@ -65,6 +65,8 @@ class ClusterTopologyManagerDroppedReplacementTest {
     private final AtomicReference<Promise<List<InstanceInfo>>> listing = new AtomicReference<>(Promise.success(List.of()));
     private final AtomicInteger terminates = new AtomicInteger();
     private final AtomicInteger listings = new AtomicInteger();
+    /// The listing calls (1-based) that fail, whatever `listing` holds.
+    private final Set<Integer> failingListings = java.util.concurrent.ConcurrentHashMap.newKeySet();
     private final AtomicBoolean terminateRemoves = new AtomicBoolean(true);
     private final AtomicReference<Set<NodeId>> swimAlive = new AtomicReference<>(Set.of());
     private CapturingAppender appender;
@@ -249,6 +251,48 @@ class ClusterTopologyManagerDroppedReplacementTest {
         assertThat(warned("no instance exists")).isFalse();
     }
 
+    /// A listing that fails is not an answer: it is neither "absent" nor the end of the check. The failure bound counts CONSECUTIVE failures.
+    private void assertQuietAfter(java.util.Collection<Integer> failures, int expectedListings) {
+        failingListings.addAll(failures);
+
+        ctm.reapDroppedReplacement(DROPPED, "its create failed: 503", DroppedInstance.MAYBE);
+
+        await().atMost(Duration.ofSeconds(10)).until(() -> listings.get() >= expectedListings);
+        settle();
+        assertThat(listings.get()).as("12 empty answers plus the failures, then it stops asking").isEqualTo(expectedListings);
+        assertThat(terminates.get()).isZero();
+        assertThat(warned("instance-termination-unconfirmed")).as("a transient listing failure is not an alarm for an instance that never existed").isFalse();
+    }
+
+    @Test
+    void droppedFailedCreate_oneListingFailureInTheMiddleOfTheCount_endsQuietly() {
+        assertQuietAfter(List.of(4), ClusterTopologyManagerRecord.ABSENT_LISTINGS_TO_CONFIRM + 1);
+    }
+
+    @Test
+    void droppedFailedCreate_oneListingFailureAtTheFirstLookup_endsQuietly() {
+        assertQuietAfter(List.of(1), ClusterTopologyManagerRecord.ABSENT_LISTINGS_TO_CONFIRM + 1);
+    }
+
+    /// Twelve failures that are NOT consecutive never reach the failure bound: each answer resets it.
+    @Test
+    void droppedFailedCreate_scatteredListingFailures_neverReachTheFailureBound() {
+        assertQuietAfter(List.of(1, 3, 5, 7, 9, 11, 13, 15, 17, 19, 21, 23), ClusterTopologyManagerRecord.ABSENT_LISTINGS_TO_CONFIRM + 12);
+    }
+
+    /// Control: a lookup that keeps failing is past its bound, and only then is the result unconfirmed.
+    @Test
+    void droppedFailedCreate_consecutiveListingFailuresPastTheBound_endInTheUnconfirmedEvent() {
+        for (var call = 1; call <= ClusterTopologyManagerRecord.LOOKUP_FAILURES_TO_GIVE_UP; call++) {
+            failingListings.add(call);
+        }
+
+        ctm.reapDroppedReplacement(DROPPED, "its create failed: 503", DroppedInstance.MAYBE);
+
+        await().atMost(Duration.ofSeconds(10)).until(() -> warned("instance-termination-unconfirmed", DROPPED.id()));
+        assertThat(warned("12 of 12 consecutive failures") || warned("whether it exists is not known")).isTrue();
+    }
+
     @Test
     void droppedFailedCreate_whoseInstanceIsFound_isTerminated_andNamedInTheWarn() {
         providerLists(instance("i-boot-crash-4", InstanceStatus.RUNNING));
@@ -424,7 +468,11 @@ class ClusterTopologyManagerDroppedReplacementTest {
 
         @Override
         public Promise<List<InstanceInfo>> listInstances() {
-            listings.incrementAndGet();
+            var call = listings.incrementAndGet();
+
+            if (failingListings.contains(call)) {
+                return EnvironmentError.operationNotSupported("transient listing failure " + call).promise();
+            }
 
             return listing.get();
         }

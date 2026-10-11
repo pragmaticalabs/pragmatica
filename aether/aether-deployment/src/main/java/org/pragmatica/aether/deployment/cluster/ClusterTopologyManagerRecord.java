@@ -1901,7 +1901,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
 
                         return unit();
                     },
-                    source -> lookUpDropped(node, source, reason, knowledge, epoch, generation, 1, start));
+                    source -> lookUpDropped(node, source, reason, knowledge, epoch, generation, 1, 0, start));
 
         return unit();
     }
@@ -1909,6 +1909,9 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     /// Consecutive successful empty listings that confirm a failed create left no instance: the count of absent listings the reconciler needs
     /// to drop an in-flight entry whose instance was never listed (#1049), and of reap retries ([#FAILED_REAP_RETRIES]).
     static final int ABSENT_LISTINGS_TO_CONFIRM = FAILED_REAP_RETRIES;
+    /// Consecutive failed lookups of a dropped failed create after which the check stops waiting and hands the drop to the confirmed reap (which
+    /// ends in the unconfirmed event if the lookup still cannot be answered). Separate from the empty count: a failure is not an answer.
+    static final int LOOKUP_FAILURES_TO_GIVE_UP = FAILED_REAP_RETRIES;
 
     /// One lookup of a dropped replacement. The WARN names source, node and instance id when the lookup finds the instance; it never says that no
     /// instance exists until [#ABSENT_LISTINGS_TO_CONFIRM] listings have shown none.
@@ -1919,9 +1922,19 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                long epoch,
                                long generation,
                                int absentListings,
+                               int failedLookups,
                                Runnable start) {
         lifecycleManager.instancesForNode(node, source)
-                        .onResult(result -> result.fold(cause -> lookupFailed(node, source, reason, cause, start),
+                        .onResult(result -> result.fold(cause -> lookupFailed(node,
+                                                                              source,
+                                                                              reason,
+                                                                              knowledge,
+                                                                              epoch,
+                                                                              generation,
+                                                                              absentListings,
+                                                                              failedLookups,
+                                                                              cause,
+                                                                              start),
                                                         listed -> lookupAnswered(node,
                                                                                  source,
                                                                                  reason,
@@ -1935,7 +1948,43 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         return unit();
     }
 
-    private Unit lookupFailed(NodeId node, SourceName source, String reason, Cause cause, Runnable start) {
+    /// A lookup that fails is neither an answer of "absent" nor the end of the check. While the instance may never have existed, the check keeps asking:
+    /// a failure advances only the count of CONSECUTIVE failures (reset by any answer), and only when that count reaches
+    /// [#LOOKUP_FAILURES_TO_GIVE_UP] is the drop handed to the confirmed reap, whose own retries end in the unconfirmed event. The empty count is
+    /// neither advanced nor reset by a failure.
+    private Unit lookupFailed(NodeId node,
+                              SourceName source,
+                              String reason,
+                              DroppedInstance knowledge,
+                              long epoch,
+                              long generation,
+                              int absentListings,
+                              int failedLookups,
+                              Cause cause,
+                              Runnable start) {
+        var failures = failedLookups + 1;
+
+        if (knowledge == DroppedInstance.MAYBE && failures < LOOKUP_FAILURES_TO_GIVE_UP) {
+            log.warn("CTM: in-flight replacement {} dropped ({}); source={}, the lookup of its instance failed ({}), {} of {} consecutive failures; asking again",
+                     node,
+                     reason,
+                     source,
+                     cause.message(),
+                     failures,
+                     LOOKUP_FAILURES_TO_GIVE_UP);
+            SharedScheduler.schedule(() -> recheckAbsence(node,
+                                                          source,
+                                                          reason,
+                                                          epoch,
+                                                          generation,
+                                                          absentListings,
+                                                          failures,
+                                                          start),
+                                     failedReapInterval());
+
+            return unit();
+        }
+
         log.warn("CTM: in-flight replacement {} dropped ({}); source={}, the lookup of its instance failed ({}), so whether it exists is not known; the confirmed reap retries the lookup",
                  node,
                  reason,
@@ -1989,16 +2038,24 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                 Runnable start) {
         if (absentListings >= ABSENT_LISTINGS_TO_CONFIRM) {
             replacementSources.remove(node);
-            log.info("CTM: in-flight replacement {} dropped ({}): {} consecutive listings of source={} show no instance of it, so its create left nothing; confirmed absent, nothing to terminate",
+            log.info("CTM: in-flight replacement {} dropped ({}): {} consecutive listings of source={}, {} ms apart, show no instance of it; treated as absent, nothing to terminate (an instance that appears later is left to the next activation's orphan replay)",
                      node,
                      reason,
                      absentListings,
-                     source);
+                     source,
+                     failedReapInterval().millis());
 
             return unit();
         }
 
-        SharedScheduler.schedule(() -> recheckAbsence(node, source, reason, epoch, generation, absentListings + 1, start),
+        SharedScheduler.schedule(() -> recheckAbsence(node,
+                                                      source,
+                                                      reason,
+                                                      epoch,
+                                                      generation,
+                                                      absentListings + 1,
+                                                      0,
+                                                      start),
                                  failedReapInterval());
 
         return unit();
@@ -2010,6 +2067,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                 long epoch,
                                 long generation,
                                 int absentListings,
+                                int failedLookups,
                                 Runnable start) {
         if (!active.get() || activationEpoch.get() != epoch || !sameIncarnation(node, generation)) {
             log.debug("CTM: absence check of dropped replacement {} stopped — deactivated, re-activated or joined since",
@@ -2018,7 +2076,15 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
             return;
         }
 
-        lookUpDropped(node, source, reason, DroppedInstance.MAYBE, epoch, generation, absentListings, start);
+        lookUpDropped(node,
+                      source,
+                      reason,
+                      DroppedInstance.MAYBE,
+                      epoch,
+                      generation,
+                      absentListings,
+                      failedLookups,
+                      start);
     }
 
     /// Idempotent per node INCARNATION: NodeRemoved and the drain-grace backstop both reap, and a reap confirmed once is not re-asked (and so cannot be
