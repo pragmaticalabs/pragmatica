@@ -826,7 +826,7 @@ Custom vendors can be added via `VendorMapping` SPI (ServiceLoader in `integrati
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `cache_name` | `String` | `"default"` | Logical cache name (shared name = shared cache instance) |
+| `cache_name` | `String` | `"default"` | Logical cache name (shared name = shared cache instance). Sections sharing a name must agree on `mode`, `ttl_seconds`, `max_entries` and the key type, and on the stored value type for the strategies that store (`strategy` itself may differ); a section that disagrees with the one provisioned first is refused at provisioning, naming the setting (#697) |
 | `strategy` | `CacheStrategy` | `CACHE_ASIDE` | Caching strategy (see table below) |
 | `ttl_seconds` | `int` | `300` | Time-to-live for cached entries — honoured by the local store (`LOCAL`, and the L1 of `TIERED`) only. The DHT has no expiry primitive, so `DISTRIBUTED` entries (and `TIERED`'s L2) do not expire; tracked in #279 |
 | `max_entries` | `int` | `10000` | Maximum number of entries in the local store — a hard cap with least-recently-used eviction (#279); `DISTRIBUTED` storage is bounded by the DHT, not by this field |

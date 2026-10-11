@@ -10,10 +10,12 @@ import java.util.List;
 import org.pragmatica.aether.slice.ProvisioningContext;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
-import org.pragmatica.lang.utils.Causes;
+import org.pragmatica.lang.type.TypeToken;
 
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.some;
+import static org.pragmatica.lang.utils.Causes.cause;
+
 
 /// Everything about a `[cache.*]` section that shapes the backend shared under its `cache_name` (#697).
 ///
@@ -28,7 +30,7 @@ record CacheShape(CacheMode mode, int ttlSeconds, int maxEntries, Option<Type> k
         var tokens = context.typeTokens();
         var keyType = typeAt(tokens, 0, tokens.size() == 2);
         var valueType = config.strategy() == CacheStrategy.WRITE_AROUND
-                        ? Option.<Type>none()
+                        ? Option.<Type> none()
                         : typeAt(tokens, 1, tokens.size() == 2);
 
         return new CacheShape(config.mode(), config.ttlSeconds(), config.maxEntries(), keyType, valueType);
@@ -36,29 +38,44 @@ record CacheShape(CacheMode mode, int ttlSeconds, int maxEntries, Option<Type> k
 
     /// The first setting on which `incoming` differs from this (already shared) shape, as a refusal.
     Option<Cause> conflictWith(CacheShape incoming, String cacheName) {
-        return differing("mode", mode, incoming.mode, cacheName)
-                         .orElse(() -> differing("ttl_seconds", ttlSeconds, incoming.ttlSeconds, cacheName))
-                         .orElse(() -> differing("max_entries", maxEntries, incoming.maxEntries, cacheName))
-                         .orElse(() -> differingType("key type", keyType, incoming.keyType, cacheName))
-                         .orElse(() -> differingType("cached value type", valueType, incoming.valueType, cacheName));
+        return differing("mode", mode, incoming.mode, cacheName).orElse(() -> differing("ttl_seconds",
+                                                                                        ttlSeconds,
+                                                                                        incoming.ttlSeconds,
+                                                                                        cacheName))
+                        .orElse(() -> differing("max_entries", maxEntries, incoming.maxEntries, cacheName))
+                        .orElse(() -> differingType("key type", keyType, incoming.keyType, cacheName))
+                        .orElse(() -> differingType("cached value type", valueType, incoming.valueType, cacheName));
     }
 
-    private static Option<Type> typeAt(List<org.pragmatica.lang.type.TypeToken<?>> tokens, int index, boolean present) {
+    private static Option<Type> typeAt(List<TypeToken<?>> tokens, int index, boolean present) {
         return present
                ? some(tokens.get(index).token())
                : none();
     }
 
-    private static Option<Cause> differingType(String setting, Option<Type> shared, Option<Type> incoming, String cacheName) {
-        return shared.flatMap(a -> incoming.filter(b -> !a.equals(b))
-                                           .flatMap(b -> differing(setting, a.getTypeName(), b.getTypeName(), cacheName)));
+    private static Option<Cause> differingType(String setting,
+                                               Option<Type> shared,
+                                               Option<Type> incoming,
+                                               String cacheName) {
+        return shared.flatMap(a -> differingFrom(setting, a, incoming, cacheName));
+    }
+
+    private static Option<Cause> differingFrom(String setting, Type shared, Option<Type> incoming, String cacheName) {
+        return incoming.filter(b -> !shared.equals(b))
+                       .flatMap(b -> differing(setting,
+                                               shared.getTypeName(),
+                                               b.getTypeName(),
+                                               cacheName));
     }
 
     private static Option<Cause> differing(String setting, Object shared, Object incoming, String cacheName) {
         return shared.equals(incoming)
                ? none()
-               : some(Causes.cause("[cache.*] sections sharing cache_name \"" + cacheName + "\" share one backend, but disagree on "
-                                   + setting + ": the section provisioned first set " + shared + ", this section sets "
-                                   + incoming + ". Give the sections the same " + setting + " or different cache_name values (#697)"));
+               : some(cause("[cache.*] sections sharing cache_name \"" + cacheName
+                           + "\" share one backend, but disagree on " + setting
+                           + ": the section provisioned first set " + shared
+                           + ", this section sets " + incoming
+                           + ". Give the sections the same " + setting
+                           + " or different cache_name values (#697)"));
     }
 }

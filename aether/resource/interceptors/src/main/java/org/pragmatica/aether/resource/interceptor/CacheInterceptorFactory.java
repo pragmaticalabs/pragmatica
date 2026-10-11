@@ -71,7 +71,9 @@ public final class CacheInterceptorFactory implements ResourceFactory<CacheMetho
 
         return caches.acquireChecked(config.cacheName(),
                                      SharedCache.sharedCache(candidate, shape),
-                                     (existing, incoming) -> existing.shape().conflictWith(incoming.shape(), config.cacheName()),
+                                     (existing, incoming) -> existing.shape()
+                                                                     .conflictWith(incoming.shape(),
+                                                                                   config.cacheName()),
                                      shared -> new CacheMethodInterceptor(shared.backend(),
                                                                           config.strategy(),
                                                                           keyExtractor,
