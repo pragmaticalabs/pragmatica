@@ -608,7 +608,13 @@ public record Main(String[] args) {
     /// Every resolver above takes it as a parameter so tests can state the environment rather than
     /// inherit it (SF4).
     private static Option<String> environmentClusterSecret() {
-        return ClusterSecretSource.resolve(System::getenv).fold(_ -> Option.<String> none(), value -> value);
+        return ambientClusterSecret(System::getenv);
+    }
+
+    /// The ambient secret with the environment supplied: `AETHER_CLUSTER_SECRET` or the file `AETHER_CLUSTER_SECRET_FILE` names (#828).
+    /// A broken file reads as absent here; the start-up gate in [#loadConfig] is what refuses it.
+    static Option<String> ambientClusterSecret(Fn1<String, String> env) {
+        return ClusterSecretSource.resolve(env).fold(_ -> Option.<String> none(), value -> value);
     }
 
     private static final Cause MISSING_CLUSTER_SECRET = Causes.cause("No cluster secret configured. Set 'cluster_secret' in [tls] section "

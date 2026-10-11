@@ -1,6 +1,6 @@
 ### Security (2026-10-04 — #828: cloud bootstrap put the cluster secret on the remote `docker run` command line)
 
-- **The node reads its cluster secret from `AETHER_CLUSTER_SECRET_FILE`** (a path; surrounding line breaks stripped).
+- **The node reads its cluster secret from `AETHER_CLUSTER_SECRET_FILE`** (a path; trailing line breaks stripped, nothing else).
   The plain `AETHER_CLUSTER_SECRET` still works. Both set to *different* values is refused at start (exit 65) with a
   message naming the variables and no value; an unreadable or empty file is refused the same way.
   [verified: `ClusterSecretSourceTest`, `MainConfigGivenBootTest#aSecretFileAndADifferingSecretVariable_refuseToStart_withExit65_namingNoValue`, `MainClusterSecretStampTest#secretFromAFile_isStampedAndDerivesTheSameBytes_andConfiguredSecretStillWins`]
@@ -17,8 +17,9 @@
 - **Same class, same fix: `AETHER_API_KEY` / `AETHER_API_KEYS`** forwarded from the operator's host env (and the provider's
   configured `api_key`) now travel as files exactly like the cluster secret, on every path above: `AETHER_API_KEYS_FILE` is read by
   the config loader ahead of any TOML, and any `${env:NAME}` reference in a node config has a `NAME_FILE` form
-  (`api_key = "${env:AETHER_API_KEY}"` among them). Same rules: a conflicting, unreadable or empty file is refused at start (exit 65),
-  and a value with a line break is refused by name. Launch paths forward no other secret-bearing variable (see the audit in the PR).
+  (`api_key = "${env:AETHER_API_KEY}"` among them). For the three file-delivered variables (`AETHER_CLUSTER_SECRET`, `AETHER_API_KEY`,
+  `AETHER_API_KEYS`) a conflicting, unreadable or empty file is refused at start (exit 65); for any other `${env:NAME}` it leaves the
+  reference as its literal placeholder. A value with a line break is refused by name on the launch side. Launch paths forward no other secret-bearing variable (see the audit in the PR).
 - **Stated limits.** Cloud-init user-data still contains the secret and keys in clear text: readable via the cloud provider's
   metadata/API by the account holder and, on the VM, via the metadata service and `/var/lib/cloud`. Hand-written compose files and
   operator `docker run -e` keep the env-var form unless the operator adopts the file form. A removed bind-mount source makes a

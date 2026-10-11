@@ -104,11 +104,23 @@ public interface ClusterSecretSource {
     }
 
     private static Result<String> nonEmpty(String plainVar, String path, String value) {
-        var stripped = value.stripTrailing();
+        var stripped = stripLineTerminators(value);
 
-        return stripped.isEmpty()
+        return stripped.isBlank()
                ? Causes.cause(fileVar(plainVar) + " file '" + path + "' is empty").result()
                : Result.success(stripped);
+    }
+
+    /// Only the file's trailing CR/LF go; blanks that are part of the secret stay, so a secret has one identity whether it arrives as
+    /// the plain variable or as a file.
+    private static String stripLineTerminators(String value) {
+        var end = value.length();
+
+        while (end > 0 && (value.charAt(end - 1) == '\n' || value.charAt(end - 1) == '\r')) {
+            end--;
+        }
+
+        return value.substring(0, end);
     }
 
     private static Result<Option<String>> reconcile(String plainVar, String fileValue, Option<String> plain) {

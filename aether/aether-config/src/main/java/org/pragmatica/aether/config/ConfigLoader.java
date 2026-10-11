@@ -306,7 +306,7 @@ public final class ConfigLoader {
         var tlsEnabled = isTlsEnabled(doc, environment);
 
         if (tlsEnabled) {
-            builder.tlsConfig(tlsFromDocument(doc));
+            builder.tlsConfig(tlsFromDocument(doc, System::getenv));
         }
     }
 
@@ -316,14 +316,16 @@ public final class ConfigLoader {
                   .or(environment.defaultTls());
     }
 
-    private static TlsConfig tlsFromDocument(TomlDocument doc) {
+    /// The `[tls]` section with the host environment supplied: `cluster_secret`, else the ambient secret (`AETHER_CLUSTER_SECRET` or
+    /// the file `AETHER_CLUSTER_SECRET_FILE` names, #828).
+    static TlsConfig tlsFromDocument(TomlDocument doc, Fn1<String, String> env) {
         var autoGen = doc.getString("tls", "auto_generate").map(ConfigLoader::toBooleanValue).or(true);
         var certPath = doc.getString("tls", "cert_path").or("");
         var keyPath = doc.getString("tls", "key_path").or("");
         var caPath = doc.getString("tls", "ca_path").or("");
         var clusterSecret = doc.getString("tls", "cluster_secret")
-                               .orElse(() -> ClusterSecretSource.resolve(System::getenv).fold(_ -> Option.<String> none(),
-                                                                                              value -> value))
+                               .orElse(() -> ClusterSecretSource.resolve(env).fold(_ -> Option.<String> none(),
+                                                                                   value -> value))
                                .or("");
 
         return new TlsConfig(autoGen, certPath, keyPath, caPath, clusterSecret);

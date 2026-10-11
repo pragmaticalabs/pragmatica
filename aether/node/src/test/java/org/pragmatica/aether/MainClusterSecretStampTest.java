@@ -163,6 +163,23 @@ class MainClusterSecretStampTest {
         }
     }
 
+    /// #828 — the ambient-secret site itself: with ONLY the file variable set it must still resolve. Red if `Main` reverts to a plain
+    /// `AETHER_CLUSTER_SECRET` read (the injected-source tests above would not notice).
+    @Test
+    void ambientClusterSecret_withOnlyTheFileVariable_resolvesIt() throws Exception {
+        var file = java.nio.file.Files.createTempFile("ambient-secret-", ".txt");
+
+        try {
+            java.nio.file.Files.writeString(file, "file-sentinel-1a2b\n");
+
+            assertThat(Main.ambientClusterSecret(java.util.Map.of("AETHER_CLUSTER_SECRET_FILE", file.toString())::get).unwrap()).isEqualTo("file-sentinel-1a2b");
+            assertThat(Main.ambientClusterSecret(java.util.Map.of("AETHER_CLUSTER_SECRET", "plain-sentinel")::get).unwrap()).isEqualTo("plain-sentinel");
+            assertThat(Main.ambientClusterSecret(java.util.Map.<String, String> of()::get).isEmpty()).isTrue();
+        } finally {
+            java.nio.file.Files.deleteIfExists(file);
+        }
+    }
+
     private static Option<AetherConfig> configWith(String clusterSecret) {
         return Option.some(AetherConfig.aetherConfig(ClusterConfig.clusterConfig(Environment.DOCKER),
                                                      NodeConfig.nodeConfig(Environment.DOCKER),

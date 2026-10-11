@@ -70,6 +70,7 @@ import org.pragmatica.consensus.topology.TransportObservation;
 import org.pragmatica.consensus.topology.NodeState;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
@@ -1659,7 +1660,12 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     /// source the renderer's `emitIdentityEnv` reads it from (`AETHER_CLUSTER_SECRET_FILE` included, #828), so the secret baked into the
     /// replacement's `AETHER_CLUSTER_SECRET` matches the live cluster's.
     private static Option<String> clusterSecretFromEnv() {
-        return ClusterSecretSource.resolve(System::getenv).fold(_ -> Option.<String> none(), value -> value);
+        return clusterSecretFrom(System::getenv);
+    }
+
+    /// The same with the leader's environment supplied (`AETHER_CLUSTER_SECRET` or the file `AETHER_CLUSTER_SECRET_FILE` names, #828).
+    static Option<String> clusterSecretFrom(Fn1<String, String> env) {
+        return ClusterSecretSource.resolve(env).fold(_ -> Option.<String> none(), value -> value);
     }
 
     private static List<String> peersList(ProvisionContext context) {

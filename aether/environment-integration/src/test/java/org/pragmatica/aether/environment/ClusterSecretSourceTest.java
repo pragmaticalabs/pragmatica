@@ -118,4 +118,12 @@ class ClusterSecretSourceTest {
         assertThat(ClusterSecretSource.containerMount("AETHER_API_KEY")).isEqualTo("/run/secrets/aether-api-key");
         assertThat(ClusterSecretSource.jvmFile("AETHER_CLUSTER_SECRET")).isEqualTo("/etc/aether/cluster-secret");
     }
+
+    @Test
+    void onlyLineTerminatorsAreStripped_blanksArePartOfTheSecret() {
+        assertThat(valueOf(Map.of("AETHER_CLUSTER_SECRET_FILE", "/run/secret"), "abc  \r\n")).as("trailing blanks stay").isEqualTo("abc  ");
+        assertThat(valueOf(Map.of("AETHER_CLUSTER_SECRET_FILE", "/run/secret", "AETHER_CLUSTER_SECRET", "abc  "), "abc  \n"))
+            .as("the same secret by file and by plain variable is one identity, not a conflict").isEqualTo("abc  ");
+        assertThat(valueOf(Map.of("AETHER_CLUSTER_SECRET_FILE", "/run/secret"), "   \n")).as("a blank-only file is empty").startsWith("FAILED:");
+    }
 }

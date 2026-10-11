@@ -216,7 +216,7 @@ patching it would not have closed anything a real deployment used.
 
 ### How the cluster secret reaches a node (#828)
 
-The node reads its secret from the file named by `AETHER_CLUSTER_SECRET_FILE`, and its API keys from `AETHER_API_KEYS_FILE` (any `${env:NAME}` in a node config likewise has a `NAME_FILE` form) (surrounding line breaks
+The node reads its secret from the file named by `AETHER_CLUSTER_SECRET_FILE`, and its API keys from `AETHER_API_KEYS_FILE` (any `${env:NAME}` in a node config likewise has a `NAME_FILE` form) (trailing line breaks
 stripped). Setting both that variable and `AETHER_CLUSTER_SECRET` to *different* values is refused at start
 (exit 65): the node cannot know which was meant. Setting both to the same value, or only one, is accepted.
 Per launch path:
@@ -231,8 +231,8 @@ Per launch path:
 
 **Stated limits.** (1) Cloud-init user-data contains the secret in clear text. It is readable by the cloud
 account holder through the provider's metadata/API and by processes on the VM through the metadata service
-and `/var/lib/cloud`; no file mode on the node changes that. (2) For `CLOUD` sources the node's `aether.toml`
-also carries `[tls] cluster_secret` (0600, uid 1000 since #287). (3) Operator-written compose and `docker run -e` keep the env-var form, and so show in `docker inspect`, unless the operator adopts `NAME_FILE`. (4) A bind-mounted secret file is re-resolved on every container start; removing the host
+and `/var/lib/cloud`; no file mode on the node changes that. (2) The CLI-generated compose file (`aether cluster init` / `DockerComposeTemplate`) still passes `AETHER_CLUSTER_SECRET` as a container environment variable, like a hand-written one. (3) For `CLOUD` sources the node's `aether.toml`
+also carries `[tls] cluster_secret` (0600, uid 1000 since #287). (4) Operator-written compose and `docker run -e` keep the env-var form, and so show in `docker inspect`, unless the operator adopts `NAME_FILE`. (5) `AETHER_BACKUP_REMOTE` (a git remote path or URL) is forwarded to provider-minted nodes as `-e`; a URL with an embedded token would be on that argv and in `docker inspect`, so use a deploy key or a mounted path. (6) A `.staged` copy of a credential survives if the ssh session drops between the push and the launch line (removal is inside that line); the next launch overwrites and removes it. (7) The uid-1000 ownership of the bootstrap and cloud-init files inside a real container, and the JVM path under a real unit, are not exercised by the real-container check. (8) A bind-mounted secret file is re-resolved on every container start; removing the host
 file makes a restart fail, loudly, because the mount is `--mount type=bind` (which errors on a missing source)
 rather than `-v` (which would create a directory in its place).
 

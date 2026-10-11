@@ -700,6 +700,8 @@ class DockerComputeProviderTest {
                 assertThat(commands.get(0)).startsWith("docker", "create").doesNotContain("run").doesNotContain("-d")
                                            .contains("AETHER_CLUSTER_SECRET_FILE=" + DockerComputeProvider.credentialPath("AETHER_CLUSTER_SECRET"));
                 assertThat(commands.get(1)).startsWith("docker", "cp", "-");
+                assertThat(commands.get(1).getLast()).as("the copy target is the directory the _FILE variable points into")
+                                                     .endsWith(":" + java.nio.file.Path.of(DockerComputeProvider.credentialPath("AETHER_CLUSTER_SECRET")).getParent());
                 assertThat(commands.get(2)).startsWith("docker", "start");
                 assertSecretOnNoArgvButInTheArchive();
             } finally {

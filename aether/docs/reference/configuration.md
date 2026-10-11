@@ -390,8 +390,8 @@ For container deployment, configuration via environment variables:
 | `CLUSTER_PEERS` | required | Cluster peer list |
 | `JAVA_OPTS` | `-Xmx256m` | JVM options |
 | `AETHER_CLUSTER_SECRET` | none | Shared secret used to generate TLS certificates; fallback for `tls.cluster_secret` |
-| `AETHER_CLUSTER_SECRET_FILE` | none | Path to a file holding the cluster secret; preferred over the plain variable because the value is then in no argv or container environment. Both set to different values is refused at start (exit 65) |
-| `AETHER_API_KEYS_FILE` | none | Path to a file holding the accepted API keys in the `AETHER_API_KEYS` format; wins over the plain variable, and both set to different values is refused at start (exit 65). Every `${env:NAME}` reference in a node config accepts `NAME_FILE` the same way |
+| `AETHER_CLUSTER_SECRET_FILE` | none | Path to a file holding the cluster secret (trailing line breaks are stripped, nothing else); preferred over the plain variable because the value is then in no argv or container environment. Both set to different values is refused at start (exit 65) |
+| `AETHER_API_KEYS_FILE` | none | Path to a file holding the accepted API keys in the `AETHER_API_KEYS` format; wins over the plain variable, and both set to different values is refused at start (exit 65). Every `${env:NAME}` reference in a node config also accepts `NAME_FILE`; only the three file-delivered variables (`AETHER_CLUSTER_SECRET`, `AETHER_API_KEY`, `AETHER_API_KEYS`) are refused at start when their file is broken, any other name leaves the reference as its literal placeholder |
 
 There are no `TLS_ENABLED` / `TLS_CERT_PATH` / `TLS_KEY_PATH` environment variables — TLS is
 configured via the `[cluster] tls` and `[tls]` TOML keys (`auto_generate`, `cert_path`,

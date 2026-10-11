@@ -161,6 +161,29 @@ class DockerBootstrapSecretTest {
         assertThat(hostEnv.apply("PATH")).as("every other name is the process environment").isEqualTo(System.getenv("PATH"));
     }
 
+    /// #828 — the operator's own `AETHER_CLUSTER_SECRET_FILE` (the adoption path of this change) names THEIR file, not this cluster's.
+    /// Left visible, it conflicts with the CLI-minted secret and refuses every docker-source bootstrap. The ambient is stated here, not
+    /// inherited: set to a file holding a different secret, the provider must still resolve the CLI's secret and launch.
+    @Test
+    void anAmbientSecretFile_doesNotLeakIntoTheBootstrapProvider_andTheCliSecretStillWins() throws Exception {
+        var operatorFile = java.nio.file.Files.createTempFile("operator-secret-", ".txt");
+
+        try {
+            java.nio.file.Files.writeString(operatorFile, "the-operators-own-secret\n");
+            java.util.function.Function<String, String> ambient = name -> name.equals("AETHER_CLUSTER_SECRET_FILE") ? operatorFile.toString() : null;
+            var hostEnv = ProviderResolver.bootstrapHostEnv(MINTED, ambient::apply);
+
+            assertThat(hostEnv.apply("AETHER_CLUSTER_SECRET")).isEqualTo(MINTED);
+            assertThat(hostEnv.apply("AETHER_CLUSTER_SECRET_FILE")).as("the operator's file variable is not the node's").isNull();
+            assertThat(org.pragmatica.aether.environment.ClusterSecretSource.resolve(hostEnv::apply).unwrap().unwrap()).isEqualTo(MINTED);
+            assertThat(org.pragmatica.aether.environment.ClusterSecretSource.resolve(ambient::apply).unwrap().unwrap())
+                .as("control: unfiltered, the ambient file would have been a different secret").isEqualTo("the-operators-own-secret");
+            assertThat(hostEnv.apply("SOME_OTHER_NAME")).as("every other name is the ambient one").isNull();
+        } finally {
+            java.nio.file.Files.deleteIfExists(operatorFile);
+        }
+    }
+
     @Test
     void theSecretVariableName_isTheOneTheProviderForwards() {
         assertThat(ClusterIdentityEnv.IDENTITY_VARS).contains(ProviderResolver.CLUSTER_SECRET_VAR);
