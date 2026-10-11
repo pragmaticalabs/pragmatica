@@ -74,7 +74,7 @@ class OperatorWarningWiringTest {
     /// it over; the reconciler tests pass their own sink, so un-binding it here left them green.
     @Test
     void assembly_givesTheSinkToTheEntityOwnershipReconciler() {
-        assertThat(assemblyCode()).contains("EntityOwnershipReconciler.SETTLE_TICKS,EntityOwnershipReconciler.FIRST_MINT_CEILING_TICKS,operatorWarningSink);");
+        assertThat(assemblyCode()).contains("EntityOwnershipReconciler.SETTLE_TICKS,EntityOwnershipReconciler.FIRST_MINT_CEILING_TICKS,ENTITY_OWNERSHIP_RECONCILE_INTERVAL,System::nanoTime,operatorWarningSink);");
     }
 
     /// A certificate rotation the HTTP listeners refuse is an operator event; un-binding the sink here would leave the

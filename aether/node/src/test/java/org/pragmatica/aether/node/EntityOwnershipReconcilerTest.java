@@ -10,6 +10,7 @@ import java.util.Map;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.Executor;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
 import java.util.stream.IntStream;
@@ -35,6 +36,7 @@ import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Option;
 import org.pragmatica.hlc.HlcClock;
+import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.serialization.Deserializer;
@@ -357,6 +359,8 @@ class EntityOwnershipReconcilerTest {
                                                                                  Runnable::run,
                                                                                  0,
                                                                                  EntityOwnershipReconciler.FIRST_MINT_CEILING_TICKS,
+                                                                                 TimeSpan.timeSpan(5).seconds(),
+                                                                                 System::nanoTime,
                                                                                  OperatorWarningSink.logOnly());
 
             reconciler.declare(KEYSPACE, PARTITIONS);
@@ -733,26 +737,27 @@ class EntityOwnershipReconcilerTest {
             assertThat(cluster.owners()).allSatisfy(owner -> assertThat(owner).isNotEqualTo(retracted));
         }
 
-        /// A1. A set that never settles must not starve the first mint: exactly one mint at pass M, one operator warning
-        /// naming the keyspace and the ceiling, and no owner moves after it. A non-committing applier re-asks every pass,
-        /// which is what pins the once-per-run announcement.
+        /// A1. A set that never settles must not starve the first mint: exactly one mint once M tick intervals of TIME
+        /// have passed, one operator warning naming the keyspace and the ceiling, and no owner moves after it. The first
+        /// pass is at t=0, so the ceiling pass is the (M+1)th. N3 is absent on it, so its later flaps are not failovers.
         @Test
         void firstMint_atTheCeiling_whenTheSetNeverSettles_mintsOnceAndWarns() {
             var cluster = new Cluster(K, M);
 
             cluster.register(N1);
             cluster.register(N2);
+            cluster.register(N3);
 
-            IntStream.range(1, M)
-                     .forEach(pass -> assertThat(flap(cluster, pass)).as("pass %d is under the ceiling", pass).isZero());
+            IntStream.rangeClosed(1, M)
+                     .forEach(pass -> assertThat(flap(cluster)).as("pass %d is under the ceiling", pass).isZero());
 
             assertThat(cluster.drainedWarnings()).as("no warning under the ceiling").isEmpty();
-            assertThat(flap(cluster, M)).as("pass %d is the ceiling: every arc is minted, once", M).isEqualTo(PARTITIONS);
+            assertThat(flap(cluster)).as("pass %d is at M intervals: every arc is minted, once", M + 1).isEqualTo(PARTITIONS);
 
             var owners = cluster.owners();
 
-            IntStream.rangeClosed(M + 1, 2 * M)
-                     .forEach(pass -> assertThat(flap(cluster, pass)).as("after the ceiling mint nothing moves").isZero());
+            IntStream.rangeClosed(1, M)
+                     .forEach(_ -> assertThat(flap(cluster)).as("after the ceiling mint nothing moves").isZero());
 
             assertThat(cluster.owners()).isEqualTo(owners);
             assertThat(cluster.maxTerm()).isEqualTo(1L);
@@ -760,11 +765,17 @@ class EntityOwnershipReconcilerTest {
             var warnings = cluster.drainedWarnings();
 
             assertThat(warnings).as("exactly one warning for the run").hasSize(1);
-            assertThat(warnings.getFirst().code()).isEqualTo(OperatorWarningCode.ENTITY_OWNERSHIP_UNSETTLED_MINT);
-            assertThat(warnings.getFirst().subject()).isEqualTo(KEYSPACE);
-            assertThat(warnings.getFirst().message()).contains("ceiling " + M);
-            assertThat(warnings.getFirst().message()).as("passes 2..%d each changed the set", M)
-                                                     .contains((M - 1) + " change(s) seen in " + M + " reconcile passes");
+
+            var warning = warnings.getFirst();
+
+            assertThat(warning.code()).isEqualTo(OperatorWarningCode.ENTITY_OWNERSHIP_UNSETTLED_MINT);
+            assertThat(warning.code().code()).as("the operator-facing string is a contract").isEqualTo("entity-ownership-unsettled-mint");
+            assertThat(warning.code().level()).isEqualTo(org.pragmatica.utility.warning.WarningLevel.WARNING);
+            assertThat(warning.code().subsystem()).isEqualTo("entity-ownership");
+            assertThat(warning.subject()).isEqualTo(KEYSPACE);
+            assertThat(warning.message()).contains("ceiling " + M * TICK_MILLIS + " ms");
+            assertThat(warning.message()).as("the set changed on each of the %d passes after the first", M)
+                                         .contains(M + " change(s) seen in " + M * TICK_MILLIS + " ms");
         }
 
         /// The announcement is once per unsettled run even when the mint is re-asked: the applier here commits nothing,
@@ -775,13 +786,111 @@ class EntityOwnershipReconcilerTest {
 
             cluster.register(N1);
             cluster.register(N2);
-            IntStream.range(1, M)
-                     .forEach(pass -> flap(cluster, pass));
+            cluster.register(N3);
+            IntStream.rangeClosed(1, M)
+                     .forEach(_ -> flap(cluster));
 
-            assertThat(flap(cluster, M)).isEqualTo(PARTITIONS);
-            assertThat(flap(cluster, M + 1)).as("the lost apply is re-asked").isEqualTo(PARTITIONS);
-            assertThat(flap(cluster, M + 2)).isEqualTo(PARTITIONS);
+            assertThat(flap(cluster)).isEqualTo(PARTITIONS);
+            assertThat(flap(cluster)).as("the lost apply is re-asked").isEqualTo(PARTITIONS);
+            assertThat(flap(cluster)).isEqualTo(PARTITIONS);
             assertThat(cluster.drainedWarnings()).as("one announcement for the whole run").hasSize(1);
+        }
+
+        /// The ceiling is measured from the START of the unsettled run, not from the latest change: a set that changes only
+        /// on every second pass (stable for one interval in between, never for two) still reaches it at M intervals.
+        @Test
+        void firstMint_atTheCeiling_whenTheSetChangesOnlyEverySecondPass() {
+            var cluster = new Cluster(K, M);
+
+            cluster.register(N1);
+            cluster.register(N2);
+            cluster.register(N3);
+            IntStream.rangeClosed(1, M)
+                     .forEach(pass -> assertThat(flapEverySecondPass(cluster, pass)).as("pass %d", pass).isZero());
+
+            assertThat(flapEverySecondPass(cluster, M + 1)).as("M intervals after the first sight").isEqualTo(PARTITIONS);
+        }
+
+        /// Pin on the first sight: a set that never changes is settled after exactly K intervals, i.e. mints on the
+        /// (K+1)th pass — not the Kth.
+        @Test
+        void firstSight_ofAnUnchangedSet_mintsOnExactlyTheKPlusFirstPass() {
+            var cluster = new Cluster(K, M);
+
+            cluster.register(N1);
+            cluster.register(N2);
+            cluster.register(N3);
+
+            assertThat(cluster.tick()).as("pass 1, t=0").isZero();
+            assertThat(cluster.tick()).as("pass 2, one interval: short of K=%d", K).isZero();
+            assertThat(cluster.tick()).as("pass 3, K intervals").isEqualTo(PARTITIONS);
+        }
+
+        /// The blocker of round 1. A kick (retract, committed registration removal) is a reconcile pass that takes no
+        /// time. Counting it as a tick let three back-to-back kicks settle a set that had been quiet for milliseconds and
+        /// mint it. Here a host registers and ten kicks follow within 10 ms: nothing may be minted, and the set settles
+        /// only after K intervals of TIME have passed since the change. Mutation: count passes again and this goes red.
+        @Test
+        void kicks_afterARegistration_doNotSettleTheSet() {
+            var cluster = new Cluster(K, M);
+
+            cluster.register(N1);
+            cluster.register(N2);
+
+            assertThat(cluster.tick()).as("first sight of {N1,N2}").isZero();
+
+            cluster.register(N3);
+
+            IntStream.rangeClosed(1, 10)
+                     .forEach(kick -> assertThat(cluster.kick(1)).as("kick %d, a millisecond after the last", kick).isZero());
+
+            assertThat(cluster.tick()).as("a periodic pass 10 ms after the change").isZero();
+            assertThat(cluster.tick()).as("one interval after the change").isZero();
+            assertThat(cluster.tick()).as("K intervals after the change: settled, minted once").isEqualTo(PARTITIONS);
+        }
+
+        /// Kicks are how failover is reached early, and they keep working while the set is unsettled: a kick right after a
+        /// host registers and an owner leaves re-places the departed owner's arcs at once.
+        @Test
+        void kicks_stillReachFailoverAtOnce() {
+            var cluster = settledOn(N1, N2, N3);
+            var before = cluster.owners();
+            var departed = before.get(0);
+
+            cluster.register(N4);
+            cluster.members.set(without(MEMBERS, departed));
+
+            assertThat(cluster.kick(1)).isEqualTo((int) before.stream().filter(departed::equals).count());
+        }
+
+        /// A dropped keyspace forgets its settle state and its announcement: re-registered later, it gets its own run, its
+        /// own ceiling and its own warning.
+        @Test
+        void ceiling_rearmsAfterTheKeyspaceIsDropped() {
+            var cluster = new Cluster(K, M, false);
+
+            cluster.register(N1);
+            cluster.register(N2);
+            cluster.register(N3);
+            IntStream.rangeClosed(1, M + 1)
+                     .forEach(_ -> flap(cluster));
+
+            assertThat(cluster.drainedWarnings()).as("first run announced").hasSize(1);
+
+            cluster.unregister(N1);
+            cluster.unregister(N2);
+            cluster.unregister(N3);
+            cluster.tick();
+            cluster.register(N1);
+            cluster.register(N2);
+            cluster.register(N3);
+            cluster.resetFlap(true);
+
+            IntStream.rangeClosed(1, M)
+                     .forEach(pass -> assertThat(flap(cluster)).as("second run, pass %d: under its own ceiling", pass).isZero());
+
+            assertThat(flap(cluster)).as("second run reaches its own ceiling").isEqualTo(PARTITIONS);
+            assertThat(cluster.drainedWarnings()).as("second run announced again").hasSize(2);
         }
 
         /// A host that comes back as a member is a change of the hosting set (hosts that are also LIVE members): its
@@ -818,7 +927,7 @@ class EntityOwnershipReconcilerTest {
             assertThat(cluster.tick()).as("quiet again: the %d new arcs are minted", PARTITIONS).isEqualTo(PARTITIONS);
         }
 
-        /// The ceiling is per unsettled RUN: once the set settles the pass count and the announcement re-arm, so a later
+        /// The ceiling is per unsettled RUN: once the set settles the clock and the announcement re-arm, so a later
         /// run gets its own full ceiling and its own warning. The non-committing applier keeps arcs unminted across runs.
         @Test
         void ceiling_rearmsAfterTheSetSettles() {
@@ -826,31 +935,37 @@ class EntityOwnershipReconcilerTest {
 
             cluster.register(N1);
             cluster.register(N2);
-            IntStream.rangeClosed(1, M)
-                     .forEach(pass -> flap(cluster, pass));
+            cluster.register(N3);
+            IntStream.rangeClosed(1, M + 1)
+                     .forEach(_ -> flap(cluster));
 
             assertThat(cluster.drainedWarnings()).as("first run announced").hasSize(1);
 
             IntStream.rangeClosed(1, K + 1)
                      .forEach(_ -> cluster.tick());
 
-            IntStream.rangeClosed(1, M - 1)
-                     .forEach(pass -> assertThat(flap(cluster, pass)).as("second run, pass %d: under its own ceiling", pass).isZero());
+            IntStream.rangeClosed(1, M)
+                     .forEach(pass -> assertThat(flap(cluster)).as("second run, pass %d: under its own ceiling", pass).isZero());
 
-            assertThat(flap(cluster, M)).as("second run reaches its own ceiling").isEqualTo(PARTITIONS);
+            assertThat(flap(cluster)).as("second run reaches its own ceiling").isEqualTo(PARTITIONS);
             assertThat(cluster.drainedWarnings()).as("second run announced again").hasSize(2);
         }
 
-        /// One pass of a hosting set that never settles: N3's registration alternates every pass, absent on even passes —
-        /// so at the ceiling pass N3 is not a host and owns nothing, and its later flaps are not failovers.
-        private static int flap(Cluster cluster, int pass) {
-            if (pass % 2 == 0) {
-                cluster.unregister(N3);
-            } else {
-                cluster.register(N3);
-            }
+        private static final long TICK_MILLIS = 5_000L;
 
-            return cluster.tick();
+        /// One pass of a hosting set that never settles: N3's registration toggles on every call (the cluster starts with N3
+        /// registered, so the first call removes it). With the first pass at t=0 and the ceiling at M intervals, the
+        /// (M+1)th call lands on the ceiling with N3 absent (M is even), so N3 owns nothing and its later flaps are not
+        /// failovers.
+        private static int flap(Cluster cluster) {
+            return cluster.flap();
+        }
+
+        /// Changes the set on every second pass only.
+        private static int flapEverySecondPass(Cluster cluster, int pass) {
+            return pass % 2 == 0
+                   ? cluster.flap()
+                   : cluster.tick();
         }
 
         private static Cluster settledOn(NodeId... hosts) {
@@ -883,6 +998,8 @@ class EntityOwnershipReconcilerTest {
         private final List<OperatorWarning> warnings = new CopyOnWriteArrayList<>();
         private final OperatorWarningSink sink = OperatorWarningSink.handingOffTo(warnings::add);
         private final List<KVCommand<AetherKey>> applied = new ArrayList<>();
+        private final AtomicLong nanos = new AtomicLong();
+        private boolean flapperRegistered = true;
         private final EntityOwnershipReconciler reconciler;
 
         Cluster(int settleTicks, int ceilingTicks) {
@@ -899,6 +1016,8 @@ class EntityOwnershipReconcilerTest {
                                                                                   Runnable::run,
                                                                                   settleTicks,
                                                                                   ceilingTicks,
+                                                                                  TimeSpan.timeSpan(5).seconds(),
+                                                                                  nanos::get,
                                                                                   sink);
         }
 
@@ -933,13 +1052,41 @@ class EntityOwnershipReconcilerTest {
             store.process(store.createBatch(List.<KVCommand<AetherKey>>of(new KVCommand.Remove<>(registrationKey(KEYSPACE, node)))));
         }
 
-        /// One pass; the number of ownership Puts it handed to the applier.
+        /// One PERIODIC pass: reconcile, then one 5 s tick interval of time passes. Returns the number of ownership Puts
+        /// it handed to the applier.
         int tick() {
+            return passThenAdvance(TimeSpan.timeSpan(5).seconds().nanos());
+        }
+
+        /// One event-triggered pass (a kick): reconcile, then `millis` of time passes. A kick takes no tick interval.
+        int kick(long millis) {
+            return passThenAdvance(millis * 1_000_000L);
+        }
+
+        private int passThenAdvance(long advanceNanos) {
             var before = applied.size();
 
             reconciler.tick();
+            nanos.addAndGet(advanceNanos);
 
             return applied.size() - before;
+        }
+
+        /// Toggle N3's registration (a change of the hosting set), then one periodic pass.
+        int flap() {
+            if (flapperRegistered) {
+                unregister(N3);
+            } else {
+                register(N3);
+            }
+
+            flapperRegistered = !flapperRegistered;
+
+            return tick();
+        }
+
+        void resetFlap(boolean registered) {
+            flapperRegistered = registered;
         }
 
         /// The committed owner of every arc, by partition; an absent record fails loudly.
