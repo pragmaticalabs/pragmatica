@@ -209,6 +209,26 @@ class ClusterTopologyManagerDockerImageTest {
         assertThat(ctm.sourceOfSourcelessNode(NodeRole.CORE).map(SourceName::value).or("<refused>")).isEqualTo("default");
     }
 
+    /// No committed config row at all: nothing to derive from, so "default" (ruled), unlike a row that exists and does not parse.
+    @Test
+    void sourceOfSourcelessNode_noConfigRowAtAll_isDefault() {
+        assertThat(ctm.sourceOfSourcelessNode(NodeRole.CORE).map(SourceName::value).or("<refused>")).isEqualTo("default");
+    }
+
+    /// A committed config that does not parse is refused with a named cause, never read as "no config": "default" would be committed into
+    /// the record for good.
+    @Test
+    void sourceOfSourcelessNode_unparseableCommittedConfig_isRefusedNamingIt_notDefault() {
+        clusterStore.seedToml("[source.dock\ntype = ");
+        var result = ctm.sourceOfSourcelessNode(NodeRole.CORE);
+
+        assertThat(result.isFailure()).as(String.valueOf(result)).isTrue();
+        result.onFailure(cause -> {
+            assertThat(cause).isInstanceOf(ReplacementConfigUnparseable.class);
+            assertThat(cause.message()).contains("does not parse").doesNotContain("\"default\"");
+        });
+    }
+
     private static void assertRefusedUnresolved(org.pragmatica.lang.Result<SourceName> result, String mention) {
         assertThat(result.isFailure()).as(String.valueOf(result)).isTrue();
         result.onFailure(cause -> {

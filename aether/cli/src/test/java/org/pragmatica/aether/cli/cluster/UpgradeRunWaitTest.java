@@ -6,9 +6,11 @@ package org.pragmatica.aether.cli.cluster;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 import org.pragmatica.aether.cli.ExitCode;
 import org.pragmatica.lang.Result;
 
@@ -16,6 +18,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /// #1543 F — `aether cluster upgrade --wait`: what ends the wait, and what does not. A transient poll failure (a leader change while
 /// the run replaces the node you are talking to) never ends it; a paused run does, because it will not move without an operator.
+@Timeout(value = 30, unit = TimeUnit.SECONDS, threadMode = Timeout.ThreadMode.SEPARATE_THREAD)
 class UpgradeRunWaitTest {
     private static String status(String state, int index, String inFlight, String reason) {
         return "{\"present\":true,\"targetVersion\":\"2.0.0\",\"state\":\"" + state + "\",\"stop\":\"NONE\",\"index\":" + index + ",\"total\":3,\"inFlight\":\"" + inFlight

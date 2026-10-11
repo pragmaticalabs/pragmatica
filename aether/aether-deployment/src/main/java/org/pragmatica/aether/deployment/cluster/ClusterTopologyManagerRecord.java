@@ -1151,12 +1151,15 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     /// no labels), resolved once by the replacement reconciler and committed into the record. Derived only when exactly ONE source, of any
     /// type, declares the role: there is no preference between types, because replacing a docker node must never provision a cloud VM.
     /// Zero or several declaring sources are a typed refusal naming the role and the candidates, never the source "default". Without any
-    /// committed config (the bootstrap seed, forge) there is nothing to derive from and the answer is "default", as before.
+    /// committed source configuration (no config row, or the bootstrap seed, which declares no source) there is nothing to derive from and
+    /// the answer is "default", as before. A committed configuration that does not parse is a typed [ReplacementConfigUnparseable]: it is
+    /// never read as "no config", because the "default" answered here is committed into the record for good.
     @Override
     public Result<SourceName> sourceOfSourcelessNode(NodeRole intendedRole) {
-        return committedToml().flatMap(ClusterTopologyManagerRecord::parseConfig)
-                            .fold(() -> Result.success(ProvisionContext.DEFAULT_SOURCE_NAME),
-                                  config -> soleSourceDeclaring(config, intendedRole).map(SourceProfile::name));
+        return committedToml().fold(() -> Result.success(ProvisionContext.DEFAULT_SOURCE_NAME),
+                                     toml -> ClusterBootstrapConfigParser.parse(toml)
+                                                                         .fold(cause -> new ReplacementConfigUnparseable(cause.message()).<SourceName> result(),
+                                                                               config -> soleSourceDeclaring(config, intendedRole).map(SourceProfile::name)));
     }
 
     private static Result<SourceProfile> soleSourceDeclaring(ClusterBootstrapConfig config, NodeRole role) {

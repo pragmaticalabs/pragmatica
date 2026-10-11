@@ -72,7 +72,7 @@ class ClusterUpgradeCommand implements Callable<Integer> {
         return ClusterHttpClient.fetch(CLUSTER_CONFIG_GET).flatMap(MAPPER::readTree);
     }
 
-    private Result<String> initiateUpgrade(JsonNode config) {
+    Result<String> initiateUpgrade(JsonNode config) {
         var currentVersion = config.path("version").asText("unknown");
 
         if (targetVersion.equals(currentVersion) && !runIsOwed()) {

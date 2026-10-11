@@ -5,6 +5,7 @@ package org.pragmatica.aether.cli.cluster;
 
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import com.sun.net.httpserver.HttpExchange;
@@ -13,12 +14,14 @@ import com.sun.net.httpserver.HttpServer;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 /// #1543 F2: the REAL `--wait` wiring (endpoint in force -> status and topology fetches -> failover) against a management server whose
 /// two names stand for two nodes: `127.0.0.1` is the node the CLI was pointed at and which is replaced after the first answer,
 /// `localhost` is a live member the topology lists. The same port on both is what a cluster's uniform management port looks like.
+@Timeout(value = 30, unit = TimeUnit.SECONDS, threadMode = Timeout.ThreadMode.SEPARATE_THREAD)
 class ClusterUpgradeWaitFailoverTest {
     private static final String RUNNING = "{\"present\":true,\"state\":\"RUNNING\",\"targetVersion\":\"2\"}";
     private static final String COMPLETED = "{\"present\":true,\"state\":\"COMPLETED\",\"targetVersion\":\"2\"}";
