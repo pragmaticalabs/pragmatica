@@ -149,7 +149,7 @@ public interface ObservabilityRegistry {
         /// #674: the consensus-load counters, served from the same supplier-map shape — and the same
         /// key vocabulary (`RabiaMetrics.counterMap()`) — as the HTTP consensus block, so Prometheus
         /// and the management API can never disagree about a counter's name or meaning. All are
-        /// monotonic totals except `consensus_pending_batches`, a level.
+        /// monotonic totals except `consensus_pending_batches` and `consensus_oldest_pending_batch_age_ms`, which are levels.
         @Override
         @SuppressWarnings("JBCT-PAT-01")
         public Result<Unit> registerConsensusMetrics(Supplier<java.util.Map<String, Number>> metricsSupplier) {
@@ -162,6 +162,12 @@ public interface ObservabilityRegistry {
             registerTransportGauge("consensus_sync_failure_total", "Rabia sync rounds failed", metricsSupplier);
             registerTransportGauge("consensus_pending_batches",
                                    "Rabia batches awaiting decision (level)",
+                                   metricsSupplier);
+            registerTransportGauge("consensus_oldest_pending_batch_age_ms",
+                                   "#1117: age of the oldest Rabia batch still awaiting a decision, 0 when none (level)",
+                                   metricsSupplier);
+            registerTransportGauge("consensus_apply_timeouts_total",
+                                   "#1117: Rabia applies never answered within the apply timeout",
                                    metricsSupplier);
 
             return unitResult();

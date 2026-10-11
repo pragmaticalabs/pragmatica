@@ -1919,6 +1919,11 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
         }
 
         private boolean hasActiveInstance(Artifact artifact) {
+            return activeInstanceCount(artifact) > 0;
+        }
+
+        /// ACTIVE instances of `artifact` on placement nodes, from the leader's `sliceStates` mirror (#1117).
+        private long activeInstanceCount(Artifact artifact) {
             var liveNodes = placementNodes();
 
             return sliceStates.entrySet()
@@ -1927,7 +1932,28 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                                                     .artifact()
                                                     .equals(artifact))
                               .filter(entry -> liveNodes.contains(entry.getKey().nodeId()))
-                              .anyMatch(entry -> entry.getValue() == SliceState.ACTIVE);
+                              .filter(entry -> entry.getValue() == SliceState.ACTIVE)
+                              .count();
+        }
+
+        /// #1117: what the "deployed" verdict asserts, and what it does not. It fires on the FIRST ACTIVE instance of
+        /// each slice, at the leader's last apply; it says nothing about the other instances or about any node's
+        /// local state, so the line carries "n of m instances ACTIVE" per slice instead of claiming "all active".
+        String deployedVerdict(BlueprintId blueprintId, Set<Artifact> slices) {
+            return "Blueprint " + blueprintId.asString()
+                 + " deployed: each of its " + slices.size()
+                 + " slices has at least one ACTIVE instance [" + instanceCoverage(slices)
+                 + "]; other instances may still be activating";
+        }
+
+        private String instanceCoverage(Set<Artifact> slices) {
+            return slices.stream()
+                         .map(artifact -> artifact.asString()
+                                         + ": " + activeInstanceCount(artifact)
+                                         + " of " + desiredReplicaCount(artifact)
+                                         + " instances ACTIVE")
+                         .sorted()
+                         .collect(Collectors.joining("; "));
         }
 
         private void handleSliceFailure(SliceNodeKey sliceKey, SliceNodeValue sliceNodeValue) {
@@ -3164,9 +3190,7 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
                 if (inflight.pendingSlices().remove(artifact)) {
                     inflight.activeSlices().add(artifact);
                     if (inflight.pendingSlices().isEmpty()) {
-                        log.info("Blueprint {} fully deployed — all {} slices active",
-                                 entry.getKey().asString(),
-                                 inflight.activeSlices().size());
+                        log.info(deployedVerdict(entry.getKey(), inflight.activeSlices()));
                         inFlightBlueprints.remove(entry.getKey());
                         recordSucceededOutcome(entry.getKey(), inflight.attemptId());
                     }

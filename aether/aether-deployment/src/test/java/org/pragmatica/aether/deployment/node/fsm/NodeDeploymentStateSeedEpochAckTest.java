@@ -269,6 +269,12 @@ class NodeDeploymentStateSeedEpochAckTest {
         void remediateStuckActivating_registeredForInvocation_forcesActive() {
             harness.dispatch(new QuorumEstablished());
             var key = sliceKey(SELF, ARTIFACT);
+            // #1117: the re-drive needs the node's own COMMITTED entry to still be inside the activation chain, and a
+            // committed target naming this version; with no entry the slice is handled as removed (see
+            // NodeDeploymentStateStuckReconcileTest).
+            seedNodeArtifact(SELF, ARTIFACT, SliceState.ACTIVATING);
+            applyToKvStore(new KVCommand.Put<>(AetherKey.SliceTargetKey.sliceTargetKey(ARTIFACT.base()),
+                                               AetherValue.SliceTargetValue.sliceTargetValue(ARTIFACT.version(), 1)));
             seedDeploymentState(key, SliceState.ACTIVATING);
             SERVING_ARTIFACTS.add(ARTIFACT);
             APPLIED_COMMANDS.clear();

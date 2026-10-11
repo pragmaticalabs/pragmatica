@@ -86,6 +86,7 @@ class NodeDeploymentStateEndpointsBeforeActiveTest {
     private static final Artifact ARTIFACT = Artifact.artifact("org.example:slice-a:1.0.0").unwrap();
     private static final MethodName EXECUTE = MethodName.methodName("execute").unwrap();
 
+    private KVStore<AetherKey, AetherValue> kvStore;
     private RecordingClusterNode cluster;
     private OneMethodSliceStore store;
     /// Artifacts the stub `InvocationHandler` reports as registered for invocation — the gate
@@ -96,7 +97,7 @@ class NodeDeploymentStateEndpointsBeforeActiveTest {
     @BeforeEach
     void setUp() {
         var router = MessageRouter.mutable();
-        var kvStore = new KVStore<AetherKey, AetherValue>(router, stubSerializer(), stubDeserializer());
+        kvStore = new KVStore<AetherKey, AetherValue>(router, stubSerializer(), stubDeserializer());
         var ctxHolder = new AtomicReference<NodeDeploymentContext>();
 
         // #1068: a slice start is gated on a committed SliceTarget naming this version.
@@ -138,6 +139,9 @@ class NodeDeploymentStateEndpointsBeforeActiveTest {
         store.loadSlice(ARTIFACT);
         serving.add(ARTIFACT);
         var key = SliceNodeKey.sliceNodeKey(ARTIFACT, SELF);
+        // #1117: the timer re-drives only while this node's COMMITTED entry is still inside the activation chain.
+        kvStore.process(kvStore.createBatch(List.of(new KVCommand.Put<>(NodeArtifactKey.nodeArtifactKey(SELF, ARTIFACT),
+                                                                      NodeArtifactValue.nodeArtifactValue(SliceState.ACTIVATING)))));
         seedDeploymentState(key, SliceState.ACTIVATING);
 
         activeState().remediateStuckActivating(key);
