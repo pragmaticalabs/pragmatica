@@ -104,13 +104,13 @@ class CoreCandidateRetirementTest {
     @Test void failedVoters_areOnlyThoseWithPositiveEvidence() {
         var members = java.util.Map.of(A, "Member", B, "Member", C, "Dead", DEAD, "Departing");
 
-        assertThat(AetherNode.failedVoters(Set.of(B), members)).containsExactlyInAnyOrder(B, C, DEAD);
-        assertThat(AetherNode.failedVoters(Set.of(), java.util.Map.of(A, "Member", B, "Member"))).isEmpty();
+        assertThat(FailedVoterEvidence.failedVoters(Set.of(B), members)).containsExactlyInAnyOrder(B, C, DEAD);
+        assertThat(FailedVoterEvidence.failedVoters(Set.of(), java.util.Map.of(A, "Member", B, "Member"))).isEmpty();
     }
 
     @Test void observedNotReady_excludesReady_andIsEmptyForNoObservation() {
-        assertThat(AetherNode.observedNotReady(java.util.Map.of(A, org.pragmatica.aether.metrics.NodeReportedState.READY,
+        assertThat(FailedVoterEvidence.observedNotReady(java.util.Map.of(A, org.pragmatica.aether.metrics.NodeReportedState.READY,
                                                                B, org.pragmatica.aether.metrics.NodeReportedState.SYNCING))).containsExactly(B);
-        assertThat(AetherNode.observedNotReady(java.util.Map.of())).isEmpty();
+        assertThat(FailedVoterEvidence.observedNotReady(java.util.Map.of())).isEmpty();
     }
 }
