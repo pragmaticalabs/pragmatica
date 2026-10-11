@@ -79,6 +79,37 @@ class ReadCommittedStreamTest {
             assertThat(readServing(manager)).containsExactly("e0");
             assertThat(manager.visibleBounds(STREAM, PARTITION).map(VisibleBounds::visibleHead).or(-2L)).isEqualTo(first);
         }
+
+        /// The metadata a consumer or an operator reads about a partition is the committed span too: head, count and the stream total.
+        @Test
+        void partitionInfo_allPartitionInfo_andStreamInfo_reportTheCommittedSpan() {
+            var registry = registryWithPeers();
+            var replication = replicationManager(SELF, registry);
+
+            manager = streamPartitionManager(Long.MAX_VALUE, EvictionListener.NOOP, replication);
+            createStream(manager, 3, 3);
+            var first = publish(manager, "e0");
+            publish(manager, "e1");
+
+            assertThat(manager.appendedHead(STREAM, PARTITION)).as("control: both records are appended").isEqualTo(1L);
+            assertCommitted(-1L, 0L);
+
+            replication.handleAck(replicateAck(PEER, STREAM, PARTITION, first));
+            replication.handleAck(replicateAck(PEER2, STREAM, PARTITION, first));
+
+            assertCommitted(first, 1L);
+        }
+
+        private void assertCommitted(long head, long count) {
+            var one = manager.partitionInfo(STREAM, PARTITION).unwrap();
+            var all = manager.allPartitionInfo(STREAM).unwrap().getFirst();
+
+            assertThat(one.headOffset()).as("partitionInfo head").isEqualTo(head);
+            assertThat(one.eventCount()).as("partitionInfo count").isEqualTo(count);
+            assertThat(all.headOffset()).as("allPartitionInfo head").isEqualTo(head);
+            assertThat(all.eventCount()).as("allPartitionInfo count").isEqualTo(count);
+            assertThat(manager.streamInfo(STREAM).unwrap().totalEvents()).as("streamInfo total").isEqualTo(count);
+        }
     }
 
     /// A replica holds records the owner has not seen acknowledged; it serves only what the owner reported visible.
@@ -162,6 +193,23 @@ class ReadCommittedStreamTest {
             assertThat(readLocal(manager)).as("r1 was already reported visible under this epoch").containsExactly("r0", "r1");
         }
 
+        /// A batch of a newer owner epoch has landed: a position still in flight from the deposed owner (older epoch) must be
+        /// refused, or it would expose the records the new owner has not yet acknowledged.
+        @Test
+        void staleEpochReport_afterANewerEpochBatchLanded_isRefused() {
+            manager = replicaWithRecords(2);
+            manager.commitAdvanced(STREAM, PARTITION, 1L, EPOCH_1);
+
+            manager.appendRecovered(STREAM, PARTITION, 2L, "n2".getBytes(UTF_8), 3L, EPOCH_2).onFailure(cause -> fail(cause.message()));
+            manager.commitAdvanced(STREAM, PARTITION, 2L, EPOCH_1);
+
+            assertThat(readLocal(manager)).as("the deposed owner's report must not expose the new owner's record").containsExactly("r0", "r1");
+
+            manager.commitAdvanced(STREAM, PARTITION, 2L, EPOCH_2);
+
+            assertThat(readLocal(manager)).containsExactly("r0", "r1", "n2");
+        }
+
         /// A node that is the owner takes no position from anyone: it is the authority.
         @Test
         void ownerIgnoresAReportedPosition() {
@@ -189,6 +237,7 @@ class ReadCommittedStreamTest {
             var replication = replicationManager(SELF, registry, (target, message) -> record(sent, senders, target, message));
 
             manager = streamPartitionManager(Long.MAX_VALUE, EvictionListener.NOOP, replication);
+            manager.ownerEpochSource((_, _) -> EPOCH_2);
             createStream(manager, 3, 3);
             var offset = publish(manager, "e0");
 
@@ -196,6 +245,8 @@ class ReadCommittedStreamTest {
             replication.handleAck(replicateAck(PEER2, STREAM, PARTITION, offset));
             awaitAnnounced(sent, offset);
 
+            assertThat(sent).as("each announcement carries the owner's committed epoch")
+                            .allSatisfy(message -> assertThat(message.ownerEpoch()).isEqualTo(EPOCH_2));
             assertThat(sent).as("only the acknowledged position is ever announced")
                             .allSatisfy(message -> assertThat(message.committedThrough()).isEqualTo(offset));
             assertThat(senders).as("announced from the ring's notifier, never from a publisher or an ack handler")

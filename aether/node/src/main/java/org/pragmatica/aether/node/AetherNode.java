@@ -5832,10 +5832,7 @@ public interface AetherNode extends ManageableNode {
         // NOTE: this is `headOffset` (highest), NOT `tailOffset` (earliest retained) — using the tail
         // understated self's position, breaking both the cold-start contest symmetry and the owner-source
         // contiguous fromOffset.
-        SelfWatermark streamSelfWatermark = (streamName, partition) -> streamPartitionManager.partitionInfo(streamName,
-                                                                                                            partition)
-                                                                                             .map(StreamPartitionManager.PartitionInfo::headOffset)
-                                                                                             .or(-1L);
+        SelfWatermark streamSelfWatermark = streamPartitionManager::appendedHead;
         // #491 F4: the committed StreamPartitionOwnershipValue.owner source, hoisted here so the backfill
         // orchestrator can gate HRW self-election on it (a diverged/empty-ring node must not self-promote
         // while a DIFFERENT node is the committed owner). Reused by the #265 owner-release guard below.

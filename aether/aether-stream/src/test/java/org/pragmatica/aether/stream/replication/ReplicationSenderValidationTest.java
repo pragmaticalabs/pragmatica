@@ -132,11 +132,16 @@ class ReplicationSenderValidationTest {
     @Test
     void onCommitAdvance_reachesTheSink_whenSenderIsTheCommittedOwner() {
         var told = new ArrayList<Long>();
+        var epochs = new ArrayList<Epoch>();
         var handler = handler(0L, committedTo(OWNER));
 
-        handler.commitSink((_, _, through, _) -> told.add(through));
+        handler.commitSink((_, _, through, epoch) -> {
+            told.add(through);
+            epochs.add(epoch);
+        });
         handler.onCommitAdvance(ReplicationMessage.CommitAdvance.commitAdvance(OWNER, STREAM, PARTITION, 7L, COMMITTED_EPOCH));
 
         assertThat(told).containsExactly(7L);
+        assertThat(epochs).as("the epoch the owner sent reaches the replica's recorded position").containsExactly(COMMITTED_EPOCH);
     }
 }

@@ -141,7 +141,7 @@ class StreamReplicationActivationTest {
         while (commitAdvanceCount.get() == 0 && System.nanoTime() < deadline) {
             Thread.onSpinWait();
         }
-        assertThat(commitAdvanceCount.get()).isGreaterThanOrEqualTo(1);
+        assertThat(commitAdvanceCount.get()).as("one visible advance, one announcement").isEqualTo(1);
         assertThat(replicateSendCount.get()).as("announcing a position is not a second replication of the event").isEqualTo(1);
         // The replica acked the highest applied offset back to the owner.
         assertThat(acksToOwner).hasSize(1);
@@ -149,6 +149,41 @@ class StreamReplicationActivationTest {
         var ack = (ReplicationMessage.ReplicateAck) acksToOwner.getFirst();
         assertThat(ack.replicaId()).isEqualTo(REPLICA);
         assertThat(ack.confirmedOffset()).isEqualTo(0L);
+    }
+
+    /// #2087: `StreamAccess.metadata()` is a consumer-facing bound. With a confirmation factor of 2 and the replica's acknowledgement
+    /// never delivered back, the published record is appended but not acknowledged: the head and the count must not show it.
+    @Test
+    void metadata_reportsTheCommittedSpan_notTheAppendedHead() {
+        var gated = "gated";
+
+        ownerRegistry.registerReplica(gated, PARTITION, REPLICA);
+        ownerManager.createStream(StreamConfig.streamConfig(gated).withReplication(new org.pragmatica.aether.slice.ReplicationFactors(3, 2)));
+        Option<Function<Integer, Option<NodeId>>> noHrwResolver = Option.none();
+        var access = PartitionedStreamAccess.streamAccess(ownerManager,
+                                                          BytePassthrough.SER,
+                                                          BytePassthrough.DESER,
+                                                          gated,
+                                                          1,
+                                                          Option.none(),
+                                                          Option.none(),
+                                                          OWNER,
+                                                          resolver(OWNER),
+                                                          noHrwResolver);
+
+        access.publish("held".getBytes());
+
+        var deadline = System.nanoTime() + 5_000_000_000L;
+
+        while (ownerManager.appendedHead(gated, PARTITION) < 0 && System.nanoTime() < deadline) {
+            Thread.onSpinWait();
+        }
+        assertThat(ownerManager.appendedHead(gated, PARTITION)).as("control: the record is appended").isEqualTo(0L);
+
+        var partition = access.metadata().await().unwrap().partitions().getFirst();
+
+        assertThat(partition.headOffset()).as("metadata head is the committed head").isEqualTo(-1L);
+        assertThat(partition.eventCount()).isZero();
     }
 
     @Test

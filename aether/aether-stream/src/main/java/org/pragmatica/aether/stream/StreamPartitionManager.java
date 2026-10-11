@@ -2144,6 +2144,18 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                                                                ring));
     }
 
+    /// A batch landed under `epoch`: the owner of that epoch is the one this replica now follows, so a position reported
+    /// under an OLDER epoch -- a deposed owner's, still in flight -- must be refused from here on (#2087). The recorded
+    /// position carries over: what was acknowledged under the earlier lineage stays acknowledged.
+    @Contract
+    private void noteBatchEpoch(String streamName, int partition, Epoch epoch) {
+        replicaCommitted.merge(partitionKeyOf(streamName, partition),
+                               new CommittedMark(epoch, -1L),
+                               (known, batch) -> batch.epoch().isStrictlyAfter(known.epoch())
+                                                 ? new CommittedMark(batch.epoch(), known.through())
+                                                 : known);
+    }
+
     private static CommittedMark newerMark(CommittedMark known, CommittedMark reported) {
         if (reported.epoch().isStrictlyAfter(known.epoch())) {
             return reported;
@@ -3481,6 +3493,7 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                                                     timestamp,
                                                                                     ownerEpoch,
                                                                                     some(ownerEpoch)))
+                                   .onSuccess(_ -> noteBatchEpoch(streamName, partition, ownerEpoch))
                                    .onSuccess(held -> visibleAtOnceWithoutWal(streamName, partition, held))
                                    .onFailure(cause -> countRefusedReplicaDrop(cause, streamName, partition));
     }
@@ -4766,7 +4779,7 @@ public final class StreamPartitionManager implements AutoCloseable {
         var totalBytes = 0L;
 
         for (var buffer : entry.materializedRings()) {
-            totalEvents += buffer.eventCount();
+            totalEvents += committedCount(buffer);
             totalBytes += buffer.allocatedBytes();
         }
 
@@ -5514,11 +5527,32 @@ public final class StreamPartitionManager implements AutoCloseable {
         return OffHeapRingBuffer.floorBytes(retention.maxCount(), retention.maxBytes());
     }
 
+    /// The partition's COMMITTED span as a consumer or operator may see it (#2087): the head is the visible position and the
+    /// count is the records between the tail and it, never the appended head or the ring's raw count. A partition with nothing
+    /// visible reports `(-1, -1, 0)`, the encoding of an absent ring. The replication code, which needs what this node HOLDS,
+    /// asks [#appendedHead].
     public Result<PartitionInfo> partitionInfo(String streamName, int partition) {
-        return resolvePartitionBuffer(streamName, partition).map(buffer -> PartitionInfo.partitionInfo(partition,
-                                                                                                       buffer.headOffset(),
-                                                                                                       buffer.tailOffset(),
-                                                                                                       buffer.eventCount()));
+        return resolvePartitionBuffer(streamName, partition).map(buffer -> committedInfo(partition, buffer));
+    }
+
+    /// The highest offset this node holds for the partition, committed or not; `-1` when nothing is held. Replication-class:
+    /// the highest-watermark contest and the catch-up `fromOffset` are about what is held, not what a consumer may see.
+    public long appendedHead(String streamName, int partition) {
+        return resolvePartitionBuffer(streamName, partition).map(OffHeapRingBuffer::headOffset)
+                                                            .or(-1L);
+    }
+
+    private static PartitionInfo committedInfo(int partition, OffHeapRingBuffer buffer) {
+        var visibleHead = Math.min(buffer.headOffset(), buffer.visibleOffset());
+        var tail = buffer.tailOffset();
+
+        return visibleHead < 0 || visibleHead < tail
+               ? PartitionInfo.partitionInfo(partition, -1L, -1L, 0L)
+               : PartitionInfo.partitionInfo(partition, visibleHead, tail, visibleHead - tail + 1);
+    }
+
+    private static long committedCount(OffHeapRingBuffer buffer) {
+        return committedInfo(0, buffer).eventCount();
     }
 
     public Result<List<PartitionInfo>> allPartitionInfo(String streamName) {
@@ -5541,10 +5575,7 @@ public final class StreamPartitionManager implements AutoCloseable {
 
     private static PartitionInfo partitionInfoFor(StreamEntry entry, int partition) {
         return entry.ringFor(partition)
-                    .map(buffer -> PartitionInfo.partitionInfo(partition,
-                                                               buffer.headOffset(),
-                                                               buffer.tailOffset(),
-                                                               buffer.eventCount()))
+                    .map(buffer -> committedInfo(partition, buffer))
                     .or(PartitionInfo.partitionInfo(partition, -1L, -1L, 0L));
     }
 
