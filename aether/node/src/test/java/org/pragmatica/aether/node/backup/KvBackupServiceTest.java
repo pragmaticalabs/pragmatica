@@ -520,6 +520,37 @@ class KvBackupServiceTest {
             assertThat(warnings).extracting(BackupWarning::code)
                                 .containsExactly(Code.BACKUP_PUSH_FAILING, Code.BACKUP_RECOVERED);
         }
+
+        /// #2095: git daemonizes `maintenance run --auto` after a commit, a fetch and (in the remote) a push, and
+        /// that background process keeps writing into the repository after the git command returned — a
+        /// test's `@TempDir` cleanup raced it, and a stopped node's backup directory would see it too. git's own
+        /// trace (inherited by every child, a path remote's receive-pack included) records every command the
+        /// whole flow starts; none may be a detached `maintenance` / `gc` (foreground ones finish inside their git command).
+        @Test
+        void aPushThatRecovers_startsNoDetachedGitMaintenance_inTheLocalRepositoryOrTheRemote() throws IOException {
+            var log = temp.resolve("trace.log");
+
+            var remotePath = temp.resolve("shimmed.git");
+            var repository = GitBackupRepository.gitBackupRepository(temp.resolve("local"),
+                                                                     Option.some(remotePath.toString()),
+                                                                     "backup",
+                                                                     TimeSpan.timeSpan(30).seconds(),
+                                                                     Map.of("GIT_TRACE2_EVENT", log.toString()));
+            var service = KvBackupService.kvBackupService(kvStore, CODEC, repository, scheduler, scheduler::now, warnings::add, TIMING);
+
+            incarnation(1);
+            service.onLeaderChange(leaderChange(true));
+            scheduler.advance(TIMING.quietMillis());
+            put(service, ConfigKey.forKey("a"), ConfigValue.configValue("a", "1"));
+            scheduler.runUntilIdle(10);
+            bareRemote(remotePath);
+            scheduler.runUntilIdle();
+
+            assertThat(commitCount(remotePath.toString())).as("the flow ran through to a push").isEqualTo(2);
+            assertThat(Files.readString(log)).as("the trace saw the flow's git commands").contains("\"push\"");
+            assertThat(Files.readString(log)).as("background git maintenance started")
+                                             .doesNotContain("\"--detach\"");
+        }
     }
 
     /// #1533: a cluster incarnation id tells two clusters at one `(lineage, incarnation)` apart. Restored from the

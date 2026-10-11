@@ -80,6 +80,7 @@ final class ScriptedDrainHttp implements HttpOperations {
     private final AtomicInteger lifecycleCalls = new AtomicInteger();
     private final List<String> requests = new CopyOnWriteArrayList<>();
     private final List<String> requestsWithQuery = new CopyOnWriteArrayList<>();
+    private final List<String> requestUris = new CopyOnWriteArrayList<>();
 
     ScriptedDrainHttp(Step drainResponse, Step... lifecycleScript) {
         this.drainResponse = drainResponse;
@@ -104,6 +105,11 @@ final class ScriptedDrainHttp implements HttpOperations {
                        .toList();
     }
 
+    /// Every request as `METHOD scheme://host:port/path?query`: where it was SENT.
+    List<String> requestUris() {
+        return List.copyOf(requestUris);
+    }
+
     List<String> requests() {
         return List.copyOf(requests);
     }
@@ -124,6 +130,7 @@ final class ScriptedDrainHttp implements HttpOperations {
     @Override
     public <T> Promise<HttpResult<T>> send(HttpRequest request, BodyHandler<T> handler) {
         requests.add(request.method() + " " + request.uri().getPath());
+        requestUris.add(request.method() + " " + request.uri());
         requestsWithQuery.add(request.method() + " " + request.uri().getPath()
                               + (request.uri().getRawQuery() == null ? "" : "?" + request.uri().getRawQuery()));
 
