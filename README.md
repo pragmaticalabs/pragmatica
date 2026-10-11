@@ -85,7 +85,7 @@ mvn test                   # Run tests after build
 
 ## License
 
-- Core, integrations, JBCT: Apache License 2.0
-- Aether: Business Source License 1.1 (converts to Apache 2.0 on January 1, 2030)
+- Apache License 2.0 everywhere by default: core, integrations, JBCT, and the Aether slice API, resources, CLI and tooling
+- Business Source License 1.1 (converts to Apache 2.0 on January 1, 2030) for the Aether runtime modules listed in [LICENSE](LICENSE): `node`, `aether-deployment`, `aether-control`, `aether-ttm`, `aether-ttm-onnx`, `aether-stream`, `aether-invoke`, `ember`, `forge-api`, `forge-core` (and the `forge-tests` harness)
 
-See [LICENSE](LICENSE) and [aether/LICENSE](aether/LICENSE).
+Each BSL module carries its own `LICENSE` file. No Apache-2.0 module depends on a BSL module; `tools/check-licence-closure.py` enforces that in CI.

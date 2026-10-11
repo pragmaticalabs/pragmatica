@@ -18,12 +18,7 @@
             <name>Apache License, Version 2.0</name>
             <url>https://www.apache.org/licenses/LICENSE-2.0.txt</url>
             <distribution>repo</distribution>
-            <comments>Core modules (core, integrations, jbct)</comments>
-        </license>
-        <license>
-            <name>Business Source License 1.1</name>
-            <url>https://mariadb.com/bsl11/</url>
-            <comments>Aether modules - converts to Apache License 2.0 on January 1, 2030</comments>
+            <comments>Everything except the BSL modules listed in LICENSE</comments>
         </license>
     </licenses>
 

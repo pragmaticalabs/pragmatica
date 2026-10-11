@@ -1,24 +1,36 @@
 Pragmatica Monorepo — License Map
 ==================================
 
-This repository contains modules under two different licenses. Each module's
+This repository is Apache-2.0 except for the listed BSL modules. Each module's
 license is authoritative; the per-file SPDX header and/or module-level LICENSE
 file governs that module's terms.
 
 Summary
 -------
 
-Apache License, Version 2.0 (see LICENSE-APACHE-2.0):
-    core/
-    integrations/
-    jbct/                           — except jbct/slice-processor/ and
-                                       jbct/slice-processor-tests/ (see below)
-    examples/                       — reference user code; authored under Apache-2.0
+Apache License, Version 2.0 (see LICENSE-APACHE-2.0): everything in this repository
+except the modules listed below. Apache-2.0 is the default for any path not listed.
 
-Business Source License 1.1 (see aether/LICENSE):
-    aether/                         — full BSL 1.1 text in aether/LICENSE
-    jbct/slice-processor/           — Aether tooling; BSL per module LICENSE
-    jbct/slice-processor-tests/     — tests for the above; BSL per module LICENSE
+Business Source License 1.1 (full text in each module's own LICENSE file), these modules only:
+    aether/node/
+    aether/aether-deployment/
+    aether/aether-control/
+    aether/aether-ttm/
+    aether/aether-ttm-onnx/
+    aether/ember/
+    aether/forge/forge-api/
+    aether/forge/forge-core/
+    aether/forge/forge-tests/
+    aether/aether-stream/
+    aether/aether-invoke/
+
+The modules listed above are licensed under the Business Source License 1.1, with the parameters
+below. This file is the repository-root LICENSE that the per-file header line "See LICENSE in the
+repository root for full terms" refers to; each BSL module's own LICENSE file holds the full text.
+
+The list is kept in tools/license/bsl-modules.txt; tools/check-licence-closure.py fails the build
+if that file and this section disagree. aether/forge/forge-tests is a test harness outside the
+default reactor; it depends on forge-core and is BSL for that reason.
 
 BSL 1.1 parameters (apply to all BSL-licensed modules above)
 ------------------------------------------------------------
@@ -32,8 +44,8 @@ BSL 1.1 parameters (apply to all BSL-licensed modules above)
                           and derivative works for internal use, and
                           evaluation/testing/development. NOT permitted for
                           Managed Service offerings (third-party SaaS,
-                          provisioned access). See aether/LICENSE for the
-                          full text.
+                          provisioned access). See the LICENSE file in each BSL
+                          module for the full text.
 
 Per-file SPDX headers
 ---------------------
