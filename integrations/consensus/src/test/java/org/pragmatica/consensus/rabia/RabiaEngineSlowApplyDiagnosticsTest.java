@@ -278,6 +278,22 @@ class RabiaEngineSlowApplyDiagnosticsTest {
     }
 
     @Test
+    void afterTheEngineIsStoppedAndReset_noStaleArrivalAgeRemains() throws Exception {
+        engine(ProtocolConfig.testConfig());
+        activate();
+        engine.apply(List.of(new TestCommand("pending-at-stop")));
+        Thread.sleep(300);
+
+        assertThat(metrics.oldestPendingAgeMs.get().getAsLong()).as("precondition: a pending batch is ageing").isGreaterThanOrEqualTo(250L);
+
+        engine.stop().await();
+
+        assertThat(metrics.oldestPendingAgeMs.get().getAsLong())
+            .as("stop resets the pending queue; the arrival stamps must go with it or the gauge reports an age for nothing")
+            .isZero();
+    }
+
+    @Test
     void aBatchThatWasDecided_noLongerAges() throws Exception {
         engine(ProtocolConfig.testConfig());
         activate();
