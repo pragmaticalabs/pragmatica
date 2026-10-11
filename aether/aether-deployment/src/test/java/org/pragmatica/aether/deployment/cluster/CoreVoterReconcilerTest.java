@@ -240,4 +240,13 @@ class CoreVoterReconcilerTest {
         assertThat(requestsOf(SEVEN, 5, Set.of(A, B, C, D, E, F), Set.of(G), Map.of(F, new NodeId("h")))).isEmpty();
         assertThat(requestsOf(SEVEN, 5, Set.of(A, B, C, D, E, F), Set.of(G), Map.of())).hasSize(1);
     }
+
+    /// The guard is on SHRINKING only: replacing a failed voter keeps the size, so it proceeds even while a swap is in progress.
+    @Test
+    void healOfAFailedVoter_isNotATrim_soItProceedsDuringASwap() {
+        var requested = requestsOf(FIVE, 5, Set.of(A, B, C, E, F), Set.of(D), Map.of(B, new NodeId("h")));
+
+        assertThat(requested).hasSize(1);
+        assertThat(requested.getFirst()).containsExactlyInAnyOrder(A, B, C, E, F);
+    }
 }
