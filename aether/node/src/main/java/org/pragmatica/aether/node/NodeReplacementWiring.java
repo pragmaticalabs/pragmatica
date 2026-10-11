@@ -164,7 +164,8 @@ public final class NodeReplacementWiring {
             return Option.none();
         }
 
-        return store.getTyped(AetherKey.ClusterConfigKey.CURRENT, AetherValue.ClusterConfigValue.class).isPresent()
+        return store.getTyped(AetherKey.ClusterConfigKey.CURRENT, AetherValue.ClusterConfigValue.class)
+                    .isPresent()
                ? Option.none()
                : Option.some("committed source configuration is missing, so the fleet inventory cannot be initialized");
     }

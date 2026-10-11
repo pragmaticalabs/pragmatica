@@ -3661,7 +3661,8 @@ public interface AetherNode extends ManageableNode {
                                                                                                    .filter(coreAdmission::isAllowed)
                                                                                                    .collect(Collectors.toUnmodifiableSet()),
                                                                           nodeReplacements::voterSwaps,
-                                                                          () -> failedVoters(cdmUnreadyObservedRef.get().get(),
+                                                                          () -> failedVoters(cdmUnreadyObservedRef.get()
+                                                                                                                  .get(),
                                                                                              Option.option(membershipFsmRef.get())
                                                                                                    .map(MembershipFsm::memberStates)
                                                                                                    .or(Map.of())),
@@ -7335,7 +7336,8 @@ public interface AetherNode extends ManageableNode {
                                .filter(entry -> !NodeReplacementWiring.alive(Option.some(entry.getValue())))
                                .map(Map.Entry::getKey);
 
-        return Stream.concat(observedNotReady.stream(), gone)
+        return Stream.concat(observedNotReady.stream(),
+                             gone)
                      .collect(Collectors.toUnmodifiableSet());
     }
 
