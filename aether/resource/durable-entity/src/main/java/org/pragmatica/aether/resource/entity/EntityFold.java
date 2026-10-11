@@ -106,6 +106,7 @@ final class EntityFold {
     /// they sit above it.
     private static final class PartitionFold {
         private final AtomicReference<FoldedPartition> published;
+
         private PartitionFold(long generation) {
             this.published = new AtomicReference<>(new FoldedPartition(generation));
         }
@@ -132,6 +133,7 @@ final class EntityFold {
         /// #2087 B4-cut: the log's cut count when this fold's build began ([EntityLogSubstrate#cutGeneration]). A fold whose generation
         /// differs from the log's current one may hold records a cut removed: it is never served and never checkpointed.
         private final long generation;
+
         private FoldedPartition(long generation) {
             this.generation = generation;
         }
@@ -250,6 +252,7 @@ final class EntityFold {
         if (data.generation != substrate.cutGeneration(keyspace, partition)) {
             return new EntityLogError.FoldInProgress(keyspace, partition).promise();
         }
+
         var offset = data.pending.get(key);
 
         if (offset == null) {
@@ -770,7 +773,8 @@ final class EntityFold {
     }
 
     private PartitionFold partitionFold(int partition) {
-        return partitions.computeIfAbsent(partition, _ -> new PartitionFold(substrate.cutGeneration(keyspace, partition)));
+        return partitions.computeIfAbsent(partition,
+                                          _ -> new PartitionFold(substrate.cutGeneration(keyspace, partition)));
     }
 
     private FoldedPartition publishedFold(int partition) {

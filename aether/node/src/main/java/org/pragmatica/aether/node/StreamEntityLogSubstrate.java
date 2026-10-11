@@ -571,8 +571,8 @@ public final class StreamEntityLogSubstrate implements EntityLogSubstrate {
     }
 
     static Promise<Unit> awaitVisible(org.pragmatica.aether.stream.OffHeapRingBuffer ring,
-                                              java.util.function.BooleanSupplier reached,
-                                              TimeSpan timeout) {
+                                      java.util.function.BooleanSupplier reached,
+                                      TimeSpan timeout) {
         var committed = Promise.<Unit> promise();
         java.util.function.LongConsumer listener = _ -> {
             if (reached.getAsBoolean()) {
