@@ -74,6 +74,7 @@ public final class DistributedDHTClient implements DHTClient {
     /// instance, and correlation IDs are globally unique, so a reply finds the collector that issued it
     /// whichever instance receives it (#1776). Configuration stays per instance; only reply lookup is shared.
     private final ConcurrentHashMap<String, PendingOperation<?>> pendingOps;
+    private final java.util.concurrent.atomic.AtomicInteger liveExpiries = new java.util.concurrent.atomic.AtomicInteger();
 
     private record PendingOperation<T>(QuorumCollector<T> collector) {}
 
@@ -1071,9 +1072,21 @@ public final class DistributedDHTClient implements DHTClient {
 
         Promise<Unit> settled = Promise.promise();
 
+        liveExpiries.incrementAndGet();
         collector.allReplied().onSuccess(_ -> settled.succeed(unit()));
         settled.timeout(config.get().operationTimeout())
-               .onResultRun(() -> pendingOps.remove(correlationId));
+               .onResultRun(() -> expire(correlationId));
+    }
+
+    private void expire(String correlationId) {
+        pendingOps.remove(correlationId);
+        liveExpiries.decrementAndGet();
+    }
+
+    /// Expiry timers still armed: one per tracked request until all its operation's replies arrive (the timer is then
+    /// cancelled) or the operation timeout fires. Test seam.
+    int pendingExpiries() {
+        return liveExpiries.get();
     }
 
     /// Requests awaiting a reply, across this client and every instance derived from it. Test seam.

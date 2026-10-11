@@ -234,6 +234,8 @@ class DistributedDHTClientPendingOpsTest {
         assertThat(client.pendingOperations()).isZero();
     }
 
+    /// The late reply lands 200 ms into a 600 ms window: the entry must still be there to take it. An expiry that fires
+    /// at (almost) once leaves nothing, and the held-count assertion fails.
     @Test
     void lateReplyInsideTheWindow_isStillConsumed_andReleasesItsEntry() {
         var client = shortWindowClient();
@@ -242,11 +244,29 @@ class DistributedDHTClientPendingOpsTest {
 
         requests.subList(0, 2).forEach(r -> client.onGetResponse(present().of(r.requestId(), REPLICA)));
         assertThat(op.await(timeSpan(2).seconds()).isSuccess()).isTrue();
-        assertThat(client.pendingOperations()).isEqualTo(1);
+
+        sleepQuietly(200);
+        assertThat(client.pendingOperations()).as("the silent replica's entry is still held 200 ms into the window").isEqualTo(1);
 
         client.onGetResponse(present().of(requests.get(2).requestId(), REPLICA));
 
         assertThat(client.pendingOperations()).as("the late reply took its entry").isZero();
+    }
+
+    /// Once every reply of an operation has arrived its expiry timer is cancelled, not left to run out the window.
+    @Test
+    void allRepliesArrived_leavesNoExpiryTimerArmed() {
+        var client = shortWindowClient();
+        var op = client.get(key());
+        var requests = requests(DHTMessage.GetRequest.class);
+
+        assertThat(client.pendingExpiries()).isEqualTo(3);
+        requests.forEach(r -> client.onGetResponse(present().of(r.requestId(), REPLICA)));
+
+        assertThat(op.await(timeSpan(2).seconds()).isSuccess()).isTrue();
+        // well inside the 600 ms window: a timer left armed would still be counted
+        assertThat(client.pendingExpiries()).as("expiry timers armed after every reply arrived").isZero();
+        assertThat(client.pendingOperations()).isZero();
     }
 
     /// A departed target is replaced by a read to another replica; if that replacement never answers, its entry
