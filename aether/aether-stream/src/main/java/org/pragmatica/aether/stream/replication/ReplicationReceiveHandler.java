@@ -323,7 +323,10 @@ public final class ReplicationReceiveHandler {
     /// view: an owner this node's SWIM view has marked DEPARTED, or has not yet seen, is still the fenced
     /// writer until the leader commits a new owner. (The filter never drops a merely SUSPECT owner.)
     private boolean senderMayBeCommittedOwner(ReplicationMessage.ReplicateEvents message) {
-        return senderMayBeCommittedOwner(message.streamName(), message.partition(), message.governorId(), message.ownerEpoch());
+        return senderMayBeCommittedOwner(message.streamName(),
+                                         message.partition(),
+                                         message.governorId(),
+                                         message.ownerEpoch());
     }
 
     private boolean senderMayBeCommittedOwner(String streamName, int partition, NodeId sender, Epoch batchEpoch) {
@@ -361,8 +364,14 @@ public final class ReplicationReceiveHandler {
     @Contract
     @MessageReceiver
     public void onCommitAdvance(ReplicationMessage.CommitAdvance message) {
-        if (senderMayBeCommittedOwner(message.streamName(), message.partition(), message.governorId(), message.ownerEpoch())) {
-            commitSink.committed(message.streamName(), message.partition(), message.committedThrough(), message.ownerEpoch());
+        if (senderMayBeCommittedOwner(message.streamName(),
+                                      message.partition(),
+                                      message.governorId(),
+                                      message.ownerEpoch())) {
+            commitSink.committed(message.streamName(),
+                                 message.partition(),
+                                 message.committedThrough(),
+                                 message.ownerEpoch());
         }
     }
 

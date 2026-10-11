@@ -223,7 +223,9 @@ final class DefaultReplicationManager implements ReplicationManager {
                                                                      committedThrough,
                                                                      ownerEpoch);
 
-        replicationTargets(streamName, partition).forEach(replica -> transport.send(replica, message, DEFAULT_ACK_TIMEOUT));
+        replicationTargets(streamName, partition).forEach(replica -> transport.send(replica,
+                                                                                    message,
+                                                                                    DEFAULT_ACK_TIMEOUT));
     }
 
     @Contract

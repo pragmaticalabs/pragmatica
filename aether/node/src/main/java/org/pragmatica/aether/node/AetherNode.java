@@ -6118,7 +6118,8 @@ public interface AetherNode extends ManageableNode {
                                                                                                                                               record)));
         periodicTasks.defer(() -> SharedScheduler.scheduleAtFixedRate(isrMonitor::tick, ISR_MONITOR_INTERVAL));
         // #2087: the owner repeats its visible position, so one lost announcement delays a replica by one tick, never longer.
-        periodicTasks.defer(() -> SharedScheduler.scheduleAtFixedRate(streamPartitionManager::repeatVisible, ISR_MONITOR_INTERVAL));
+        periodicTasks.defer(() -> SharedScheduler.scheduleAtFixedRate(streamPartitionManager::repeatVisible,
+                                                                      ISR_MONITOR_INTERVAL));
         allEntries.add(MessageRouter.Entry.route(ClusterStateNotification.class, ownerActivation::onQuorumStateChange));
         // Reconcile on every membership decision (all variants via the tail helper) and on
         // ClusterStateNotification edges (PASSIVE suppresses; PASSIVE->ACTIVE re-reconciles).

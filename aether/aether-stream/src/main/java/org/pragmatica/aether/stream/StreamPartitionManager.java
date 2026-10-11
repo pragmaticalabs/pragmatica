@@ -283,7 +283,9 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// it holds, so no read path serves an offset a failover could still replace. Absent means nothing is known: nothing
     /// is exposed until the owner reports. A newer epoch replaces the entry, even with a lower value; an older one is ignored.
     private final ConcurrentHashMap<String, CommittedMark> replicaCommitted = new ConcurrentHashMap<>();
+
     private record CommittedMark(Epoch epoch, long through) {}
+
     /// #2087: how far a replica's unverified tail has been compared with the committed owner ([#markVerified]); only
     /// meaningful while the partition is in [#unverifiedReplicas]. A verified prefix is exposed up to the owner's report.
     private final ConcurrentHashMap<String, Long> verifiedPrefix = new ConcurrentHashMap<>();
@@ -2092,6 +2094,7 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                                                                   partition,
                                                                                                   config.confirmationFactor() - 1)));
         }
+
         ring.addAppendListener(visible -> announceVisible(config.name(), partition, visible));
     }
 
@@ -2115,7 +2118,7 @@ public final class StreamPartitionManager implements AutoCloseable {
     @Contract
     public void repeatVisible() {
         materializedHeads().forEach(head -> resolvePartitionBuffer(head.streamName(), head.partition()).onSuccess(ring -> repeatVisible(head,
-                                                                                                                                         ring)));
+                                                                                                                                        ring)));
     }
 
     @Contract
@@ -2136,7 +2139,9 @@ public final class StreamPartitionManager implements AutoCloseable {
         replicaCommitted.merge(partitionKeyOf(streamName, partition),
                                new CommittedMark(ownerEpoch, through),
                                StreamPartitionManager::newerMark);
-        resolvePartitionBuffer(streamName, partition).onSuccess(ring -> exposeReplicaCommitted(streamName, partition, ring));
+        resolvePartitionBuffer(streamName, partition).onSuccess(ring -> exposeReplicaCommitted(streamName,
+                                                                                               partition,
+                                                                                               ring));
     }
 
     private static CommittedMark newerMark(CommittedMark known, CommittedMark reported) {
@@ -2144,14 +2149,15 @@ public final class StreamPartitionManager implements AutoCloseable {
             return reported;
         }
 
-        return reported.epoch().equals(known.epoch()) && reported.through() > known.through()
+        return reported.epoch()
+                       .equals(known.epoch()) && reported.through() > known.through()
                ? reported
                : known;
     }
 
     private long committedMarkThrough(String streamName, int partition) {
         return option(replicaCommitted.get(partitionKeyOf(streamName, partition))).map(CommittedMark::through)
-                                                                                 .or(-1L);
+                     .or(-1L);
     }
 
     /// A replica's visible position: what it holds durably, no further than the owner has reported visible, and not
@@ -2198,8 +2204,10 @@ public final class StreamPartitionManager implements AutoCloseable {
         if (replica) {
             exposeReplicaCommitted(streamName, partition, ring);
         } else {
-            ring.advanceVisible(Math.min(Math.min(offset, ring.durableOffset()), peerAcknowledgedThrough(streamName, partition)));
+            ring.advanceVisible(Math.min(Math.min(offset, ring.durableOffset()),
+                                         peerAcknowledgedThrough(streamName, partition)));
         }
+
         if (offset >= ring.headOffset()) {
             unverifiedReplicas.remove(key);
             verifiedPrefix.remove(key);
@@ -3497,7 +3505,10 @@ public final class StreamPartitionManager implements AutoCloseable {
 
     @Contract
     private void replicaDurable(String streamName, int partition, long offset) {
-        resolvePartitionBuffer(streamName, partition).onSuccess(ring -> replicaDurable(streamName, partition, ring, offset));
+        resolvePartitionBuffer(streamName, partition).onSuccess(ring -> replicaDurable(streamName,
+                                                                                       partition,
+                                                                                       ring,
+                                                                                       offset));
     }
 
     /// #2087: durable here is not visible here. A replica's visible position is bounded by what the owner has reported

@@ -96,11 +96,7 @@ public sealed interface ReplicationMessage extends ProtocolMessage {
     /// returns an offset a failover could still replace. `ownerEpoch` is the sending owner's fencing token; the replica
     /// validates the sender exactly as it does for [ReplicateEvents]. Sent when the owner's visible position advances and
     /// repeated on the owner's tick, so one lost message delays visibility on a replica and never advances it.
-    record CommitAdvance(NodeId governorId,
-                         String streamName,
-                         int partition,
-                         long committedThrough,
-                         Epoch ownerEpoch) implements ReplicationMessage {
+    record CommitAdvance(NodeId governorId, String streamName, int partition, long committedThrough, Epoch ownerEpoch) implements ReplicationMessage {
         public static CommitAdvance commitAdvance(NodeId governorId,
                                                   String streamName,
                                                   int partition,
