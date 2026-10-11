@@ -36,6 +36,7 @@ import org.pragmatica.aether.config.cluster.SourceCloudBindings;
 import org.pragmatica.aether.config.cluster.SourceType;
 import org.pragmatica.aether.config.cluster.SshDeploymentConfig;
 import org.pragmatica.aether.deployment.DeploymentMap;
+import org.pragmatica.aether.environment.ClusterSecretSource;
 import org.pragmatica.aether.environment.ClusterName;
 import org.pragmatica.aether.environment.AutoHealConfig;
 import org.pragmatica.aether.environment.EnvironmentError;
@@ -69,6 +70,7 @@ import org.pragmatica.consensus.topology.TransportObservation;
 import org.pragmatica.consensus.topology.NodeState;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
@@ -146,7 +148,6 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     /// #2062: a reap that failed or could not be confirmed is retried this many times, one sixth of a provisioning window apart (ten seconds
     /// at the default window, about two minutes in all), before an operator event names the node.
     static final int FAILED_REAP_RETRIES = 12;
-    private static final String AETHER_CLUSTER_SECRET_ENV = "AETHER_CLUSTER_SECRET";
 
     static ClusterTopologyManagerRecord clusterTopologyManagerRecord(TopologyObserver observer,
                                                                      NodeLifecycleManager lifecycleManager,
@@ -1714,10 +1715,15 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     }
 
     /// The cluster secret as the running (leader) node sees it in its own environment — the same
-    /// source the renderer's `emitIdentityEnv` reads it from, so the secret baked into the
+    /// source the renderer's `emitIdentityEnv` reads it from (`AETHER_CLUSTER_SECRET_FILE` included, #828), so the secret baked into the
     /// replacement's `AETHER_CLUSTER_SECRET` matches the live cluster's.
     private static Option<String> clusterSecretFromEnv() {
-        return Option.option(System.getenv(AETHER_CLUSTER_SECRET_ENV)).filter(s -> !s.isBlank());
+        return clusterSecretFrom(System::getenv);
+    }
+
+    /// The same with the leader's environment supplied (`AETHER_CLUSTER_SECRET` or the file `AETHER_CLUSTER_SECRET_FILE` names, #828).
+    static Option<String> clusterSecretFrom(Fn1<String, String> env) {
+        return ClusterSecretSource.resolve(env).fold(_ -> Option.<String> none(), value -> value);
     }
 
     private static List<String> peersList(ProvisionContext context) {

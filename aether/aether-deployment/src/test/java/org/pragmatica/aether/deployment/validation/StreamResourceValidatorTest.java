@@ -127,6 +127,21 @@ class StreamResourceValidatorTest {
                   });
         }
 
+        /// #1338: a writing role on a `system` External source is refused at the deploy gate under its own rule, and the rule is
+        /// gating (the deploy refuses; the alias is not merely dropped). A consumer role on the same source validates.
+        @Test
+        void systemExternalSourceWithAProducerRoleProducesSourceSystemNotConsumerFailure() {
+            var toml = "[streams.inbox]\nsource = \"system:cluster-events:1.0.0\"\nrole = \"producer\"\n";
+            var result = StreamResourceValidator.validate(Option.some(toml), APP_ARTIFACT);
+
+            result.onSuccessRun(() -> fail("Expected failure"))
+                  .onFailure(cause -> assertThat(((StreamValidationFailures) cause).failures()).extracting(StreamValidationFailure::rule)
+                                                                                              .containsExactly(StreamResourceValidator.RULE_SOURCE_SYSTEM_NOT_CONSUMER));
+            assertThat(StreamResourceValidator.GATING_SECTION_RULES).contains(StreamResourceValidator.RULE_SOURCE_SYSTEM_NOT_CONSUMER);
+            StreamResourceValidator.validate(Option.some(toml.replace("producer", "consumer")), APP_ARTIFACT)
+                                   .onFailure(cause -> fail("a consumer-role system source must validate: " + cause.message()));
+        }
+
         @Test
         void producerLatestProducesProducerExactFailure() {
             var toml = """

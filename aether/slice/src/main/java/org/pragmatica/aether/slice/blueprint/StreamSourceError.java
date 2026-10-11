@@ -21,6 +21,14 @@ public sealed interface StreamSourceError extends Cause {
                                                                                                      ReservedKindSource::new);
     }
 
+    /// A `system` source declared with a role that writes (`producer`, `both`) (#1338). System streams are read-only to
+    /// blueprints and slices: only the node's own system publishers write them, so the declaration is refused at
+    /// validation instead of surfacing as a refused publish later.
+    record SystemSourceNotConsumer(String alias, String sourceAddress, String role, String message) implements StreamSourceError {
+        static final Fn3<SystemSourceNotConsumer, String, String, String> FACTORY = Causes.forThreeValues("Stream resource '%s' names the system stream '%s' with role '%s': system streams are read-only to blueprints and slices; declare role = \"consumer\"",
+                                                                                                          SystemSourceNotConsumer::new);
+    }
+
     record unused() implements StreamSourceError {
         @Override
         public String message() {

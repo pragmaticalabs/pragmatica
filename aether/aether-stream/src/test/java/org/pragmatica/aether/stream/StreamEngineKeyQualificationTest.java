@@ -34,11 +34,8 @@ import static org.junit.jupiter.api.Assertions.fail;
 /// `streamConfigKey(qualified)` could not find the config committed under the bare name. A declared
 /// `min-sync-replicas = 2` was therefore silently void for every write through the catalog path.
 ///
-/// EVERY TEST HERE USES A NON-`system` NAMESPACE, and that is load-bearing rather than incidental.
-/// `system:cluster-events` is the one address whose two spellings coincide — `engineKey` reduces the
-/// `system` namespace to the bare name — which is why it is useless as a control for this defect and
-/// why it was the control every diagnostic reached for. [SystemBareReduction] pins that reduction
-/// separately, as behaviour to preserve rather than as evidence about the qualified path.
+/// Since #1338 `system` addresses key by their full address like every other namespace, so the earlier caveat (that
+/// `system:cluster-events` was the one address whose two spellings coincide) no longer applies.
 class StreamEngineKeyQualificationTest {
     private static final RetentionPolicy RETENTION = RetentionPolicy.retentionPolicy(10_000, 4 * 1024 * 1024L, 60_000L);
     private static final String ALIAS = "repl-failover-events";
@@ -248,13 +245,12 @@ class StreamEngineKeyQualificationTest {
     }
 
     @Nested
-    class SystemBareReduction {
-        /// `system` streams keep their bare key — `StreamManager.engineKey` reduces the `system`
-        /// namespace deliberately and `SystemStreams.isForbiddenEngineKey` depends on that spelling for
-        /// the management-api write gate. A resolver that qualified them would move `cluster-events`
-        /// out from under the gate, which is a security boundary, not a naming preference.
+    class SystemFullAddress {
+        /// #1338: a `system` stream is qualified to its FULL address, the name the framework creates it under, and a
+        /// stream that is merely NAMED like one stays unqualified-by-system (it is resolved to its own address).
         @Test
-        void qualify_keepsBareName_whenResolverReducesSystemNamespace() {
+        void qualify_usesTheFullSystemAddress_whenResolverResolvesASystemSource() {
+            var systemName = "system:cluster-events:1.0.0";
             var systemConfig = StreamConfig.streamConfig("cluster-events",
                                                          1,
                                                          RETENTION,
@@ -262,12 +258,12 @@ class StreamEngineKeyQualificationTest {
                                                          1024 * 1024L,
                                                          ConsistencyMode.EVENTUAL,
                                                          1);
-            StreamAddressResolver systemResolver = (_, alias) -> Result.success(alias);
+            StreamAddressResolver systemResolver = (_, _) -> Result.success(systemName);
             var context = ProvisioningContext.provisioningContext()
                                              .withExtension(StreamAddressResolver.class, systemResolver)
                                              .withExtension(String.class, SLICE_ID);
 
-            assertThat(StreamAddressResolver.qualify(systemConfig, context).unwrap().name()).isEqualTo("cluster-events");
+            assertThat(StreamAddressResolver.qualify(systemConfig, context).unwrap().name()).isEqualTo(systemName);
         }
     }
 

@@ -43,6 +43,7 @@ class DeploymentOutcomeUnknownStatusCodecTest {
     private static final String CAUSE = "slice activation timed out";
     private static final long TIMESTAMP = 1_700_000_000_000L;
     private static final long VERSION = 4L;
+    private static final String ATTEMPT = "attempt-972";
 
     /// Frames a `DeploymentOutcomeValue` exactly as the generated `writeBody` does, except the status
     /// ordinal is supplied by the caller — the only way to obtain the bytes a node with an extra
@@ -61,6 +62,9 @@ class DeploymentOutcomeUnknownStatusCodecTest {
         buf.writeLong(TIMESTAMP);
         buf.writeByte(SliceCodec.TAG_LONG);
         buf.writeLong(VERSION);
+        // #972: the attempt the record closes, the last component.
+        buf.writeByte(SliceCodec.TAG_STRING);
+        SliceCodec.writeString(buf, ATTEMPT);
 
         return buf;
     }
@@ -94,6 +98,7 @@ class DeploymentOutcomeUnknownStatusCodecTest {
             assertThat(decoded.cause()).isEqualTo(CAUSE);
             assertThat(decoded.timestampMs()).isEqualTo(TIMESTAMP);
             assertThat(decoded.outcomeVersion()).isEqualTo(VERSION);
+            assertThat(decoded.attemptId()).isEqualTo(ATTEMPT);
         }
     }
 

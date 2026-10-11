@@ -38,6 +38,7 @@ public final class DefaultStreamPublisher<T> implements StreamPublisher<T> {
     private final ConsistencyMode consistencyMode;
     private final Option<ConsensusPublishPath> consensusPath;
     private final StreamWriteRouter writeRouter;
+    private final boolean systemWriter;
 
     private DefaultStreamPublisher(Serializer serializer,
                                    String streamName,
@@ -45,7 +46,9 @@ public final class DefaultStreamPublisher<T> implements StreamPublisher<T> {
                                    Option<Function<T, Object>> partitionKeyExtractor,
                                    ConsistencyMode consistencyMode,
                                    Option<ConsensusPublishPath> consensusPath,
-                                   StreamWriteRouter writeRouter) {
+                                   StreamWriteRouter writeRouter,
+                                   boolean systemWriter) {
+        this.systemWriter = systemWriter;
         this.serializer = serializer;
         this.streamName = streamName;
         this.partitionCount = partitionCount;
@@ -106,12 +109,9 @@ public final class DefaultStreamPublisher<T> implements StreamPublisher<T> {
                                                                 Option<Fn0<Option<NodeId>>> governorResolver,
                                                                 Option<Function<Integer, Option<NodeId>>> partitionOwnerResolver,
                                                                 Option<NodeId> selfNodeId) {
-        var writeRouter = StreamWriteRouter.streamWriteRouter(partitionManager,
-                                                              forwardClient,
-                                                              selfNodeId,
-                                                              (_, partition) -> StreamWriteRouter.hrwOwner(partitionOwnerResolver,
-                                                                                                           governorResolver,
-                                                                                                           partition));
+        var owner = (ForwardingReadRouter.OwnerResolver)(_, partition) -> StreamWriteRouter.hrwOwner(partitionOwnerResolver,
+                                                                                                     governorResolver,
+                                                                                                     partition);
 
         return new DefaultStreamPublisher<>(serializer,
                                             streamName,
@@ -119,11 +119,65 @@ public final class DefaultStreamPublisher<T> implements StreamPublisher<T> {
                                             partitionKeyExtractor,
                                             consistencyMode,
                                             consensusPath,
-                                            writeRouter);
+                                            StreamWriteRouter.streamWriteRouter(partitionManager,
+                                                                                forwardClient,
+                                                                                selfNodeId,
+                                                                                owner),
+                                            false);
+    }
+
+    /// The publisher of a node's own system stream (#1338): the only one whose writes to a `system:` stream are
+    /// admitted. Package-private, so only [SystemStreamFactories] can build one.
+    static <T> DefaultStreamPublisher<T> systemStreamPublisher(StreamPartitionManager partitionManager,
+                                                               Serializer serializer,
+                                                               String streamName,
+                                                               int partitionCount,
+                                                               Option<Function<T, Object>> partitionKeyExtractor) {
+        return systemStreamPublisher(partitionManager,
+                                     serializer,
+                                     streamName,
+                                     partitionCount,
+                                     partitionKeyExtractor,
+                                     ConsistencyMode.EVENTUAL,
+                                     Option.none(),
+                                     Option.none(),
+                                     Option.none(),
+                                     Option.none());
+    }
+
+    static <T> DefaultStreamPublisher<T> systemStreamPublisher(StreamPartitionManager partitionManager,
+                                                               Serializer serializer,
+                                                               String streamName,
+                                                               int partitionCount,
+                                                               Option<Function<T, Object>> partitionKeyExtractor,
+                                                               ConsistencyMode consistencyMode,
+                                                               Option<ConsensusPublishPath> consensusPath,
+                                                               Option<StreamForwardClient> forwardClient,
+                                                               Option<Function<Integer, Option<NodeId>>> partitionOwnerResolver,
+                                                               Option<NodeId> selfNodeId) {
+        return new DefaultStreamPublisher<>(serializer,
+                                            streamName,
+                                            partitionCount,
+                                            partitionKeyExtractor,
+                                            consistencyMode,
+                                            consensusPath,
+                                            StreamWriteRouter.systemWriter(partitionManager,
+                                                                           forwardClient,
+                                                                           selfNodeId,
+                                                                           (_, partition) -> StreamWriteRouter.hrwOwner(partitionOwnerResolver,
+                                                                                                                        Option.none(),
+                                                                                                                        partition)),
+                                            true);
     }
 
     @Override
     public Promise<Unit> publish(T event) {
+        return StreamWriteRouter.systemWriteRefusal(streamName, systemWriter)
+                                .<Promise<Unit>> map(Cause::promise)
+                                .or(() -> admittedPublish(event));
+    }
+
+    private Promise<Unit> admittedPublish(T event) {
         var bytes = serializer.encode(event);
         var partition = resolvePartition(event);
         var timestamp = System.currentTimeMillis();
@@ -145,6 +199,12 @@ public final class DefaultStreamPublisher<T> implements StreamPublisher<T> {
     public Promise<List<PublishOutcome>> publishBatch(List<T> events) {
         if (events.isEmpty()) {
             return Promise.success(List.of());
+        }
+
+        var refusal = StreamWriteRouter.systemWriteRefusal(streamName, systemWriter);
+
+        if (refusal.isPresent()) {
+            return Promise.success(notAttempted(events.size(), refusal.unwrap()));
         }
 
         if (consistencyMode == ConsistencyMode.STRONG) {

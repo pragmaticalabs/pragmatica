@@ -38,7 +38,7 @@ PATTERN='(^|[^_[:alnum:]])start_node([^_[:alnum:]]|$)|cloud_revive_vm|cloud_stop
 # to an excused file (a `docker start` appended to chaos-controller.sh) is still a violation. The path is a prefix.
 ALLOW=(
   'aether/script/demo-cluster.sh|start_node|first start of a demo cluster, not a relaunch'
-  'aether/cli/src/main/java/org/pragmatica/aether/cli/cluster/BootstrapPhaseDeploy.java|&& systemctl start " [+] NodeUserDataRenderer[.]JVM_UNIT_NAME;|#1959 guarded FIRST start: refuses an ever-started node (C4 pins the guard)'
+  'aether/cli/src/main/java/org/pragmatica/aether/cli/cluster/BootstrapPhaseDeploy.java|&& systemctl start " [+] NodeUserDataRenderer[.]JVM_UNIT_NAME$|#1959 guarded FIRST start: refuses an ever-started node (C4 pins the guard); #828 wraps the whole line in a subshell, so the statement no longer ends in a semicolon'
   'aether/cli/src/test/java/org/pragmatica/aether/cli/cluster/BootstrapLaunchOnceTest.java|systemctl (start|restart)|docker (run|restart)|refusal seam: asserts the #1959 guard and that no restart is ever issued'
   'aether/cli/src/test/java/org/pragmatica/aether/cli/cluster/BootstrapPhaseDeployCloudSshRestartTest.java|systemctl start|asserts the guarded first-start command shape (#1959)'
   'aether/aether-config/src/main/java/org/pragmatica/aether/config/cluster/NodeUserDataRenderer.java|systemctl start|FIRST start in cloud-init (never enabled)'

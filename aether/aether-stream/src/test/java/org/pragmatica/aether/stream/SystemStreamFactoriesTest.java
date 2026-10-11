@@ -115,7 +115,8 @@ class SystemStreamFactoriesTest {
         // No caught-up replica visible yet AND no owner resolvable (bootstrap window): the read must fail
         // soft to the local partition rather than fail/forward. SELF owns a local partition with one event.
         partitionManager.createStream(clusterEventsConfig());
-        partitionManager.publishLocal(STREAM, 0, "local".getBytes(), 1_000L);
+        // #1338: a system stream is written only by the system publisher, so the seed carries the system-writer mark.
+        partitionManager.publishLocalAtFloor(STREAM, 0, "local".getBytes(), 1_000L, 0, true);
 
         var consumer = SystemStreamFactories.<byte[]>systemStreamConsumer(SystemStreams.CLUSTER_EVENTS,
                                                                           partitionManager,

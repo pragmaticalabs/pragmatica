@@ -122,6 +122,9 @@ class ClusterDeploymentStateRebalanceOnScaleUpTest {
         // this test class exercises rebalancing, not schema gating, and the value is orthogonal
         // to every assertion below.
         activeState().blueprints().put(artifact, Blueprint.blueprint(artifact, instances, 1, Option.empty(), true));
+        // #1109: the leader allocates only for a COMMITTED target, so the seeded blueprint needs its target in the applied store.
+        kvStore.put(AetherKey.SliceTargetKey.sliceTargetKey(artifact.base()),
+                    AetherValue.SliceTargetValue.sliceTargetValue(artifact.version(), instances));
     }
 
     private void seedSliceActive(Artifact artifact, NodeId node) {
