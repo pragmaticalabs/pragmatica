@@ -278,6 +278,18 @@ public final class StreamPartitionManager implements AutoCloseable {
 
     private record EpochTrust(Epoch epoch, boolean verified) {}
 
+    /// #2087: the highest owner-visible offset this REPLICA has been told of, per partition, with the owner epoch it was
+    /// reported under ([#commitAdvanced]). A replica exposes to a consumer read no more than the minimum of this and what
+    /// it holds, so no read path serves an offset a failover could still replace. Absent means nothing is known: nothing
+    /// is exposed until the owner reports. A newer epoch replaces the entry, even with a lower value; an older one is ignored.
+    private final ConcurrentHashMap<String, CommittedMark> replicaCommitted = new ConcurrentHashMap<>();
+
+    private record CommittedMark(Epoch epoch, long through) {}
+
+    /// #2087: how far a replica's unverified tail has been compared with the committed owner ([#markVerified]); only
+    /// meaningful while the partition is in [#unverifiedReplicas]. A verified prefix is exposed up to the owner's report.
+    private final ConcurrentHashMap<String, Long> verifiedPrefix = new ConcurrentHashMap<>();
+
     /// The offset the owner of `epoch` began writing at.
     @FunctionalInterface
     public interface EpochStartSource {
@@ -2137,6 +2149,97 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                                                                   partition,
                                                                                                   config.confirmationFactor() - 1)));
         }
+
+        ring.addAppendListener(visible -> announceVisible(config.name(), partition, visible));
+    }
+
+    /// #2087: the owner's visible position moved: tell the replicas. Runs on the ring's serial notifier -- never under
+    /// the append lock, never on a publisher's thread -- and the notifier coalesces advances, so a burst of acks is one
+    /// message per drain, not one per ack. A node that is not this partition's owner announces nothing.
+    @Contract
+    private void announceVisible(String streamName, int partition, long visible) {
+        if (placementRoleSupplier.roleFor(streamName, partition) == Role.OWNER) {
+            replicationManager.announceCommitted(streamName,
+                                                 partition,
+                                                 visible,
+                                                 ownerEpochSource.currentOwnerEpoch(streamName, partition));
+        }
+    }
+
+    /// #2087: repeat the visible position of every partition this node owns, on the owner's tick. A replica that missed
+    /// an announcement stays BEHIND, never ahead, and this closes the gap: after the last ack a replica's visible
+    /// position lags the owner's by at most one tick interval plus one message delivery. Cost: one small message per
+    /// owned partition per replica per tick, independent of the publish rate.
+    @Contract
+    public void repeatVisible() {
+        materializedHeads().forEach(head -> resolvePartitionBuffer(head.streamName(), head.partition()).onSuccess(ring -> repeatVisible(head,
+                                                                                                                                        ring)));
+    }
+
+    @Contract
+    private void repeatVisible(PartitionHead head, OffHeapRingBuffer ring) {
+        if (ring.visibleOffset() >= 0) {
+            announceVisible(head.streamName(), head.partition(), ring.visibleOffset());
+        }
+    }
+
+    /// #2087: the owner told this replica how far its visible position reaches. Ignored on the owner itself (it is the
+    /// authority, not a follower) and for an older epoch than the one already recorded.
+    @Contract
+    public void commitAdvanced(String streamName, int partition, long through, Epoch ownerEpoch) {
+        if (placementRoleSupplier.roleFor(streamName, partition) == Role.OWNER) {
+            return;
+        }
+
+        replicaCommitted.merge(partitionKeyOf(streamName, partition),
+                               new CommittedMark(ownerEpoch, through),
+                               StreamPartitionManager::newerMark);
+        resolvePartitionBuffer(streamName, partition).onSuccess(ring -> exposeReplicaCommitted(streamName,
+                                                                                               partition,
+                                                                                               ring));
+    }
+
+    /// A batch landed under `epoch`: the owner of that epoch is the one this replica now follows, so a position reported
+    /// under an OLDER epoch -- a deposed owner's, still in flight -- must be refused from here on (#2087). The recorded
+    /// position carries over: what was acknowledged under the earlier lineage stays acknowledged.
+    @Contract
+    private void noteBatchEpoch(String streamName, int partition, Epoch epoch) {
+        replicaCommitted.merge(partitionKeyOf(streamName, partition),
+                               new CommittedMark(epoch, -1L),
+                               (known, batch) -> batch.epoch()
+                                                      .isStrictlyAfter(known.epoch())
+                                                 ? new CommittedMark(batch.epoch(), known.through())
+                                                 : known);
+    }
+
+    private static CommittedMark newerMark(CommittedMark known, CommittedMark reported) {
+        if (reported.epoch().isStrictlyAfter(known.epoch())) {
+            return reported;
+        }
+
+        return reported.epoch()
+                       .equals(known.epoch()) && reported.through() > known.through()
+               ? reported
+               : known;
+    }
+
+    private long committedMarkThrough(String streamName, int partition) {
+        return option(replicaCommitted.get(partitionKeyOf(streamName, partition))).map(CommittedMark::through)
+                     .or(-1L);
+    }
+
+    /// A replica's visible position: what it holds durably, no further than the owner has reported visible, and not
+    /// into a tail it has not compared with the committed owner ([#unverifiedReplicas]). The epoch trust
+    /// ([#unverifiedFrom]) stays where it was, at the read ([#servedIfVerified]): it is evaluated lazily at the first read
+    /// after the committed epoch advances, and evaluating it here, on the append path, would fix its answer earlier.
+    @Contract
+    private void exposeReplicaCommitted(String streamName, int partition, OffHeapRingBuffer ring) {
+        var key = partitionKeyOf(streamName, partition);
+        var limit = Math.min(ring.durableOffset(), committedMarkThrough(streamName, partition));
+
+        ring.advanceVisible(unverifiedReplicas.contains(key)
+                            ? Math.min(limit, verifiedPrefix.getOrDefault(key, -1L))
+                            : limit);
     }
 
     /// A REPLICA that recovered a tail keeps it invisible until [#markVerified] (#1730 phase 2): before, "its OWN
@@ -2162,9 +2265,20 @@ public final class StreamPartitionManager implements AutoCloseable {
     }
 
     private void exposeVerified(String streamName, int partition, OffHeapRingBuffer ring, long offset) {
-        ring.advanceVisible(Math.min(offset, ring.durableOffset()));
+        var key = partitionKeyOf(streamName, partition);
+        var replica = placementRoleSupplier.roleFor(streamName, partition) == Role.REPLICA;
+
+        verifiedPrefix.merge(key, offset, Math::max);
+        if (replica) {
+            exposeReplicaCommitted(streamName, partition, ring);
+        } else {
+            ring.advanceVisible(Math.min(Math.min(offset, ring.durableOffset()),
+                                         peerAcknowledgedThrough(streamName, partition)));
+        }
+
         if (offset >= ring.headOffset()) {
-            unverifiedReplicas.remove(partitionKeyOf(streamName, partition));
+            unverifiedReplicas.remove(key);
+            verifiedPrefix.remove(key);
         }
     }
 
@@ -2447,6 +2561,12 @@ public final class StreamPartitionManager implements AutoCloseable {
 
     /// Offsets at or below the last sealed offset were durably sealed into segments: what this copy holds there is not a tail
     /// it may discard, so a divergence at or below the sealed floor is refused (the quarantine and the flag stand).
+    /// The highest offset sealed history holds for the partition (`-1` for none). A cut is refused below it ([#requireAboveSealedFloor]), so no
+    /// record at or below it can ever be cut.
+    public long sealedFloor(String streamName, int partition) {
+        return lastSealedOffset.lastSealedOffset(streamName, partition);
+    }
+
     private Result<Unit> requireAboveSealedFloor(String streamName, int partition, long keep) {
         var floor = lastSealedOffset.lastSealedOffset(streamName, partition);
 
@@ -2468,28 +2588,39 @@ public final class StreamPartitionManager implements AutoCloseable {
         var preserved = new java.util.concurrent.atomic.AtomicReference<RecoverySegment.Preserved>();
 
         cutWindowHook.run();
+        var token = new Object();
 
-        return ring.truncateSuffix(keep,
-                                   () -> cutInsideSection(streamName,
-                                                          partition,
-                                                          divergedAtOffset,
-                                                          keep,
-                                                          authority,
-                                                          wal,
-                                                          ring,
-                                                          epoch,
-                                                          wrote,
-                                                          preserved),
-                                   _ -> forgetCutState(streamName, partition, ref, divergedAtOffset, keep))
-                   .onFailure(_ -> {
-                       if (wrote.get()) {
-                       restoreWitness(streamName, partition, wal);
-                   }
-                   })
-                   .onSuccess(_ -> option(preserved.get()).onPresent(segment -> reportPreserved(streamName,
-                                                                                                partition,
-                                                                                                segment)))
-                   .map(removed -> new TailCut(keep, removed, keep + 1, keep + removed, epoch));
+        try {
+            return ring.truncateSuffix(keep,
+                                       () -> cutInsideSection(streamName,
+                                                              partition,
+                                                              divergedAtOffset,
+                                                              keep,
+                                                              authority,
+                                                              wal,
+                                                              ring,
+                                                              epoch,
+                                                              wrote,
+                                                              preserved,
+                                                              token),
+                                       _ -> {
+                                           forgetCutState(streamName, partition, ref, divergedAtOffset, keep);
+                                           endCut(streamName, partition, token);
+                                       })
+                       .onFailure(_ -> {
+                           if (wrote.get()) {
+                           restoreWitness(streamName, partition, wal);
+                       }
+                       })
+                       .onSuccess(_ -> option(preserved.get()).onPresent(segment -> reportPreserved(streamName,
+                                                                                                    partition,
+                                                                                                    segment)))
+                       .map(removed -> new TailCut(keep, removed, keep + 1, keep + removed, epoch));
+        } finally {
+            // Every exit closes the cut's bracket (#2087): the cut refused, failed in the durable copy, failed to shrink the ring, or threw. A
+            // generation left odd would refuse every entity read of the partition for good.
+            endCut(streamName, partition, token);
+        }
     }
 
     /// Test seam (#2086): runs just before the ring's ordered section is entered, i.e. at the point where the cut used to have read the
@@ -2514,7 +2645,23 @@ public final class StreamPartitionManager implements AutoCloseable {
                                           OffHeapRingBuffer ring,
                                           Option<Epoch> epoch,
                                           java.util.concurrent.atomic.AtomicBoolean wrote,
-                                          java.util.concurrent.atomic.AtomicReference<RecoverySegment.Preserved> preserved) {
+                                          java.util.concurrent.atomic.AtomicReference<RecoverySegment.Preserved> preserved,
+                                          Object token) {
+        beginCut(streamName, partition, token);
+
+        return cutSteps(streamName, partition, divergedAtOffset, keep, authority, wal, ring, epoch, wrote, preserved);
+    }
+
+    private Result<Unit> cutSteps(String streamName,
+                                  int partition,
+                                  long divergedAtOffset,
+                                  long keep,
+                                  QuarantineView.RepairAuthority authority,
+                                  Option<AppendLog> wal,
+                                  OffHeapRingBuffer ring,
+                                  Option<Epoch> epoch,
+                                  java.util.concurrent.atomic.AtomicBoolean wrote,
+                                  java.util.concurrent.atomic.AtomicReference<RecoverySegment.Preserved> preserved) {
         var head = ring.headOffset();
         var prospective = new TailCut(keep, head - keep, keep + 1, head, epoch);
 
@@ -2616,6 +2763,54 @@ public final class StreamPartitionManager implements AutoCloseable {
                : new StreamError.RepairNotAuthorized(streamName, partition, divergedAtOffset).<Unit> result();
     }
 
+    /// How many times the log of each partition has been cut (#2087 B4-cut), by [#forgetCutState] -- the single exit of the only suffix
+    /// truncation ([OffHeapRingBuffer#truncateSuffix] through the divergent-tail repair). Anything folded from the log before a cut may hold
+    /// records the cut removed, so a derived view (the durable-entity fold) compares this with the value it was built under.
+    private final ConcurrentHashMap<String, Long> cutGenerations = new ConcurrentHashMap<>();
+
+    /// The identity of the partition's log content, for anything derived from it (#2087 B4-cut): it changes when the ring is replaced (a
+    /// re-created stream, a re-materialization) and across every cut, and it is ODD while a cut is in progress -- from before the ring
+    /// shrinks until after -- so a view built, or checked, in that window never matches. A view is valid only if it was built under an EVEN
+    /// value equal to the current one.
+    public long cutGeneration(String streamName, int partition) {
+        var cuts = cutGenerations.getOrDefault(partitionKeyOf(streamName, partition), 0L);
+
+        return resolvePartitionBuffer(streamName, partition).map(ring -> (ring.incarnation() << 24) + cuts)
+                                     .or(-1L << 24);
+    }
+
+    /// The cut currently open on each partition (#2087): begun inside the ring's ordered section, closed after the ring shrank or on ANY other
+    /// exit. The token makes the close idempotent and keeps it from closing a LATER cut: a close that arrives after another cut began finds a
+    /// different token and does nothing.
+    private final ConcurrentHashMap<String, Object> openCuts = new ConcurrentHashMap<>();
+
+    @Contract
+    void beginCut(String streamName, int partition, Object token) {
+        var key = partitionKeyOf(streamName, partition);
+
+        openCuts.put(key, token);
+        cutGenerations.compute(key,
+                               (_, count) -> count == null
+                                             ? 1L
+                                             : (count & 1L) == 1L
+                                               ? count
+                                               : count + 1L);
+    }
+
+    @Contract
+    void endCut(String streamName, int partition, Object token) {
+        var key = partitionKeyOf(streamName, partition);
+
+        if (openCuts.remove(key, token)) {
+            cutGenerations.compute(key,
+                                   (_, count) -> count == null
+                                                 ? 0L
+                                                 : (count & 1L) == 1L
+                                                   ? count + 1L
+                                                   : count);
+        }
+    }
+
     /// Runs inside the ring's ordered section, after the ring shrank: the quarantine this repair read is lifted, and
     /// the replicated write the durability barrier remembers is forgotten when it was above the cut -- a barrier that
     /// still pointed at it would expose, as durable and visible, offsets the cut removed.
@@ -2627,6 +2822,13 @@ public final class StreamPartitionManager implements AutoCloseable {
         }
         // What remains is the prefix this copy shares with its sender: verified by construction.
         unverifiedReplicas.remove(partitionKeyOf(streamName, partition));
+        verifiedPrefix.remove(partitionKeyOf(streamName, partition));
+        // The owner's reported position above the cut described records that no longer exist here (#2087): what is appended
+        // at those offsets next is the new lineage, visible only once the owner reports it.
+        replicaCommitted.computeIfPresent(partitionKeyOf(streamName, partition),
+                                          (_, mark) -> mark.through() > keep
+                                                       ? new CommittedMark(mark.epoch(), keep)
+                                                       : mark);
         lastReplicatedWalWrite.computeIfPresent(partitionKeyOf(streamName, partition),
                                                 (_, write) -> write.offset() > keep
                                                               ? null
@@ -3448,6 +3650,7 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                                                     timestamp,
                                                                                     ownerEpoch,
                                                                                     some(ownerEpoch)))
+                                   .onSuccess(_ -> noteBatchEpoch(streamName, partition, ownerEpoch))
                                    .onSuccess(held -> visibleAtOnceWithoutWal(streamName, partition, held))
                                    .onFailure(cause -> countRefusedReplicaDrop(cause, streamName, partition));
     }
@@ -3472,16 +3675,23 @@ public final class StreamPartitionManager implements AutoCloseable {
 
     @Contract
     private void replicaDurable(String streamName, int partition, long offset) {
-        var verified = !unverifiedReplicas.contains(partitionKeyOf(streamName, partition));
-
-        resolvePartitionBuffer(streamName, partition).onSuccess(ring -> replicaDurable(ring, offset, verified));
+        resolvePartitionBuffer(streamName, partition).onSuccess(ring -> replicaDurable(streamName,
+                                                                                       partition,
+                                                                                       ring,
+                                                                                       offset));
     }
 
+    /// #2087: durable here is not visible here. A replica's visible position is bounded by what the owner has reported
+    /// visible ([#exposeReplicaCommitted]), so a record this replica holds but the owner has not seen acknowledged is
+    /// never served -- a failover may replace it at the same offset. A node that is no longer (or not yet) a replica --
+    /// a promoted one still landing a catch-up -- follows the owner rule ([#refreshVisible]).
     @Contract
-    private static void replicaDurable(OffHeapRingBuffer ring, long offset, boolean verified) {
+    private void replicaDurable(String streamName, int partition, OffHeapRingBuffer ring, long offset) {
         ring.markDurable(offset);
-        if (verified) {
-            ring.advanceVisible(offset);
+        if (placementRoleSupplier.roleFor(streamName, partition) == Role.REPLICA) {
+            exposeReplicaCommitted(streamName, partition, ring);
+        } else {
+            refreshVisible(ring, streamName, partition);
         }
     }
 
@@ -3852,6 +4062,16 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                                         .map(ProvenanceEntry::provenanceEntry)
                                                                         .toList()))
                      .or(() -> success(List.of()));
+    }
+
+    /// The owner epoch this node's WAL history records for the record at `offset` (the last history entry starting at or below it), or none
+    /// for a copy that keeps no log or records none (#2087 B4-cut: part of a checkpoint's lineage identity).
+    public Option<Epoch> epochAt(String streamName, int partition, long offset) {
+        return epochHistory(streamName, partition).option()
+                           .flatMap(history -> Option.from(history.stream()
+                                                                  .filter(entry -> entry.startOffset() <= offset)
+                                                                  .reduce((earlier, later) -> later)))
+                           .map(ProvenanceEntry::rank);
     }
 
     /// What this node's copy of `(streamName, partition)` says about its records' provenance (#1596): the input of
@@ -4726,7 +4946,7 @@ public final class StreamPartitionManager implements AutoCloseable {
         var totalBytes = 0L;
 
         for (var buffer : entry.materializedRings()) {
-            totalEvents += buffer.eventCount();
+            totalEvents += committedCount(buffer);
             totalBytes += buffer.allocatedBytes();
         }
 
@@ -5474,11 +5694,32 @@ public final class StreamPartitionManager implements AutoCloseable {
         return OffHeapRingBuffer.floorBytes(retention.maxCount(), retention.maxBytes());
     }
 
+    /// The partition's COMMITTED span as a consumer or operator may see it (#2087): the head is the visible position and the
+    /// count is the records between the tail and it, never the appended head or the ring's raw count. A partition with nothing
+    /// visible reports `(-1, -1, 0)`, the encoding of an absent ring. The replication code, which needs what this node HOLDS,
+    /// asks [#appendedHead].
     public Result<PartitionInfo> partitionInfo(String streamName, int partition) {
-        return resolvePartitionBuffer(streamName, partition).map(buffer -> PartitionInfo.partitionInfo(partition,
-                                                                                                       buffer.headOffset(),
-                                                                                                       buffer.tailOffset(),
-                                                                                                       buffer.eventCount()));
+        return resolvePartitionBuffer(streamName, partition).map(buffer -> committedInfo(partition, buffer));
+    }
+
+    /// The highest offset this node holds for the partition, committed or not; `-1` when nothing is held. Replication-class:
+    /// the highest-watermark contest and the catch-up `fromOffset` are about what is held, not what a consumer may see.
+    public long appendedHead(String streamName, int partition) {
+        return resolvePartitionBuffer(streamName, partition).map(OffHeapRingBuffer::headOffset)
+                                     .or(-1L);
+    }
+
+    private static PartitionInfo committedInfo(int partition, OffHeapRingBuffer buffer) {
+        var visibleHead = Math.min(buffer.headOffset(), buffer.visibleOffset());
+        var tail = buffer.tailOffset();
+
+        return visibleHead < 0 || visibleHead < tail
+               ? PartitionInfo.partitionInfo(partition, -1L, -1L, 0L)
+               : PartitionInfo.partitionInfo(partition, visibleHead, tail, visibleHead - tail + 1);
+    }
+
+    private static long committedCount(OffHeapRingBuffer buffer) {
+        return committedInfo(0, buffer).eventCount();
     }
 
     public Result<List<PartitionInfo>> allPartitionInfo(String streamName) {
@@ -5501,10 +5742,7 @@ public final class StreamPartitionManager implements AutoCloseable {
 
     private static PartitionInfo partitionInfoFor(StreamEntry entry, int partition) {
         return entry.ringFor(partition)
-                    .map(buffer -> PartitionInfo.partitionInfo(partition,
-                                                               buffer.headOffset(),
-                                                               buffer.tailOffset(),
-                                                               buffer.eventCount()))
+                    .map(buffer -> committedInfo(partition, buffer))
                     .or(PartitionInfo.partitionInfo(partition, -1L, -1L, 0L));
     }
 

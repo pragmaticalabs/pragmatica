@@ -216,6 +216,20 @@ final class DefaultReplicationManager implements ReplicationManager {
 
     @Contract
     @Override
+    public void announceCommitted(String streamName, int partition, long committedThrough, Epoch ownerEpoch) {
+        var message = ReplicationMessage.CommitAdvance.commitAdvance(governorId,
+                                                                     streamName,
+                                                                     partition,
+                                                                     committedThrough,
+                                                                     ownerEpoch);
+
+        replicationTargets(streamName, partition).forEach(replica -> transport.send(replica,
+                                                                                    message,
+                                                                                    DEFAULT_ACK_TIMEOUT));
+    }
+
+    @Contract
+    @Override
     public void handleAck(ReplicationMessage.ReplicateAck ack) {
         notifyObserver(ack);
         registry.updateWatermark(ack.streamName(),

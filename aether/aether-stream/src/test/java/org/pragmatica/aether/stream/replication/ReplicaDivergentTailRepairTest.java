@@ -244,7 +244,7 @@ class ReplicaDivergentTailRepairTest {
     }
 
     /// A WAL replica that restarted with a recovered tail shows readers nothing of it until its backfill has compared it
-    /// with the owner's; completing that comparison exposes it. (Before, a restarted REPLICA exposed its whole recovered
+    /// with the owner's; completing that comparison exposes it up to the position the owner reports visible (#2087). (Before, a restarted REPLICA exposed its whole recovered
     /// tail at once, including an ex-owner's unacknowledged records.)
     @Test
     void walReplicaRestartedWithATail_isVisibleOnlyAfterItsBackfillVerifiesIt() {
@@ -263,7 +263,11 @@ class ReplicaDivergentTailRepairTest {
         backfill(owner(5, 5, new AtomicLong(), List.of(ProvenanceEntry.provenanceEntry(E1, 0L))));
 
         assertThat(descriptor().state()).isEqualTo(ReplicationState.CAUGHT_UP);
-        assertThat(manager.readLocal(STREAM, PARTITION, 0, 20).unwrap()).as("verified through the owner's head").hasSize(5);
+        assertThat(manager.readLocal(STREAM, PARTITION, 0, 20).unwrap()).as("verified, but the owner has reported nothing visible (#2087)").isEmpty();
+
+        manager.commitAdvanced(STREAM, PARTITION, 4L, E1);
+
+        assertThat(manager.readLocal(STREAM, PARTITION, 0, 20).unwrap()).as("verified through the owner's head and reported visible").hasSize(5);
     }
 
     /// Control: a replica exactly at the owner's head with the owner's records is CAUGHT_UP at that offset, no repair.

@@ -323,25 +323,57 @@ public final class ReplicationReceiveHandler {
     /// view: an owner this node's SWIM view has marked DEPARTED, or has not yet seen, is still the fenced
     /// writer until the leader commits a new owner. (The filter never drops a merely SUSPECT owner.)
     private boolean senderMayBeCommittedOwner(ReplicationMessage.ReplicateEvents message) {
-        return committedOwners.committedOwner(message.streamName(),
-                                              message.partition())
-                              .map(committed -> senderMatches(committed, message))
+        return senderMayBeCommittedOwner(message.streamName(),
+                                         message.partition(),
+                                         message.governorId(),
+                                         message.ownerEpoch());
+    }
+
+    private boolean senderMayBeCommittedOwner(String streamName, int partition, NodeId sender, Epoch batchEpoch) {
+        return committedOwners.committedOwner(streamName, partition)
+                              .map(committed -> senderMatches(committed, sender, batchEpoch))
                               .or(true);
     }
 
     private static boolean senderMatches(CommittedStreamOwnerSource.CommittedOwner committed,
-                                         ReplicationMessage.ReplicateEvents message) {
-        var batchEpoch = message.ownerEpoch();
+                                         NodeId sender,
+                                         Epoch batchEpoch) {
         var committedEpoch = committed.ownerEpoch();
 
-        return batchEpoch.isStrictlyAfter(committedEpoch) || batchEpoch.equals(committedEpoch) && isCommittedSender(committed,
-                                                                                                                    message);
+        return batchEpoch.isStrictlyAfter(committedEpoch) || batchEpoch.equals(committedEpoch) && committed.owner()
+                                                                                                           .equals(sender);
     }
 
-    private static boolean isCommittedSender(CommittedStreamOwnerSource.CommittedOwner committed,
-                                             ReplicationMessage.ReplicateEvents message) {
-        return committed.owner()
-                        .equals(message.governorId());
+    /// What a replica does with the owner's visible position (#2087). Production wires
+    /// `StreamPartitionManager::commitAdvanced`; the default drops it.
+    @FunctionalInterface
+    public interface CommitSink {
+        @Contract
+        void committed(String streamName, int partition, long committedThrough, Epoch ownerEpoch);
+    }
+
+    private volatile CommitSink commitSink = (_, _, _, _) -> {};
+
+    /// Late-bind the [CommitSink]. Set once at wiring.
+    @Contract
+    public void commitSink(CommitSink sink) {
+        this.commitSink = sink;
+    }
+
+    /// The owner's visible position (#2087), validated like a batch: from a sender that cannot be the committed owner
+    /// at that epoch it is dropped, because a deposed owner's position describes a lineage this replica no longer follows.
+    @Contract
+    @MessageReceiver
+    public void onCommitAdvance(ReplicationMessage.CommitAdvance message) {
+        if (senderMayBeCommittedOwner(message.streamName(),
+                                      message.partition(),
+                                      message.governorId(),
+                                      message.ownerEpoch())) {
+            commitSink.committed(message.streamName(),
+                                 message.partition(),
+                                 message.committedThrough(),
+                                 message.ownerEpoch());
+        }
     }
 
     /// A batch from a node that cannot be the committed owner: nothing is applied and nothing is acked —

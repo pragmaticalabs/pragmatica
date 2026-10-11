@@ -450,7 +450,8 @@ public final class EntityCheckpointDriver {
                     .saveCheckpoint(registration.keyspace(),
                                     partition,
                                     candidate.throughOffset(),
-                                    candidate.snapshot())
+                                    candidate.snapshot(),
+                                    candidate.lineage())
                     .withResult(result -> recordOutcome(registration, partition, candidate, tick, result));
     }
 

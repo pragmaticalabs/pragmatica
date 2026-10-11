@@ -63,6 +63,20 @@ class EntityCheckpointDriverCoalescingTest {
                              .isLessThan(IDLE_TICK_BUDGET);
     }
 
+    /// #2087 (B4-cut): the lineage of the record at the claim, read when the candidate was taken, travels with the save. A save without it would
+    /// leave a checkpoint that cannot be validated against the log it is later seeded into.
+    @Test
+    void tick_savesTheCheckpointWithTheLineageOfItsClaim() {
+        var substrate = new CountingSubstrate(true);
+        var driver = EntityCheckpointDriver.entityCheckpointDriver();
+
+        driver.register(KEYSPACE, 1, populatedFold(substrate), substrate, OWNS_EVERY_PARTITION);
+        driver.tick();
+
+        assertThat(substrate.saves.get()).isEqualTo(1);
+        assertThat(substrate.savedLineage.map(lineage -> lineage[0]).or((byte) 0)).as("the lineage the substrate reported at the claim").isEqualTo((byte) 7);
+    }
+
     /// A save that has not resolved by the next tick is still the partition's checkpoint in progress; the
     /// next tick leaves it alone rather than encoding and saving the same fold a second time.
     @Test
@@ -234,6 +248,7 @@ class EntityCheckpointDriverCoalescingTest {
     private static final class CountingSubstrate implements EntityLogSubstrate {
         private final boolean savesResolve;
         private final AtomicInteger saves = new AtomicInteger();
+        private volatile Option<byte[]> savedLineage = Option.none();
         private final AtomicBoolean throwOnNextSave = new AtomicBoolean();
         private final List<Promise<Unit>> pending = new CopyOnWriteArrayList<>();
 
@@ -254,6 +269,18 @@ class EntityCheckpointDriverCoalescingTest {
 
         void throwOnNextSave() {
             throwOnNextSave.set(true);
+        }
+
+        @Override
+        public Option<byte[]> lineageAt(String keyspace, int partition, long offset) {
+            return Option.some(new byte[]{7});
+        }
+
+        @Override
+        public Promise<Unit> saveCheckpoint(String keyspace, int partition, long throughOffset, byte[] snapshot, Option<byte[]> lineage) {
+            savedLineage = lineage;
+
+            return saveCheckpoint(keyspace, partition, throughOffset, snapshot);
         }
 
         @Override

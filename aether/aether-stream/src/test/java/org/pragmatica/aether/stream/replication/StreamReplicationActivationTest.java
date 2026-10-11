@@ -48,11 +48,13 @@ class StreamReplicationActivationTest {
     private StreamPartitionManager replicaManager;
     private ReplicaRegistry ownerRegistry;
     private AtomicInteger replicateSendCount;
+    private AtomicInteger commitAdvanceCount;
     private List<ReplicationMessage> acksToOwner;
 
     @BeforeEach
     void setUp() {
         replicateSendCount = new AtomicInteger(0);
+        commitAdvanceCount = new AtomicInteger(0);
         acksToOwner = new ArrayList<>();
 
         // Replica side: a manager whose appendRecovered the receive handler drives. Its acks are
@@ -67,9 +69,12 @@ class StreamReplicationActivationTest {
         ownerRegistry = replicaRegistry();
         ownerRegistry.registerReplica(STREAM, PARTITION, REPLICA);
         ReplicationTransport loopback = (target, message) -> {
-            replicateSendCount.incrementAndGet();
             if (message instanceof ReplicationMessage.ReplicateEvents events) {
+                replicateSendCount.incrementAndGet();
                 receiveHandler.onReplicateEvents(events);
+            }
+            if (message instanceof ReplicationMessage.CommitAdvance) {
+                commitAdvanceCount.incrementAndGet();
             }
         };
         var ownerReplication = replicationManager(OWNER, ownerRegistry, loopback);
@@ -125,16 +130,60 @@ class StreamReplicationActivationTest {
 
         access.publish("only".getBytes()).await();
 
-        // Exactly one ReplicateEvents send for the single owner publish. The replica applied via
+        // Exactly one ReplicateEvents send for the single owner publish (the owner's CommitAdvance announcements
+        // are a different message, counted on their own and not a replication of the event). The replica applied via
         // appendRecovered (non-replicating) so there is no second send — no replicate→apply→replicate
         // loop.
         assertThat(replicateSendCount.get()).isEqualTo(1);
+        // The owner told its replica how far the acknowledged position reaches (#2087), from the ring's notifier thread.
+        var deadline = System.nanoTime() + 5_000_000_000L;
+
+        while (commitAdvanceCount.get() == 0 && System.nanoTime() < deadline) {
+            Thread.onSpinWait();
+        }
+        assertThat(commitAdvanceCount.get()).as("one visible advance, one announcement").isEqualTo(1);
+        assertThat(replicateSendCount.get()).as("announcing a position is not a second replication of the event").isEqualTo(1);
         // The replica acked the highest applied offset back to the owner.
         assertThat(acksToOwner).hasSize(1);
         assertThat(acksToOwner.getFirst()).isInstanceOf(ReplicationMessage.ReplicateAck.class);
         var ack = (ReplicationMessage.ReplicateAck) acksToOwner.getFirst();
         assertThat(ack.replicaId()).isEqualTo(REPLICA);
         assertThat(ack.confirmedOffset()).isEqualTo(0L);
+    }
+
+    /// #2087: `StreamAccess.metadata()` is a consumer-facing bound. With a confirmation factor of 2 and the replica's acknowledgement
+    /// never delivered back, the published record is appended but not acknowledged: the head and the count must not show it.
+    @Test
+    void metadata_reportsTheCommittedSpan_notTheAppendedHead() {
+        var gated = "gated";
+
+        ownerRegistry.registerReplica(gated, PARTITION, REPLICA);
+        ownerManager.createStream(StreamConfig.streamConfig(gated).withReplication(new org.pragmatica.aether.slice.ReplicationFactors(3, 2)));
+        Option<Function<Integer, Option<NodeId>>> noHrwResolver = Option.none();
+        var access = PartitionedStreamAccess.streamAccess(ownerManager,
+                                                          BytePassthrough.SER,
+                                                          BytePassthrough.DESER,
+                                                          gated,
+                                                          1,
+                                                          Option.none(),
+                                                          Option.none(),
+                                                          OWNER,
+                                                          resolver(OWNER),
+                                                          noHrwResolver);
+
+        access.publish("held".getBytes());
+
+        var deadline = System.nanoTime() + 5_000_000_000L;
+
+        while (ownerManager.appendedHead(gated, PARTITION) < 0 && System.nanoTime() < deadline) {
+            Thread.onSpinWait();
+        }
+        assertThat(ownerManager.appendedHead(gated, PARTITION)).as("control: the record is appended").isEqualTo(0L);
+
+        var partition = access.metadata().await().unwrap().partitions().getFirst();
+
+        assertThat(partition.headOffset()).as("metadata head is the committed head").isEqualTo(-1L);
+        assertThat(partition.eventCount()).isZero();
     }
 
     @Test
