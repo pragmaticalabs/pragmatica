@@ -176,7 +176,8 @@ public final class NodeReplacementPlanner {
     /// The deadline's cause names what kept provisioning from starting when the observation knows it (#2098: the committed
     /// source configuration the fleet inventory is built from never appeared), so the operator is not left with a bare deadline.
     private static String provisioningDeadline(Observation o) {
-        return o.provisionBlocker().isEmpty()
+        return o.provisionBlocker()
+                .isEmpty()
                ? "provisioning deadline"
                : "provisioning deadline: " + o.provisionBlocker();
     }
