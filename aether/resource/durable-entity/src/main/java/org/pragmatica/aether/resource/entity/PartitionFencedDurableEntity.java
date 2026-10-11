@@ -414,7 +414,8 @@ final class PartitionFencedDurableEntity<K, S, C extends Mutator<S>> implements 
     /// The client-facing read (#2087): committed state only. The write path and the timers keep [#readState], which sees the
     /// owner's own pending entries -- the single writer sequences against its log, a reader sees what the log has acknowledged.
     private Promise<Option<S>> readCommittedState(Object key) {
-        return fold.getCommitted(partitionOf(key), String.valueOf(key))
+        return fold.getCommitted(partitionOf(key),
+                                 String.valueOf(key))
                    .flatMap(raw -> raw.fold(() -> Promise.success(Option.<S> none()),
                                             bytes -> Result.lift(throwable -> codecFailed(key, throwable),
                                                                  () -> Option.some(decode(bytes)))
@@ -1134,7 +1135,7 @@ final class PartitionFencedDurableEntity<K, S, C extends Mutator<S>> implements 
             case "EntityNotFound" -> new EntityError.EntityNotFound(String.valueOf(key));
             case "StorageUnavailable" -> new EntityError.StorageUnavailable(String.valueOf(key), cause);
             case "OwnerTransitioning", "OwnershipNotYetCommitted", "FoldInProgress", "NotYetCommitted" -> new EntityError.OwnerTransitioning(String.valueOf(key),
-                                                                                                                          ownerMessage);
+                                                                                                                                             ownerMessage);
             case "ForwardBudgetExhausted" -> new EntityOwnerForward.ForwardNotSent("entity owner-forward for key '" + key + "' refused by the owner, which did not touch the entity: " + ownerMessage + " — nothing was applied; safe to retry with a fresh budget");
             default -> cause;
         }

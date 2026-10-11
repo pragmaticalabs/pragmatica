@@ -11,3 +11,12 @@
   `[mechanism: StreamPartitionManager.exposeReplicaCommitted bounds every replica visible advance by the owner's reported position]`
   `[verified: aether/ember/src/test/java/org/pragmatica/aether/ember/EmberReadCommittedFailoverTest.java]`
   Per-path table: `aether/docs/reference/guarantees.md`.
+- **Metadata and bounds report the committed span.** `StreamAccess.metadata()`, the partition-detail and consumers routes and the stream totals
+  reported the appended head and the ring's raw count (head 1, count 2 against a visible head of -1). They now report the committed head and
+  the committed count; the replication code that needs what a node HOLDS reads `appendedHead`.
+  `[verified: StreamRoutesCommittedBoundsTest, ReadCommittedStreamTest]`
+- **Durable-entity reads serve committed state only.** A client `get` of a key whose newest record is not yet committed waits up to the replication
+  barrier timeout and then fails `NotYetCommitted` (transient); the owner's own writes and timers still sequence against pending entries, and a
+  checkpoint claims only committed offsets. `[verified: EntityCommittedReadEndToEndTest]`
+- **An unacknowledged tail commits without a new publish.** The owner re-offers its tail as an ordinary batch after five quiet ticks (at most 256
+  events); replicas verify what they hold and acknowledge it. `[verified: EmberReadCommittedFailoverTest]`

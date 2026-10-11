@@ -539,8 +539,10 @@ public final class StreamEntityLogSubstrate implements EntityLogSubstrate {
     /// confirmation peers on an owner, or reported visible by the owner on a replica. Never above the appended head.
     @Override
     public long committedOffset(String keyspace, int partition) {
-        return partitionManager.partitionBuffer(EntityPartitionArc.arcName(keyspace), partition)
-                               .map(ring -> Math.min(ring.headOffset(), ring.visibleOffset()))
+        return partitionManager.partitionBuffer(EntityPartitionArc.arcName(keyspace),
+                                                partition)
+                               .map(ring -> Math.min(ring.headOffset(),
+                                                     ring.visibleOffset()))
                                .or(-1L);
     }
 
@@ -553,9 +555,14 @@ public final class StreamEntityLogSubstrate implements EntityLogSubstrate {
             return Promise.unitPromise();
         }
 
-        return partitionManager.partitionBuffer(EntityPartitionArc.arcName(keyspace), partition)
-                               .fold(() -> Causes.cause("partition " + partition + " of '" + keyspace + "' is not held here").<Unit> promise(),
-                                     ring -> awaitVisible(ring, () -> committedOffset(keyspace, partition) >= offset, timeout));
+        return partitionManager.partitionBuffer(EntityPartitionArc.arcName(keyspace),
+                                                partition)
+                               .fold(() -> Causes.cause("partition " + partition
+                                                       + " of '" + keyspace
+                                                       + "' is not held here").<Unit> promise(),
+                                     ring -> awaitVisible(ring,
+                                                          () -> committedOffset(keyspace, partition) >= offset,
+                                                          timeout));
     }
 
     private static Promise<Unit> awaitVisible(org.pragmatica.aether.stream.OffHeapRingBuffer ring,

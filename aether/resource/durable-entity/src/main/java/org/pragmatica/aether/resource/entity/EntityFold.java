@@ -234,7 +234,10 @@ final class EntityFold {
             return Promise.success(get(partition, key));
         }
 
-        return substrate.awaitCommitted(keyspace, partition, offset, substrate.commitWait())
+        return substrate.awaitCommitted(keyspace,
+                                        partition,
+                                        offset,
+                                        substrate.commitWait())
                         .fold(result -> result.fold(_ -> new EntityLogError.NotYetCommitted(keyspace, partition, offset).<Option<byte[]>> promise(),
                                                     _ -> getCommitted(partition, key)));
     }
@@ -311,7 +314,10 @@ final class EntityFold {
                        .onSuccess(_ -> forgetCovered(data,
                                                      record.key(),
                                                      offset))
-                       .onSuccess(_ -> notePending(partition, data, record.key(), offset))
+                       .onSuccess(_ -> notePending(partition,
+                                                   data,
+                                                   record.key(),
+                                                   offset))
                        .onFailure(cause -> logUnapplicable(offset, record, cause));
     }
 
@@ -562,7 +568,6 @@ final class EntityFold {
         var through = data.appliedThrough.get();
 
         data.keyApplied.values().removeIf(applied -> applied <= through);
-
         var claim = committedClaim(partition, data);
 
         return claim < 0L || claim <= notAbove
@@ -665,8 +670,10 @@ final class EntityFold {
 
         for (var raw : records) {
             var applyAt = offset;
-            var applied = EntityLogRecord.decode(raw)
-                                         .flatMap(record -> applyCaughtUp(data, record, applyAt).onSuccess(_ -> notePending(partition, data, record.key(), applyAt)));
+            var applied = EntityLogRecord.decode(raw).flatMap(record -> applyCaughtUp(data, record, applyAt).onSuccess(_ -> notePending(partition,
+                                                                                                                                        data,
+                                                                                                                                        record.key(),
+                                                                                                                                        applyAt)));
 
             if (applied instanceof Result.Failure<Unit>(var cause)) {
                 return new EntityLogError.FoldFailed(keyspace, partition, cause).result();
@@ -901,8 +908,10 @@ final class EntityFold {
 
         for (var raw : records) {
             var applyAt = offset;
-            var applied = EntityLogRecord.decode(raw)
-                                         .flatMap(record -> applyReplayed(building, record, applyAt).onSuccess(_ -> notePending(partition, building, record.key(), applyAt)));
+            var applied = EntityLogRecord.decode(raw).flatMap(record -> applyReplayed(building, record, applyAt).onSuccess(_ -> notePending(partition,
+                                                                                                                                            building,
+                                                                                                                                            record.key(),
+                                                                                                                                            applyAt)));
 
             if (applied instanceof Result.Failure<Unit>(var cause)) {
                 return new EntityLogError.FoldFailed(keyspace, partition, cause).result();

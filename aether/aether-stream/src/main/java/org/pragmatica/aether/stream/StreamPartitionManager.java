@@ -2126,6 +2126,7 @@ public final class StreamPartitionManager implements AutoCloseable {
         if (ring.visibleOffset() >= 0) {
             announceVisible(head.streamName(), head.partition(), ring.visibleOffset());
         }
+
         retransmitTail(head.streamName(), head.partition(), ring);
     }
 
@@ -2152,7 +2153,9 @@ public final class StreamPartitionManager implements AutoCloseable {
         var visible = ring.visibleOffset();
         var head = ring.headOffset();
 
-        if (visible >= head || placementRoleSupplier.roleFor(streamName, partition) != Role.OWNER || ownerServeGate.admit(streamName, partition).isFailure()) {
+        if (visible >= head || placementRoleSupplier.roleFor(streamName, partition) != Role.OWNER || ownerServeGate.admit(streamName,
+                                                                                                                          partition)
+                                                                                                                   .isFailure()) {
             tailWatch.remove(key);
 
             return;
@@ -2174,7 +2177,11 @@ public final class StreamPartitionManager implements AutoCloseable {
     private void offerTail(String streamName, int partition, OffHeapRingBuffer ring, long from) {
         ring.readAppended(from, TAIL_RETRANSMIT_MAX_EVENTS)
             .onSuccess(events -> offerEvents(streamName, partition, from, events))
-            .onFailure(cause -> log.debug("Tail retransmit of {}[{}] from {} not offered: {}", streamName, partition, from, cause.message()));
+            .onFailure(cause -> log.debug("Tail retransmit of {}[{}] from {} not offered: {}",
+                                          streamName,
+                                          partition,
+                                          from,
+                                          cause.message()));
     }
 
     @Contract
@@ -2214,7 +2221,8 @@ public final class StreamPartitionManager implements AutoCloseable {
     private void noteBatchEpoch(String streamName, int partition, Epoch epoch) {
         replicaCommitted.merge(partitionKeyOf(streamName, partition),
                                new CommittedMark(epoch, -1L),
-                               (known, batch) -> batch.epoch().isStrictlyAfter(known.epoch())
+                               (known, batch) -> batch.epoch()
+                                                      .isStrictlyAfter(known.epoch())
                                                  ? new CommittedMark(batch.epoch(), known.through())
                                                  : known);
     }
@@ -5602,7 +5610,7 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// the highest-watermark contest and the catch-up `fromOffset` are about what is held, not what a consumer may see.
     public long appendedHead(String streamName, int partition) {
         return resolvePartitionBuffer(streamName, partition).map(OffHeapRingBuffer::headOffset)
-                                                            .or(-1L);
+                                     .or(-1L);
     }
 
     private static PartitionInfo committedInfo(int partition, OffHeapRingBuffer buffer) {
