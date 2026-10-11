@@ -128,6 +128,18 @@ class RabiaEngineSlowApplyDiagnosticsTest {
     }
 
     @Test
+    void aTaskThatFinished_isNeverReportedLater() throws Exception {
+        engine(ProtocolConfig.testConfig());
+
+        engine.safeExecuteForTesting(() -> {});
+        awaitIdle();
+
+        assertThat(engine.slowTaskCheckForTesting(System.nanoTime() + timeSpan(10).seconds().nanos()).isPresent())
+            .as("a task that ended long ago must not be reported as still running")
+            .isFalse();
+    }
+
+    @Test
     void aYoungTask_isNotReported() throws Exception {
         engine(ProtocolConfig.testConfig());
         var entered = new CountDownLatch(1);
