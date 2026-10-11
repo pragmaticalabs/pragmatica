@@ -1629,7 +1629,8 @@ class NodeReplacementRealRegistryReapTest {
         within(20, () -> assertThat(warnings).anyMatch(w -> w.startsWith("instance-termination-unconfirmed:" + OLD.id())));
 
         assertThat(warnings).anyMatch(w -> w.startsWith("instance-termination-unconfirmed:" + OLD.id()) && w.contains("a failing listing proves nothing") && !w.contains("by hand"));
-        assertThat(persistedMark(OLD).map(m -> !m.seen() && !m.absent()).or(false)).as("not seen, and nothing proves it absent").isTrue();
+        // The event is handed off before the mark's write commits: the mark is awaited, not read at the instant the event is seen.
+        within(10, () -> assertThat(persistedMark(OLD).map(m -> !m.seen() && !m.absent()).or(false)).as("not seen, and nothing proves it absent").isTrue());
         var before = lists.get();
 
         within(30, () -> assertThat(lists.get() - before).as("still re-checked at the normal cadence").isGreaterThanOrEqualTo(2));
