@@ -193,6 +193,45 @@ public interface ClusterTopologyManager extends TopologyManager {
         return org.pragmatica.lang.Unit.unit();
     }
 
+    /// #2062: the manager owns the unconfirmed-termination lifecycle. Marks `node` as retired with an instance whose termination is NOT confirmed and
+    /// raises `instance-termination-unconfirmed` (once per node). While this manager is the active leader it re-checks every marked node at a low
+    /// bounded rate and raises `instance-termination-confirmed` on a real confirmation. Every raiser goes through here; nothing raises the pair
+    /// directly. Default: nothing (a manager that cannot confirm).
+    default org.pragmatica.lang.Unit markUnconfirmed(NodeId node, String cause) {
+        return org.pragmatica.lang.Unit.unit();
+    }
+
+    /// #2062: where the persisted "termination not confirmed" marks are read from (the replicated store), so that a new leader inherits every
+    /// open mark. Default: none.
+    default org.pragmatica.lang.Unit setUnconfirmedMarks(java.util.function.Supplier<java.util.Map<NodeId, org.pragmatica.aether.slice.kvstore.AetherValue.UnconfirmedTerminationValue>> reader) {
+        return org.pragmatica.lang.Unit.unit();
+    }
+
+    /// The replicated marks this manager reads (readable so that the node's wiring can be pinned).
+    default java.util.Map<NodeId, org.pragmatica.aether.slice.kvstore.AetherValue.UnconfirmedTerminationValue> unconfirmedMarks() {
+        return java.util.Map.of();
+    }
+
+    /// The sink the unconfirmed-termination events go to (readable so that the node's wiring can be pinned).
+    default org.pragmatica.utility.warning.OperatorWarningSink operatorWarningSink() {
+        return org.pragmatica.utility.warning.OperatorWarningSink.logOnly();
+    }
+
+    /// #2062: where the unconfirmed-termination operator events go (default: nowhere, the log line stands).
+    default org.pragmatica.lang.Unit setOperatorWarningSink(org.pragmatica.utility.warning.OperatorWarningSink sink) {
+        return org.pragmatica.lang.Unit.unit();
+    }
+
+    /// #2062: the node was retired by `replacement`: its admission marker becomes a retirement tombstone, so its identity, if it rejoins, is refused. Default: nothing.
+    default org.pragmatica.lang.Unit supersedeAdmission(NodeId node, NodeId replacement) {
+        return org.pragmatica.lang.Unit.unit();
+    }
+
+    /// #2062: the node is gone for good (retired by a replacement): its admission marker is deleted ([NodeLifecycleManager#forgetAdmission]). Default: nothing.
+    default org.pragmatica.lang.Unit forgetAdmission(NodeId node) {
+        return org.pragmatica.lang.Unit.unit();
+    }
+
     /// #1543: the committed replacement pairings, read by worker surplus selection.
     default org.pragmatica.lang.Unit setNodeReplacements(NodeReplacementIndex index) {
         return org.pragmatica.lang.Unit.unit();
