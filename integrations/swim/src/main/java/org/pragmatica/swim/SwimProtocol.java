@@ -357,13 +357,12 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// next value and stamps it into [#lastProbedAt], giving a granularity-free total order
     /// for least-recently-probed selection. See [#lastProbedAt].
     private final AtomicLong probeOrdinal = new AtomicLong(0);
-    /// Single false->true latch set on the first inbound SWIM Ping (proof a peer
-    /// has acknowledged this node). Read by [#runAnnounceAttempt] on the scheduler
-    /// thread to cancel the join-announce loop once self is acknowledged — fixes a
-    /// replacement joining an already-quorate cluster never sending an ANNOUNCE
-    /// because the quorum predicate is satisfied at join time. Volatile: written on
-    /// the message thread, read on the scheduler thread.
-    private volatile boolean inboundProbeReceived = false;
+    /// Latch set when this node receives the join ack (a sequence-[#SYNC_ACK_SEQUENCE] `Ack`) for an ANNOUNCE a seed
+    /// ACCEPTED, i.e. after the seed pinned this node's address. Read by [#runAnnounceAttempt] on the scheduler thread
+    /// to cancel the join-announce loop. An inbound Ping does not set it: the seed's address-candidate probe is an
+    /// ordinary Ping, and if this node's Ack to it is lost the seed never accepts the ANNOUNCE, so the retries must
+    /// go on until the join ack arrives. Volatile: written on the message thread, read on the scheduler thread.
+    private volatile boolean joinAckReceived = false;
     /// Self-isolation latch (P2 isolation-era verdict expiry). Set `true` when a FAULTY
     /// edge leaves EVERY tracked peer FAULTY simultaneously — an all-peers-FAULTY signature
     /// is epistemically "I am cut off", not "the whole cluster died". While latched, the
@@ -1580,7 +1579,6 @@ public final class SwimProtocol implements SwimMessageHandler {
 
     // -- Message handlers --
     private void handlePing(InetSocketAddress sender, Ping ping) {
-        inboundProbeReceived = true;
         recordInboundReachability();
         processPiggyback(ping.piggyback(), ping.from(), Option.none());
         var ack = Ack.ack(selfId, ping.sequence(), ackPiggyback());
@@ -1608,6 +1606,10 @@ public final class SwimProtocol implements SwimMessageHandler {
     }
 
     private void handleAck(InetSocketAddress sender, Ack ack) {
+        if (ack.sequence() == SYNC_ACK_SEQUENCE) {
+            joinAckReceived = true;
+        }
+
         var answeredCandidate = confirmAddressCandidate(sender, ack);
 
         processPiggyback(gossipOf(ack, answeredCandidate), ack.from(), answeredProbeFrom(ack));
@@ -2069,16 +2071,22 @@ public final class SwimProtocol implements SwimMessageHandler {
     /// so a stale entry can never resurrect a FAULTY or removed member. The joiner's own pings then carry
     /// its self-ALIVE to every member it just learned, which closes the other direction.
     /// Bounded: at most [#SYNC_MAX_DATAGRAMS] datagrams, each within the piggyback byte budget. The member
-    /// order is shuffled per reply, so the ANNOUNCE retries (every 500ms until first probed) cover a view
+    /// order is shuffled per reply, so the ANNOUNCE retries (every 500ms until the join ack arrives) cover a view
     /// larger than one reply.
     @Contract
     private void replyWithMembershipSnapshot(InetSocketAddress sender, NodeId announcer) {
-        PiggybackBuffer.pack(snapshotFor(announcer),
-                             config.maxPiggyback(),
-                             piggybackBudgetBytes,
-                             SYNC_MAX_DATAGRAMS)
-                       .forEach(page -> transport.send(sender,
-                                                       Ack.ack(selfId, SYNC_ACK_SEQUENCE, page)));
+        var pages = PiggybackBuffer.pack(snapshotFor(announcer),
+                                         config.maxPiggyback(),
+                                         piggybackBudgetBytes,
+                                         SYNC_MAX_DATAGRAMS);
+
+        if (pages.isEmpty()) {
+            // The ack is also the joiner's stop signal: a view with nothing to tell must still answer.
+            transport.send(sender, Ack.ack(selfId, SYNC_ACK_SEQUENCE, List.of()));
+            return;
+        }
+
+        pages.forEach(page -> transport.send(sender, Ack.ack(selfId, SYNC_ACK_SEQUENCE, page)));
     }
 
     /// Live members worth telling a joiner about: ALIVE and SUSPECT (hearsay the joiner's own merge rules
@@ -2250,6 +2258,7 @@ public final class SwimProtocol implements SwimMessageHandler {
             // Seed the durable self-incarnation from the boot incarnation BEFORE the
             // announce loop runs. Monotonic max so a re-announce (or a refutation that
             // already advanced the value) never regresses it.
+            joinAckReceived = false;
             selfIncarnation.updateAndGet(cur -> Math.max(cur, incarnation));
             selfBootToken.compareAndSet(0L, bootToken);
             selfLabels = gossipLabels(self.labels());
@@ -2417,8 +2426,8 @@ public final class SwimProtocol implements SwimMessageHandler {
                                     List<InetSocketAddress> seeds,
                                     AtomicInteger attempts,
                                     AtomicReference<ScheduledFuture<?>> future) {
-        if (inboundProbeReceived) {
-            cancelAnnounce(future, self, "self acknowledged by peer");
+        if (joinAckReceived) {
+            cancelAnnounce(future, self, "join acknowledged by seed");
 
             return;
         }

@@ -140,6 +140,25 @@ class SwimJoinSyncTest {
         assertThat(replied).containsExactly(X);
     }
 
+    /// The join ack is the joiner's stop signal, so a seed whose view holds nothing to tell the announcer must still
+    /// answer with one (empty) sequence-0 Ack, or the joiner would announce until its cap.
+    @Test
+    void announceReply_withNothingToTell_stillSendsAnEmptySequenceZeroAck() {
+        var transport = new RecordingTransport();
+        var seed = SwimProtocol.swimProtocol(manualConfig(), transport, new SwimProtocolTest.RecordingListener(), SEED, SEED_ADDR)
+                               .unwrap();
+
+        seed.putMemberForTest(new NodeId("joiner-b"), JOINER_ADDR, MemberState.ALIVE);
+        seed.announceFromPinnedSourceForTest(JOINER_ADDR, Announce.announce(selfInfo("joiner-b", 29102), "c", 1L));
+
+        var joinAcks = transport.sentMessages.stream()
+                                .filter(sent -> sent.message() instanceof Ack ack && ack.sequence() == 0L)
+                                .toList();
+
+        assertThat(joinAcks).hasSize(1);
+        assertThat(((Ack) joinAcks.getFirst().message()).piggyback()).isEmpty();
+    }
+
     /// A stale entry in the reply (the seed's view of X: ALIVE at incarnation 0) must not resurrect a member
     /// the joiner already holds FAULTY at incarnation 1.
     @Test

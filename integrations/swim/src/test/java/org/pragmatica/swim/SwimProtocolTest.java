@@ -703,7 +703,7 @@ class SwimProtocolTest {
 
         @Test
         void announceJoin_notYetAcknowledged_sendsAnnounce() throws InterruptedException {
-            // No quorum signal exists any more — the only stop conditions are inbound-probe and the cap.
+            // No quorum signal exists any more — the only stop conditions are the join ack and the cap.
             protocol.announceJoin(nodeInfoFor(SELF_ID, SELF_ADDR), "", 0L, List.of(ADDR_A));
 
             // First scheduled attempt fires at 500ms; wait until at least one ANNOUNCE is sent.
@@ -714,22 +714,42 @@ class SwimProtocolTest {
                 .isGreaterThanOrEqualTo(1);
         }
 
+        /// The seed's address-candidate probe is an ordinary Ping. If this node's Ack to it is lost the seed never
+        /// accepts the ANNOUNCE, so a Ping alone must not end the retries.
         @Test
-        void announceJoin_inboundPingReceived_cancelsAnnounceLoop() throws InterruptedException {
+        void announceJoin_inboundPingReceived_keepsAnnouncing() throws InterruptedException {
+            protocol.announceJoin(nodeInfoFor(SELF_ID, SELF_ADDR), "", 0L, List.of(ADDR_A));
+
+            waitUntil(() -> announceCount(transport) >= 1, 3_000L);
+            protocol.onMessage(ADDR_A, new Ping(NODE_A, 1L, List.of()));
+
+            var afterPing = announceCount(transport);
+
+            waitUntil(() -> announceCount(transport) > afterPing, 3_000L);
+            assertThat(announceCount(transport))
+                .as("announce loop must keep retrying after an inbound Ping: the seed has not accepted the ANNOUNCE")
+                .isGreaterThan(afterPing);
+        }
+
+        @Test
+        void announceJoin_joinAckReceived_cancelsAnnounceLoop() throws InterruptedException {
             protocol.announceJoin(nodeInfoFor(SELF_ID, SELF_ADDR), "", 0L, List.of(ADDR_A));
 
             waitUntil(() -> announceCount(transport) >= 1, 3_000L);
             assertThat(announceCount(transport)).isGreaterThanOrEqualTo(1);
 
-            // Deliver an inbound Ping through the real receive path — sets inboundProbeReceived.
-            protocol.onMessage(ADDR_A, new Ping(NODE_A, 1L, List.of()));
+            // The seed's sequence-0 Ack for an accepted ANNOUNCE, through the real receive path.
+            protocol.onMessage(ADDR_A, Ack.ack(NODE_A, 0L, List.of()));
 
-            // The loop must stop announcing on the next tick: count freezes after the latch is set.
-            var afterPing = announceCount(transport);
+            // The loop must stop announcing by the following tick; allow an in-flight attempt to drain first.
+            Thread.sleep(200L);
+
+            var afterAck = announceCount(transport);
+
             Thread.sleep(1_200L); // span at least two 500ms announce ticks
             assertThat(announceCount(transport))
-                .as("announce loop must cancel on the tick following an inbound Ping (self acknowledged)")
-                .isEqualTo(afterPing);
+                .as("announce loop must cancel once the join ack arrives")
+                .isEqualTo(afterAck);
         }
 
         /// #501: the announce loop is a periodic task on the shared scheduler; `stop()` must cancel it
