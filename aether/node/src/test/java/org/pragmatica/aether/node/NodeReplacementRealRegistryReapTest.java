@@ -2518,6 +2518,77 @@ class NodeReplacementRealRegistryReapTest {
         assertThat(r.isFailure()).as("a node that shows life is never cleared").isTrue();
     }
 
+
+    // ---- v-2125 regressions, green on 54d671e98 and kept ----
+    /// D4: two concurrent clears with the by-id read held: exactly one wins, one event.
+    @Test
+    void v2125d_twoConcurrentClears_oneWins_oneEvent() {
+        absentMark();
+        Promise<InstanceInfo> gate = Promise.promise();
+        statusOverride.set(gate);
+
+        var a = ctmUnderTest.clearUnconfirmed(OLD, "alice", "i-1");
+        var b = ctmUnderTest.clearUnconfirmed(OLD, "bob", "i-1");
+
+        gate.succeed(instance(OLD, "i-1", InstanceStatus.TERMINATED));
+        var ra = a.await();
+        var rb = b.await();
+
+        settle();
+        assertThat((ra.isSuccess() ? 1 : 0) + (rb.isSuccess() ? 1 : 0)).isEqualTo(1);
+        assertThat(warnings.stream().filter(w -> w.startsWith("instance-termination-cleared:")).count()).isEqualTo(1);
+    }
+
+    /// D6 (independent re-derivation of F1): a re-check listing in flight when a FORCED clear lands must not re-create the mark.
+    @Test
+    void v2125d_recheckInFlight_forcedClear_isNotResurrected() throws Exception {
+        markWhileListingFails(OLD, "never listed");
+        Promise<List<InstanceInfo>> inFlight = Promise.promise();
+
+        lists.set(0);
+        oneShotListing.set(inFlight);
+        within(10, () -> assertThat(lists.get()).as("the re-check listing is in flight").isGreaterThan(0));
+
+        assertThat(ctmUnderTest.clearUnconfirmed(OLD, "alice", "i-1", true).await().isSuccess()).isTrue();
+        assertThat(persistedMark(OLD).isEmpty()).isTrue();
+        inFlight.succeed(List.of());
+        Thread.sleep(1500);
+
+        assertThat(persistedMark(OLD).isEmpty()).as("the cleared mark must stay cleared").isTrue();
+        assertThat(unconfirmedWarnings()).as("no second unconfirmed warning").isEqualTo(1);
+    }
+
+    /// A FORCED clear while the by-id read finds the instance running: it clears the mark and says so, and it does NOT return the capacity (a read showed the
+    /// instance live); the ledger and the reservation stay as they were.
+    @Test
+    void clearUnconfirmed_aForcedClear_whenTheNamedInstanceRuns_clearsTheMarkButKeepsTheCapacity() {
+        absentMark();
+        reservationFor(OLD);
+        var before = allocated();
+        statusOverride.set(Promise.success(instance(OLD, "i-1", InstanceStatus.RUNNING)));
+
+        assertThat(ctmUnderTest.clearUnconfirmed(OLD, "alice", "i-1", true).await().isSuccess()).isTrue();
+
+        assertThat(persistedMark(OLD).isEmpty()).isTrue();
+        within(5, () -> assertThat(clearedWarning("(forced=true; provider state: no instance listed; by id i-1: RUNNING; ")).isTrue());
+        settle();
+        assertThat(reservation(OLD).isPresent()).isTrue();
+        assertThat(allocated()).isEqualTo(before);
+    }
+
+    /// Odd attested ids never throw: a case variant of `unknown` is just an id (not found, so it clears), and so are ids with spaces, non-ASCII or a newline.
+    @Test
+    void clearUnconfirmed_oddAttestedIds_areIdsLikeAnyOther_andNeverThrow() {
+        for (var odd : new String[] {"UNKNOWN", "i 1 ; rm", "\u00e9\u00e9", "i-1\n"}) {
+            absentMark();
+
+            var result = ctmUnderTest.clearUnconfirmed(OLD, "alice", odd).await();
+
+            assertThat(result.isSuccess()).as("attested id [%s]", odd.replace("\n", "\\n")).isTrue();
+            within(5, () -> assertThat(persistedMark(OLD).isEmpty()).isTrue());
+        }
+    }
+
     /// An instance the provider lists as TERMINATED is gone: the clear goes through unforced, and the event names what the provider showed.
     @Test
     void clearUnconfirmed_aTerminatedInstanceDoesNotRefuse() {
