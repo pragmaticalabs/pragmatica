@@ -106,6 +106,13 @@ public interface EntityLogSubstrate {
         return Promise.unitPromise();
     }
 
+    /// How many times the log of `(keyspace, partition)` has been CUT (#2087 B4-cut): a divergent tail removed from this node's copy. A fold
+    /// built before a cut may hold records the cut removed, so the fold compares this with the value it was built under and rebuilds from the
+    /// surviving log when it changed. The default (a log that is never cut) is constant.
+    default long cutGeneration(String keyspace, int partition) {
+        return 0L;
+    }
+
     /// How long a client read waits for a pending record to commit: the replication barrier's own wait, so a read never waits
     /// longer than the write whose acknowledgement it is waiting for (#2087).
     default TimeSpan commitWait() {

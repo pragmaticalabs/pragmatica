@@ -98,4 +98,31 @@ class StreamEntityLogSubstrateCommittedTest {
             partitionManager.close();
         }
     }
+
+    /// N3: the committed position can reach the target between the caller's first check and the listener's registration, and then no
+    /// listener call ever comes. `awaitVisible` re-reads the position AFTER registering; without that re-read the wait hangs until its
+    /// timeout. The position here is "already reached" and the ring never advances, so only the re-read can resolve the wait.
+    @Test
+    void awaitVisible_resolvesWhenThePositionWasReachedBeforeTheListenerWasRegistered() {
+        var arc = EntityPartitionArc.arcName(KEYSPACE);
+        var partitionManager = streamPartitionManager(64L * 1024 * 1024, EvictionListener.NOOP, replicationManager(SELF, replicaRegistry()));
+
+        try {
+            streamEntityLogSubstrate(partitionManager,
+                                     (_, _) -> new StreamPartitionManager.ReplicaCatchupSource.CatchupView(0, false),
+                                     null,
+                                     null,
+                                     EvictionListener.NOOP,
+                                     null,
+                                     null,
+                                     null).ensureLog(KEYSPACE, 1, new ReplicationFactors(1, 1)).unwrap();
+            var ring = partitionManager.partitionBuffer(arc, 0).or(() -> fail("no ring"));
+
+            assertThat(StreamEntityLogSubstrate.awaitVisible(ring, () -> true, TimeSpan.timeSpan(300).millis()).await().isSuccess())
+                .as("resolved by the re-check after registration, not by a listener call")
+                .isTrue();
+        } finally {
+            partitionManager.close();
+        }
+    }
 }

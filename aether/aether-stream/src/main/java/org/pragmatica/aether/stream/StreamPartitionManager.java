@@ -2675,6 +2675,15 @@ public final class StreamPartitionManager implements AutoCloseable {
                : new StreamError.RepairNotAuthorized(streamName, partition, divergedAtOffset).<Unit> result();
     }
 
+    /// How many times the log of each partition has been cut (#2087 B4-cut), by [#forgetCutState] -- the single exit of the only suffix
+    /// truncation ([OffHeapRingBuffer#truncateSuffix] through the divergent-tail repair). Anything folded from the log before a cut may hold
+    /// records the cut removed, so a derived view (the durable-entity fold) compares this with the value it was built under.
+    private final ConcurrentHashMap<String, Long> cutGenerations = new ConcurrentHashMap<>();
+
+    public long cutGeneration(String streamName, int partition) {
+        return cutGenerations.getOrDefault(partitionKeyOf(streamName, partition), 0L);
+    }
+
     /// Runs inside the ring's ordered section, after the ring shrank: the quarantine this repair read is lifted, and
     /// the replicated write the durability barrier remembers is forgotten when it was above the cut -- a barrier that
     /// still pointed at it would expose, as durable and visible, offsets the cut removed.
@@ -2687,6 +2696,7 @@ public final class StreamPartitionManager implements AutoCloseable {
         // What remains is the prefix this copy shares with its sender: verified by construction.
         unverifiedReplicas.remove(partitionKeyOf(streamName, partition));
         verifiedPrefix.remove(partitionKeyOf(streamName, partition));
+        cutGenerations.merge(partitionKeyOf(streamName, partition), 1L, Long::sum);
         // The owner's reported position above the cut described records that no longer exist here (#2087): what is appended
         // at those offsets next is the new lineage, visible only once the owner reports it.
         replicaCommitted.computeIfPresent(partitionKeyOf(streamName, partition),

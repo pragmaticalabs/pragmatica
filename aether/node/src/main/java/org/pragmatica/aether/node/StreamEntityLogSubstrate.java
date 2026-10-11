@@ -535,6 +535,11 @@ public final class StreamEntityLogSubstrate implements EntityLogSubstrate {
         return partitionManager.nextExpectedOffset(EntityPartitionArc.arcName(keyspace), partition) - 1;
     }
 
+    @Override
+    public long cutGeneration(String keyspace, int partition) {
+        return partitionManager.cutGeneration(EntityPartitionArc.arcName(keyspace), partition);
+    }
+
     /// The log's COMMITTED position (#2087): the ring's visible position, i.e. durable here AND acknowledged by the keyspace's
     /// confirmation peers on an owner, or reported visible by the owner on a replica. Never above the appended head.
     @Override
@@ -565,7 +570,7 @@ public final class StreamEntityLogSubstrate implements EntityLogSubstrate {
                                                           timeout));
     }
 
-    private static Promise<Unit> awaitVisible(org.pragmatica.aether.stream.OffHeapRingBuffer ring,
+    static Promise<Unit> awaitVisible(org.pragmatica.aether.stream.OffHeapRingBuffer ring,
                                               java.util.function.BooleanSupplier reached,
                                               TimeSpan timeout) {
         var committed = Promise.<Unit> promise();

@@ -163,6 +163,29 @@ class EntityCommittedReadTest {
         assertThat(fold.pendingKeys(0)).as("the keys that committed left; only the unacknowledged one remains").isEqualTo(1);
     }
 
+    @Test
+    void aCut_dropsTheFold_soTheCutValueIsNeverServed_andTheSurvivingLogIsRebuilt() {
+        append("k", 5);
+        append("j", 9);
+        assertThat(entity.get("k").await().unwrap()).as("control: served before the cut").isEqualTo(Option.some(5));
+
+        substrate.cutTo(0L);
+
+        assertThat(entity.get("k").await().unwrap()).as("k, at offset 0, survived the cut").isEqualTo(Option.some(5));
+        assertThat(entity.get("j").await().unwrap()).as("j was cut: the rebuilt fold does not hold it").isEqualTo(Option.none());
+    }
+
+    @Test
+    void aStaleFold_isNeverCheckpointed_afterACut() {
+        append("k", 5);
+        append("j", 9);
+
+        substrate.cutTo(-1L);
+
+        assertThat(fold.checkpointCandidate(0, -1L).isPresent()).as("the contents may hold cut records").isFalse();
+        assertThat(fold.checkpointableThrough(0)).isEqualTo(-1L);
+    }
+
     private void append(String key, int value) {
         var record = EntityLogRecord.upsert(key, String.valueOf(value).getBytes(StandardCharsets.UTF_8)).encode();
         var offset = substrate.appendRaw(record);
@@ -177,6 +200,21 @@ class EntityCommittedReadTest {
         private volatile long committed = Long.MAX_VALUE;
 
         private record Waiter(long offset, Promise<Unit> promise) {}
+
+        private volatile long cutGeneration;
+
+        /// Removes every record above `keepThrough` and counts a cut, as the divergent-tail repair does on the ring.
+        void cutTo(long keepThrough) {
+            while (log.size() - 1L > keepThrough) {
+                log.remove(log.size() - 1);
+            }
+            cutGeneration++;
+        }
+
+        @Override
+        public long cutGeneration(String keyspace, int partition) {
+            return cutGeneration;
+        }
 
         long appendRaw(byte[] record) {
             log.add(record);

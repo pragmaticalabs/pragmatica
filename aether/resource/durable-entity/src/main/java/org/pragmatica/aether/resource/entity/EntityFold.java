@@ -105,7 +105,11 @@ final class EntityFold {
     /// new one from the LOG — by the replay when they sit below its head, by the next [#caughtUp] when
     /// they sit above it.
     private static final class PartitionFold {
-        private final AtomicReference<FoldedPartition> published = new AtomicReference<>(new FoldedPartition());
+        private final AtomicReference<FoldedPartition> published;
+        private PartitionFold(long generation) {
+            this.published = new AtomicReference<>(new FoldedPartition(generation));
+        }
+
         private final AtomicReference<Promise<Unit>> rebuild = new AtomicReference<>();
         private final AtomicReference<Promise<Unit>> catchUp = new AtomicReference<>();
     }
@@ -125,6 +129,13 @@ final class EntityFold {
     /// watermark covers it — at once by [#forgetCovered], or by the next [#checkpointCandidate] for an
     /// offset that parked — so the map tracks keys written above the watermark, not every key ever written.
     private static final class FoldedPartition {
+        /// #2087 B4-cut: the log's cut count when this fold's build began ([EntityLogSubstrate#cutGeneration]). A fold whose generation
+        /// differs from the log's current one may hold records a cut removed: it is never served and never checkpointed.
+        private final long generation;
+        private FoldedPartition(long generation) {
+            this.generation = generation;
+        }
+
         private final Map<String, byte[]> state = new ConcurrentHashMap<>();
         private final Map<String, Map<String, PendingTimer>> timers = new ConcurrentHashMap<>();
         private final ConcurrentHashMap<String, Long> keyApplied = new ConcurrentHashMap<>();
@@ -146,6 +157,8 @@ final class EntityFold {
     /// latching the failure forever would turn a transient state into a permanent outage.
     Promise<Unit> ready(int partition) {
         var fold = partitionFold(partition);
+
+        dropIfCut(partition, fold);
         var existing = fold.rebuild.get();
 
         if (existing != null) {
@@ -191,6 +204,17 @@ final class EntityFold {
         readyWindowProbe = probe;
     }
 
+    /// #2087 B4-cut: the log was CUT since the published fold was built, so the fold may hold records the cut removed (the probe: a
+    /// key whose cut write was still served). The rebuild memo is dropped so the next access rebuilds from the surviving log; until the new
+    /// fold is published every client read refuses ([#getCommitted]) and no stale fold is checkpointed. The cut is the event: nothing here
+    /// polls on a timer.
+    private void dropIfCut(int partition, PartitionFold fold) {
+        if (fold.published.get().generation != substrate.cutGeneration(keyspace, partition)) {
+            fold.rebuild.set(null);
+            fold.catchUp.set(null);
+        }
+    }
+
     private static void completeRebuild(PartitionFold fold, Promise<Unit> started, Result<Unit> result) {
         result.onFailure(_ -> fold.rebuild.set(null));
         started.resolve(result);
@@ -222,6 +246,10 @@ final class EntityFold {
     /// reveal a value a failover could still replace. Every other key is answered at once. Only valid after [#ready].
     Promise<Option<byte[]>> getCommitted(int partition, String key) {
         var data = publishedFold(partition);
+
+        if (data.generation != substrate.cutGeneration(keyspace, partition)) {
+            return new EntityLogError.FoldInProgress(keyspace, partition).promise();
+        }
         var offset = data.pending.get(key);
 
         if (offset == null) {
@@ -531,6 +559,10 @@ final class EntityFold {
     /// A checkpoint may claim only COMMITTED offsets (#2087): the contents may run ahead of the claim (replay is idempotent), but a
     /// claim above the committed position would pin retention above records a failover may still replace.
     private long committedClaim(int partition, FoldedPartition data) {
+        if (data.generation != substrate.cutGeneration(keyspace, partition)) {
+            return -1L;
+        }
+
         return Math.min(data.appliedThrough.get(), substrate.committedOffset(keyspace, partition));
     }
 
@@ -738,7 +770,7 @@ final class EntityFold {
     }
 
     private PartitionFold partitionFold(int partition) {
-        return partitions.computeIfAbsent(partition, _ -> new PartitionFold());
+        return partitions.computeIfAbsent(partition, _ -> new PartitionFold(substrate.cutGeneration(keyspace, partition)));
     }
 
     private FoldedPartition publishedFold(int partition) {
@@ -756,10 +788,10 @@ final class EntityFold {
             return new EntityLogError.FoldInProgress(keyspace, partition).promise();
         }
 
-        var building = new FoldedPartition();
+        var building = new FoldedPartition(substrate.cutGeneration(keyspace, partition));
 
         return usableCheckpoint(partition).flatMap(checkpoint -> restoreThenReplay(partition, building, checkpoint))
-                               .map(_ -> publish(fold, building));
+                               .flatMap(_ -> publishUnlessCut(partition, fold, building));
     }
 
     /// The checkpoint to seed from, validated HERE, at its point of use (#1533): a checkpoint pointer is
@@ -835,6 +867,13 @@ final class EntityFold {
     /// refuses to write a checkpoint that does not advance the last one it wrote. The pairing half is
     /// here, in [#checkpointCandidate]; the monotonicity half is there, because only the writer knows what
     /// it last published.
+    /// A fold built while the log was being cut would publish records the cut removed: it is discarded and the rebuild retried.
+    private Promise<Unit> publishUnlessCut(int partition, PartitionFold fold, FoldedPartition built) {
+        return built.generation == substrate.cutGeneration(keyspace, partition)
+               ? Promise.success(publish(fold, built))
+               : new EntityLogError.FoldInProgress(keyspace, partition).promise();
+    }
+
     private static Unit publish(PartitionFold fold, FoldedPartition built) {
         fold.published.set(built);
 
