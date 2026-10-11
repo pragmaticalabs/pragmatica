@@ -2576,19 +2576,20 @@ public final class StreamPartitionManager implements AutoCloseable {
                                           java.util.concurrent.atomic.AtomicReference<RecoverySegment.Preserved> preserved) {
         beginCut(streamName, partition);
 
-        return cutSteps(streamName, partition, divergedAtOffset, keep, authority, wal, ring, epoch, wrote, preserved).onFailure(_ -> endCut(streamName, partition));
+        return cutSteps(streamName, partition, divergedAtOffset, keep, authority, wal, ring, epoch, wrote, preserved).onFailure(_ -> endCut(streamName,
+                                                                                                                                            partition));
     }
 
     private Result<Unit> cutSteps(String streamName,
-                                          int partition,
-                                          long divergedAtOffset,
-                                          long keep,
-                                          QuarantineView.RepairAuthority authority,
-                                          Option<AppendLog> wal,
-                                          OffHeapRingBuffer ring,
-                                          Option<Epoch> epoch,
-                                          java.util.concurrent.atomic.AtomicBoolean wrote,
-                                          java.util.concurrent.atomic.AtomicReference<RecoverySegment.Preserved> preserved) {
+                                  int partition,
+                                  long divergedAtOffset,
+                                  long keep,
+                                  QuarantineView.RepairAuthority authority,
+                                  Option<AppendLog> wal,
+                                  OffHeapRingBuffer ring,
+                                  Option<Epoch> epoch,
+                                  java.util.concurrent.atomic.AtomicBoolean wrote,
+                                  java.util.concurrent.atomic.AtomicReference<RecoverySegment.Preserved> preserved) {
         var head = ring.headOffset();
         var prospective = new TailCut(keep, head - keep, keep + 1, head, epoch);
 
@@ -2703,7 +2704,7 @@ public final class StreamPartitionManager implements AutoCloseable {
         var cuts = cutGenerations.getOrDefault(partitionKeyOf(streamName, partition), 0L);
 
         return resolvePartitionBuffer(streamName, partition).map(ring -> (ring.incarnation() << 24) + cuts)
-                                                            .or(-1L << 24);
+                                     .or(-1L << 24);
     }
 
     @Contract
