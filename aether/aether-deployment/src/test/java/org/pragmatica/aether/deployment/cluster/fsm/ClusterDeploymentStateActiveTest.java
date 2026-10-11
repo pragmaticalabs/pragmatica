@@ -1087,19 +1087,22 @@ class ClusterDeploymentStateActiveTest {
             assertThat(codes()).containsExactly("slice-start-awaiting-target", "slice-start-deferral-ended");
         }
 
-        /// v-2128 W12b: the submitted value is only reused for the version it names; a value pending for another version of the base is not
-        /// written for this one.
+        /// v-2128 W12b: the submitted value is only reused for the version it names. A rollout holds two versions of one base in the mirror and one
+        /// pending value (the newer's); the refused older version must not get it written for it.
         @Test
         void pendingValueOfAnotherVersion_isNeverResubmittedForThisOne() {
-            var otherVersion = org.pragmatica.aether.artifact.Version.version("2.0.0").unwrap();
+            var newer = Artifact.artifact("org.example:slice-a:2.0.0").unwrap();
 
-            activeState().ctx().pendingTargetPuts().put(ARTIFACT.base(), SliceTargetValue.sliceTargetValue(otherVersion, 7));
+            activeState().blueprints().put(newer, org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager.Blueprint.blueprint(
+                    newer, 7, 1, Option.some(OWNER), true));
+            activeState().ctx().pendingTargetPuts().put(ARTIFACT.base(), SliceTargetValue.sliceTargetValue(newer.version(), 7));
             tick(0);
             tick(bound());
 
-            assertThat(targetPuts()).hasSize(2);
-            assertThat(targetPuts().getLast().currentVersion()).as("the re-submitted put names the refused version").isEqualTo(ARTIFACT.version());
-            assertThat(targetPuts().getLast().targetInstances()).as("and not the other version's count").isEqualTo(1);
+            assertThat(targetPuts().stream().skip(1).filter(put -> put.currentVersion().equals(ARTIFACT.version())).toList())
+                    .as("the refused older version is re-submitted with its own value, not the pending value of the newer one")
+                    .isNotEmpty()
+                    .allSatisfy(put -> assertThat(put.targetInstances()).isEqualTo(1));
         }
 
         /// v-2128 follow-up: a submitted value whose blueprint is rolled back or removed is forgotten, not kept.
