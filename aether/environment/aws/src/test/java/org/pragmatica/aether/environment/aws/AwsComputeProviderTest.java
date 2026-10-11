@@ -95,7 +95,7 @@ class AwsComputeProviderTest {
             provider.provision(InstanceType.ON_DEMAND)
                     .await()
                     .onSuccess(info -> assertThat(info).as("expected readiness failure, not a phantom success").isNull())
-                    .onFailure(AwsComputeProviderTest::assertProvisionFailedError);
+                    .onFailure(cause -> assertThat(cause).as("#1111: the readiness timeout reaches the caller typed (the instance EXISTS), never flattened into a provision failure").isInstanceOf(EnvironmentError.ProvisionReadinessTimeout.class));
         }
 
         @Test
