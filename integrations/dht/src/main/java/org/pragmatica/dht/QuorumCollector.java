@@ -21,7 +21,6 @@ import java.util.function.BinaryOperator;
 import java.util.function.UnaryOperator;
 
 import org.pragmatica.lang.Cause;
-import org.pragmatica.lang.io.CoreError;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
@@ -101,16 +100,6 @@ public final class QuorumCollector<T> {
     /// @param promise promise to resolve when quorum reached or failed
     public static <V> QuorumCollector<Option<V>> optionCollector(int quorum, int total, Promise<Option<V>> promise) {
         return new QuorumCollector<>(quorum, total, promise, UnaryOperator.identity(), QuorumCollector::selectBest);
-    }
-
-    /// Run `cleanup` if the operation ends by timing out ([CoreError.Timeout]); a quorum success or a fast-fail does not.
-    @Contract
-    public void onTimeout(Runnable cleanup) {
-        promise.onFailure(cause -> {
-            if (cause instanceof CoreError.Timeout) {
-                cleanup.run();
-            }
-        });
     }
 
     /// Record a successful response. Resolves promise when quorum reached.

@@ -28,11 +28,13 @@ class DistributedDHTClientPendingOpsTest {
     private static final DHTConfig SHORT_CONFIG = new DHTConfig(1, 1, 1, timeSpan(300).millis());
 
     private final CopyOnWriteArrayList<ProtocolMessage> sent = new CopyOnWriteArrayList<>();
+    private final CopyOnWriteArrayList<NodeId> sentTo = new CopyOnWriteArrayList<>();
+    private ConsistentHashRing<NodeId> ring;
     private DistributedDHTClient base;
 
     @BeforeEach
     void setUp() {
-        var ring = ConsistentHashRing.<NodeId> consistentHashRing();
+        ring = ConsistentHashRing.<NodeId> consistentHashRing();
 
         for (var i = 1; i <= 6; i++) {
             ring.addNode(new NodeId("replica-" + i));
@@ -40,6 +42,7 @@ class DistributedDHTClientPendingOpsTest {
         DHTNetwork network = new DHTNetwork() {
             @Override
             public void send(NodeId nodeId, ProtocolMessage message) {
+                sentTo.add(nodeId);
                 sent.add(message);
             }
 
@@ -176,5 +179,98 @@ class DistributedDHTClientPendingOpsTest {
                                            DHTMessage.ExistsRequest.class,
                                            id -> new DHTMessage.ExistsResponse(id, REPLICA, true, DHTMessage.Readiness.SERVING),
                                            m -> base.onExistsResponse((DHTMessage.ExistsResponse) m));
+    }
+
+    private DistributedDHTClient shortWindowClient() {
+        var config = new DHTConfig(3, 2, 2, timeSpan(600).millis());
+        var node = dhtNode(LOCAL, memoryStorageEngine(), ring, config);
+
+        return distributedDHTClient(node, new DHTNetwork() {
+            @Override
+            public void send(NodeId nodeId, ProtocolMessage message) {
+                sentTo.add(nodeId);
+                sent.add(message);
+            }
+
+            @Override
+            public Promise<WriteOutcome> sendOutcome(NodeId target, ProtocolMessage message) {
+                send(target, message);
+                return Promise.success(new WriteOutcome.Sent(target));
+            }
+        }, config);
+    }
+
+    private static void awaitPending(DistributedDHTClient client, int expected) {
+        for (var i = 0; i < 300 && client.pendingOperations() != expected; i++) {
+            sleepQuietly(10);
+        }
+        assertThat(client.pendingOperations()).isEqualTo(expected);
+    }
+
+    private static GetResponseFactory present() {
+        return (id, sender) -> new DHTMessage.GetResponse(id, sender, Option.some(new byte[]{1}), DHTMessage.Readiness.SERVING);
+    }
+
+    private interface GetResponseFactory {
+        DHTMessage.GetResponse of(String requestId, NodeId sender);
+    }
+
+    /// RF3 / R2: two replies make the quorum and the read returns; the third replica stays silent and in the ring.
+    /// Its entry must not outlive the operation window, yet a reply that does land inside the window is consumed.
+    @Test
+    void silentReplicaAfterQuorum_entryExpires_andLateReplyAfterExpiryIsIgnored() {
+        var client = shortWindowClient().withResolveFallbackObserver(ResolveFallbackObserver.noop());
+        var op = client.get(key());
+        var requests = requests(DHTMessage.GetRequest.class);
+
+        assertThat(requests).hasSize(3);
+        requests.subList(0, 2).forEach(r -> client.onGetResponse(present().of(r.requestId(), REPLICA)));
+
+        assertThat(op.await(timeSpan(2).seconds()).isSuccess()).as("quorum of two resolves the read").isTrue();
+        assertThat(client.pendingOperations()).as("the silent replica's entry is still held inside the window").isEqualTo(1);
+
+        awaitPending(client, 0);
+        client.onGetResponse(present().of(requests.get(2).requestId(), REPLICA));
+        assertThat(client.pendingOperations()).isZero();
+    }
+
+    @Test
+    void lateReplyInsideTheWindow_isStillConsumed_andReleasesItsEntry() {
+        var client = shortWindowClient();
+        var op = client.get(key());
+        var requests = requests(DHTMessage.GetRequest.class);
+
+        requests.subList(0, 2).forEach(r -> client.onGetResponse(present().of(r.requestId(), REPLICA)));
+        assertThat(op.await(timeSpan(2).seconds()).isSuccess()).isTrue();
+        assertThat(client.pendingOperations()).isEqualTo(1);
+
+        client.onGetResponse(present().of(requests.get(2).requestId(), REPLICA));
+
+        assertThat(client.pendingOperations()).as("the late reply took its entry").isZero();
+    }
+
+    /// A departed target is replaced by a read to another replica; if that replacement never answers, its entry
+    /// expires like any other.
+    @Test
+    void silentReplacementRead_entryExpires() {
+        var client = shortWindowClient();
+        var op = client.get(key());
+        var initial = requests(DHTMessage.GetRequest.class);
+
+        assertThat(initial).hasSize(3);
+        ring.removeNode(sentTo.get(0));
+
+        var all = requests(DHTMessage.GetRequest.class);
+
+        assertThat(all).as("the departure dispatched a replacement read").hasSize(4);
+        client.onGetResponse(present().of(initial.get(1).requestId(), REPLICA));
+        client.onGetResponse(present().of(initial.get(2).requestId(), REPLICA));
+
+        assertThat(op.await(timeSpan(2).seconds()).isSuccess()).isTrue();
+        assertThat(client.pendingOperations()).as("the replacement is silent and still held").isEqualTo(1);
+
+        awaitPending(client, 0);
+        client.onGetResponse(present().of(all.get(3).requestId(), REPLICA));
+        assertThat(client.pendingOperations()).isZero();
     }
 }

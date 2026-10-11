@@ -1056,12 +1056,24 @@ public final class DistributedDHTClient implements DHTClient {
         return HEX.formatHex(key);
     }
 
-    /// Register the request so its reply finds the collector, and drop the entry when the operation times out: a
-    /// peer that never answers and never leaves the ring would otherwise leave it in the shared map for good. A reply
-    /// arriving after the timeout finds no entry and is ignored.
+    /// Register the request so its reply finds the collector, and bound the entry's life: it is dropped once every
+    /// reply of the operation has arrived, or the operation timeout has passed since the request was sent, whichever
+    /// comes first. A peer that never answers and never leaves the ring would otherwise leave the entry in the shared
+    /// map for good, after a quorum success, a fast-fail, a timeout, or for a silent replacement read alike.
+    ///
+    /// The entry is deliberately NOT dropped at the moment the operation completes: a reply that lands after the
+    /// quorum is still consumed, because it feeds the late-stale evidence of a write ([#noteLateStale]) and the late
+    /// value a read discarded, both of which wait for [QuorumCollector#allReplied] for at most the operation timeout.
+    /// Expiry and a late reply arbitrate on the atomic `pendingOps.remove`: whichever removes the entry first owns
+    /// it, the other finds nothing and does nothing.
     private <T> void track(String correlationId, QuorumCollector<T> collector) {
         pendingOps.put(correlationId, new PendingOperation<>(collector));
-        collector.onTimeout(() -> pendingOps.remove(correlationId));
+
+        Promise<Unit> settled = Promise.promise();
+
+        collector.allReplied().onSuccess(_ -> settled.succeed(unit()));
+        settled.timeout(config.get().operationTimeout())
+               .onResultRun(() -> pendingOps.remove(correlationId));
     }
 
     /// Requests awaiting a reply, across this client and every instance derived from it. Test seam.
