@@ -5,7 +5,9 @@
 package org.pragmatica.aether.node.health;
 
 import java.net.InetSocketAddress;
+import java.util.Collection;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
@@ -13,6 +15,8 @@ import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.function.Predicate;
 import java.util.function.Supplier;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 import org.pragmatica.aether.metrics.observation.PeerObservationStore;
 import org.pragmatica.aether.node.health.fsm.SwimHealthContext;
@@ -112,6 +116,7 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
     private final List<SwimProtocol.TransportObservationEmitter> pendingTransportObservationEmitters = new CopyOnWriteArrayList<>();
 
     private volatile Option<AnnounceJoinCall> pendingAnnounceJoin = none();
+    private final MembershipResyncPolicy resync = MembershipResyncPolicy.membershipResyncPolicy();
     /// Test seam (#1308): runs on the starting thread once the SWIM port is bound and before the
     /// protocol is created, so a test can hold the detector in Starting or fail a start after a
     /// successful bind. Production never replaces it.
@@ -420,6 +425,43 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
         protocol().onPresent(p -> p.announceJoin(self, clusterName, incarnation, bootToken, seeds));
     }
 
+    /// Asks the peers for the committed electorate's members this node's SWIM view still lacks (#1803).
+    ///
+    /// A replacement is minted with the peers that existed when it was minted, so the electorate it later
+    /// joins can name voters its SWIM view never held: the join ack was merged through a scope that did not
+    /// yet include them, and gossip about them is a one-shot. Re-announcing to the seeds and to every member
+    /// already known makes each answer with its view again, merged now through the grown scope; a voter learned
+    /// this way is dialed through the same discovery path as any other SWIM-introduced peer. Paced by
+    /// [MembershipResyncPolicy]; a no-op while nothing is missing, before the announce call is known, or
+    /// while the protocol is not running.
+    @Contract
+    public void requestMembershipView(Set<NodeId> electorate) {
+        protocol().onPresent(protocol -> pendingAnnounceJoin.onPresent(call -> resyncMembership(protocol,
+                                                                                                call,
+                                                                                                electorate)));
+    }
+
+    private void resyncMembership(SwimProtocol protocol, AnnounceJoinCall call, Set<NodeId> electorate) {
+        var self = call.self().id();
+        var known = protocol.members();
+        var missing = electorate.stream()
+                                .filter(voter -> !voter.equals(self) && !known.containsKey(voter))
+                                .collect(Collectors.toUnmodifiableSet());
+
+        if (resync.permits(missing, System.nanoTime())) {
+            protocol.requestMembershipView(call.self(), call.clusterName(), announceTargets(call, known.values()));
+        }
+    }
+
+    private static List<InetSocketAddress> announceTargets(AnnounceJoinCall call, Collection<SwimMember> members) {
+        return Stream.concat(call.seeds().stream(),
+                             members.stream()
+                                    .filter(member -> member.state() == SwimMember.MemberState.ALIVE)
+                                    .map(SwimMember::address))
+                     .distinct()
+                     .toList();
+    }
+
     public SwimHealth healthOf(NodeId nodeId) {
         return protocol().map(p -> p.healthOf(nodeId))
                        .or(SwimHealth.UNKNOWN);
@@ -440,6 +482,30 @@ public final class CoreSwimHealthDetector implements SwimMembershipListener {
     @Contract
     public void setSwimBlackholed(boolean enabled) {
         transport().onPresent(t -> t.blackhole(enabled));
+    }
+
+    /// Test-only per-peer partition (#1730): drop SWIM traffic to and from `unreachable`, resolved to their SWIM
+    /// addresses from the current membership. An empty set heals.
+    @Contract
+    public void setSwimPeerPartition(java.util.Set<NodeId> unreachable) {
+        var addresses = protocol().map(p -> p.members()
+                                             .values()
+                                             .stream()
+                                             .filter(member -> unreachable.contains(member.nodeId()))
+                                             .map(SwimMember::address)
+                                             .collect(java.util.stream.Collectors.toSet()))
+                                .or(java.util.Set.of());
+
+        transport().onPresent(t -> t.dropPeers(address -> addresses.stream()
+                                                                   .anyMatch(dropped -> sameEndpoint(dropped, address))));
+    }
+
+    private static boolean sameEndpoint(InetSocketAddress left, InetSocketAddress right) {
+        return left.getPort() == right.getPort()
+               && (left.getAddress() == null || right.getAddress() == null || left.getAddress()
+                                                                                  .isLoopbackAddress() && right.getAddress()
+                                                                                                               .isLoopbackAddress() || left.getAddress()
+                                                                                                                                           .equals(right.getAddress()));
     }
 
     private Option<SwimTransport> transport() {

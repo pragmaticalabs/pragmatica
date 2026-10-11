@@ -1,12 +1,12 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.resource.db.jooq.r2dbc;
 
 import java.util.List;
 
 import org.pragmatica.aether.resource.db.DatabaseConnectorConfig;
+import org.pragmatica.aether.resource.db.DatabaseType;
 import org.pragmatica.aether.resource.db.DatabaseConnectorError;
 import org.pragmatica.aether.resource.db.jooq.JooqConnector;
 import org.pragmatica.jooq.r2dbc.JooqR2dbcOperations;
@@ -45,7 +45,7 @@ public final class R2dbcJooqConnector implements JooqConnector {
 
     public static R2dbcJooqConnector r2dbcJooqConnector(DatabaseConnectorConfig config,
                                                         ConnectionFactory connectionFactory) {
-        var dialect = JooqConnector.mapDialect(config.effectiveType());
+        var dialect = JooqConnector.mapDialect(config.effectiveType(DatabaseConnectorConfig.Transport.R2DBC));
 
         return new R2dbcJooqConnector(config, connectionFactory, dialect);
     }
@@ -107,6 +107,11 @@ public final class R2dbcJooqConnector implements JooqConnector {
     @Override
     public DatabaseConnectorConfig config() {
         return config;
+    }
+
+    @Override
+    public DatabaseType databaseType() {
+        return config.effectiveType(DatabaseConnectorConfig.Transport.R2DBC);
     }
 
     @Override

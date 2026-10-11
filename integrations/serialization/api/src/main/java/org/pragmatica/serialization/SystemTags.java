@@ -183,6 +183,12 @@ public interface SystemTags {
         // #1526: genesis agreement. Consensus-prefixed, so it must sit in the one-byte window; 89 was
         // the next free slot in it (blocks are advisory).
         pin(table, 89, "org.pragmatica.consensus.rabia.RabiaProtocolMessage.Asynchronous.GenesisAnnouncement");
+        // #1777: carried in every DHT read reply; DHT-prefixed, so it must sit in the one-byte window, and 90
+        // was a free slot in it (blocks are advisory). Tag 90 was
+        // `org.pragmatica.aether.worker.network.DHTRelayMessage`, removed by #1390 (09a2185fb) WITHOUT a retired
+        // pin. It had no handler or registration, so no peer of any shipped build sends it; reuse is a pre-GA
+        // exception to "never reuse", as 89 was (#1526).
+        pin(table, 90, "org.pragmatica.dht.DHTMessage.Readiness");
         // stream replication and forwarding  [base 91]
         pin(table, 91, "org.pragmatica.aether.stream.consensus.StreamConsensusCommand");
         pin(table, 92, "org.pragmatica.aether.stream.forward.RawEventDto");
@@ -562,14 +568,74 @@ public interface SystemTags {
         pin(table, 1718, "org.pragmatica.aether.slice.kvstore.AetherKey.BackupRestoreKey");
         pin(table, 1719, "org.pragmatica.aether.slice.kvstore.AetherValue.BackupRestoreValue");
         pin(table, 1720, "org.pragmatica.aether.slice.kvstore.AetherValue.BackupRestoreOutcome");
+        // leader pre-vote (#1748) — next free slots after 1720
+        pin(table, 1721, "org.pragmatica.consensus.net.NetworkMessage.LeaderPreVoteRequest");
+        pin(table, 1722, "org.pragmatica.consensus.net.NetworkMessage.LeaderPreVoteResponse");
         // community lifecycle cluster events (#1652) — claimed range from 1740
         pin(table, 1740, "org.pragmatica.aether.api.ClusterEvent.CommunityMinted");
         pin(table, 1741, "org.pragmatica.aether.api.ClusterEvent.CommunityStateChanged");
         pin(table, 1742, "org.pragmatica.aether.api.ClusterEvent.CommunityMemberJoined");
         pin(table, 1743, "org.pragmatica.aether.api.ClusterEvent.CommunityMemberLeft");
+        // stream failover refusal transitions (#1730, owner ruling)
+        pin(table, 1744, "org.pragmatica.aether.api.ClusterEvent.StreamFailoverRefused");
+        pin(table, 1745, "org.pragmatica.aether.api.ClusterEvent.StreamFailoverResolved");
+        // stream ISR below the confirmation factor / restored (#1883)
+        pin(table, 1746, "org.pragmatica.aether.api.ClusterEvent.StreamIsrBelowMinimum");
+        pin(table, 1747, "org.pragmatica.aether.api.ClusterEvent.StreamIsrRestored");
+        // stream partition epoch start (#1730 phase 2)
+        pin(table, 1748, "org.pragmatica.aether.slice.kvstore.AetherValue.EpochStart");
+        pin(table, 1749, "org.pragmatica.aether.api.ClusterEvent.StreamLineageRestarted");
+        // a committed stream config lowering that is not applied online (#1883)
+        pin(table, 1750, "org.pragmatica.aether.api.ClusterEvent.StreamConfigChangeNotApplied");
+        // a scheduled task with an unknown fire outcome / its late resolution (#1723)
+        pin(table, 1751, "org.pragmatica.aether.api.ClusterEvent.ScheduledTaskOutcomeUnknown");
+        pin(table, 1752, "org.pragmatica.aether.api.ClusterEvent.ScheduledTaskOutcomeRestored");
+        // a scheduled fire still in flight while its ticks are skipped / its resolution (#1930)
+        pin(table, 1753, "org.pragmatica.aether.api.ClusterEvent.ScheduledTaskFireHeld");
+        pin(table, 1754, "org.pragmatica.aether.api.ClusterEvent.ScheduledTaskFireReleased");
+        // two artifacts serving one HTTP route / the collision cleared (#1206)
+        pin(table, 1755, "org.pragmatica.aether.api.ClusterEvent.RoutePrefixCollision");
+        pin(table, 1756, "org.pragmatica.aether.api.ClusterEvent.RoutePrefixCollisionCleared");
         pin(table, 2112, "org.pragmatica.aether.slice.kvstore.AetherKey.CommunityPlacementAvailabilityKey");
         pin(table, 2113, "org.pragmatica.aether.slice.kvstore.AetherValue.CommunityPlacementAvailabilityValue");
-        // ---- 2114..16383 RESERVED ----
+        // built-in artifact store versions index in consensus (#1778)
+        pin(table, 2114, "org.pragmatica.aether.slice.kvstore.AetherKey.ArtifactVersionsKey");
+        pin(table, 2115, "org.pragmatica.aether.slice.kvstore.AetherValue.ArtifactVersionsValue");
+        pin(table, 2116, "org.pragmatica.aether.slice.kvstore.AetherValue.ArtifactVersionEntry");
+        // first-committed content digest per artifact file (#1778)
+        pin(table, 2117, "org.pragmatica.aether.slice.kvstore.AetherKey.ArtifactContentKey");
+        pin(table, 2118, "org.pragmatica.aether.slice.kvstore.AetherValue.ArtifactContentValue");
+        // the DHT replication a worker's projection carries (#1777 track 1) — next free after 2118
+        pin(table, 2119, "org.pragmatica.aether.worker.metadata.WorkerMetadataMessage.DhtReplication");
+        // #1777 R1b: the committed DHT replication change, the members' reports, and the operator events
+        pin(table, 2120, "org.pragmatica.aether.slice.kvstore.AetherKey.DhtReplicationChangeKey");
+        pin(table, 2121, "org.pragmatica.aether.slice.kvstore.AetherValue.DhtReplicationChangeValue");
+        pin(table, 2122, "org.pragmatica.aether.slice.kvstore.AetherKey.DhtReplicationReportKey");
+        pin(table, 2123, "org.pragmatica.aether.slice.kvstore.AetherValue.DhtReplicationReportValue");
+        pin(table, 2124, "org.pragmatica.aether.api.ClusterEvent.DhtReplicationUnsettled");
+        pin(table, 2125, "org.pragmatica.aether.api.ClusterEvent.DhtReplicationSettled");
+        pin(table, 2126, "org.pragmatica.aether.slice.kvstore.AetherValue.DhtReplicationStage");
+        pin(table, 2127, "org.pragmatica.aether.api.ClusterEvent.DhtWriterStale");
+        pin(table, 2128, "org.pragmatica.aether.api.ClusterEvent.DhtWriterStaleResolved");
+        // #1543 part D: the replacement pairing record — next free after 2128
+        pin(table, 2129, "org.pragmatica.aether.slice.kvstore.AetherKey.NodeReplacementKey");
+        pin(table, 2130, "org.pragmatica.aether.slice.kvstore.AetherValue.NodeReplacementValue");
+        pin(table, 2131, "org.pragmatica.aether.slice.kvstore.AetherValue.NodeReplacementPhase");
+        // #1543 part F: the rolling-upgrade run — next free after 2135
+        pin(table, 2136, "org.pragmatica.aether.slice.kvstore.AetherKey.UpgradeRunKey");
+        pin(table, 2137, "org.pragmatica.aether.slice.kvstore.AetherValue.UpgradeRunValue");
+        pin(table, 2134, "org.pragmatica.aether.slice.kvstore.AetherValue.UpgradeRunState");
+        pin(table, 2135, "org.pragmatica.aether.slice.kvstore.AetherValue.UpgradeStop");
+        // #2062: the persisted "termination not confirmed" mark — next free after 2131
+        pin(table, 2132, "org.pragmatica.aether.slice.kvstore.AetherKey.UnconfirmedTerminationKey");
+        pin(table, 2133, "org.pragmatica.aether.slice.kvstore.AetherValue.UnconfirmedTerminationValue");
+        // #2062: the admission marker of an EXTERNAL capacity reservation — 2134..2137 belong to the rolling-upgrade run state (#1543 F1/F2, open PRs)
+        pin(table, 2138, "org.pragmatica.aether.slice.kvstore.AetherKey.CapacityAdmissionKey");
+        pin(table, 2139, "org.pragmatica.aether.slice.kvstore.AetherValue.CapacityAdmissionValue");
+        // #1967: the typed read refusal a forwarded read carries -- next free after 2139
+        pin(table, 2140, "org.pragmatica.aether.stream.forward.ReadRefusal");
+        pin(table, 2141, "org.pragmatica.aether.stream.forward.ReadRefusal.Kind");
+        // ---- 2142..16383 RESERVED ----
         rejectDuplicateTags(table);
 
         return Map.copyOf(table);

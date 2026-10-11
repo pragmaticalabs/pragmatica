@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.environment.docker;
 
 import java.util.Map;
@@ -9,6 +8,7 @@ import java.util.Map;
 import org.pragmatica.aether.environment.CloudConfig;
 import org.pragmatica.aether.environment.EnvironmentIntegration;
 import org.pragmatica.aether.environment.EnvironmentIntegrationFactory;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 
 import static org.pragmatica.aether.environment.docker.DockerConfig.dockerConfig;
@@ -33,6 +33,14 @@ public record DockerEnvironmentIntegrationFactory() implements EnvironmentIntegr
         var networkName = envNetwork != null && !envNetwork.isBlank()
                           ? envNetwork
                           : compute.getOrDefault("network_name", "aether-network");
+        var refusal = Option.option(compute.get(org.pragmatica.aether.environment.ClusterIdentityEnv.BACKUP_PATH))
+                            .filter(path -> !path.isBlank())
+                            .flatMap(path -> org.pragmatica.aether.environment.BackupPathRule.refusal(path, true));
+
+        if (refusal.isPresent()) {
+            return org.pragmatica.aether.environment.EnvironmentError.operationNotSupported("[backup] path " + refusal.unwrap())
+                                                                     .result();
+        }
 
         return dockerConfig(compute.getOrDefault("image_name", "aether-node:local"),
                             networkName,
@@ -42,7 +50,15 @@ public record DockerEnvironmentIntegrationFactory() implements EnvironmentIntegr
                             compute.getOrDefault("socket_path", "/var/run/docker.sock"),
                             compute.getOrDefault("api_key", ""),
                             compute.getOrDefault("docker_gid", ""),
-                            parseBoolOrDefault(compute.getOrDefault("expose_host_ports", ""), false));
+                            parseBoolOrDefault(compute.getOrDefault("expose_host_ports", ""), false)).map(docker -> docker.withBackupEnv(backupEnvOf(compute)));
+    }
+
+    /// The leader's effective `[backup]`, handed in as `AETHER_BACKUP_*` entries of the compute map (`Main` writes them).
+    private static Map<String, String> backupEnvOf(Map<String, String> compute) {
+        return compute.entrySet()
+                      .stream()
+                      .filter(entry -> org.pragmatica.aether.environment.ClusterIdentityEnv.BACKUP_VARS.contains(entry.getKey()))
+                      .collect(java.util.stream.Collectors.toMap(Map.Entry::getKey, Map.Entry::getValue));
     }
 
     /// Resolve a port-base setting with the following precedence:

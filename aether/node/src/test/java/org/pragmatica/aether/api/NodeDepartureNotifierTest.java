@@ -24,10 +24,15 @@ import org.pragmatica.hlc.HlcClock;
 import org.pragmatica.serialization.FrameworkCodecs;
 import org.pragmatica.serialization.SliceCodec;
 
+import org.pragmatica.utility.warning.OperatorWarningCode;
+import org.pragmatica.utility.warning.OperatorWarningSink;
+
 import java.util.List;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.awaitility.Awaitility.await;
 
 
 /// #926 round 2 — pins the COMPOSITION on the confirmed-departure edge.
@@ -82,7 +87,10 @@ class NodeDepartureNotifierTest {
                                                                            () -> false);
             var alerts = AlertManager.readOnly((KVStore<AetherKey, AetherValue>) Mockito.mock(KVStore.class));
 
-            return new Fixture(NodeDepartureNotifier.nodeDepartureNotifier(aggregator, alerts, SELF), aggregator, alerts);
+            return new Fixture(NodeDepartureNotifier.nodeDepartureNotifier(aggregator,
+                                                                                    alerts,
+                                                                                    SELF,
+                                                                                    OperatorWarningSink.handingOffTo(aggregator::onOperatorWarning)), aggregator, alerts);
         }
 
         List<ClusterEvent> events() {
@@ -128,22 +136,50 @@ class NodeDepartureNotifierTest {
         assertThat(f.alerts().getActiveNodeHealthAlerts()).hasSize(1);
     }
 
-    /// An operator drain still belongs in the stream — a `NodeFailed` record of a drained departure is
-    /// legitimate history — but must NOT raise a CRITICAL alert. This pins that the two surfaces diverge
-    /// exactly where they should, so the drain-quieting fix cannot be mistaken for suppressing the event
-    /// as well.
+    /// #2014 — a planned departure announced to this observer (here by the broadcast drain set, not by
+    /// its own FSM) must not page: no CRITICAL `NodeFailed`, no CRITICAL alert. It stays in the stream as
+    /// an INFO `NodeLeft`. Reverting the announced branch in the notifier turns this red.
+    @Test
+    void announcedDeparture_raisesNoCriticalEvent_noAlert_staysInStreamAsInfoNodeLeft() {
+        var f = Fixture.create();
+        f.alerts().noteMembershipTransition(DEAD, "DrainRequested");
+        f.notifier().onConfirmedDeparture(DEAD);
+
+        assertThat(f.events()).noneMatch(e -> e instanceof ClusterEvent.NodeFailed);
+        assertThat(f.events()).noneMatch(e -> e.severity() == ClusterEvent.Severity.CRITICAL);
+        assertThat(f.events()).hasSize(1);
+        assertThat(f.events().getFirst()).isInstanceOf(ClusterEvent.NodeLeft.class);
+        assertThat(f.events().getFirst().severity()).isEqualTo(ClusterEvent.Severity.INFO);
+        assertThat(f.alerts().getActiveNodeHealthAlerts()).isEmpty();
+    }
+
+    /// The safety property: with NO announcement an unplanned death still raises CRITICAL on both
+    /// surfaces. (Pinned beside the announced case so a blanket suppression turns one of the two red.)
+    @Test
+    void unannouncedDeparture_stillRaisesCriticalNodeFailedAndAlert() {
+        var f = Fixture.create();
+        f.notifier().onConfirmedDeparture(DEAD);
+
+        assertThat(f.events().getFirst()).isInstanceOf(ClusterEvent.NodeFailed.class);
+        assertThat(f.events().getFirst().severity()).isEqualTo(ClusterEvent.Severity.CRITICAL);
+        assertThat(f.alerts().getActiveNodeHealthAlerts()).hasSize(1);
+    }
+
+    /// #2014 supersedes the earlier "drain keeps a NodeFailed record": that was the defect (a planned drain
+    /// recorded as CRITICAL `NodeFailed`). The record stays, as INFO `NodeLeft`; no alert. The earlier
+    /// test was wrong, not the fix: it asserted the CRITICAL event as intended behaviour.
     ///
     /// **This test previously fed `"SwimDeparted"`** and asserted no alert — encoding the round-2
     /// blocking defect as the specification. `SwimDeparted` is SWIM's death broadcast, not a graceful
     /// goodbye; `DrainRequested` is the only cause that genuinely means "announced".
     @Test
-    void drainedDeparture_reachesTheStreamButRaisesNoAlert() {
+    void drainedDeparture_reachesTheStreamAsInfoButRaisesNoAlert() {
         var f = Fixture.create();
         f.alerts().noteMembershipTransition(DEAD, "DrainRequested");
         f.notifier().onConfirmedDeparture(DEAD);
 
         assertThat(f.events()).hasSize(1);
-        assertThat(f.events().getFirst()).isInstanceOf(ClusterEvent.NodeFailed.class);
+        assertThat(f.events().getFirst()).isInstanceOf(ClusterEvent.NodeLeft.class);
         assertThat(f.alerts().getActiveNodeHealthAlerts()).isEmpty();
     }
 
@@ -159,5 +195,25 @@ class NodeDepartureNotifierTest {
         assertThat(f.events()).hasSize(1);
         assertThat(f.alerts().getActiveNodeHealthAlerts()).hasSize(1);
         assertThat(f.alerts().getActiveNodeHealthAlerts().getFirst().severity()).isEqualTo(AlertEvent.Severity.CRITICAL);
+    }
+
+    /// #1835: a death with no reachability evidence is "never joined", not "failed". The operator still sees
+    /// it (WARNING operator-warning event) but there is NO `NodeFailed` event and NO CRITICAL node-health alert.
+    /// The fixture's aggregator and alert manager are the real ones, so routing it through
+    /// [`NodeDepartureNotifier#onConfirmedDeparture`] instead turns this red.
+    @Test
+    void neverJoined_raisesWarningOnly_noNodeFailedNoCriticalAlert() {
+        var f = Fixture.create();
+        f.notifier().onNeverJoined(DEAD);
+
+        await().atMost(5, TimeUnit.SECONDS)
+               .untilAsserted(() -> assertThat(f.events()).hasSize(1));
+        var event = f.events().getFirst();
+        assertThat(event).isInstanceOf(ClusterEvent.OperatorWarning.class);
+        assertThat(event.severity()).isEqualTo(ClusterEvent.Severity.WARNING);
+        assertThat(event.details()).containsEntry("code", OperatorWarningCode.NODE_NEVER_JOINED.code());
+        assertThat(event.details()).containsEntry("subject", DEAD.id());
+        assertThat(f.events()).noneMatch(e -> e instanceof ClusterEvent.NodeFailed);
+        assertThat(f.alerts().getActiveNodeHealthAlerts()).isEmpty();
     }
 }

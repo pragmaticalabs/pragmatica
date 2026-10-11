@@ -255,11 +255,27 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
             return Option.option(storage.get(put.key()));
         }
 
-        var oldValue = Option.option(storage.put(put.key(), put.value()));
+        var stored = merged(put.key(), put.value());
+        var oldValue = Option.option(storage.put(put.key(), stored));
 
-        publish(new ValuePut<>(put, oldValue));
+        publish(new ValuePut<>(stored == put.value()
+                               ? put
+                               : new Put<>(put.key(), stored),
+                               oldValue));
 
         return oldValue;
+    }
+
+    /// Grow-only merge (#1778): a [GrowOnlyMergeable] value written over a committed value of the same class
+    /// is merged into it, so concurrent writers fold instead of overwriting one another. Anything else is
+    /// stored as written. Reads only committed storage and the incoming value, like every arm above.
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    private V merged(K key, V incoming) {
+        var committed = storage.get(key);
+
+        return incoming instanceof GrowOnlyMergeable mergeable && committed != null && committed.getClass() == incoming.getClass()
+               ? (V) mergeable.mergeInto((GrowOnlyMergeable) committed)
+               : incoming;
     }
 
     /// The committed-state fence, shared by [#handlePut] and [#handleRemove] (#345 piece 1a, #379):
@@ -268,7 +284,7 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
     /// (ownership fence), a non-successor write to a [VersionFenced] value (lost-update fence,
     /// RFC-0018 #570), a regressive write to a [MonotonicFenced] value (running-max fence,
     /// #700), a write to an [AssignmentGuarded] key by anything but its committed assignee (#1271), or a write that would erase a committed
-    /// [LeaderAuthorized] or [OwnerFenced] marker (fence-drop arms). All arms are pure functions of the committed storage content and the
+    /// [LeaderAuthorized] or [OwnerFenced] marker (fence-drop arms), or a write that would change the committed non-empty community of a [CommunityFenced] value (#1840), or a write that would replace the committed life of an [IncarnationFenced] value (#1278). All arms are pure functions of the committed storage content and the
     /// incoming value alone, so every replica decides identically inside the consensus applier.
     /// Snapshot restore ([#restoreSnapshot]) intentionally bypasses all fences: a restored snapshot
     /// is the authoritative committed state, not a competing write.
@@ -278,7 +294,17 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
                                                                                                                                           incoming) || staleSuccessorWrite(key,
                                                                                                                                                                            incoming) || regressiveWatermarkWrite(key,
                                                                                                                                                                                                                  incoming) || unassignedWrite(key,
-                                                                                                                                                                                                                                              incoming);
+                                                                                                                                                                                                                                              incoming) || reassignsCommunity(key,
+                                                                                                                                                                                                                                                                              incoming) || reincarnates(key,
+                                                                                                                                                                                                                                                                                                        incoming);
+    }
+
+    /// #1278: a write that would replace the committed non-zero life of an [IncarnationFenced] value; see that type.
+    private boolean reincarnates(K key, Object incoming) {
+        return incoming instanceof IncarnationFenced in
+               && storage.get(key) instanceof IncarnationFenced stored
+               && stored.fenceIncarnation() != 0
+               && stored.fenceIncarnation() != in.fenceIncarnation();
     }
 
     private boolean dropsOwnerFence(K key, Object incoming) {
@@ -423,6 +449,21 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
                            .equals(claim.guardToken());
     }
 
+    /// Write-once community fence (#1840, H11): a [CommunityFenced] write is rejected iff the committed
+    /// value under the key is also `CommunityFenced`, carries a non-empty community, and the incoming
+    /// community differs from it. A committed empty community fences nothing (the first non-empty
+    /// assignment is the one that is final), an identical community passes, and a first write passes.
+    /// Deterministic like the arms above: reads only committed storage and the incoming value. A rejected
+    /// write mutates nothing and emits NO notification (see [CommunityFenced] for the caller-side caveat).
+    private boolean reassignsCommunity(K key, Object incoming) {
+        return incoming instanceof CommunityFenced in
+               && storage.get(key) instanceof CommunityFenced stored
+               && !stored.fenceCommunity()
+                         .isEmpty()
+               && !stored.fenceCommunity()
+                         .equals(in.fenceCommunity());
+    }
+
     private Option<V> handleRemove(Remove<K> remove) {
         if (staleRemove(remove)) {
             return Option.option(storage.get(remove.key()));
@@ -444,7 +485,10 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
     /// witness fails, so a deposed owner cannot delete a fenced key even with a bare `Remove(key)` —
     /// closing the witnessless-delete gap. A non-fenced committed value, or an absent key, deletes
     /// freely — preserving every existing unfenced remover (locks, blueprints, registry entries; no
-    /// production remover targets a fenced key today). The decision reads only committed storage and
+    /// production remover targets an epoch- or owner-fenced key today) — except a [WitnessedRemoval] value
+    /// (#806), which is deleted only by a witness EQUAL to it. Its one production user, the schema
+    /// migration lock, is never removed at all: it is released by a tombstone `Put` so its version chain
+    /// never restarts, and this arm exists to refuse a bare `Remove` that would restart it. The decision reads only committed storage and
     /// the command, so every replica accepts or rejects a delete identically inside the applier.
     private boolean staleRemove(Remove<K> remove) {
         var key = remove.key();
@@ -458,6 +502,7 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
                                                                                               remove.witness());
             case OwnerFenced<?, ?> committed -> !newerOwnerWitness(committed, remove.witness());
             case EpochBearing<?> committed -> !currentEpochWitness(committed, remove.witness());
+            case WitnessedRemoval committed -> !remove.witness().map(committed::equals).or(false);
             case null, default -> false;
         };
     }

@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 
 package org.pragmatica.aether.environment.hetzner;
 
@@ -119,6 +118,20 @@ class HetznerComputeProviderTest {
                             .onFailure(cause -> assertThat(cause).isNull())
                             .onSuccess(HetznerComputeProviderTest::assertProvisionedInstanceInfo);
             assertThat(testClient.lastGetServerId).isEqualTo(42);
+        }
+
+        /// #1111: createServer succeeds, then the server reports `off` (boot crash). The server EXISTS and bills, so the cause that leaves
+        /// `createFrom` must say so (typed), not read as a plain rejection.
+        @Test
+        void provision_serverCrashesDuringBoot_failsWithTheTypedReadinessTimeout() {
+            testClient.createServerResponse = Promise.success(runningServer(42, "aether-test"));
+            testClient.getServerResponse = Promise.success(new Server(42, "aether-test", "off", serverType(), image(),
+                                                                       publicNet("1.2.3.4"), List.of(), Map.of(), null));
+
+            seededProvider().provision(InstanceType.ON_DEMAND)
+                            .await()
+                            .onSuccess(info -> assertThat(info).as("expected readiness failure, not a phantom success").isNull())
+                            .onFailure(cause -> assertThat(cause).as("#1111: the readiness timeout reaches the caller typed (the instance EXISTS), never flattened into a provision failure").isInstanceOf(EnvironmentError.ProvisionReadinessTimeout.class));
         }
 
         @Test
@@ -667,22 +680,6 @@ class HetznerComputeProviderTest {
                     .onSuccess(instances -> assertThat(instances).hasSize(1));
 
             assertThat(testClient.lastLabelSelector).isEqualTo("env=prod");
-        }
-    }
-
-    @Nested
-    class RestartTests {
-
-        @Test
-        void restart_success_callsReboot() {
-            testClient.rebootServerResponse = Promise.success(Unit.unit());
-
-            provider.restart(new InstanceId("42"))
-                    .await()
-                    .onFailure(cause -> assertThat(cause).isNull())
-                    .onSuccess(unit -> assertThat(unit).isNotNull());
-
-            assertThat(testClient.lastRebootServerId).isEqualTo(42L);
         }
     }
 

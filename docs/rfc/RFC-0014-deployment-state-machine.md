@@ -309,6 +309,7 @@ When NDM fails to write `FAILED` state specifically, it retries up to `MAX_TRANS
 1. `ActiveNodeDeploymentState.suspendSlices()`:
    - For each `ACTIVE` deployment: unpublish HTTP routes (local), unregister from invocation handler
    - Does **NOT** unload slices from `SliceStore` (kept in memory)
+   - Writes **no** transition: without quorum no write can commit, so the committed `NodeArtifactKey` keeps reading `ACTIVE` until the quorum returns (#1452)
    - Collects `SuspendedSlice` list
 2. Transition to `DormantNodeDeploymentState(suspendedSlices)`
 3. All subsequent `NodeArtifactKey` notifications are silently ignored
@@ -321,7 +322,7 @@ When NDM fails to write `FAILED` state specifically, it retries up to `MAX_TRANS
 4. Reactivate suspended slices:
    - Re-register with invocation handler
    - Re-publish endpoints, HTTP routes, topic subscriptions, scheduled tasks
-   - On reactivation failure: cleanup and remove from deployments
+   - On reactivation failure, including a suspended slice no longer in `SliceStore`: unregister and unpublish locally, and commit a non-fatal `FAILED` for this node (#1660). The leader's failure path unloads and re-drives the instance, and the committed `FAILED` surfaces as a WARNING `DeploymentFailed` event. The deployment stays in the map until that unload, so a second quorum loss before the write commits re-suspends it and the next restoration retries.
 
 #### 6.3 CDM Behavior on Leader Loss
 

@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.jbct.slice.routing;
 
 import javax.annotation.processing.Filer;
@@ -662,7 +661,7 @@ public class RouteSourceGenerator {
         var trailer = versionedTrailer(version) + outputCall(routeDsl) + comma;
         var hasPath = routeDsl.hasPathParams();
         var hasQuery = routeDsl.hasQueryParams();
-        var hasBody = isBodyMethod(routeDsl.method());
+        var hasBody = isBodyMethod(routeDsl.method()) && !boundEntirelyByPathAndQuery(method, routeDsl);
         // #397 §4.2: value-object path/query segments (a component whose type exposes
         // `valueMapping()`) compose the framework String->P parser with the VO's `lift`; keyed by
         // request-record component name so path/query arg emission can look each one up.
@@ -728,6 +727,26 @@ public class RouteSourceGenerator {
         } else {
             generateNoParamsRoute(out, fullPath, httpMethod, responseType, routeDsl, method, trailer, security);
         }
+    }
+
+    /// #1214: a POST/PUT/PATCH route whose request record is bound ENTIRELY from the path and query has no
+    /// body parameter, so it must not demand a body. It used to bind `.withBody(...)` anyway, and a request
+    /// with no body frame (`curl -X POST .../open/<e>`) failed with `Type mismatch: expected Request, got
+    /// unknown` while `-d '{}'` passed. Such a route is now generated as a path/query route; a body the
+    /// client does send is ignored. Only a JSON-consuming route qualifies: a text, binary or multipart route
+    /// binds its body as the payload itself.
+    private boolean boundEntirelyByPathAndQuery(MethodModel method, RouteDsl routeDsl) {
+        if (!routeDsl.consumes().isJson() || !(routeDsl.hasPathParams() || routeDsl.hasQueryParams())) {
+            return false;
+        }
+
+        var components = MethodModel.recordComponents(method.hasSecurityParams()
+                                                      ? method.businessParameterType()
+                                                      : method.parameterType());
+
+        return !components.isEmpty() && pathQueryParamNames(routeDsl).containsAll(components.stream()
+                                                                                          .map(MethodModel.RecordComponent::name)
+                                                                                          .toList());
     }
 
     /// Resolve the value-object bindings for a route method's path/query parameters (#397 §4.2):

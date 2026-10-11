@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.metrics;
 
 import java.lang.management.ManagementFactory;
@@ -250,6 +249,22 @@ public interface ClusterSyncCollector {
     @Contract
     default void setDrainCommandHandler(Runnable handler) {}
 
+    /// Observer for the leader's broadcast drain set (#2014). Invoked on every authoritative ping,
+    /// an empty set included (absence is how a cancelled drain is noticed), on EVERY receiver and not only on the targets, so a follower
+    /// learns of a planned departure while the leader is the only node that saw `DrainRequested`.
+    /// Must be idempotent: pings repeat the set until the drain is cleared. Default no-op.
+    @Contract
+    default void setDrainSetObserver(java.util.function.Consumer<Set<NodeId>> observer) {}
+
+    /// The global `drainNodes` set carried by the latest authoritative `ClusterSyncPing` — every node
+    /// the leader has commanded to drain, self included when targeted. Read by the departure push so a
+    /// drainer excludes the nodes leaving WITH it (issue #1818): this ping is the only carrier of that
+    /// knowledge at drain-command time, seconds ahead of any peer's DEPARTING edge. Empty until an
+    /// authoritative ping arrives; default empty for test doubles.
+    default Set<NodeId> commandedDrainNodes() {
+        return Set.of();
+    }
+
     /// Observation exchange is leader-independent. These predicates authorize only control
     /// effects and core-reachability evidence; unconfigured collectors fail closed.
     @Contract
@@ -353,8 +368,13 @@ class ClusterSyncCollectorImpl implements ClusterSyncCollector {
     /// Membership v2 (B5a) — handler invoked when an inbound DRAIN ping is received. Default
     /// no-op until `setDrainCommandHandler(...)` wires the local `DrainProcedure`. Invoked on
     /// every DRAIN ping; the handler must be idempotent (DrainProcedure is CAS-guarded).
+    private final AtomicReference<java.util.function.Consumer<Set<NodeId>>> drainSetObserver = new AtomicReference<>(_ -> {});
+
     private final AtomicReference<Runnable> drainCommandHandler = new AtomicReference<>(() -> {});
 
+    /// Global drain set of the latest authoritative ping (issue #1818), recorded before the
+    /// self-check so a drainer can see the nodes commanded to leave with it.
+    private final AtomicReference<Set<NodeId>> commandedDrainNodes = new AtomicReference<>(Set.of());
     private final AtomicReference<Predicate<NodeId>> eligibleProducer = new AtomicReference<>(_ -> false);
     private final AtomicReference<Predicate<NodeId>> coreSender = new AtomicReference<>(_ -> false);
     private final AtomicReference<Predicate<NodeId>> authoritySender = new AtomicReference<>(_ -> false);
@@ -673,6 +693,8 @@ class ClusterSyncCollectorImpl implements ClusterSyncCollector {
     /// `drainNodes` set targets THIS node. The leader broadcasts one uniform ping carrying the
     /// global drain set; each receiver self-checks `drainNodes.contains(self)`.
     private void handleDrainCommand(ClusterSyncPing ping) {
+        commandedDrainNodes.set(ping.drainNodes());
+        drainSetObserver.get().accept(ping.drainNodes());
         if (!ping.drainNodes().contains(self)) {
             return;
         }
@@ -889,10 +911,23 @@ class ClusterSyncCollectorImpl implements ClusterSyncCollector {
 
     @Override
     @Contract
+    public void setDrainSetObserver(java.util.function.Consumer<Set<NodeId>> observer) {
+        drainSetObserver.set(observer == null
+                             ? _ -> {}
+                             : observer);
+    }
+
+    @Override
+    @Contract
     public void setDrainCommandHandler(Runnable handler) {
         drainCommandHandler.set(handler == null
                                 ? () -> {}
                                 : handler);
+    }
+
+    @Override
+    public Set<NodeId> commandedDrainNodes() {
+        return commandedDrainNodes.get();
     }
 
     @Override

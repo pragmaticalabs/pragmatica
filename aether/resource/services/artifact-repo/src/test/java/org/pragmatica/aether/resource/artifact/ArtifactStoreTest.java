@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 
 package org.pragmatica.aether.resource.artifact;
 
@@ -22,7 +21,6 @@ import org.pragmatica.dht.DHTClient;
 import org.pragmatica.dht.DHTConfig;
 import org.pragmatica.dht.DHTError;
 import org.pragmatica.dht.Partition;
-import org.pragmatica.dht.ReadOptions;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
@@ -195,33 +193,6 @@ class ArtifactStoreTest {
         }
     }
 
-    @Nested
-    class DeleteTests {
-        @Test
-        void delete_deployedArtifact_removesMetadata() {
-            var artifact = Artifact.artifact("org.example:delete-test:1.0.0").unwrap();
-            var content = "content to deploy and delete".getBytes(StandardCharsets.UTF_8);
-
-            store.deploy(artifact, content)
-                 .await()
-                 .onFailureRun(Assertions::fail);
-
-            store.delete(artifact)
-                 .await()
-                 .onFailureRun(Assertions::fail);
-
-            store.exists(artifact)
-                 .await()
-                 .onFailureRun(Assertions::fail)
-                 .onSuccess(exists -> assertThat(exists).isFalse());
-
-            store.resolve(artifact)
-                 .await()
-                 .onSuccessRun(Assertions::fail)
-                 .onFailure(cause -> assertThat(cause).isInstanceOf(ArtifactStoreError.NotFound.class));
-        }
-    }
-
     /// #281 — the metadata key is a STORAGE FORMAT: one key per file, the primary jar included, and
     /// the pre-#281 GAV-only key is never written or read. A renamed segment must redden this.
     @Nested
@@ -236,13 +207,12 @@ class ArtifactStoreTest {
             store.deploy(ArtifactFile.artifactFile(artifact, "sources", "jar"), content).await().onFailureRun(Assertions::fail);
 
             assertThat(dhtStorage.keySet()).containsExactlyInAnyOrder(
-                "artifacts/org.example/keyed/1.0.0-rc4/jar/meta",
-                "artifacts/org.example/keyed/1.0.0-rc4/pom/meta",
-                "artifacts/org.example/keyed/1.0.0-rc4/sources.jar/meta",
-                "artifacts/org.example/keyed/1.0.0-rc4/files",
-                "artifacts/org.example/keyed/versions");
+                "artifacts/org.example/keyed/1.0.0-rc4/keyed-1.0.0-rc4.jar/meta",
+                "artifacts/org.example/keyed/1.0.0-rc4/keyed-1.0.0-rc4.pom/meta",
+                "artifacts/org.example/keyed/1.0.0-rc4/keyed-1.0.0-rc4-sources.jar/meta",
+                "artifacts/org.example/keyed/1.0.0-rc4/files");
             assertThat(new String(dhtStorage.get("artifacts/org.example/keyed/1.0.0-rc4/files"), StandardCharsets.UTF_8))
-                .isEqualTo("jar,pom,sources.jar");
+                .isEqualTo("keyed-1.0.0-rc4-sources.jar,keyed-1.0.0-rc4.jar,keyed-1.0.0-rc4.pom");
         }
 
         @Test
@@ -252,108 +222,13 @@ class ArtifactStoreTest {
 
             store.deploy(artifact, content).await().onFailureRun(Assertions::fail);
             // Move the primary's metadata to the pre-#281 key: the store must not find it there.
-            var meta = dhtStorage.remove("artifacts/org.example/legacy/1.0.0/jar/meta");
+            var meta = dhtStorage.remove("artifacts/org.example/legacy/1.0.0/legacy-1.0.0.jar/meta");
             dhtStorage.put("artifacts/org.example/legacy/1.0.0/meta", meta);
 
             store.exists(artifact)
                  .await()
                  .onFailureRun(Assertions::fail)
                  .onSuccess(exists -> assertThat(exists).as("no legacy read fallback").isFalse());
-        }
-    }
-
-    /// #281 round 2 (CTO ruling): a version is listed while ANY of its files exists; deleting the
-    /// last remaining file — primary or not — delists it.
-    @Nested
-    class FileDeleteTests {
-        private final Artifact artifact = Artifact.artifact("org.example:files:1.0.0").unwrap();
-        private final ArtifactFile pom = ArtifactFile.artifactFile(artifact, "", "pom");
-        private final byte[] content = "file content".getBytes(StandardCharsets.UTF_8);
-
-        private void deploy(ArtifactFile file) {
-            store.deploy(file, content).await().onFailureRun(Assertions::fail);
-        }
-
-        private void delete(ArtifactFile file) {
-            store.delete(file).await().onFailureRun(Assertions::fail);
-        }
-
-        private boolean exists(ArtifactFile file) {
-            return store.exists(file).await().onFailureRun(Assertions::fail).unwrap();
-        }
-
-        private List<Version> versions() {
-            return store.versions(artifact.groupId(), artifact.artifactId()).await().onFailureRun(Assertions::fail).unwrap();
-        }
-
-        @Test
-        void deletePrimaryWhileSidecarRemains_keepsTheVersionListed() {
-            deploy(ArtifactFile.primary(artifact));
-            deploy(pom);
-
-            delete(ArtifactFile.primary(artifact));
-
-            assertThat(exists(ArtifactFile.primary(artifact))).isFalse();
-            assertThat(exists(pom)).as("the pom is its own entry").isTrue();
-            assertThat(versions()).as("a file of the version still exists").containsExactly(artifact.version());
-        }
-
-        @Test
-        void deleteSidecarWhilePrimaryRemains_keepsTheVersionListed() {
-            deploy(ArtifactFile.primary(artifact));
-            deploy(pom);
-
-            delete(pom);
-
-            assertThat(exists(pom)).isFalse();
-            assertThat(exists(ArtifactFile.primary(artifact))).isTrue();
-            assertThat(versions()).containsExactly(artifact.version());
-        }
-
-        @Test
-        void deleteLastRemainingFile_delistsTheVersion_whateverTheFile() {
-            deploy(ArtifactFile.primary(artifact));
-            deploy(pom);
-
-            delete(ArtifactFile.primary(artifact));
-            delete(pom);
-
-            assertThat(versions()).as("no file of the version is left").isEmpty();
-            assertThat(dhtStorage.keySet()).as("the version's file list is gone with its last file")
-                                           .doesNotContain("artifacts/org.example/files/1.0.0/files");
-        }
-
-        @Test
-        void pomOnlyVersion_isDelistedWithItsPom() {
-            deploy(pom);
-
-            assertThat(versions()).containsExactly(artifact.version());
-
-            delete(pom);
-
-            assertThat(versions()).isEmpty();
-        }
-
-        @Test
-        void deleteOneVersion_leavesTheOthersListed() {
-            var other = Artifact.artifact("org.example:files:2.0.0").unwrap();
-
-            deploy(ArtifactFile.primary(artifact));
-            deploy(ArtifactFile.primary(other));
-
-            delete(ArtifactFile.primary(artifact));
-
-            assertThat(versions()).containsExactly(other.version());
-        }
-
-        @Test
-        void deleteOfANeverDeployedFile_isANoOp() {
-            deploy(ArtifactFile.primary(artifact));
-
-            delete(pom);
-
-            assertThat(versions()).containsExactly(artifact.version());
-            assertThat(exists(ArtifactFile.primary(artifact))).isTrue();
         }
     }
 
@@ -454,6 +329,57 @@ class ArtifactStoreTest {
                       .onSuccess(resolved -> assertThat(resolved.content()).isEqualTo(content));
 
             assertThat(gating.peakConcurrentGets()).isEqualTo(MAX_CONCURRENT_CHUNKS);
+        }
+    }
+
+    /// #1818, the owner's fence ruling: a DHT put that lost its quorum to owner-epoch fences is INDETERMINATE —
+    /// it may have been applied. ArtifactStore treats it as retryable, like an unreachable quorum: the retry is
+    /// stamped with the owner epoch as it stands by then.
+    @Nested
+    class WriteIndeterminateTests {
+        @Test
+        void deploy_metadataPutIndeterminateOnce_isRetriedAndSucceeds() {
+            var delegate = testDht();
+            var indeterminateLeft = new AtomicInteger(1);
+            DHTClient fencedOnce = new DHTClient() {
+                @Override
+                public Promise<Option<byte[]>> get(byte[] key) {
+                    return delegate.get(key);
+                }
+
+                @Override
+                public Promise<Unit> put(byte[] key, byte[] value) {
+                    return indeterminateLeft.getAndDecrement() > 0
+                           ? DHTError.writeIndeterminate(2, 1, 1).promise()
+                           : delegate.put(key, value);
+                }
+
+                @Override
+                public Promise<Boolean> remove(byte[] key) {
+                    return delegate.remove(key);
+                }
+
+                @Override
+                public Promise<Boolean> exists(byte[] key) {
+                    return delegate.exists(key);
+                }
+
+                @Override
+                public Partition partitionFor(byte[] key) {
+                    return delegate.partitionFor(key);
+                }
+            };
+            var storageInstance = StorageInstance.storageInstance("indeterminate-artifacts",
+                                                                  List.of(MemoryTier.memoryTier(64 * 1024 * 1024)));
+            var retryStore = ArtifactStore.artifactStore(fencedOnce,
+                                                         storageInstance,
+                                                         new DHTConfig.DhtRetryPolicy(3, List.of(timeSpan(1).millis())));
+            var artifact = Artifact.artifact("org.example:indeterminate:1.0.0").unwrap();
+
+            retryStore.deploy(artifact, "x".getBytes(StandardCharsets.UTF_8))
+                      .await()
+                      .onFailure(cause -> Assertions.fail(cause.message()));
+            assertThat(indeterminateLeft.get()).as("control: the indeterminate put was injected").isNegative();
         }
     }
 
@@ -573,34 +499,45 @@ class ArtifactStoreTest {
                       .onFailure(cause -> assertThat(cause).isInstanceOf(ArtifactStoreError.NotFound.class));
 
             // Option.empty() is a legitimate not-found: each get is a single quorum read,
-            // NEVER retried. With one resolve get against a missing key, exactly one get
-            // is issued (no retry burst).
-            assertThat(flakyGetDht.getsAfterArm()).isEqualTo(1);
+            // NEVER retried. A resolve of a missing key issues exactly two gets, the metadata read and
+            // the archive-marker read that runs beside it (#1778) — no retry burst.
+            assertThat(flakyGetDht.getsAfterArm()).isEqualTo(2);
         }
     }
 
-    /// #1775: only the artifact METADATA resolve read opts into the absent grace (artifacts are write-once);
-    /// every other DHT read keeps the default quorum rule, because the DHT has no tombstones and a grace window
-    /// resurrects a removed value from the replica that missed the remove.
+    /// #1777 track 2: a metadata read that meets replicas still catching up after a ring change fails
+    /// [DHTError.NotCaughtUp]. That is not an answer about the artifact: it is retried like any transient DHT
+    /// failure, and if it persists the resolve fails with it — never with "not found", which would let the
+    /// slice loader conclude the artifact is gone.
     @Nested
-    class MetadataAbsentGraceTests {
-        private final CopyOnWriteArrayList<ReadOptions> seen = new CopyOnWriteArrayList<>();
-        private final AtomicInteger plainGets = new AtomicInteger();
+    class NotCaughtUpResolveTests {
+        private final AtomicInteger gets = new AtomicInteger();
+        private final AtomicInteger refusalsLeft = new AtomicInteger();
 
-        private DHTClient recordingDht() {
+        /// Only the metadata read is counted: the archive-marker read (#1778) runs beside it and has its own retry.
+        private void countIfMetadata(byte[] key) {
+            if (new String(key, StandardCharsets.UTF_8).endsWith("/meta")) {
+                gets.incrementAndGet();
+            }
+        }
+
+        /// Answers `NotCaughtUp` while `refusalsLeft` is positive, then delegates.
+        private DHTClient catchingUp() {
+            return catchingUp(_ -> true);
+        }
+
+        /// As [#catchingUp()], refusing only the keys `refused` selects.
+        private DHTClient catchingUp(java.util.function.Predicate<String> refused) {
             var delegate = testDht();
 
             return new DHTClient() {
                 @Override
                 public Promise<Option<byte[]>> get(byte[] key) {
-                    plainGets.incrementAndGet();
-                    return delegate.get(key);
-                }
+                    countIfMetadata(key);
 
-                @Override
-                public Promise<Option<byte[]>> get(byte[] key, ReadOptions options) {
-                    seen.add(options);
-                    return delegate.get(key);
+                    return refused.test(new String(key, StandardCharsets.UTF_8)) && refusalsLeft.getAndDecrement() > 0
+                           ? DHTError.notCaughtUp(2, 0).promise()
+                           : delegate.get(key);
                 }
 
                 @Override
@@ -625,83 +562,49 @@ class ArtifactStoreTest {
             };
         }
 
-        /// The bounded retry re-issues the metadata read after a transient failure; the retry must carry the same
-        /// absent grace as the first attempt, or a retried resolve silently falls back to absent-on-two-empties.
-        @Test
-        void resolveWithMetadata_retryAfterTransientFailure_keepsTheAbsentGrace() {
-            var artifact = Artifact.artifact("org.example:grace-retry:1.0.0").unwrap();
-            var storageInstance = StorageInstance.storageInstance("grace-retry-artifacts",
-                                                                  List.of(MemoryTier.memoryTier(64 * 1024 * 1024)));
-            var inner = recordingDht();
-            var failFirstGrace = new AtomicInteger();
-            DHTClient flaky = new DHTClient() {
-                @Override
-                public Promise<Option<byte[]>> get(byte[] key) {
-                    return inner.get(key);
-                }
+        private ArtifactStore storeOver(DHTClient dht, String name) {
+            var storageInstance = StorageInstance.storageInstance(name, List.of(MemoryTier.memoryTier(64 * 1024 * 1024)));
 
-                @Override
-                public Promise<Option<byte[]>> get(byte[] key, ReadOptions options) {
-                    return failFirstGrace.getAndIncrement() == 0
-                           ? DHTError.quorumNotReached(2, 1).promise()
-                           : inner.get(key, options);
-                }
-
-                @Override
-                public Promise<Unit> put(byte[] key, byte[] value) {
-                    return inner.put(key, value);
-                }
-
-                @Override
-                public Promise<Boolean> remove(byte[] key) {
-                    return inner.remove(key);
-                }
-
-                @Override
-                public Promise<Boolean> exists(byte[] key) {
-                    return inner.exists(key);
-                }
-
-                @Override
-                public Partition partitionFor(byte[] key) {
-                    return inner.partitionFor(key);
-                }
-            };
-            var retryStore = ArtifactStore.artifactStore(flaky,
-                                                         storageInstance,
-                                                         new DHTConfig.DhtRetryPolicy(3, List.of(timeSpan(1).millis())));
-
-            retryStore.deploy(artifact, "x".getBytes(StandardCharsets.UTF_8)).await().onFailureRun(Assertions::fail);
-            seen.clear();
-            failFirstGrace.set(0);
-
-            retryStore.resolveWithMetadata(artifact).await().onFailureRun(Assertions::fail);
-
-            // attempt 1 failed before reaching the delegate; the RETRY is the one recorded, and it keeps the grace
-            assertThat(failFirstGrace.get()).isEqualTo(2);
-            assertThat(seen).hasSize(1);
-            assertThat(seen.getFirst().hasAbsentGrace()).isTrue();
+            return ArtifactStore.artifactStore(dht, storageInstance, new DHTConfig.DhtRetryPolicy(3, List.of(timeSpan(1).millis())));
         }
 
         @Test
-        void resolveWithMetadata_readsMetadataWithAbsentGrace_andNothingElseDoes() {
-            var artifact = Artifact.artifact("org.example:grace:1.0.0").unwrap();
-            var storageInstance = StorageInstance.storageInstance("grace-artifacts",
-                                                                  List.of(MemoryTier.memoryTier(64 * 1024 * 1024)));
-            var graceStore = ArtifactStore.artifactStore(recordingDht(), storageInstance, timeSpan(250).millis());
+        void resolveWithMetadata_notCaughtUpOnce_isRetriedAndResolves() {
+            var artifact = Artifact.artifact("org.example:catching-up:1.0.0").unwrap();
+            var store = storeOver(catchingUp(), "catching-up-artifacts");
 
-            graceStore.deploy(artifact, "x".getBytes(StandardCharsets.UTF_8)).await().onFailureRun(Assertions::fail);
-            seen.clear();
-            plainGets.set(0);
+            store.deploy(artifact, "x".getBytes(StandardCharsets.UTF_8)).await().onFailureRun(Assertions::fail);
+            refusalsLeft.set(1);
 
-            graceStore.resolveWithMetadata(artifact).await().onFailureRun(Assertions::fail);
-            graceStore.metadata(artifact).await();
-            graceStore.versions(artifact.groupId(), artifact.artifactId()).await();
+            store.resolveWithMetadata(artifact).await().onFailure(cause -> Assertions.fail(cause.message()));
+        }
 
-            // the metadata resolve read is the only one carrying the grace; metadata() and versions() use the plain get
-            assertThat(seen).hasSize(1);
-            assertThat(seen.getFirst().absentGrace()).isEqualTo(timeSpan(250).millis());
-            assertThat(plainGets.get()).isEqualTo(2);
+        @Test
+        void resolveWithMetadata_notCaughtUpThroughout_failsNotCaughtUp_neverNotFound() {
+            var artifact = Artifact.artifact("org.example:never-caught-up:1.0.0").unwrap();
+
+            refusalsLeft.set(Integer.MAX_VALUE);
+            storeOver(catchingUp(), "never-caught-up-artifacts").resolveWithMetadata(artifact)
+                                                                .await()
+                                                                .onSuccessRun(Assertions::fail)
+                                                                .onFailure(cause -> assertThat(cause).isInstanceOf(DHTError.NotCaughtUp.class));
+            assertThat(gets.get()).as("the bounded retry re-issued the metadata read").isEqualTo(3);
+        }
+
+        @Test
+        void resolveWithMetadata_archiveMarkerNotCaughtUpThroughout_failsNotCaughtUp_neverServesTheBytes() {
+            // The metadata is readable; only the archive-marker read meets replicas still catching up. "Not known to
+            // be archived" is not "live": the resolve must fail with the refusal, never serve the bytes.
+            var artifact = Artifact.artifact("org.example:marker-catching-up:1.0.0").unwrap();
+            var store = storeOver(catchingUp(key -> key.endsWith("/archived")), "marker-catching-up-artifacts");
+
+            store.deploy(artifact, "x".getBytes(StandardCharsets.UTF_8)).await().onFailureRun(Assertions::fail);
+            refusalsLeft.set(Integer.MAX_VALUE);
+
+            store.resolveWithMetadata(artifact)
+                 .await()
+                 .onSuccessRun(Assertions::fail)
+                 .onFailure(cause -> assertThat(cause).isInstanceOf(DHTError.NotCaughtUp.class));
         }
     }
 
@@ -713,7 +616,7 @@ class ArtifactStoreTest {
         void resolveWithMetadata_absentKey_notFoundNamesTheDhtKeyHex() {
             var artifact = Artifact.artifact("org.example:absent:1.0.0").unwrap();
             var keyHex = java.util.HexFormat.of()
-                                            .formatHex("artifacts/org.example/absent/1.0.0/jar/meta".getBytes(StandardCharsets.UTF_8));
+                                            .formatHex("artifacts/org.example/absent/1.0.0/absent-1.0.0.jar/meta".getBytes(StandardCharsets.UTF_8));
 
             store.resolveWithMetadata(artifact)
                  .await()
@@ -742,7 +645,7 @@ class ArtifactStoreTest {
         @Test
         void resolveWithMetadata_unparseableMetadata_isNotNotFound() {
             var artifact = Artifact.artifact("org.example:garbled:1.0.0").unwrap();
-            dhtStorage.put("artifacts/org.example/garbled/1.0.0/jar/meta", "not metadata".getBytes(StandardCharsets.UTF_8));
+            dhtStorage.put("artifacts/org.example/garbled/1.0.0/garbled-1.0.0.jar/meta", "not metadata".getBytes(StandardCharsets.UTF_8));
 
             store.resolveWithMetadata(artifact)
                  .await()
@@ -806,7 +709,7 @@ class ArtifactStoreTest {
             var store = new ArtifactStoreImpl(hangingDht, storage, new DHTConfig.DhtRetryPolicy(3, List.of(timeSpan(1).millis())), FAST_BASE, FAST_PER_CHUNK, FAST_CEILING, lines::add);
             var artifact = Artifact.artifact("org.example:hang-meta:1.0.0").unwrap();
             var keyHex = java.util.HexFormat.of()
-                                            .formatHex("artifacts/org.example/hang-meta/1.0.0/jar/meta".getBytes(StandardCharsets.UTF_8));
+                                            .formatHex("artifacts/org.example/hang-meta/1.0.0/hang-meta-1.0.0.jar/meta".getBytes(StandardCharsets.UTF_8));
 
             store.resolveWithMetadata(artifact)
                  .await(timeSpan(10).seconds())
@@ -818,11 +721,14 @@ class ArtifactStoreTest {
         }
 
         @Test
-        void isArtifactKeyHex_recognisesStoreKeysAndNothingElse() {
+        void isArtifactMetadataKeyHex_recognisesOnlyMetadataKeys() {
             var hex = java.util.HexFormat.of();
 
-            assertThat(ArtifactStore.isArtifactKeyHex(hex.formatHex("artifacts/g/a/1/jar/meta".getBytes(StandardCharsets.UTF_8)))).isTrue();
-            assertThat(ArtifactStore.isArtifactKeyHex(hex.formatHex("stream/x".getBytes(StandardCharsets.UTF_8)))).isFalse();
+            assertThat(ArtifactStore.isArtifactMetadataKeyHex(hex.formatHex("artifacts/g/a/1/jar/meta".getBytes(StandardCharsets.UTF_8)))).isTrue();
+            assertThat(ArtifactStore.isArtifactMetadataKeyHex(hex.formatHex("artifacts/g/a/1/files".getBytes(StandardCharsets.UTF_8)))).isFalse();
+            assertThat(ArtifactStore.isArtifactMetadataKeyHex(hex.formatHex("artifacts/g/a/versions".getBytes(StandardCharsets.UTF_8)))).isFalse();
+            assertThat(ArtifactStore.isArtifactMetadataKeyHex(hex.formatHex("stream/x/meta".getBytes(StandardCharsets.UTF_8)))).isFalse();
+            assertThat(ArtifactStore.isArtifactMetadataKeyHex("not hex at all")).isFalse();
         }
 
         @Test

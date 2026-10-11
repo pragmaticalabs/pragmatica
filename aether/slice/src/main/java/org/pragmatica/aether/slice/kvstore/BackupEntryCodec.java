@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.slice.kvstore;
 
 import java.nio.charset.StandardCharsets;
@@ -142,6 +141,12 @@ public record BackupEntryCodec(SliceCodec codec) {
                                                              KeyBinding.keyBinding(AppBlueprintKey.class,
                                                                                    AppBlueprintValue.class,
                                                                                    AppBlueprintKey::appBlueprintKey),
+                                                             KeyBinding.keyBinding(AetherKey.ArtifactVersionsKey.class,
+                                                                                   AetherValue.ArtifactVersionsValue.class,
+                                                                                   AetherKey.ArtifactVersionsKey::artifactVersionsKey),
+                                                             KeyBinding.keyBinding(AetherKey.ArtifactContentKey.class,
+                                                                                   AetherValue.ArtifactContentValue.class,
+                                                                                   AetherKey.ArtifactContentKey::artifactContentKey),
                                                              KeyBinding.keyBinding(DeploymentOutcomeKey.class,
                                                                                    DeploymentOutcomeValue.class,
                                                                                    DeploymentOutcomeKey::deploymentOutcomeKey),

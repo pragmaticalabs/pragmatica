@@ -290,6 +290,8 @@ class SegmentSealerTest {
             awaitCondition(() -> !orderedSealer.holdsUnsealed(STREAM, PARTITION, 3L));
             assertThat(heldAtIndexUpdate.get()).as("sealer still held the copy when the index was updated").isTrue();
             assertThat(index.findSegment(STREAM, PARTITION, 3L).isPresent()).isTrue();
+            // released() removes from the queue, THEN releases the copy: holdsUnsealed==false does not imply pendingBytes==0.
+            awaitCondition(() -> orderedSealer.pendingBytes() == 0);
             assertThat(orderedSealer.pendingBytes()).isZero();
         }
 
@@ -520,8 +522,9 @@ class SegmentSealerTest {
         public Promise<Unit> seal(SealedSegment segment, Option<AppendLog> log) {
             var outcome = Promise.<Unit> promise();
 
-            segments.add(segment);
+            // outcomes first: calls() counts segments, so a reader that saw call N must find outcome N.
             outcomes.add(outcome);
+            segments.add(segment);
 
             return outcome;
         }

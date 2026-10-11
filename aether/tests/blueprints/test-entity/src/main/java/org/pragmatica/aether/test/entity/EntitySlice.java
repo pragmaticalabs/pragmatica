@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.test.entity;
 
 import java.time.Duration;
@@ -36,8 +35,8 @@ import org.pragmatica.lang.Verify;
 /// [#scheduleTimer] exists for exactly this reason. Durable timers are real on the fenced-log backing a
 /// node provisions (#345 I4): the call answers with a token, the pending timer is a record in the entity's
 /// own log, and the fire applies [OrderCommand.Expire] to the state through the same path an external
-/// update takes. `DurableEntityFactory` provisions only that backing, so `TimerNotSupported` — the answer
-/// of the HA-only in-memory cut (`InMemoryDurableEntity`, `FencedDurableEntity`), test-only fixtures that
+/// update takes. `DurableEntityFactory` provisions only that backing, so the refusal of the
+/// HA-only in-memory cut (`InMemoryDurableEntity`, `FencedDurableEntity`), test-only fixtures that
 /// unit tests construct directly — cannot arrive here. The fixture reports whatever answer it receives as data, so a
 /// test that ever saw one would name it rather than hang waiting for a fire.
 ///

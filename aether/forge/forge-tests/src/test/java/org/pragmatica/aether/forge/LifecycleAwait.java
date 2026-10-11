@@ -11,6 +11,8 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 
+import java.util.regex.Pattern;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -146,7 +148,25 @@ final class LifecycleAwait {
     static String report(String step, TimeSpan bound, String cause, EmberCluster cluster) {
         return step + " did not settle within " + bound
                + ": " + cause
+               + bindAttribution(cause)
                + "\nCluster state when the wait ended:\n" + snapshot(cluster);
+    }
+
+    private static final Pattern PORT_IN_CAUSE = Pattern.compile("port (\\d+)");
+
+    /// A bind collision names the port it hit, and says where to look: most tests here bind a fixed test-port block
+    /// (tools/check-test-ports.py pins the blocks as non-overlapping with each other, not with the host). A block that
+    /// is hit in CI should become probe-and-skip. Empty for every other failure.
+    static String bindAttribution(String cause) {
+        if (!cause.contains("Address already in use") && !cause.contains("BindException")) {
+            return "";
+        }
+
+        var port = PORT_IN_CAUSE.matcher(cause);
+        var named = port.find() ? "port " + port.group(1) : "a port the transport did not name (see the snapshot)";
+
+        return "\n=> bind collision on " + named + ": a fixed test-port block, see check-test-ports.py"
+               + " and TEST_PORT_ALLOCATION.md; a block hit in CI should be converted to probe-and-skip";
     }
 
     /// Delegates to [ClusterSnapshot], which is the module's one renderer. The only thing decided

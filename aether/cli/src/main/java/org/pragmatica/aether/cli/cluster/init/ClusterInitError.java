@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.cli.cluster.init;
 
 import java.util.List;
@@ -138,6 +137,18 @@ public sealed interface ClusterInitError extends Cause {
                  + "The region decides which jurisdiction your cluster's data physically resides in, "
                  + "so it must be chosen deliberately for your residency, latency and egress "
                  + "requirements — never inherited from a default.";
+        }
+    }
+
+    /// A gcp target reached config generation with no zone. gcp's integration requires one, and there is NO
+    /// default: a defaulted `<region>-a` names a zone that does not exist for some regions (europe-west1 has
+    /// b, c and d), passes validation, and fails only at VM create.
+    record ZoneRequired(String provider) implements ClusterInitError {
+        @Override
+        public String message() {
+            return "No zone given for cloud provider '" + provider
+                 + "', and Aether ships no default on purpose: supply --zone. "
+                 + "A zone name derived from the region can name one that does not exist.";
         }
     }
 

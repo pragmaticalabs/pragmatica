@@ -10,6 +10,7 @@ import java.util.stream.IntStream;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Contract;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
@@ -32,6 +33,17 @@ public interface ReplicationManager extends AutoCloseable {
     }
 
     EarliestRetainedOffset ALWAYS_PROMOTE = (_, _) -> - 1L;
+
+    /// #1730: the partition's COMMITTED in-sync replica set (the owner included), read from the committed ownership
+    /// record. When present, a confirmation needs EVERY member other than the owner, and the pre-append floor is
+    /// the ISR's size (min-ISR = the confirmation factor). [Option#none] means the partition carries no committed
+    /// ISR (no record yet, or a record minted before #1730), and the any-`minAcks`-replicas rule applies.
+    @FunctionalInterface
+    interface InSyncReplicas {
+        Option<List<NodeId>> inSyncReplicas(String streamName, int partition);
+    }
+
+    InSyncReplicas UNMANAGED = (_, _) -> Option.none();
 
     /// Owner-side observer of the replica-ack stream (#1235). It is told of each ack BEFORE the registry
     /// records it (ruling after the #1279 review, N2): a waiter can be resolved from a registry read, so an
@@ -81,6 +93,12 @@ public interface ReplicationManager extends AutoCloseable {
 
     ReplicaRegistry registry();
     Promise<Unit> awaitReplication(String streamName, int partition, long offset, int minAcks);
+
+    /// Bind where the committed owner epoch is read (#1730 phase 2): a replica's confirmation counts only while it was made under
+    /// the epoch now in force. Set once at wiring; the default manager ignores it.
+    @Contract
+    default void ownerEpochs(org.pragmatica.aether.stream.StreamOwnerEpochSource source) {}
+
     /// The highest offset at least `minAcks` DISTINCT non-self replicas have acknowledged for
     /// `(stream, partition)` — the non-blocking reading of the same condition [#awaitReplication] waits
     /// for (#1235). `-1` when fewer replicas than `minAcks` have acknowledged anything; [Long#MAX_VALUE]
@@ -90,6 +108,10 @@ public interface ReplicationManager extends AutoCloseable {
     /// overlaid on the registry rows (never lowering a row), so an [AckObserver] running before the
     /// registry update sees the ack it is being told about.
     long replicatedThrough(ReplicationMessage.ReplicateAck pending, int minAcks);
+
+    /// Late-bind the committed ISR source (#1730). The default manages nothing.
+    @Contract
+    default void inSyncReplicaSource(InSyncReplicas source) {}
 
     /// Install the single [AckObserver] (#1235). The partition manager installs itself at construction.
     @Contract

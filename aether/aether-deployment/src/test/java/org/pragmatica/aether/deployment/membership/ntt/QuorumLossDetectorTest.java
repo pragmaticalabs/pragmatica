@@ -31,7 +31,7 @@ import static org.pragmatica.aether.deployment.membership.ntt.QuorumLossDetector
 
 
 /// Unit tests for [`QuorumLossDetector`] — mechanism in isolation, no SWIM/config wiring.
-/// Member count is supplied externally via [`QuorumLossDetector#onMemberCountChanged`] and
+/// Member count is derived by a supplier ([`QuorumLossDetector#reevaluate`] is the edge input) and
 /// already includes self; a cluster of "self + N connected peers" is fed as `N + 1`.
 class QuorumLossDetectorTest {
     private TestTimeSource timeSource;
@@ -39,7 +39,7 @@ class QuorumLossDetectorTest {
     private RecordingListener listener;
     private MutableIntSupplier coreCount;
     private QuorumLossDetector detector;
-    private int lastMemberCount;
+    private final AtomicInteger memberCount = new AtomicInteger(1);
 
     @BeforeEach
     void setUp() {
@@ -47,17 +47,17 @@ class QuorumLossDetectorTest {
         scheduler = new ManualScheduler();
         listener = new RecordingListener();
         coreCount = new MutableIntSupplier(0);
-        lastMemberCount = 1;
-        detector = quorumLossDetector(membershipConfig(), coreCount, timeSource, scheduler);
+        memberCount.set(1);
+        detector = quorumLossDetector(membershipConfig(), coreCount, memberCount::get, timeSource, scheduler);
         detector.setQuorumLossListener(listener);
     }
 
     /// Feed a fresh member count (includes self) and remember it so a subsequent core-count
     /// change can re-trigger a recompute against the same membership.
     @Contract
-    private void members(int memberCount) {
-        lastMemberCount = memberCount;
-        detector.onMemberCountChanged(memberCount);
+    private void members(int newMemberCount) {
+        memberCount.set(newMemberCount);
+        detector.reevaluate();
     }
 
     /// Replicate the original `onConfiguredCoreCountChanged` semantics — change the configured
@@ -65,7 +65,90 @@ class QuorumLossDetectorTest {
     @Contract
     private void coreCount(int newCoreCount) {
         coreCount.set(newCoreCount);
-        detector.onMemberCountChanged(lastMemberCount);
+        detector.reevaluate();
+    }
+
+    /// #1853 — the count is DERIVED on every read, never stored: an input that changes without a push cannot
+    /// leave the detector reporting a stale value.
+    @Nested
+    class DerivedCount {
+        @Test
+        void inputChangeWithoutReevaluate_isVisibleToEveryRead() {
+            coreCount.set(5);
+            memberCount.set(5);
+
+            assertThat(detector.currentMemberCount()).isEqualTo(5);
+            assertThat(detector.isBelowThreshold()).isFalse();
+            assertThat(QuorumLossSnapshot.from(detector).strictMemberCount()).isEqualTo(5);
+            assertThat(QuorumLossSnapshot.from(detector).belowThreshold()).isFalse();
+
+            memberCount.set(1);
+
+            assertThat(detector.currentMemberCount()).isEqualTo(1);
+            assertThat(detector.isBelowThreshold()).isTrue();
+            assertThat(QuorumLossSnapshot.from(detector).belowThreshold()).isTrue();
+        }
+
+        @Test
+        void reads_areObservationOnly_theyNeverArmOrOpenAWindow() {
+            coreCount.set(5);
+            memberCount.set(5);
+
+            detector.currentMemberCount();
+            detector.isBelowThreshold();
+            QuorumLossSnapshot.from(detector);
+
+            assertThat(detector.isArmed()).as("only an edge input arms").isFalse();
+            assertThat(scheduler.pendingTasks()).isEmpty();
+        }
+
+        @Test
+        void reevaluate_afterInputChangedUnderneath_armsOnTheQuorateCount() {
+            coreCount.set(5);
+            memberCount.set(0);
+            detector.reevaluate();
+            assertThat(detector.isArmed()).as("arming: an empty electorate derives 0").isFalse();
+
+            memberCount.set(5);
+            detector.reevaluate();
+
+            assertThat(detector.isArmed()).isTrue();
+        }
+
+        /// A derived count can change between two reads, so a snapshot that reads it twice can report a count and
+        /// a `belowThreshold` that contradict each other. The supplier here answers 5, then 1.
+        @Test
+        void snapshot_readsTheCountOnce_soItsFieldsAgree() {
+            var reads = new AtomicInteger();
+            var racing = quorumLossDetector(membershipConfig(),
+                                            () -> 5,
+                                            () -> reads.getAndIncrement() == 0
+                                                  ? 5
+                                                  : 1,
+                                            timeSource,
+                                            scheduler);
+
+            var snapshot = QuorumLossSnapshot.from(racing);
+
+            assertThat(reads.get()).as("one read of the derived count per snapshot").isEqualTo(1);
+            assertThat(snapshot.strictMemberCount()).isEqualTo(5);
+            assertThat(snapshot.belowThreshold()).as("5 of required 3 is not below").isFalse();
+        }
+
+        @Test
+        void firingCheck_readsCurrentCount_notTheCountOfTheEdgeThatOpenedTheWindow() {
+            coreCount.set(5);
+            members(5);
+            members(1);
+            assertThat(scheduler.pendingTasks()).hasSize(1);
+
+            // Quorum returns by an input whose change nothing re-evaluated.
+            memberCount.set(4);
+            timeSource.advanceTimeMillis(membershipConfig().splitTimeout().millis());
+            scheduler.fireAll();
+
+            assertThat(listener.events()).as("the firing check reads the live count: recovered, no drain").isEmpty();
+        }
     }
 
     @Nested

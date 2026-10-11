@@ -12,7 +12,10 @@ import org.pragmatica.aether.slice.StreamConfig;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.stream.StreamNamespacesService;
+import org.pragmatica.aether.stream.StreamError;
 import org.pragmatica.aether.stream.StreamPartitionManager;
+import org.pragmatica.aether.stream.forward.StreamForwardError;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.aether.stream.StreamWriteRouter;
 import org.pragmatica.aether.stream.consumer.ConsumerGroupCoordinator;
 import org.pragmatica.aether.stream.consumer.ConsumerGroupRegistry;
@@ -208,6 +211,80 @@ class StreamApiRoutesPublishPartitionTest {
         assertThat(forwarded).isInstanceOf(ManagementServerError.PublishRetryable.class);
         assertThat(((ManagementServerError.PublishRetryable) forwarded).httpStatus()).isEqualTo(HttpStatus.SERVICE_UNAVAILABLE);
         assertThat(StreamApiRoutes.retryableRefusal(STREAM_ADDRESS, permanent)).isSameAs(permanent);
+    }
+
+    /// #1944: a publish to a node whose copy of the stream is not yet the committed life (it has not applied the
+    /// stream's config) used to answer 500 `Stream config not yet visible on this node`. The condition is transient and
+    /// the refusal precedes any append, so it answers the same retryable 503 as the other pre-append refusals. Driven
+    /// through the real publish route with the write router refusing exactly as `committedLife` does.
+    @Test
+    void publish_toANodeThatHasNotAppliedTheStreamConfig_is503Retryable_not500() {
+        var manager = streamPartitionManager(Long.MAX_VALUE);
+        try {
+            manager.createStream(StreamConfig.streamConfig(STREAM_ADDRESS, PARTITIONS, retention(), "latest"))
+                   .onFailure(cause -> fail("stream create must succeed: " + cause));
+            var refusal = new StreamError.StreamConfigNotYetVisible(STREAM_ADDRESS);
+
+            var result = refusingPublish(manager, refusal).publishEvent(NAMESPACE, STREAM, VERSION, new StreamApiRoutes.PublishRequest("payload", null))
+                                                         .await();
+
+            assertThat(result.isFailure()).isTrue();
+            result.onFailure(cause -> {
+                assertThat(cause).isInstanceOf(ManagementServerError.PublishRetryable.class);
+                assertThat(((ManagementServerError.PublishRetryable) cause).httpStatus()).isEqualTo(HttpStatus.SERVICE_UNAVAILABLE);
+                assertThat(cause.message()).as("an accurate problem body: refused before writing, with the cause named")
+                                           .contains("refused before writing", "Stream config not yet visible");
+            });
+        } finally {
+            manager.close();
+        }
+    }
+
+    /// The siblings: the owner has not finished promotion / this node is not the committed owner. Both refuse before any
+    /// append, both are transient.
+    @Test
+    void publish_siblingPreAppendRefusals_are503Retryable() {
+        for (Cause refusal : new Cause[]{new StreamError.OwnerNotActivated(STREAM_ADDRESS, 0),
+                                        new StreamError.NotOwnerAppend(STREAM_ADDRESS, 0, new org.pragmatica.consensus.NodeId("owner"))}) {
+            assertThat(StreamApiRoutes.retryableRefusal(STREAM_ADDRESS, refusal))
+                    .as(refusal.getClass().getSimpleName())
+                    .isInstanceOfSatisfying(ManagementServerError.PublishRetryable.class,
+                                            retryable -> assertThat(retryable.httpStatus()).isEqualTo(HttpStatus.SERVICE_UNAVAILABLE));
+        }
+    }
+
+    /// Control: the allow-list is not widened to every transient cause or every stream error. A timeout may follow a
+    /// write, and an oversize event or an unknown stream is the client's, so these keep their own cause (and status).
+    @Test
+    void retryableRefusal_doesNotWidenToOtherTransientOrPermanentCauses() {
+        Cause[] others = {StreamForwardError.General.FORWARD_TIMEOUT,
+                          new StreamError.StreamNotFound("s"),
+                          new StreamError.EventTooLarge(2, 1)};
+
+        for (var cause : others) {
+            assertThat(StreamApiRoutes.retryableRefusal(STREAM_ADDRESS, cause)).as(cause.getClass().getSimpleName()).isSameAs(cause);
+        }
+    }
+
+    private static StreamApiRoutes refusingPublish(StreamPartitionManager manager, Cause refusal) {
+        var router = org.mockito.Mockito.mock(StreamWriteRouter.class);
+
+        org.mockito.Mockito.when(router.publish(org.mockito.ArgumentMatchers.anyString(),
+                                                org.mockito.ArgumentMatchers.anyInt(),
+                                                org.mockito.ArgumentMatchers.any(byte[].class),
+                                                org.mockito.ArgumentMatchers.anyLong()))
+                           .thenReturn(refusal.<Long> promise());
+
+        var node = (ManageableNode) Proxy.newProxyInstance(ManageableNode.class.getClassLoader(),
+                                                           new Class[]{ManageableNode.class},
+                                                           (_, method, _) -> method.getName().equals("streamWriteRouter")
+                                                                             ? router
+                                                                             : stubbed(method.getName(), manager));
+
+        return StreamApiRoutes.streamApiRoutes(() -> node,
+                                               StreamNamespacesService.inMemory(),
+                                               ConsumerGroupCoordinator.noOp(),
+                                               ConsumerGroupRegistry.consumerGroupRegistry());
     }
 
     private static RetentionPolicy retention() {

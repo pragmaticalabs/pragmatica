@@ -18,6 +18,7 @@ import java.util.function.Consumer;
 import java.util.function.IntSupplier;
 import java.util.function.Supplier;
 
+import org.pragmatica.aether.stream.OwnerActivation;
 import org.pragmatica.aether.stream.replication.ReplicaPlacement.Placement;
 import org.pragmatica.aether.stream.replication.ReplicaPlacement.StreamClass;
 import org.pragmatica.consensus.NodeId;
@@ -104,6 +105,12 @@ public final class ReplicaSetController implements AutoCloseable {
         Option<NodeId> committedOwner(String stream, int partition);
     }
 
+    /// #1730: the committed in-sync replica set of `(stream, partition)`, empty when the record carries none.
+    @FunctionalInterface
+    public interface CommittedIsrLookup {
+        List<NodeId> committedIsr(String stream, int partition);
+    }
+
     /// Self-role for a single `(stream, partition)` under the current placement.
     public enum Role {
         OWNER,
@@ -121,9 +128,13 @@ public final class ReplicaSetController implements AutoCloseable {
     private final Executor executor;
     private final boolean ownsExecutor;
     private final AtomicBoolean passive = new AtomicBoolean(false);
+    /// True while a reconcile run is queued and has not yet started reading its inputs (see [#reconcile]).
+    private final AtomicBoolean reconcilePending = new AtomicBoolean(false);
     /// #1555 sticky ownership source. Default: no records, so every placement is pure HRW (Forge/unit/legacy
     /// controllers). `AetherNode` binds the committed `StreamPartitionOwnershipValue`.
     private volatile CommittedOwnerLookup committedOwners = (_, _) -> none();
+    /// #1730 committed ISR source. Default: none, so placement ignores the ISR.
+    private volatile CommittedIsrLookup committedIsr = (_, _) -> List.of();
     /// Membership snapshot captured by the LAST completed reconcile. `roleFor` / `isOwner` (the B3
     /// emit-gate) compute placement from THIS snapshot — the same generation the registry was
     /// reconciled against — so emit-ownership and replica-ownership never read the live topology at
@@ -268,6 +279,12 @@ public final class ReplicaSetController implements AutoCloseable {
         this.committedOwners = lookup;
     }
 
+    /// Late-bind the committed ISR source (#1730). Set once at wiring.
+    @Contract
+    public void committedIsrSource(CommittedIsrLookup lookup) {
+        this.committedIsr = lookup;
+    }
+
     /// #1555 sticky ownership, the placement EVERY node routes by: with a committed ownership record its owner leads,
     /// unconditionally — liveness is judged only by the leader's writer ([#desiredOwner]) — and the other replicas
     /// are the HRW-top of the rest; with no record yet, pure HRW. Every node agrees on the owner by construction,
@@ -275,11 +292,13 @@ public final class ReplicaSetController implements AutoCloseable {
     private Option<Placement> effectivePlacement(String streamName, int partition, List<NodeId> members, int rf) {
         return committedOwners.committedOwner(streamName, partition)
                               .fold(() -> ReplicaPlacement.place(streamName, partition, members, rf),
-                                    owner -> Option.some(ReplicaPlacement.placeWithOwner(streamName,
-                                                                                         partition,
-                                                                                         owner,
-                                                                                         members,
-                                                                                         rf)));
+                                    owner -> Option.some(ReplicaPlacement.placeWithOwnerAndIsr(streamName,
+                                                                                               partition,
+                                                                                               owner,
+                                                                                               committedIsr.committedIsr(streamName,
+                                                                                                                         partition),
+                                                                                               members,
+                                                                                               rf)));
     }
 
     /// The owner the LEADER's ownership writer should commit (#1555 sticky ownership): the committed owner while it
@@ -295,6 +314,37 @@ public final class ReplicaSetController implements AutoCloseable {
                                                                    members,
                                                                    rfFor(streamName,
                                                                          classify(streamName))).map(Placement::owner));
+    }
+
+    /// #1730: the replica placement of `(stream, partition)` led by `owner`, the owner first — the ISR the leader's
+    /// writer mints with a partition's first ownership record (a fresh partition holds nothing, so every placed
+    /// replica is trivially in sync).
+    public List<NodeId> placementWithOwner(String streamName, int partition, NodeId owner) {
+        return ReplicaPlacement.placeWithOwnerAndIsr(streamName,
+                                                     partition,
+                                                     owner,
+                                                     committedIsr.committedIsr(streamName, partition),
+                                                     currentMembers(),
+                                                     rfFor(streamName,
+                                                           classify(streamName)))
+                               .replicas();
+    }
+
+    /// #1730: the unclean-failover refusal, as an operator-readable block: the committed owner is not in the live set
+    /// and no member of the committed ISR is, so the leader's writer elects nobody. None otherwise.
+    public Option<OwnerActivation.ActivationBlock> noInSyncReplica(String streamName, int partition) {
+        var members = currentMembers();
+        var isr = committedIsr.committedIsr(streamName, partition);
+
+        return committedOwners.committedOwner(streamName, partition)
+                              .filter(owner -> !members.contains(owner)
+                                               && !isr.isEmpty()
+                                               && isr.stream()
+                                                     .noneMatch(members::contains))
+                              .map(owner -> new OwnerActivation.ActivationBlock.NoInSyncReplica(streamName,
+                                                                                                partition,
+                                                                                                owner,
+                                                                                                isr));
     }
 
     /// Membership-tail hook: any {@link MembershipDecision} variant triggers a reconcile. Wire via
@@ -320,11 +370,26 @@ public final class ReplicaSetController implements AutoCloseable {
     }
 
     /// Schedule a serialized reconcile. Returns immediately; the work runs on the controller's
-    /// executor. Safe to call from any thread and any number of times (coalesces naturally because
-    /// each run recomputes from a fresh snapshot).
+    /// executor. Safe to call from any thread and any number of times: calls made while a run is
+    /// still QUEUED coalesce into it, and a call made while a run is EXECUTING schedules exactly one
+    /// more — the pending flag is cleared BEFORE the run reads its inputs, so an input that changed
+    /// after that read is always followed by a run that sees it. That ordering is the whole point of
+    /// the flag: a trigger can be coalesced only into a run that has not yet read.
+    ///
+    /// This is the one entry every placement-input trigger calls. The pass derives everything from
+    /// CURRENT state when it runs (members, cluster size, committed ownership records, the stream
+    /// catalog), so a trigger carries no payload and ordering between a trigger and the state it
+    /// announces cannot lose an update — it can only make one extra pass redundant.
     @Contract
     public void reconcile() {
-        executor.execute(this::reconcileNow);
+        if (reconcilePending.compareAndSet(false, true)) {
+            executor.execute(this::runPendingReconcile);
+        }
+    }
+
+    private void runPendingReconcile() {
+        reconcilePending.set(false);
+        reconcileNow();
     }
 
     private void reconcileNow() {

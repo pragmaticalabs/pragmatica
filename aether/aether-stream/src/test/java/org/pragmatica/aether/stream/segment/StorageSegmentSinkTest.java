@@ -8,17 +8,24 @@ package org.pragmatica.aether.stream.segment;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.storage.AppendLog;
 import org.pragmatica.storage.BlockId;
 import org.pragmatica.storage.BlockMetadata;
+import org.pragmatica.storage.LocalDiskTier;
 import org.pragmatica.storage.MemoryTier;
 import org.pragmatica.storage.MetadataStore;
 import org.pragmatica.storage.StorageGarbageCollector;
 import org.pragmatica.storage.StorageInstance;
 
+import java.nio.file.Path;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
@@ -238,6 +245,75 @@ class StorageSegmentSinkTest {
             gate.succeed(unit());
 
             assertThat(indexedWhenResolved.await().unwrap()).isTrue();
+        }
+    }
+
+    /// #1441: a seal WITHOUT a log has no record of its range above the last metadata snapshot but its ref, so the
+    /// ref is made durable before the seal resolves -- and before the index holds the segment, which is what the
+    /// sealer's release waits for. A seal WITH a log needs none of it: the log keeps every record above the
+    /// snapshot floor (#1345), and forcing a snapshot per seal there would cost the default path for nothing.
+    @Nested
+    class RefDurabilityOnSeal {
+        @TempDir
+        Path dir;
+
+        @Test
+        void sealWithoutLog_persistsTheRefBeforeTheSegmentIsIndexed() {
+            var persists = new AtomicInteger();
+            var indexedAtPersist = new AtomicReference<Boolean>();
+            var durableSink = storageSegmentSink(storage, index, () -> recordPersist(persists, indexedAtPersist, 5));
+            var segment = sealedSegment(STREAM, PARTITION, 0, 9, 10, 1000L, 2000L, new byte[]{1, 2, 3});
+
+            durableSink.seal(segment)
+                       .await()
+                       .onFailure(c -> fail("seal failed: " + c.message()));
+
+            assertThat(persists.get()).as("one forced snapshot per seal without a log").isEqualTo(1);
+            assertThat(indexedAtPersist.get()).as("the ref is durable BEFORE the index releases the sealer's copy").isFalse();
+            assertThat(index.findSegment(STREAM, PARTITION, 5).isPresent()).isTrue();
+        }
+
+        @Test
+        void sealWithoutLog_whenTheRefCannotBeMadeDurable_failsAndIndexesNothing() {
+            var failingSink = storageSegmentSink(storage, index, () -> Causes.cause("snapshot dir unwritable").result());
+            var segment = sealedSegment(STREAM, PARTITION, 0, 9, 10, 1000L, 2000L, new byte[]{1, 2, 3});
+
+            var result = failingSink.seal(segment)
+                                    .await();
+
+            assertThat(result.isFailure()).as("a seal whose ref a crash would lose is not a completed seal").isTrue();
+            assertThat(index.lastSealedOffset(STREAM, PARTITION)).as("so the floor does not move, and the sealer keeps its copy to retry")
+                                                                 .isEqualTo(-1L);
+        }
+
+        @Test
+        void sealWithLog_neverForcesASnapshot() {
+            var diskStorage = StorageInstance.storageInstance("with-log",
+                                                              List.of(LocalDiskTier.localDiskTier(dir.resolve("segments"), ONE_GB)
+                                                                                   .unwrap()));
+            var log = AppendLog.open(dir.resolve("p0.wal"))
+                               .onFailure(c -> fail(c.message()))
+                               .unwrap();
+            var persists = new AtomicInteger();
+            var loggedSink = storageSegmentSink(diskStorage, index, () -> recordPersist(persists, new AtomicReference<>(), 5));
+            var segment = sealedSegment(STREAM, PARTITION, 0, 9, 10, 1000L, 2000L, new byte[]{1, 2, 3});
+
+            loggedSink.seal(segment, Option.some(log))
+                      .await()
+                      .onFailure(c -> fail("seal failed: " + c.message()));
+
+            assertThat(index.findSegment(STREAM, PARTITION, 5).isPresent()).as("control: the logged seal completed").isTrue();
+            assertThat(persists.get()).as("the log holds the range above the snapshot floor; no snapshot is forced").isZero();
+            log.close();
+        }
+
+        private org.pragmatica.lang.Result<Unit> recordPersist(AtomicInteger persists,
+                                                               AtomicReference<Boolean> indexedAtPersist,
+                                                               long offset) {
+            persists.incrementAndGet();
+            indexedAtPersist.set(index.findSegment(STREAM, PARTITION, offset).isPresent());
+
+            return org.pragmatica.lang.Result.unitResult();
         }
     }
 

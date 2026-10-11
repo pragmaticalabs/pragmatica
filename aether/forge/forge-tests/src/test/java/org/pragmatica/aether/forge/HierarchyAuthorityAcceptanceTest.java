@@ -48,7 +48,7 @@ import static org.pragmatica.http.JdkHttpOperations.jdkHttpOperations;
 class HierarchyAuthorityAcceptanceTest {
     private static final TimeSpan BUDGET = TimeSpan.timeSpan(120).seconds();
     private static final TimeSpan REQUEST = TimeSpan.timeSpan(10).seconds();
-    private final EmberCluster cluster = EmberCluster.emberCluster(3, 35100, 35200, 35300, "authority");
+    private final EmberCluster cluster = EmberCluster.emberCluster(3, 3000, 3100, 3200, "authority");
 
     @AfterEach void stop() {
         cluster.allNodes().forEach(node -> node.setInboundFaultFilter((_, _) -> true));
@@ -122,8 +122,9 @@ class HierarchyAuthorityAcceptanceTest {
         LifecycleAwait.nodeSettled("release one worker slot", cluster, cluster.killNode(workers.getLast().self().id(), false));
         var extra = LifecycleAwait.nodeSettled("admit CORE above desired count", cluster, cluster.addNode());
         var candidate = cluster.getNode(extra.id()).unwrap();
-        await().atMost(BUDGET.duration()).until(() -> leader().membershipFsm().memberDescriptor(extra).isPresent());
-        assertThat(leader().membershipFsm().memberDescriptor(extra).unwrap().role()).isEqualToIgnoringCase("CORE");
+        // One leader() per evaluation: a second call after the await may name a different node that has no descriptor yet.
+        await().atMost(BUDGET.duration()).until(() -> leader().membershipFsm().memberDescriptor(extra)
+                                                           .map(descriptor -> "CORE".equalsIgnoreCase(descriptor.role())).or(false));
         assertPromotionRefused(candidate, "WORKER");
         assertThat(leader().coreNodeIds()).hasSize(3);
     }

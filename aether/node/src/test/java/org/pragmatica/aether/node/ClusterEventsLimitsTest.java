@@ -9,6 +9,7 @@ import java.util.Map;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.slice.RetentionMode;
 import org.pragmatica.aether.slice.RetentionPolicy;
+import org.pragmatica.aether.slice.blueprint.StreamEventLimits;
 import org.pragmatica.aether.stream.OffHeapRingBuffer;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
@@ -92,6 +93,21 @@ class ClusterEventsLimitsTest {
     @Test
     void clusterEventsLimits_negativeAge_refusesTheBoot() {
         assertRefused(ClusterEventsLimits.MAX_AGE_MS_VARIABLE, "-1");
+    }
+
+    /// #1937: this stream is built directly, so the one-frame ceiling every declared stream is held to is enforced here, at boot.
+    /// Red when the maximum is `Long.MAX_VALUE`: a value above the ceiling is accepted and the stream's events cannot replicate.
+    @Test
+    void clusterEventsLimits_eventSizeAboveTheOneFrameCeiling_refusesTheBoot() {
+        assertRefused(ClusterEventsLimits.MAX_EVENT_SIZE_BYTES_VARIABLE, String.valueOf(StreamEventLimits.MAX_EVENT_SIZE_BYTES + 1L));
+        assertRefused(ClusterEventsLimits.MAX_EVENT_SIZE_BYTES_VARIABLE, String.valueOf(Long.MAX_VALUE));
+    }
+
+    @Test
+    void clusterEventsLimits_eventSizeAtTheOneFrameCeiling_isAccepted() {
+        var limits = limitsFrom(Map.of(ClusterEventsLimits.MAX_EVENT_SIZE_BYTES_VARIABLE, String.valueOf(StreamEventLimits.MAX_EVENT_SIZE_BYTES))).unwrap();
+
+        assertThat(limits.maxEventSizeBytes()).isEqualTo(StreamEventLimits.MAX_EVENT_SIZE_BYTES);
     }
 
     @Test

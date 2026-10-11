@@ -31,9 +31,12 @@ ENV JAVA_OPTS="-Xmx1g -XX:+UseZGC"
 # Dashboard port
 EXPOSE 8888
 
-# Health check against Forge API
+# Health check against Forge API. /api/forge/status is Forge's constant-time readiness route
+# (answers {"forge":true} once the HTTP server is up). Do NOT probe /api/metrics: Forge serves only
+# /api/metrics/history (and that one proxies to the cluster leader), so /api/metrics is a 404 (#960).
+# /health is registered in StatusRoutes but is shadowed -- ForgeRequestHandler sends only /api/* to the API handler.
 HEALTHCHECK --interval=10s --timeout=5s --start-period=60s --retries=3 \
-    CMD wget --no-verbose --tries=1 --spider http://localhost:${FORGE_PORT}/api/metrics || exit 1
+    CMD wget --no-verbose --tries=1 --spider http://localhost:${FORGE_PORT}/api/forge/status || exit 1
 
 # Switch to non-root user
 USER aether

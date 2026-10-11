@@ -13,7 +13,5 @@ public sealed interface ActionResult {
 
     record NodeStopped(NodeId nodeId) implements ActionResult {}
 
-    record NodeRestarted(NodeId nodeId) implements ActionResult {}
-
     record SlicesMigrated(NodeId source, int sliceCount) implements ActionResult {}
 }

@@ -11,6 +11,7 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.function.IntConsumer;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
 import java.util.concurrent.atomic.AtomicReference;
@@ -27,7 +28,6 @@ import org.pragmatica.aether.ember.EmberCluster.StartFailure;
 import org.pragmatica.aether.ember.EmberConfig;
 import org.pragmatica.aether.config.AetherConfig;
 import org.pragmatica.aether.config.AppHttpConfig;
-import org.pragmatica.aether.config.ConfigLoader;
 import org.pragmatica.config.ConfigurationProvider;
 import org.pragmatica.aether.dashboard.StaticFileHandler;
 import org.pragmatica.aether.forge.load.ConfigurableLoadRunner;
@@ -87,7 +87,7 @@ public final class ForgeServer {
     private final StatusWebSocketHandler eventWsHandler = new StatusWebSocketHandler(WebSocketAuthenticator.webSocketAuthenticator(SecurityValidator.permitAllValidator(),
                                                                                                                                    false));
 
-    private final HttpOperations http = JdkHttpOperations.jdkHttpOperations();
+    private final HttpOperations http;
     /// The credential Forge presents on its OWN control-plane calls (currently the startup blueprint
     /// deploy). Empty when no keys are configured, which is the default and leaves every request
     /// unauthenticated exactly as before.
@@ -103,8 +103,15 @@ public final class ForgeServer {
     private volatile String lastEventTimestamp = "";
 
     private ForgeServer(StartupConfig startupConfig, EmberConfig forgeConfig) {
+        this(startupConfig, forgeConfig, JdkHttpOperations.jdkHttpOperations());
+    }
+
+    /// Package-visible so the startup deploy's CALL SITE is pinnable (#1218): a test drives
+    /// [#deployBlueprintFromArtifact] against an injected transport, which a helper test cannot do.
+    ForgeServer(StartupConfig startupConfig, EmberConfig forgeConfig, HttpOperations http) {
         this.startupConfig = startupConfig;
         this.forgeConfig = forgeConfig;
+        this.http = http;
     }
 
     private static final String VERSION = "Aether Forge " + resolveVersion();
@@ -142,6 +149,8 @@ public final class ForgeServer {
         }
 
         var startupConfig = startupConfigResult.unwrap();
+        // #909 - an aether.toml that exists and does not load is refused before anything is created, not dropped to the NONE defaults.
+        ForgeAppConfig.loadOrRefuse(startupConfig.forgeConfig(), System::exit);
         var forgeConfig = loadForgeConfig(startupConfig);
 
         printBanner(forgeConfig, startupConfig);
@@ -323,15 +332,20 @@ public final class ForgeServer {
     /// + [AppHttpConfig#DEFAULT_API_VERSION_HEADER] defaults — existing path-mode forge runs are
     /// byte-for-byte unchanged.
     private void applyApiVersioning(EmberCluster clusterInstance) {
-        startupConfig.forgeConfig()
-                     .map(path -> path.resolveSibling("aether.toml"))
-                     .filter(path -> path.toFile()
-                                         .exists())
-                     .map(ConfigLoader::load)
-                     .flatMap(Result::option)
-                     .map(AetherConfig::appHttp)
-                     .onPresent(appHttp -> clusterInstance.withApiVersioningDetection(appHttp.apiVersioningDetection(),
-                                                                                      appHttp.apiVersionHeaderName()));
+        applyApiVersioning(clusterInstance, System::exit);
+    }
+
+    /// Package-visible with the exit injected so the call site of the sibling-config refusal is pinnable (#909).
+    void applyApiVersioning(EmberCluster clusterInstance, IntConsumer exit) {
+        siblingAppConfig(exit).map(AetherConfig::appHttp)
+                        .onPresent(appHttp -> clusterInstance.withApiVersioningDetection(appHttp.apiVersioningDetection(),
+                                                                                         appHttp.apiVersionHeaderName()));
+    }
+
+    /// The sibling `aether.toml`, or none when there is no such file. One that exists and does not load is refused (#909): the cause is logged
+    /// at ERROR and Forge stops, because falling back to NONE would run an unauthenticated cluster for a user who configured authentication.
+    private Option<AetherConfig> siblingAppConfig(IntConsumer exit) {
+        return ForgeAppConfig.loadOrRefuse(startupConfig.forgeConfig(), exit);
     }
 
     /// #573 — make `forge run` honor `[app-http] security_mode` and `[app-http.api-keys.<key>]` from the
@@ -357,20 +371,19 @@ public final class ForgeServer {
     /// `ConfigLoader` resolves keys from `AETHER_API_KEYS` before any TOML, so a credential need never
     /// be written into committed config.
     private void applyAppHttpSecurity(EmberCluster clusterInstance) {
-        startupConfig.forgeConfig()
-                     .map(path -> path.resolveSibling("aether.toml"))
-                     .filter(path -> path.toFile()
-                                         .exists())
-                     .map(ConfigLoader::load)
-                     .flatMap(Result::option)
-                     .map(AetherConfig::appHttp)
-                     .filter(appHttp -> !appHttp.apiKeys()
-                                                .isEmpty())
-                     .onPresent(appHttp -> {
-                                    clusterInstance.withAppHttpSecurity(appHttp.securityMode(),
-                                                                        appHttp.apiKeys());
-                                    operatorApiKey.set(adminCapableKey(appHttp));
-                                });
+        applyAppHttpSecurity(clusterInstance, System::exit);
+    }
+
+    /// Package-visible with the exit injected (see [#applyApiVersioning]).
+    void applyAppHttpSecurity(EmberCluster clusterInstance, IntConsumer exit) {
+        siblingAppConfig(exit).map(AetherConfig::appHttp)
+                        .filter(appHttp -> !appHttp.apiKeys()
+                                                   .isEmpty())
+                        .onPresent(appHttp -> {
+                                       clusterInstance.withAppHttpSecurity(appHttp.securityMode(),
+                                                                           appHttp.apiKeys());
+                                       operatorApiKey.set(adminCapableKey(appHttp));
+                                   });
     }
 
     /// Pick the credential Forge itself will present. An ADMIN-roled key is preferred because the
@@ -649,7 +662,7 @@ public final class ForgeServer {
         }
     }
 
-    private void deployBlueprintFromArtifact(String artifactCoords) {
+    void deployBlueprintFromArtifact(String artifactCoords) {
         log.info("Deploying blueprint artifact: {}...", artifactCoords);
         var leaderPort = cluster.flatMap(EmberCluster::getLeaderManagementPort).or(forgeConfig.managementPort());
         var body = "{\"artifact\":\"" + artifactCoords + "\"}";
@@ -661,11 +674,29 @@ public final class ForgeServer {
         var request = builder.POST(HttpRequest.BodyPublishers.ofString(body)).build();
 
         log.info("Deploying blueprint by coordinates: POST /api/v1/blueprints/deploy — {}", artifactCoords);
-        http.sendString(request)
-            .await(TimeSpan.timeSpan(10).seconds())
-            .onSuccess(result -> handleDeployResponse(result, artifactCoords))
-            .onFailure(cause -> failStartupDeploy(artifactCoords,
-                                                  cause.message()));
+        awaitStartupDeploy(http, forgeConfig, request).onSuccess(result -> handleDeployResponse(result, artifactCoords))
+                          .onFailure(cause -> failStartupDeploy(artifactCoords,
+                                                                startupDeployTimeoutDetail(forgeConfig,
+                                                                                           cause.message())));
+    }
+
+    /// The one place the startup deploy is awaited, so a test can drive the real wait against a slow
+    /// transport and observe which budget it honours (#1218).
+    static Result<HttpResult<String>> awaitStartupDeploy(HttpOperations http, EmberConfig config, HttpRequest request) {
+        return http.sendString(request)
+                   .await(startupDeployTimeout(config));
+    }
+
+    /// #1218 — the startup deploy shares the cluster-start budget. It used to carry its own hardcoded
+    /// 10 s, which `startTimeoutSeconds` did not cover: an operator on a slow host who raised the
+    /// documented knob changed the formation wait and left the step that actually timed out alone.
+    static TimeSpan startupDeployTimeout(EmberConfig config) {
+        return TimeSpan.timeSpan(config.startTimeoutSeconds()).seconds();
+    }
+
+    /// Names the budget and its setting, so a timeout is not mistaken for a rejected deploy.
+    static String startupDeployTimeoutDetail(EmberConfig config, String detail) {
+        return detail + " (deploy budget " + config.startTimeoutSeconds() + "s, set by cluster.start_timeout_seconds)";
     }
 
     private void handleDeployResponse(HttpResult<String> result, String artifactCoords) {

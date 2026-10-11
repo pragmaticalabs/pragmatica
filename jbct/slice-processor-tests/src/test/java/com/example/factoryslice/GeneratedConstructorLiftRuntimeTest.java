@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 
 package com.example.factoryslice;
 
@@ -56,6 +55,37 @@ class GeneratedConstructorLiftRuntimeTest {
         assertThat(strictCalls.get()).isEqualTo(1);
     }
 
+    /// #1214: a POST whose request record is bound entirely from the path must serve with NO body at all. The
+    /// route used to bind `.withBody(...)` regardless, so the absent body failed to deserialize into the request
+    /// record (`Type mismatch: expected ..., got unknown`) and only `-d '{}'` got through. The request is built
+    /// with no body bytes, exactly as a body-less `curl -X POST` arrives.
+    @Test
+    void postBoundEntirelyFromThePath_servesWithNoBody() {
+        var response = post("/api/factory/open/abc", new byte[0]);
+
+        assertThat(response.statusCode()).isEqualTo(200);
+    }
+
+    /// Control, so the test above cannot pass by the route ignoring the path: the id still binds from it.
+    @Test
+    void postBoundEntirelyFromThePath_bindsTheIdFromThePath() {
+        var response = post("/api/factory/open/xyz", new byte[0]);
+
+        assertThat(new String(response.body())).contains("xyz");
+    }
+
+    /// A body the client does send stays harmless (the old workaround keeps working).
+    @Test
+    void postBoundEntirelyFromThePath_ignoresABodyTheClientSends() {
+        assertThat(post("/api/factory/open/abc", "{}".getBytes()).statusCode()).isEqualTo(200);
+    }
+
+    private HttpResponseData post(String path, byte[] body) {
+        return router.handle(HttpRequestContext.httpRequestContext(path, "POST", Map.of(), Map.of(), body, "req_open"))
+                     .await(AWAIT)
+                     .fold(cause -> fail("router failed: " + cause.message()), response -> response);
+    }
+
     private HttpResponseData get(String path) {
         return router.handle(HttpRequestContext.httpRequestContext(path, "GET", Map.of(), Map.of(), "req_strict"))
                      .await(AWAIT)
@@ -81,6 +111,11 @@ class GeneratedConstructorLiftRuntimeTest {
         @Override
         public Promise<ShortResponse> lookup(LookupRequest request) {
             return delegate.lookup(request);
+        }
+
+        @Override
+        public Promise<ShortResponse> openCode(LookupRequest request) {
+            return delegate.openCode(request);
         }
 
         @Override

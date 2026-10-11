@@ -35,6 +35,8 @@ import org.pragmatica.consensus.net.NetworkMessage.DiscoveredNodes;
 import org.pragmatica.consensus.net.NetworkMessage.Hello;
 import org.pragmatica.consensus.net.NetworkMessage.KeepAlive;
 import org.pragmatica.consensus.net.NetworkMessage.KVSyncRequest;
+import org.pragmatica.consensus.net.NetworkMessage.LeaderPreVoteRequest;
+import org.pragmatica.consensus.net.NetworkMessage.LeaderPreVoteResponse;
 import org.pragmatica.consensus.net.NetworkMessage.KVSyncResponse;
 import org.pragmatica.consensus.net.NetworkServiceMessage;
 import org.pragmatica.consensus.net.NetworkServiceMessage.Broadcast;
@@ -44,6 +46,7 @@ import org.pragmatica.consensus.net.NetworkServiceMessage.ConnectionEstablished;
 import org.pragmatica.consensus.net.NetworkServiceMessage.ConnectionFailed;
 import org.pragmatica.consensus.net.NetworkServiceMessage.DisconnectNode;
 import org.pragmatica.consensus.net.NetworkServiceMessage.ListConnectedNodes;
+import org.pragmatica.consensus.net.NetworkServiceMessage.OfflineFramesExpired;
 import org.pragmatica.consensus.net.NetworkServiceMessage.Send;
 import org.pragmatica.consensus.net.quic.QuicClusterNetwork;
 import org.pragmatica.consensus.net.quic.QuicTlsProvider;
@@ -561,6 +564,15 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
         }
 
         consensus.onVoterConfiguration(leaderManager::installVoterConfiguration);
+        // #1803: a node that joined a running cluster waits for its KV state to catch up before electing, so it
+        // cannot depose a live leader it has not yet read. "Joined" means it adopted an already-formed electorate
+        // (a genesis latecomer counts); a node that forms genesis itself or restarts from its own state does not.
+        leaderManager.installKvSyncProgress(() -> consensus.joinedFormedElectorate() && consensus.isPendingCatchUp());
+        // #1748: a follower that loses its leader asks the electorate before electing; consensus mode only, since
+        // local election has no network to ask over.
+        if (useConsensusLeaderElection) {
+            leaderManager.enableLeaderPreVote();
+        }
         // Collect sealed hierarchy entries
         var topologyMgmtRoutes = SealedBuilder.from(TopologyManagementMessage.class).route(route(SetClusterSize.class,
                                                                                                  topologyManager::handleSetClusterSize));
@@ -590,7 +602,11 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
                                                                                                                    syncHoldRegistry,
                                                                                                                    syncHoldConfig)),
                                                                               route(KVSyncResponse.class,
-                                                                                    _ -> onSyncResponseReceived.run()));
+                                                                                    _ -> onSyncResponseReceived.run()),
+                                                                              route(LeaderPreVoteRequest.class,
+                                                                                    leaderManager::leaderPreVoteRequest),
+                                                                              route(LeaderPreVoteResponse.class,
+                                                                                    leaderManager::leaderPreVoteResponse));
         var networkServiceRoutes = SealedBuilder.from(NetworkServiceMessage.class).route(route(ConnectedNodesList.class,
                                                                                                topologyManager::reconcile),
                                                                                          route(ConnectNode.class,
@@ -605,6 +621,11 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
         // (AetherNode.attachQuicPeerStateListener -> swimDetector.recordTransportHint).
         // The router routes are retained only to satisfy sealed-hierarchy coverage.
         route(ConnectionFailed.class,
+              _ -> {}),
+
+        // #1996: a dropped-frame notification is an operator event, delivered by the node's own route to its event
+        // aggregator; here the route only satisfies sealed-hierarchy coverage.
+        route(OfflineFramesExpired.class,
               _ -> {}),
                                                                                          route(ConnectionEstablished.class,
                                                                                                _ -> {}),

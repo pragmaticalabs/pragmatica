@@ -26,6 +26,7 @@ import java.util.stream.Collectors;
 
 import org.pragmatica.aether.config.cluster.NodeRole;
 import org.pragmatica.aether.config.cluster.SourceProfile;
+import org.pragmatica.aether.deployment.cluster.CapacityControlledLifecycle;
 import org.pragmatica.aether.deployment.cluster.ClusterTopologyManager;
 import org.pragmatica.aether.deployment.cluster.DrainReason;
 import org.pragmatica.aether.deployment.cluster.ProvisionDisposition;
@@ -34,8 +35,10 @@ import org.pragmatica.aether.deployment.cluster.SliceOwnershipQuery.DrainRefusal
 import org.pragmatica.aether.deployment.membership.MembershipConfig;
 import org.pragmatica.aether.deployment.membership.fsm.MembershipFsm;
 import org.pragmatica.aether.environment.ClusterName;
+import org.pragmatica.aether.environment.EnvironmentError;
 import org.pragmatica.aether.environment.ProvisionContext;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.io.TimeSpan;
@@ -105,6 +108,18 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// each node id's ULID carries, so a leader change does not restart it, while their absence count starts
 /// afresh at inheritance (see [`#inheritedEntry`]). The map is internal — exposed only via observability
 /// accessors.
+///
+/// **Join grace (#1783).** An entry the provider has CONFIRMED (listed) that has still not joined membership
+/// once [`#joinGraceWindow`] has passed since its mint stops counting toward effective capacity, so the
+/// deficit it was masking re-opens and the next pass re-dispatches, well before the ceiling. The entry itself
+/// is kept (polled, bounded by the ceiling): if the late node then joins, the identity-match clear removes it
+/// and the existing surplus path ([`#computePeersToDrain`], the surplus follow-up) converges the cluster back
+/// to the configured count. A provision dispatched while a discounted entry exists is a substitute (generation 1)
+/// and is never itself discounted, so one missing slot has at most two in flight per ceiling window (#1786). The
+/// generation survives a leader handover by inference from the inherited ids' mint times (see
+/// [`#inheritedGeneration`]). The grace runs from the entry's
+/// `sinceNanos` — dispatch, or the ULID mint time for an inherited entry — so a leader change neither restarts
+/// nor shortens it.
 ///
 /// **Reached-full-membership latch (safety-critical — Bug C).** The reconciler must NEVER
 /// provision a replacement for a configured core peer that has not yet joined (initial
@@ -192,6 +207,9 @@ public final class LeaderReconciler {
     private final TimeSpan drainSafetyGraceWindow;
     /// Status-poll cadence for in-flight replacements (#1049) — see [`#computeInFlightPollInterval`].
     private final TimeSpan inFlightPollInterval;
+    /// How long after its mint a provider-CONFIRMED in-flight replacement may stay unjoined and still count
+    /// toward effective capacity (#1783) — see [`#computeJoinGrace`].
+    private final TimeSpan joinGraceWindow;
     /// Wall floor a never-listed in-flight replacement must stay absent for, since it became pollable,
     /// before it counts as deleted (#1049) — [`SourceProfile#REPLACEMENT_FIRST_LISTING_FLOOR`].
     private final TimeSpan firstListingFloor;
@@ -239,6 +257,9 @@ public final class LeaderReconciler {
     /// [`#setOwnsActiveSlices`]. A predicate (not a snapshot set) is intentional: ownership is read
     /// fresh per drain pass, never staged stale.
     private final AtomicReference<Predicate<NodeId>> ownsActiveSlices = new AtomicReference<>(id -> false);
+
+    /// #1543 E: replacements that are SURGE capacity (a live pairing's replacement before its original retires), not surplus.
+    private final AtomicReference<Supplier<Set<NodeId>>> surgeReplacements = new AtomicReference<>(Set::of);
 
     /// Drain-availability guard (#1488 owner ruling), consulted for SLICE-OWNER candidates only:
     /// `apply(candidate, remainingNodes)` returns the [`DrainRefusal`] naming the first hosted slice
@@ -331,6 +352,10 @@ public final class LeaderReconciler {
 
     private final AtomicReference<Option<ReconcileTrigger>> pendingTriggerRef = new AtomicReference<>(none());
 
+    /// Generation of a provision dispatched as a substitute for a discounted entry (#1786). Such an entry is
+    /// never itself discounted, which bounds one missing slot to an original plus one substitute in flight.
+    private static final int SUBSTITUTE_GENERATION = 1;
+
     private final ConcurrentHashMap<NodeId, InFlightEntry> inFlightProvisioning = new ConcurrentHashMap<>();
     /// Node ids with a provider status query outstanding (#1049) — the single-flight guard, so a slow
     /// provider never accumulates stacked queries for the same replacement across poll ticks.
@@ -377,6 +402,7 @@ public final class LeaderReconciler {
         // (role-propagation race window; ≥ deficit debounce; single timing constant).
         this.drainSafetyGraceWindow = computeDrainSafetyGrace(membershipConfig.splitTimeout());
         this.inFlightPollInterval = computeInFlightPollInterval(membershipConfig.splitTimeout());
+        this.joinGraceWindow = computeJoinGrace(membershipConfig.splitTimeout());
         this.firstListingFloor = SourceProfile.REPLACEMENT_FIRST_LISTING_FLOOR;
         this.requiredAbsentListings = computeRequiredAbsentListings(firstListingFloor, inFlightPollInterval);
         this.presenceSampler = presenceSampler;
@@ -484,13 +510,18 @@ public final class LeaderReconciler {
         // Core-scoped (Wave 2 / W2): a retained dispatch is fulfilled only by a CORE member —
         // matches the fulfillment-clear in runReconcileBody, which also reads coreCountedMembers().
         var currentMembers = membershipFsm.coreCountedMembers();
+        var unjoinedMints = unjoinedMintTimes(retained, currentMembers);
 
         for (var id : retained) {
             if (currentMembers.contains(id)) {
                 continue;
             }
 
-            inFlightProvisioning.putIfAbsent(id, inheritedEntry(id, nowNanos, ceiling));
+            inFlightProvisioning.putIfAbsent(id,
+                                             inheritedEntry(id,
+                                                            nowNanos,
+                                                            ceiling,
+                                                            inheritedGeneration(id, unjoinedMints)));
         }
 
         log.info("LeaderReconciler seeded in-flight provisioning from retained dispatched set (retained={}, inFlight={})",
@@ -507,11 +538,46 @@ public final class LeaderReconciler {
     /// and dispatched, since the reconciler mints an id only to dispatch it. Its absence count starts at zero
     /// and its first-listing floor at inheritance: this leader counts only listings it has seen itself, so no
     /// part of a prior leader's history can shorten the observation.
-    private static InFlightEntry inheritedEntry(NodeId id, long nowNanos, TimeSpan ceiling) {
+    private static InFlightEntry inheritedEntry(NodeId id, long nowNanos, TimeSpan ceiling, int generation) {
         return InFlightEntry.inFlightEntry(nowNanos - timeSpan(mintAgeMs(id)).millis().nanos(),
                                            ceiling,
                                            InFlightState.UNCONFIRMED,
-                                           nowNanos);
+                                           nowNanos,
+                                           generation);
+    }
+
+    /// Mint times (ULID epoch milliseconds) of the retained ids that are not yet members; ids with no ULID
+    /// carry no mint time and are left out.
+    private static List<Long> unjoinedMintTimes(Set<NodeId> retained, Set<NodeId> currentMembers) {
+        return retained.stream()
+                       .filter(id -> !currentMembers.contains(id))
+                       .map(id -> mintedUlid(id).map(ULID::timestamp)
+                                            .or(-1L))
+                       .filter(mint -> mint >= 0L)
+                       .toList();
+    }
+
+    /// #1786 — the substitute generation survives a leader handover by inference, because what a leader
+    /// inherits is a set of node ids: the retained-dispatch wire carries no per-entry attributes, and the
+    /// provider's answer for an id is only a state (`ReplacementInstanceState`), never labels. A retained
+    /// unjoined id minted more than [`#joinGraceWindow`] after another retained unjoined id's mint is treated
+    /// as a substitute (generation 1) — a substitute is only ever dispatched once the entry it replaces has been
+    /// unjoined for longer than the grace. MISCLASSIFICATION DIRECTION: a genuine second missing slot first
+    /// dispatched more than the grace after another unjoined one is also read as a substitute, so it is never
+    /// discounted and falls back to the pre-#1786 ceiling behaviour — slower to heal, never extra spend. The
+    /// converse (a substitute read as generation 0) needs the original evicted by its ceiling first, which is
+    /// the bound's own window. Ids without a ULID are generation 0.
+    private int inheritedGeneration(NodeId id, List<Long> unjoinedMints) {
+        return mintedUlid(id).map(ulid -> generationForMint(ulid.timestamp(),
+                                                            unjoinedMints))
+                         .or(0);
+    }
+
+    private int generationForMint(long mintMs, List<Long> unjoinedMints) {
+        return unjoinedMints.stream()
+                            .anyMatch(other -> mintMs - other > joinGraceWindow.millis())
+               ? SUBSTITUTE_GENERATION
+               : 0;
     }
 
     /// How long ago `id` was minted, in milliseconds, read from the wall clock `ULID#ulid` stamps with (an
@@ -751,6 +817,22 @@ public final class LeaderReconciler {
         ownsActiveSlices.set(predicate == null
                              ? id -> false
                              : predicate);
+    }
+
+    /// Inject the surge set: members the surplus path must not count as surplus because a committed replacement pairing
+    /// brought them in on purpose (#1543). `null` resets to "no surge".
+    /// What the surge supplier reports now: the replacement pairings' nodes this reconciler counts as capacity. Read-only, for the
+    /// boot test that pins the node's wiring.
+    public Set<NodeId> surgeReplacementsView() {
+        return surgeReplacements.get()
+                                .get();
+    }
+
+    @Contract
+    public void setSurgeReplacements(Supplier<Set<NodeId>> supplier) {
+        surgeReplacements.set(supplier == null
+                              ? Set::of
+                              : supplier);
     }
 
     /// Inject the drain-availability guard consulted for slice-owner drain candidates (#1488 owner
@@ -1187,10 +1269,23 @@ public final class LeaderReconciler {
     /// whose in-flight placeholder has not yet expired is present in both sets; counting it
     /// once (via the union) prevents the inflated-surplus → spurious-drain → quorum-loss
     /// dissolution. Never a sum.
+    ///
+    /// A provider-CONFIRMED entry still unjoined past [`#joinGraceWindow`] is left out of the union (#1783):
+    /// it does not hide the deficit, though it stays in the map until it joins, fails or hits its ceiling.
     private int effectiveCapacity(Set<NodeId> currentMembers) {
         var union = new LinkedHashSet<>(currentMembers);
+        var now = timeSource.nanoTime();
 
-        union.addAll(inFlightProvisioning.keySet());
+        inFlightProvisioning.entrySet()
+                            .stream()
+                            .filter(entry -> entry.getValue()
+                                                  .countsTowardCapacity(now, joinGraceWindow))
+                            .map(Map.Entry::getKey)
+                            .forEach(union::add);
+        // #1543: a committed replacement pairing's replacement is capacity on purpose, joined or not yet. Without it, an
+        // original that dies before its replacement is a member reads as a deficit and auto-heal provisions a second
+        // node for the same seat.
+        union.addAll(surgeReplacements.get().get());
 
         return union.size();
     }
@@ -1257,7 +1352,12 @@ public final class LeaderReconciler {
     /// young ages + one scheduled follow-up reconcile via [`#armDrainGraceReEval`]) rather than
     /// silently dropped. Internal — observers see only the count via
     /// [`ReconcileIntent#drainCount`].
-    private Set<NodeId> computePeersToDrain(Set<NodeId> currentMembers, int configuredCoreCount, int effective) {
+    private Set<NodeId> computePeersToDrain(Set<NodeId> currentMembers,
+                                            int configuredCoreCount,
+                                            int effectiveWithSurge) {
+        var surge = surgeReplacements.get().get().size();
+        var effective = effectiveWithSurge - surge;
+
         if (effective <= configuredCoreCount) {
             return Set.of();
         }
@@ -1613,16 +1713,36 @@ public final class LeaderReconciler {
                      peersToProvision);
         }
 
-        peersToProvision.forEach(placeholder -> dispatchSingleProvision(nowNanos, placeholder, currentMembers));
+        var generation = substituteGeneration(nowNanos);
+
+        peersToProvision.forEach(placeholder -> dispatchSingleProvision(nowNanos,
+                                                                        placeholder,
+                                                                        currentMembers,
+                                                                        generation));
+    }
+
+    /// #1786 — a provision dispatched while a discounted (unjoined past the join grace) entry is still in flight
+    /// is a SUBSTITUTE for it: generation 1. Every other dispatch — the first, or the re-dispatch after the
+    /// ceiling evicted the stale entry — is generation 0.
+    private int substituteGeneration(long nowNanos) {
+        return inFlightProvisioning.values()
+                                   .stream()
+                                   .anyMatch(entry -> entry.isDiscounted(nowNanos, joinGraceWindow))
+               ? SUBSTITUTE_GENERATION
+               : 0;
     }
 
     @Contract
-    private void dispatchSingleProvision(long nowNanos, NodeId placeholder, Set<NodeId> currentMembers) {
+    private void dispatchSingleProvision(long nowNanos,
+                                         NodeId placeholder,
+                                         Set<NodeId> currentMembers,
+                                         int generation) {
         inFlightProvisioning.put(placeholder,
                                  InFlightEntry.inFlightEntry(nowNanos,
                                                              ctm.replacementCeiling(NodeRole.CORE),
                                                              InFlightState.DISPATCHING,
-                                                             nowNanos));
+                                                             nowNanos,
+                                                             generation));
         armInFlightSweep();
         // Pass the SAME minted placeholder as the new node's intended identity: the provisioned
         // node boots under exactly this id (CTM threads it into ProvisionContext.nodeId()), so the
@@ -1646,7 +1766,50 @@ public final class LeaderReconciler {
                                  currentMembers,
                                  NodeRole.CORE)
            .onSuccess(disposition -> reconcileInFlightForDisposition(placeholder, disposition))
-           .onFailure(_ -> inFlightProvisioning.remove(placeholder));
+           .onFailure(cause -> reapFailedProvision(placeholder, cause));
+    }
+
+    /// #1111 — a failed create is a drop like the other three, with one exception: a failure that PROVES no instance was made (a capacity
+    /// refusal in every zone, the node cap, a refused fleet-capacity reservation) reaps nothing. Every other failure is AMBIGUOUS, because
+    /// the providers report a readiness timeout, a 5xx after the provider accepted, a lost response and a failed tag as an ordinary provision
+    /// failure while the instance exists and bills: the manager looks the instance up by its label and terminates it, or confirms it absent. Only
+    /// the call that actually removes the entry acts, so a placeholder the ceiling already dropped is not reaped twice.
+    @Contract
+    private void reapFailedProvision(NodeId placeholder, Cause cause) {
+        Option.option(inFlightProvisioning.remove(placeholder)).onPresent(entry -> settleFailedProvision(placeholder,
+                                                                                                         cause));
+    }
+
+    private void settleFailedProvision(NodeId placeholder, Cause cause) {
+        if (provesNoInstance(cause)) {
+            log.warn("LeaderReconciler in-flight replacement {} dropped: the provider created no instance, so nothing is reaped: {}",
+                     placeholder,
+                     cause.message());
+
+            return;
+        }
+
+        reapDropped(placeholder, "its create failed: " + cause.message(), ClusterTopologyManager.DroppedInstance.MAYBE);
+    }
+
+    private static ClusterTopologyManager.DroppedInstance knownInstance(boolean listed) {
+        return listed
+               ? ClusterTopologyManager.DroppedInstance.LISTED
+               : ClusterTopologyManager.DroppedInstance.CREATED;
+    }
+
+    /// The causes that state no instance was made: `CapacityUnavailable` (Hetzner `resource_unavailable`, AWS `InsufficientInstanceCapacity`, and
+    /// the manager's all-zones-exhausted refusal), `NodeCapExceeded` (the fleet cap, checked before the create call) and the fleet-capacity
+    /// refusal of `CapacityControlledLifecycle` ("no provider create was dispatched").
+    private static boolean provesNoInstance(Cause cause) {
+        return cause instanceof EnvironmentError.CapacityUnavailable || cause instanceof EnvironmentError.NodeCapExceeded || cause == CapacityControlledLifecycle.AdmissionFailure.CAPACITY_UNAVAILABLE;
+    }
+
+    /// #1111 — every drop of an in-flight replacement hands its instance to the manager's confirmed reap (bounded, confirmed, operator-visible
+    /// when unconfirmed), which never terminates a node that shows life. `knowledge` says what is known of the instance: listed by the provider, only created, or possibly never made.
+    @Contract
+    private void reapDropped(NodeId id, String reason, ClusterTopologyManager.DroppedInstance knowledge) {
+        ctm.reapDroppedReplacement(id, reason, knowledge);
     }
 
     /// Keep the in-flight placeholder only for a real [`ProvisionDisposition.Dispatched`] boot; a
@@ -1696,7 +1859,7 @@ public final class LeaderReconciler {
                                                                    entry.getValue()));
     }
 
-    private static boolean isPastCeilingLogged(long nowNanos, NodeId id, InFlightEntry entry) {
+    private boolean isPastCeilingLogged(long nowNanos, NodeId id, InFlightEntry entry) {
         if (!entry.isPastCeiling(nowNanos)) {
             return false;
         }
@@ -1705,6 +1868,11 @@ public final class LeaderReconciler {
                  id,
                  entry.ceiling().millis(),
                  entry.state());
+        reapDropped(id,
+                    "still unjoined after its " + entry.ceiling().millis()
+                   + " ms replacement ceiling (state=" + entry.state()
+                   + ")",
+                    knownInstance(entry.state() == InFlightState.CONFIRMED));
 
         return true;
     }
@@ -1838,6 +2006,9 @@ public final class LeaderReconciler {
         log.info("LeaderReconciler dropping in-flight replacement {}: provider reports {} — the deficit re-opens and re-dispatches after the deficit debounce",
                  id,
                  state);
+        reapDropped(id,
+                    "the provider reports " + state,
+                    knownInstance(state == ReplacementInstanceState.FAILED || polled.state() == InFlightState.CONFIRMED));
         triggerReconcile(ReconcileTrigger.NTT_FIRE);
     }
 
@@ -2020,6 +2191,17 @@ public final class LeaderReconciler {
         return (int) Math.ceilDiv(firstListingFloor.nanos(), inFlightPollInterval.nanos());
     }
 
+    /// Join grace = `nttDepartureTimeout × 6` (90s at the 15s default), configurable through `split_timeout` like
+    /// its neighbours (#1783). A cloud replacement takes 50–63s from mint to membership, so the window must sit
+    /// above that or a healthy boot would be discounted and re-minted; ×6 leaves about 1.4× headroom over the
+    /// slowest observed boot, and is roughly 2× `nttDepartureTimeout` past the provider's confirmation of an
+    /// instance created within the usual minute. Anchored on the mint so it survives a leader change. A
+    /// discounted replacement that then joins is a surplus the drain path removes — it costs a spare node
+    /// for a moment, not correctness — whereas a slot masked for the whole ceiling cost a run its budget.
+    private static TimeSpan computeJoinGrace(TimeSpan splitTimeout) {
+        return timeSpan(splitTimeout.nanos() * 6).nanos();
+    }
+
     /// Drain-safety grace = `nttDepartureTimeout × 2` — see the [`#drainSafetyGraceWindow`]
     /// field doc for the sizing rationale (role-propagation race window; ≥ the ×1 deficit
     /// debounce; single membership timing constant).
@@ -2103,28 +2285,50 @@ public final class LeaderReconciler {
                                  TimeSpan ceiling,
                                  InFlightState state,
                                  long pollableSinceNanos,
-                                 int absentListings) {
+                                 int absentListings,
+                                 int generation) {
         static InFlightEntry inFlightEntry(long sinceNanos,
                                            TimeSpan ceiling,
                                            InFlightState state,
                                            long pollableSinceNanos) {
-            return new InFlightEntry(sinceNanos, ceiling, state, pollableSinceNanos, 0);
+            return inFlightEntry(sinceNanos, ceiling, state, pollableSinceNanos, 0);
+        }
+
+        static InFlightEntry inFlightEntry(long sinceNanos,
+                                           TimeSpan ceiling,
+                                           InFlightState state,
+                                           long pollableSinceNanos,
+                                           int generation) {
+            return new InFlightEntry(sinceNanos, ceiling, state, pollableSinceNanos, 0, generation);
         }
 
         InFlightEntry withState(InFlightState next) {
-            return new InFlightEntry(sinceNanos, ceiling, next, pollableSinceNanos, absentListings);
+            return new InFlightEntry(sinceNanos, ceiling, next, pollableSinceNanos, absentListings, generation);
         }
 
         InFlightEntry pollableFrom(long nowNanos) {
-            return new InFlightEntry(sinceNanos, ceiling, InFlightState.UNCONFIRMED, nowNanos, 0);
+            return new InFlightEntry(sinceNanos, ceiling, InFlightState.UNCONFIRMED, nowNanos, 0, generation);
         }
 
         InFlightEntry withAbsentListing() {
-            return new InFlightEntry(sinceNanos, ceiling, state, pollableSinceNanos, absentListings + 1);
+            return new InFlightEntry(sinceNanos, ceiling, state, pollableSinceNanos, absentListings + 1, generation);
         }
 
         boolean isDispatching() {
             return state == InFlightState.DISPATCHING;
+        }
+
+        /// Only a generation-0 entry can be discounted by the join grace: a substitute keeps counting until it
+        /// joins, fails or hits its ceiling, so one missing slot has at most an original and one substitute in
+        /// flight per ceiling window.
+        boolean isDiscounted(long nowNanos, TimeSpan grace) {
+            return generation < SUBSTITUTE_GENERATION
+                   && state == InFlightState.CONFIRMED
+                   && nowNanos - sinceNanos > grace.nanos();
+        }
+
+        boolean countsTowardCapacity(long nowNanos, TimeSpan grace) {
+            return ! isDiscounted(nowNanos, grace);
         }
 
         boolean isPastCeiling(long nowNanos) {

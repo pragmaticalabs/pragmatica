@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.environment.gcp;
 
 import java.util.LinkedHashMap;
@@ -157,12 +156,6 @@ public record GcpComputeProvider(GcpClient client, GcpEnvironmentConfig config) 
         return client.getInstance(instanceId.value())
                      .map(GcpComputeProvider::toInstanceInfo)
                      .mapError(GcpComputeProvider::toProvisionError);
-    }
-
-    @Override
-    public Promise<Unit> restart(InstanceId id) {
-        return client.resetInstance(id.value())
-                     .mapToUnit();
     }
 
     @Override
@@ -361,6 +354,11 @@ public record GcpComputeProvider(GcpClient client, GcpEnvironmentConfig config) 
     /// asked for. A blank `zone` here means the insert requested the client-level default placement
     /// — [EnvironmentError.ProvisionFailed] renders that as "not recorded", never as an empty field.
     private static EnvironmentError toProvisionError(String instanceType, String zone, Cause cause) {
+        // #1111: the VM EXISTS (it was created, then failed readiness): the typed cause reaches the caller, never flattened into a rejection.
+        if (cause instanceof EnvironmentError.ProvisionReadinessTimeout timeout) {
+            return timeout;
+        }
+
         return EnvironmentError.provisionFailed(instanceType, zone, new RuntimeException(cause.message()));
     }
 

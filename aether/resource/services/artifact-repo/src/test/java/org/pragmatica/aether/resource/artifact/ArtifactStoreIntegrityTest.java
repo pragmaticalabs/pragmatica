@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 
 package org.pragmatica.aether.resource.artifact;
 
@@ -80,7 +79,7 @@ class ArtifactStoreIntegrityTest {
              .onFailureRun(Assertions::fail);
 
         // Corrupt the metadata to have wrong SHA1
-        var metaKey = "artifacts/org.example/test/1.0.0/jar/meta";
+        var metaKey = "artifacts/org.example/test/1.0.0/test-1.0.0.jar/meta";
         var corruptedMeta = dhtStorage.get(metaKey);
         var metaStr = new String(corruptedMeta, StandardCharsets.UTF_8);
         // Replace sha1 with a bogus value (field index 3)

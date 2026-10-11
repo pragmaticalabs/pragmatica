@@ -54,16 +54,17 @@ import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 /// genesis, and requires that it dial only the peers it is the designated dialer for. It pins the dial
 /// DECISION rather than a handshake total: the designated side's own retries to a peer that was down
 /// can land more than once after the peer starts, a transport behaviour this rule does not govern.
+@PortBudget
 class EmberColdStartSingleDialerTest {
     private static final int CLUSTER_SIZE = 5;
     private static final int JOIN_CLUSTER_SIZE = 3;
     private static final int SLOTS = CLUSTER_SIZE;
     private static final int MGMT_OFFSET = 40;
     private static final int APP_HTTP_OFFSET = 80;
-    /// Disjoint from every other Ember/Forge test's port range (highest below is 41900, next above 45100).
-    private static final int FIRST_CANDIDATE_BASE = 42100;
-    private static final int LAST_CANDIDATE_BASE = 43900;
-    private static final int CANDIDATE_STEP = 200;
+    /// The shared Ember pool below the ephemeral floor (EmberTestPorts.POOL_FIRST).
+    private static final int FIRST_CANDIDATE_BASE = EmberTestPorts.POOL_FIRST;
+    private static final int LAST_CANDIDATE_BASE = EmberTestPorts.POOL_LAST;
+    private static final int CANDIDATE_STEP = EmberTestPorts.POOL_STEP;
     /// #1667: probed through the shared EmberTestPorts, which also probes each node's SWIM UDP port.
     private static final EmberTestPorts.Block PORTS = new EmberTestPorts.Block(FIRST_CANDIDATE_BASE,
                                                                                 LAST_CANDIDATE_BASE,

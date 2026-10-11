@@ -704,6 +704,11 @@ class SwimDeathPathCoConfirmationTest {
                        .until(() -> protocol.members().values().stream()
                                             .allMatch(m -> m.state() == MemberState.FAULTY));
 
+                // selfIsolated and the piggyback backlog are written by transitionToFaulty AFTER the
+                // member state, so await each asserted value itself.
+                await().atMost(Duration.ofSeconds(10))
+                       .until(() -> protocol.selfIsolatedForTest() && protocol.piggybackFaultyCountForTest() > 0);
+
                 assertThat(protocol.selfIsolatedForTest())
                     .as("All-peers-FAULTY latches the self-isolation signature")
                     .isTrue();
@@ -757,6 +762,10 @@ class SwimDeathPathCoConfirmationTest {
                 // NODE_A is never acked and goes FAULTY; NODE_B's probes are answered by the transport.
                 await().atMost(Duration.ofSeconds(10))
                        .until(() -> protocol.members().get(NODE_A).state() == MemberState.FAULTY);
+                // The piggyback entry is added after the FAULTY state is stored, and the first ack to
+                // NODE_B is a precondition of the scenario, not implied by NODE_A's FAULTY: await both.
+                await().atMost(Duration.ofSeconds(10))
+                       .until(() -> protocol.piggybackFaultyCountForTest() > 0 && transport.acksDelivered.get() > 0);
 
                 assertThat(transport.acksDelivered.get())
                     .as("control: the transport answered at least one probe to NODE_B")

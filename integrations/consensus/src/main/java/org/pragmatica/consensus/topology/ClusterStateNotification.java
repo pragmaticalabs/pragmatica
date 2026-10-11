@@ -31,12 +31,22 @@ import org.pragmatica.messaging.Message;
 /// Subscribers can rely on `ACTIVE` to mean "consensus engine is genuinely operational" and
 /// on `PASSIVE` to mean "consensus engine is NOT operational" (i.e. any state other than
 /// `Active`: `Syncing`, `Paused`, `Stopped`, `Observing`).
-public record ClusterStateNotification(State state, long sequence) implements Message.Local {
+///
+/// `demoted` refines `PASSIVE` with its cause: the node left the voter electorate while the
+/// cluster kept its quorum (#1790), so it is an observer that keeps applying committed decisions.
+/// It is NOT quorum loss. Consumers that only ask "is consensus operational on this node?" read
+/// `state()` and see `PASSIVE` exactly as before; only a consumer whose correctness depends on
+/// the cause — app HTTP routing, whose route view an observer keeps current — reads `demoted()`.
+public record ClusterStateNotification(State state, long sequence, boolean demoted) implements Message.Local {
     private static final AtomicLong SEQUENCE = new AtomicLong();
 
     public enum State {
         ACTIVE,
         PASSIVE
+    }
+
+    public ClusterStateNotification(State state, long sequence) {
+        this(state, sequence, false);
     }
 
     public static ClusterStateNotification active() {
@@ -45,6 +55,11 @@ public record ClusterStateNotification(State state, long sequence) implements Me
 
     public static ClusterStateNotification passive() {
         return new ClusterStateNotification(State.PASSIVE, SEQUENCE.incrementAndGet());
+    }
+
+    /// `PASSIVE` caused by leaving the electorate of a live quorum, not by losing quorum.
+    public static ClusterStateNotification demotion() {
+        return new ClusterStateNotification(State.PASSIVE, SEQUENCE.incrementAndGet(), true);
     }
 
     /// Atomically advance the tracker if this notification is newer.

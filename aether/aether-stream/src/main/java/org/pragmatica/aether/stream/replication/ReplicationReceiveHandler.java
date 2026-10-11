@@ -72,10 +72,11 @@ import static org.pragmatica.utility.warning.OperatorWarningCode.REPLICA_FSYNC_F
 ///
 /// The refusal still fires `onGap`. In production that runs the backfill orchestrator, which refuses every
 /// self-promotion of a quarantined partition and demotes a CAUGHT_UP one to SYNCING ({@link PartitionBackfill}).
-/// That is how a replica that was already CAUGHT_UP stops being one. No catch-up can repair the entry: a
-/// backfill pulls only from the local head + 1, and the ring has no overwrite. The quarantine is logged at
-/// ERROR once, by the partition manager, and lasts until the manager is gone. Repair is #1514; persistence and
-/// owner-election exclusion are #1513.
+/// That is how a replica that was already CAUGHT_UP stops being one. The same orchestrator then REPAIRS the copy when
+/// its owner is known and it is not the owner (#1730 phase 2, KIP-101): the tail is cut back to offset `N - 1`
+/// (WAL, epoch history and ring, in the ring's ordered section) and refetched from the owner, which lifts the
+/// quarantine. A copy that cannot be repaired stays quarantined until the manager is gone. The quarantine is logged
+/// at ERROR once, by the partition manager. Persistence and owner-election exclusion are #1513.
 ///
 /// ## Sender validation (#1230)
 /// Before anything else, a batch whose sender cannot be the committed owner of the partition at the batch's
@@ -136,6 +137,23 @@ public final class ReplicationReceiveHandler {
     }
 
     public static final ReplicaDurability NO_DURABILITY_BARRIER = (_, _) -> Promise.unitPromise();
+
+    /// B7 (#1730 phase 2): whether this node may acknowledge what it holds to the owner. A copy that has not been compared
+    /// with the committed owner of the current epoch (a demoted owner, a replica whose epoch advanced while it was away) holds
+    /// records the owner may not hold, and an acknowledgement of a LATER offset would be counted for those too. Production wires
+    /// `StreamPartitionManager::replicaVerified`; the default always acknowledges.
+    @FunctionalInterface
+    public interface AckGate {
+        boolean mayAck(String streamName, int partition);
+    }
+
+    private volatile AckGate ackGate = (_, _) -> true;
+
+    /// Late-bind the [AckGate]. Set once at wiring.
+    @Contract
+    public void ackGate(AckGate gate) {
+        this.ackGate = gate;
+    }
 
     private final NodeId self;
     private final RecoveredAppender appender;
@@ -376,6 +394,17 @@ public final class ReplicationReceiveHandler {
         }
 
         var highestHeld = fromOffset + outcome.held() - 1;
+
+        if (!ackGate.mayAck(streamName, partition)) {
+            log.debug("ReplicationReceiveHandler: {}[{}] up to {} applied but NOT acked: this copy is not yet verified against the "
+                     + "committed owner's epoch; backfill compares it first",
+                      streamName,
+                      partition,
+                      highestHeld);
+            onGap.accept(streamName, partition);
+
+            return;
+        }
         // Ack ONLY after the batch is fsynced here (#634 item 1): the owner's confirmation barrier counts
         // this ack as a durable copy, so acking from RAM would let correlated power loss inside the
         // unsealed window erase writes the caller was told reached RF. A failed sync WITHHOLDS the ack —
@@ -383,7 +412,11 @@ public final class ReplicationReceiveHandler {
         // the owner's barrier degrades honestly instead of over-counting.
         durability.sync(streamName, partition)
                   .onSuccess(_ -> transport.send(message.governorId(),
-                                                 replicateAck(self, streamName, partition, highestHeld)))
+                                                 replicateAck(self,
+                                                              streamName,
+                                                              partition,
+                                                              highestHeld,
+                                                              message.ownerEpoch())))
                   .onFailure(cause -> reportWithheldAck(streamName, partition, highestHeld, cause));
     }
 

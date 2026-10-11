@@ -8,6 +8,8 @@ Updated: 2026-03-02
 Affects: [environment-integration, hetzner, cloud-tests, aether-setup, node]
 ---
 
+> **Path note (2026-10-03, #960):** this document predates the `/api/v1` migration (#300). A node serves `/api/v1/health` and `/api/v1/cluster/topology` (leader-bound, authenticated) and the unversioned probes `/health/live` and `/health/ready`; the unversioned `/api/health`, `/api/cluster/topology` and `/health` paths below return 404. Kept as written for history.
+
 ## Summary
 
 Introduces a `DeploymentProvider` SPI that bridges the gap between cloud compute provisioning (`ComputeProvider`) and running Aether nodes on provisioned infrastructure. The SPI defines two deployment strategies -- container-based and binary-based -- with a common interface for health verification, log access, graceful shutdown, and rolling upgrades. The existing ad-hoc deployment code in `aether/cloud-tests/` is extracted into a reusable SPI implementation, and `DeploymentProvider` becomes a new facet on `EnvironmentIntegration`.

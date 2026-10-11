@@ -94,7 +94,7 @@ record PeerOpenedLaneRouter(Deserializer deserializer,
         log.warn("No verified peer connection on parent channel for {} lane from {} — closing (handshake-first ordering violated)",
                  lane,
                  ctx.channel().remoteAddress());
-        ctx.close();
+        QuicPeerConnection.endLaneThenClose(ctx);
 
         return unit();
     }

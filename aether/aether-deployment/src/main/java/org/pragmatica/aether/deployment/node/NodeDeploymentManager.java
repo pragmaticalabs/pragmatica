@@ -51,6 +51,7 @@ import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Functions.Fn2;
 import org.pragmatica.lang.Option;
+import org.pragmatica.utility.warning.OperatorWarningSink;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.parse.Number;
 import org.pragmatica.lang.io.TimeSpan;
@@ -120,6 +121,12 @@ public interface NodeDeploymentManager {
 
     @Contract
     void setSelfReadySignal(Runnable signal);
+
+    /// Binds THIS node's operator-warning sink, so a deployment condition an operator must see (a declared stream
+    /// consumer that could not be registered, #1935) reaches this node's event log. Until bound, only the log line
+    /// is written.
+    @Contract
+    void setOperatorWarningSink(OperatorWarningSink sink);
 
     boolean isActive();
 
@@ -549,8 +556,23 @@ public interface NodeDeploymentManager {
                      quorumStateNotification);
             switch (quorumStateNotification.state()) {
                 case ACTIVE -> dispatchQuorumEstablished();
-                case PASSIVE -> ctx.dispatch(new ClusterFsmEvent.QuorumDisappeared());
+                case PASSIVE -> dispatchPassive(quorumStateNotification);
             }
+        }
+
+        // #1790: a demoted observer of a live quorum must keep its slices serving. Suspending them
+        // unpublishes the routes the local fast path reads, so the node would refuse traffic it hosts
+        // until DRAIN; the drain's admission gate is the one designed refusal. Genuine quorum loss
+        // still suspends.
+        private void dispatchPassive(ClusterStateNotification notification) {
+            if (notification.demoted()) {
+                log.info("Node {} demoted to observer of a live quorum — keeping slices serving",
+                         ctx.self().id());
+
+                return;
+            }
+
+            ctx.dispatch(new ClusterFsmEvent.QuorumDisappeared());
         }
 
         private void dispatchQuorumEstablished() {
@@ -629,6 +651,12 @@ public interface NodeDeploymentManager {
         @Override
         public void setShutdownCallback(Runnable callback) {
             ctx.setShutdownCallback(callback);
+        }
+
+        @Contract
+        @Override
+        public void setOperatorWarningSink(OperatorWarningSink sink) {
+            ctx.setOperatorWarningSink(sink);
         }
     }
 }

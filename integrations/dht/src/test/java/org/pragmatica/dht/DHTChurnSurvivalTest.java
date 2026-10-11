@@ -25,9 +25,11 @@ import org.pragmatica.lang.Option;
 
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.dht.DHTAntiEntropy.dhtAntiEntropy;
@@ -84,6 +86,7 @@ class DHTChurnSurvivalTest {
         cluster.seedOnly(departing, uniqueKey, value("payload"));
 
         // The fix: the departing node pushes its held chunks to the new replicas before it leaves.
+        cluster.markDeparting(departing);
         cluster.member(departing).rebalancer().pushOnDeparture(DeparturePushObserver.noop()).await();
         cluster.remove(departing);
 
@@ -284,6 +287,117 @@ class DHTChurnSurvivalTest {
         assertThat(cluster.inSetCopies(gainedKey)).as("the responsible set is restored to RF").isEqualTo(3);
     }
 
+    /// Issue #1818 — a co-departing NON-holder absorbs the push. Two nodes drain together and both
+    /// push while both are still in every ring (the drains were commanded in one ping). The holder's
+    /// newcomer for the key, computed with only itself excluded, is the OTHER drainer, which halts with
+    /// the copy. The key is seeded on the departing holder alone — the run-7 state, where the other
+    /// two ring replicas never acquired it — so a push that lands on the co-drainer loses it outright.
+    @Test
+    void concurrentDeparture_coDepartingNonHolderDoesNotAbsorbThePush() {
+        var cluster = sevenNodeCluster();
+        var shape = cluster.findKeyWhoseNewcomerIsAlsoLeaving("absorb");
+        var survivorNewcomer = shape.postDepartureNewcomer();
+
+        cluster.seedOnly(shape.holder(), shape.key(), value("payload"));
+
+        assertThat(cluster.responsibleFor(shape.key())).as("control: the co-drainer is not a replica of the key")
+                                                     .doesNotContain(shape.coDeparting());
+
+        departTogetherWithPush(cluster, shape.holder(), shape.coDeparting());
+
+        assertThat(cluster.resolve(shape.key())).as("the key survives two concurrent departures").isTrue();
+        assertThat(cluster.holds(survivorNewcomer, shape.key())).as("the live node that newly owns the key received it")
+                                                                .isTrue();
+    }
+
+    /// Issue #1818 — two HOLDERS of one key drain together. Each counts the other as a surviving
+    /// replica, so both push only to the single node that replaces ITSELF, and the slot the other one
+    /// vacates is never stocked: the post-departure set holds RF-1 copies.
+    @Test
+    void concurrentDeparture_twoHoldersLeavingTogether_stockEveryVacatedSlot() {
+        var cluster = sevenNodeCluster();
+        var key = key("two-holders");
+        var before = cluster.responsibleFor(key);
+        var first = before.get(0);
+        var second = before.get(1);
+
+        before.forEach(holder -> cluster.seedOnly(holder, key, value("payload")));
+        departTogetherWithPush(cluster, first, second);
+
+        assertThat(cluster.responsibleFor(key)).as("control: both departed holders left the replica set")
+                                               .doesNotContain(first, second);
+        assertThat(cluster.inSetCopies(key)).as("every slot of the post-departure replica set holds the key")
+                                            .isEqualTo(3);
+    }
+
+    /// Issue #1818, staggered drains: the second drain arrives in a LATER ping, so the first drainer
+    /// pushes knowing only itself and its push lands before the second drainer's own push enumerates
+    /// its storage. The first push may land on the second drainer; the second drainer, knowing both,
+    /// relays it to the true post-departure newcomer. No re-push on a drain-set change is needed.
+    @Test
+    void staggeredDeparture_secondDrainerRelaysWhatTheFirstHandedIt() {
+        var cluster = sevenNodeCluster();
+        var shape = cluster.findKeyWhoseNewcomerIsAlsoLeaving("staggered");
+        var leaving = Set.of(shape.holder(), shape.coDeparting());
+
+        cluster.seedOnly(shape.holder(), shape.key(), value("payload"));
+        cluster.markDeparting(shape.holder());
+        cluster.member(shape.holder()).rebalancer().pushOnDeparture(Set.of(), DeparturePushObserver.noop()).await();
+
+        assertThat(cluster.holds(shape.coDeparting(), shape.key())).as("control: the first push landed on the later drainer")
+                                                                   .isTrue();
+
+        cluster.markDeparting(shape.coDeparting());
+        cluster.member(shape.coDeparting()).rebalancer().pushOnDeparture(leaving, DeparturePushObserver.noop()).await();
+        cluster.remove(shape.holder());
+        cluster.remove(shape.coDeparting());
+
+        assertThat(cluster.holds(shape.postDepartureNewcomer(), shape.key())).as("the relay reached the live newcomer")
+                                                                             .isTrue();
+    }
+
+    @Test
+    void staggeredDeparture_twoHolders_stockEveryVacatedSlot() {
+        var cluster = sevenNodeCluster();
+        var key = key("two-holders-staggered");
+        var before = cluster.responsibleFor(key);
+        var first = before.get(0);
+        var second = before.get(1);
+
+        before.forEach(holder -> cluster.seedOnly(holder, key, value("payload")));
+        cluster.markDeparting(first);
+        cluster.member(first).rebalancer().pushOnDeparture(Set.of(), DeparturePushObserver.noop()).await();
+        cluster.markDeparting(second);
+        cluster.member(second).rebalancer().pushOnDeparture(Set.of(first, second), DeparturePushObserver.noop()).await();
+        cluster.remove(first);
+        cluster.remove(second);
+
+        assertThat(cluster.inSetCopies(key)).as("every slot of the post-departure replica set holds the key")
+                                            .isEqualTo(3);
+    }
+
+    /// Two drains commanded together: both nodes push while both are still in every ring, then both
+    /// leave. `second` pushes FIRST: in run 7 both pushes left in the same millisecond, so each drainer
+    /// enumerated its storage before the other's push landed. The reverse order would let `second`
+    /// relay whatever `first` had just handed it, a rescue the concurrent drain does not get.
+    private void departTogetherWithPush(DhtCluster cluster, NodeId first, NodeId second) {
+        var leaving = Set.of(first, second);
+
+        leaving.forEach(cluster::markDeparting);
+        cluster.member(second).rebalancer().pushOnDeparture(leaving, DeparturePushObserver.noop()).await();
+        cluster.member(first).rebalancer().pushOnDeparture(leaving, DeparturePushObserver.noop()).await();
+        cluster.remove(first);
+        cluster.remove(second);
+    }
+
+    private DhtCluster sevenNodeCluster() {
+        var cluster = new DhtCluster();
+        for (int i = 0; i < 7; i++) {
+            cluster.add(new NodeId("node-" + i));
+        }
+        return cluster;
+    }
+
     private void seedUniqueKeys(DhtCluster cluster, NodeId holder, String prefix, List<byte[]> seeded) {
         for (int i = 0; i < 3; i++) {
             var k = cluster.findUniquelyHeldKeyWithNewcomer(holder, prefix + "-" + i);
@@ -293,6 +407,7 @@ class DHTChurnSurvivalTest {
     }
 
     private void departWithPush(DhtCluster cluster, NodeId departing) {
+        cluster.markDeparting(departing);
         cluster.member(departing).rebalancer().pushOnDeparture(DeparturePushObserver.noop()).await();
         cluster.remove(departing);
     }
@@ -317,6 +432,12 @@ class DHTChurnSurvivalTest {
 
     private static final class DhtCluster {
         private final Map<NodeId, Member> members = new LinkedHashMap<>();
+        /// The nodes every member knows to be draining — what the leader's drain set tells the receivers.
+        private final Set<NodeId> departing = new HashSet<>();
+
+        void markDeparting(NodeId id) {
+            departing.add(id);
+        }
 
         void add(NodeId id) {
             members.values().forEach(existing -> existing.ring().addNode(id));
@@ -327,7 +448,7 @@ class DHTChurnSurvivalTest {
             var node = dhtNode(id, storage, ring, CONFIG);
             DHTNetwork network = this::deliver;
             var rebalancer = dhtRebalancer(node, network, CONFIG);
-            var antiEntropy = dhtAntiEntropy(node, network, CONFIG);
+            var antiEntropy = dhtAntiEntropy(node, network, CONFIG, departing::contains);
             var member = new Member(id,
                                     node,
                                     rebalancer,
@@ -371,7 +492,7 @@ class DHTChurnSurvivalTest {
             var node = dhtNode(id, storage, ring, CONFIG);
             DHTNetwork network = this::deliver;
             var rebalancer = dhtRebalancer(node, network, CONFIG);
-            var antiEntropy = dhtAntiEntropy(node, network, CONFIG);
+            var antiEntropy = dhtAntiEntropy(node, network, CONFIG, departing::contains);
             var existing = List.copyOf(members.keySet());
             var wholeCluster = new ArrayList<>(existing);
 
@@ -487,6 +608,42 @@ class DHTChurnSurvivalTest {
             }
 
             throw new AssertionError("no key gaining exactly one newcomer on the crash found");
+        }
+
+        record CoDepartureShape(byte[] key, NodeId holder, NodeId coDeparting, NodeId postDepartureNewcomer) {}
+
+        /// A key, one of its holders, and the non-holder that becomes the holder's single newcomer when
+        /// only the holder is excluded — the node a self-only exclusion pushes to. That node drains too,
+        /// so the true post-departure newcomer is the next live node on the ring.
+        CoDepartureShape findKeyWhoseNewcomerIsAlsoLeaving(String prefix) {
+            var ring = members.values().iterator().next().ring();
+            var rf = CONFIG.effectiveReplicationFactor(members.size());
+
+            for (int i = 0; i < 20_000; i++) {
+                var candidate = key(prefix + "-probe-" + i);
+                var current = ring.nodesFor(candidate, rf);
+                var holder = current.getFirst();
+                var selfOnly = ring.nodesFor(candidate, rf, id -> !id.equals(holder))
+                                   .stream()
+                                   .filter(id -> !current.contains(id))
+                                   .toList();
+
+                if (selfOnly.size() != 1) {
+                    continue;
+                }
+
+                var coDeparting = selfOnly.getFirst();
+                var live = ring.nodesFor(candidate, rf, id -> !id.equals(holder) && !id.equals(coDeparting))
+                               .stream()
+                               .filter(id -> !current.contains(id))
+                               .toList();
+
+                if (live.size() == 1) {
+                    return new CoDepartureShape(candidate, holder, coDeparting, live.getFirst());
+                }
+            }
+
+            throw new AssertionError("no key whose self-only newcomer is a co-departing node found");
         }
 
         void remove(NodeId id) {

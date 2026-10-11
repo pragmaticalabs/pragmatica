@@ -32,6 +32,18 @@ class BuiltinRepositoryTest {
     }
 
     @Test
+    void locate_storeArchived_isAbsent() {
+        var store = mock(ArtifactStore.class);
+        when(store.resolveWithMetadata(artifact)).thenReturn(new ArtifactStore.ArtifactStoreError.Archived(ArtifactFile.primary(artifact)).promise());
+
+        var failure = locateFailure(store);
+
+        assertThat(failure).as("archived is unavailable on purpose, an answer and not an outage")
+                           .isInstanceOf(Repository.Absent.class);
+        assertThat(failure.message()).contains("archived");
+    }
+
+    @Test
     void locate_storeTimeout_isNotAbsent() {
         var store = mock(ArtifactStore.class);
         var timeout = new CoreError.Timeout("dht read");

@@ -32,6 +32,7 @@ package org.pragmatica.dht;
 /// @param unprobed      non-R-set ring members the probe bound left unread
 /// @param elapsedMillis time from the R-set read starting to this report
 /// @param lateValueFrom the replica whose reply carried a value AFTER the quorum resolved empty, or empty
+/// @param departed      R-set replicas that left the ring mid-read while still owing a reply (each counts as unreachable)
 public record ResolveMiss(String keyHex,
                           int rSetSize,
                           int rSetLive,
@@ -40,7 +41,8 @@ public record ResolveMiss(String keyHex,
                           int probesFailed,
                           int unprobed,
                           long elapsedMillis,
-                          String lateValueFrom) {
+                          String lateValueFrom,
+                          int departed) {
     public static ResolveMiss resolveMiss(String keyHex,
                                           int rSetSize,
                                           int rSetLive,
@@ -49,7 +51,8 @@ public record ResolveMiss(String keyHex,
                                           int probesFailed,
                                           int unprobed,
                                           long elapsedMillis,
-                                          String lateValueFrom) {
+                                          String lateValueFrom,
+                                          int departed) {
         return new ResolveMiss(keyHex,
                                rSetSize,
                                rSetLive,
@@ -58,7 +61,8 @@ public record ResolveMiss(String keyHex,
                                probesFailed,
                                unprobed,
                                elapsedMillis,
-                               lateValueFrom);
+                               lateValueFrom,
+                               departed);
     }
 
     /// True only when nothing could have hidden a copy: no late reply carried a value, every R-set member was
@@ -66,6 +70,7 @@ public record ResolveMiss(String keyHex,
     /// that was never written from one that was lost, so it is named for what it observed, not for a cause.
     public boolean absentEverywhere() {
         return lateValueFrom.isEmpty()
+               && departed == 0
                && probesFailed == 0
                && unprobed == 0
                && rSetLive == rSetSize

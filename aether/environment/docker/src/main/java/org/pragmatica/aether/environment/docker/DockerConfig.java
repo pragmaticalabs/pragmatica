@@ -1,8 +1,9 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.environment.docker;
+
+import java.util.Map;
 
 import org.pragmatica.lang.Result;
 
@@ -17,7 +18,15 @@ public record DockerConfig(String imageName,
                            String socketPath,
                            String apiKey,
                            String dockerGid,
-                           boolean exposeHostPorts) {
+                           boolean exposeHostPorts,
+                           Map<String, String> backupEnv) {
+    /// `backupEnv` (#1968): the leader's EFFECTIVE `[backup]` as `AETHER_BACKUP_*` variables, whatever its source (TOML or
+    /// environment). A Docker replacement has no node TOML, so this is what carries the backup to it; empty falls back to the
+    /// provisioning host's own `AETHER_BACKUP_*` environment.
+    public DockerConfig {
+        backupEnv = Map.copyOf(backupEnv);
+    }
+
     private static final String DEFAULT_IMAGE_NAME = "aether-node:local";
     private static final String DEFAULT_NETWORK_NAME = "aether-network";
     private static final int DEFAULT_MANAGEMENT_PORT_BASE = 5150;
@@ -64,7 +73,21 @@ public record DockerConfig(String imageName,
                                         socketPath,
                                         apiKey,
                                         dockerGid,
-                                        exposeHostPorts));
+                                        exposeHostPorts,
+                                        Map.of()));
+    }
+
+    public DockerConfig withBackupEnv(Map<String, String> backupEnv) {
+        return new DockerConfig(imageName,
+                                networkName,
+                                managementPortBase,
+                                appPortBase,
+                                clusterPort,
+                                socketPath,
+                                apiKey,
+                                dockerGid,
+                                exposeHostPorts,
+                                backupEnv);
     }
 
     public static Result<DockerConfig> dockerConfig() {

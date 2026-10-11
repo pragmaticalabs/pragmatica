@@ -296,8 +296,9 @@ public final class SegmentReader {
         return Compression.NONE;
     }
 
-    private static String buildRefName(String streamName, int partition, SegmentIndex.SegmentRef ref) {
-        return "streams/" + streamName + "/" + partition + "/" + ref.startOffset() + "-" + ref.endOffset();
+    /// The ref of the segment in the life of the stream the index serves (#1278 review).
+    private String buildRefName(String streamName, int partition, SegmentIndex.SegmentRef ref) {
+        return index.refNameOf(streamName, partition, ref);
     }
 
     /// Decode `[offset:8][timestamp:8][len:4][data:len]` records, keeping at most `maxEvents` whose offset

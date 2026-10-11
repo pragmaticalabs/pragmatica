@@ -111,9 +111,8 @@ private String httpGet(int port, String path) {
 }
 ```
 
-Common management paths (all under `/api/`, prefix required): `/api/health`, `/api/nodes/status`,
-`/api/metrics`, `/api/blueprints/{id}` (GET/POST/DELETE for deploy/scale/undeploy), `/api/deploy`
-and `/api/deploy/{id}/{promote,complete,rollback}` for staged deployments. Read the actual route
+Management routes are versioned under `/api/v1/` (e.g. `/api/v1/health`, `/api/v1/nodes/status`); the
+unauthenticated probes `/health/live` and `/health/ready` are unversioned. Read the actual route
 definitions under `aether/node/.../api/routes/` or `aether/forge/forge-api/.../api/` rather than
 trusting a doc snapshot of the full path list — these evolve.
 
@@ -145,7 +144,7 @@ void threeNodeCluster_formsQuorum_andElectsLeader() {
 @Test
 void cluster_nodesVisibleToAllMembers() {
     for (var node : cluster.status().nodes()) {
-        var health = httpGet(node.mgmtPort(), "/api/health");
+        var health = httpGet(node.mgmtPort(), "/api/v1/health");
         assertThat(health).contains("\"connectedPeers\":2").contains("\"nodeCount\":3");
     }
 }

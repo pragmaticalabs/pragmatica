@@ -210,7 +210,7 @@ class SchemaRoutesVersionIntegrityTest {
     }
 
     private static Repository noLocalRepository() {
-        return _ -> Causes.cause("Artifact not present in local repository").promise();
+        return _ -> ((org.pragmatica.aether.slice.repository.Repository.Absent) () -> "Artifact not present in local repository").promise();
     }
 
     private static byte[] blueprintJar() {
@@ -265,7 +265,7 @@ class SchemaRoutesVersionIntegrityTest {
                 return Promise.success(List.of());
             }
 
-            @Override public Promise<Unit> delete(ArtifactFile file) {
+            @Override public Promise<Unit> archive(Artifact artifact) {
                 return Promise.unitPromise();
             }
 

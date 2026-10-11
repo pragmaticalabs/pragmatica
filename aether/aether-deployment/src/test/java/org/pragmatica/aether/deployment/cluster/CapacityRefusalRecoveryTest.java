@@ -1,4 +1,7 @@
 // SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.cluster;
 
 import io.netty.buffer.ByteBuf;
@@ -99,7 +102,6 @@ class CapacityRefusalRecoveryTest {
             @Override public Promise<List<InstanceInfo>> listInstances(Map<String, String> filter, SourceName source, String binding) { return Promise.success(List.of()); }
             @Override public Promise<Unit> terminateNode(NodeId node, SourceName source, String binding) { return Promise.unitPromise(); }
             @Override public Promise<Unit> terminateNode(NodeId node) { return Promise.unitPromise(); }
-            @Override public Promise<Unit> restartNode(NodeId node) { return Promise.unitPromise(); }
             @Override public Promise<ActionResult> executeAction(NodeAction action) { return Causes.cause("unused").promise(); }
             @Override public org.pragmatica.lang.Result<String> sourceBinding(SourceName source) { return org.pragmatica.lang.Result.success("binding"); }
             @Override public boolean isCloudManaged() { return true; }
@@ -119,7 +121,7 @@ class CapacityRefusalRecoveryTest {
     @Test
     void competingReservationsForLastSlot_exactlyOneWinsViaLedgerCas() {
         seedLedger(0);
-        seed(new KVCommand.Put<>(AetherKey.ClusterConfigKey.CURRENT, new AetherValue.ClusterConfigValue(CONFIG, "test", "1.0.0", List.of(), 3, 3, "forge", 1, 0)));
+        seed(new KVCommand.Put<>(AetherKey.ClusterConfigKey.CURRENT, new AetherValue.ClusterConfigValue(Option.some(CONFIG), "test", "1.0.0", List.of(), 3, 3, "forge", 1, 0)));
         var creates = new AtomicInteger();
         var providerB = provider(creates, s -> Promise.success(instance(s.context().nodeId().unwrap())));
         var lifecycleB = CapacityControlledLifecycle.capacityControlledLifecycle(providerB, CORE, store, this::process, () -> true, () -> 1);
@@ -153,7 +155,7 @@ class CapacityRefusalRecoveryTest {
     private void initializeReconcilerWorld() {
         seed(new KVCommand.Put<>(LeaderKey.INSTANCE, LEADER));
         seed(new KVCommand.Put<>(AetherKey.ClusterConfigKey.CURRENT,
-            new AetherValue.ClusterConfigValue(CONFIG, "test", "1.0.0", List.of(), 3, 3, "forge", 1, 0)));
+            new AetherValue.ClusterConfigValue(Option.some(CONFIG), "test", "1.0.0", List.of(), 3, 3, "forge", 1, 0)));
         seed(new KVCommand.Put<>(new AetherKey.ActivationDirectiveKey(OLD), new AetherValue.ActivationDirectiveValue(AetherValue.ActivationDirectiveValue.WORKER, "stable", "")));
         seed(new KVCommand.Put<>(new AetherKey.NodePlacementKey(OLD), new AetherValue.NodePlacementValue("pool", Option.some("old"), "old-instance")));
         ready.add(OLD);

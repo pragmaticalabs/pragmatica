@@ -823,6 +823,8 @@ echo "== E. S19 tier 2 (_confirm_survivor_departure) on cloud"
 
 SURV1_IP="203.0.113.10"   # node-1 -> hetzner-eu-core-0 in fixtures/bootstrap-state.json
 SURV2_IP="203.0.113.11"   # node-2 -> hetzner-eu-core-1
+ID1='AETHER_NODE_ID=hetzner-eu-core-0\n'   # what each survivor VM prints from /etc/aether/node.env
+ID2='AETHER_NODE_ID=hetzner-eu-core-1\n'
 tier2_setup() { # tier2_setup <dir> <runtime or -unset->
     cat > "$1/setup.sh" <<EOF
 SURVIVOR_EXIT_BUDGET_S=0
@@ -833,27 +835,27 @@ EOF
     if [ "$2" = "-unset-" ]; then echo "unset CLOUD_RUNTIME" >> "$1/setup.sh"; else echo "export CLOUD_RUNTIME=$2" >> "$1/setup.sh"; fi
 }
 
-d=$(new_case); tier2_setup "$d" jvm; resp "$d/ssh-${SURV1_IP}" 0 "$UNIT_FAILED_2"
+d=$(new_case); tier2_setup "$d" jvm; resp "$d/ssh-${SURV1_IP}" 0 "${ID1}${UNIT_FAILED_2}"
 run_in "$d" "$SELF_DRAIN_SUITE" _confirm_survivor_departure node-1 ""
 check "$d" "E1 jvm failed/2 -> departure confirmed from systemctl show" \
-    eval '[ "$(rc_of "$d")" = 0 ] && has "$d" "designed drain halt confirmed via SSH systemctl-show" && grep -qF "${SURV1_IP}|systemctl show aether-node --property=ActiveState,ExecMainStatus" "$d/ssh-calls"'
+    eval '[ "$(rc_of "$d")" = 0 ] && has "$d" "designed drain halt confirmed via SSH systemctl-show" && grep -qF "${SURV1_IP}|grep -m1 '"'"'^AETHER_NODE_ID='"'"' /etc/aether/node.env 2>&1; systemctl show aether-node --property=ActiveState,ExecMainStatus" "$d/ssh-calls"'
 
-d=$(new_case); tier2_setup "$d" jvm; resp "$d/ssh-${SURV1_IP}" 0 'ActiveState=active\nExecMainStatus=2\n'
+d=$(new_case); tier2_setup "$d" jvm; resp "$d/ssh-${SURV1_IP}" 0 "${ID1}ActiveState=active\nExecMainStatus=2\n"
 run_in "$d" "$SELF_DRAIN_SUITE" _confirm_survivor_departure node-1 ""
 check "$d" "E2 jvm active/2 -> S19 violation naming the state read" \
     eval '[ "$(rc_of "$d")" = 1 ] && has "$d" "systemd unit reports ActiveState='"'"'active'"'"' ExecMainStatus='"'"'2'"'"'"'
 
-d=$(new_case); tier2_setup "$d" jvm; resp "$d/ssh-${SURV1_IP}" 0 'ActiveState=failed\nExecMainStatus=0\n'
+d=$(new_case); tier2_setup "$d" jvm; resp "$d/ssh-${SURV1_IP}" 0 "${ID1}ActiveState=failed\nExecMainStatus=0\n"
 run_in "$d" "$SELF_DRAIN_SUITE" _confirm_survivor_departure node-1 ""
 check "$d" "E3 jvm failed/0 -> S19 violation" \
     eval '[ "$(rc_of "$d")" = 1 ] && has "$d" "ExecMainStatus='"'"'0'"'"' — not a designed drain halt"'
 
-d=$(new_case); tier2_setup "$d" jvm; resp "$d/ssh-${SURV1_IP}" 0 'ActiveState=failed\r\nExecMainStatus=2\r\n'
+d=$(new_case); tier2_setup "$d" jvm; resp "$d/ssh-${SURV1_IP}" 0 "AETHER_NODE_ID=hetzner-eu-core-0\r\nActiveState=failed\r\nExecMainStatus=2\r\n"
 run_in "$d" "$SELF_DRAIN_SUITE" _confirm_survivor_departure node-1 ""
 check "$d" "E4 jvm failed/2 with CRLF line ends -> still confirmed" \
     eval '[ "$(rc_of "$d")" = 0 ] && has "$d" "designed drain halt confirmed"'
 
-d=$(new_case); tier2_setup "$d" -unset-; resp "$d/ssh-${SURV1_IP}" 0 "$UNIT_FAILED_2"
+d=$(new_case); tier2_setup "$d" -unset-; resp "$d/ssh-${SURV1_IP}" 0 "${ID1}${UNIT_FAILED_2}"
 run_in "$d" "$SELF_DRAIN_SUITE" _confirm_survivor_departure node-1 ""
 check "$d" "E5 CLOUD_RUNTIME unset -> refused, no docker inspect default" \
     eval '[ "$(rc_of "$d")" = 1 ] && has "$d" "CLOUD_RUNTIME is '"'"'<unset>'"'"'" && [ ! -f "$d/ssh-calls" ]'
@@ -868,31 +870,179 @@ run_in "$d" "$SELF_DRAIN_SUITE" _confirm_survivor_departure node-1 ""
 check "$d" "E8 SSH unreachable with no output -> degrades with a warning naming the runtime, not a violation at tier 2" \
     eval 'has "$d" "tier-2 (SSH drain-state read, jvm runtime) corroboration unavailable (rc=255" && ! has "$d" "remote drain-state read (jvm runtime) failed"'
 
-d=$(new_case); tier2_setup "$d" container; resp "$d/ssh-${SURV1_IP}" 0 '2|2026-09-13T13:07:28Z\n'
+d=$(new_case); tier2_setup "$d" container; resp "$d/ssh-${SURV1_IP}" 0 '2|2026-09-13T13:07:28Z|hetzner-eu-core-0\n'
 run_in "$d" "$SELF_DRAIN_SUITE" _confirm_survivor_departure node-1 ""
 check "$d" "E6 container path unchanged: docker inspect exit 2 -> confirmed" \
-    eval '[ "$(rc_of "$d")" = 0 ] && has "$d" "container exit code=2" && grep -qF "${SURV1_IP}|docker inspect --format '"'"'{{.State.ExitCode}}|{{.State.FinishedAt}}'"'"' aether-node" "$d/ssh-calls"'
+    eval '[ "$(rc_of "$d")" = 0 ] && has "$d" "container exit code=2" && grep -qF "${SURV1_IP}|docker inspect --format '"'"'{{.State.ExitCode}}|{{.State.FinishedAt}}|{{index .Config.Labels \"aether-node-id\"}}'"'"' aether-node" "$d/ssh-calls"'
+
+
+# TI: S19 tier 2 reads an exit state at a PRE-KILL CACHED address, and cloud IPs are recycled: it must prove which VM answered
+# (JVM: AETHER_NODE_ID in /etc/aether/node.env; container: the aether-node-id label of the aether-node container).
+d=$(new_case); tier2_setup "$d" jvm; resp "$d/ssh-${SURV1_IP}" 0 "AETHER_NODE_ID=hetzner-eu-core-4\n${UNIT_FAILED_2}"
+run_in "$d" "$SELF_DRAIN_SUITE" _confirm_survivor_departure node-1 ""
+check "$d" "TI1 jvm: a DIFFERENT node answers at the cached IP (failed/2 on a stranger) -> identity violation FAIL, never 'confirmed'" \
+    eval '[ "$(rc_of "$d")" = 1 ] && has "$d" "S19 tier-2 identity violation: read ${SURV1_IP} expecting survivor '"'"'hetzner-eu-core-0'"'"' but node '"'"'hetzner-eu-core-4'"'"' answered" && ! has "$d" "designed drain halt confirmed"'
+d=$(new_case); tier2_setup "$d" container; resp "$d/ssh-${SURV1_IP}" 0 '2|2026-09-13T13:07:28Z|hetzner-eu-core-4\n'
+run_in "$d" "$SELF_DRAIN_SUITE" _confirm_survivor_departure node-1 ""
+check "$d" "TI2 container: a DIFFERENT node's label at the cached IP -> identity violation FAIL, never 'confirmed'" \
+    eval '[ "$(rc_of "$d")" = 1 ] && has "$d" "S19 tier-2 identity violation" && has "$d" "but node '"'"'hetzner-eu-core-4'"'"' answered" && ! has "$d" "container exit code=2"'
+d=$(new_case); tier2_setup "$d" jvm; resp "$d/ssh-${SURV1_IP}" 0 "${UNIT_FAILED_2}"
+run_in "$d" "$SELF_DRAIN_SUITE" _confirm_survivor_departure node-1 ""
+check "$d" "TI3 jvm: no AETHER_NODE_ID in the reply -> identity indeterminate FAIL (void, not a pass)" \
+    eval '[ "$(rc_of "$d")" = 1 ] && has "$d" "S19 tier-2 identity indeterminate" && ! has "$d" "designed drain halt confirmed"'
+d=$(new_case); tier2_setup "$d" container; resp "$d/ssh-${SURV1_IP}" 0 '2|2026-09-13T13:07:28Z\n'
+run_in "$d" "$SELF_DRAIN_SUITE" _confirm_survivor_departure node-1 ""
+check "$d" "TI4 container: an empty label (no third field) -> identity indeterminate FAIL" \
+    eval '[ "$(rc_of "$d")" = 1 ] && has "$d" "S19 tier-2 identity indeterminate"'
+
+# E9: a CTM-replacement survivor (KSUID id, ABSENT from the fixture bootstrap-state.json) whose live lookup cannot work
+# mid-quorum-loss (api_get stubbed to fail). Tier 2 must read the pre-kill IP CACHE and SSH to that address; it used to
+# resolve through cloud_ssh -> cloud_public_ip, miss, count a [FAIL] on the swallowed stdout, never invoke ssh, and pass
+# only through the approximate tier-3 proof (cloud run 4, S19 x2). FILE_DELTA is the fail-file line count the case added.
+CTM_SURV="aether-test-b-node-01m3tk5gfr70v0xbzh8v0dkjyv"
+case_e9() {
+    local before after rc
+    before=$(_harness_fail_lines)
+    _confirm_survivor_departure "$CTM_SURV" ""
+    rc=$?
+    after=$(_harness_fail_lines)
+    echo "FILE_DELTA=$((after - before));"
+    return "$rc"
+}
+d=$(new_case); tier2_setup "$d" container
+cat >> "$d/setup.sh" <<SETUP
+printf '%s\n' "$CTM_SURV" > "\$SURVIVORS_FILE"
+SURVIVOR_IPS_FILE="\$STUB_DIR/survivor-ips"
+printf '%s %s\n' "$CTM_SURV" "${SURV1_IP}" > "\$SURVIVOR_IPS_FILE"
+SETUP
+resp "$d/ssh-${SURV1_IP}" 0 "2|2026-10-01T02:11:00Z|${CTM_SURV}\n"
+run_in "$d" "$SELF_DRAIN_SUITE" case_e9
+check "$d" "E9a CTM survivor, IP only in the pre-kill cache: tier 2 SSHes to the cached IP and confirms exit code 2" \
+    eval '[ "$(rc_of "$d")" = 0 ] && has "$d" "container exit code=2" && grep -qF "${SURV1_IP}|docker inspect" "$d/ssh-calls"'
+check "$d" "E9b the same case adds ZERO lines to the fail file (a miss is not a counted [FAIL])" \
+    has "$d" "FILE_DELTA=0;"
+
+# E9c: no cache entry and no live answer -> honest WARN, ssh never attempted, no SSH-lockout attribution (it implied a
+# connection that was never made); degrades to the next tiers, which cannot prove departure -> FAIL (see E9d-g).
+d=$(new_case); tier2_setup "$d" container
+cat >> "$d/setup.sh" <<SETUP
+printf '%s\n' "$CTM_SURV" > "\$SURVIVORS_FILE"
+SURVIVOR_IPS_FILE="\$STUB_DIR/no-ip-cache"
+SETUP
+run_in "$d" "$SELF_DRAIN_SUITE" case_e9
+check "$d" "E9c unresolvable survivor (no cache, dead lookup): WARN 'IP unresolvable — SSH not attempted', no ssh call, no lockout attribution, and the VERDICT is rc 1 (FILE_DELTA=1: one visible FAIL)" \
+    eval '[ "$(rc_of "$d")" = 1 ] && has "$d" "IP unresolvable — SSH not attempted" && [ ! -f "$d/ssh-calls" ] && ! has "$d" "likely #441 item 3 SSH lockout" && has "$d" "FILE_DELTA=1;"'
+
+
+# E9d-g: cloud_server_id distinguishes rc 1 (address known, no server holds it: GONE) from rc 3 (address unresolvable or
+# hcloud list failed: UNKNOWN, says nothing about the VM). Every existence probe may read ONLY rc 1 as "gone"; reading
+# rc 3 that way scored a still-running survivor as departed (S19 tier 4) and skipped a kill (kill-multiple).
+# E9c above is the unresolvable case end to end through the REAL cloud_server_id (it used to assert only the WARN,
+# no ssh call and FILE_DELTA — never the verdict, so it observed the vacuous pass without pinning it).
+d=$(new_case); tier2_setup "$d" container
+cat >> "$d/setup.sh" <<SETUP
+printf '%s\n' "$CTM_SURV" > "\$SURVIVORS_FILE"
+SURVIVOR_IPS_FILE="\$STUB_DIR/no-ip-cache"
+SETUP
+run_in "$d" "$SELF_DRAIN_SUITE" case_e9
+check "$d" "E9d survivor unresolvable (no cache, dead lookup): tier 4 FAILS — departure UNPROVEN, counted once, never a PASS" \
+    eval '[ "$(rc_of "$d")" = 1 ] && has "$d" "departure UNPROVEN" && has "$d" "cloud_server_id rc=3" && ! has "$d" "treating as satisfied departure" && has "$d" "FILE_DELTA=1;"'
+
+case_e9_scored() {   # the verdict as run_test scores it, with the VM still LISTED by hcloud
+    TESTS_PASSED=0; TESTS_FAILED=0
+    vp_fn() { _confirm_survivor_departure "$CTM_SURV" ""; }
+    run_test "E9 scored" vp_fn
+    echo "VERDICT P=${TESTS_PASSED} F=${TESTS_FAILED};"
+}
+d=$(new_case); tier2_setup "$d" container
+cat >> "$d/setup.sh" <<SETUP
+printf '%s\n' "$CTM_SURV" > "\$SURVIVORS_FILE"
+SURVIVOR_IPS_FILE="\$STUB_DIR/no-ip-cache"
+SETUP
+printf '99 198.51.100.7\n' > "$d/hcloud-all-list"
+run_in "$d" "$SELF_DRAIN_SUITE" case_e9_scored
+check "$d" "E9e CTM survivor, empty cache, dead lookup, VM STILL LISTED by hcloud: scored FAIL (P=0 F=1), never PASS" \
+    has "$d" "VERDICT P=0 F=1;"
+
+d=$(new_case); tier2_setup "$d" container
+cat >> "$d/setup.sh" <<SETUP
+printf '%s\n' "$CTM_SURV" > "\$SURVIVORS_FILE"
+SURVIVOR_IPS_FILE="\$STUB_DIR/no-ip-cache"
+cloud_server_id() { return 1; }
+SETUP
+run_in "$d" "$SELF_DRAIN_SUITE" case_e9
+check "$d" "E9f control: cloud_server_id rc 1 (address known, no server) IS departure evidence -> confirmed, no [FAIL]" \
+    eval '[ "$(rc_of "$d")" = 0 ] && has "$d" "already departed" && has "$d" "FILE_DELTA=0;"'
+
+d=$(new_case); tier2_setup "$d" container
+cat >> "$d/setup.sh" <<SETUP
+printf '%s\n' "$CTM_SURV" > "\$SURVIVORS_FILE"
+SURVIVOR_IPS_FILE="\$STUB_DIR/no-ip-cache"
+cloud_server_id() { return 3; }
+SETUP
+run_in "$d" "$SELF_DRAIN_SUITE" case_e9
+check "$d" "E9g cloud_server_id rc 3 (unknown) -> FAIL, the exact counterpart of E9f" \
+    eval '[ "$(rc_of "$d")" = 1 ] && has "$d" "departure UNPROVEN" && has "$d" "FILE_DELTA=1;"'
+
+echo "== E2. kill paths read only rc 1 as 'gone' (kill-multiple, cloud_kill_vm)"
+KM_SUITE="${INTEG_DIR}/suites/02-chaos/test-kill-multiple.sh"
+KM_FILE="${WORK}/km-fn.sh"
+{ echo "source \"${CLUSTER_LIB}\""; sed -n '/^_kill_and_confirm_departure() {/,/^}/p' "$KM_SUITE"; } > "$KM_FILE"
+case_km() {
+    export CLOUD_MODE=true
+    TESTS_PASSED=0; TESTS_FAILED=0
+    kill_node() { echo "KILL_NODE_CALLED $*"; }
+    topology_now() { echo base; }
+    local before; before=$(_harness_fail_lines)
+    km_fn() { _kill_and_confirm_departure "$CTM_SURV"; }
+    run_test "KM scored" km_fn
+    echo "VERDICT P=${TESTS_PASSED} F=${TESTS_FAILED} DELTA=$(( $(_harness_fail_lines) - before ));"
+}
+d=$(new_case); printf '99 198.51.100.7\n' > "$d/hcloud-all-list"
+run_in "$d" "$KM_FILE" case_km
+check "$d" "KV1 kill-multiple: victim unresolvable, VM still listed -> FAIL (P=0 F=1), counted once, never PASS, no 'already gone'" \
+    eval 'has "$d" "VERDICT P=0 F=1 DELTA=1;" && has "$d" "cannot tell whether its VM exists" && ! has "$d" "already gone"'
+d=$(new_case); echo 'cloud_server_id() { return 1; }' > "$d/setup.sh"
+run_in "$d" "$KM_FILE" case_km
+check "$d" "KV2 control: cloud_server_id rc 1 (address known, no server) -> already gone, satisfied departure (P=1 F=0), no kill" \
+    eval 'has "$d" "VERDICT P=1 F=0 DELTA=0;" && has "$d" "already gone" && ! has "$d" "KILL_NODE_CALLED"'
+
+case_kill_vm() { cloud_kill_vm "$1"; local rc=$?; echo "KILLVM_RC=${rc};"; return "$rc"; }
+d=$(new_case)
+run_in "$d" "$CLUSTER_LIB" case_kill_vm "$CTM_SURV"
+check "$d" "KV3 cloud_kill_vm: unresolvable node -> rc 1 with a visible FAIL, NOT 'already deleted', no hcloud delete" \
+    eval 'has "$d" "KILLVM_RC=1;" && has "$d" "cannot tell whether" && ! has "$d" "already deleted" && ! grep -q "server delete" "$d/hcloud-calls" 2>/dev/null'
+d=$(new_case)
+run_in "$d" "$CLUSTER_LIB" case_kill_vm node-1
+check "$d" "KV4 control: node-1's address resolves and no server holds it (rc 1) -> idempotent no-op, rc 0" \
+    eval 'has "$d" "KILLVM_RC=0;" && has "$d" "already deleted/replaced"'
+d=$(new_case); echo 1 > "$d/hcloud-list-rc"
+run_in "$d" "$CLUSTER_LIB" case_kill_vm node-1
+check "$d" "KV5 cloud_kill_vm: hcloud list FAILS (address known) -> rc 1 FAIL, not 'already deleted'" \
+    eval 'has "$d" "KILLVM_RC=1;" && has "$d" "cannot tell whether" && ! has "$d" "already deleted"'
+
+
 
 echo "== F. exit-code step (test_survivor_exit_codes_are_two) on cloud jvm"
 
 case_h2() { TEST_FAIL_COUNT=0; test_survivor_exit_codes_are_two; local rc=$?; echo "FAILS=${TEST_FAIL_COUNT};"; return "$rc"; }
 
-d=$(new_case); tier2_setup "$d" jvm; resp "$d/ssh-${SURV1_IP}" 0 "$UNIT_FAILED_2"; resp "$d/ssh-${SURV2_IP}" 0 "$UNIT_FAILED_2"
+d=$(new_case); tier2_setup "$d" jvm; resp "$d/ssh-${SURV1_IP}" 0 "${ID1}${UNIT_FAILED_2}"; resp "$d/ssh-${SURV2_IP}" 0 "${ID2}${UNIT_FAILED_2}"
 run_in "$d" "$SELF_DRAIN_SUITE" case_h2
 check "$d" "F1 both survivors failed/2 -> PASS, no FAIL latched" \
     eval '[ "$(rc_of "$d")" = 0 ] && has "$d" "FAILS=0;" && has "$d" "Survivor node-2 systemd unit ActiveState=failed ExecMainStatus=2"'
 
-d=$(new_case); tier2_setup "$d" jvm; resp "$d/ssh-${SURV1_IP}" 0 'ActiveState=failed\nExecMainStatus=0\n'; resp "$d/ssh-${SURV2_IP}" 0 "$UNIT_FAILED_2"
+d=$(new_case); tier2_setup "$d" jvm; resp "$d/ssh-${SURV1_IP}" 0 "${ID1}ActiveState=failed\nExecMainStatus=0\n"; resp "$d/ssh-${SURV2_IP}" 0 "${ID2}${UNIT_FAILED_2}"
 run_in "$d" "$SELF_DRAIN_SUITE" case_h2
 check "$d" "F2 first survivor exit 0, second fine -> the first FAIL stays latched" \
     eval 'has "$d" "FAILS=1;" && has "$d" "Survivor node-1 systemd unit is not in the drain-halt state: expected ActiveState=failed ExecMainStatus=2, got ActiveState='"'"'failed'"'"' ExecMainStatus='"'"'0'"'"'"'
 
-d=$(new_case); tier2_setup "$d" jvm; resp "$d/ssh-${SURV1_IP}" 0 "$UNIT_FAILED_2"; resp "$d/ssh-${SURV2_IP}" 0 'ActiveState=active\nExecMainStatus=2\n'
+d=$(new_case); tier2_setup "$d" jvm; resp "$d/ssh-${SURV1_IP}" 0 "${ID1}${UNIT_FAILED_2}"; resp "$d/ssh-${SURV2_IP}" 0 "${ID2}ActiveState=active\nExecMainStatus=2\n"
 run_in "$d" "$SELF_DRAIN_SUITE" case_h2
 check "$d" "F3 ExecMainStatus=2 on a still-active unit -> FAIL (same predicate as S19 tier 2)" \
     eval 'has "$d" "FAILS=1;" && has "$d" "got ActiveState='"'"'active'"'"' ExecMainStatus='"'"'2'"'"'"'
 
-d=$(new_case); tier2_setup "$d" jvm; resp "$d/ssh-${SURV2_IP}" 0 "$UNIT_FAILED_2"
+d=$(new_case); tier2_setup "$d" jvm; resp "$d/ssh-${SURV2_IP}" 0 "${ID2}${UNIT_FAILED_2}"
 run_in "$d" "$SELF_DRAIN_SUITE" case_h2
 check "$d" "F4 SSH error on a survivor -> FAIL as unreadable" \
     eval 'has "$d" "FAILS=1;" && has "$d" "Survivor node-1 systemd unit unreadable: SSH/systemctl failed (rc=255)"'
@@ -909,6 +1059,42 @@ run_in "$d" "$SELF_DRAIN_SUITE" case_h2
 check "$d" "F6 docker/remote: exit code 2 read by docker inspect is attributed to DrainProcedure's Runtime.halt(2)" \
     eval '[ "$(rc_of "$d")" = 0 ] && has "$d" "FAILS=0;" && has "$d" "Survivor aether-b-node-4 exit code is 2 (Runtime.halt(2) via DrainProcedure)" && ! has "$d" "SelfDrainCoordinator"'
 
+
+# FJ: the exit-code step on CTM survivors AFTER the quorum-loss drain (JVM run, cloud run 7): the survivors are KSUID ids absent
+# from bootstrap-state.json and the cluster API is dead, so a live resolve misses; the step used to FAIL on VMs that had halted
+# with exit 2. It now reads at the PRE-KILL cached address and proves WHICH VM answered (AETHER_NODE_ID from node.env).
+FJ1="aether-test-b-node-01m3tk5gfr70v0xbzh8v0dkjyv"; FJ2="aether-test-b-node-01m3tkbwmkt571zge09tk1mng3"
+fj_setup() {  # <dir> [cache? 1|0]
+    tier2_setup "$1" jvm
+    cat >> "$1/setup.sh" <<SETUP
+printf '%s\n%s\n' "$FJ1" "$FJ2" > "\$SURVIVORS_FILE"
+SURVIVOR_IPS_FILE="\$STUB_DIR/survivor-ips"
+SETUP
+    if [ "${2:-1}" = 1 ]; then printf '%s %s\n%s %s\n' "$FJ1" "$SURV1_IP" "$FJ2" "$SURV2_IP" > "$1/survivor-ips"; fi
+}
+d=$(new_case); fj_setup "$d"
+resp "$d/ssh-${SURV1_IP}" 0 "AETHER_NODE_ID=${FJ1}\n${UNIT_FAILED_2}"; resp "$d/ssh-${SURV2_IP}" 0 "AETHER_NODE_ID=${FJ2}\n${UNIT_FAILED_2}"
+run_in "$d" "$SELF_DRAIN_SUITE" case_h2
+check "$d" "FJ1 CTM survivors, cached IPs, API dead: both exit-code reads happen at the cached addresses and PASS (FAILS=0)" \
+    eval 'has "$d" "FAILS=0;" && has "$d" "Survivor ${FJ1} systemd unit ActiveState=failed ExecMainStatus=2" && has "$d" "Survivor ${FJ2} systemd unit ActiveState=failed ExecMainStatus=2" && grep -q "^${SURV1_IP}|" "$d/ssh-calls" && grep -q "^${SURV2_IP}|" "$d/ssh-calls"'
+
+d=$(new_case); fj_setup "$d"
+resp "$d/ssh-${SURV1_IP}" 0 "AETHER_NODE_ID=aether-test-b-node-01STRANGERRECYCLEDIP0000\n${UNIT_FAILED_2}"; resp "$d/ssh-${SURV2_IP}" 0 "AETHER_NODE_ID=${FJ2}\n${UNIT_FAILED_2}"
+run_in "$d" "$SELF_DRAIN_SUITE" case_h2
+check "$d" "FJ2 recycled IP: the VM at survivor 1's cached address is a DIFFERENT node -> identity violation FAIL, never a pass on a stranger's unit state" \
+    eval 'has "$d" "FAILS=1;" && has "$d" "identity violation: read ${SURV1_IP} expecting node '"'"'${FJ1}'"'"' but node '"'"'aether-test-b-node-01STRANGERRECYCLEDIP0000'"'"' answered" && ! has "$d" "Survivor ${FJ1} systemd unit ActiveState=failed"'
+
+d=$(new_case); fj_setup "$d"
+resp "$d/ssh-${SURV1_IP}" 0 "${UNIT_FAILED_2}"; resp "$d/ssh-${SURV2_IP}" 0 "AETHER_NODE_ID=${FJ2}\n${UNIT_FAILED_2}"
+run_in "$d" "$SELF_DRAIN_SUITE" case_h2
+check "$d" "FJ3 no AETHER_NODE_ID in the reply: identity indeterminate -> FAIL (the read is void, not a pass)" \
+    eval 'has "$d" "FAILS=1;" && has "$d" "identity indeterminate"'
+
+d=$(new_case); fj_setup "$d" 0
+run_in "$d" "$SELF_DRAIN_SUITE" case_h2
+check "$d" "FJ4 no cache entry and a dead live lookup: honest FAIL 'IP unresolvable ... SSH not attempted', no ssh call" \
+    eval 'has "$d" "FAILS=2;" && has "$d" "IP unresolvable (no pre-kill cache entry, live lookup failed) — SSH not attempted" && [ ! -f "$d/ssh-calls" ]'
+
 echo "== G. exit-code step disposition and S20 step name"
 
 disp_case() { # disp_case <label> <env> <runtime or -unset-> <verdict> <command> <expected substring>
@@ -920,8 +1106,8 @@ disp_case() { # disp_case <label> <env> <runtime or -unset-> <verdict> <command>
 VERDICT_FILE="\$STUB_DIR/verdict"
 echo "$4" > "\$VERDICT_FILE"
 EOF
-    resp "$d/ssh-${SURV1_IP}" 0 "$UNIT_FAILED_2"
-    resp "$d/ssh-${SURV2_IP}" 0 "$UNIT_FAILED_2"
+    resp "$d/ssh-${SURV1_IP}" 0 "${ID1}${UNIT_FAILED_2}"
+    resp "$d/ssh-${SURV2_IP}" 0 "${ID2}${UNIT_FAILED_2}"
     run_in "$d" "$SELF_DRAIN_SUITE" $5
     # Locals, not $6/$7: the eval runs inside check, where the positional parameters are
     # check's own (bash dynamic scoping still shows it disp_case's locals).
@@ -963,6 +1149,19 @@ run_in "$d" "$SELF_DRAIN_SUITE" case_run_section
 g9_lines=$(sed -n 's/^SECTION_LINES=\([0-9]*\);$/\1/p' "$d/out")
 check "$d" "G9 the scenario section records the exit-code step through its disposition and names S20 by its enforced budget" \
     eval '[ "${g9_lines:-0}" -ge 8 ] && has "$d" "SKIP_TEST|Survivor exit codes are 2 (Runtime.halt(2))|GAP-A (cloud --runtime container)" && ! has "$d" "RUN_TEST|Survivor exit codes are 2" && has "$d" "RUN_TEST|Cluster recovers to 5 healthy cores within 600s of drain confirmation (S20, cloud full drain)|test_cluster_recovers_to_five_on_duty" && has "$d" "PRINT_SUMMARY"'
+
+# G10: the post-drain KV-write check is docker-log based. On cloud it must be a visible SKIP, not a PASS recorded
+# for a test that returned 0 before asserting anything (it used to: `return 0` after a log_info, scored PASS).
+case_record_kv() { _s19_record_no_kv_writes_step; echo "P=${TESTS_PASSED} F=${TESTS_FAILED} S=${TESTS_SKIPPED};"; }
+d=$(new_case); echo cloud > "$d/env"; tier2_setup "$d" jvm
+run_in "$d" "$SELF_DRAIN_SUITE" case_record_kv
+check "$d" "G10a cloud: 'No KV-writes after drain trigger' is recorded SKIPPED with an honest reason, not PASS (P=0 F=0 S=1)" \
+    eval 'has "$d" "P=0 F=0 S=1;" && has "$d" "log-based KV-write check not implemented for cloud runtimes" && ! has "$d" "no docker/SSH on cloud"'
+d=$(new_case); echo docker > "$d/env"; tier2_setup "$d" jvm
+printf 'test_no_kv_writes_after_drain_trigger() { echo RAN_KV_TEST; }\n' >> "$d/setup.sh"
+run_in "$d" "$SELF_DRAIN_SUITE" case_record_kv
+check "$d" "G10b control, docker: the step still RUNS the test (recorded PASS, P=1 F=0 S=0)" \
+    eval 'has "$d" "RAN_KV_TEST" && has "$d" "P=1 F=0 S=0;"'
 
 echo "== H. H4 CAUGHT_UP wait (test_identify_owner_and_caught_up_replica)"
 

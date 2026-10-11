@@ -14,11 +14,11 @@
 | C2 | Soak app endpoint accepts seed PUT with strict 2xx (no 3xx redirect masking) | `aether/docs/specs/test-readiness-contract.md §4.2` (strict 2xx, no 3xx-as-success) |
 | C3 | Sustained HTTP soak (4h default) holds error rate below the soak-tier 1.0% noise floor | `aether/docs/specs/test-readiness-contract.md §4` (Soak tier = 1.0%) |
 | C4 | Cluster shape is preserved across soak: `member_count >= NODE_COUNT` post-soak | `aether/docs/specs/test-readiness-contract.md §2.1` (member-count semantic) |
-| C5 | Cluster health remains `"healthy"` after soak | `aether/docs/specs/test-readiness-contract.md §3 (api/health row)` |
+| C5 | Cluster health remains `"healthy"` after soak | `aether/docs/specs/test-readiness-contract.md §3 (api/v1/health row)` |
 | C6 | Leader is still present after soak (existence-only check — see Known limitations) | `aether/docs/specs/test-readiness-contract.md §1.1 (Property 2)` |
 | C7 | Stream list endpoint responds | `aether/docs/specs/streaming-spec.md §publish` `[CONTRACT-GAP]` (stream-existence semantics not spec-pinned) |
 | C8 | Sustained 1h stream publish holds error rate below the operational-event 2.0% tier | `aether/docs/specs/test-readiness-contract.md §4` (Operational events tier = 2.0%) |
-| C9 | Cluster shape + health preserved across streaming soak | `aether/docs/specs/test-readiness-contract.md §2.1`, `§3 (api/health)` |
+| C9 | Cluster shape + health preserved across streaming soak | `aether/docs/specs/test-readiness-contract.md §2.1`, `§3 (api/v1/health)` |
 | C10 | JVM stats (uptime per node) are collectible — diagnostic baseline for leak inspection | `[CONTRACT-GAP]` — no formal leak-detection spec; current automation is diagnostic-only |
 
 ---
@@ -34,7 +34,7 @@
 | TC-01-005 | `test_soak_load` | `test-soak-4h.sh:82` | C3 | core | Dual loader (app + `/health/live`), 4h default; `assert_error_rate_below 1.0` |
 | TC-01-006 | `test_collect_post_stats` | `test-soak-4h.sh:103` | C10 | smoke | Diagnostic-only; no pre/post comparison — see Known limitations |
 | TC-01-007 | `test_no_node_drift` | `test-soak-4h.sh:110` | C4 | core | `assert_ge $end_nodes $NODE_COUNT`; floor-only (doesn't catch upward drift) |
-| TC-01-008 | `test_cluster_still_healthy` | `test-soak-4h.sh:116` | C5 | core | `assert_cluster_healthy` (`/api/health` status == healthy) |
+| TC-01-008 | `test_cluster_still_healthy` | `test-soak-4h.sh:116` | C5 | core | `assert_cluster_healthy` (`/api/v1/health` status == healthy) |
 | TC-01-009 | `test_no_leader_change` | `test-soak-4h.sh:120` | C6 | regression-net | Existence check (`assert_ne "$leader" ""`) — name overstates; see Known limitations |
 | TC-01-010 | `test_stream_exists` | `test-streaming-soak.sh:17` | C7 | smoke | Empty stream list passes via `if empty → log_info → log_pass anyway`; see Known limitations |
 | TC-01-011 | `test_sustained_publish` | `test-streaming-soak.sh:27` | C8 | core | 1h publish to `/api/streams/publish/<name>`; inline strict 2xx classifier; `assert_error_rate_below 2.0` |

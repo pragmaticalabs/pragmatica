@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.resource.db.jooq.r2dbc;
 
 import org.pragmatica.aether.resource.ResourceFactory;
@@ -43,13 +42,22 @@ public final class R2dbcJooqConnectorFactory implements ResourceFactory<JooqConn
         return Promise.lift(DatabaseConnectorError::databaseFailure, () -> connector(config));
     }
 
-    private static JooqConnector connector(DatabaseConnectorConfig config) {
+    /// Package-visible so the URL and credentials the pool is built with are checkable without connecting (#784): the
+    /// R2DBC connector reads ITS OWN transport's values.
+    static ConnectionFactoryOptions connectionFactoryOptions(DatabaseConnectorConfig config) {
         var options = ConnectionFactoryOptions.parse(config.effectiveR2dbcUrl());
         var optionsBuilder = ConnectionFactoryOptions.builder().from(options);
 
-        config.effectiveUsername().onPresent(u -> optionsBuilder.option(ConnectionFactoryOptions.USER, u));
-        config.effectivePassword().onPresent(p -> optionsBuilder.option(ConnectionFactoryOptions.PASSWORD, p));
-        var connectionFactory = ConnectionFactories.get(optionsBuilder.build());
+        config.effectiveUsername(DatabaseConnectorConfig.Transport.R2DBC)
+              .onPresent(u -> optionsBuilder.option(ConnectionFactoryOptions.USER, u));
+        config.effectivePassword(DatabaseConnectorConfig.Transport.R2DBC)
+              .onPresent(p -> optionsBuilder.option(ConnectionFactoryOptions.PASSWORD, p));
+
+        return optionsBuilder.build();
+    }
+
+    private static JooqConnector connector(DatabaseConnectorConfig config) {
+        var connectionFactory = ConnectionFactories.get(connectionFactoryOptions(config));
         var poolConfig = ConnectionPoolConfiguration.builder(connectionFactory)
                                                     .maxSize(config.poolConfig().maxConnections())
                                                     .initialSize(config.poolConfig().minConnections())

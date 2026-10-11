@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.cli.cluster;
 
 import java.nio.file.Files;
@@ -98,6 +97,15 @@ sealed interface BootstrapStatePersistence {
         return read(clusterName).mapError(BootstrapStatePersistence::unreadable)
                    .flatMap(state -> state.toResult(LEDGER_ABSENT))
                    .map(state -> state.withResource(resource))
+                   .flatMap(BootstrapStatePersistence::saveAppended);
+    }
+
+    /// #1543 — records that a node process was started under `nodeId`, through the same read-modify-write
+    /// path as [#appendResource] (never creates a ledger; absent and unreadable stay distinct failures).
+    static Result<Unit> appendStartedNode(ClusterName clusterName, String nodeId) {
+        return read(clusterName).mapError(BootstrapStatePersistence::unreadable)
+                   .flatMap(state -> state.toResult(LEDGER_ABSENT))
+                   .map(state -> state.withStartedNodeId(nodeId))
                    .flatMap(BootstrapStatePersistence::saveAppended);
     }
 

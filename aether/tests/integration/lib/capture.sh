@@ -18,6 +18,52 @@
 _CAPTURE_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 _failcap_root() { echo "${AETHER_FAILURE_LOGS_DIR:-${_CAPTURE_LIB_DIR}/../failure-logs}"; }
 
+# ---------------------------------------------------------------------------
+# VM registry (cloud): every VM a suite has touched, not only those the provider lists at capture time.
+# 2026-10-01 S-triple-prime: 03 Scale_down failed against core-4 (178.105.27.245), a scale-down VICTIM; the fail-time
+# capture (01:50:46) enumerated the provider's CURRENT VMs, core-4 had been drained and was gone, and the one node
+# the 503s hinged on was missing from the manifest. The registry remembers each VM seen at suite start, at the start
+# of every test, and at every capture; a capture then tries every remembered VM too, with a short bound for the ones
+# the provider no longer lists, and says in the manifest which of them were gone.
+# ---------------------------------------------------------------------------
+_capture_cluster_name() {
+    if [ "$1" = "a" ]; then echo "${CLUSTER_A_NAME:-${BOOTSTRAP_CLUSTER_NAME:-}}"; else echo "${CLUSTER_B_NAME:-${BOOTSTRAP_CLUSTER_NAME:-}}"; fi
+}
+# <cluster_name> <suite>  -> registry file path ("-restore-failed" suffix of a suite name is dropped)
+_capture_vm_registry_file() {
+    local suite="${2%-restore-failed}"
+    echo "$(_failcap_root)/vm-registries/${1}-${suite}.txt"
+}
+# capture_remember_vms <target_cluster> [suite]: add the provider's current VM IPs to the suite's registry. Quiet,
+# bounded, never fails the caller.
+capture_remember_vms() { _capture_remember_vms_body "$@" || true; }
+_capture_remember_vms_body() {
+    [ "${CLOUD_MODE:-false}" = "true" ] || return 0
+    local target="${1:-a}" suite="${2:-${SUITE_TAG:-no-suite}}" cluster ips ip reg
+    cluster=$(_capture_cluster_name "$target")
+    [ -n "$cluster" ] || return 0
+    reg=$(_capture_vm_registry_file "$cluster" "$suite")
+    mkdir -p "$(dirname "$reg")" 2>/dev/null || return 0
+    # _fork_bounded, NOT _run_with_timeout: _cloud_running_vm_ips is a shell FUNCTION, and _run_with_timeout execs
+    # coreutils `timeout`, which can only run a binary on PATH (rc 127 "failed to run command" for a function; the `|| return 0`
+    # below then swallowed it and the registry was never written, so a scale-down victim was omitted again). See common.sh.
+    ips=$(_fork_bounded "${CLOUD_CAPTURE_ENUM_TIMEOUT_S:-30}" _cloud_running_vm_ips "$cluster" 2>/dev/null) || return 0
+    for ip in $ips; do
+        printf '%s' "$ip" | grep -Eq '^[A-Za-z0-9.-]+$' || continue
+        grep -qxF "$ip" "$reg" 2>/dev/null || printf '%s\n' "$ip" >> "$reg" 2>/dev/null || true
+    done
+    return 0
+}
+# capture_forget_vms <target_cluster> [suite]: start a suite with an empty registry (no VM from a previous run).
+capture_forget_vms() {
+    local cluster reg
+    cluster=$(_capture_cluster_name "${1:-a}")
+    [ -n "$cluster" ] || return 0
+    reg=$(_capture_vm_registry_file "$cluster" "${2:-${SUITE_TAG:-no-suite}}")
+    rm -f "$reg" 2>/dev/null || true
+    return 0
+}
+
 # Best-effort node-log capture for a failed suite. Never fails the run: it exists to
 # preserve evidence, and losing evidence must not also lose the result that produced it.
 capture_node_logs() {
@@ -35,7 +81,18 @@ capture_node_logs() {
         # Clear STALE captures first: this dir accumulates across runs, and run3's diagnosis
         # nearly used run2's node-5.log sitting beside run3's fresh files. A capture must
         # only ever contain THIS run's evidence.
-        rm -f "${out_dir}"/*.log "${out_dir}/provisioning-snapshot.txt" 2>/dev/null || true
+        # NOT `*.log`: this directory also holds the load generator's failure bodies (load-failures-<test>.log, written by
+        # _load_persist_failure_bodies at stop_load, BEFORE this suite-end capture runs). A blanket `*.log` clear deleted
+        # them at every suite end (03 Scale_down, S-triple-prime: the 503 bodies were written and then erased). Node
+        # logs go; a load-failures file goes only when a PREVIOUS run wrote it (mtime before this suite's start).
+        find "${out_dir}" -maxdepth 1 -name '*.log' ! -name 'load-failures-*' -exec rm -f {} + 2>/dev/null || true
+        rm -f "${out_dir}/provisioning-snapshot.txt" 2>/dev/null || true
+        local lf lf_mtime
+        for lf in "${out_dir}"/load-failures-*.log; do
+            [ -f "$lf" ] || continue
+            lf_mtime=$(stat -c %Y "$lf" 2>/dev/null || stat -f %m "$lf" 2>/dev/null || echo 0)
+            [ "$lf_mtime" -lt "$since_epoch" ] 2>/dev/null && rm -f "$lf" 2>/dev/null
+        done
     else
         mkdir -p "$out_dir" 2>/dev/null || return 0
     fi
@@ -91,28 +148,47 @@ capture_node_logs() {
                 log_warn "${suite_name}: cloud node-log capture has no cluster name — nothing captured"
                 return 0
             fi
-            ips=$(_cloud_running_vm_ips "$cluster_name" 2>/dev/null) || enum_rc=$?
-            if [ "$enum_rc" -ne 0 ]; then
+            # Remember what the provider lists NOW, then capture current ∪ remembered: a VM removed mid-suite (a
+            # scale-down victim) is no longer listed but may still answer, and the manifest must say which are gone.
+            capture_remember_vms "$target_cluster" "$suite_name"
+            local registry remembered="" cur_ips=""
+            registry=$(_capture_vm_registry_file "$cluster_name" "$suite_name")
+            [ -f "$registry" ] && remembered=$(cat "$registry" 2>/dev/null || true)
+            cur_ips=$(_cloud_running_vm_ips "$cluster_name" 2>/dev/null) || enum_rc=$?
+            if [ "$enum_rc" -ne 0 ] && [ -z "$remembered" ]; then
                 # Unavailable is not empty (_cloud_running_vm_ips's own contract).
                 echo "VM enumeration UNAVAILABLE for cluster ${cluster_name} (rc=${enum_rc}) — nothing captured" >> "${out_dir}/capture-manifest.txt" 2>/dev/null || true
                 log_warn "${suite_name}: cloud VM enumeration unavailable (rc=${enum_rc}) — nothing captured"
                 return 0
             fi
+            [ "$enum_rc" -ne 0 ] && echo "VM enumeration UNAVAILABLE (rc=${enum_rc}); capturing the remembered VM set only" >> "${out_dir}/capture-manifest.txt" 2>/dev/null || true
+            # `|| true`: grep -v exits 1 when there is nothing to list, which under pipefail/set -e would end the capture
+            # before it wrote the "NO VMs found" line.
+            ips=$(printf '%s\n%s\n' "$cur_ips" "$remembered" | { grep -v '^$' || true; } | awk '!seen[$0]++')
             local remote_cmd="docker logs --timestamps --since ${since_epoch} aether-node"
             [ "${CLOUD_RUNTIME:-container}" = "jvm" ] && remote_cmd="journalctl -u aether-node --no-pager --since @${since_epoch} -o short-iso"
             echo "window: since epoch ${since_epoch} (suite start)" >> "${out_dir}/capture-manifest.txt" 2>/dev/null || true
+            local ssh_bound state
             for ip in $ips; do
                 attempted=$((attempted + 1))
+                state=current
+                if [ "$enum_rc" -eq 0 ] && ! printf '%s\n' "$cur_ips" | grep -qxF "$ip"; then state="remembered-not-listed"; fi
                 # Outer bound covers connect + transfer; the remote `timeout` covers a command that
                 # hangs on a live connection, which ssh keepalives cannot detect (#628 note at
-                # common.sh remote_exec_bounded). A capture must never stall the run it serves.
+                # common.sh remote_exec_bounded). A capture must never stall the run it serves. A VM the provider no
+                # longer lists gets a short bound: it is most likely gone.
+                ssh_bound="${CLOUD_CAPTURE_SSH_TIMEOUT_S:-90}"
+                [ "$state" = "remembered-not-listed" ] && ssh_bound="${CLOUD_CAPTURE_GONE_TIMEOUT_S:-20}"
                 rc=0
-                _run_with_timeout "${CLOUD_CAPTURE_SSH_TIMEOUT_S:-90}" \
+                _run_with_timeout "$ssh_bound" \
                     ssh -n "${SSH_OPTS[@]}" -i "${AETHER_SSH_KEY}" "${CLOUD_SSH_USER:-root}@${ip}" \
                     "hostname; timeout ${CLOUD_CAPTURE_REMOTE_TIMEOUT_S:-60} ${remote_cmd}" > "${out_dir}/vm-${ip}.log" 2>&1 || rc=$?
                 [ "$rc" -eq 0 ] && ok=$((ok + 1))
-                printf 'vm %s rc=%s lines=%s\n' "$ip" "$rc" "$(wc -l < "${out_dir}/vm-${ip}.log" | tr -d ' ')" \
+                printf 'vm %s rc=%s lines=%s state=%s\n' "$ip" "$rc" "$(wc -l < "${out_dir}/vm-${ip}.log" | tr -d ' ')" "$state" \
                     >> "${out_dir}/capture-manifest.txt" 2>/dev/null || true
+                if [ "$state" = "remembered-not-listed" ] && [ "$rc" -ne 0 ]; then
+                    echo "vm ${ip} GONE: remembered from earlier in the suite, no longer listed by the provider, and unreachable (rc=${rc})" >> "${out_dir}/capture-manifest.txt" 2>/dev/null || true
+                fi
             done
             provisioning_snapshot > "${out_dir}/provisioning-snapshot.txt" 2>&1 || true
             if [ "$attempted" -eq 0 ]; then
@@ -198,6 +274,68 @@ _failcap_on_fail_body() {
     # mkdir is the atomic once-per-test latch and, unlike a shell variable, holds across subshells.
     mkdir "${SUITE_FAILCAP_DIR}/first-fail-${SUITE_TAG:-no-suite}-${TEST_TAG:-outside-a-test}" 2>/dev/null || return 0
     _failcap_capture "first-fail"
+    return 0
+}
+
+# capture_at_demotion <voters before> [budget seconds] — the logs of every voter REMOVED from the electorate, taken while it
+# still runs. A scale-down victim halts a few seconds after demotion (3s in S-triple-prime, ~18s in 0120Z) and is gone by
+# the time any fail-time or suite-end capture runs, so its log was never available. Polls targetVoters until it differs
+# from <before>, then reads each removed node's own log in parallel (cloud: ssh `docker logs`/`journalctl`, bounded).
+# Armed only inside run-tests.sh (SUITE_FAILCAP_DIR), once per test, capped per suite; writes NOTHING to stdout/stderr
+# (notes file only) and can never fail the caller: thin wrapper `body || true`, as #1768's hooks. Callers background it.
+FAILCAP_MAX_DEMOTION="${FAILCAP_MAX_DEMOTION:-3}"
+# Runs in a subshell with HARNESS_FAIL_FILE=/dev/null (a log_fail inside it must not add a [FAIL] to the test, as in
+# _failcap_capture) and with stdio AND fd 7 (generation.sh's saved stderr) closed, so a background job never holds the
+# suite's stderr pipe open after the suite is done.
+capture_at_demotion() { ( HARNESS_FAIL_FILE=/dev/null; _capture_at_demotion_body "$@" ) > /dev/null 2>&1 7>&- || true; return 0; }
+_capture_at_demotion_body() {
+    local before="${1:-}" budget="${2:-${DEMOTION_CAPTURE_POLL_S:-60}}" deadline now removed id ip n
+    _failcap_armed || return 0
+    [ -n "$before" ] || return 0
+    [ "${ENV_TYPE:-docker}" = "cloud" ] || { _failcap_note "[INFO]  capture_at_demotion: only implemented for cloud runs; nothing captured"; return 0; }
+    n=$(ls -d "${SUITE_FAILCAP_DIR}"/demotion-* 2>/dev/null | wc -l | tr -d ' ')
+    if [ "${n:-0}" -ge "$FAILCAP_MAX_DEMOTION" ]; then
+        _failcap_note "[WARN]  capture_at_demotion: cap of ${FAILCAP_MAX_DEMOTION} demotion captures reached for this suite — not capturing"
+        return 0
+    fi
+    mkdir "${SUITE_FAILCAP_DIR}/demotion-${SUITE_TAG:-no-suite}-${TEST_TAG:-outside-a-test}" 2>/dev/null || return 0
+    deadline=$(( SECONDS + budget ))
+    while :; do
+        now=$(_cluster_voters targetVoters 2>/dev/null) || now=""
+        [ -n "$now" ] || now=$(_cluster_voters installedVoters 2>/dev/null) || now=""
+        if [ -n "$now" ]; then
+            removed=$(_id_set_difference "$before" "$now")
+            [ -n "$removed" ] && break
+        fi
+        if [ "$SECONDS" -ge "$deadline" ]; then
+            _failcap_note "[WARN]  capture_at_demotion: no voter left the electorate within ${budget}s — nothing captured"
+            return 0
+        fi
+        sleep "${DEMOTION_CAPTURE_POLL_INTERVAL_S:-0.5}"
+    done
+    local dir since="${SUITE_START_EPOCH:-$(( $(date +%s) - 3600 ))}" remote_cmd pids="" bound="${FAILCAP_SSH_TIMEOUT_S:-30}"
+    dir="$(_failcap_root)/${SUITE_TAG:-no-suite}/${TEST_TAG:-outside-a-test}/$(date -u '+%Y%m%dT%H%M%SZ')-demotion"
+    mkdir -p "$dir" 2>/dev/null || return 0
+    remote_cmd="docker logs --timestamps --since ${since} aether-node"
+    [ "${CLOUD_RUNTIME:-container}" = "jvm" ] && remote_cmd="journalctl -u aether-node --no-pager --since @${since} -o short-iso"
+    printf 'demotion capture %s: removed voters [%s]\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$(printf '%s' "$removed" | tr '\n' ' ')" > "${dir}/capture-manifest.txt" 2>/dev/null || true
+    for id in $removed; do
+        ip=$(cloud_public_ip "$id" 2>/dev/null) || ip=""
+        if [ -z "$ip" ]; then
+            printf 'voter %s: address unresolvable, not captured\n' "$id" >> "${dir}/capture-manifest.txt" 2>/dev/null || true
+            continue
+        fi
+        (
+            rc=0
+            _run_with_timeout_kill "$bound" ssh -n "${SSH_OPTS[@]}" -i "${AETHER_SSH_KEY:-/dev/null}" "${CLOUD_SSH_USER:-root}@${ip}" \
+                "hostname; timeout ${CLOUD_CAPTURE_REMOTE_TIMEOUT_S:-25} ${remote_cmd}" > "${dir}/voter-${id}.log" 2>&1 || rc=$?
+            printf 'voter %s (%s) rc=%s lines=%s\n' "$id" "$ip" "$rc" "$(wc -l < "${dir}/voter-${id}.log" | tr -d ' ')" >> "${dir}/capture-manifest.txt" 2>/dev/null || true
+        ) &
+        pids="${pids} $!"
+    done
+    # shellcheck disable=SC2086
+    [ -n "$pids" ] && wait $pids 2>/dev/null
+    _failcap_note "[INFO]  demotion capture of [$(printf '%s' "$removed" | tr '\n' ' ')] -> ${dir}"
     return 0
 }
 

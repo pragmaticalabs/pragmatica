@@ -316,7 +316,6 @@ dependency.1.artifact=org.example:inventory
 dependency.1.version=1.0.0
 
 # Metadata
-generated.timestamp=2024-01-15T10:30:00Z
 processor.version=0.4.8
 ```
 

@@ -1,11 +1,13 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.cli.cluster;
+
+import java.util.List;
 
 import org.pragmatica.aether.cli.cluster.ClusterBootstrapOrchestrator.BootstrapContext;
 import org.pragmatica.aether.config.cluster.BootstrapOverlayGenerator;
+import org.pragmatica.aether.config.cluster.CloudCredentialSchema;
 import org.pragmatica.aether.config.cluster.SourceCloudBindings;
 import org.pragmatica.aether.config.cluster.DefaultNodeConfig;
 import org.pragmatica.aether.config.cluster.NodeConfigComposer;
@@ -26,6 +28,20 @@ sealed interface NodeConfigBuilder {
                                         NodeRole role,
                                         Option<String> dockerGid,
                                         Option<String> clusterSecret) {
+        return CloudCredentialSchema.validate(source).flatMap(validated -> composeValidated(ctx,
+                                                                                            validated,
+                                                                                            nodeIndex,
+                                                                                            role,
+                                                                                            dockerGid,
+                                                                                            clusterSecret));
+    }
+
+    private static Result<TomlDocument> composeValidated(BootstrapContext ctx,
+                                                         SourceProfile source,
+                                                         int nodeIndex,
+                                                         NodeRole role,
+                                                         Option<String> dockerGid,
+                                                         Option<String> clusterSecret) {
         var overlay = BootstrapOverlayGenerator.overlay(ctx.config(),
                                                         source,
                                                         nodeIndex,
@@ -33,7 +49,8 @@ sealed interface NodeConfigBuilder {
                                                         dockerGid,
                                                         clusterSecret,
                                                         role,
-                                                        ctx.sshKeyIdsFor(source.name().value()));
+                                                        ctx.sshKeyIdsFor(source.name().value()),
+                                                        genesisVotersFor(ctx, role));
         var protectedOverlay = SourceCloudBindings.augment(overlay,
                                                            ctx.config(),
                                                            role,
@@ -46,5 +63,13 @@ sealed interface NodeConfigBuilder {
                                                                               typeDefault,
                                                                               source.nodeConfig(),
                                                                               protectedOverlay));
+    }
+
+    /// #1543 — only a CORE of the initial bootstrap carries the genesis roster; a worker does not vote.
+    static List<String> genesisVotersFor(BootstrapContext ctx, NodeRole role) {
+        return role == NodeRole.CORE
+               ? ctx.config()
+                    .initialCoreIds()
+               : List.of();
     }
 }

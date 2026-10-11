@@ -27,16 +27,17 @@ import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 /// The black-hole starts only after the cold-boot convergence window has elapsed on every node, because a
 /// quorum-loss self-drain is deliberately deferred during that window (A6); the property under test is the
 /// steady-state fence, not the boot deferral.
+@PortBudget
 class EmberPartitionedCoreSelfFenceTest {
     private static final Logger log = LoggerFactory.getLogger(EmberPartitionedCoreSelfFenceTest.class);
     private static final int CLUSTER_SIZE = 5;
     private static final int SLOTS = 2 * CLUSTER_SIZE;
     private static final int MGMT_OFFSET = 40;
     private static final int APP_HTTP_OFFSET = 80;
-    /// Disjoint from every other Ember test's candidate range (25600-31500, 34000-34800, 36100-37900, 45100).
-    private static final int FIRST_CANDIDATE_BASE = 38100;
-    private static final int LAST_CANDIDATE_BASE = 39900;
-    private static final int CANDIDATE_STEP = 200;
+    /// The shared Ember pool below the ephemeral floor (EmberTestPorts.POOL_FIRST).
+    private static final int FIRST_CANDIDATE_BASE = EmberTestPorts.POOL_FIRST;
+    private static final int LAST_CANDIDATE_BASE = EmberTestPorts.POOL_LAST;
+    private static final int CANDIDATE_STEP = EmberTestPorts.POOL_STEP;
     /// #1667: probed through the shared EmberTestPorts, which also probes each node's SWIM UDP port.
     private static final EmberTestPorts.Block PORTS = new EmberTestPorts.Block(FIRST_CANDIDATE_BASE,
                                                                                 LAST_CANDIDATE_BASE,

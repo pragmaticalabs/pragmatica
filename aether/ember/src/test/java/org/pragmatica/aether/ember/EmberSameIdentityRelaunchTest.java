@@ -36,6 +36,7 @@ import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 ///
 /// Run for both addresses of the relaunched process: a different port (next free slot) and the killed
 /// node's own port (same address, the container-restart shape).
+@PortBudget
 class EmberSameIdentityRelaunchTest {
     private static final int CLUSTER_SIZE = 3;
     private static final int SLOTS = 2 * CLUSTER_SIZE;

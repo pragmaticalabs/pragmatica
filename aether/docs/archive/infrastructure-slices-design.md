@@ -1,6 +1,6 @@
 # Infrastructure Slices Design
 
-Status: **IN PROGRESS** (10/21 complete - see [infra-slices-progress.md](infra-slices-progress.md))
+Status: **IN PROGRESS** (10/21 complete - see [infra-slices-progress.md](../.internal/progress/infra-slices-progress.md))
 
 ## Overview
 
@@ -841,6 +841,6 @@ GET /api/infra/circuitbreaker/states
 
 ## Related Documents
 
-- [Infrastructure Services](infrastructure-services.md) - Built-in services (artifact repo, DHT)
-- [Slice Factory Generation](SLICE-FACTORY-GENERATION.md) - How slices are instantiated
-- [Slice Developer Guide](guide/slice-developer-guide.md) - How to write slices
+- [Infrastructure Services](infra-services.md) - Built-in services (artifact repo, DHT)
+- [Slice Factory Generation](../../../jbct/slice-processor/docs/SLICE-FACTORY-GENERATION.md) - How slices are instantiated
+- [Slice Developer Guide](../slice-developers/slice-patterns.md) - How to write slices

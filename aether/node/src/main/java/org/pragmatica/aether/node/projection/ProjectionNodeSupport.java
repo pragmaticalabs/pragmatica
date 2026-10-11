@@ -46,7 +46,8 @@ public interface ProjectionNodeSupport {
                                                        Fn1<Promise<Unit>, List<KVCommand<AetherKey>>> commandWriter,
                                                        Fn1<Option<StreamCursorCheckpointValue>, StreamCursorCheckpointKey> committedReader,
                                                        CommittedAssignments committedAssignments,
-                                                       LongSupplier clusterIncarnation) {
+                                                       LongSupplier clusterIncarnation,
+                                                       CommitWitness witness) {
         record projectionNodeSupport(ProjectionRegistry registry,
                                      LongSupplier reportFailures,
                                      Fn1<Option<Integer>, String> partitionCount,
@@ -54,7 +55,8 @@ public interface ProjectionNodeSupport {
                                      Fn1<Promise<Unit>, List<KVCommand<AetherKey>>> commandWriter,
                                      Fn1<Option<StreamCursorCheckpointValue>, StreamCursorCheckpointKey> committedReader,
                                      CommittedAssignments committedAssignments,
-                                     LongSupplier clusterIncarnation) implements ProjectionNodeSupport {
+                                     LongSupplier clusterIncarnation,
+                                     CommitWitness witness) implements ProjectionNodeSupport {
             @Override
             public long cursorReportFailures() {
                 return reportFailures.getAsLong();
@@ -74,7 +76,8 @@ public interface ProjectionNodeSupport {
                                                                              commandWriter,
                                                                              committedReader,
                                                                              committedAssignments,
-                                                                             clusterIncarnation));
+                                                                             clusterIncarnation,
+                                                                             witness));
 
                 return registry.register(new Registration(slice,
                                                           topicStream,
@@ -91,6 +94,7 @@ public interface ProjectionNodeSupport {
                                          commandWriter,
                                          committedReader,
                                          committedAssignments,
-                                         clusterIncarnation);
+                                         clusterIncarnation,
+                                         witness);
     }
 }

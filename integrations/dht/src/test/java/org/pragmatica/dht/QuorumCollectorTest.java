@@ -18,6 +18,7 @@ package org.pragmatica.dht;
 
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
@@ -42,6 +43,46 @@ class QuorumCollectorTest {
         @Override
         public String message() {
             return "test failure";
+        }
+    }
+
+    /// #1777 R2: when quorum is lost to a MIX of failures, a fence refusal decides the cause. A fenced write
+    /// may have been applied on a replica whose high-water lagged, so the failure must say
+    /// `WriteIndeterminate` (#1818) before a catching-up refusal's `NotCaughtUp` (#1777), which only says some
+    /// replica could not yet answer. Plain failures alone stay `QuorumNotReached`. Today the mix does not
+    /// arise: catching-up refusals come from reads and fence refusals from writes. This pins the rule anyway.
+    @Nested
+    class FailurePrecedence {
+        private static final NodeId REPLICA = new NodeId("replica");
+
+        @Test
+        void fenceRefusal_decidesTheCause_overACatchingUpRefusal_inEitherArrivalOrder() {
+            assertThat(causeAfter(DHTError.replicaCatchingUp(REPLICA), DHTError.replicaFenced(REPLICA)))
+                .isInstanceOf(DHTError.WriteIndeterminate.class);
+            assertThat(causeAfter(DHTError.replicaFenced(REPLICA), DHTError.replicaCatchingUp(REPLICA)))
+                .isInstanceOf(DHTError.WriteIndeterminate.class);
+        }
+
+        @Test
+        void catchingUpRefusal_decidesTheCause_overAPlainFailure() {
+            assertThat(causeAfter(FAILURE, DHTError.replicaCatchingUp(REPLICA))).isInstanceOf(DHTError.NotCaughtUp.class);
+        }
+
+        @Test
+        void plainFailures_stayQuorumNotReached() {
+            assertThat(causeAfter(FAILURE, FAILURE)).isInstanceOf(DHTError.QuorumNotReached.class);
+        }
+
+        /// total=3, quorum=2: the second failure makes quorum unreachable and settles the promise.
+        private Cause causeAfter(Cause first, Cause second) {
+            Promise<Unit> promise = Promise.promise();
+            var collector = quorumCollector(2, 3, promise);
+
+            collector.onFailure(first);
+            collector.onFailure(second);
+
+            return promise.await()
+                          .fold(cause -> cause, _ -> FAILURE);
         }
     }
 
@@ -117,100 +158,6 @@ class QuorumCollectorTest {
             assertThat(promise.isResolved()).isTrue();
             promise.await()
                    .onFailure(cause -> fail("Expected success: " + cause.message()));
-        }
-    }
-
-    @Nested
-    class GraceMode {
-        private final Cause failure = DHTError.OPERATION_TIMEOUT;
-        private final AtomicInteger triggers = new AtomicInteger();
-
-        private QuorumCollector<Option<String>> collector(Promise<Option<String>> promise) {
-            return QuorumCollector.graceCollector(2, 3, promise, _ -> {
-                triggers.incrementAndGet();
-                return unit();
-            });
-        }
-
-        @Test
-        void onSuccess_staysOpenAndTriggersOnce_afterQuorumOfEmptyAnswers() {
-            Promise<Option<String>> promise = Promise.promise();
-            var collector = collector(promise);
-
-            collector.onSuccess(Option.none());
-            assertThat(triggers.get()).isZero();
-            collector.onSuccess(Option.none());
-
-            assertThat(promise.isResolved()).isFalse();
-            assertThat(triggers.get()).isEqualTo(1);
-        }
-
-        @Test
-        void onSuccess_resolvesAbsentAtOnce_whenEverySlotAnsweredEmpty() {
-            Promise<Option<String>> promise = Promise.promise();
-            var collector = collector(promise);
-
-            collector.onSuccess(Option.none());
-            collector.onSuccess(Option.none());
-            collector.onSuccess(Option.none());
-
-            promise.await(timeSpan(2).seconds())
-                   .onFailure(c -> fail("Expected absent"))
-                   .onSuccess(o -> assertThat(o.isEmpty()).isTrue());
-        }
-
-        @Test
-        void onSuccess_resolvesFound_atFirstPresentAnswerEvenAfterQuorumOfEmpties() {
-            Promise<Option<String>> promise = Promise.promise();
-            var collector = collector(promise);
-
-            collector.onSuccess(Option.none());
-            collector.onSuccess(Option.none());
-            collector.onSuccess(Option.some("v"));
-
-            promise.await(timeSpan(2).seconds())
-                   .onFailure(c -> fail("Expected found"))
-                   .onSuccess(o -> assertThat(o).isEqualTo(Option.some("v")));
-        }
-
-        @Test
-        void onFailure_resolvesAbsent_whenLastSlotFailsAfterQuorumOfEmpties() {
-            Promise<Option<String>> promise = Promise.promise();
-            var collector = collector(promise);
-
-            collector.onSuccess(Option.none());
-            collector.onSuccess(Option.none());
-            collector.onFailure(failure);
-
-            promise.await(timeSpan(2).seconds())
-                   .onFailure(c -> fail("Expected absent"))
-                   .onSuccess(o -> assertThat(o.isEmpty()).isTrue());
-        }
-
-        @Test
-        void onFailure_failsFast_whenQuorumBecomesImpossible() {
-            Promise<Option<String>> promise = Promise.promise();
-            var collector = collector(promise);
-
-            collector.onFailure(failure);
-            collector.onFailure(failure);
-
-            assertThat(promise.isResolved()).isTrue();
-            promise.await(timeSpan(2).seconds()).onSuccess(_ -> fail("Expected failure"));
-        }
-
-        @Test
-        void resolveWithBest_resolvesAbsent_afterQuorumOfEmpties() {
-            Promise<Option<String>> promise = Promise.promise();
-            var collector = collector(promise);
-
-            collector.onSuccess(Option.none());
-            collector.onSuccess(Option.none());
-            collector.resolveWithBest();
-
-            promise.await(timeSpan(2).seconds())
-                   .onFailure(c -> fail("Expected absent"))
-                   .onSuccess(o -> assertThat(o.isEmpty()).isTrue());
         }
     }
 }

@@ -20,6 +20,8 @@ public interface InboundMessageAuthority {
             case NetworkMessage.Hello hello -> peer.equals(hello.sender());
             case NetworkMessage.KeepAlive keepAlive -> peer.equals(keepAlive.sender());
             case NetworkMessage.KVSyncRequest request -> peer.equals(request.sender());
+            case NetworkMessage.LeaderPreVoteRequest request -> peer.equals(request.sender());
+            case NetworkMessage.LeaderPreVoteResponse response -> peer.equals(response.sender());
             default -> true;
         };
     }

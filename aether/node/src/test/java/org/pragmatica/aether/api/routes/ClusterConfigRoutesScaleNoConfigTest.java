@@ -94,7 +94,7 @@ class ClusterConfigRoutesScaleNoConfigTest {
     private static ClusterConfigValue topology(TopologyEntry... entries) {
         // Blank seed TOML: every committed config is re-read for [replication.cluster_events] (#1564 B1), and the
         // placeholder "toml" this used before is not a TOML document.
-        return ClusterConfigValue.clusterConfigValue("", "prod", "1.0.0", List.of(entries), 3, 9, "hetzner", 1);
+        return ClusterConfigValue.bootstrapSeed("prod", "1.0.0", List.of(entries), 3, 9, "hetzner", 1);
     }
 
     private static TestKVStore storeWith(ClusterConfigValue committed) {

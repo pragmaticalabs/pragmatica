@@ -76,6 +76,7 @@ import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 /// A fabricated worker id is used as the drainee (as in `EmberDrainAcknowledgementWiringTest`) so the
 /// reconciler neither drains nor dials a real peer; it holds no slice, which is what makes
 /// `completeDrain` the terminal step.
+@PortBudget
 class EmberDrainEvictionWiringTest {
     private static final int CLUSTER_SIZE = 3;
     /// `EmberCluster.start` builds a slot pool of `2 * clusterSize`.

@@ -61,6 +61,7 @@ class GenesisJoinRuleTest {
 
         assertThat(engine.voterConfiguration()).as("B saw a formed electorate; it must not form a second one")
                                                .isEqualTo(Option.some(FORMED));
+        assertThat(engine.joinedFormedElectorate()).as("joining a formed electorate marks B a joiner (#1803)").isTrue();
     }
 
     /// Control for the arm above: with no formed answer the same schedule completes the agreement, so a
@@ -75,6 +76,7 @@ class GenesisJoinRuleTest {
         settle();
 
         assertThat(engine.voterConfiguration()).isEqualTo(Option.some(new VoterConfiguration(0, PENDING_VIEW)));
+        assertThat(engine.joinedFormedElectorate()).as("forming genesis is not joining (#1803)").isFalse();
     }
 
     /// J2 at unit level: a LIVE sync response carrying the newer configuration outranks a lagging member's

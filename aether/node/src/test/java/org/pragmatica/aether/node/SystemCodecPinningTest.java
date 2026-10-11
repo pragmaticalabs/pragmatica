@@ -60,16 +60,26 @@ class SystemCodecPinningTest {
     /// that drifted past 127 would silently start costing a second byte on every message of the
     /// cluster's highest-frequency traffic — a regression with no other symptom.
     ///
+    /// The leader pre-vote pair (#1748) is exempt like the refusals: a handful of messages per leader-loss
+    /// suspicion, none in steady state, and no one-byte slot is free to give it.
+    ///
     /// The `provenance` package (#1596: `ProvenanceEntry` and its `ProvenanceEpoch` kinds) is exempt like the
     /// refusals: history entries, carried only by a replica catch-up answer (a handful per catch-up, none on any other read, and an empty list encodes no element tag),
     /// so it is not the per-message traffic the window was bought for -- and no one-byte slot is free to give it.
+    ///
+    /// The `ReadRefusal` pair (#1967) is exempt for the same reason: it rides only on a FAILED forwarded read (a refusal
+    /// answers the read in place of its events, and an answer that succeeds carries none), so it is not steady-state traffic, and
+    /// no one-byte slot is free to give it.
     @Test
     void hotProtocolTypes_fitInTheOneByteWindow() {
         var hot = SystemTags.TAGS.entrySet()
                                  .stream()
                                  .filter(entry -> !entry.getKey().endsWith(".SyncRejected") && !entry.getKey().endsWith(".HelloRefused")
                                                   && !entry.getKey().endsWith(".IdentityRefused")
-                                                  && !entry.getKey().startsWith("org.pragmatica.aether.stream.provenance."))
+                                                  && !entry.getKey().endsWith(".LeaderPreVoteRequest")
+                                                  && !entry.getKey().endsWith(".LeaderPreVoteResponse")
+                                                  && !entry.getKey().startsWith("org.pragmatica.aether.stream.provenance.")
+                                                  && !entry.getKey().startsWith("org.pragmatica.aether.stream.forward.ReadRefusal"))
                                  .filter(entry -> !RETIRED_IN_HOT_PACKAGES.contains(entry.getKey()))
                                  .filter(entry -> HOT_PREFIXES.stream().anyMatch(prefix -> entry.getKey().startsWith(prefix)))
                                  .toList();

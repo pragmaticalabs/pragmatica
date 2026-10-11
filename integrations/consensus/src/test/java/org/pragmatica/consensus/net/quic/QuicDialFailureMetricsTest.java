@@ -20,6 +20,7 @@ import java.net.SocketAddress;
 import java.net.SocketException;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.BooleanSupplier;
 import java.util.function.Predicate;
 import org.junit.jupiter.api.AfterEach;
@@ -53,6 +54,9 @@ class QuicDialFailureMetricsTest {
     private static final String FOREIGN_SECRET = "a-different-clusters-secret";
 
     private final List<QuicClusterNetwork> networks = new ArrayList<>();
+    /// `ConnectionFailed` messages routed by any network under test. `onConnectFailed` routes it AFTER both
+    /// metric writes, so seeing it means every counter that dial failure bumps has been bumped (#1855).
+    private final AtomicInteger connectionFailedRouted = new AtomicInteger();
 
     @AfterEach
     void tearDown() {
@@ -71,7 +75,9 @@ class QuicDialFailureMetricsTest {
         start(foreign, foreignPort);
         dialer.dialForTests(nodeInfo("dfm-foreign", foreignPort), true);
 
+        // onConnectFailed writes the dial counter, then the handshake counter, on the network thread: await both.
         await(() -> dialer.quicMetrics().dialFailureCount() >= 1, "the dial to the foreign cluster fails");
+        await(() -> dialer.quicMetrics().handshakeFailureCount() >= 1, "the TLS refusal is counted as a handshake failure");
         assertThat(dialer.quicMetrics().handshakeFailureCount()).as("#1489: a TLS refusal is a handshake failure").isEqualTo(1);
         assertThat(dialer.quicMetrics().dialFailureCount()).isEqualTo(1);
     }
@@ -89,7 +95,8 @@ class QuicDialFailureMetricsTest {
         start(actual, actualPort);
         dialer.dialForTests(nodeInfo("dfm-expected", actualPort), true);
 
-        await(() -> dialer.quicMetrics().dialFailureCount() >= 1, "the dial fails on the identity check");
+        // The zero asserted below only means something once the failure path has run past both metric writes.
+        await(() -> connectionFailedRouted.get() >= 1, "the dial fails on the identity check and its failure is routed");
         assertThat(dialer.quicMetrics().handshakeFailureCount()).as("#1489: a completed TLS handshake is not a handshake failure")
                                                                 .isZero();
         assertThat(dialer.quicMetrics().snapshot()).containsEntry("quic_dial_failures_total", 1L)
@@ -101,7 +108,11 @@ class QuicDialFailureMetricsTest {
         var self = NodeInfo.nodeInfo(new NodeId(id), NodeAddress.nodeAddress("127.0.0.1", 19997).fold(_ -> fail("bad address"), a -> a));
         var serverSsl = QuicTlsProvider.serverContext(tls).fold(_ -> fail("server ssl"), ssl -> ssl);
         var clientSsl = QuicTlsProvider.clientContext(tls).fold(_ -> fail("client ssl"), ssl -> ssl);
-        var network = new QuicClusterNetwork(stubTopology(self), codec, codec, MessageRouter.mutable(), serverSsl, clientSsl);
+        var router = MessageRouter.mutable();
+
+        router.addRoute(NetworkServiceMessage.ConnectionFailed.class, _ -> connectionFailedRouted.incrementAndGet());
+
+        var network = new QuicClusterNetwork(stubTopology(self), codec, codec, router, serverSsl, clientSsl);
 
         networks.add(network);
 

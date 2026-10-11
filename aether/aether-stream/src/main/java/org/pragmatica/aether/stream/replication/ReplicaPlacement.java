@@ -92,6 +92,31 @@ public final class ReplicaPlacement {
         return new Placement(owner, replicas);
     }
 
+    /// #1730: [#placeWithOwner] keeping the committed in-sync replicas placed. The owner leads, then every ISR member
+    /// (in HRW order, whether or not it is a live member — an ISR member is dropped only by a committed ISR change),
+    /// then the HRW-top of the remaining members up to `rf`. An ISR member left unplaced would stop receiving the
+    /// partition, and every acknowledgement would wait for it until the ISR shrank.
+    public static Placement placeWithOwnerAndIsr(String streamName,
+                                                 int partition,
+                                                 NodeId owner,
+                                                 List<NodeId> isr,
+                                                 Iterable<NodeId> members,
+                                                 int requestedRf) {
+        var replicas = new ArrayList<NodeId>();
+
+        replicas.add(owner);
+        rank(streamName, partition, isr).stream().filter(member -> !replicas.contains(member)).forEach(replicas::add);
+        var others = rank(streamName, partition, members).stream()
+                         .filter(member -> !replicas.contains(member))
+                         .toList();
+        var room = Math.max(0, requestedRf - replicas.size());
+
+        replicas.addAll(others.subList(0,
+                                       Math.min(room, others.size())));
+
+        return new Placement(owner, List.copyOf(replicas));
+    }
+
     /// Rank all members by HRW score descending, tie-broken by node-id string ascending.
     /// Package-visible to allow direct churn/ordering assertions in tests.
     static List<NodeId> rank(String streamName, int partition, Iterable<NodeId> members) {

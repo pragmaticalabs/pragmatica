@@ -17,6 +17,7 @@ import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.api.parallel.Execution;
 import org.junit.jupiter.api.parallel.ExecutionMode;
 import org.awaitility.core.ConditionTimeoutException;
+import org.pragmatica.aether.config.BackupConfig;
 import org.pragmatica.aether.dht.EntityPartitionArc;
 import org.pragmatica.aether.ember.EmberCluster;
 import org.pragmatica.config.ConfigurationProvider;
@@ -24,10 +25,12 @@ import org.pragmatica.http.HttpOperations;
 import org.pragmatica.http.HttpResult;
 import org.pragmatica.lang.Option;
 
+import java.io.IOException;
 import java.net.URI;
 import java.net.http.HttpRequest;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -134,6 +137,7 @@ class DurableEntityTimerDurabilityTest {
     private static final EntityPartitionArc ARC = EntityPartitionArc.entityPartitionArc(KEYSPACE, ENTITY_PARTITIONS);
 
     private static final Duration WAIT_TIMEOUT = Duration.ofSeconds(240);
+    private static final Duration STORAGE_SETTLE_TIMEOUT = Duration.ofSeconds(60);
     private static final Duration POLL_INTERVAL = Duration.ofMillis(500);
 
     /// The handover gate's delay. It must comfortably outlive create + schedule + the pre-kill read — the
@@ -190,8 +194,37 @@ class DurableEntityTimerDurabilityTest {
         // entity log's backing per-partition WAL on. Without it a full-cluster restart would lose the log
         // and the gate would be measuring the harness rather than the entity.
         cluster.withDataBaseDir(baseDir);
+        // The supported restart configuration (#1532/#1533): the KV is backed up to a git remote and restored, so the entity log's
+        // backing stream comes back with the SAME incarnation and finds its WAL directory (`<engine key>@<incarnation>`, #1567).
+        // Without it a restart starts from an empty KV, the stream is created afresh under a new incarnation, and the old log
+        // (with the pending timer) is never looked up (#1569).
+        var remote = baseDir.resolve("kv-backup-remote.git");
+
+        runGit(baseDir, "init", "--quiet", "--bare", remote.toString());
+        cluster.withKvBackup(baseDir.resolve("kv-backup-nodes"), remote.toString(), BackupConfig.RestoreMode.AUTO);
 
         startAndAwaitReady();
+    }
+
+    private static void runGit(Path cwd, String... args) {
+        var command = new ArrayList<String>();
+
+        command.add("git");
+        command.addAll(List.of(args));
+
+        try {
+            var process = new ProcessBuilder(command).directory(cwd.toFile()).redirectErrorStream(true).start();
+
+            process.getInputStream().readAllBytes();
+
+            if (process.waitFor() != 0) {
+                throw new IllegalStateException("git " + String.join(" ", args) + " failed");
+            }
+        } catch (IOException e) {
+            throw new IllegalStateException(e);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
     }
 
     @AfterAll
@@ -504,8 +537,18 @@ class DurableEntityTimerDurabilityTest {
         assertThat(responses).describedAs("every node must have answered").hasSize(NODES);
         assertThat(created).describedAs("exactly one attempt may create '%s'; got %s", key, outcomesOf(responses))
                            .hasSize(1);
-        assertThat(rejectionTypesOf(responses)).describedAs("every later attempt must surface the owner's duplicate refusal (#596)")
-                                               .containsOnly("EntityAlreadyExists");
+        // A node whose entity storage is still loading answers `StorageUnavailable` (a typed, transient refusal) instead of relaying the
+        // owner's verdict; right after a full-cluster restart that is the common case (measured: 1 of 2 runs of the handover gate after
+        // the restart gate, 0 of 3 when it runs alone). Re-offering the key is idempotent, so the duplicate refusal is awaited, bounded;
+        // a node that never stops saying `StorageUnavailable` still fails the gate.
+        var settleStartedAt = System.nanoTime();
+
+        await().atMost(STORAGE_SETTLE_TIMEOUT)
+               .pollInterval(POLL_INTERVAL)
+               .untilAsserted(() -> assertThat(rejectionTypesOf(appPorts().stream().map(port -> create(port, key, status, amount)).toList()))
+                   .describedAs("every later attempt must surface the owner's duplicate refusal (#596)")
+                   .containsOnly("EntityAlreadyExists"));
+        LOG.log(System.Logger.Level.INFO, "createOnOwner({0}): every later attempt refused with EntityAlreadyExists after {1} ms", key, elapsedMillis(settleStartedAt));
     }
 
     private static List<String> outcomesOf(List<String> responses) {

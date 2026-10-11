@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.environment.azure;
 
 import java.nio.charset.StandardCharsets;
@@ -135,11 +134,6 @@ public record AzureComputeProvider(AzureClient client, AzureEnvironmentConfig co
         return client.getVm(instanceId.value())
                      .map(AzureComputeProvider::toInstanceInfo)
                      .mapError(AzureComputeProvider::toProvisionError);
-    }
-
-    @Override
-    public Promise<Unit> restart(InstanceId id) {
-        return client.restartVm(id.value());
     }
 
     @Override
@@ -421,6 +415,11 @@ public record AzureComputeProvider(AzureClient client, AzureEnvironmentConfig co
     /// (where the incident that motivated this was measured), so a rejection has to name what was
     /// asked for — `SkuNotAvailable` names the sku but not the region it was refused in.
     private static EnvironmentError toProvisionError(String instanceType, String zone, Cause cause) {
+        // #1111: the VM EXISTS (it was created, then failed readiness): the typed cause reaches the caller, never flattened into a rejection.
+        if (cause instanceof EnvironmentError.ProvisionReadinessTimeout timeout) {
+            return timeout;
+        }
+
         return EnvironmentError.provisionFailed(instanceType, zone, new RuntimeException(cause.message()));
     }
 

@@ -1,9 +1,6 @@
-<!--
-SPDX-License-Identifier: BUSL-1.1
-Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-See LICENSE in the repository root for full terms.
--->
+<!-- SPDX-License-Identifier: Apache-2.0 -->
+<!-- Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko -->
+<!-- Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms. -->
 
 # Slice Test Kit — Design Specification
 
@@ -440,21 +437,10 @@ artifact. `[ASSUMPTION]` A build check (or a simple reverse-dependency lint) enf
 
 ### 6.3 Licensing
 
-Every module under `aether/**` carries the BSL-1.1 SPDX header (`docs/legal/bsl-header.txt`); the
-API modules the kit builds on (`slice-api`, `resource/api`) are already BSL-1.1 (verified in
-`ResourceFactory.java:1-4`, `Aspect.java:1-4`, `SliceCreationContext.java:1-4`).
-
-**OPEN QUESTION — BSL-1.1 or Apache-2.0 for the kit?**
-
-- **Option A — BSL-1.1 (match `aether/**`).** *Recommended.* Consistent with the tree; adds **no new
-  encumbrance** because any slice author already compiles against BSL-1.1 `slice-api`/`resource/api`
-  to write a slice at all. Test/dev use is not restricted by BSL's production-use clause.
-- **Option B — Apache-2.0 (relax for a developer-facing tool).** Signals "freely usable tooling" to
-  external slice authors. But it would be an Apache module physically under `aether/**` (an exception
-  to the tree convention) and its BSL-1.1 dependencies still govern the APIs it exposes, so the
-  practical freedom gained is limited.
-
-**Recommendation: Option A (BSL-1.1)** — consistent, and the kit exposes BSL-1.1 API types regardless.
+**Resolved by #1989:** the kit is Apache-2.0. Apache-2.0 is the default licence of the repository; only
+the modules listed in `tools/license/bsl-modules.txt` are BSL-1.1, and the API modules the kit builds on
+(`slice-api`, `resource/api`) are Apache-2.0 too. The closure gate (`tools/check-licence-closure.py`)
+keeps an Apache module from depending on a BSL one, so the kit adds no encumbrance for slice authors.
 
 ---
 
@@ -516,7 +502,7 @@ and all-fakes) with no forge archive and no cluster.
    explicit-per-resource.
 2. **§6.1 Module shape** — single module with `optional` Testcontainers (rec.) vs split fakes /
    containers modules.
-3. **§6.3 License** — BSL-1.1 to match `aether/**` (rec.) vs Apache-2.0 as developer tooling.
+3. **§6.3 License** — resolved by #1989: Apache-2.0 (the repository default).
 4. **§7.1 Testcontainer path in MVP** — include for real `@PgSql` acceptance (rec.) vs defer to rc3.
 5. **Terminology — "facts".** The issue lists "emitted facts" *and* "pub-sub" separately. This spec
    treats a "fact" as an emitted domain event captured at its sink: pub-sub `Publisher.publish(...)`

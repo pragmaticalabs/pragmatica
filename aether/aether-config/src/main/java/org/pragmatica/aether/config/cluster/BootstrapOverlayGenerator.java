@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.config.cluster;
 
 import java.util.LinkedHashMap;
@@ -54,7 +53,22 @@ public interface BootstrapOverlayGenerator {
                                 Option<String> clusterSecret,
                                 NodeRole role,
                                 List<Long> sshKeyIds) {
-        var fixed = Stream.of(Option.some(clusterSection(config)),
+        return overlay(config, source, nodeIndex, apiKey, dockerGid, clusterSecret, role, sshKeyIds, List.of());
+    }
+
+    /// #1543 — `genesisVoters` is the provisioned INITIAL core ids a CLI bootstrap renders as
+    /// `cluster.genesis_voters` (owner ruling, session 28). A CTM replacement passes none: it joins the
+    /// formed electorate through the Rabia §4 add command (#1526) and must never carry a genesis roster.
+    static TomlDocument overlay(ClusterBootstrapConfig config,
+                                SourceProfile source,
+                                int nodeIndex,
+                                Option<String> apiKey,
+                                Option<String> dockerGid,
+                                Option<String> clusterSecret,
+                                NodeRole role,
+                                List<Long> sshKeyIds,
+                                List<String> genesisVoters) {
+        var fixed = Stream.of(Option.some(clusterSection(config, genesisVoters)),
                               Option.some(clusterPortsSection(config)),
                               cloudSection(source),
                               cloudCredentialsSection(source),
@@ -81,7 +95,7 @@ public interface BootstrapOverlayGenerator {
         return Map.copyOf(ordered);
     }
 
-    private static Section clusterSection(ClusterBootstrapConfig config) {
+    private static Section clusterSection(ClusterBootstrapConfig config, List<String> genesisVoters) {
         var values = new LinkedHashMap<String, Object>();
 
         values.put("name",
@@ -95,6 +109,9 @@ public interface BootstrapOverlayGenerator {
         values.put("nodes", config.derivedCoreCount());
         values.put("tls",
                    config.operations().tls().autoGenerate());
+        if (!genesisVoters.isEmpty()) {
+            values.put("genesis_voters", String.join(",", genesisVoters));
+        }
 
         return Section.section("cluster", values);
     }
@@ -179,10 +196,12 @@ public interface BootstrapOverlayGenerator {
             return Option.empty();
         }
 
-        return source.credentials()
-                     .filter(token -> !token.isBlank())
-                     .map(token -> Section.section("cloud.credentials",
-                                                   Map.of("api_token", token)));
+        return source.provider()
+                     .map(provider -> CloudCredentialSchema.credentials(source,
+                                                                        provider.value()))
+                     .filter(credentials -> !credentials.isEmpty())
+                     .map(credentials -> Section.section("cloud.credentials",
+                                                         Map.<String, Object> copyOf(credentials)));
     }
 
     private static Option<Section> cloudDiscoverySection(ClusterBootstrapConfig config, SourceProfile source) {

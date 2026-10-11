@@ -67,9 +67,21 @@ echo5() { for n in 1 2 3 4 5; do inst "n$n" "$1"; echo; done | paste -sd, -; }
 {
 cat <<'STUB'
 log_info() { echo "INFO $*"; }; log_warn() { echo "WARN $*"; }; log_fail() { echo "FAIL $*"; }
-api_get() { [ "$1" = /api/v1/slices ] || return 0; [ -f "$SLICES_LATER" ] && [ $((SECONDS - START)) -ge "${LATER_AFTER:-9999}" ] && cat "$SLICES_LATER" || cat "$SLICES"; }
+api_get() {
+    case "$1" in
+        /api/v1/schema/status)
+            # the Nth read serves $SCHEMA_LATER once it exists and N > 1 (a FAILED that clears on the next poll)
+            local n=$(( $(cat "${SCHEMA}.n" 2>/dev/null || echo 0) + 1 )); echo "$n" > "${SCHEMA}.n"
+            if [ "$n" -gt 1 ] && [ -f "${SCHEMA}.later" ]; then cat "${SCHEMA}.later"
+            elif [ -f "${SCHEMA:-}" ]; then cat "$SCHEMA"; else echo '{"datasources":[]}'; fi
+            return 0 ;;
+        /api/v1/slices) ;;
+        *) return 0 ;;
+    esac
+    [ -f "$SLICES_LATER" ] && [ $((SECONDS - START)) -ge "${LATER_AFTER:-9999}" ] && cat "$SLICES_LATER" || cat "$SLICES"
+}
 STUB
-for f in _slices_by_artifact _slices_missing_active _restore_slices_gate; do extract "$LIB" "$f"; done
+for f in _slices_by_artifact _slices_missing_active _schema_failed_holds _restore_slices_gate; do extract "$LIB" "$f"; done
 } > "$WORK/gate.sh"
 
 run_gate() {  # <label> <slices body> [later body] [later-after]
@@ -132,6 +144,74 @@ else fail "G10 rc=$(cat "$WORK/grc.g10") literal=${#LITERAL} bytes: $(head -c 20
 run_gate g11 "$(printf '%s' "$LITERAL" | sed 's/"state":"ACTIVE"/"state":"UNLOADING"/g')"
 if [ "$(cat "$WORK/grc.g11")" = "1" ]; then ok "G11 the literal body with every instance UNLOADING fails the gate"
 else fail "G11 rc=$(cat "$WORK/grc.g11") $(head -c 200 "$WORK/g.g11")"; fi
+
+# ---- E3: a slice held by a FAILED schema migration fails the gate FAST, naming the datasource ---------------
+# Fixture built from the real record, like the slices ones: SchemaRoutes.SchemaStatusResponse(datasource,
+# currentVersion, lastMigration, status, owningBlueprint, heldSlices) (aether/node/.../SchemaRoutes.java:76-81).
+SCHEMA_SRC="${REPO_ROOT}/aether/node/src/main/java/org/pragmatica/aether/api/routes/SchemaRoutes.java"
+schema_components() {
+    sed -n '/record SchemaStatusResponse(/,/) {/p' "$SCHEMA_SRC" | tr '\n' ' ' | sed -E 's/.*record SchemaStatusResponse\(//; s/\) \{.*//' | tr ',' '\n' | sed -E 's/^ +//; s/ +$//' | awk '{print $2}'
+}
+SK_DS=$(schema_components | sed -n 1p); SK_VER=$(schema_components | sed -n 2p); SK_LM=$(schema_components | sed -n 3p)
+SK_ST=$(schema_components | sed -n 4p); SK_OB=$(schema_components | sed -n 5p); SK_HELD=$(schema_components | sed -n 6p)
+schema_entry() {  # <datasource> <status> <held slice or ''>
+    local held=""; [ -n "$3" ] && held="\"$3\""
+    printf '{"%s":"%s","%s":900,"%s":"V900__create_kv.sql","%s":"%s","%s":"org.pragmatica.aether.test:test-persistence:1.0.0","%s":[%s]}' \
+        "$SK_DS" "$1" "$SK_VER" "$SK_LM" "$SK_ST" "$2" "$SK_OB" "$SK_HELD" "$held"
+}
+schema_body() { printf '{"datasources":[%s]}' "$(local IFS=,; echo "$*")"; }
+# heldSlices carries artifact BASES (group:artifact, SchemaRoutes.collectIfHeldBySchema: key.artifact().base()), the
+# slices rows carry the versioned coordinate.
+PERS_BASE=org.pragmatica.aether.test:test-persistence-persistence-slice
+PERS_SLICE="${PERS_BASE}:1.0.0"
+LOADED3="$(body "$(slice $ECHO 3 "$(inst n1 ACTIVE)")" "$(slice $PERS_SLICE 3 "$(inst n1 LOADED)" "$(inst n2 LOADED)" "$(inst n3 LOADED)")")"
+timed_gate() {  # <label> <slices> <schema body or ''> [schema body from the 2nd read on] -> elapsed seconds in $WORK/el.<label>
+    printf '%s' "$2" > "$WORK/slices.$1"; rm -f "$WORK/later.$1" "$WORK/schema.$1" "$WORK/schema.$1.n" "$WORK/schema.$1.later"
+    [ -n "$3" ] && printf '%s' "$3" > "$WORK/schema.$1"
+    [ -n "${4:-}" ] && printf '%s' "$4" > "$WORK/schema.$1.later"
+    local t0=$SECONDS
+    ( export SLICES="$WORK/slices.$1" SLICES_LATER="$WORK/later.$1" SCHEMA="$WORK/schema.$1" START=$SECONDS \
+             AETHER_RESTORE_SLICES_TIMEOUT=6 AETHER_RESTORE_SLICES_POLL=1 TIMEOUT_SCALE=1
+      source "$WORK/gate.sh"; _restore_slices_gate ) > "$WORK/g.$1" 2>&1
+    echo $? > "$WORK/grc.$1"; echo $(( SECONDS - t0 )) > "$WORK/el.$1"
+}
+timed_gate s1 "$LOADED3" "$(schema_body "$(schema_entry database.testpersistence FAILED "$PERS_BASE")")"
+if [ "$(cat "$WORK/grc.s1")" = "1" ] && [ "$(cat "$WORK/el.s1")" -lt 5 ] && grep -q 'FAILED schema migration' "$WORK/g.s1" \
+   && grep -q 'datasource=database.testpersistence' "$WORK/g.s1" && grep -q 'V900__create_kv.sql' "$WORK/g.s1" && grep -q 'test-persistence-persistence-slice' "$WORK/g.s1"; then
+    ok "S1 LOADED slice held by a FAILED schema fails in $(cat "$WORK/el.s1")s (budget 6s), naming the datasource, migration and held slice"
+else fail "S1 rc=$(cat "$WORK/grc.s1") elapsed=$(cat "$WORK/el.s1")s $(head -c 300 "$WORK/g.s1")"; fi
+timed_gate s2 "$LOADED3" "$(schema_body "$(schema_entry database.testpersistence COMPLETED "")")"
+if [ "$(cat "$WORK/grc.s2")" = "1" ] && [ "$(cat "$WORK/el.s2")" -ge 5 ] && grep -q 'NO ACTIVE instance' "$WORK/g.s2" && ! grep -q 'FAILED schema' "$WORK/g.s2"; then
+    ok "S2 LOADED with a COMPLETED schema is NOT fast-failed: it waits the budget ($(cat "$WORK/el.s2")s) and reports NO ACTIVE"
+else fail "S2 rc=$(cat "$WORK/grc.s2") elapsed=$(cat "$WORK/el.s2")s $(head -c 200 "$WORK/g.s2")"; fi
+timed_gate s3 "$LOADED3" "$(schema_body "$(schema_entry database.other FAILED "")")"
+if [ "$(cat "$WORK/el.s3")" -ge 5 ] && ! grep -q 'FAILED schema' "$WORK/g.s3"; then ok "S3 a FAILED schema that holds NOTHING (empty heldSlices) does not fast-fail the gate"
+else fail "S3 elapsed=$(cat "$WORK/el.s3")s $(head -c 200 "$WORK/g.s3")"; fi
+timed_gate s4 "$ALLACTIVE" "$(schema_body "$(schema_entry database.testpersistence FAILED "$PERS_BASE")")"
+if [ "$(cat "$WORK/grc.s4")" = "0" ]; then ok "S4 every artifact ACTIVE passes even with an unrelated FAILED schema record"
+else fail "S4 rc=$(cat "$WORK/grc.s4") $(head -c 200 "$WORK/g.s4")"; fi
+# S5: v1743's probe. persistence is STARVED (LOADED, held by nothing the schema record names), while a FAILED hold
+# sits on an UNRELATED healthy artifact. Blaming it would misattribute: no fast-fail, the gate waits its budget.
+UNRELATED_SLICE=org.pragmatica.aether.test:test-echo-echo-slice
+timed_gate s5 "$LOADED3" "$(schema_body "$(schema_entry database.unrelated FAILED "$UNRELATED_SLICE")")"
+if [ "$(cat "$WORK/grc.s5")" = "1" ] && [ "$(cat "$WORK/el.s5")" -ge 5 ] && grep -q 'NO ACTIVE instance' "$WORK/g.s5" && ! grep -q 'FAILED schema' "$WORK/g.s5"; then
+    ok "S5 a FAILED hold on an UNRELATED artifact does not fast-fail a starved one: it waits the budget ($(cat "$WORK/el.s5")s)"
+else fail "S5 rc=$(cat "$WORK/grc.s5") elapsed=$(cat "$WORK/el.s5")s $(head -c 240 "$WORK/g.s5")"; fi
+# S6: FAILED on poll 1, PENDING on poll 2 (a stale FAILED right after a redeploy) -> no fast-fail
+timed_gate s6 "$LOADED3" "$(schema_body "$(schema_entry database.testpersistence FAILED "$PERS_BASE")")" "$(schema_body "$(schema_entry database.testpersistence PENDING "$PERS_BASE")")"
+if [ "$(cat "$WORK/grc.s6")" = "1" ] && [ "$(cat "$WORK/el.s6")" -ge 5 ] && ! grep -q 'FAILED schema' "$WORK/g.s6"; then
+    ok "S6 FAILED on poll 1 and PENDING on poll 2 does not fast-fail (2 consecutive polls required)"
+else fail "S6 rc=$(cat "$WORK/grc.s6") elapsed=$(cat "$WORK/el.s6")s $(head -c 240 "$WORK/g.s6")"; fi
+# S7: a FAILED hold on the starved artifact AMONG an unrelated one still fast-fails, naming only the intersection
+timed_gate s7 "$LOADED3" "$(schema_body "$(schema_entry database.unrelated FAILED "$UNRELATED_SLICE")" "$(schema_entry database.testpersistence FAILED "$PERS_BASE")")"
+if [ "$(cat "$WORK/grc.s7")" = "1" ] && [ "$(cat "$WORK/el.s7")" -lt 5 ] && grep -q 'datasource=database.testpersistence' "$WORK/g.s7" && ! grep -q 'datasource=database.unrelated' "$WORK/g.s7"; then
+    ok "S7 with an unrelated and a relevant FAILED record, it fast-fails on the relevant one only"
+else fail "S7 rc=$(cat "$WORK/grc.s7") elapsed=$(cat "$WORK/el.s7")s $(head -c 240 "$WORK/g.s7")"; fi
+# tripwire: the keys the probe parses must be components of the real record
+GATE_SCHEMA_KEYS=$(extract "$LIB" _schema_failed_holds | grep -oE '"(datasource|status|heldSlices|lastMigration|owningBlueprint)"' | tr -d '"' | sort -u | tr '\n' ' ')
+miss=""; for k in $GATE_SCHEMA_KEYS; do schema_components | grep -qx "$k" || miss="$miss $k"; done
+if [ -z "$miss" ] && [ -n "$GATE_SCHEMA_KEYS" ]; then ok "T3 every key the schema probe parses is a SchemaStatusResponse component ($GATE_SCHEMA_KEYS)"
+else fail "T3 keys not in the record:${miss:- <none parsed>} (record: $(schema_components | tr '\n' ' '))"; fi
 
 # W1: restore_cluster_baseline with every earlier step stubbed green and the slices from G1
 {

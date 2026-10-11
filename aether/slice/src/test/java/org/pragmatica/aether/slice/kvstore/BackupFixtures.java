@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.slice.kvstore;
 
 import java.util.ArrayList;
@@ -158,6 +157,14 @@ final class BackupFixtures {
         return List.of(new Fixture(SliceTargetKey.sliceTargetKey(base),
                                    SliceTargetValue.sliceTargetValue(v1, 3, Option.some(owner))),
                        new Fixture(AppBlueprintKey.appBlueprintKey(owner), AppBlueprintValue.appBlueprintValue(blueprint(), true)),
+                       new Fixture(AetherKey.ArtifactContentKey.artifactContentKey(ArtifactBase.artifactBase("org.example:orders-slice").unwrap(),
+                                                                                   "1.0.0",
+                                                                                   "sources.jar"),
+                                   new AetherValue.ArtifactContentValue(1234L, "d41d8cd98f00b204e9800998ecf8427e", "da39a3ee5e6b4b0d3255bfef95601890afd80709", "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", 1_700_000_000_000L)),
+                       new Fixture(AetherKey.ArtifactVersionsKey.artifactVersionsKey(ArtifactBase.artifactBase("org.example:orders-slice").unwrap()),
+                                   new AetherValue.ArtifactVersionsValue(List.of(new AetherValue.ArtifactVersionEntry("1.0.0", true),
+                                                                                 new AetherValue.ArtifactVersionEntry("1.1.0", false)),
+                                                                     AetherValue.ArtifactVersionsValue.DEFAULT_MAX_LIVE)),
                        new Fixture(DeploymentOutcomeKey.deploymentOutcomeKey(owner),
                                    DeploymentOutcomeValue.failed(List.of("org.example:orders-slice:1.2.3", AWKWARD), AWKWARD, 1_700_000_000_000L)),
                        new Fixture(VersionRoutingKey.versionRoutingKey(base), VersionRoutingValue.versionRoutingValue(v1, v2)),
@@ -220,7 +227,8 @@ final class BackupFixtures {
                                                                                         3,
                                                                                         2,
                                                                                         StreamCompression.ZSTD,
-                                                                                        Option.some("kms-key-1")),
+                                                                                        Option.some("kms-key-1"),
+                                                                                        42L),
                                                                        1_700_000_000_000L)),
                        new Fixture(ApiKeyKey.apiKeyKey("key-1"), ApiKeyValue.apiKeyValue("key-1", "sha256:abc=", 60_000)),
                        new Fixture(ApiKeyAuditKey.apiKeyAuditKey("audit-1"), ApiKeyAuditValue.apiKeyAuditValue("key-1", "REVOKED", AWKWARD)),

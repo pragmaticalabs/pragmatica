@@ -82,7 +82,9 @@ public sealed interface ClusterReplication {
                                                                                               value.coreCount()));
     }
 
-    private static Result<ReplicationDefaultsConfig> defaults(Option<ClusterConfigValue> committed) {
+    /// The committed `[replication]` and `[cache]` defaults — the built-in ones while no cluster config is committed.
+    /// The DHT resolves its replication and the cache namespace's from these (#1777 track 1).
+    static Result<ReplicationDefaultsConfig> defaults(Option<ClusterConfigValue> committed) {
         return committed.fold(() -> Result.success(ReplicationDefaultsConfig.BUILT_IN),
                               value -> ReplicationDefaultsParser.fromClusterToml(value.tomlContent()));
     }

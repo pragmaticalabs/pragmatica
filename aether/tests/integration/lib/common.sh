@@ -134,6 +134,18 @@ _log_prefix() {
     fi
 }
 
+# deadline_in <seconds>: the absolute `$SECONDS` value a poll loop compares against, reached NO SOONER than <seconds> of wall time from now.
+# `$((SECONDS + N))` is not that: `$SECONDS` counts whole seconds from integer boundaries of the shell's own clock, so it expires after
+# anywhere in (N-1, N] seconds, and a short budget (an 8s node-removal wait, a 5s partition hold) can lose most of a second, or all of
+# it for N=1 (#1887: a 1s stub deadline expired after one slow call). This one is in [N, N+1). A budget of 0 stays "already expired".
+deadline_in() {
+    if [ "${1:-0}" -gt 0 ] 2>/dev/null; then
+        echo $((SECONDS + $1 + 1))
+    else
+        echo "$SECONDS"
+    fi
+}
+
 log_info()  { echo -e "${GREEN}[INFO]${NC}  $(_log_prefix)$1"; }
 log_warn()  { echo -e "${YELLOW}[WARN]${NC}  $(_log_prefix)$1"; }
 log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
@@ -261,6 +273,83 @@ _discover_endpoint_by_label() {
 # `if timeout ...; then` (a missing binary just evaluates false); this helper
 # is for callers like _cloud_running_vm_ips that must also cap wall-clock time
 # on macOS dev boxes and turn "took too long" into an honest non-zero rc.
+# Like _run_with_timeout, but escalates to SIGKILL <grace> seconds after the TERM (TIMEOUT_KILL_GRACE_S, default 5), so a
+# command that ignores SIGTERM still ends. For background callers nobody reaps. The fallback (no timeout binary) already
+# uses kill -9.
+_run_with_timeout_kill() {
+    local secs="$1"
+    shift
+    if command -v timeout >/dev/null 2>&1; then
+        timeout -k "${TIMEOUT_KILL_GRACE_S:-5}" "$secs" "$@"
+        return $?
+    fi
+    if command -v gtimeout >/dev/null 2>&1; then
+        gtimeout -k "${TIMEOUT_KILL_GRACE_S:-5}" "$secs" "$@"
+        return $?
+    fi
+    _run_with_timeout "$secs" "$@"
+}
+
+# Reap a background job: wait up to <seconds> for it to end, then kill it and its whole process tree (TERM, then KILL).
+# Never fails.
+# Usage: reap_bg_job <pid> [seconds]
+reap_bg_job() {
+    local pid="${1:-}" bound="${2:-10}" waited=0
+    [ -n "$pid" ] || return 0
+    while kill -0 "$pid" 2>/dev/null && [ "$waited" -lt "$bound" ]; do
+        sleep 1
+        waited=$((waited + 1))
+    done
+    if kill -0 "$pid" 2>/dev/null; then
+        pkill -TERM -P "$pid" 2>/dev/null || true
+        kill -TERM "$pid" 2>/dev/null || true
+        sleep 1
+        _kill_tree "$pid"
+    fi
+    wait "$pid" 2>/dev/null || true
+    return 0
+}
+
+# Kill <pid> and every descendant with SIGKILL (#1886). Each process is STOPPED before its children are listed, so it
+# cannot fork a replacement between the listing and its own kill, and descendants are killed before their parent, so
+# none is orphaned out of reach of `-P`. Killing the job first left a child it had just respawned, and killing only its
+# direct children left grandchildren; either survived the reap and outlived the suite.
+_kill_tree() {
+    local p="$1" c
+    kill -STOP "$p" 2>/dev/null || return 0
+    for c in $(pgrep -P "$p" 2>/dev/null); do
+        _kill_tree "$c"
+    done
+    kill -KILL "$p" 2>/dev/null || true
+}
+
+# A run-level warning: logged, AND recorded in RUN_WARNINGS_FILE (exported by run-tests.sh) so print_summary, the end-of-run
+# report and test-results.json carry it. A warning visible only inline in a long suite log is invisible to whoever reads
+# the summary. One line per warning: suite|test|text.
+log_run_warning() {
+    log_warn "$1"
+    [ -n "${RUN_WARNINGS_FILE:-}" ] && printf '%s|%s|%s\n' "${SUITE_TAG:-no-suite}" "${TEST_TAG:-outside-a-test}" "$(printf '%s' "$1" | tr '\n|' '  ')" >> "$RUN_WARNINGS_FILE" 2>/dev/null
+    return 0
+}
+_run_warning_lines() {
+    if [ -f "${RUN_WARNINGS_FILE:-}" ]; then wc -l < "$RUN_WARNINGS_FILE" | tr -d ' '; else echo 0; fi
+}
+# JSON fragment for one suite: "warnings":N,"warning_texts":["...",...]
+run_warnings_json() {
+    local suite="$1" n=0 texts="" line text
+    if [ -f "${RUN_WARNINGS_FILE:-}" ]; then
+        while IFS= read -r line; do
+            [ "${line%%|*}" = "$suite" ] || continue
+            text="${line#*|}"; text="${text#*|}"
+            text=$(printf '%s' "$text" | tr -d '\000-\037' | sed 's/\\/\\\\/g; s/"/\\"/g')
+            texts="${texts}${texts:+,}\"${text}\""
+            n=$((n + 1))
+        done < "$RUN_WARNINGS_FILE"
+    fi
+    printf '"warnings":%s,"warning_texts":[%s]' "$n" "$texts"
+}
+_RUN_WARN_BASE=$(_run_warning_lines)
+
 _run_with_timeout() {
     local secs="$1"
     shift
@@ -1329,7 +1418,7 @@ ENV_TYPE="${ENV_TYPE:-docker}"
 export ENV_TYPE
 CLOUD_MODE="${CLOUD_MODE:-false}"   # backward compat: true maps to ENV_TYPE=cloud
 if [ "$CLOUD_MODE" = "true" ]; then ENV_TYPE="cloud"; fi
-# Sync the reverse direction: kill_node, start_node, etc. still branch on CLOUD_MODE.
+# Sync the reverse direction: kill_node, restart_all_nodes, etc. still branch on CLOUD_MODE.
 if [ "$ENV_TYPE" = "cloud" ]; then CLOUD_MODE="true"; fi
 export CLOUD_MODE
 # BASTION_IP is retained for backward-compat env templates but ignored under
@@ -1404,10 +1493,58 @@ to_node_id() {
         aether-*) echo "$node_id"; return 0 ;;
     esac
     if [[ "$node_id" =~ ^node-([0-9]+)$ ]] && [ -n "${CLUSTER_ID:-}" ]; then
-        echo "aether-${CLUSTER_ID}-node-${BASH_REMATCH[1]}"
+        local ordinal="${BASH_REMATCH[1]}"
+        if [ "$CLUSTER_ID" = "b" ]; then
+            ordinal=$(b_seed_number "$(b_current_generation)" "$ordinal")
+        fi
+        echo "aether-${CLUSTER_ID}-node-${ordinal}"
         return 0
     fi
     echo "$node_id"
+}
+
+# ---------------------------------------------------------------------------
+# Cluster B core-node generations (#1968, #1543)
+# ---------------------------------------------------------------------------
+# A node id never returns: restart_all_nodes restarts the whole cluster onto FRESH core ids and restores the KV from the
+# backup. Core ids are `aether-b-node-<number>`. Generation 0 (the first start) is 1..5; generation G >= 1 is G*100+i, so
+# every id still ends in digits and the ordinal (i) is recoverable as (number-1)%100+1 wherever an id is mapped to a
+# host port or a position. The current generation is kept on the Docker host (one cluster B per host), read when needed.
+BACKUP_REMOTE_VOLUME="aether-b-backup-remote"
+BACKUP_GENERATION_FILE='~/.aether-b-generation'
+
+# The core number of seed ordinal <i> (1-based) at generation <G>.
+b_seed_number() {
+    local gen="$1" ordinal="$2"
+    if [ "${gen:-0}" -gt 0 ] 2>/dev/null; then
+        echo $((gen * 100 + ordinal))
+    else
+        echo "$ordinal"
+    fi
+}
+
+# The 0-based position of core number <N> (any generation) in the fixed per-seed port ranges.
+b_seed_offset() {
+    echo $((($1 - 1) % 100))
+}
+
+# The current generation of cluster B, 0 when none was ever started by restart_all_nodes. Cached per process in a NON-exported
+# variable that restart_all_nodes refreshes, so a suite subshell started after a restart reads the file once.
+b_current_generation() {
+    if [ -z "${_AETHER_B_GEN:-}" ]; then
+        _AETHER_B_GEN=$(remote_exec "cat ${BACKUP_GENERATION_FILE} 2>/dev/null || echo 0" 2>/dev/null | tail -n1 | tr -dc '0-9')
+        _AETHER_B_GEN="${_AETHER_B_GEN:-0}"
+    fi
+    echo "$_AETHER_B_GEN"
+}
+
+# Shell run on the Docker host to (re)create the backup remote of a cluster B start: a fresh external volume holding an
+# initialised bare repository owned by the in-container user (uid 1000), and generation 0. The remote is what a restart restores
+# from, so it must exist before the nodes boot and must not be removed by `compose down -v` (it is external).
+backup_remote_init_script() {
+    cat <<SCRIPT
+docker volume rm -f ${BACKUP_REMOTE_VOLUME} >/dev/null 2>&1; rm -f ${BACKUP_GENERATION_FILE}; docker volume create ${BACKUP_REMOTE_VOLUME} >/dev/null && docker run --rm --user root --entrypoint sh -v ${BACKUP_REMOTE_VOLUME}:/r aether-node:local -c 'git init -q --bare /r/kv.git && chown -R 1000:1000 /r'
+SCRIPT
 }
 
 # Map a node's runtime id (as reported by the management API, e.g. in
@@ -1421,7 +1558,7 @@ to_node_id() {
 _registered_by_to_offset() {
     local id="$1"
     if [[ "$id" =~ ^(aether-[ab]-)?node-([0-9]+)$ ]]; then
-        echo "$(( ${BASH_REMATCH[2]} - 1 ))"
+        b_seed_offset "${BASH_REMATCH[2]}"
         return 0
     fi
     if [[ "$id" =~ ^[A-Za-z0-9-]+-core-([0-9]+)$ ]]; then
@@ -1451,6 +1588,17 @@ _registered_by_to_offset() {
 #
 # Provider-agnostic shell: dispatches on CLOUD_PROVIDER so an aws/gcp branch slots
 # in later. Hetzner is the only implemented backend today.
+#
+# A NOT-FOUND outcome is a PROBE MISS, not a failure: nothing on stdout, a log_warn on stderr, rc 1.
+# log_fail prints on the stdout that callers capture with $(...) while still counting through the fail
+# file, so a miss became a counted [FAIL] with no visible line (12-network S05, cloud run 4). A caller
+# for which a miss is fatal logs its own log_fail on rc!=0. Argument/provider errors (rc 2) stay loud.
+#
+# THREE distinct non-success outcomes, and callers must not conflate them:
+#   rc 1  the node's address is KNOWN and no server holds it: the VM is gone (the only "departed" evidence);
+#   rc 3  UNKNOWN: the address could not be resolved, or hcloud could not list servers. Says NOTHING about the
+#         VM, which may be running. An existence probe treats rc 3 as "cannot tell", never as "gone".
+#   rc 2  harness/argument/provider error.
 cloud_server_id() {
     local node_id="${1:-}"
     if [ -z "$node_id" ]; then
@@ -1465,17 +1613,20 @@ cloud_server_id() {
             fi
             local ip
             ip=$(cloud_public_ip "$node_id") || {
-                log_fail "cloud_server_id: could not resolve a public IP for '${node_id}' (cluster-scoped lookup failed)"
-                return 1
+                log_warn "cloud_server_id: could not resolve a public IP for '${node_id}' (cluster-scoped lookup failed); the VM's existence is UNKNOWN" >&2
+                return 3
             }
             # Map IP -> numeric server id. `hcloud -o columns -o noheader` prints
             # `id<WS>ipv4` per server; awk exact-matches column 2 and prints the id.
             # No manual JSON parsing — hcloud handles the (multi-line) API body.
-            local sid
-            sid=$(hcloud server list -o columns=id,ipv4 -o noheader 2>/dev/null \
-                    | awk -v ip="$ip" '$2==ip{print $1; exit}')
+            local sid servers
+            servers=$(hcloud server list -o columns=id,ipv4 -o noheader 2>/dev/null) || {
+                log_warn "cloud_server_id: hcloud server list failed; the existence of '${node_id}' (${ip}) is UNKNOWN" >&2
+                return 3
+            }
+            sid=$(printf '%s\n' "$servers" | awk -v ip="$ip" '$2==ip{print $1; exit}')
             if [ -z "$sid" ]; then
-                log_fail "cloud_server_id: no Hetzner server has public IP '${ip}' (node '${node_id}')"
+                log_warn "cloud_server_id: no Hetzner server has public IP '${ip}' (node '${node_id}')" >&2
                 return 1
             fi
             printf '%s\n' "$sid"
@@ -1498,8 +1649,12 @@ cloud_server_id() {
 # Cluster name resolution: $BOOTSTRAP_CLUSTER_NAME (set by run-tests.sh per cluster);
 # falls back to CLOUD_BOOTSTRAP_CLUSTER for ad-hoc invocations.
 #
-# Returns the IP on stdout. Logs a failure (without exiting the caller) and returns
-# non-zero if the state file is missing or the node has no recorded address.
+# Returns the IP on stdout. A NOT-FOUND outcome (state file missing, arrays missing, no entry for the
+# node) is a PROBE MISS: nothing on stdout, a log_warn on stderr, rc 1 — never log_fail. log_fail prints
+# on the stdout a caller captures with $(...) while still counting through the fail file (#1511), so a
+# miss became a counted [FAIL] with no visible line (02-chaos S19 x2, 12-network S05; cloud run 4). The
+# caller decides whether a miss is fatal and logs its own log_fail then. Argument errors (rc 2) are
+# harness bugs and stay loud.
 cloud_public_ip() {
     local node_id="${1:-}"
     if [ -z "$node_id" ]; then
@@ -1513,7 +1668,7 @@ cloud_public_ip() {
     fi
     local state_file="${HOME}/.aether/clusters/${cluster}/bootstrap-state.json"
     if [ ! -f "$state_file" ]; then
-        log_fail "cloud_public_ip: bootstrap-state.json not found at ${state_file}"
+        log_warn "cloud_public_ip: bootstrap-state.json not found at ${state_file}" >&2
         return 1
     fi
     # Translate friendly node-N → bootstrap nodeId form.
@@ -1535,7 +1690,7 @@ cloud_public_ip() {
         if (RSTART > 0) print substr($0, RSTART, RLENGTH);
     }' "$state_file")
     if [ -z "$ids_raw" ] || [ -z "$addrs_raw" ]; then
-        log_fail "cloud_public_ip: provisionedNodeIds or collectedAddresses missing from ${state_file}"
+        log_warn "cloud_public_ip: provisionedNodeIds or collectedAddresses missing from ${state_file}" >&2
         return 1
     fi
     # Strip key + brackets, split into one quoted token per line, drop quotes.
@@ -1582,7 +1737,7 @@ cloud_public_ip() {
             printf '%s\n' "$ip"
             return 0
         fi
-        log_fail "cloud_public_ip: no entry for '${target}' (input='${node_id}') in ${state_file} and this cluster's /api/v1/nodes/endpoint/${node_id} returned no address"
+        log_warn "cloud_public_ip: no entry for '${target}' (input='${node_id}') in ${state_file} and this cluster's /api/v1/nodes/endpoint/${node_id} returned no address" >&2
         return 1
     fi
     printf '%s\n' "$ip"
@@ -1609,6 +1764,13 @@ cloud_ssh() {
     local node_id="$1"; shift
     local target_ip
     target_ip=$(cloud_public_ip "$node_id") || return $?
+    cloud_ssh_ip "$target_ip" "$@"
+}
+
+# SSH to an already-resolved address. For callers that resolve through a cache (S19's pre-kill
+# survivor IPs) and must not re-resolve mid-quorum-loss; cloud_ssh is this plus the live lookup.
+cloud_ssh_ip() {
+    local target_ip="$1"; shift
     ssh "${SSH_OPTS[@]}" \
         -i "${AETHER_SSH_KEY}" \
         "${CLOUD_SSH_USER:-root}@${target_ip}" "$@"
@@ -1660,14 +1822,45 @@ jvm_unit_is_drain_halt() {
 # systemctl show — the JVM-runtime analog of `docker inspect .State.ExitCode`. An
 # SSH/systemctl read failure is a hard log_fail, never a silent pass. Unit-tested via
 # test/test-cloud-helpers.sh and test/test-chaos-harness.sh with a stubbed ssh.
+#
+# With a THIRD argument (even empty) the read goes to that ADDRESS (cloud_ssh_ip) instead of resolving <node id> live, and
+# proves WHICH VM answered: the same ssh command first prints the VM's own AETHER_NODE_ID (/etc/aether/node.env, written by
+# the node's user-data), and a mismatch or missing id is a FAIL. After a quorum-loss drain a CTM survivor no longer resolves
+# live (it is not in bootstrap-state.json and the cluster API is down), so callers pass the pre-kill cached address; and a
+# cached address may have been RECYCLED onto another VM, which would answer with its own unit state (a successful read from
+# the wrong subject). An empty address is an honest FAIL ("SSH not attempted"), never a guess.
 jvm_unit_assert_drain_halt() {
     local node_id="$1" label="${2:-$1}"
     local show rc active_state exec_status
-    show=$(jvm_unit_show "$node_id" "ActiveState,ExecMainStatus")
-    rc=$?
-    if [ "$rc" -ne 0 ]; then
-        log_fail "${label} systemd unit unreadable: SSH/systemctl failed (rc=${rc}): $(printf '%s' "$show" | head -c 300)"
-        return 1
+    if [ "$#" -ge 3 ]; then
+        local ip="$3" expected="$1" observed
+        if [ -z "$ip" ]; then
+            log_fail "${label} systemd unit unread: IP unresolvable (no pre-kill cache entry, live lookup failed) — SSH not attempted"
+            return 1
+        fi
+        [[ "$expected" =~ ^node-([0-9]+)$ ]] && expected="${CLOUD_SOURCE_NAME}-core-$(( ${BASH_REMATCH[1]} - 1 ))"
+        show=$(cloud_ssh_ip "$ip" "grep -m1 '^AETHER_NODE_ID=' /etc/aether/node.env 2>&1; systemctl show aether-node --property=ActiveState,ExecMainStatus 2>&1")
+        rc=$?
+        if [ "$rc" -ne 0 ]; then
+            log_fail "${label} systemd unit unreadable: SSH/systemctl failed (rc=${rc}) at ${ip}: $(printf '%s' "$show" | head -c 300)"
+            return 1
+        fi
+        observed=$(jvm_unit_field "$show" "AETHER_NODE_ID" | tr -d '"')
+        if [ -z "$observed" ]; then
+            log_fail "${label} identity indeterminate: ${ip} returned no AETHER_NODE_ID, so it cannot be shown WHICH VM answered — the read is void, not a pass"
+            return 1
+        fi
+        if [ "$observed" != "$expected" ]; then
+            log_fail "${label} identity violation: read ${ip} expecting node '${expected}' but node '${observed}' answered — the cached survivor IP has been recycled onto another VM; its unit state says nothing about ${expected}"
+            return 1
+        fi
+    else
+        show=$(jvm_unit_show "$node_id" "ActiveState,ExecMainStatus")
+        rc=$?
+        if [ "$rc" -ne 0 ]; then
+            log_fail "${label} systemd unit unreadable: SSH/systemctl failed (rc=${rc}): $(printf '%s' "$show" | head -c 300)"
+            return 1
+        fi
     fi
     active_state=$(jvm_unit_field "$show" "ActiveState")
     exec_status=$(jvm_unit_field "$show" "ExecMainStatus")
@@ -1759,6 +1952,9 @@ run_test() {
     # Cleared at function exit so logs emitted by surrounding scaffolding don't
     # leak the last test's name.
     export TEST_TAG="$sanitized_name"
+    # Cloud: remember the VMs the provider lists NOW (nodes join and leave mid-suite); the capture tries every
+    # remembered VM, not only those still listed when a failure is finally captured (lib/capture.sh).
+    [ -n "${SUITE_FAILCAP_DIR:-}" ] && capture_remember_vms "${CLUSTER_ID:-a}" "${SUITE_TAG:-no-suite}" >/dev/null 2>&1 || true
     echo ""
     log_step "=== TEST: ${name} ==="
 
@@ -1791,6 +1987,14 @@ run_test() {
         fn_rc=$?
     fi
     fails_logged=$(( $(_harness_fail_lines) - fails_before ))
+    # A [FAIL] raised inside a $(...) capture counts through the fail file but its text went into the
+    # caller's variable, so the log may show no line for it. When more were counted than the in-process
+    # latch saw, print the test's whole fail-file record (every line from fails_before+1, exactly as counted;
+    # which of them were already visible is not knowable here), so a counted [FAIL] never appears only as a number.
+    if [ "$fails_logged" -gt "${TEST_FAIL_COUNT:-0}" ] && [ -f "${HARNESS_FAIL_FILE:-}" ]; then
+        log_info "run_test: '${name}' counted [FAIL] record for this test (${fails_logged} counted, ${TEST_FAIL_COUNT:-0} printed above):"
+        sed -n "$((fails_before + 1)),\$p" "$HARNESS_FAIL_FILE" | sed 's/^/    | /'
+    fi
     [ "${TEST_FAIL_COUNT:-0}" -gt "$fails_logged" ] && fails_logged=${TEST_FAIL_COUNT:-0}
     HARNESS_FAIL_CONSUMED=$(_harness_fail_lines)
     if [ "$fn_rc" -eq 0 ] && [ "$fails_logged" -eq 0 ]; then
@@ -1840,6 +2044,11 @@ print_summary() {
     echo "  PASSED:  ${TESTS_PASSED}"
     echo "  FAILED:  ${TESTS_FAILED}"
     echo "  SKIPPED: ${TESTS_SKIPPED}"
+    local warned=$(( $(_run_warning_lines) - ${_RUN_WARN_BASE:-0} ))
+    if [ "$warned" -gt 0 ]; then
+        echo "  WARNINGS: ${warned}"
+        tail -n "$warned" "$RUN_WARNINGS_FILE" | sed 's/^/    warning: /'
+    fi
     echo "========================================"
 
     if [[ "${COLLECT_METRICS:-false}" == "true" ]]; then

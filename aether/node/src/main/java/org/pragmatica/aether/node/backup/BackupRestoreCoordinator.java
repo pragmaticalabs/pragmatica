@@ -15,6 +15,8 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
 
 import org.pragmatica.aether.config.BackupConfig.RestoreMode;
+import org.pragmatica.aether.config.cluster.ClusterBootstrapConfigParser;
+import org.pragmatica.aether.config.cluster.NodeUserDataRenderer;
 import org.pragmatica.aether.node.ClusterIncarnation;
 import org.pragmatica.aether.node.ClusterIncarnationRegistrar.RetryScheduler;
 import org.pragmatica.aether.node.backup.BackupWarning.Code;
@@ -102,6 +104,7 @@ public final class BackupRestoreCoordinator {
     private final AtomicBoolean leader = new AtomicBoolean(false);
     private final AtomicBoolean done = new AtomicBoolean(false);
     private final AtomicBoolean blocked = new AtomicBoolean(false);
+    private final AtomicBoolean missingReported = new AtomicBoolean(false);
     private final AtomicReference<ScheduledFuture<?>> pendingRetry = new AtomicReference<>();
     private final AtomicReference<TimeSpan> nextBackoff = new AtomicReference<>(INITIAL_BACKOFF);
 
@@ -198,6 +201,14 @@ public final class BackupRestoreCoordinator {
         }
     }
 
+    /// #1968: the node is stopping (graceful stop, drain, self-fence). A leader without `[backup]` raised a CRITICAL that only
+    /// this node's own event layer can close, so ending the term here, before the event layer goes down, is the last chance to
+    /// raise its recovery. A crash (`kill -9`) cannot be answered in-process; see the backup runbook.
+    @Contract
+    public void onNodeStopping() {
+        deactivate();
+    }
+
     @Contract
     void activate() {
         if (!leader.compareAndSet(false, true)) {
@@ -205,6 +216,7 @@ public final class BackupRestoreCoordinator {
         }
 
         nextBackoff.set(INITIAL_BACKOFF);
+        warnIfBackupMissing();
         runPass();
     }
 
@@ -215,6 +227,67 @@ public final class BackupRestoreCoordinator {
         }
 
         cancelPendingRetry();
+        recoverBackupMissing();
+        recoverRestoreBlocked();
+    }
+
+    /// A node that raised `backup-restore-blocked` is the only one whose event layer can close it, and it stops holding the cluster when
+    /// it stops leading, stops, or restarts (a restart is a stop first). The next leader that cannot read the backup raises it again.
+    @Contract
+    private void recoverRestoreBlocked() {
+        if (blocked.compareAndSet(true, false)) {
+            warnings.emit(BackupWarning.backupWarning(Code.BACKUP_RESTORE_UNBLOCKED,
+                                                      "this node no longer leads (or is stopping), so its blocked backup restore no longer holds the cluster;"
+                                                     + " a leader that still cannot read the backup raises backup-restore-blocked again"));
+        }
+    }
+
+    /// #1968: a leader with no `[backup]` while the cluster's committed state says the backup is in use (typically a replacement
+    /// provisioned without it) would stop the backup without a word. The committed setting is KEPT: this node commits
+    /// nothing, a terminal decision stands, and the one thing it can do is say so, once per leadership term. Refusing instead
+    /// (withholding the decision) would hold [RestoreGate] closed and refuse every cluster-state write cluster-wide for as
+    /// long as this node leads, and a node cannot make itself stop leading.
+    @Contract
+    private void warnIfBackupMissing() {
+        if (source.isEmpty() && committedBackupExpected() && missingReported.compareAndSet(false, true)) {
+            warnings.emit(BackupWarning.backupWarning(Code.BACKUP_CONFIG_MISSING,
+                                                      "this node leads without a [backup] section, but the cluster's committed state says the backup is in use,"
+                                                     + " so nothing is backed up while it leads; the committed setting is unchanged. Restart this node"
+                                                     + " with the cluster's [backup] (or the AETHER_BACKUP_* environment), or move leadership to a node that has it"));
+        }
+    }
+
+    @Contract
+    private void recoverBackupMissing() {
+        if (missingReported.compareAndSet(true, false)) {
+            warnings.emit(BackupWarning.backupWarning(Code.BACKUP_CONFIG_RESTORED,
+                                                      "this node no longer leads (or is stopping), so its missing [backup] no longer stops the cluster's backup;"
+                                                     + " a leader that also lacks [backup] raises backup-config-missing again"));
+        }
+    }
+
+    /// The committed state names a backup in use: a restore decision made by a backup-enabled leader (anything but DISABLED),
+    /// or a committed cluster configuration with a source whose `node_config` enables `[backup]` with a path.
+    private boolean committedBackupExpected() {
+        return RestoreGate.decision(kvStore)
+                          .map(marker -> marker.outcome() != BackupRestoreOutcome.DISABLED && marker.outcome() != BackupRestoreOutcome.UNKNOWN)
+                          .or(false) || committedConfigEnablesBackup();
+    }
+
+    private boolean committedConfigEnablesBackup() {
+        return kvStore.get(AetherKey.ClusterConfigKey.CURRENT)
+                      .filter(AetherValue.ClusterConfigValue.class::isInstance)
+                      .map(AetherValue.ClusterConfigValue.class::cast)
+                      .flatMap(AetherValue.ClusterConfigValue::tomlContent)
+                      .flatMap(toml -> ClusterBootstrapConfigParser.parse(toml).fold(_ -> Option.<org.pragmatica.aether.config.cluster.ClusterBootstrapConfig> none(),
+                                                                                     Option::some))
+                      .map(config -> config.sources()
+                                           .values()
+                                           .stream()
+                                           .anyMatch(source -> source.nodeConfig()
+                                                                     .flatMap(NodeUserDataRenderer::backupPath)
+                                                                     .isPresent()))
+                      .or(false);
     }
 
     boolean isComplete() {
@@ -607,8 +680,8 @@ public final class BackupRestoreCoordinator {
         if (done.compareAndSet(false, true)) {
             RestoreGate.decision(kvStore).onPresent(BackupRestoreCoordinator::logDecision);
             if (blocked.compareAndSet(true, false)) {
-                warnings.emit(BackupWarning.backupWarning(Code.BACKUP_RECOVERED,
-                                                          "the backup restore is no longer blocked"));
+                warnings.emit(BackupWarning.backupWarning(Code.BACKUP_RESTORE_UNBLOCKED,
+                                                          "the backup restore is no longer blocked: the backup was read and the restore decision committed"));
             }
         }
     }

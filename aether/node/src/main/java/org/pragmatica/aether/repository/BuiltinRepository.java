@@ -29,12 +29,15 @@ public interface BuiltinRepository extends Repository {
                                 .flatMap(resolved -> writeToTempFile(artifact, resolved));
     }
 
-    /// The store's own "no such artifact" is an ANSWER; a timeout or DHT error is not, and passes through
-    /// unchanged so the composite can tell the two apart.
+    /// The store's own "no such artifact" is an ANSWER, and so is "archived" (#1778: archived means
+    /// unavailable on purpose); a timeout or DHT error is not, and passes through unchanged so the composite
+    /// can tell the two apart.
     private static Cause answerOf(Cause cause) {
-        return cause instanceof ArtifactStore.ArtifactStoreError.NotFound notFound
-               ? new RepositoryError.NotInStore(notFound.message())
-               : cause;
+        return switch (cause) {
+            case ArtifactStore.ArtifactStoreError.NotFound notFound -> new RepositoryError.NotInStore(notFound.message());
+            case ArtifactStore.ArtifactStoreError.Archived archived -> new RepositoryError.NotInStore(archived.message());
+            default -> cause;
+        };
     }
 
     private static Promise<Location> writeToTempFile(Artifact artifact, ResolvedArtifact resolved) {

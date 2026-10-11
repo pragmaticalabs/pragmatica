@@ -19,6 +19,7 @@ import java.net.BindException;
 import java.net.DatagramSocket;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
+import java.time.Duration;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
@@ -106,7 +107,7 @@ class QuicServerPortExclusiveTest {
     /// #1727's reproduction as a regression: mid-burst, a reuse-enabled socket tries to bind the acceptor's port — as a
     /// concurrent server's bind on the same host would. It must be refused, and every write must still be delivered.
     @Test
-    void intruderBindMidBurst_isRefused_andEveryWriteIsDelivered() throws IOException {
+    void intruderBindMidBurst_isRefused_andEveryWriteIsDelivered() throws IOException, InterruptedException {
         assumeTrue(platformSharesReusePorts(), "this platform never lets two SO_REUSEADDR UDP sockets share a port");
         var port = startServer(0);
 
@@ -137,6 +138,8 @@ class QuicServerPortExclusiveTest {
         assertThat(intrusion.get()).as("the intruder's bind on the acceptor's port is refused").startsWith("refused");
         awaitTrue(() -> delivered() == BURST, "every write is delivered despite the intrusion attempt (delivered=" + delivered()
                                               + " succeeded=" + succeeded.get() + ")");
+        // The thread exits after intrusion.set, which delivered()==BURST does not order: join, then assert.
+        intruderThread.join(Duration.ofSeconds(10));
         assertThat(intruderThread.isAlive()).isFalse();
     }
 

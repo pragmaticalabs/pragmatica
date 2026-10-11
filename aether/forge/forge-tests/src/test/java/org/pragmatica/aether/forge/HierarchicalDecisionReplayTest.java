@@ -1,4 +1,7 @@
 // SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.forge;
 
 import java.util.List;
@@ -40,7 +43,7 @@ class HierarchicalDecisionReplayTest {
     private static final TimeSpan BUDGET = TimeSpan.timeSpan(120).seconds();
     private static final TimeSpan REQUEST = TimeSpan.timeSpan(15).seconds();
     private static final AetherKey.LogLevelKey KEY = AetherKey.LogLevelKey.forLogger("hierarchy.replay.probe");
-    private final EmberCluster cluster = EmberCluster.emberCluster(3, 35400, 35500, 35600, "replay");
+    private final EmberCluster cluster = EmberCluster.emberCluster(3, 3220, 3320, 3420, "replay");
 
     private Runnable restoreObserver = () -> {};
 

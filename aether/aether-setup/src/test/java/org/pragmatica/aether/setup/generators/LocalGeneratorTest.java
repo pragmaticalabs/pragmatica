@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.setup.generators;
 
 import java.nio.file.Files;
@@ -42,6 +41,32 @@ class LocalGeneratorTest {
                                                                                             + "pings from a dead process (deployment-recovery.md §4.5). Got:\n" + startScript)
                       .isEqualTo(nodes);
         }
+    }
+
+    /// #960 class: the generated `status.sh` curls a node health route; the node serves
+    /// `/health/live` and `/health/ready`, never bare `/health` (a 404 that `curl -s` prints as success).
+    @Test
+    void generate_statusScript_curlsARouteTheNodeServes(@TempDir Path outputDir) {
+        var statusScript = generateStatus(outputDir, false);
+
+        assertThat(statusScript).as("control: the status script probes node health").contains("/health/");
+        assertThat(statusScript).contains("curl -sk http://localhost:$PORT/health/ready").doesNotContain("/health 2>");
+    }
+
+    @Test
+    void generate_tlsEnabled_statusScriptUsesHttps(@TempDir Path outputDir) {
+        var statusScript = generateStatus(outputDir, true);
+
+        assertThat(statusScript).contains("curl -sk https://localhost:$PORT/health/ready");
+    }
+
+    private static String generateStatus(Path outputDir, boolean tls) {
+        var config = AetherConfig.builder().withEnvironment(Environment.LOCAL).tls(tls).build();
+
+        assertThat(config.tlsEnabled()).as("control: the config under test has the requested TLS mode").isEqualTo(tls);
+        new LocalGenerator().generate(config, outputDir).onFailure(cause -> fail(cause.message()));
+
+        return read(outputDir.resolve("status.sh"));
     }
 
     private static int occurrences(String text, String needle) {

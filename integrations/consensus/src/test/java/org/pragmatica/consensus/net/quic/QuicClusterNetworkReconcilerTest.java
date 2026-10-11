@@ -666,6 +666,30 @@ class QuicClusterNetworkReconcilerTest {
             .isEqualTo(0L);
     }
 
+    /// #1973: the same unicast to a null-state member, but a NoOfflineBuffering frame (an entity owner-forward): not buffered,
+    /// reported ConnectionDead (not sent), so it can never be delivered after the caller was told it was not.
+    @Test
+    void sendOutcome_toNullMemberPeer_noOfflineBufferingFrame_isNotBuffered_andReportsNotSent() {
+        var self = new NodeId("zzz-self");
+        var member = new NodeId("aaa-member");
+        var peerInfo = NodeInfo.nodeInfo(member, addressOf("127.0.0.1", 1));
+        var stub = countingTopology(self, List.of(peerInfo), Set.of(self, member));
+        var network = createNetwork(self, List.of(peerInfo), MessageRouter.mutable(), stub);
+
+        var outcome = network.sendOutcome(member, new UnbufferedStubMessage(self)).await(AWAIT_TIMEOUT);
+
+        outcome.onFailure(cause -> fail("sendOutcome should resolve: " + cause.message()))
+               .onSuccess(result -> assertThat(result).isInstanceOf(WriteOutcome.ConnectionDead.class));
+        assertThat(network.offlineBufferSizeForTests(member)).as("nothing held for a late delivery").isZero();
+    }
+
+    private record UnbufferedStubMessage(NodeId sender) implements ProtocolMessage, org.pragmatica.consensus.net.NoOfflineBuffering {
+        @Override
+        public StreamType streamType() {
+            return StreamType.FORWARD;
+        }
+    }
+
     @Test
     void sendOutcome_toNullMemberPeer_buffersAndReportsSent() {
         // #491: the outcome-tracking sendOutcome variant must ALSO buffer (not NoPeerState-drop) a unicast to

@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.cli;
 
 import java.io.BufferedReader;
@@ -342,7 +341,7 @@ public class AetherCli implements Runnable {
     }
 
     @Contract
-    private void readConfigFromPath(Path path) {
+    void readConfigFromPath(Path path) {
         ConfigLoader.load(path).onSuccess(this::setAddressFromConfig).onFailure(this::onConfigLoadFailure);
         configPath = path;
     }
@@ -382,8 +381,14 @@ public class AetherCli implements Runnable {
     }
 
     private void onConfigLoadFailure(Cause cause) {
-        System.err.println("Warning: Failed to load config: " + cause.message());
+        System.err.println(configLoadWarning(cause));
         nodeAddress = DEFAULT_ADDRESS;
+    }
+
+    /// The CLI keeps going on its default address when a config file fails to load (it is a client, not a node), but the warning carries the
+    /// CAUSE: a bare "failed to load" hides which setting was refused (#909).
+    static String configLoadWarning(Cause cause) {
+        return "Warning: Failed to load config: " + cause.message();
     }
 
     @Contract
@@ -936,9 +941,12 @@ public class AetherCli implements Runnable {
             @Parameters(index = "0", description = "Node ID")
             private String nodeId;
 
+            @CommandLine.Option(names = {"--override-floor"}, description = "Override the slice minAvailable floor: proceed even if a hosted slice would fall below it (the cluster raises an operator warning)")
+            private boolean overrideFloor;
+
             @Override
             public Integer call() {
-                return executeTransition(NODE_DRAIN, "drain", nodeId, nodesParent);
+                return executeTransition(NODE_DRAIN, "drain", nodeId, nodesParent, overrideFloor);
             }
         }
 
@@ -950,9 +958,12 @@ public class AetherCli implements Runnable {
             @Parameters(index = "0", description = "Node ID")
             private String nodeId;
 
+            @CommandLine.Option(names = {"--override-floor"}, description = "Override the slice minAvailable floor: proceed even if a hosted slice would fall below it (the cluster raises an operator warning)")
+            private boolean overrideFloor;
+
             @Override
             public Integer call() {
-                return executeTransition(NODE_SHUTDOWN, "shutdown", nodeId, nodesParent);
+                return executeTransition(NODE_SHUTDOWN, "shutdown", nodeId, nodesParent, overrideFloor);
             }
         }
 
@@ -1088,8 +1099,14 @@ public class AetherCli implements Runnable {
         private static Integer executeTransition(ManagementRoute route,
                                                  String action,
                                                  String nodeId,
-                                                 NodesCommand nodesParent) {
-            var response = nodesParent.parent.post(route, List.of(nodeId), "");
+                                                 NodesCommand nodesParent,
+                                                 boolean overrideFloor) {
+            var response = nodesParent.parent.post(route,
+                                                   List.of(nodeId),
+                                                   overrideFloor
+                                                   ? "force=true"
+                                                   : "",
+                                                   "");
             var errorCode = OutputFormatter.checkResponseError(response,
                                                                nodesParent.parent.outputOptions(),
                                                                "Failed to " + action + " node " + nodeId);
@@ -1414,7 +1431,7 @@ public class AetherCli implements Runnable {
             CommandLine.usage(this, System.out);
         }
 
-        @Command(name = "deploy", description = "Deploy a JAR file to the artifact repository")
+        @Command(name = "deploy", description = "Deploy a JAR file to the artifact repository. A coordinate is written once: re-deploying identical content is a no-op, different content is refused (409), and SNAPSHOT versions are refused (400)")
         static class DeployArtifactCommand implements Callable<Integer> {
             @CommandLine.ParentCommand
             private ArtifactCommand artifactParent;
@@ -1472,7 +1489,7 @@ public class AetherCli implements Runnable {
             }
         }
 
-        @Command(name = "push", description = "Push blueprint and its slices from local Maven repository to cluster")
+        @Command(name = "push", description = "Push blueprint and its slices from local Maven repository to cluster. Coordinates are written once: identical content is a no-op, different content is refused (409), and SNAPSHOT versions are refused (400)")
         static class PushArtifactCommand implements Callable<Integer> {
             @CommandLine.ParentCommand
             private ArtifactCommand artifactParent;
@@ -1958,7 +1975,7 @@ public class AetherCli implements Runnable {
             }
         }
 
-        @Command(name = "delete", description = "Delete an artifact from the repository")
+        @Command(name = "archive", aliases = "delete", description = "Archive an artifact version: it stops resolving and is delisted, its keys are kept. Allowed once the version has been stored for the minimum retention period (default 7 days, [slice] artifact_archive_retention)")
         static class DeleteCommand implements Callable<Integer> {
             @CommandLine.ParentCommand
             private ArtifactCommand artifactParent;
@@ -1981,7 +1998,7 @@ public class AetherCli implements Runnable {
                                                             List.of(parts[0].replace('.', '/'), parts[1], parts[2]));
                 var errorCode = OutputFormatter.checkResponseError(response,
                                                                    artifactParent.parent.outputOptions(),
-                                                                   "Failed to delete");
+                                                                   "Failed to archive");
 
                 if (errorCode >= 0) {
                     return errorCode;
@@ -1989,7 +2006,7 @@ public class AetherCli implements Runnable {
 
                 return OutputFormatter.printAction(response,
                                                    artifactParent.parent.outputOptions(),
-                                                   "Deleted " + coordinates);
+                                                   "Archived " + coordinates);
             }
         }
 

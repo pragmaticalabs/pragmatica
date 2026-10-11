@@ -10,13 +10,20 @@ import java.util.function.Supplier;
 import org.pragmatica.aether.http.handler.security.AuthorizationRole;
 import org.pragmatica.aether.http.handler.security.SecurityContext;
 import org.pragmatica.aether.http.handler.security.SecurityContextHolder;
+import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.management.route.ManagementRoute;
+import org.pragmatica.aether.resource.artifact.ArtifactStore;
+import org.pragmatica.aether.resource.artifact.MavenProtocolHandler;
 import org.pragmatica.aether.resource.artifact.MavenProtocolHandler.MavenResponse;
 import org.pragmatica.aether.node.ManageableNode;
 import org.pragmatica.http.ContentCategory;
+import org.pragmatica.http.CommonContentType;
 import org.pragmatica.http.ContentType;
+import org.pragmatica.http.HttpError;
 import org.pragmatica.http.HttpStatus;
 import org.pragmatica.http.HttpRequest;
+import org.pragmatica.http.JsonCodec;
+import org.pragmatica.http.routing.JsonCodecAdapter;
 import org.pragmatica.http.server.ResponseWriter;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
@@ -29,6 +36,8 @@ import org.pragmatica.storage.StorageError;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import static org.pragmatica.aether.api.ManagementApiResponses.ArtifactInfoResponse;
+import static org.pragmatica.http.HttpMethod.DELETE;
 import static org.pragmatica.http.HttpMethod.GET;
 import static org.pragmatica.http.HttpMethod.POST;
 import static org.pragmatica.http.HttpMethod.PUT;
@@ -39,6 +48,7 @@ public final class MavenProtocolRoutes implements RouteHandler {
     private static final Logger log = LoggerFactory.getLogger(MavenProtocolRoutes.class);
     private static final String DEV_MODE_ENV = "AETHER_INSECURE_DEV_MODE";
     private static final String REPOSITORY_PREFIX = ManagementRoute.ARTIFACT_GET.prefix() + "/";
+    private static final JsonCodec JSON_CODEC = JsonCodecAdapter.defaultCodec();
     private static final String REPOSITORY_INFO_PREFIX = ManagementRoute.ARTIFACT_INFO.prefix() + "/";
     /// Per-request deadline (HTTP backstop). The maven protocol handler delegates to the
     /// artifact store, whose resolve/deploy pipelines are now individually bounded — but this
@@ -59,7 +69,7 @@ public final class MavenProtocolRoutes implements RouteHandler {
     /// unmeasured retry hint [design intent — unverified]: it need only beat `mvn deploy`'s own
     /// "do not retry a 500" default so a CI deploy racing a node restart backs off and succeeds on
     /// its own retry instead of failing hard.
-    private static final int TIER_NOT_ADMITTED_RETRY_AFTER_SECONDS = 1;
+    private static final int RETRY_AFTER_SECONDS = 1;
 
     /// Security-relevant bypass notices (#520). Both name the artifact, the posture that admitted it,
     /// and what an operator must change — a WARN nobody can read past without understanding it.
@@ -140,7 +150,11 @@ public final class MavenProtocolRoutes implements RouteHandler {
         var path = ctx.path();
         var method = ctx.method();
 
-        if (!path.startsWith(REPOSITORY_PREFIX) || path.startsWith(REPOSITORY_INFO_PREFIX)) {
+        if (path.startsWith(REPOSITORY_INFO_PREFIX)) {
+            return method == GET && handleInfo(ctx, response);
+        }
+
+        if (!path.startsWith(REPOSITORY_PREFIX)) {
             return false;
         }
 
@@ -152,6 +166,12 @@ public final class MavenProtocolRoutes implements RouteHandler {
 
         if (method == POST || method == PUT) {
             handlePush(response, path, ctx.body());
+
+            return true;
+        }
+
+        if (method == DELETE) {
+            handleArchive(response, path);
 
             return true;
         }
@@ -185,6 +205,22 @@ public final class MavenProtocolRoutes implements RouteHandler {
 
         warnUnauthenticatedPush(admission, path);
         handlePut(response, path, content);
+    }
+
+    /// `DELETE /repository/<groupPath>/<artifactId>/<version>` archives the version (#1778). Archiving
+    /// changes what the cluster will resolve, so it takes the same OPERATOR-or-ADMIN admission as a push.
+    @Contract
+    private void handleArchive(ResponseWriter response, String path) {
+        var admission = admitPush();
+
+        if (admission == PushAdmission.DENIED) {
+            rejectUnauthorizedPush(response, path);
+
+            return;
+        }
+
+        warnUnauthenticatedPush(admission, path);
+        handleDelete(response, path);
     }
 
     /// Defense-in-depth authorization for artifact publication (#282, #520). Artifact PUT/POST place
@@ -246,7 +282,54 @@ public final class MavenProtocolRoutes implements RouteHandler {
 
     private void rejectUnauthorizedPush(ResponseWriter response, String path) {
         response.header("WWW-Authenticate", "ApiKey realm=\"Aether\"");
-        response.error(HttpStatus.UNAUTHORIZED, "Artifact publication requires OPERATOR or ADMIN authentication");
+        response.error(HttpStatus.UNAUTHORIZED,
+                       "Artifact publication and archiving require OPERATOR or ADMIN authentication");
+    }
+
+    /// `GET /repository/info/<groupPath>/<artifactId>/<version>` (`ARTIFACT_INFO`, #1102). The group is
+    /// every segment before the last two, read by the same parser as `DELETE`, so a dotted group
+    /// (`org/example`) spans segments here exactly as it does on `ARTIFACT_GET`. It used to be a typed
+    /// route of three single-segment parameters, which never matched a group with more than one segment.
+    @Contract
+    private boolean handleInfo(HttpRequest ctx, ResponseWriter response) {
+        var path = ctx.path();
+        var coordinates = path.substring(REPOSITORY_INFO_PREFIX.length());
+
+        MavenProtocolHandler.parseVersionPath(coordinates)
+                            .onEmpty(() -> response.badRequest("Cannot parse path: " + path))
+                            .onPresent(artifact -> respondWithInfo(ctx, response, artifact));
+
+        return true;
+    }
+
+    @Contract
+    private void respondWithInfo(HttpRequest ctx, ResponseWriter response, Artifact artifact) {
+        var node = nodeSupplier.get();
+
+        node.artifactStore()
+            .resolveWithMetadata(artifact)
+            .timeout(requestTimeout)
+            .map(resolved -> artifactInfoOf(node, artifact, resolved))
+            .flatMap(info -> JSON_CODEC.serialize(info).async())
+            .onSuccess(bytes -> response.write(HttpStatus.OK, bytes, CommonContentType.APPLICATION_JSON))
+            .onFailure(cause -> ProblemResponses.writeProblem(response,
+                                                              cause,
+                                                              ctx.path(),
+                                                              ctx.requestId()));
+    }
+
+    private static ArtifactInfoResponse artifactInfoOf(ManageableNode node,
+                                                       Artifact artifact,
+                                                       ArtifactStore.ResolvedArtifact resolved) {
+        var meta = resolved.metadata();
+
+        return new ArtifactInfoResponse(artifact.asString(),
+                                        meta.size(),
+                                        meta.chunkCount(),
+                                        meta.md5(),
+                                        meta.sha1(),
+                                        meta.deployedAt(),
+                                        node.artifactMetricsCollector().isDeployed(artifact));
     }
 
     @Contract
@@ -271,16 +354,27 @@ public final class MavenProtocolRoutes implements RouteHandler {
             .onFailure(cause -> sendFailureResponse(response, cause));
     }
 
+    @Contract
+    private void handleDelete(ResponseWriter response, String uri) {
+        var node = nodeSupplier.get();
+
+        node.mavenProtocolHandler()
+            .handleDelete(uri)
+            .timeout(requestTimeout)
+            .onSuccess(r -> sendProtocolResponse(response, r))
+            .onFailure(cause -> sendFailureResponse(response, cause));
+    }
+
     private void sendFailureResponse(ResponseWriter response, Cause cause) {
         if (cause instanceof CoreError.Timeout) {
-            response.error(HttpStatus.GATEWAY_TIMEOUT, cause.message());
+            response.error(HttpStatus.GATEWAY_TIMEOUT, HttpError.clientMessage(cause));
 
             return;
         }
 
         if (cause instanceof StorageError.TierNotAdmitted) {
-            response.header("Retry-After", String.valueOf(TIER_NOT_ADMITTED_RETRY_AFTER_SECONDS));
-            response.error(HttpStatus.SERVICE_UNAVAILABLE, cause.message());
+            response.header("Retry-After", String.valueOf(RETRY_AFTER_SECONDS));
+            response.error(HttpStatus.SERVICE_UNAVAILABLE, HttpError.clientMessage(cause));
 
             return;
         }
@@ -290,6 +384,10 @@ public final class MavenProtocolRoutes implements RouteHandler {
 
     private void sendProtocolResponse(ResponseWriter response, MavenResponse mavenResponse) {
         var status = findHttpStatus(mavenResponse.statusCode());
+
+        if (status == HttpStatus.SERVICE_UNAVAILABLE) {
+            response.header("Retry-After", String.valueOf(RETRY_AFTER_SECONDS));
+        }
 
         response.write(status,
                        mavenResponse.content(),

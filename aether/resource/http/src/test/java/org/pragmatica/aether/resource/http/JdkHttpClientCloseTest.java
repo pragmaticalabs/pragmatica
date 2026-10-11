@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.resource.http;
 
 import java.net.http.HttpClient.Redirect;
@@ -101,8 +100,8 @@ class JdkHttpClientCloseTest {
                          .isSuccess()).isTrue();
     }
 
-    /// The JDK backend's operations own no releasable state and implement no close convention, so
-    /// the client's close is a success rather than a failure.
+    /// The JDK backend's operations are `AsyncCloseable` since #1097 (they shut their `HttpClient` down);
+    /// the client's close succeeds through them.
     @Test
     void close_succeeds_withJdkBackend() {
         var client = JdkHttpClient.jdkHttpClient(configWith(HttpBackend.JDK));

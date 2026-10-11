@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.slice.blueprint;
 
 import java.util.List;
@@ -102,6 +101,18 @@ public sealed interface StreamDeclarationError extends Cause {
         @Override
         public String message() {
             return "Stream resource '" + alias + "' has " + key + " = '" + value + "', below the minimum of " + minimum;
+        }
+    }
+
+    /// A value above its key's maximum (#1937): a `max-event-size` that cannot travel in one replication or catch-up frame.
+    record ValueAboveMaximum(String alias, String key, String value, long maximum) implements StreamDeclarationError {
+        @Override
+        public String message() {
+            return "Stream resource '" + alias
+                 + "' has " + key
+                 + " = '" + value
+                 + "', above the maximum of " + maximum
+                 + " bytes: one event must fit a single replication or catch-up frame";
         }
     }
 

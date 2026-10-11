@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.resource.db.async;
 
 import org.pragmatica.aether.resource.ResourceFactory;
@@ -49,11 +48,11 @@ public final class AsyncSqlConnectorFactory implements ResourceFactory<SqlConnec
     }
 
     private static void configureConnection(NettyConnectibleBuilder builder, DatabaseConnectorConfig config) {
-        builder.hostname(config.effectiveHost());
-        builder.port(config.effectivePort());
-        builder.database(config.effectiveDatabase());
-        config.effectiveUsername().onPresent(builder::username);
-        config.effectivePassword().onPresent(builder::password);
+        builder.hostname(config.effectiveHost(DatabaseConnectorConfig.Transport.ASYNC));
+        builder.port(config.effectivePort(DatabaseConnectorConfig.Transport.ASYNC));
+        builder.database(config.effectiveDatabase(DatabaseConnectorConfig.Transport.ASYNC));
+        config.effectiveUsername(DatabaseConnectorConfig.Transport.ASYNC).onPresent(builder::username);
+        config.effectivePassword(DatabaseConnectorConfig.Transport.ASYNC).onPresent(builder::password);
     }
 
     private static void configurePool(NettyConnectibleBuilder builder, DatabaseConnectorConfig config) {

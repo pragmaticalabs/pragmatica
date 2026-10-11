@@ -6,8 +6,16 @@ name: Heavy forge tests
 # workflow_dispatch, and on a pull request carrying the `run-heavy` label (re-run on each push while the
 # label stays).
 #
-# GitHub fires `schedule` only for the workflow file on the DEFAULT branch (main), against main's code.
-# A release branch gets Heavy coverage from the label or from dispatch, not from the nightly run.
+# GitHub fires `schedule` only for the workflow file on the DEFAULT branch, against that branch's code
+# (release-1.0.0-rc4 while it is the default). Another release branch gets Heavy coverage from the label or
+# from dispatch, not from the nightly run.
+#
+# A red nightly must reach someone: the `notify` job keeps exactly one open issue labelled `heavy-nightly`
+# (opened or commented on a red scheduled night, closed on a green one); GitHub's own notifications mail it.
+# A known red (@KnownRed, a ticketed enabled tripwire) is listed apart from a new red and does not fail the run.
+permissions:
+  contents: read
+
 on:
   schedule:
     - cron: '17 2 * * *'
@@ -18,6 +26,11 @@ on:
 
 jobs:
   heavy-forge-tests:
+    outputs:
+      state: ${{ steps.summary.outputs.state }}
+      reason: ${{ steps.summary.outputs.reason }}
+      new_reds: ${{ steps.summary.outputs.new_reds }}
+      known_reds: ${{ steps.summary.outputs.known_reds }}
     # A labelled event for some other label must not start (or cancel) a Heavy run.
     if: >-
       github.event_name != 'pull_request' ||
@@ -78,29 +91,14 @@ jobs:
 
       # Counts <testcase> elements, never the <testsuite tests="N"> attribute, which reads 0 for
       # @Nested classes.
+      # The state (ok | red | unknown) goes to the notify job. UNKNOWN (no report, a report that does not parse, zero testcases) fails this
+      # step: a run that examined nothing is never green. pipefail so the script's exit code survives the tee.
       - name: Summarise failsafe reports
+        id: summary
         if: always()
         run: |
-          python3 - <<'EOF' | tee -a "$GITHUB_STEP_SUMMARY"
-          import glob, xml.etree.ElementTree as ET
-          files = sorted(glob.glob('aether/forge/forge-tests/target/failsafe-reports/TEST-*.xml'))
-          print('### Heavy forge tests: failsafe reports\n')
-          print('| class | testcases | failures | errors | skipped | seconds |')
-          print('|---|---|---|---|---|---|')
-          total = {'cases': 0, 'failures': 0, 'errors': 0, 'skipped': 0}
-          for f in files:
-              suite = ET.parse(f).getroot()
-              cases = suite.findall('testcase')
-              failures = sum(1 for c in cases if c.find('failure') is not None)
-              errors = sum(1 for c in cases if c.find('error') is not None)
-              skipped = sum(1 for c in cases if c.find('skipped') is not None)
-              name = suite.get('name', f).rsplit('.', 1)[-1]
-              print(f"| {name} | {len(cases)} | {failures} | {errors} | {skipped} | {suite.get('time', '?')} |")
-              total['cases'] += len(cases); total['failures'] += failures
-              total['errors'] += errors; total['skipped'] += skipped
-          print(f"\n**{len(files)} report files, {total['cases']} testcases, {total['failures']} failures, "
-                f"{total['errors']} errors, {total['skipped']} skipped**")
-          EOF
+          set -o pipefail
+          python3 tools/heavy-forge-summary.py | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: Upload Heavy forge test results
         uses: actions/upload-artifact@v6
@@ -112,3 +110,49 @@ jobs:
             aether/forge/forge-tests/target/failsafe-reports/*.xml
             aether/forge/forge-tests/target/failsafe-reports/*.txt
           retention-days: 14
+
+  # One heavy-nightly issue: opened or commented on a red scheduled night, closed on a green one. `issues: write` is scoped to
+  # this job only; the test job above keeps `contents: read`. The lists come in through env, never interpolated into the script.
+  notify:
+    needs: heavy-forge-tests
+    if: always() && github.event_name == 'schedule' && (needs.heavy-forge-tests.result == 'success' || needs.heavy-forge-tests.result == 'failure')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      issues: write
+    concurrency:
+      group: heavy-nightly-issue
+      cancel-in-progress: false
+    steps:
+      - name: Open, update or close the heavy-nightly issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RESULT: ${{ needs.heavy-forge-tests.result }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          SHA: ${{ github.sha }}
+          STATE: ${{ needs.heavy-forge-tests.outputs.state }}
+          REASON: ${{ needs.heavy-forge-tests.outputs.reason }}
+          NEW_REDS: ${{ needs.heavy-forge-tests.outputs.new_reds }}
+          KNOWN_REDS: ${{ needs.heavy-forge-tests.outputs.known_reds }}
+        run: |
+          set -euo pipefail
+          gh label create heavy-nightly --description "the nightly Heavy forge run" --force >/dev/null
+          open=$(gh issue list --label heavy-nightly --state open --json number --jq '.[0].number // empty')
+          # Close ONLY on a night that is both a green job and a summary that read real reports (state ok). Anything else, including a missing or
+          # unknown state, keeps the issue open: an unknown night is never green.
+          if [ "$RESULT" = success ] && [ "${STATE:-}" = ok ]; then
+            if [ -n "$open" ]; then
+              gh issue close "$open" --comment "Green: $RUN_URL ($SHA)"
+            fi
+            exit 0
+          fi
+          body=$(printf 'Run: %s\nCommit: %s\nState: %s %s\n\nNew reds:\n%s\n\nKnown reds:\n%s\n' "$RUN_URL" "$SHA" "${STATE:-unknown}" "${REASON:-}" "${NEW_REDS:-none listed}" "${KNOWN_REDS:-none}")
+          # the title says which kind of bad night this is, and follows the latest night when it changes
+          if [ "${STATE:-}" = red ]; then title="Heavy nightly: new reds"; else title="Heavy nightly: unknown result"; fi
+          if [ -n "$open" ]; then
+            gh issue edit "$open" --title "$title"
+            gh issue comment "$open" --body "$body"
+          else
+            gh issue create --title "$title" --label heavy-nightly --body "$body"
+          fi

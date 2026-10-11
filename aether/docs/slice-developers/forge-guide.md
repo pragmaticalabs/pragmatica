@@ -186,8 +186,11 @@ base_port = 6000             # Base QUIC/consensus UDP port (node i binds base_p
 management_port = 5150       # Base management port
 dashboard_port = 8888        # Dashboard port
 app_http_port = 8070         # Base app HTTP port (load target)
-start_timeout_seconds = 60   # How long to wait for the cluster to finish forming before exiting
+start_timeout_seconds = 60   # How long to wait for the cluster to finish forming, and for the startup blueprint deploy, before exiting
 ```
+
+`start_timeout_seconds` also bounds the startup blueprint deploy that `--blueprint` issues once the cluster is
+up; a deploy that does not answer inside it fails the same way, and the failure names the budget.
 
 If the cluster does not finish forming inside `start_timeout_seconds`, Forge exits non-zero and
 reports what it had reached at the deadline — how many nodes were consensus-active, the leader (or

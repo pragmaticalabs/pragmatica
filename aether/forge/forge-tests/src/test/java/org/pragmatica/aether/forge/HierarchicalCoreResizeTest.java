@@ -1,4 +1,7 @@
 // SPDX-License-Identifier: BUSL-1.1
+// Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.forge;
 
 import java.net.URI;
@@ -68,7 +71,7 @@ class HierarchicalCoreResizeTest {
             [source.default.core]
             count = 3
             """;
-        var after = new AetherValue.ClusterConfigValue(configuration, "resize", "1.0.0",
+        var after = new AetherValue.ClusterConfigValue(Option.some(configuration), "resize", "1.0.0",
             List.of(new AetherValue.TopologyEntry("default", "core", 3)), 3, 11,
             "forge", before.configVersion() + 1, System.currentTimeMillis());
         var id = UUID.randomUUID().toString();

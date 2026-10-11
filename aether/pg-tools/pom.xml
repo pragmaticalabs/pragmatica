@@ -52,6 +52,8 @@
                 <groupId>org.pragmatica-lite.aether</groupId>
                 <artifactId>pg-test-corpus</artifactId>
                 <version>${project.version}</version>
+                <!-- SQL fixtures only; nothing in any src/main reads them, so no consumer of pg-codegen or pg-schema needs them (#1989) -->
+                <scope>test</scope>
             </dependency>
 
             <dependency>
@@ -61,4 +63,17 @@
             </dependency>
         </dependencies>
     </dependencyManagement>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.sonatype.central</groupId>
+                <artifactId>central-publishing-maven-plugin</artifactId>
+                <inherited>false</inherited>
+                <configuration>
+                    <skipPublishing>false</skipPublishing>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
 </project>

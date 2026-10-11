@@ -224,7 +224,6 @@ dependency.1.version=1.2.0
 config.file=slices/OrderService.toml
 
 # Metadata
-generated.timestamp=2026-01-15T10:30:00Z
 processor.version=0.5.0
 ```
 

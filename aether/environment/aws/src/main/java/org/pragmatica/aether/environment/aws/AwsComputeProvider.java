@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.environment.aws;
 
 import java.util.LinkedHashMap;
@@ -140,11 +139,6 @@ public record AwsComputeProvider(AwsClient client, AwsEnvironmentConfig config) 
         return client.describeInstancesById(instanceId.value())
                      .flatMap(response -> firstInstance(response, instanceId))
                      .mapError(AwsComputeProvider::toProvisionError);
-    }
-
-    @Override
-    public Promise<Unit> restart(InstanceId id) {
-        return client.rebootInstances(List.of(id.value()));
     }
 
     @Override
@@ -663,6 +657,8 @@ public record AwsComputeProvider(AwsClient client, AwsEnvironmentConfig config) 
     /// what was asked for — `InvalidParameterValue: Invalid instance type` does not.
     private static EnvironmentError toProvisionError(String instanceType, String zone, Cause cause) {
         return switch (cause) {
+            // #1111: the instance EXISTS (it was created, then failed readiness): the typed cause reaches the caller, never flattened into a rejection.
+            case EnvironmentError.ProvisionReadinessTimeout timeout -> timeout;
             case AwsError.ApiError api when INSUFFICIENT_CAPACITY_CODE.equals(api.code()) -> EnvironmentError.capacityUnavailable(zone,
                                                                                                                                   new RuntimeException(api.message()));
             case AwsError.ApiError api when SPOT_MAX_PRICE_TOO_LOW_CODE.equals(api.code()) -> EnvironmentError.provisionFailed(instanceType,

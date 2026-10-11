@@ -341,7 +341,7 @@ final class DefaultAetherSchemaManager implements AetherSchemaManager {
         var startNanos = System.nanoTime();
         var sql = migration.entry().sql();
 
-        return MigrationDialects.dialectFor(connector.config().effectiveType())
+        return MigrationDialects.dialectFor(connector.databaseType())
                                 .fold(() -> executeNaive(migration, connector, sql, nodeId, startNanos),
                                       dialect -> executeSplit(datasource,
                                                               migration,

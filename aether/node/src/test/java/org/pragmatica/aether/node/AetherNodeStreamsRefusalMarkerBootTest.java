@@ -4,9 +4,6 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.node;
 
-import java.io.IOException;
-import java.io.UncheckedIOException;
-import java.net.ServerSocket;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -137,7 +134,7 @@ class AetherNodeStreamsRefusalMarkerBootTest {
                                                 5,
                                                 "",
                                                 true);
-        var selfInfo = NodeInfo.nodeInfo(self, nodeAddress("localhost", freePort()).unwrap());
+        var selfInfo = NodeInfo.nodeInfo(self, nodeAddress("localhost", ClusterTestPorts.freeClusterPort()).unwrap());
 
         return AetherNodeConfig.builder()
                                 .self(self)
@@ -156,13 +153,5 @@ class AetherNodeStreamsRefusalMarkerBootTest {
                                 .storageConfig(Map.of("artifacts", artifactsConfig))
                                 .build()
                                 .withStorageEncryption(encryption);
-    }
-
-    private static int freePort() {
-        try (var socket = new ServerSocket(0)) {
-            return socket.getLocalPort();
-        } catch (IOException e) {
-            throw new UncheckedIOException(e);
-        }
     }
 }

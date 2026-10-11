@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.resource.interceptor;
 
 import java.time.Duration;
@@ -49,7 +48,8 @@ class TransientClassificationTest {
             new DatabaseConnectorError.TimedOut("query"),
             DatabaseConnectorError.PoolExhausted.INSTANCE,
             new HttpClientError.ConnectionFailed("refused", Option.none()),
-            new HttpClientError.Timeout("slow", Option.some(Duration.ofSeconds(1))),
+            new HttpClientError.ConnectionFailed("refused", Option.some(new java.net.ConnectException("refused"))),
+            new HttpClientError.ConnectionFailed("dns", Option.some(new java.net.UnknownHostException("nohost"))),
             new DHTError.PeerUnreachable(new NodeId("n1"), "down"),
             new DHTError.QuorumNotReached(2, 1),
             new DHTError.NoAvailableNodes(),
@@ -70,6 +70,10 @@ class TransientClassificationTest {
             new CapacityDenied("not capacity"),
             new DatabaseConnectorError.ConstraintViolation("pk", "dup"),
             new HttpClientError.RequestFailed(500, "boom"),
+            // A timed-out or reset request may already have executed on the server: retrying it under
+            // RetryOn.TRANSIENT could duplicate a non-idempotent call, so neither is classified transient.
+            new HttpClientError.Timeout("slow", Option.some(Duration.ofSeconds(1))),
+            new HttpClientError.ConnectionFailed("reset", Option.some(new java.io.IOException("Connection reset"))),
             new DHTError.StaleEpochWrite(0, 1, 1),
         };
 

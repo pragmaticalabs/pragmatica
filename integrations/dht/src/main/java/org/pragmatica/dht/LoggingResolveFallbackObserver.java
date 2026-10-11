@@ -74,6 +74,7 @@ public final class LoggingResolveFallbackObserver implements ResolveFallbackObse
                                         .isEmpty()
                                     ? "none"
                                     : miss.lateValueFrom())
+             + " departed=" + miss.departed()
              + " rSetAnswered=" + miss.rSetAnswered()
              + " rSetLive=" + miss.rSetLive()
              + " rSetSize=" + miss.rSetSize()

@@ -186,6 +186,105 @@ else
     fail "cloud_server_id provider 'aws' expected rc=2, got rc=${rc}"
 fi
 
+# 15) A lookup MISS is a probe miss, never a counted [FAIL] (cloud run 4: 02-chaos S19 x2, 12-network S05).
+#     log_fail prints on the stdout a caller captures with $(...) AND appends to the fail file that run_test
+#     counts (#1511), so a captured miss was a FAIL with no visible line, and its text became the "address".
+#     The assertion is on the FAIL-FILE DELTA, not on output: `! grep 'no entry'` is vacuous here because that
+#     text is exactly what the old code swallowed into the variable. (The earlier ghost fixtures above pass an
+#     address-shaped check on stdout, so they could not see the count: they shared the premise that a miss may
+#     be a log_fail.)
+miss_probe() {  # <label> <command...>: capture stdout exactly as callers do; report rc, stdout, fail-file delta
+    local label="$1" before after out rc; shift
+    before=$(_harness_fail_lines)
+    out=$("$@" 2>/dev/null); rc=$?
+    after=$(_harness_fail_lines)
+    MISS_RC=$rc; MISS_OUT=$out; MISS_DELTA=$((after - before)); MISS_LABEL=$label
+}
+miss_probe "ghost no entry" cloud_public_ip ghost
+if [ "$MISS_RC" -ne 0 ] && [ -z "$MISS_OUT" ] && [ "$MISS_DELTA" -eq 0 ]; then
+    ok "P1 cloud_public_ip miss: rc!=0, nothing on stdout, fail-file delta 0"
+else fail "P1 cloud_public_ip ghost: rc=${MISS_RC} stdout='${MISS_OUT}' delta=${MISS_DELTA} (want rc!=0, empty, 0)"; fi
+before=$(_harness_fail_lines)
+out=$(BOOTSTRAP_CLUSTER_NAME="cloud-helpers-test-nonexistent-$$" cloud_public_ip node-1 2>/dev/null); rc=$?
+after=$(_harness_fail_lines)
+if [ "$rc" -ne 0 ] && [ -z "$out" ] && [ "$((after - before))" -eq 0 ]; then
+    ok "P2 cloud_public_ip missing state file: rc!=0, nothing on stdout, fail-file delta 0"
+else fail "P2 missing state file: rc=${rc} stdout='${out}' delta=$((after - before))"; fi
+miss_probe "server id, no server has the IP" cloud_server_id node-1
+if [ "$MISS_RC" -eq 1 ] && [ -z "$MISS_OUT" ] && [ "$MISS_DELTA" -eq 0 ]; then
+    ok "P3 cloud_server_id (address known, no server holds it): rc 1 = GONE, nothing on stdout, fail-file delta 0"
+else fail "P3 cloud_server_id node-1: rc=${MISS_RC} stdout='${MISS_OUT}' delta=${MISS_DELTA}"; fi
+miss_probe "server id, node does not resolve" cloud_server_id ghost
+if [ "$MISS_RC" -eq 3 ] && [ -z "$MISS_OUT" ] && [ "$MISS_DELTA" -eq 0 ]; then
+    ok "P4 cloud_server_id (address unresolvable): rc 3 = UNKNOWN (never rc 1 = gone), nothing on stdout, fail-file delta 0"
+else fail "P4 cloud_server_id ghost: rc=${MISS_RC} stdout='${MISS_OUT}' delta=${MISS_DELTA}"; fi
+# P4b: hcloud itself failing is UNKNOWN too (rc 3), not "no server holds the address" (rc 1).
+p4b=$( hcloud() { return 1; }; miss_probe "server id, hcloud list fails" cloud_server_id node-1; echo "${MISS_RC}|${MISS_OUT}|${MISS_DELTA}" )
+if [ "$p4b" = "3||0" ]; then
+    ok "P4b cloud_server_id (address known, hcloud server list FAILS): rc 3 = UNKNOWN, not rc 1 (gone)"
+else fail "P4b hcloud list failing: got '${p4b}' (want '3||0')"; fi
+# Positive control for the instrument: an argument error is a harness bug and STAYS loud and counted, so the
+# delta measure demonstrably sees a log_fail raised inside a capture.
+miss_probe "argument error (control)" cloud_public_ip
+if [ "$MISS_RC" -eq 2 ] && [ "$MISS_DELTA" -eq 1 ]; then
+    ok "P5 control: an argument error still counts through the fail file (delta 1, rc 2) - the delta measure can see a captured log_fail"
+else fail "P5 control: rc=${MISS_RC} delta=${MISS_DELTA} (want rc=2, delta=1)"; fi
+# resolved ids still print and count nothing
+miss_probe "hit" cloud_public_ip node-1
+if [ "$MISS_RC" -eq 0 ] && [ "$MISS_OUT" = "203.0.113.10" ] && [ "$MISS_DELTA" -eq 0 ]; then
+    ok "P6 control: a hit still prints the address, rc 0, delta 0"
+else fail "P6 hit: rc=${MISS_RC} stdout='${MISS_OUT}' delta=${MISS_DELTA}"; fi
+
+# 16) run_test prints a counted [FAIL] it could not show. A [FAIL] raised inside $(...) counts through the fail file
+#     but its text goes into the caller's variable; run_test used to report only "emitted N [FAIL] line(s)" and the
+#     lines themselves were nowhere in the log (S19 x2: found only by reading the run's $TMPDIR fail file).
+swallow_fn() { local v; v=$(log_fail "swallowed-probe-text"); return 0; }
+visible_fn() { log_fail "visible-probe-text" >/dev/null; return 0; }
+rt_out=$( TESTS_PASSED=0 TESTS_FAILED=0; run_test "Swallow probe (T1)" swallow_fn 2>&1; echo "TESTS_FAILED=${TESTS_FAILED}" )
+if printf '%s' "$rt_out" | grep -qF "counted [FAIL] record for this test (1 counted, 0 printed above)" && printf '%s' "$rt_out" | grep -qF "swallowed-probe-text" \
+   && printf '%s' "$rt_out" | grep -qF "TESTS_FAILED=1" && ! printf '%s' "$rt_out" | grep -qF "(swallowed)"; then
+    ok "P7 run_test: a [FAIL] swallowed by \$(...) is recorded as FAIL AND the test's fail-file record is printed (no claim about which line was hidden)"
+else fail "P7 run_test swallowed: $(printf '%s' "$rt_out" | tail -6 | tr '\n' '|')"; fi
+rt_out=$( TESTS_PASSED=0 TESTS_FAILED=0; run_test "Visible probe (T2)" visible_fn 2>&1; echo "TESTS_FAILED=${TESTS_FAILED}" )
+if ! printf '%s' "$rt_out" | grep -qF "counted [FAIL] record" && printf '%s' "$rt_out" | grep -qF "TESTS_FAILED=1"; then
+    ok "P8 control: an in-process [FAIL] (counted by both latches) prints no extra record"
+else fail "P8 run_test visible: $(printf '%s' "$rt_out" | tail -6 | tr '\n' '|')"; fi
+# P9: interleaved captured / in-process / captured fails: the record is exactly this test's fail-file lines, in order,
+# starting AFTER what earlier tests wrote (the first line used to be omitted and an already-visible one mislabelled).
+mixed_fn() { local v; v=$(log_fail "mix-sw-1"); log_fail "mix-vis-2" >/dev/null; v=$(log_fail "mix-sw-3"); return 0; }
+log_fail "earlier-test-line" >/dev/null
+rt_out=$( TESTS_PASSED=0 TESTS_FAILED=0; run_test "Mixed probe (T3)" mixed_fn 2>&1 )
+rec=$(printf '%s\n' "$rt_out" | grep -E '^    \| ' | tr '\n' '#')
+case "$rec" in
+    *"mix-sw-1"*"#"*"mix-vis-2"*"#"*"mix-sw-3"*"#") rec_ok=1 ;; *) rec_ok=0 ;;
+esac
+if [ "$rec_ok" = 1 ] && ! printf '%s' "$rec" | grep -qF "earlier-test-line" && printf '%s' "$rt_out" | grep -qF "(3 counted, 1 printed above)"; then
+    ok "P9 interleaved fails: the record holds all 3 of this test's lines in order, none of an earlier test's, header says 3 counted / 1 printed"
+else fail "P9 got '${rec}' hdr=$(printf '%s' "$rt_out" | grep -F 'record for this test')"; fi
+
+# 17) run-level warnings reach the summaries (a membership-gate "seeding anyway" was visible only inline in a long log).
+RW=$(mktemp)
+rw_out=$( RUN_WARNINGS_FILE="$RW"; _RUN_WARN_BASE=0; SUITE_TAG=03-scaling; TEST_TAG=Seed_marker
+          v=$(log_run_warning 'membership not settled within 90s; "seeding" anyway | now' ); print_summary 2>&1 )
+if printf '%s' "$rw_out" | grep -qF "WARNINGS: 1" && printf '%s' "$rw_out" | grep -qF "warning: 03-scaling|Seed_marker|membership not settled within 90s"; then
+    ok "RW1 a log_run_warning raised inside \$(...) is counted and printed by print_summary (WARNINGS: 1 + the text)"
+else fail "RW1 got: $(printf '%s' "$rw_out" | tail -8 | tr '\n' '|')"; fi
+rw_json=$( RUN_WARNINGS_FILE="$RW"; run_warnings_json 03-scaling )
+rw_none=$( RUN_WARNINGS_FILE="$RW"; run_warnings_json 99-other )
+if command -v python3 >/dev/null 2>&1; then
+    rw_ok=$(python3 -c "import json,sys; d=json.loads('{'+sys.argv[1]+'}'); print(d['warnings'], len(d['warning_texts']), 'seeding' in d['warning_texts'][0])" "$rw_json" 2>&1)
+else rw_ok="1 1 True"; fi
+if [ "$rw_ok" = "1 1 True" ] && [ "$rw_none" = '"warnings":0,"warning_texts":[]' ]; then
+    ok "RW2 run_warnings_json is valid JSON with quotes escaped (1 warning, text intact) and empty for a suite with none"
+else fail "RW2 json=[${rw_json}] check=[${rw_ok}] none=[${rw_none}]"; fi
+rw_clean=$( RUN_WARNINGS_FILE="$(mktemp)"; _RUN_WARN_BASE=0; print_summary 2>&1 )
+if ! printf '%s' "$rw_clean" | grep -q "WARNINGS"; then ok "RW3 control: no warnings -> no WARNINGS line"; else fail "RW3 got WARNINGS line"; fi
+if grep -q 'run_warnings_json "\$suite_name"' "${INTEG_DIR}/run-tests.sh" && grep -q 'export RUN_WARNINGS_FILE=' "${INTEG_DIR}/run-tests.sh" \
+   && grep -q 'Warnings: %d' "${INTEG_DIR}/run-tests.sh" && grep -q 'log_run_warning "test_seed_marker: membership not settled' "${INTEG_DIR}/suites/03-scaling/test-03-scale-down.sh"; then
+    ok "RW4 wiring: run-tests.sh exports the file, writes it into each suite's JSON and the end report; the seed gate uses log_run_warning"
+else fail "RW4 wiring missing"; fi
+rm -f "$RW"
+
 # ---------------------------------------------------------------------------
 # H1/H2 (#1051): jvm_unit_show / jvm_unit_field / jvm_unit_is_drain_halt /
 # jvm_unit_assert_drain_halt (lib/common.sh). On --runtime jvm there is no
@@ -289,7 +388,7 @@ set --
 # --- node_app_endpoints on cloud (2026-09-24): one http://<public-ip>:<app port> per live core ------
 # Uses the REAL cloud_public_ip against this file's fixture: node-1 resolves from bootstrap-state,
 # the CTM replacement resolves via /api/v1/nodes/endpoint, and "ghost" misses — which cloud_public_ip
-# reports through log_fail on STDOUT, the exact output a capture must not mistake for an address.
+# reports as a stderr warning with rc 1 (it used to be a log_fail on STDOUT, which counted a phantom FAIL — see P1).
 app_eps() {  # members... -> "rc|<stdout joined by ,>"
     ( CLOUD_MODE=true; APP_PORT=8070
       source "${INTEG_DIR}/lib/cluster.sh" >/dev/null 2>&1
@@ -472,13 +571,13 @@ W_WORK="$(mktemp -d)"
 w_defs() {
     grep -E '^(KEY_PREFIX|ENTITY_TRANSIENT_FAILURE_TYPES|TRANSIENT_READ_DEADLINE_S|TRANSIENT_READ_BACKOFF_S)=' "$W02"
     local fn
-    for fn in key_for amount_for entity_post_any entity_refusal_class entity_post_status transient_failure_type read_amount \
+    for fn in now_s key_for amount_for entity_post_any entity_refusal_class entity_post_status transient_failure_type read_amount \
               test_pre_kill_state_readable test_every_acked_entity_survives_the_crash; do
         awk -v f="$fn" '$0 ~ "^" f "\\(\\) \\{" {on=1} on {print} on && /^\}/ {exit}' "$W02"
     done
 }
 w_defs > "${W_WORK}/defs.sh"
-for fn in entity_post_any entity_refusal_class entity_post_status transient_failure_type read_amount test_pre_kill_state_readable test_every_acked_entity_survives_the_crash; do
+for fn in now_s entity_post_any entity_refusal_class entity_post_status transient_failure_type read_amount test_pre_kill_state_readable test_every_acked_entity_survives_the_crash; do
     grep -q "^${fn}() {" "${W_WORK}/defs.sh" || fail "W0 ${fn} not extracted from the 02w suite (examined NOTHING)"
 done
 w_run() {  # <snippet> <queued bodies...> -> "rc=<rc> out=<stdout> calls=<n>"; stderr -> $W_WORK/err
@@ -488,6 +587,11 @@ w_run() {  # <snippet> <queued bodies...> -> "rc=<rc> out=<stdout> calls=<n>"; s
       ENTITY_APP_ENDPOINTS="http://w-stub:8070"; KILL_CONFIRMED=1
       TRANSIENT_READ_BACKOFF_S=0
       [ -n "${W_DEADLINE:-}" ] && TRANSIENT_READ_DEADLINE_S="$W_DEADLINE"
+      # A case that sets W_CLOCK_JUMP_AFTER_CALLS drives time by the number of stub calls made so far: the clock reads 0 until
+      # that many calls have happened and is far past any deadline afterwards. Cases that do not set it keep the real clock.
+      [ -n "${W_CLOCK_JUMP_AFTER_CALLS:-}" ] && now_s() {
+          if [ "$(grep -c . "${W_WORK}/calls")" -ge "$W_CLOCK_JUMP_AFTER_CALLS" ]; then NOW_S=1000000; else NOW_S=0; fi
+      }
       refresh_app_endpoints() { :; }
       log_warn() { echo "WARN $*" >&2; }; log_error() { echo "ERROR $*" >&2; }
       log_fail() { echo "FAIL $*" >&2; }; log_pass() { echo "PASS $*" >&2; }; log_info() { echo "INFO $*" >&2; }
@@ -560,13 +664,30 @@ for ft in FoldInProgressX XFoldInProgress foldinprogress; do
 done
 [ -z "$w11" ] && ok "W11 the allow-list matches by exact name (FoldInProgressX, XFoldInProgress, foldinprogress are not retried)" \
     || fail "W11 allow-list exactness: ${w11}"
-# A no-answer attempt is now swept until the deadline instead of ending the read at once (the post-kill
-# window), so the call count is timing-dependent: assert rc 4 and the report, not calls.
-got=$(W_DEADLINE=1 w_run 'read_amount ENTDUR-00003-Z' "$FOLD_BODY" __DOWN__ __DOWN__)
-case "$got" in "rc=4 out= calls="*) true ;; *) got="BAD:${got}" ;; esac
-[ "${got#BAD:}" = "$got" ] && grep -q 'previous attempt WAS answered with a transient refusal: .*still replaying its log' "${W_WORK}/err" \
-    && ok "W12 transient refusal then no answer: rc 4, and the report names the earlier transient answer" \
+# A no-answer attempt is swept until the deadline instead of ending the read at once (the post-kill window). The deadline is the
+# case's own clock, not the runner's (#1887): `now_s` is overridden to stay at 0 until two stub calls have been made and then jump past the
+# 1s deadline, so the case asserts the SEQUENCE (one attempt answered transient; one attempt that gets no answer, which makes two
+# stub calls; then the deadline) and exactly three calls, whatever the speed of the machine. With the real `$SECONDS` a 1s deadline was somewhere in (0, 1] seconds of wall time and a
+# slow first call alone could exhaust it, giving rc 5 after one call.
+got=$(W_DEADLINE=1 W_CLOCK_JUMP_AFTER_CALLS=2 w_run 'read_amount ENTDUR-00003-Z' "$FOLD_BODY" __DOWN__ __DOWN__)
+[ "$got" = "rc=4 out= calls=3" ] && grep -q 'previous attempt WAS answered with a transient refusal: .*still replaying its log' "${W_WORK}/err" \
+    && ok "W12 transient refusal then no answer: rc 4 after the transient attempt and the unanswered one, and the report names the earlier transient answer" \
     || fail "W12 transient then down: got '${got}'; $(tr '\n' '|' < "${W_WORK}/err")"
+# W14 (#1887): read_amount with the REAL clock keeps retrying for at least its stated deadline. Started with the shell clock at the end of
+# a second (SECONDS=0 after 0.9s), `SECONDS + 1` is reached 0.1s later; the read must still be retrying a full second after it began.
+SECONDS=0; sleep 0.9; w14_t0=$(perl -MTime::HiRes=time -e 'print time')
+W_DEADLINE=1 w_run 'read_amount ENTDUR-00003-Z' "$FOLD_BODY" > /dev/null
+w14_ms=$(perl -MTime::HiRes=time -e "printf '%d', (time - $w14_t0) * 1000")
+[ "$w14_ms" -ge 1000 ] && ok "W14 a 1s read deadline on the real clock keeps retrying for >= 1s (${w14_ms}ms)" \
+    || fail "W14 a 1s read deadline gave up after ${w14_ms}ms (< 1000): the deadline is the whole-second \$SECONDS tick, not the stated duration"
+# D1/D2 (#1887): deadline_in is reached NO SOONER than the stated duration. `$SECONDS` is whole seconds, so with the shell clock sitting
+# just before a tick (SECONDS=0 after 0.9s) the old `SECONDS + 3` is 3 and is reached 2.1s later; deadline_in 3 must be at least 4.
+SECONDS=0; sleep 0.9; got=$(deadline_in 3)
+[ "$got" -ge 4 ] && ok "D1 deadline_in 3 at the end of a shell second is >= 4 (reached no sooner than 3s of wall time), got ${got}" \
+    || fail "D1 deadline_in 3 at the end of a shell second: got '${got}', want >= 4 (SECONDS + 3 is reached after only 2.1s)"
+got=$(deadline_in 0); [ "$got" -le "$SECONDS" ] && [ "$(deadline_in x)" -le "$SECONDS" ] \
+    && ok "D2 deadline_in 0 (and a non-number) is already expired, as the stub cases that pass a 0s deadline need" \
+    || fail "D2 deadline_in 0: got '${got}' with SECONDS=${SECONDS}"
 got=$(w_run 'read_amount ENTDUR-00003-Z' '{"outcome":"failed","failureType":"FoldInProgress","failure":"x","failureType":"Other"}' "$FOUND3")
 [ "$got" = "rc=0 out=24 calls=2" ] \
     && ok "W13 the FIRST failureType in a body decides (greedy last-match would read 'Other')" \

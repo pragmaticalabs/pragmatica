@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.cli.cluster;
 
 import javax.net.ssl.SSLContext;
@@ -22,7 +21,6 @@ import org.pragmatica.aether.management.route.ManagementRoute;
 import org.pragmatica.http.HttpOperations;
 import org.pragmatica.http.HttpResult;
 import org.pragmatica.http.JdkHttpOperations;
-import org.pragmatica.json.JsonMapper;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Contract;
 import org.pragmatica.lang.Option;
@@ -38,8 +36,7 @@ public sealed interface ClusterHttpClient {
 
     AtomicReference<HttpOperations> HTTP_OPS_REF = new AtomicReference<>(JdkHttpOperations.jdkHttpOperations());
 
-    JsonMapper LIFECYCLE_MAPPER = JsonMapper.defaultJsonMapper();
-    String DECOMMISSIONED = "DECOMMISSIONED";
+    long DRAIN_POLL_INTERVAL_MS = 2000;
 
     @Contract
     @SuppressWarnings({"JBCT-EX-01", "JBCT-PAT-01", "JBCT-RET-08"})
@@ -162,6 +159,15 @@ public sealed interface ClusterHttpClient {
         return route.assemble(params)
                     .map(path -> appendQuery(path, queryString))
                     .flatMap(path -> postPath(path, jsonBody));
+    }
+
+    /// The `force` query of the operator drain/shutdown routes (#1720): `force=true` overrides the slice
+    /// `minAvailable` floor, empty otherwise. `cluster destroy` passes it unconditionally, since destroying a cluster takes every
+    /// slice below its floor by definition.
+    static String forceQuery(boolean force) {
+        return force
+               ? "force=true"
+               : "";
     }
 
     private static String appendQuery(String path, String queryString) {
@@ -385,40 +391,78 @@ public sealed interface ClusterHttpClient {
         return getDirect(url);
     }
 
-    static Result<Unit> waitForDrainComplete(String address, int managementPort, String nodeId, long timeoutMs) {
-        return waitForDrainComplete(registryScheme(), address, managementPort, nodeId, timeoutMs);
+    /// Drain `nodeId` and wait for the drain to complete. The two are one operation so that completion
+    /// is only ever judged for a drain the server ACCEPTED — see [DrainCompletion] for why that matters.
+    static Result<Unit> drainNodeAndAwait(String address, int managementPort, String nodeId, long timeoutMs) {
+        return drainNodeAndAwait(registryScheme(), address, managementPort, nodeId, timeoutMs);
     }
 
-    static Result<Unit> waitForDrainComplete(String scheme,
-                                             String address,
-                                             int managementPort,
-                                             String nodeId,
-                                             long timeoutMs) {
+    static Result<Unit> drainNodeAndAwait(String scheme,
+                                          String address,
+                                          int managementPort,
+                                          String nodeId,
+                                          long timeoutMs) {
+        return drainNodeWhenFloorAllows(scheme, address, managementPort, nodeId, timeoutMs, DRAIN_POLL_INTERVAL_MS).flatMap(_ -> awaitDrainComplete(scheme,
+                                                                                                                                                    address,
+                                                                                                                                                    managementPort,
+                                                                                                                                                    nodeId,
+                                                                                                                                                    timeoutMs,
+                                                                                                                                                    DRAIN_POLL_INTERVAL_MS));
+    }
+
+    /// #1720: a drain refused by a slice's `minAvailable` floor (409) is TRANSIENT inside a rolling operation — the
+    /// instance the previous drain displaced is not ACTIVE on its new node yet, and `waitForNodeReady` does not wait
+    /// for slices — so the drain is re-requested until admitted or the bound passes, instead of ending the wave on
+    /// the first refusal. Any other answer, success or failure, returns at once. The last refusal is what a caller
+    /// sees on expiry, so it still names the slice.
+    static Result<Unit> drainNodeWhenFloorAllows(String scheme,
+                                                 String address,
+                                                 int managementPort,
+                                                 String nodeId,
+                                                 long timeoutMs,
+                                                 long pollIntervalMs) {
+        var deadline = System.currentTimeMillis() + timeoutMs;
+        var result = drainNode(scheme, address, managementPort, nodeId);
+
+        while (isSliceFloorRefusal(result) && System.currentTimeMillis() < deadline) {
+            System.out.printf("  drain of %s waits for the slice floor to recover...%n", nodeId);
+            ClusterBootstrapOrchestrator.sleepQuietly(pollIntervalMs);
+            result = drainNode(scheme, address, managementPort, nodeId);
+        }
+
+        return result;
+    }
+
+    private static boolean isSliceFloorRefusal(Result<Unit> result) {
+        return result.fold(cause -> cause instanceof HttpError.ApiError error
+                                    && error.statusCode() == 409
+                                    && error.body()
+                                            .contains("minAvailable"),
+                           _ -> false);
+    }
+
+    /// Polls the DRAINING node itself. After an accepted drain the node halts (`DrainProcedure`), so
+    /// the terminal signal is its port refusing the connection; any answer it serves, 404 included, means
+    /// it is still alive — see [DrainCompletion]. Callers must have had the drain accepted first — use
+    /// [#drainNodeAndAwait].
+    static Result<Unit> awaitDrainComplete(String scheme,
+                                           String address,
+                                           int managementPort,
+                                           String nodeId,
+                                           long timeoutMs,
+                                           long pollIntervalMs) {
         var url = scheme + "://" + address + ":" + managementPort + "/api/v1/nodes/lifecycle/" + nodeId;
         var deadline = System.currentTimeMillis() + timeoutMs;
 
         while (System.currentTimeMillis() < deadline) {
-            if (isDecommissioned(getDirect(url))) {
+            if (DrainCompletion.isComplete(getDirect(url))) {
                 return Result.unitResult();
             }
 
-            ClusterBootstrapOrchestrator.sleepQuietly(2000);
+            ClusterBootstrapOrchestrator.sleepQuietly(pollIntervalMs);
         }
 
         return new HttpError.DrainTimeout(nodeId, timeoutMs).result();
-    }
-
-    /// Reads the lifecycle entry's `state` field rather than searching the whole response body
-    /// for the token (#522 sibling sweep): a body-wide match would report a drain complete the
-    /// moment any other field happened to mention the state — the wave would then restart a node
-    /// that is still shedding traffic. An unreadable response is never "decommissioned", so the
-    /// caller keeps waiting and ultimately fails with `DrainTimeout`.
-    static boolean isDecommissioned(Result<String> lifecycleResponse) {
-        return lifecycleResponse.flatMap(LIFECYCLE_MAPPER::readTree)
-                                .map(node -> node.path("state")
-                                                 .asText(""))
-                                .map(DECOMMISSIONED::equals)
-                                .or(false);
     }
 
     sealed interface HttpError extends Cause {

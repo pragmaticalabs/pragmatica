@@ -56,6 +56,7 @@ import static org.pragmatica.net.tcp.NodeAddress.nodeAddress;
 /// core dial set, so the leader neither drains real peers nor dials the fakes (a failed dial would inject
 /// liveness-loss death evidence). The final check also asserts every real peer is still `Member`, so any
 /// reconciler interference turns this test red instead of hiding.
+@PortBudget
 class EmberDrainAcknowledgementWiringTest {
     private static final int CLUSTER_SIZE = 3;
     /// `EmberCluster.start` builds a slot pool of `2 * clusterSize`.

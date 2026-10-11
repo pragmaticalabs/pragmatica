@@ -197,7 +197,11 @@ public final class CommunityHealthIndex {
 
     /// Provenance travels with any positive membership tap; consumers must never reinterpret
     /// absence from this list as a death report.
-    public record GovernorEvidence(String community, NodeId governor, long governorTerm, MemberHealth member) {}
+    public record GovernorEvidence(String community,
+                                   NodeId governor,
+                                   long governorTerm,
+                                   MemberHealth member,
+                                   long observedAgoNanos) {}
 
     public synchronized java.util.List<GovernorEvidence> positiveEvidence(String community) {
         return Option.option(observations.get(community))
@@ -212,7 +216,10 @@ public final class CommunityHealthIndex {
                                         .map(member -> new GovernorEvidence(community,
                                                                             value.report().sender(),
                                                                             value.report().governorTerm(),
-                                                                            member))
+                                                                            member,
+                                                                            clock.nanoTime() - value.receivedAt() + value.transit()
+                                                                                                                         .nanos() + member.observationAge()
+                                                                                                                                          .nanos()))
                                         .toList())
                      .or(java.util.List.of());
     }

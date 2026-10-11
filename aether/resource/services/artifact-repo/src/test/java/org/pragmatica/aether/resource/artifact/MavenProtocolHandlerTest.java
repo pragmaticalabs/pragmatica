@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 
 package org.pragmatica.aether.resource.artifact;
 
@@ -245,7 +244,7 @@ class MavenProtocolHandlerTest {
             }
 
             @Override
-            public Promise<Unit> delete(ArtifactFile file) {
+            public Promise<Unit> archive(Artifact artifact) {
                 return Promise.success(Unit.unit());
             }
 
@@ -260,7 +259,7 @@ class MavenProtocolHandlerTest {
         return new ArtifactStore() {
             @Override
             public Promise<DeployResult> deploy(ArtifactFile file, byte[] content) {
-                return Promise.success(new DeployResult(file.artifact(), content.length, "fresh-md5", "fresh-sha1"));
+                return Promise.success(new DeployResult(file.artifact(), 42L, "existing-md5", "existing-sha1", true));
             }
 
             @Override
@@ -280,7 +279,7 @@ class MavenProtocolHandlerTest {
 
             @Override
             public Promise<Option<ArtifactMetadata>> metadata(ArtifactFile file) {
-                var meta = new ArtifactMetadata(42L, 1, "existing-md5", "existing-sha1", 0L, java.util.List.of("blk"));
+                var meta = new ArtifactMetadata(42L, 1, "existing-md5", "existing-sha1", "existing-sha256", 0L, java.util.List.of("blk"));
                 return Promise.success(Option.some(meta));
             }
 
@@ -292,7 +291,7 @@ class MavenProtocolHandlerTest {
             }
 
             @Override
-            public Promise<Unit> delete(ArtifactFile file) {
+            public Promise<Unit> archive(Artifact artifact) {
                 return Promise.success(Unit.unit());
             }
 

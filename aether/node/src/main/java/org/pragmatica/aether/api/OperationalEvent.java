@@ -4,6 +4,8 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.api;
 
+import java.util.List;
+
 import org.pragmatica.messaging.Message;
 
 
@@ -44,6 +46,368 @@ public sealed interface OperationalEvent extends Message.Local {
     record BlueprintDeleted(String artifactId, String requestedBy, long timestamp) implements OperationalEvent {
         public static BlueprintDeleted blueprintDeleted(String artifactId, String requestedBy) {
             return new BlueprintDeleted(artifactId, requestedBy, System.currentTimeMillis());
+        }
+    }
+
+    /// #1777 (CTO ruling R1b, owner rule): a live DHT replication change has stayed unsettled for longer than the
+    /// operator-attention bound, so every node still reads and writes at the stricter transitional quorums
+    /// ([ClusterEvent.DhtReplicationUnsettled]). Derived from the committed change record on every node; published at most once.
+    record DhtReplicationUnsettled(long changeVersion,
+                                   int replicationFactor,
+                                   int confirmationFactor,
+                                   String stage,
+                                   long since,
+                                   String reason,
+                                   long timestamp) implements OperationalEvent {
+        public static DhtReplicationUnsettled dhtReplicationUnsettled(long changeVersion,
+                                                                      int replicationFactor,
+                                                                      int confirmationFactor,
+                                                                      String stage,
+                                                                      long since,
+                                                                      String reason) {
+            return new DhtReplicationUnsettled(changeVersion,
+                                               replicationFactor,
+                                               confirmationFactor,
+                                               stage,
+                                               since,
+                                               reason,
+                                               System.currentTimeMillis());
+        }
+    }
+
+    /// #1777: an overdue DHT replication change left the condition — it settled, or a newer change superseded it
+    /// ([ClusterEvent.DhtReplicationSettled]).
+    record DhtReplicationSettled(long changeVersion,
+                                 int replicationFactor,
+                                 int confirmationFactor,
+                                 long since,
+                                 String reason,
+                                 long timestamp) implements OperationalEvent {
+        public static DhtReplicationSettled dhtReplicationSettled(long changeVersion,
+                                                                  int replicationFactor,
+                                                                  int confirmationFactor,
+                                                                  long since,
+                                                                  String reason) {
+            return new DhtReplicationSettled(changeVersion,
+                                             replicationFactor,
+                                             confirmationFactor,
+                                             since,
+                                             reason,
+                                             System.currentTimeMillis());
+        }
+    }
+
+    /// #1777 (owner rule): this node's DHT writes have been refused as stale by the replication-change fence for longer
+    /// than the operator-attention bound, and it has not adopted the change ([ClusterEvent.DhtWriterStale]). Raised by the
+    /// refused node itself, the subject.
+    record DhtWriterStale(String nodeId, long fence, long since, long timestamp) implements OperationalEvent {
+        public static DhtWriterStale dhtWriterStale(String nodeId, long fence, long since) {
+            return new DhtWriterStale(nodeId, fence, since, System.currentTimeMillis());
+        }
+    }
+
+    /// #1777: the stale writer adopted a newer replication change; its writes are stamped under it now
+    /// ([ClusterEvent.DhtWriterStaleResolved]).
+    record DhtWriterStaleResolved(String nodeId, long fence, long since, long timestamp) implements OperationalEvent {
+        public static DhtWriterStaleResolved dhtWriterStaleResolved(String nodeId, long fence, long since) {
+            return new DhtWriterStaleResolved(nodeId, fence, since, System.currentTimeMillis());
+        }
+    }
+
+    /// #1730 (owner ruling): failover refused for a stream partition — its owner is dead and no in-sync replica is
+    /// live. Raised once per committed refusal by the leader that committed it ([ClusterEvent.StreamFailoverRefused]).
+    record StreamFailoverRefused(String stream,
+                                 int partition,
+                                 String owner,
+                                 List<String> isr,
+                                 List<String> live,
+                                 String reason,
+                                 String eventId,
+                                 long timestamp) implements OperationalEvent {
+        public static StreamFailoverRefused streamFailoverRefused(String stream,
+                                                                  int partition,
+                                                                  String owner,
+                                                                  List<String> isr,
+                                                                  List<String> live,
+                                                                  String reason,
+                                                                  String eventId) {
+            return new StreamFailoverRefused(stream,
+                                             partition,
+                                             owner,
+                                             isr,
+                                             live,
+                                             reason,
+                                             eventId,
+                                             System.currentTimeMillis());
+        }
+    }
+
+    /// #1730: a refused stream partition has an owner again ([ClusterEvent.StreamFailoverResolved]).
+    record StreamFailoverResolved(String stream,
+                                  int partition,
+                                  String owner,
+                                  List<String> isr,
+                                  List<String> live,
+                                  String reason,
+                                  String eventId,
+                                  long timestamp) implements OperationalEvent {
+        public static StreamFailoverResolved streamFailoverResolved(String stream,
+                                                                    int partition,
+                                                                    String owner,
+                                                                    List<String> isr,
+                                                                    List<String> live,
+                                                                    String reason,
+                                                                    String eventId) {
+            return new StreamFailoverResolved(stream,
+                                              partition,
+                                              owner,
+                                              isr,
+                                              live,
+                                              reason,
+                                              eventId,
+                                              System.currentTimeMillis());
+        }
+    }
+
+    /// #1883: a stream partition's committed in-sync set fell below its confirmation factor, so every acknowledged
+    /// publish is refused (`NOT_ENOUGH_REPLICAS`) until a replica rejoins ([ClusterEvent.StreamIsrBelowMinimum]).
+    /// `fenced` is the committed set of members the leader keeps out for liveness.
+    record StreamIsrBelowMinimum(String stream,
+                                 int partition,
+                                 String owner,
+                                 List<String> isr,
+                                 List<String> fenced,
+                                 int confirmationFactor,
+                                 String eventId,
+                                 long timestamp) implements OperationalEvent {
+        public static StreamIsrBelowMinimum streamIsrBelowMinimum(String stream,
+                                                                  int partition,
+                                                                  String owner,
+                                                                  List<String> isr,
+                                                                  List<String> fenced,
+                                                                  int confirmationFactor,
+                                                                  String eventId) {
+            return new StreamIsrBelowMinimum(stream,
+                                             partition,
+                                             owner,
+                                             isr,
+                                             fenced,
+                                             confirmationFactor,
+                                             eventId,
+                                             System.currentTimeMillis());
+        }
+    }
+
+    /// #1883: the in-sync set of a partition reached its confirmation factor again ([ClusterEvent.StreamIsrRestored]).
+    record StreamIsrRestored(String stream,
+                             int partition,
+                             String owner,
+                             List<String> isr,
+                             List<String> fenced,
+                             int confirmationFactor,
+                             String eventId,
+                             long timestamp) implements OperationalEvent {
+        public static StreamIsrRestored streamIsrRestored(String stream,
+                                                          int partition,
+                                                          String owner,
+                                                          List<String> isr,
+                                                          List<String> fenced,
+                                                          int confirmationFactor,
+                                                          String eventId) {
+            return new StreamIsrRestored(stream,
+                                         partition,
+                                         owner,
+                                         isr,
+                                         fenced,
+                                         confirmationFactor,
+                                         eventId,
+                                         System.currentTimeMillis());
+        }
+    }
+
+    /// #1883: a committed config lowered a running stream's confirmation factor, which is not applied online
+    /// (durability only increases), so the stream keeps enforcing `effectiveConfirmationFactor`
+    /// ([ClusterEvent.StreamConfigChangeNotApplied]). A point event: no resolved pair.
+    record StreamConfigChangeNotApplied(String stream,
+                                        int requestedConfirmationFactor,
+                                        int effectiveConfirmationFactor,
+                                        String reason,
+                                        String eventId,
+                                        long timestamp) implements OperationalEvent {
+        public static StreamConfigChangeNotApplied streamConfigChangeNotApplied(String stream,
+                                                                                int requestedConfirmationFactor,
+                                                                                int effectiveConfirmationFactor,
+                                                                                String reason,
+                                                                                String eventId) {
+            return new StreamConfigChangeNotApplied(stream,
+                                                    requestedConfirmationFactor,
+                                                    effectiveConfirmationFactor,
+                                                    reason,
+                                                    eventId,
+                                                    System.currentTimeMillis());
+        }
+    }
+
+    /// #1723: a scheduled task's newest fire has an UNKNOWN outcome (no response within the invocation timeout), so it is
+    /// not known whether the work ran ([ClusterEvent.ScheduledTaskOutcomeUnknown]). `task` is
+    /// `section/artifact/method`, `node` the per-node row of an ALL-mode task (empty otherwise), `fireAt` when the fire
+    /// was recorded.
+    record ScheduledTaskOutcomeUnknown(String task, String node, long fireAt, String eventId, long timestamp) implements OperationalEvent {
+        public static ScheduledTaskOutcomeUnknown scheduledTaskOutcomeUnknown(String task,
+                                                                              String node,
+                                                                              long fireAt,
+                                                                              String eventId) {
+            return new ScheduledTaskOutcomeUnknown(task, node, fireAt, eventId, System.currentTimeMillis());
+        }
+
+        /// The key the aggregator pairs this event with its [ScheduledTaskOutcomeRestored] by.
+        public String key() {
+            return task + "@" + node;
+        }
+    }
+
+    /// #1206: two slices of DIFFERENT artifacts are serving the same HTTP route in the committed route table, so one of them
+    /// serves nothing ([ClusterEvent.RoutePrefixCollision]). A collision blueprint admission cannot see (the jar was
+    /// unavailable at admission, concurrent publishes, a slice deployed another way). `artifacts` are the artifact bases
+    /// claiming the route, sorted.
+    record RoutePrefixCollision(String method, String prefix, List<String> artifacts, String eventId, long timestamp) implements OperationalEvent {
+        public static RoutePrefixCollision routePrefixCollision(String method,
+                                                                String prefix,
+                                                                List<String> artifacts,
+                                                                String eventId) {
+            return new RoutePrefixCollision(method, prefix, List.copyOf(artifacts), eventId, System.currentTimeMillis());
+        }
+    }
+
+    /// #1206: the route no longer has two artifacts claiming it ([ClusterEvent.RoutePrefixCollisionCleared]). `artifacts` are the
+    /// bases that had been claiming it.
+    record RoutePrefixCollisionCleared(String method,
+                                       String prefix,
+                                       List<String> artifacts,
+                                       String eventId,
+                                       long timestamp) implements OperationalEvent {
+        public static RoutePrefixCollisionCleared routePrefixCollisionCleared(String method,
+                                                                              String prefix,
+                                                                              List<String> artifacts,
+                                                                              String eventId) {
+            return new RoutePrefixCollisionCleared(method,
+                                                   prefix,
+                                                   List.copyOf(artifacts),
+                                                   eventId,
+                                                   System.currentTimeMillis());
+        }
+    }
+
+    /// #1930: a scheduled task's fire is still in flight when its next tick arrives, so the tick (and each one after it, up to
+    /// the completion bound) is skipped ([ClusterEvent.ScheduledTaskFireHeld]). Raised ONCE per in-flight fire, by the node
+    /// whose scheduler holds it: `node`, `fireAt` (when that fire started), `inFlightMs` (how long it had been in flight at
+    /// the first skipped tick).
+    record ScheduledTaskFireHeld(String task,
+                                 String node,
+                                 long fireAt,
+                                 long inFlightMs,
+                                 String eventId,
+                                 long timestamp) implements OperationalEvent {
+        public static ScheduledTaskFireHeld scheduledTaskFireHeld(String task,
+                                                                  String node,
+                                                                  long fireAt,
+                                                                  long inFlightMs,
+                                                                  String eventId) {
+            return new ScheduledTaskFireHeld(task, node, fireAt, inFlightMs, eventId, System.currentTimeMillis());
+        }
+
+        public String key() {
+            return task + "@" + node;
+        }
+    }
+
+    /// #1930: the fire a [ScheduledTaskFireHeld] told the operator about resolved ([ClusterEvent.ScheduledTaskFireReleased]).
+    /// `outcome` is `executed`, `failed`, `unknown` (the completion bound passed with no response) or `completed` (released
+    /// by a manual trigger); `inFlightMs` is how long the fire was in flight in all.
+    record ScheduledTaskFireReleased(String task,
+                                     String node,
+                                     long fireAt,
+                                     long inFlightMs,
+                                     String outcome,
+                                     String eventId,
+                                     long timestamp) implements OperationalEvent {
+        public static ScheduledTaskFireReleased scheduledTaskFireReleased(String task,
+                                                                          String node,
+                                                                          long fireAt,
+                                                                          long inFlightMs,
+                                                                          String outcome,
+                                                                          String eventId) {
+            return new ScheduledTaskFireReleased(task,
+                                                 node,
+                                                 fireAt,
+                                                 inFlightMs,
+                                                 outcome,
+                                                 eventId,
+                                                 System.currentTimeMillis());
+        }
+
+        public String key() {
+            return task + "@" + node;
+        }
+    }
+
+    /// #1723: a scheduled task's newest fire is no longer unknown ([ClusterEvent.ScheduledTaskOutcomeRestored]). `reason`
+    /// says why: `late-answer` (the newest fire's late response arrived; `outcome` is what it said), `later-fire` (a
+    /// later fire completed; `outcome` is that fire's) or `task-removed` (the task was removed with its outcome still
+    /// unknown; `outcome` is `unknown`) or `node-departed` (the per-node row's node left the cluster for good while it
+    /// was unknown; `outcome` is `unknown`). `outcome` is otherwise `executed` or `failed`.
+    record ScheduledTaskOutcomeRestored(String task,
+                                        String node,
+                                        String outcome,
+                                        String reason,
+                                        String eventId,
+                                        long timestamp) implements OperationalEvent {
+        public static final String LATE_ANSWER = "late-answer";
+        public static final String LATER_FIRE = "later-fire";
+        public static final String TASK_REMOVED = "task-removed";
+        public static final String NODE_DEPARTED = "node-departed";
+
+        public static ScheduledTaskOutcomeRestored scheduledTaskOutcomeRestored(String task,
+                                                                                String node,
+                                                                                String outcome,
+                                                                                String reason,
+                                                                                String eventId) {
+            return new ScheduledTaskOutcomeRestored(task, node, outcome, reason, eventId, System.currentTimeMillis());
+        }
+
+        public boolean late() {
+            return LATE_ANSWER.equals(reason);
+        }
+
+        public String key() {
+            return task + "@" + node;
+        }
+    }
+
+    /// #1873: a stream partition's owner began a new epoch of the SAME owner (its ring was rebuilt: a restart without a WAL, a
+    /// lazy re-materialize, a re-created stream), so consumers that read the old epoch past `startOffset` are told to re-read
+    /// from it ([ClusterEvent.StreamLineageRestarted]). A fact about the committed record, not a loss: the owner may have pulled
+    /// every record back from replicas.
+    record StreamLineageRestarted(String stream,
+                                  int partition,
+                                  String owner,
+                                  String oldEpoch,
+                                  String newEpoch,
+                                  long startOffset,
+                                  long timestamp) implements OperationalEvent {
+        public static StreamLineageRestarted streamLineageRestarted(String stream,
+                                                                    int partition,
+                                                                    String owner,
+                                                                    String oldEpoch,
+                                                                    String newEpoch,
+                                                                    long startOffset) {
+            return new StreamLineageRestarted(stream,
+                                              partition,
+                                              owner,
+                                              oldEpoch,
+                                              newEpoch,
+                                              startOffset,
+                                              System.currentTimeMillis());
         }
     }
 }

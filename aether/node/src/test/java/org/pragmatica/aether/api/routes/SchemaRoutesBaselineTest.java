@@ -333,7 +333,7 @@ class SchemaRoutesBaselineTest {
     /// NOT_IN_REPOSITORY.promise();` — a repository miss is the common case, forcing resolution to
     /// fall back to [#artifactStoreServing].
     private static Repository noLocalRepository() {
-        return _ -> Causes.cause("Artifact not present in local repository").promise();
+        return _ -> ((org.pragmatica.aether.slice.repository.Repository.Absent) () -> "Artifact not present in local repository").promise();
     }
 
     private static byte[] blueprintJar() {
@@ -383,7 +383,7 @@ class SchemaRoutesBaselineTest {
                 return Promise.success(List.of());
             }
 
-            @Override public Promise<Unit> delete(ArtifactFile file) {
+            @Override public Promise<Unit> archive(Artifact artifact) {
                 return Promise.unitPromise();
             }
 

@@ -17,6 +17,8 @@ import org.pragmatica.consensus.leader.fsm.LeaderElectionContext;
 import org.pragmatica.consensus.leader.fsm.LeaderElectionEvents;
 import org.pragmatica.consensus.leader.fsm.LeaderElectionFsm;
 import org.pragmatica.consensus.leader.fsm.LeaderElectionState;
+import org.pragmatica.consensus.net.NetworkMessage.LeaderPreVoteRequest;
+import org.pragmatica.consensus.net.NetworkMessage.LeaderPreVoteResponse;
 import org.pragmatica.consensus.topology.ClusterStateNotification;
 import org.pragmatica.consensus.topology.TransportObservation.PeerDisconnected;
 import org.pragmatica.consensus.topology.TransportObservation.PeerJoined;
@@ -55,6 +57,30 @@ public interface LeaderManager {
     default org.pragmatica.lang.Unit installPassiveCoreDirectory(List<NodeId> members) {
         return org.pragmatica.lang.Unit.unit();
     }
+
+    /// Wires the signal that this node's KV state still trails the committed frontier (#1803), so a joiner
+    /// waits for a committed leader to arrive through KV sync instead of electing on a wall-clock grace.
+    /// Default no-op for implementations without an election gate.
+    default Unit installKvSyncProgress(Supplier<Boolean> pending) {
+        return Unit.unit();
+    }
+
+    /// Turns the leader pre-vote on (#1748): a follower that loses its leader asks the electorate before it
+    /// elects, so one follower's broken link cannot depose a leader the rest still reaches. Wired by the
+    /// consensus node only — it needs a network to ask over. Default no-op for implementations without one.
+    default Unit enableLeaderPreVote() {
+        return Unit.unit();
+    }
+
+    /// A peer asks whether this node still sees `leader` healthy (#1748). Default no-op.
+    @Contract
+    @MessageReceiver
+    default void leaderPreVoteRequest(LeaderPreVoteRequest request) {}
+
+    /// A peer's answer to this node's pre-vote question (#1748). Default no-op.
+    @Contract
+    @MessageReceiver
+    default void leaderPreVoteResponse(LeaderPreVoteResponse response) {}
 
     boolean isLeader();
     /// Returns the current leader's epoch (the cluster-side rabia term) iff this node is the
@@ -358,6 +384,32 @@ public interface LeaderManager {
             previous.filter(node -> !context.isEligible(node))
                     .onPresent(node -> fsm.dispatch(new ClusterFsmEvent.NodeGone(node,
                                                                                  context.currentTopology())));
+        }
+
+        @Override
+        public Unit installKvSyncProgress(Supplier<Boolean> pending) {
+            context.installKvSyncPending(pending);
+
+            return Unit.unit();
+        }
+
+        @Override
+        public Unit enableLeaderPreVote() {
+            context.enablePreVote();
+
+            return Unit.unit();
+        }
+
+        @Contract
+        @Override
+        public void leaderPreVoteRequest(LeaderPreVoteRequest request) {
+            context.preVote().onPresent(preVote -> preVote.onRequest(request));
+        }
+
+        @Contract
+        @Override
+        public void leaderPreVoteResponse(LeaderPreVoteResponse response) {
+            context.preVote().onPresent(preVote -> preVote.onResponse(response));
         }
 
         @Override

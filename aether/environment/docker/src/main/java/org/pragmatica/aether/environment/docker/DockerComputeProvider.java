@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.environment.docker;
 
 import java.util.ArrayList;
@@ -245,15 +244,6 @@ public record DockerComputeProvider(DockerCommandRunner runner, DockerConfig con
     }
 
     @Override
-    public Promise<Unit> restart(InstanceId id) {
-        var command = buildRestartCommand(id);
-
-        return runner.execute(command)
-                     .mapToUnit()
-                     .mapError(DockerComputeProvider::toProvisionError);
-    }
-
-    @Override
     public Promise<Unit> applyTags(InstanceId id, Map<String, String> tags) {
         return EnvironmentError.operationNotSupported("applyTags (Docker labels are immutable after creation)").promise();
     }
@@ -294,6 +284,8 @@ public record DockerComputeProvider(DockerCommandRunner runner, DockerConfig con
                                               "aether.role=" + role,
                                               "--label",
                                               "aether.node-id=" + nodeId,
+                                              "--label",
+                                              "aether.source=" + ctx.sourceName().value(),
                                               "--label",
                                               "aether.provisioned-by=ctm",
                                               "-e",
@@ -358,6 +350,10 @@ public record DockerComputeProvider(DockerCommandRunner runner, DockerConfig con
                                         .filter(name -> !ClusterIdentityEnv.NODE_OWN_VARS.contains(name))
                                         .forEach(name -> propagateEnvVar(command, name));
         ClusterIdentityEnv.DOCKER_INFRA_VARS.forEach(name -> propagateEnvVar(command, name));
+        // #1968: the backup configuration is environment-driven for a Docker node (it has no node TOML of its own), so a
+        // replacement inherits it from the provisioning host's environment, and gets a volume for the repository path.
+        ClusterIdentityEnv.BACKUP_VARS.forEach(name -> emitBackupVar(command, name));
+        addBackupVolume(command, containerName);
         // --- Dev-mode (ISOLATED — never part of IDENTITY_VARS) ---
         // Propagate AETHER_INSECURE_DEV_MODE only when present in env so an auto-healed
         // replacement inherits the dev-mode posture of its siblings (dev-gated routes
@@ -391,6 +387,46 @@ public record DockerComputeProvider(DockerCommandRunner runner, DockerConfig con
         command.add(config.imageName());
 
         return List.copyOf(command);
+    }
+
+    /// A per-node named volume for the backup repository, only when the backup is enabled with a path in the environment
+    /// being forwarded. The repository is `<path>/kv-backup`; without a volume it lives in the container's writable layer and
+    /// dies with the node, and a path the image does not own is root-owned and unwritable by the node user. The image owns
+    /// `/data`, so a path under it mounts `/data` (the volume is initialised from the image's ownership); any other path
+    /// is mounted as given. Per node, never shared: two nodes must not write one git working tree.
+    private void addBackupVolume(ArrayList<String> command, String containerName) {
+        var enabled = Boolean.parseBoolean(backupValue(ClusterIdentityEnv.BACKUP_ENABLED));
+        var path = backupValue(ClusterIdentityEnv.BACKUP_PATH);
+
+        if (!enabled || path.isBlank()) {
+            return;
+        }
+
+        var target = path.startsWith("/data/") || path.equals("/data")
+                     ? "/data"
+                     : path;
+
+        command.add("-v");
+        command.add(containerName + "-backup:" + target);
+    }
+
+    /// The backup variable from the leader's EFFECTIVE `[backup]` (whatever its source) when one was handed in, else from the
+    /// provisioning host's environment. Never a mix: a configured leader's backup is that whole section.
+    private String backupValue(String name) {
+        return config.backupEnv()
+                     .isEmpty()
+               ? Option.option(hostEnv.apply(name)).or("")
+               : config.backupEnv()
+                       .getOrDefault(name, "");
+    }
+
+    private void emitBackupVar(ArrayList<String> command, String name) {
+        var value = backupValue(name);
+
+        if (!value.isEmpty()) {
+            command.add("-e");
+            command.add(name + "=" + value);
+        }
     }
 
     private void propagateEnvVar(ArrayList<String> command, String name) {
@@ -493,10 +529,6 @@ public record DockerComputeProvider(DockerCommandRunner runner, DockerConfig con
                       + "{{with index .Config.Labels \"aether.role\"}}{{.}}{{end}}\t"
                       + "{{with index .Config.Labels \"aether.node-id\"}}{{.}}{{end}}",
                        instanceId.value());
-    }
-
-    private static List<String> buildRestartCommand(InstanceId id) {
-        return List.of("docker", "restart", id.value());
     }
 
     private InstanceInfo toProvisionedInfo(String containerId, String containerName, ProvisionRequest request) {
@@ -634,6 +666,11 @@ public record DockerComputeProvider(DockerCommandRunner runner, DockerConfig con
     /// availability by — `instanceSize` here selects a local container shape, so naming it would
     /// point the operator at a catalogue that does not exist.
     private static EnvironmentError toProvisionError(Cause cause) {
+        // #1111: the container EXISTS (it was created, then failed readiness): the typed cause reaches the caller, never flattened into a rejection.
+        if (cause instanceof EnvironmentError.ProvisionReadinessTimeout timeout) {
+            return timeout;
+        }
+
         return EnvironmentError.provisionFailed(new RuntimeException(cause.message()));
     }
 

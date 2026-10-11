@@ -26,8 +26,8 @@ import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 /// an unwritable `/data`, and neither starts a node.
 class EmberClusterHermeticStorageTest {
     private static final TimeSpan STOPPED = TimeSpan.timeSpan(10).seconds();
-    private static final int BASE_PORT = 45_300;
-    private static final int BASE_MGMT_PORT = 45_400;
+    private static final int BASE_PORT = EmberTestPorts.POOL_FIRST;
+    private static final int BASE_MGMT_PORT = EmberTestPorts.POOL_FIRST + 100;
     private static final Cause START_FAILED = Causes.cause("start failed");
 
     @Test

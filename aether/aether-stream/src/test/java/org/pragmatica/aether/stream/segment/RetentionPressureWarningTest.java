@@ -38,6 +38,7 @@ class RetentionPressureWarningTest {
                                                            index,
                                                            60_000L,
                                                            RetentionEnforcer.SegmentRetentionFloor.NONE,
+                                                           RefDurability.LIVE,
                                                            SegmentReader.segmentReader(storage, index),
                                                            utilization::get,
                                                            reliefs::incrementAndGet);

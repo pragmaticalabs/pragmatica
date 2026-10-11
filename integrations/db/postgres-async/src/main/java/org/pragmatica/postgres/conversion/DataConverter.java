@@ -19,7 +19,8 @@ import org.pragmatica.postgres.PgColumn;
 import org.pragmatica.postgres.net.Converter;
 import org.pragmatica.postgres.net.PgValue;
 import org.pragmatica.postgres.net.PgWriter;
-import org.pragmatica.lang.Functions.Fn2;
+import org.pragmatica.lang.Functions.Fn3;
+import org.pragmatica.postgres.util.HexConverter;
 
 import static org.pragmatica.postgres.conversion.TemporalConversions.*;
 import static org.pragmatica.postgres.util.HexConverter.parseHexBinary;
@@ -131,9 +132,29 @@ public class DataConverter {
     public String toString(Oid oid, byte[] value, boolean binary) {
         if (value == null) return null;
 
-        if (binary) return new String(value, encoding);
+        if (binary) return binaryText(oid, value);
 
         return StringConversions.asString(oid, new String(value, encoding));
+    }
+
+    /// A `String` read of a BINARY column decodes the value by the column's type first, then formats it: the raw wire bytes
+    /// are not text (an int8 read as text is garbage). The rendering is the decoded value's canonical Java form
+    /// (`LocalDate`, `Instant`, `UUID`, ... `toString`), `\\x` hex for bytea, and `true`/`false` for bool; it is not
+    /// PostgreSQL's own text rendering. Text-like and unrecognised columns keep the bytes as text.
+    private String binaryText(Oid oid, byte[] value) {
+        return switch (oid) {
+            case INT2, INT4, INT8 -> toLong(oid, value, true).toString();
+            case FLOAT4 -> Float.toString(ByteBuffer.wrap(value).getFloat());
+            case FLOAT8 -> Double.toString(ByteBuffer.wrap(value).getDouble());
+            case BOOL -> toBoolean(oid, value, true).toString();
+            case UUID -> toUuid(value, true).toString();
+            case BYTEA -> "\\x" + HexConverter.printHexBinary(value).toLowerCase(java.util.Locale.ROOT);
+            case DATE -> toLocalDate(oid, value, true).toString();
+            case TIME, TIMETZ -> toLocalTime(oid, value, true).toString();
+            case TIMESTAMP -> toLocalDateTime(oid, value, true).toString();
+            case TIMESTAMPTZ -> toInstant(oid, value, true).toString();
+            default -> new String(value, encoding);
+        };
     }
 
     public Character toChar(Oid oid, byte[] value, boolean binary) {
@@ -272,15 +293,12 @@ public class DataConverter {
                 case DATE -> {
                     int days = ByteBuffer.wrap(value).getInt();
 
-                    yield LocalDate.of(2000, 1, 1).plusDays(days);
+                    yield PgTemporal.date(days);
                 }
                 case TIMESTAMP, TIMESTAMPTZ -> {
                     long pgMicros = ByteBuffer.wrap(value).getLong();
-                    long epochMicros = pgMicros + BinaryCodec.PG_EPOCH_MICROS_OFFSET;
-                    long epochSecs = Math.floorDiv(epochMicros, 1_000_000);
-                    int nanoAdj = (int)(Math.floorMod(epochMicros, 1_000_000) * 1000);
 
-                    yield LocalDateTime.ofInstant(Instant.ofEpochSecond(epochSecs, nanoAdj), ZoneOffset.UTC).toLocalDate();
+                    yield LocalDateTime.ofInstant(PgTemporal.timestamp(pgMicros), ZoneOffset.UTC).toLocalDate();
                 }
                 default -> TemporalConversions.toLocalDate(oid, new String(value, encoding));
             };
@@ -296,16 +314,13 @@ public class DataConverter {
             return switch (oid) {
                 case TIMESTAMP, TIMESTAMPTZ -> {
                     long pgMicros = ByteBuffer.wrap(value).getLong();
-                    long epochMicros = pgMicros + BinaryCodec.PG_EPOCH_MICROS_OFFSET;
-                    long epochSecs = Math.floorDiv(epochMicros, 1_000_000);
-                    int nanoAdj = (int)(Math.floorMod(epochMicros, 1_000_000) * 1000);
 
-                    yield LocalDateTime.ofInstant(Instant.ofEpochSecond(epochSecs, nanoAdj), ZoneOffset.UTC);
+                    yield LocalDateTime.ofInstant(PgTemporal.timestamp(pgMicros), ZoneOffset.UTC);
                 }
                 case DATE -> {
                     int days = ByteBuffer.wrap(value).getInt();
 
-                    yield LocalDate.of(2000, 1, 1).plusDays(days).atStartOfDay();
+                    yield PgTemporal.date(days).atStartOfDay();
                 }
                 default -> TemporalConversions.toLocalDateTime(oid, new String(value, encoding));
             };
@@ -331,11 +346,8 @@ public class DataConverter {
                 }
                 case TIMESTAMP, TIMESTAMPTZ -> {
                     long pgMicros = ByteBuffer.wrap(value).getLong();
-                    long epochMicros = pgMicros + BinaryCodec.PG_EPOCH_MICROS_OFFSET;
-                    long epochSecs = Math.floorDiv(epochMicros, 1_000_000);
-                    int nanoAdj = (int)(Math.floorMod(epochMicros, 1_000_000) * 1000);
 
-                    yield LocalDateTime.ofInstant(Instant.ofEpochSecond(epochSecs, nanoAdj), ZoneOffset.UTC).toLocalTime();
+                    yield LocalDateTime.ofInstant(PgTemporal.timestamp(pgMicros), ZoneOffset.UTC).toLocalTime();
                 }
                 default -> TemporalConversions.toLocalTime(oid, new String(value, encoding));
             };
@@ -351,16 +363,13 @@ public class DataConverter {
             return switch (oid) {
                 case TIMESTAMP, TIMESTAMPTZ -> {
                     long pgMicros = ByteBuffer.wrap(value).getLong();
-                    long epochMicros = pgMicros + BinaryCodec.PG_EPOCH_MICROS_OFFSET;
-                    long epochSecs = Math.floorDiv(epochMicros, 1_000_000);
-                    int nanoAdj = (int)(Math.floorMod(epochMicros, 1_000_000) * 1000);
 
-                    yield Instant.ofEpochSecond(epochSecs, nanoAdj);
+                    yield PgTemporal.timestamp(pgMicros);
                 }
                 case DATE -> {
                     int days = ByteBuffer.wrap(value).getInt();
 
-                    yield LocalDate.of(2000, 1, 1).plusDays(days).atStartOfDay().toInstant(ZoneOffset.UTC);
+                    yield PgTemporal.date(days).atStartOfDay().toInstant(ZoneOffset.UTC);
                 }
                 default -> TemporalConversions.toInstant(oid, new String(value, encoding));
             };
@@ -389,7 +398,7 @@ public class DataConverter {
     public String toString(Oid oid, byte[] data, int offset, int length, boolean binary) {
         if (length == -1) return null;
 
-        if (binary) return new String(data, offset, length, encoding);
+        if (binary) return binaryText(oid, Arrays.copyOfRange(data, offset, offset + length));
 
         return StringConversions.asString(oid, new String(data, offset, length, encoding));
     }
@@ -530,15 +539,12 @@ public class DataConverter {
                 case DATE -> {
                     int days = ByteBuffer.wrap(data, offset, 4).getInt();
 
-                    yield LocalDate.of(2000, 1, 1).plusDays(days);
+                    yield PgTemporal.date(days);
                 }
                 case TIMESTAMP, TIMESTAMPTZ -> {
                     long pgMicros = ByteBuffer.wrap(data, offset, 8).getLong();
-                    long epochMicros = pgMicros + BinaryCodec.PG_EPOCH_MICROS_OFFSET;
-                    long epochSecs = Math.floorDiv(epochMicros, 1_000_000);
-                    int nanoAdj = (int)(Math.floorMod(epochMicros, 1_000_000) * 1000);
 
-                    yield LocalDateTime.ofInstant(Instant.ofEpochSecond(epochSecs, nanoAdj), ZoneOffset.UTC).toLocalDate();
+                    yield LocalDateTime.ofInstant(PgTemporal.timestamp(pgMicros), ZoneOffset.UTC).toLocalDate();
                 }
                 default -> TemporalConversions.toLocalDate(oid, new String(data, offset, length, encoding));
             };
@@ -554,16 +560,13 @@ public class DataConverter {
             return switch (oid) {
                 case TIMESTAMP, TIMESTAMPTZ -> {
                     long pgMicros = ByteBuffer.wrap(data, offset, 8).getLong();
-                    long epochMicros = pgMicros + BinaryCodec.PG_EPOCH_MICROS_OFFSET;
-                    long epochSecs = Math.floorDiv(epochMicros, 1_000_000);
-                    int nanoAdj = (int)(Math.floorMod(epochMicros, 1_000_000) * 1000);
 
-                    yield LocalDateTime.ofInstant(Instant.ofEpochSecond(epochSecs, nanoAdj), ZoneOffset.UTC);
+                    yield LocalDateTime.ofInstant(PgTemporal.timestamp(pgMicros), ZoneOffset.UTC);
                 }
                 case DATE -> {
                     int days = ByteBuffer.wrap(data, offset, 4).getInt();
 
-                    yield LocalDate.of(2000, 1, 1).plusDays(days).atStartOfDay();
+                    yield PgTemporal.date(days).atStartOfDay();
                 }
                 default -> TemporalConversions.toLocalDateTime(oid, new String(data, offset, length, encoding));
             };
@@ -589,11 +592,8 @@ public class DataConverter {
                 }
                 case TIMESTAMP, TIMESTAMPTZ -> {
                     long pgMicros = ByteBuffer.wrap(data, offset, 8).getLong();
-                    long epochMicros = pgMicros + BinaryCodec.PG_EPOCH_MICROS_OFFSET;
-                    long epochSecs = Math.floorDiv(epochMicros, 1_000_000);
-                    int nanoAdj = (int)(Math.floorMod(epochMicros, 1_000_000) * 1000);
 
-                    yield LocalDateTime.ofInstant(Instant.ofEpochSecond(epochSecs, nanoAdj), ZoneOffset.UTC).toLocalTime();
+                    yield LocalDateTime.ofInstant(PgTemporal.timestamp(pgMicros), ZoneOffset.UTC).toLocalTime();
                 }
                 default -> TemporalConversions.toLocalTime(oid, new String(data, offset, length, encoding));
             };
@@ -609,16 +609,13 @@ public class DataConverter {
             return switch (oid) {
                 case TIMESTAMP, TIMESTAMPTZ -> {
                     long pgMicros = ByteBuffer.wrap(data, offset, 8).getLong();
-                    long epochMicros = pgMicros + BinaryCodec.PG_EPOCH_MICROS_OFFSET;
-                    long epochSecs = Math.floorDiv(epochMicros, 1_000_000);
-                    int nanoAdj = (int)(Math.floorMod(epochMicros, 1_000_000) * 1000);
 
-                    yield Instant.ofEpochSecond(epochSecs, nanoAdj);
+                    yield PgTemporal.timestamp(pgMicros);
                 }
                 case DATE -> {
                     int days = ByteBuffer.wrap(data, offset, 4).getInt();
 
-                    yield LocalDate.of(2000, 1, 1).plusDays(days).atStartOfDay().toInstant(ZoneOffset.UTC);
+                    yield PgTemporal.date(days).atStartOfDay().toInstant(ZoneOffset.UTC);
                 }
                 default -> TemporalConversions.toInstant(oid, new String(data, offset, length, encoding));
             };
@@ -856,38 +853,52 @@ public class DataConverter {
         };
     }
 
-    private static final Map<Class<?>, Fn2<?, Oid, String>> KNOWN_TYPES = new HashMap<>();
+    private Float toFloat(Oid oid, byte[] value, boolean binary) {
+        return binary
+               ? toDouble(oid, value, true).floatValue()
+               : NumericConversions.toFloat(oid, new String(value, encoding));
+    }
 
-    static {
-        KNOWN_TYPES.put(byte.class, NumericConversions::toByte);
-        KNOWN_TYPES.put(Byte.class, NumericConversions::toByte);
-        KNOWN_TYPES.put(char.class, StringConversions::toChar);
-        KNOWN_TYPES.put(Character.class, StringConversions::toChar);
-        KNOWN_TYPES.put(short.class, NumericConversions::toShort);
-        KNOWN_TYPES.put(Short.class, NumericConversions::toShort);
-        KNOWN_TYPES.put(int.class, NumericConversions::toInteger);
-        KNOWN_TYPES.put(Integer.class, NumericConversions::toInteger);
-        KNOWN_TYPES.put(long.class, NumericConversions::toLong);
-        KNOWN_TYPES.put(Long.class, NumericConversions::toLong);
-        KNOWN_TYPES.put(BigInteger.class, NumericConversions::toBigInteger);
-        KNOWN_TYPES.put(BigDecimal.class, NumericConversions::toBigDecimal);
-        KNOWN_TYPES.put(float.class, NumericConversions::toFloat);
-        KNOWN_TYPES.put(Float.class, NumericConversions::toFloat);
-        KNOWN_TYPES.put(double.class, NumericConversions::toDouble);
-        KNOWN_TYPES.put(Double.class, NumericConversions::toDouble);
-        KNOWN_TYPES.put(String.class, StringConversions::asString);
-        KNOWN_TYPES.put(boolean.class, BooleanConversions::toBoolean);
-        KNOWN_TYPES.put(Boolean.class, BooleanConversions::toBoolean);
-        KNOWN_TYPES.put(UUID.class, (oid, value) -> UUID.fromString(value));
-        // BYTEA in text format ("\x..."): strip the leading "\x" prefix before parsing hex.
-        KNOWN_TYPES.put(byte[].class,
-                        (oid, value) -> BlobConversions.toBytes(oid, value.substring(2)));
-        KNOWN_TYPES.put(LocalDate.class, TemporalConversions::toLocalDate);
-        KNOWN_TYPES.put(LocalTime.class, TemporalConversions::toLocalTime);
-        KNOWN_TYPES.put(LocalDateTime.class, TemporalConversions::toLocalDateTime);
-        KNOWN_TYPES.put(ZonedDateTime.class, TemporalConversions::toZonedDateTime);
-        KNOWN_TYPES.put(OffsetDateTime.class, TemporalConversions::toOffsetDateTime);
-        KNOWN_TYPES.put(Instant.class, TemporalConversions::toInstant);
+    private final Map<Class<?>, Fn3<?, Oid, byte[], Boolean>> knownTypes = knownTypes();
+
+    private Map<Class<?>, Fn3<?, Oid, byte[], Boolean>> knownTypes() {
+        var converters = new HashMap<Class<?>, Fn3<?, Oid, byte[], Boolean>>();
+
+        converters.put(byte.class, this::toByte);
+        converters.put(Byte.class, this::toByte);
+        converters.put(char.class, this::toChar);
+        converters.put(Character.class, this::toChar);
+        converters.put(short.class, this::toShort);
+        converters.put(Short.class, this::toShort);
+        converters.put(int.class, this::toInteger);
+        converters.put(Integer.class, this::toInteger);
+        converters.put(long.class, this::toLong);
+        converters.put(Long.class, this::toLong);
+        converters.put(BigInteger.class, this::toBigInteger);
+        converters.put(BigDecimal.class, this::toBigDecimal);
+        converters.put(double.class, this::toDouble);
+        converters.put(Double.class, this::toDouble);
+        converters.put(String.class, this::toString);
+        converters.put(boolean.class, this::toBoolean);
+        converters.put(Boolean.class, this::toBoolean);
+        converters.put(byte[].class, this::toBytes);
+        converters.put(LocalDate.class, this::toLocalDate);
+        converters.put(LocalTime.class, this::toLocalTime);
+        converters.put(LocalDateTime.class, this::toLocalDateTime);
+        converters.put(Instant.class, this::toInstant);
+        converters.put(float.class, this::toFloat);
+        converters.put(Float.class, this::toFloat);
+        converters.put(UUID.class, (_, value, binary) -> toUuid(value, binary));
+        converters.put(ZonedDateTime.class,
+                       (oid, value, binary) -> binary
+                                               ? toInstant(oid, value, true).atZone(ZoneOffset.UTC)
+                                               : TemporalConversions.toZonedDateTime(oid, new String(value, encoding)));
+        converters.put(OffsetDateTime.class,
+                       (oid, value, binary) -> binary
+                                               ? toInstant(oid, value, true).atOffset(ZoneOffset.UTC)
+                                               : TemporalConversions.toOffsetDateTime(oid, new String(value, encoding)));
+
+        return Map.copyOf(converters);
     }
 
     public <T> T toObject(Oid oid, byte[] value, Class<T> type) {
@@ -930,17 +941,15 @@ public class DataConverter {
 
                 return converter.to(pgValue);
             }
-            // A UUID arrives as 16 raw bytes in binary format; stringifying those bytes yields
-            // mojibake and UUID.fromString then fails. The KNOWN_TYPES converters take a String and
-            // so cannot see the wire format, which is why this case is decided before the lookup.
-            if (type == UUID.class) {
-                return (T) toUuid(value, binary);
-            }
-            // Try known converter
-            var knownConverter = KNOWN_TYPES.get(type);
+            // Every built-in conversion receives the actual wire format, including generic get().
+            var knownConverter = knownTypes.get(type);
 
             if (knownConverter != null) {
-                return (T) knownConverter.apply(oid, new String(value, encoding));
+                return (T) knownConverter.apply(oid, value, binary);
+            }
+
+            if (type.isArray()) {
+                return toArray(type, oid, value, binary);
             }
 
             throw new IllegalArgumentException("Unknown conversion target: " + type);
@@ -948,17 +957,17 @@ public class DataConverter {
         // Convert by oid
         return (T) switch (oid) {
             case null -> null;
-            case TEXT, CHAR, BPCHAR, VARCHAR -> toString(oid, value);
-            case INT2 -> toShort(oid, value);
-            case INT4 -> toInteger(oid, value);
-            case INT8 -> toLong(oid, value);
-            case NUMERIC, FLOAT4, FLOAT8 -> toBigDecimal(oid, value);
-            case BYTEA -> toBytes(oid, value);
-            case DATE -> toLocalDate(oid, value);
-            case TIMETZ, TIME -> toLocalTime(oid, value);
-            case TIMESTAMP, TIMESTAMPTZ -> toInstant(oid, value);
+            case TEXT, CHAR, BPCHAR, VARCHAR -> toString(oid, value, binary);
+            case INT2 -> toShort(oid, value, binary);
+            case INT4 -> toInteger(oid, value, binary);
+            case INT8 -> toLong(oid, value, binary);
+            case NUMERIC, FLOAT4, FLOAT8 -> toBigDecimal(oid, value, binary);
+            case BYTEA -> toBytes(oid, value, binary);
+            case DATE -> toLocalDate(oid, value, binary);
+            case TIMETZ, TIME -> toLocalTime(oid, value, binary);
+            case TIMESTAMP, TIMESTAMPTZ -> toInstant(oid, value, binary);
             case UUID -> toUuid(value, binary);
-            case BOOL -> toBoolean(oid, value);
+            case BOOL -> toBoolean(oid, value, binary);
             case INT2_ARRAY, INT4_ARRAY, INT8_ARRAY, NUMERIC_ARRAY, FLOAT4_ARRAY, FLOAT8_ARRAY, TEXT_ARRAY, CHAR_ARRAY, BPCHAR_ARRAY, VARCHAR_ARRAY, TIMESTAMP_ARRAY, TIMESTAMPTZ_ARRAY, TIMETZ_ARRAY, TIME_ARRAY, BOOL_ARRAY, BYTEA_ARRAY, UUID_ARRAY, DATE_ARRAY -> toArray(Object[].class,
                                                                                                                                                                                                                                                                               oid,
                                                                                                                                                                                                                                                                               value,

@@ -172,14 +172,16 @@ class SegmentIndexTest {
             assertThat(index.lastSealedOffset(STREAM, PARTITION)).isEqualTo(199L);
         }
 
-        /// After a restart only surviving refs are known, and a prefix reclaimed by retention cannot be told
-        /// apart from one never sealed — so the rebuilt watermark is anchored at the lowest surviving ref and
-        /// still stops at the first hole above it.
+        /// After a restart only surviving refs are known. A prefix retention reclaimed is recorded by its persisted
+        /// floor (#1278), so the rebuilt watermark is anchored at the floor and still stops at the first hole above
+        /// it. Without the floor the same refs rebuild to -1 (ReclaimedThroughFloorTest: an unrecorded missing
+        /// prefix is lost refs, not reclaimed history).
         @Test
-        void rebuildFromRefs_anchorsAtLowestSurvivingRef_andStopsAtHole() {
+        void rebuildFromRefs_anchorsAtTheReclaimedFloor_andStopsAtHole() {
             var store = MetadataStore.inMemoryMetadataStore("rebuild");
             var block = BlockId.blockId(new byte[]{1}).unwrap();
 
+            store.putRef(SegmentIndex.floorRefName(STREAM, PARTITION, 99), block);
             store.putRef("streams/" + STREAM + "/" + PARTITION + "/100-199", block);
             store.putRef("streams/" + STREAM + "/" + PARTITION + "/200-299", block);
             store.putRef("streams/" + STREAM + "/" + PARTITION + "/400-499", block);

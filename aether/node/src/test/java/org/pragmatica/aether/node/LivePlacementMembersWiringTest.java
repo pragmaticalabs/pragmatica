@@ -53,6 +53,24 @@ class LivePlacementMembersWiringTest {
         assertThat(assemblyCode()).contains("EntityOwnershipReconciler.entityOwnershipReconciler(kvStore,config.self(),streamReplicaSetController::reconciledMembers,");
     }
 
+    /// Rebalance handoff (run 8, 02w): the receiving service must be told what the COMMITTED state says
+    /// about this node, or every missing target answers terminally again — the wiring is the half a service
+    /// unit test cannot see, because the test constructs its own predicate.
+    @Test
+    void entityForwardService_isGivenTheCommittedStakeTest() {
+        assertThat(assemblyCode()).contains("EntityForwardService.entityForwardService(config.self(),clusterNode.network()::sendOutcome,ENTITY_FORWARD_TIMEOUT,CommittedEntityStake.committedEntityStake(kvStore,config.self()));");
+    }
+
+    /// The reconciler's event triggers: a real executor (not a no-op) for the retract-driven pass, and the
+    /// committed-registration-removal route that wakes the leader's mint.
+    @Test
+    void entityReconcile_isTriggeredByRetractAndByACommittedRegistrationRemoval() {
+        var code = assemblyCode();
+
+        assertThat(code).contains("clusterCommandApplier,ENTITY_RECONCILE_KICK,EntityOwnershipReconciler.SETTLE_TICKS,EntityOwnershipReconciler.FIRST_MINT_CEILING_TICKS,ENTITY_OWNERSHIP_RECONCILE_INTERVAL,System::nanoTime,operatorWarningSink);");
+        assertThat(code).contains("MessageRouter.Entry.route(KVStoreNotification.ValueRemove.class,entityOwnershipReconciler::onRegistrationRemoved)");
+    }
+
     @Test
     void consumerGroupOwnership_readsTheController() {
         var code = assemblyCode();
@@ -65,7 +83,9 @@ class LivePlacementMembersWiringTest {
     /// the leader's live set), not by the routing owner, which now follows the committed record.
     @Test
     void ownershipWriterHrwOwner_readsTheControllersDesiredOwner() {
-        assertThat(assemblyCode()).contains("Option.option(clusterEventsControllerRef.get()).flatMap(ownershipController->ownershipController.desiredOwner(stream,partition)))");
+        // #1730: the writer is the ISR-aware one -- the same desired-owner read, plus the live/initial-ISR inputs from the
+        // controller and the committed leader its guarded transactions carry.
+        assertThat(assemblyCode()).contains("Option.option(clusterEventsControllerRef.get()).flatMap(ownershipController->ownershipController.desiredOwner(stream,partition)),streamIsrInputs(clusterEventsControllerRef),()->kvStore.getTyped(LeaderKey.INSTANCE,LeaderValue.class));");
     }
 
     /// #1555 sticky ownership: every node routes by the committed record, and backfill resolves the same owner.
@@ -83,11 +103,31 @@ class LivePlacementMembersWiringTest {
     void ownerPromotionBlock_reachesStatusReadAlarmAndWindow() {
         var code = assemblyCode();
 
-        assertThat(code).contains("streamPartitionManager.ownerBlockSource(ownerActivation::blockOf);");
-        assertThat(code).contains("AetherNode::raiseOwnerPromotionBlock,ownerPromotionAlarmWindow(config.timeouts().swim().suspectTimeout()));");
-        assertThat(code).contains("returnsuspectTimeout.plus(suspectTimeout);");
+        // #1730: a partition with no live in-sync replica has no owner to report, so the controller's block joins it.
+        assertThat(code).contains("streamPartitionManager.ownerBlockSource((stream,partition)->ownerActivation.blockOf(stream,partition).orElse(()->streamReplicaSetController.noInSyncReplica(stream,partition)));");
+        // #1431: the alarm also reaches the node's operator-warning sink (an oversized peer event is its own warning); the
+        // window is still the argument after it — `OwnerActivation`'s `unreachableAlarmAfter`. #1873: the gate's constructor then
+        // takes the ring incarnation and the lineage commit (see EpochFetchWiringTest).
+        assertThat(code).contains("ownerPromotionAlarm(operatorWarningSink),ownerPromotionAlarmWindow(config.timeouts().swim().suspectTimeout()),(stream,partition)->");
+        assertThat(code).contains("returnStreamingConfig.ownerPromotionAlarmWindow(suspectTimeout);");
+        assertThat(code).as("#2080: the owner gate is told its escape bound").contains("ownerActivation.promotionEscapeAfter(streamingConfig.promotionEscapeAfter());");
         assertThat(code).as("v1555 F1: the overlap read is the production OwnerPeerReads.ownerRange the gate tests exercise")
-                        .contains("OwnerPeerReads.ownerRange(config.self(),streamPartitionManager,streamTieredReader,streamForwardClient::readRemoteCatchup,STREAM_CATCHUP_BATCH_SIZE),AetherNode::raiseOwnerPromotionBlock");
+                        .contains("OwnerPeerReads.ownerRange(config.self(),streamPartitionManager,streamTieredReader,streamForwardClient::readRemoteCatchup,STREAM_CATCHUP_BATCH_SIZE),ownerPromotionAlarm(operatorWarningSink)");
+    }
+
+    /// #1730 phase 2 (B5-B7): the gate's relaxation reads the candidate's sealed floor and forgets a left-out peer's registry row; a
+    /// replica that has not been compared with the committed owner of the current epoch acknowledges nothing.
+    @Test
+    void epochVerification_isWiredIntoTheGateAndTheReceiveHandler() {
+        var code = assemblyCode();
+
+        assertThat(code).contains("ownerActivation.sealedFloor(streamSegmentIndex::lastSealedOffset);");
+        assertThat(code).contains("ownerActivation.peerRows((stream,partition,peer)->streamReplicaRegistry.updateWatermark(stream,partition,peer,-1L,ReplicationState.SYNCING));");
+        assertThat(code).contains("streamReplicationReceiveHandler.ackGate(streamPartitionManager::replicaVerified);");
+        assertThat(code).contains("streamReplicationManager.ownerEpochs(streamOwnerEpochSource);");
+        assertThat(code).contains("streamPartitionManager.repairReportBound(TimeSpan.timeSpan(STREAM_BACKFILL_REDRIVE_INTERVAL.millis()*12L).millis());");
+        assertThat(code).contains("ownerActivation.peerRingTail((node,stream,partition)->");
+        assertThat(code).contains(":streamForwardClient.ringTailRemote(node,stream,partition).recover(_->Option.<Long>none()));");
     }
 
     @Test
@@ -102,7 +142,26 @@ class LivePlacementMembersWiringTest {
     /// the unbounded factory is for tests only.
     @Test
     void backfillSingleFlight_isBoundedByTheConfiguredIdleBound() {
-        assertThat(assemblyCode()).contains("streamPartitionManager.quarantineView(),Option.some(streamingConfig.backfillFlightIdleBound()));");
+        assertThat(assemblyCode()).contains("streamPartitionManager.quarantineView(),Option.some(streamingConfig.backfillFlightIdleBound()))");
+    }
+
+    /// #2077: the promotion decision's ISR evidence is the RAW committed record read from the store, never the liveness-filtered
+    /// routing view (`streamCommittedOwnerSource`), which hides a dead owner. Binding the routing view here would let a node's own
+    /// membership view vouch for itself.
+    @Test
+    void backfillIsrEvidence_isTheRawCommittedRecord_notTheRoutingView() {
+        assertThat(assemblyCode()).contains(".withCommittedIsr(KvCommittedStreamOwnerSource.kvCommittedStreamOwnerSource(kvStore));");
+    }
+
+    /// #1339 / #1732: `AetherNodeReplicaSetTriggersTest` drives the trigger helpers through wiring it builds itself, so
+    /// deleting either production call site leaves it green. These pins are the half it cannot see: the placement-input
+    /// triggers are registered on the node's routes, and the FSM transition hook reconciles on a counted-boundary edge.
+    @Test
+    void replicaSetInputTriggers_areWiredIntoTheAssembly() {
+        var code = assemblyCode();
+
+        assertThat(code).contains("wireReplicaSetInputTriggers(allEntries,streamReplicaSetController::reconcile,clusterNode::onVoterConfiguration);");
+        assertThat(code).contains("reconcileReplicaSetOnCountedBoundary(clusterEventsControllerRef,record);");
     }
 
     /// `AetherNode.java` with line comments removed and all whitespace stripped, so a pin matches the

@@ -5,11 +5,15 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.storage.StorageInstance.RefSwap;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.some;
@@ -20,6 +24,7 @@ import static org.pragmatica.storage.ContentStoreError.General.CONTENT_NOT_FOUND
 
 /// Default content store implementation with auto-chunking and compression.
 final class DefaultContentStore implements ContentStore {
+    private static final Logger log = LoggerFactory.getLogger(DefaultContentStore.class);
     private static final int SIZE_HEADER_BYTES = 4;
 
     private final StorageInstance storage;
@@ -75,12 +80,39 @@ final class DefaultContentStore implements ContentStore {
                             .flatMap(framed -> storage.swapRef(name, framed));
     }
 
+    /// Each chunk holds only `put`'s credit and no name, so a put that fails part-way would leave
+    /// the chunks it already stored at refCount 1 behind no manifest -- uncollectable for ever, and with
+    /// deduplication an over-count that keeps a chunk shared with the previous document alive after that
+    /// document is deleted (#1437). On ANY failure, chunk `k` or the manifest swap, the put therefore
+    /// gives back exactly the credits THIS put took, never the previous document's (it is released only
+    /// after a successful swap, see [#put]).
     private Promise<RefSwap> putChunked(String name, byte[] content) {
         var chunks = splitIntoChunks(content);
+        var stored = new ArrayList<String>();
+        var attempt = storeAllChunks(chunks, 0, stored).flatMap(chunkIds -> storeManifestUnderName(name,
+                                                                                                   content.length,
+                                                                                                   chunkIds));
 
-        return storeAllChunks(chunks, 0, new ArrayList<>()).flatMap(chunkIds -> storeManifestUnderName(name,
-                                                                                                       content.length,
-                                                                                                       chunkIds));
+        return releaseStoredOnFailure(attempt, stored);
+    }
+
+    /// The release is awaited before the failure is reported, so a caller that sees the failure also sees
+    /// the credits returned; a release that itself fails is logged and does not mask the original cause.
+    private Promise<RefSwap> releaseStoredOnFailure(Promise<RefSwap> attempt, List<String> stored) {
+        var settled = Promise.<RefSwap> promise();
+
+        attempt.onResult(result -> result.onSuccess(settled::succeed)
+                                         .onFailure(cause -> rollBack(stored, cause, settled)));
+
+        return settled;
+    }
+
+    private void rollBack(List<String> stored, Cause cause, Promise<RefSwap> settled) {
+        releaseAllChunks(List.copyOf(stored),
+                         0).onFailure(releaseCause -> log.warn("Rollback of {} chunk(s) of a failed put could not complete: {}",
+                                                               stored.size(),
+                                                               releaseCause.message()))
+                        .onResult(_ -> settled.fail(cause));
     }
 
     /// One write-and-ref call, never [StorageInstance#put] followed by [StorageInstance#createRef]:

@@ -68,6 +68,7 @@ import static org.pragmatica.aether.ember.EmberCluster.emberCluster;
 ///
 /// Ports are probed free at run time, following `EmberClusterObservedNodeStateTest`: module test phases
 /// run concurrently in CI, so a fixed port block is exposed to every other module (#939).
+@PortBudget
 class EmberBootstrapAdminKeyAuthTest {
     private static final int CLUSTER_SIZE = 3;
     /// `EmberCluster.start` builds a slot pool of `2 * clusterSize`, so a block must cover twice the

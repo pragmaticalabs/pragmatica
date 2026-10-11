@@ -7,6 +7,7 @@ package org.pragmatica.aether.stream;
 import java.util.List;
 
 import org.pragmatica.aether.slice.ConsumerConfig;
+import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.stream.consumer.TransactionalCursorCommit;
 import org.pragmatica.aether.slice.generation.RewindEpoch;
 import org.pragmatica.aether.stream.segment.ConsumerCursorStore;
@@ -15,6 +16,7 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.utility.warning.OperatorWarningSink;
 
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.some;
@@ -26,7 +28,9 @@ public interface StreamConsumerRuntime extends AutoCloseable {
     /// call it from a plain statement. `void` is the JDK's contract here, not a choice, hence
     /// [`Contract`].
     ///
-    /// Closing flushes every consumer's cursor before removing push listeners. That flush is
+    /// Closing flushes every consumer's cursor before removing push listeners; each flush first waits, up to
+    /// one second, for a delivery in flight to advance the cursor, so an event whose handler completed is not
+    /// redelivered (#1403). That flush is
     /// `ConsumerCursorStore.commit(...)` — a `Promise<CommitOutcome>` consensus write that can fail, or simply
     /// not settle before shutdown needs to proceed. #654: the batch of final commits is bound-await
     /// for up to 5 seconds so a wedged or slow write cannot hold node stop; a commit that has not
@@ -114,6 +118,10 @@ public interface StreamConsumerRuntime extends AutoCloseable {
     /// (#1333) is the epoch the consumer resumed under and stamps on every commit — `RewindEpoch.NONE`
     /// for a group never rewound; the node compares it with the committed epoch to detect a rewind it
     /// must restart the consumer for.
+    ///
+    /// `stalled` (#752) is a PROCESSING-FAILURE latch, not a liveness signal: it is set only when a handler failed
+    /// under the STALL error strategy. A consumer that receives nothing at all reports `stalled = false`
+    /// indefinitely, exactly like a healthy consumer on a quiet partition, so `false` never means "receiving".
     record SubscriptionSnapshot(String streamName,
                                 int partition,
                                 String consumerGroup,
@@ -139,6 +147,11 @@ public interface StreamConsumerRuntime extends AutoCloseable {
         KEEP_UNTIL_UNSUBSCRIBED
     }
 
+    /// Late-bind where a consumer's re-seek after a replaced lineage is reported to the operator (#1873). The default ignores
+    /// it: a runtime without a node behind it only logs.
+    @Contract
+    default void operatorWarnings(OperatorWarningSink sink) {}
+
     @FunctionalInterface
     interface ConsumerCallback {
         Promise<Unit> onEvent(long offset, byte[] payload, long timestamp);
@@ -157,6 +170,51 @@ public interface StreamConsumerRuntime extends AutoCloseable {
                                                        int partition,
                                                        long fromOffset,
                                                        int maxEvents);
+
+        /// The consumer's read (#1730 phase 2 / #1873, KIP-320): the same read, carrying the owner epoch the consumer last
+        /// read under, answered with the events and the epoch they were served under, or with the typed
+        /// [StreamError.EpochDiverged] when the cursor belongs to a replaced lineage. The default is a plain read that
+        /// reports no epoch, which never diverges: a reader without an owner behind it has no lineage to be checked against.
+        default Promise<StreamPartitionManager.EpochRead> readFrom(String streamName,
+                                                                   int partition,
+                                                                   long fromOffset,
+                                                                   int maxEvents,
+                                                                   Epoch consumerEpoch) {
+            return read(streamName, partition, fromOffset, maxEvents).map(events -> new StreamPartitionManager.EpochRead(events,
+                                                                                                                         Epoch.ZERO));
+        }
+    }
+
+    /// A reader that validates against the owner's epoch (#1730 phase 2 / #1873): `plain` for the unvalidated read,
+    /// `validated` for the consumer's.
+    @FunctionalInterface
+    interface ValidatedRead {
+        Promise<StreamPartitionManager.EpochRead> read(String streamName,
+                                                       int partition,
+                                                       long fromOffset,
+                                                       int maxEvents,
+                                                       Epoch consumerEpoch);
+    }
+
+    static PartitionReader validatingReader(PartitionReader plain, ValidatedRead validated) {
+        return new PartitionReader() {
+            @Override
+            public Promise<List<OffHeapRingBuffer.RawEvent>> read(String streamName,
+                                                                  int partition,
+                                                                  long fromOffset,
+                                                                  int maxEvents) {
+                return plain.read(streamName, partition, fromOffset, maxEvents);
+            }
+
+            @Override
+            public Promise<StreamPartitionManager.EpochRead> readFrom(String streamName,
+                                                                      int partition,
+                                                                      long fromOffset,
+                                                                      int maxEvents,
+                                                                      Epoch consumerEpoch) {
+                return validated.read(streamName, partition, fromOffset, maxEvents, consumerEpoch);
+            }
+        };
     }
 
     /// The default reader: this node's own ring, and nothing else.

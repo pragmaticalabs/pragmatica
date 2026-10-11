@@ -41,7 +41,7 @@ class HierarchicalCapacityFallbackTest {
     private final java.util.concurrent.atomic.AtomicReference<org.pragmatica.consensus.NodeId> refusedNode = new java.util.concurrent.atomic.AtomicReference<>();
 
     @BeforeAll void start() {
-        cluster = EmberCluster.emberCluster(3, 36900, 37000, 37100, "fallback");
+        cluster = EmberCluster.emberCluster(3, 4320, 4420, 4520, "fallback");
         cluster.withComputeProviderDecorator(this::refusePreferred);
         LifecycleAwait.settled("start fallback cluster", cluster, cluster.start());
         await().atMost(BUDGET.millis(), TimeUnit.MILLISECONDS).until(() -> cluster.currentLeader()
@@ -111,7 +111,7 @@ class HierarchicalCapacityFallbackTest {
     private void changeDestination(String destination) {
         var node = leader();
         var before = node.kvStore().getTyped(AetherKey.ClusterConfigKey.CURRENT, AetherValue.ClusterConfigValue.class).unwrap();
-        var value = new AetherValue.ClusterConfigValue(policy(destination), "fallback", "1.0.0",
+        var value = new AetherValue.ClusterConfigValue(Option.some(policy(destination)), "fallback", "1.0.0",
             List.of(new AetherValue.TopologyEntry("default", "core", 3), new AetherValue.TopologyEntry("east", "worker", 0),
                 new AetherValue.TopologyEntry("west", "worker", 0)), 3, 3, "forge", before.configVersion() + 1, System.currentTimeMillis());
         var id = UUID.randomUUID().toString();

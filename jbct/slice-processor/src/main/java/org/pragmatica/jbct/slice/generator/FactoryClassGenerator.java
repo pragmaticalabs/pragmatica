@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.jbct.slice.generator;
 
 import javax.annotation.processing.Filer;
@@ -2496,7 +2495,7 @@ public class FactoryClassGenerator {
 
     /// Collect codec entries for the type arguments of resource-qualified factory parameters.
     ///
-    /// A resource such as `DurableEntity<String, OrderState>` serializes its type arguments through
+    /// A resource such as `DurableEntity<String, OrderState, OrderCommand>` serializes its type arguments through
     /// the slice codec, yet the author never names them in a slice method signature — the fixture
     /// this was found on deliberately keeps entity state off the HTTP boundary. Walking
     /// `model.methods()` alone therefore leaves the state type without a codec and the first write

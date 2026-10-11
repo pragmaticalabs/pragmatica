@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.config;
 
 import org.junit.jupiter.api.Assertions;
@@ -41,6 +40,52 @@ class ClusterTimeoutsAbsenceOrderingTest {
 
         assertTrue(defaults.coreAbsence().nanos() > defaults.pingInterval().nanos());
         assertTrue(defaults.communityAbsence().nanos() > defaults.pingInterval().nanos());
+    }
+
+    /// #1996: the longest a request frame may wait in a peer's offline buffer is a cluster timeout, 30s by default, and an
+    /// operator's value reaches the transport through the loader rather than being silently ignored.
+    @Test
+    void offlineBufferCap_defaultsToThirtySeconds_andIsReadFromToml() {
+        assertThat(ClusterTimeouts.clusterTimeouts().offlineBufferCap()).isEqualTo(timeSpan(30).seconds());
+
+        ConfigLoader.loadFromString("""
+                                    [cluster]
+                                    environment = "docker"
+
+                                    [timeouts.cluster]
+                                    offline_buffer_cap = "7s"
+                                    """)
+                    .onFailure(cause -> Assertions.fail(cause.message()))
+                    .onSuccess(config -> assertThat(config.timeouts().cluster().offlineBufferCap()).isEqualTo(timeSpan(7).seconds()));
+    }
+
+    /// The floor is wired, not merely declared: a cap under it comes back as a validation failure naming the key, and the
+    /// floor itself and the default pass (so a validator rejecting everything would not satisfy the first test).
+    @Test
+    void validate_offlineBufferCapBelowTheFloor_failsNamingTheKey() {
+        ConfigValidator.validate(configWith(withCap(timeSpan(4).seconds())))
+                       .onSuccessRun(Assertions::fail)
+                       .onFailure(cause -> assertThat(cause.message()).contains("timeouts.cluster.offline_buffer_cap"));
+        ConfigValidator.validate(configWith(withCap(timeSpan(0).seconds())))
+                       .onSuccessRun(Assertions::fail);
+    }
+
+    @Test
+    void validate_offlineBufferCapAtTheFloor_succeeds() {
+        ConfigValidator.validate(configWith(withCap(timeSpan(5).seconds()))).onFailureRun(Assertions::fail);
+        ConfigValidator.validate(AetherConfig.aetherConfig(Environment.DOCKER)).onFailureRun(Assertions::fail);
+    }
+
+    private static ClusterTimeouts withCap(TimeSpan cap) {
+        var defaults = ClusterTimeouts.clusterTimeouts();
+
+        return new ClusterTimeouts(defaults.hello(),
+                                   defaults.reconciliationInterval(),
+                                   defaults.pingInterval(),
+                                   defaults.channelProtection(),
+                                   defaults.coreAbsence(),
+                                   defaults.communityAbsence(),
+                                   cap);
     }
 
     @Test
@@ -88,7 +133,8 @@ class ClusterTimeoutsAbsenceOrderingTest {
                                    defaults.pingInterval(),
                                    defaults.channelProtection(),
                                    coreAbsence,
-                                   communityAbsence);
+                                   communityAbsence,
+                                   defaults.offlineBufferCap());
     }
 
     private static AetherConfig configWith(ClusterTimeouts cluster) {

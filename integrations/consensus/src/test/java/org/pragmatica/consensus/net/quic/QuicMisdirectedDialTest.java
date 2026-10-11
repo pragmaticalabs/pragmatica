@@ -118,6 +118,37 @@ class QuicMisdirectedDialTest {
         assertThat(connected(bNet, a)).as("B still has A CONNECTED").isTrue();
     }
 
+    /// #1830: the dialer reports the mismatch to its peer-state listener as a refutation of the DIALED
+    /// identity, never of the node that answered — SWIM consumes it to stop shielding a phantom seed.
+    @Test
+    void dialAnsweredByAnotherIdentity_reportsOnlyTheDialedIdentityAsRefuted() {
+        var a = new NodeId("md-a");
+        var b = new NodeId("md-b");
+        var ghost = new NodeId("md-c");
+        var aNet = network(a, new CopyOnWriteArrayList<>());
+        var bNet = network(b, new CopyOnWriteArrayList<>());
+        var refutations = new CopyOnWriteArrayList<List<NodeId>>();
+
+        aNet.setPeerStateListener(refutationRecorder(refutations));
+        start(aNet);
+        start(bNet);
+
+        aNet.dialForTests(nodeInfo(ghost, bNet.boundPort().unwrap()), true);
+        awaitTrue(() -> !refutations.isEmpty(), "the dialer reported the identity mismatch");
+
+        assertThat(refutations).as("refuted = the dialed identity, claimant = the node that answered")
+                               .containsOnly(List.of(ghost, b));
+    }
+
+    private static QuicPeerStateListener refutationRecorder(List<List<NodeId>> refutations) {
+        return new QuicPeerStateListener() {
+            @Override public void onPeerJoined(NodeId nodeId) {}
+            @Override public void onPeerReconnected(NodeId nodeId) {}
+            @Override public void onPeerLeft(NodeId nodeId) {}
+            @Override public void onPeerIdentityRefuted(NodeId dialed, NodeId claimant) {refutations.add(List.of(dialed, claimant));}
+        };
+    }
+
     private static List<String> causes(List<PeerTransitionRecord> journal) {
         return journal.stream()
                       .map(PeerTransitionRecord::cause)

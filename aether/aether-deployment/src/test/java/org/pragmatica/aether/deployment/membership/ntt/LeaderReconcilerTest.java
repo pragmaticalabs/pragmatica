@@ -77,6 +77,7 @@ import java.net.InetSocketAddress;
 import java.net.SocketAddress;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -126,6 +127,8 @@ class LeaderReconcilerTest {
     /// test sets another.
     private static final TimeSpan EXPECTED_POLL_INTERVAL = membershipConfig().splitTimeout();
     private static final TimeSpan DEFAULT_REPLACEMENT_CEILING = timeSpan(10).minutes();
+    /// Poll intervals (15s) that fit inside the default ten-minute ceiling window.
+    private static final int CEILING_WINDOW_INTERVALS = 40;
     /// #1049 round 3 — a never-listed replacement counts as deleted only after twelve consecutive successful
     /// listings omit it AND three minutes have passed since it became pollable (its create call resolved).
     private static final TimeSpan EXPECTED_FIRST_LISTING_FLOOR = timeSpan(3).minutes();
@@ -239,6 +242,25 @@ class LeaderReconcilerTest {
         assertThat(sampler.peakMembershipCount()).isEqualTo(1);
         assertThat(listener.events().getLast().provisionCount()).isEqualTo(2);
         assertThat(ctm.provisionReplacementCalls()).hasSize(2);
+    }
+
+    /// #1543 N6: a live pairing's replacement that has not joined yet is capacity. Two cores short of 5, one of them already
+    /// on its way as a pairing's replacement: auto-heal provisions ONE, not two. The control is the same cluster with no pairing.
+    @Test
+    void pendingPairingReplacement_countsAsCapacity_autoHealDoesNotProvisionTheSeatTwice() {
+        configuredCoreCount.set(3);
+        observeCoreHealthy(PEER_A);
+        observeCoreHealthy(PEER_B);
+        reconciler.activate();
+        scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
+        configuredCoreCount.set(5);
+        reconciler.setSurgeReplacements(() -> Set.of(NodeId.randomNodeId()));
+        reconciler.onConfigChange();
+        fireDebouncedReconcile();
+        advancePastProvisioningGates();
+        triggerAndFireReconcile();
+
+        assertThat(ctm.provisionReplacementCalls()).as("one seat is already being filled by the pairing").hasSize(1);
     }
 
     @Test
@@ -1049,6 +1071,24 @@ class LeaderReconcilerTest {
                 .hasSize(1);
         }
 
+        /// #1543 E (v-1970 gap): a paired replacement is surge capacity, not surplus. With one live pairing the +1 member
+        /// must not be counted as surplus, so the reconciler dispatches no drain for it (and re-arms no follow-up). The control
+        /// is the same cluster without the surge: its surplus IS drained.
+        @Test
+        void surplusDrain_surgeReplacement_isNotCountedAsSurplus_controlWithoutItDrains() {
+            configuredCoreCount.set(3);
+            seedClusterWithPeers(PEER_A, PEER_B);
+            var surge = NodeId.randomNodeId();
+
+            seedYoungPeers(surge);
+            reconciler.setSurgeReplacements(() -> Set.of(surge));
+
+            reconciler.activate();
+            scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
+
+            assertThat(ctm.drainNodeCalls()).as("the paired surge node is not surplus").isEmpty();
+        }
+
         @Test
         void surplusDrain_allConfiguredCandidatesYoung_defersWithFollowUp_noDrainDispatched() {
             configuredCoreCount.set(2);
@@ -1760,15 +1800,223 @@ class LeaderReconcilerTest {
             return ctm.instanceStateQueries().size();
         }
 
+        /// #1111 — a dropped in-flight replacement is handed to the manager's confirmed reap, whatever the reason it was dropped for.
+        private DroppedReap onlyDroppedReap(NodeId minted) {
+            assertThat(reconciler.inFlightProvisioningKeys()).as("dropped").doesNotContain(minted);
+            assertThat(ctm.droppedReaps()).as("exactly one reap request, for the dropped placeholder").hasSize(1);
+            assertThat(ctm.droppedReaps().getFirst().node()).isEqualTo(minted);
+
+            return ctm.droppedReaps().getFirst();
+        }
+
+        @Test
+        void inFlightEntry_droppedAtTheCeiling_isReaped_andSaysSoWhenTheInstanceWasSeen() {
+            ctm.setReplacementCeiling(timeSpan(2).minutes());
+            var minted = dispatchOneReplacement();
+
+            ctm.reportInstanceState(minted, ReplacementInstanceState.PRESENT);
+            advancePollIntervals(10);
+
+            var reap = onlyDroppedReap(minted);
+
+            assertThat(reap.reason()).contains("replacement ceiling").contains("CONFIRMED");
+            assertThat(reap.knowledge()).as("the provider listed it (PRESENT) before the ceiling").isEqualTo(ClusterTopologyManager.DroppedInstance.LISTED);
+        }
+
+        @Test
+        void inFlightEntry_droppedAtTheCeiling_neverListed_isReapedAsNeverSeen() {
+            ctm.setReplacementCeiling(timeSpan(2).minutes());
+            var minted = dispatchOneReplacement();
+
+            ctm.reportInstanceState(minted, ReplacementInstanceState.UNKNOWN);
+            advancePollIntervals(10);
+
+            assertThat(onlyDroppedReap(minted).knowledge()).as("UNKNOWN is no sighting: created, never listed").isEqualTo(ClusterTopologyManager.DroppedInstance.CREATED);
+        }
+
+        @Test
+        void inFlightEntry_droppedAfterTwelveAbsentListings_isReaped_asNeverSeen() {
+            var minted = dispatchOneReplacement();
+
+            ctm.reportInstanceState(minted, ReplacementInstanceState.ABSENT);
+            advancePollIntervals(EXPECTED_ABSENT_LISTINGS);
+
+            var reap = onlyDroppedReap(minted);
+
+            assertThat(reap.reason()).contains("ABSENT");
+            assertThat(reap.knowledge()).as("twelve empty listings are not a sighting: a lagging listing may still hold the VM").isEqualTo(ClusterTopologyManager.DroppedInstance.CREATED);
+        }
+
+        @Test
+        void inFlightEntry_droppedAsAbsentAfterBeingSeen_isReaped_asSeen() {
+            var minted = dispatchOneReplacement();
+
+            ctm.reportInstanceState(minted, ReplacementInstanceState.PRESENT);
+            advanceOnePollInterval();
+            ctm.reportInstanceState(minted, ReplacementInstanceState.ABSENT);
+            advanceOnePollInterval();
+
+            assertThat(onlyDroppedReap(minted).knowledge()).as("it was listed PRESENT before").isEqualTo(ClusterTopologyManager.DroppedInstance.LISTED);
+        }
+
+        @Test
+        void inFlightEntry_droppedAsFailed_isReaped_asSeen() {
+            var minted = dispatchOneReplacement();
+
+            ctm.reportInstanceState(minted, ReplacementInstanceState.FAILED);
+            advanceOnePollInterval();
+
+            var reap = onlyDroppedReap(minted);
+
+            assertThat(reap.reason()).contains("FAILED");
+            assertThat(reap.knowledge()).as("FAILED is stated about instances the provider listed").isEqualTo(ClusterTopologyManager.DroppedInstance.LISTED);
+        }
+
+        /// Fails the next create with `cause`, drives the reconciler to dispatch it and returns the placeholder the dropped entry was minted as.
+        private NodeId dropOnFailedCreate(org.pragmatica.lang.Cause cause) {
+            ctm.failNextProvision(cause);
+            configuredCoreCount.set(5);
+            seedClusterWithPeers(PEER_A, PEER_B, PEER_C, PEER_D);
+            reconciler.activate();
+            scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
+            removePeers(PEER_D);
+            triggerAndFireReconcile();
+            advancePastProvisioningGates();
+            triggerAndFireReconcile();
+            assertThat(ctm.provisionReplacementCalls()).as("arming: a provision was attempted and failed").hasSize(1);
+
+            return ctm.provisionReplacementCalls().getFirst();
+        }
+
+        /// Every create failure that does not PROVE no instance was made is ambiguous (the providers report a readiness timeout, a 5xx after the
+        /// provider accepted and a failed tag as ordinary failures while the instance exists), so it goes to the lookup-and-reap, never to a WARN.
+        private void assertReapedAsMaybe(org.pragmatica.lang.Cause cause) {
+            var reap = onlyDroppedReap(dropOnFailedCreate(cause));
+
+            assertThat(reap.reason()).contains("create failed").contains(cause.message());
+            assertThat(reap.knowledge()).as("the instance may or may not exist: only the lookup can say").isEqualTo(ClusterTopologyManager.DroppedInstance.MAYBE);
+        }
+
+        @Test
+        void inFlightEntry_droppedWhenItsCreateTimesOutOnReadiness_isReaped_asMaybe() {
+            assertReapedAsMaybe(READINESS_TIMEOUT);
+        }
+
+        @Test
+        void inFlightEntry_droppedWhenItsCreateFailsAfterTheProviderAccepted_isReaped_asMaybe() {
+            assertReapedAsMaybe(org.pragmatica.aether.environment.EnvironmentError.provisionFailed(new RuntimeException("503 service unavailable after accept")));
+        }
+
+        @Test
+        void inFlightEntry_droppedWhenItsCreateFailsOnTheTagStep_isReaped_asMaybe() {
+            assertReapedAsMaybe(org.pragmatica.aether.environment.EnvironmentError.provisionFailed(new RuntimeException("createTags failed after RunInstances")));
+        }
+
+        @Test
+        void inFlightEntry_droppedWhenItsCreateFailsWithAnUntypedCause_isReaped_asMaybe() {
+            assertReapedAsMaybe(Causes.cause("quota exceeded for server type"));
+        }
+
+        /// Capacity refused in every zone, the node cap, and a refused fleet reservation PROVE that no instance was made: nothing to look up.
+        @Test
+        void inFlightEntry_droppedWhenCapacityIsUnavailable_isNotReaped() {
+            dropOnFailedCreate(org.pragmatica.aether.environment.EnvironmentError.capacityUnavailable("nbg1", new RuntimeException("resource_unavailable")));
+
+            assertThat(ctm.droppedReaps()).isEmpty();
+        }
+
+        @Test
+        void inFlightEntry_droppedWhenTheNodeCapIsExceeded_isNotReaped() {
+            dropOnFailedCreate(org.pragmatica.aether.environment.EnvironmentError.NodeCapExceeded
+                                   .nodeCapExceeded(org.pragmatica.aether.environment.ClusterName.clusterName("test-cluster").unwrap(), 5, 5).unwrap());
+
+            assertThat(ctm.droppedReaps()).isEmpty();
+        }
+
+        @Test
+        void inFlightEntry_droppedWhenTheFleetReservationIsRefused_isNotReaped() {
+            dropOnFailedCreate(org.pragmatica.aether.deployment.cluster.CapacityControlledLifecycle.AdmissionFailure.CAPACITY_UNAVAILABLE);
+
+            assertThat(ctm.droppedReaps()).isEmpty();
+        }
+
+        /// A create that was refused or deferred made no instance: nothing to reap, and no unconfirmed event to raise for it.
+        @Test
+        void inFlightEntry_removedByADeferral_isNotReaped() {
+            ctm.deferNextProvision(ProvisionDisposition.DeferralReason.CIRCUIT_OPEN);
+            configuredCoreCount.set(5);
+            seedClusterWithPeers(PEER_A, PEER_B, PEER_C, PEER_D);
+            reconciler.activate();
+            scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
+            removePeers(PEER_D);
+            triggerAndFireReconcile();
+            advancePastProvisioningGates();
+            triggerAndFireReconcile();
+
+            assertThat(ctm.provisionReplacementCalls()).as("arming: a provision was attempted").hasSize(1);
+            assertThat(reconciler.inFlightProvisioningCount()).isZero();
+            assertThat(ctm.droppedReaps()).isEmpty();
+        }
+
+        /// Control: a replacement that joined is cleared by membership, never dropped, so it is never handed to a reap.
+        @Test
+        void inFlightEntry_thatJoined_isNeverReaped() {
+            var minted = dispatchOneReplacement();
+
+            ctm.reportInstanceState(minted, ReplacementInstanceState.PRESENT);
+            advanceOnePollInterval();
+            seedClusterWithPeers(minted);
+            triggerAndFireReconcile();
+            advancePollIntervals(12);
+
+            assertThat(reconciler.inFlightProvisioningKeys()).doesNotContain(minted);
+            assertThat(ctm.droppedReaps()).as("a joined replacement is never terminated").isEmpty();
+            assertThat(ctm.drainNodeCalls()).doesNotContain(minted);
+        }
+
+        /// A dropped entry is reaped once: the ceiling dropping it first leaves the later create failure with nothing to remove.
+        @Test
+        void inFlightEntry_droppedByTheCeilingWhileCreating_thenFailing_isReapedOnce() {
+            var create = Promise.<ProvisionDisposition> promise();
+
+            ctm.setReplacementCeiling(timeSpan(2).minutes());
+            ctm.holdNextProvision(create);
+            configuredCoreCount.set(5);
+            seedClusterWithPeers(PEER_A, PEER_B, PEER_C, PEER_D);
+            reconciler.activate();
+            scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
+            removePeers(PEER_D);
+            triggerAndFireReconcile();
+            advancePastProvisioningGates();
+            triggerAndFireReconcile();
+            var minted = ctm.provisionReplacementCalls().getFirst();
+
+            advancePollIntervals(10);
+            assertThat(reapsOf(minted)).as("arming: the ceiling dropped the DISPATCHING entry").hasSize(1);
+            create.fail(READINESS_TIMEOUT);
+            create.await();
+
+            // The failure callback runs off this thread; an absence needs a window, so a second reap of the same placeholder would have to land inside it.
+            // (The re-dispatch the drop re-opened shares the held promise, so it fails too: its reap is its own, hence the filter.)
+            await().during(java.time.Duration.ofMillis(500))
+                   .atMost(java.time.Duration.ofSeconds(5))
+                   .untilAsserted(() -> assertThat(reapsOf(minted)).hasSize(1));
+            assertThat(reapsOf(minted).getFirst().reason()).contains("replacement ceiling");
+        }
+
+        private List<DroppedReap> reapsOf(NodeId node) {
+            return ctm.droppedReaps().stream().filter(reap -> reap.node().equals(node)).toList();
+        }
+
         @Test
         void inFlightEntry_providerReportsBooting_isNotReDispatched_pastSplitTimeoutTimesThree() {
             var minted = dispatchOneReplacement();
 
             ctm.reportInstanceState(minted, ReplacementInstanceState.PRESENT);
-            advancePollIntervals(12);
+            advancePollIntervals(5);
 
             assertThat(ctm.provisionReplacementCalls())
-                .as("three minutes in (4x the old 45s expiry) a replacement the provider reports booting is not minted twice")
+                .as("75s in (past the old 45s expiry, inside the 90s join grace) a replacement the provider reports booting is not minted twice")
                 .hasSize(1);
             assertThat(reconciler.inFlightProvisioningKeys()).containsExactly(minted);
             assertThat(ctm.instanceStateQueries())
@@ -1817,7 +2065,7 @@ class LeaderReconcilerTest {
             pendingProvision.succeed(ProvisionDisposition.dispatched());
             await().atMost(2, TimeUnit.SECONDS).until(() -> tickAndCountQueries() >= 1);
             ctm.reportInstanceState(minted, ReplacementInstanceState.PRESENT);
-            advancePollIntervals(EXPECTED_ABSENT_LISTINGS + 2);
+            advancePollIntervals(1);
 
             assertThat(ctm.provisionReplacementCalls())
                 .as("one lagged listing after a slow create is not a deletion")
@@ -1936,11 +2184,13 @@ class LeaderReconcilerTest {
         }
 
         @Test
-        void inFlightEntry_pastHardCeiling_isReDispatched_evenWhileProviderReportsBooting() {
+        void inFlightEntry_pastHardCeiling_isReDispatched_whileTheProviderNeverConfirmsIt() {
             ctm.setReplacementCeiling(timeSpan(2).minutes());
             var minted = dispatchOneReplacement();
 
-            ctm.reportInstanceState(minted, ReplacementInstanceState.PRESENT);
+            // UNKNOWN keeps the entry unconfirmed, so only the ceiling bounds it (a CONFIRMED one is discounted by
+            // the join grace first — see inFlightEntry_confirmedButNeverJoins_deficitReappearsAfterJoinGrace_beforeCeiling).
+            ctm.reportInstanceState(minted, ReplacementInstanceState.UNKNOWN);
             advancePollIntervals(8);
 
             assertThat(ctm.provisionReplacementCalls())
@@ -1952,8 +2202,234 @@ class LeaderReconcilerTest {
 
             assertThat(reconciler.inFlightProvisioningKeys()).doesNotContain(minted);
             assertThat(ctm.provisionReplacementCalls())
-                .as("the per-source ceiling re-dispatches although the provider still reports booting")
+                .as("the per-source ceiling re-dispatches although the provider never said the instance is gone")
                 .hasSize(2);
+        }
+
+        /// #1783 — a replacement the provider lists (CONFIRMED) that never joins membership stops masking the
+        /// deficit once the join grace (6 x splitTimeout = 90s) has passed since its mint: the deficit re-opens and
+        /// re-dispatches one debounce later, at about two minutes, long before the ten-minute ceiling. Inside the
+        /// grace the booting replacement is still counted (no duplicate mint).
+        @Test
+        void inFlightEntry_confirmedButNeverJoins_deficitReappearsAfterJoinGrace_beforeCeiling() {
+            var minted = dispatchOneReplacement();
+
+            ctm.reportInstanceState(minted, ReplacementInstanceState.PRESENT);
+            advancePollIntervals(5);
+
+            assertThat(ctm.provisionReplacementCalls())
+                .as("75s after its mint, inside the 90s join grace, a booting replacement still counts")
+                .hasSize(1);
+
+            advancePollIntervals(2);
+            timeSource.advanceTimeMillis(EXPECTED_DEBOUNCE_WINDOW.millis() + 1);
+            triggerAndFireReconcile();
+
+            assertThat(ctm.provisionReplacementCalls())
+                .as("past the grace the unjoined CONFIRMED entry no longer counts: the deficit re-opens and re-dispatches")
+                .hasSize(2);
+            assertThat(reconciler.inFlightProvisioningKeys())
+                .as("the unjoined instance is kept for adoption, only its count is withdrawn")
+                .contains(minted);
+        }
+
+        /// #1786 — replacements the provider lists but that never join (Addendum 7's shape, repeating): one
+        /// missing slot mints at most an original and ONE substitute per ceiling window, never a chain of them —
+        /// the ceiling forgets an entry without terminating its instance, so each mint is a paid server.
+        /// Worst case in flight for the slot: 2. (Adopted from v1770's P1 probe.)
+        @Test
+        void inFlightEntry_neverJoiningConfirmedReplacements_mintAtMostOneSubstitutePerSlot() {
+            dispatchOneReplacement();
+            var peakInFlight = reconciler.inFlightProvisioningCount();
+
+            for (var i = 0; i < 42; i++) {
+                ctm.provisionReplacementCalls()
+                   .forEach(id -> ctm.reportInstanceState(id, ReplacementInstanceState.PRESENT));
+                advanceOnePollInterval();
+                peakInFlight = Math.max(peakInFlight, reconciler.inFlightProvisioningCount());
+            }
+
+            assertThat(ctm.provisionReplacementCalls())
+                .as("mints for ONE missing slot over ~630s (more than the 600s ceiling)")
+                .hasSizeLessThanOrEqualTo(2);
+            assertThat(peakInFlight).as("peak concurrent in-flight entries for one slot").isLessThanOrEqualTo(2);
+        }
+
+        /// #1786 — a stuck slot (every replacement listed, none joins) with a leader handover every
+        /// `tenureIntervals` poll intervals. The new leader inherits every unjoined id, re-minted on the fake
+        /// timeline so its ULID mint time matches (the CTM mints on the real wall clock, which would silently
+        /// restart the grace). Returns the mints for the one missing slot. Adopted from v1770's P3 probe.
+        private int mintsWithHandovers(int tenureIntervals, int totalIntervals) {
+            dispatchOneReplacement();
+            var dispatchedAtFakeMs = new LinkedHashMap<NodeId, Long>();
+            var live = new LinkedHashSet<NodeId>(ctm.provisionReplacementCalls());
+
+            live.forEach(id -> dispatchedAtFakeMs.put(id, timeSource.nanoTime() / 1_000_000));
+            var seen = ctm.provisionReplacementCalls().size();
+
+            for (var i = 1; i <= totalIntervals; i++) {
+                live.forEach(id -> ctm.reportInstanceState(id, ReplacementInstanceState.PRESENT));
+                advanceOnePollInterval();
+                var calls = ctm.provisionReplacementCalls();
+
+                for (var k = seen; k < calls.size(); k++) {
+                    live.add(calls.get(k));
+                    dispatchedAtFakeMs.put(calls.get(k), timeSource.nanoTime() / 1_000_000);
+                }
+                seen = calls.size();
+                live.retainAll(reconciler.inFlightProvisioningKeys());
+
+                if (i % tenureIntervals == 0) {
+                    live = handOver(live, dispatchedAtFakeMs);
+                }
+            }
+
+            return ctm.provisionReplacementCalls().size();
+        }
+
+        /// One leader handover: the surviving unjoined ids are re-minted with their original fake-timeline mint
+        /// time, deactivated and re-inherited by the next term. Returns the re-minted ids.
+        private LinkedHashSet<NodeId> handOver(LinkedHashSet<NodeId> live, Map<NodeId, Long> dispatchedAtFakeMs) {
+            var nowFakeMs = timeSource.nanoTime() / 1_000_000;
+            var carried = new LinkedHashSet<NodeId>();
+
+            for (var id : live) {
+                var reminted = mintedAt(System.currentTimeMillis() - (nowFakeMs - dispatchedAtFakeMs.get(id)));
+
+                dispatchedAtFakeMs.put(reminted, dispatchedAtFakeMs.get(id));
+                ctm.reportInstanceState(reminted, ReplacementInstanceState.PRESENT);
+                carried.add(reminted);
+            }
+            reconciler.deactivate();
+            leaderTerm.set(leaderTerm.get() + 1);
+            reconciler.setRetainedDispatchedSupplier(() -> Set.copyOf(carried));
+            reconciler.activate();
+            scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).forEach(ManualTask::runIfLive);
+
+            return carried;
+        }
+
+        @Test
+        void inFlightEntry_stuckSlot_noHandover_sameHarness_mintsAtMostTwo() {
+            assertThat(mintsWithHandovers(1000, 42)).as("control: same harness, no handover in ~630s").isLessThanOrEqualTo(2);
+        }
+
+        @Test
+        void inFlightEntry_stuckSlot_handoverEvery60s_substituteGenerationSurvives() {
+            assertThat(mintsWithHandovers(4, CEILING_WINDOW_INTERVALS)).as("mints inside the original's 600s ceiling window, handover every 60s").isLessThanOrEqualTo(2);
+        }
+
+        @Test
+        void inFlightEntry_stuckSlot_handoverEvery105s_substituteGenerationSurvives() {
+            assertThat(mintsWithHandovers(7, CEILING_WINDOW_INTERVALS)).as("mints inside the original's 600s ceiling window, handover every 105s").isLessThanOrEqualTo(2);
+        }
+
+        @Test
+        void inFlightEntry_stuckSlot_handoverEvery120s_substituteGenerationSurvives() {
+            assertThat(mintsWithHandovers(8, CEILING_WINDOW_INTERVALS)).as("mints inside the original's 600s ceiling window, handover every 120s").isLessThanOrEqualTo(2);
+        }
+
+        /// #1786 — the residual the inference cannot close: once the ceiling has evicted the ORIGINAL (600s), a
+        /// handover leaves the substitute as a lone unjoined id, indistinguishable from a genuine first
+        /// replacement, so it reads as generation 0 and may be discounted and substituted once more. This is the
+        /// ceiling's own re-dispatch (the pre-#1786 behaviour at that point), bounded at one extra mint per
+        /// ceiling window; spend stays at most original + substitute + one ceiling re-dispatch.
+        @Test
+        void inFlightEntry_stuckSlot_handoverEvery60s_pastTheOriginalsCeiling_mayMintOneMore() {
+            assertThat(mintsWithHandovers(4, 42)).as("mints over ~630s, handover every 60s").isLessThanOrEqualTo(3);
+        }
+
+        /// #1786 — the documented misclassification of the handover inference: two genuinely missing slots whose
+        /// replacements were minted more than the grace apart read, to the inheriting leader, as original +
+        /// substitute. The later one is never discounted (pre-#1786 ceiling behaviour, slower to heal, no extra
+        /// spend): after both are long past the grace, exactly one more mint covers the earlier slot, where two
+        /// generation-0 entries would both be discounted and mint twice.
+        @Test
+        void newLeader_twoGenuineSlotsMintedMoreThanGraceApart_laterIsReadAsSubstitute_keepsCounting() {
+            var earlier = mintedAt(System.currentTimeMillis() - 120_000L);
+            var later = mintedAt(System.currentTimeMillis() - 10_000L);
+
+            configuredCoreCount.set(5);
+            leaderTerm.set(2L);
+            seedClusterWithPeers(PEER_A, PEER_B);
+            reconciler.setRetainedDispatchedSupplier(() -> Set.of(earlier, later));
+            ctm.reportInstanceState(earlier, ReplacementInstanceState.PRESENT);
+            ctm.reportInstanceState(later, ReplacementInstanceState.PRESENT);
+            reconciler.activate();
+            scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
+            advancePollIntervals(11);
+
+            assertThat(ctm.provisionReplacementCalls())
+                .as("only the earlier entry is discounted: one mint, not two")
+                .hasSize(1);
+            assertThat(reconciler.inFlightProvisioningKeys()).contains(earlier, later);
+        }
+
+        /// #1783 — the discounted replacement then joins late, after its substitute was dispatched. The cluster
+        /// must converge to the configured count, not sit at target + 1: the late joiner clears its entry, the
+        /// substitute is still in flight (counted), and once the substitute joins as well the existing surplus
+        /// path (`computePeersToDrain`) drains exactly one node. Nothing is drained while the substitute has not
+        /// yet joined (the floor holds at the configured count).
+        @Test
+        void inFlightEntry_discountedReplacementJoinsLate_afterSubstituteDispatched_convergesToTarget() {
+            var minted = dispatchOneReplacement();
+
+            ctm.reportInstanceState(minted, ReplacementInstanceState.PRESENT);
+            advancePollIntervals(7);
+            timeSource.advanceTimeMillis(EXPECTED_DEBOUNCE_WINDOW.millis() + 1);
+            triggerAndFireReconcile();
+            assertThat(ctm.provisionReplacementCalls()).hasSize(2);
+            var substitute = ctm.provisionReplacementCalls().getLast();
+
+            seedClusterWithPeers(minted);
+            triggerAndFireReconcile();
+
+            assertThat(reconciler.inFlightProvisioningKeys())
+                .as("the late joiner's entry is cleared by membership; only the substitute remains in flight")
+                .containsExactly(substitute);
+            assertThat(ctm.drainNodeCalls())
+                .as("five members at target: nothing is drained before the substitute joins")
+                .isEmpty();
+
+            seedClusterWithPeers(substitute);
+            triggerAndFireReconcile();
+
+            assertThat(ctm.drainNodeCalls())
+                .as("six members against a target of five: exactly one surplus node is drained")
+                .hasSize(1);
+
+            removePeers(ctm.drainNodeCalls().getFirst());
+            triggerAndFireReconcile();
+
+            assertThat(ctm.provisionReplacementCalls()).as("converged: no third provision").hasSize(2);
+            assertThat(ctm.drainNodeCalls()).as("converged: no second drain").hasSize(1);
+            assertThat(reconciler.inFlightProvisioningCount()).isZero();
+        }
+
+        /// #1783 — the grace clock survives a leader handover: it runs from the entry's mint (the ULID the
+        /// inherited id carries), not from the moment this leader took over. Minted 60s ago and inherited with
+        /// the provider reporting it listed, the entry is discounted at 105s of age, only 45s after inheritance,
+        /// and re-dispatched one debounce later — a clock restarted at inheritance would keep counting it until
+        /// 90s after the handover.
+        @Test
+        void newLeader_inheritedConfirmedEntry_graceRunsFromMint_notFromInheritance() {
+            var inherited = inheritReplacement(mintedAt(System.currentTimeMillis() - timeSpan(60).seconds().millis()),
+                                               ReplacementInstanceState.PRESENT);
+
+            advancePollIntervals(2);
+
+            assertThat(ctm.provisionReplacementCalls())
+                .as("90s after its mint (30s after inheritance) it is not yet past the grace")
+                .isEmpty();
+
+            advancePollIntervals(1);
+            timeSource.advanceTimeMillis(EXPECTED_DEBOUNCE_WINDOW.millis() + 1);
+            triggerAndFireReconcile();
+
+            assertThat(ctm.provisionReplacementCalls())
+                .as("105s after its mint, 45s after inheritance, the unjoined confirmed entry is discounted and replaced")
+                .hasSize(1);
+            assertThat(reconciler.inFlightProvisioningKeys()).contains(inherited);
         }
 
         @Test
@@ -1980,10 +2456,10 @@ class LeaderReconcilerTest {
         void newLeader_inheritedEntryProviderReportsBooting_isNotReDispatched() {
             var inherited = inheritOneReplacement(ReplacementInstanceState.PRESENT);
 
-            advancePollIntervals(12);
+            advancePollIntervals(5);
 
             assertThat(ctm.provisionReplacementCalls())
-                .as("a new leader keeps an inherited replacement the provider reports booting — no duplicate mint")
+                .as("a new leader keeps an inherited replacement the provider reports booting, inside the join grace — no duplicate mint")
                 .isEmpty();
             assertThat(reconciler.inFlightProvisioningKeys()).containsExactly(inherited);
             assertThat(ctm.instanceStateQueries())
@@ -2107,7 +2583,7 @@ class LeaderReconcilerTest {
         void newLeader_inheritedIdWithoutUlid_restartsCeilingAtInheritance() {
             ctm.setReplacementCeiling(timeSpan(2).minutes());
             var inherited = inheritReplacement(NodeId.nodeId("aether-test-cluster-node-5").unwrap(),
-                                               ReplacementInstanceState.PRESENT);
+                                               ReplacementInstanceState.UNKNOWN);
 
             advancePollIntervals(8);
 
@@ -2128,7 +2604,7 @@ class LeaderReconcilerTest {
         void newLeader_inheritedIdMintedInTheFuture_isClampedToNow() {
             ctm.setReplacementCeiling(timeSpan(2).minutes());
             var inherited = inheritReplacement(mintedAt(System.currentTimeMillis() + timeSpan(1).hours().millis()),
-                                               ReplacementInstanceState.PRESENT);
+                                               ReplacementInstanceState.UNKNOWN);
 
             advancePollIntervals(8);
 
@@ -3515,6 +3991,278 @@ class LeaderReconcilerTest {
 
     /// Recording `ClusterTopologyManager` stub. Phase 1.5 verification surface for
     /// `provisionReplacement` / `drainNode` / `reconcile` v2 calls.
+    private static final org.pragmatica.aether.environment.EnvironmentError.ProvisionReadinessTimeout READINESS_TIMEOUT =
+        org.pragmatica.aether.environment.EnvironmentError.ProvisionReadinessTimeout.provisionReadinessTimeout(
+            org.pragmatica.aether.environment.InstanceId.instanceId("i-slow").unwrap(),
+            new org.pragmatica.aether.environment.InstanceStatus.Provisioning(),
+            300_000L).unwrap();
+
+    /// #1111, round 2: the reconciler wired to the REAL topology manager and the REAL lifecycle over a fake provider whose create MAKES an instance and
+    /// then fails with the cause each provider really emits (the provider-side shapes are pinned in the provider modules). Nothing here is a
+    /// hand-built verdict: whether the instance is terminated follows from the cause, the label lookup and the confirmed reap.
+    @Nested
+    class RealCreatePath {
+        private static final String LOGGER_NAME = "org.pragmatica.aether.deployment.cluster.ClusterTopologyManager";
+        private final ConcurrentHashMap<String, org.pragmatica.aether.environment.InstanceInfo> inventory = new ConcurrentHashMap<>();
+        private final AtomicReference<Cause> createOutcome = new AtomicReference<>();
+        private final AtomicBoolean createMakesInstance = new AtomicBoolean(true);
+        private final AtomicInteger terminates = new AtomicInteger();
+        private final AtomicInteger listings = new AtomicInteger();
+        private WarnCapture appender;
+        private LoggerConfig loggerConfig;
+        private Level originalLevel;
+
+        @BeforeEach
+        void wire() {
+            appender = WarnCapture.create();
+            appender.start();
+            var logContext = (LoggerContext) LogManager.getContext(false);
+            var existing = logContext.getConfiguration().getLoggerConfig(LOGGER_NAME);
+
+            loggerConfig = LOGGER_NAME.equals(existing.getName())
+                           ? existing
+                           : new LoggerConfig(LOGGER_NAME, Level.WARN, false);
+            if (!LOGGER_NAME.equals(existing.getName())) {
+                logContext.getConfiguration().addLogger(LOGGER_NAME, loggerConfig);
+            }
+            originalLevel = loggerConfig.getLevel();
+            loggerConfig.addAppender(appender, Level.WARN, null);
+            loggerConfig.setLevel(Level.WARN);
+            logContext.updateLoggers();
+            ctm.real = realTopologyManager(true);
+            ctm.real.activate();
+        }
+
+        @org.junit.jupiter.api.AfterEach
+        void unwire() {
+            ctm.real.deactivate();
+            var logContext = (LoggerContext) LogManager.getContext(false);
+
+            loggerConfig.removeAppender(appender.getName());
+            loggerConfig.setLevel(originalLevel);
+            logContext.updateLoggers();
+            appender.stop();
+        }
+
+        private ClusterTopologyManager realTopologyManager(boolean namesASource) {
+            var snapshotSource = new org.pragmatica.consensus.topology.GenerationSnapshotSource() {
+                @Override
+                public Option<org.pragmatica.consensus.topology.MembershipView> currentMembershipView() {
+                    return Option.none();
+                }
+
+                @Override
+                public long observedRabiaTerm() {
+                    return 0L;
+                }
+            };
+            var nodes = new ArrayList<NodeInfo>();
+            var port = 7100;
+
+            for (var node : List.of(SELF, PEER_A, PEER_B, PEER_C, PEER_D)) {
+                nodes.add(NodeInfo.nodeInfo(node, org.pragmatica.net.tcp.NodeAddress.nodeAddress("localhost", port++).unwrap()));
+            }
+
+            var config = new org.pragmatica.consensus.topology.TopologyConfig(SELF, 5, timeSpan(60).seconds(), timeSpan(1).seconds(), nodes);
+            var observer = TopologyObserver.topologyObserver(config, org.pragmatica.messaging.MessageRouter.mutable(), snapshotSource).unwrap();
+            var autoHeal = org.pragmatica.aether.environment.AutoHealConfig.autoHealConfig(timeSpan(1).millis(), timeSpan(60).millis()).unwrap();
+            var liveness = org.pragmatica.aether.deployment.cluster.MembershipLiveness.membershipLiveness(Set::of,
+                                                                                                           Set::of,
+                                                                                                           _ -> false,
+                                                                                                           _ -> false,
+                                                                                                           Set::of,
+                                                                                                           () -> 5,
+                                                                                                           _ -> Option.none());
+            var plain = org.pragmatica.aether.deployment.cluster.NodeLifecycleManager.nodeLifecycleManager(Option.some(new CreatingProvider()));
+            var lifecycle = namesASource
+                            ? new SourcedLifecycle(plain)
+                            : plain;
+            var manager = ClusterTopologyManager.clusterTopologyManager(observer,
+                                                                        lifecycle,
+                                                                        autoHeal,
+                                                                        org.pragmatica.aether.deployment.DeploymentMap.deploymentMap(),
+                                                                        snapshotSource,
+                                                                        () -> Option.<org.pragmatica.aether.slice.kvstore.AetherValue.ClusterConfigValue> none(),
+                                                                        commands -> Promise.success(List.<Object> of()),
+                                                                        () -> org.pragmatica.aether.slice.kvstore.AetherValue.ClusterPhase.NORMAL,
+                                                                        _ -> {},
+                                                                        _ -> {},
+                                                                        Option::none,
+                                                                        liveness);
+
+            manager.setRetirementRefusal(_ -> Option.none());
+
+            return manager;
+        }
+
+        private NodeId dispatchWithCreate(Cause outcome, boolean makesInstance) {
+            createOutcome.set(outcome);
+            createMakesInstance.set(makesInstance);
+            configuredCoreCount.set(5);
+            seedClusterWithPeers(PEER_A, PEER_B, PEER_C, PEER_D);
+            reconciler.activate();
+            scheduler.tasksByDelay(EXPECTED_ACTIVATION_DELAY).getFirst().runIfLive();
+            removePeers(PEER_D);
+            triggerAndFireReconcile();
+            advancePastProvisioningGates();
+            triggerAndFireReconcile();
+            await().atMost(java.time.Duration.ofSeconds(5)).until(() -> !ctm.provisionReplacementCalls().isEmpty());
+
+            return ctm.provisionReplacementCalls().getFirst();
+        }
+
+        private boolean warned(String... fragments) {
+            return appender.warns().stream().anyMatch(message -> List.of(fragments).stream().allMatch(message::contains));
+        }
+
+        private void assertInstanceOfTheFailedCreateIsTerminated(Cause outcome) {
+            var minted = dispatchWithCreate(outcome, true);
+
+            await().atMost(java.time.Duration.ofSeconds(10)).until(() -> terminates.get() == 1);
+            assertThat(inventory).as("the instance the create made is gone").isEmpty();
+            assertThat(warned("in-flight replacement", minted.id(), "source=", "instanceIds=[i-" + minted.id() + "]")).as("warns: " + appender.warns()).isTrue();
+            assertThat(warned("instance-termination-unconfirmed")).isFalse();
+        }
+
+        @Test
+        void aCreateThatMadeAnInstanceThenTimedOutOnReadiness_isTerminated() {
+            assertInstanceOfTheFailedCreateIsTerminated(READINESS_TIMEOUT);
+        }
+
+        @Test
+        void aCreateThatMadeAnInstanceThenFailedWith5xxAfterAccept_isTerminated() {
+            assertInstanceOfTheFailedCreateIsTerminated(org.pragmatica.aether.environment.EnvironmentError.provisionFailed(new RuntimeException("503 after accept")));
+        }
+
+        @Test
+        void aCreateThatMadeAnInstanceThenFailedOnTheTagStep_isTerminated() {
+            assertInstanceOfTheFailedCreateIsTerminated(org.pragmatica.aether.environment.EnvironmentError.provisionFailed(new RuntimeException("createTags failed after RunInstances")));
+        }
+
+        /// The lifecycle names no source for a placeholder that has no reservation yet: the source the create was sent to is remembered by the
+        /// manager and the lookup goes there, so the WARN still names the source and the instance id.
+        @Test
+        void aDroppedCreate_isLookedUpAtTheSourceItWasCreatedFor() {
+            ctm.real.deactivate();
+            ctm.real = realTopologyManager(false);
+            ctm.real.activate();
+            var minted = dispatchWithCreate(org.pragmatica.aether.environment.EnvironmentError.provisionFailed(new RuntimeException("503 after accept")), true);
+
+            await().atMost(java.time.Duration.ofSeconds(10)).until(() -> terminates.get() == 1);
+            assertThat(warned("in-flight replacement", minted.id(), "source=", "instanceIds=[i-" + minted.id() + "]")).as("warns: " + appender.warns()).isTrue();
+        }
+
+        @Test
+        void aCapacityRefusal_makesNoInstance_andIsNeverLookedUp() {
+            var minted = dispatchWithCreate(org.pragmatica.aether.environment.EnvironmentError.capacityUnavailable("nbg1", new RuntimeException("resource_unavailable")), false);
+            var before = listings.get();
+
+            await().during(java.time.Duration.ofMillis(500)).atMost(java.time.Duration.ofSeconds(5)).until(() -> true);
+            assertThat(ctm.droppedReaps()).as("a capacity refusal proves no instance was made: no reap for " + minted + " warns=" + appender.warns()).isEmpty();
+            assertThat(terminates.get()).isZero();
+            assertThat(listings.get()).as("nothing looked the instance up").isEqualTo(before);
+            assertThat(warned("instance-termination-unconfirmed")).isFalse();
+        }
+
+        /// The rejected create that made nothing: the lookup is repeated across the absent-listing bound, then the drop ends quietly.
+        @Test
+        void aFailedCreateThatMadeNothing_isConfirmedAbsentByRepeatedListings_withNoEvent() {
+            var minted = dispatchWithCreate(org.pragmatica.aether.environment.EnvironmentError.provisionFailed(new RuntimeException("quota exceeded")), false);
+
+            await().atMost(java.time.Duration.ofSeconds(10))
+                   .until(() -> ctm.droppedReaps().stream().anyMatch(reap -> reap.node().equals(minted)) && listings.get() >= 12);
+            await().during(java.time.Duration.ofMillis(500)).atMost(java.time.Duration.ofSeconds(5)).until(() -> true);
+            assertThat(terminates.get()).isZero();
+            assertThat(warned("instance-termination-unconfirmed")).as("no event for a VM that never existed").isFalse();
+            assertThat(warned("no instance exists")).isFalse();
+        }
+
+        private final class CreatingProvider implements org.pragmatica.aether.environment.ComputeProvider {
+            @Override
+            public org.pragmatica.aether.environment.ProviderDefaults providerDefaults() {
+                return org.pragmatica.aether.environment.ProviderDefaults.providerDefaults("cx22", "img", "img", "nbg1", Option.none(), true);
+            }
+
+            @Override
+            public Promise<org.pragmatica.aether.environment.InstanceInfo> createFrom(org.pragmatica.aether.environment.ProvisionRequest request) {
+                var node = request.context().nodeId().or("unnamed");
+
+                if (createMakesInstance.get()) {
+                    inventory.put(node,
+                                  new org.pragmatica.aether.environment.InstanceInfo(org.pragmatica.aether.environment.InstanceId.instanceId("i-" + node).unwrap(),
+                                                                                       org.pragmatica.aether.environment.InstanceStatus.RUNNING,
+                                                                                       List.of(),
+                                                                                       org.pragmatica.aether.environment.InstanceType.ON_DEMAND,
+                                                                                       Map.of("aether.node-id", node),
+                                                                                       Option.some(node),
+                                                                                       Option.none()));
+                }
+
+                return createOutcome.get().promise();
+            }
+
+            @Override
+            public Promise<Unit> terminate(org.pragmatica.aether.environment.InstanceId instanceId) {
+                terminates.incrementAndGet();
+                inventory.values().removeIf(instance -> instance.id().equals(instanceId));
+
+                return Promise.unitPromise();
+            }
+
+            @Override
+            public Promise<List<org.pragmatica.aether.environment.InstanceInfo>> listInstances() {
+                listings.incrementAndGet();
+
+                return Promise.success(List.copyOf(inventory.values()));
+            }
+
+            @Override
+            public Promise<org.pragmatica.aether.environment.InstanceInfo> instanceStatus(org.pragmatica.aether.environment.InstanceId instanceId) {
+                return org.pragmatica.aether.environment.EnvironmentError.operationNotSupported("instanceStatus").promise();
+            }
+        }
+    }
+
+    /// The production lifecycle's `sourceOf` is total; the single-provider record names none, so this names the default.
+    private record SourcedLifecycle(org.pragmatica.aether.deployment.cluster.NodeLifecycleManager delegate) implements org.pragmatica.aether.deployment.cluster.NodeLifecycleManager {
+        @Override
+        public Promise<org.pragmatica.aether.deployment.cluster.ActionResult> executeAction(org.pragmatica.aether.deployment.cluster.NodeAction action) {
+            return delegate.executeAction(action);
+        }
+
+        @Override
+        public Promise<org.pragmatica.aether.environment.InstanceInfo> provisionNode(org.pragmatica.aether.environment.ProvisionSpec spec) {
+            return delegate.provisionNode(spec);
+        }
+
+        @Override
+        public Promise<Unit> terminateNode(NodeId nodeId) {
+            return delegate.terminateNode(nodeId);
+        }
+
+        @Override
+        public Promise<List<org.pragmatica.aether.environment.InstanceInfo>> instancesForNode(NodeId nodeId) {
+            return delegate.instancesForNode(nodeId);
+        }
+
+        @Override
+        public Promise<List<org.pragmatica.aether.environment.InstanceInfo>> listInstances(Map<String, String> tagFilter) {
+            return delegate.listInstances(tagFilter);
+        }
+
+        @Override
+        public boolean isCloudManaged() {
+            return delegate.isCloudManaged();
+        }
+
+        @Override
+        public Option<SourceName> sourceOf(NodeId nodeId) {
+            return Option.some(SourceName.DEFAULT);
+        }
+    }
+
+    private record DroppedReap(NodeId node, String reason, ClusterTopologyManager.DroppedInstance knowledge) {}
+
     private static final class RecordingCtm implements ClusterTopologyManager {
         @Override public boolean usesExplicitCommunities() { return false; }
         @Override public void installCommunityPlacement(org.pragmatica.aether.deployment.cluster.CommunityPlacementReconciler reconciler) {}
@@ -3576,6 +4324,24 @@ class LeaderReconcilerTest {
             return List.copyOf(drainNodeCalls);
         }
 
+        /// When set, the three operations of the in-flight path run on this real topology manager (the recording stays).
+        volatile ClusterTopologyManager real;
+        private final List<DroppedReap> droppedReaps = new CopyOnWriteArrayList<>();
+
+        @Override
+        public Unit reapDroppedReplacement(NodeId node, String reason, ClusterTopologyManager.DroppedInstance knowledge) {
+            droppedReaps.add(new DroppedReap(node, reason, knowledge));
+            if (real != null) {
+                real.reapDroppedReplacement(node, reason, knowledge);
+            }
+
+            return Unit.unit();
+        }
+
+        List<DroppedReap> droppedReaps() {
+            return List.copyOf(droppedReaps);
+        }
+
         @Contract
         void clear() {
             drainNodeCalls.clear();
@@ -3617,6 +4383,9 @@ class LeaderReconcilerTest {
                                                                   NodeRole intendedRole) {
             provisionReplacementCalls.add(newNodeId);
             provisionReplacementRoles.add(intendedRole);
+            if (real != null) {
+                return real.provisionReplacement(newNodeId, failedPeer, clusterMembers, intendedRole);
+            }
             return nextProvisionResult.get();
         }
 
@@ -3630,6 +4399,9 @@ class LeaderReconcilerTest {
         @Override
         public Promise<ReplacementInstanceState> replacementInstanceState(NodeId nodeId) {
             instanceStateQueries.add(nodeId);
+            if (real != null) {
+                return real.replacementInstanceState(nodeId);
+            }
             return heldInstanceStateAnswer.get()
                                           .or(() -> Promise.success(instanceStates.getOrDefault(nodeId,
                                                                                                 ReplacementInstanceState.UNKNOWN)));

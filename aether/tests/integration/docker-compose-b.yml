@@ -17,10 +17,14 @@ x-node-common: &node-common
     - "${DOCKER_GID:-984}"
   volumes:
     - /var/run/docker.sock:/var/run/docker.sock
+    - aether-b-backup-remote:/data/backup-remote
   environment: &node-env
     CLUSTER_PORT: "6000"
     MANAGEMENT_PORT: "8080"
-    PEERS: "aether-b-node-1:aether-b-node-1:6000,aether-b-node-2:aether-b-node-2:6000,aether-b-node-3:aether-b-node-3:6000,aether-b-node-4:aether-b-node-4:6000,aether-b-node-5:aether-b-node-5:6000"
+    # Core node ids are generation-encoded (#1968): generation 0 is the static 1..5, generation G is G*100+i, minted by
+    # restart_all_nodes (lib/cluster.sh) through AETHER_B_N1..5 and AETHER_B_PEERS. A node id never returns: a whole-cluster
+    # restart is a regular start on FRESH ids followed by the KV restore from the backup below.
+    PEERS: "${AETHER_B_PEERS:-aether-b-node-1:aether-b-node-1:6000,aether-b-node-2:aether-b-node-2:6000,aether-b-node-3:aether-b-node-3:6000,aether-b-node-4:aether-b-node-4:6000,aether-b-node-5:aether-b-node-5:6000}"
     CORE_MAX: "5"
     DOCKER_GID: "${DOCKER_GID:-984}"
     JAVA_OPTS: "-Xmx512m -XX:+UseZGC -Djava.net.preferIPv4Stack=true"
@@ -49,6 +53,13 @@ x-node-common: &node-common
     # explicitly opts OUT via per-test unset when exercising the TLS-rotation
     # NOT_CONFIGURED skip path — see 05-security/CHARTER.md.
     AETHER_INSECURE_DEV_MODE: "true"
+    # [backup] (#1532/#1533, #1968): each node's repository is local; the REMOTE is a bare repository on a volume shared by every
+    # node (the only thing that outlives a whole-cluster restart onto fresh ids), and the Docker provider forwards these to every
+    # CTM replacement. `restore = auto` makes a fresh cluster restore the head when there is one.
+    AETHER_BACKUP_ENABLED: "true"
+    AETHER_BACKUP_PATH: "/data/backups"
+    AETHER_BACKUP_REMOTE: "/data/backup-remote/kv.git"
+    AETHER_BACKUP_RESTORE: "auto"
   healthcheck:
     test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/health/live"]
     interval: 10s
@@ -74,14 +85,14 @@ services:
   # The MGMT_PORT+i convention resolves node-{i+1} → 5161+i.
   aether-b-node-1:
     <<: *node-common
-    container_name: aether-b-node-1
-    hostname: aether-b-node-1
+    container_name: aether-b-node-${AETHER_B_N1:-1}
+    hostname: aether-b-node-${AETHER_B_N1:-1}
     labels:
       aether.cluster: "b"
-      aether.node-id: "aether-b-node-1"
+      aether.node-id: "aether-b-node-${AETHER_B_N1:-1}"
     environment:
       <<: *node-env
-      NODE_ID: "aether-b-node-1"
+      NODE_ID: "aether-b-node-${AETHER_B_N1:-1}"
     ports:
       - "5161:8080"   # Direct mgmt
       - "8080:8070"   # App HTTP
@@ -90,56 +101,56 @@ services:
 
   aether-b-node-2:
     <<: *node-common
-    container_name: aether-b-node-2
-    hostname: aether-b-node-2
+    container_name: aether-b-node-${AETHER_B_N2:-2}
+    hostname: aether-b-node-${AETHER_B_N2:-2}
     labels:
       aether.cluster: "b"
-      aether.node-id: "aether-b-node-2"
+      aether.node-id: "aether-b-node-${AETHER_B_N2:-2}"
     environment:
       <<: *node-env
-      NODE_ID: "aether-b-node-2"
+      NODE_ID: "aether-b-node-${AETHER_B_N2:-2}"
     ports:
       - "5162:8080"
       - "8081:8070"
 
   aether-b-node-3:
     <<: *node-common
-    container_name: aether-b-node-3
-    hostname: aether-b-node-3
+    container_name: aether-b-node-${AETHER_B_N3:-3}
+    hostname: aether-b-node-${AETHER_B_N3:-3}
     labels:
       aether.cluster: "b"
-      aether.node-id: "aether-b-node-3"
+      aether.node-id: "aether-b-node-${AETHER_B_N3:-3}"
     environment:
       <<: *node-env
-      NODE_ID: "aether-b-node-3"
+      NODE_ID: "aether-b-node-${AETHER_B_N3:-3}"
     ports:
       - "5163:8080"
       - "8082:8070"
 
   aether-b-node-4:
     <<: *node-common
-    container_name: aether-b-node-4
-    hostname: aether-b-node-4
+    container_name: aether-b-node-${AETHER_B_N4:-4}
+    hostname: aether-b-node-${AETHER_B_N4:-4}
     labels:
       aether.cluster: "b"
-      aether.node-id: "aether-b-node-4"
+      aether.node-id: "aether-b-node-${AETHER_B_N4:-4}"
     environment:
       <<: *node-env
-      NODE_ID: "aether-b-node-4"
+      NODE_ID: "aether-b-node-${AETHER_B_N4:-4}"
     ports:
       - "5164:8080"
       - "8083:8070"
 
   aether-b-node-5:
     <<: *node-common
-    container_name: aether-b-node-5
-    hostname: aether-b-node-5
+    container_name: aether-b-node-${AETHER_B_N5:-5}
+    hostname: aether-b-node-${AETHER_B_N5:-5}
     labels:
       aether.cluster: "b"
-      aether.node-id: "aether-b-node-5"
+      aether.node-id: "aether-b-node-${AETHER_B_N5:-5}"
     environment:
       <<: *node-env
-      NODE_ID: "aether-b-node-5"
+      NODE_ID: "aether-b-node-${AETHER_B_N5:-5}"
     ports:
       - "5165:8080"
       - "8084:8070"
@@ -148,3 +159,10 @@ networks:
   aether-b-network:
     external: true
     name: aether-b-network
+
+# The backup remote: created and initialised (`git init --bare kv.git`, owned by uid 1000) by run-tests.sh when cluster B is
+# deployed, removed with it. EXTERNAL so that `compose down -v` never wipes the one thing a restart restores from.
+volumes:
+  aether-b-backup-remote:
+    external: true
+    name: aether-b-backup-remote

@@ -29,16 +29,18 @@ class DhtResolveObserverWiringTest {
     }
 
     @Test
-    void assembly_warnsOnlyForArtifactKeys() throws IOException {
+    void assembly_warnsOnlyForArtifactMetadataKeys() throws IOException {
         var source = Files.readString(SOURCE);
 
-        assertThat(source).contains("ArtifactStore::isArtifactKeyHex");
+        assertThat(source).contains("ArtifactStore::isArtifactMetadataKeyHex");
     }
 
     @Test
     void assembly_scopesTheCacheClientFromTheUnobservedBase() throws IOException {
         var source = Files.readString(SOURCE);
 
-        assertThat(source).contains("var cacheDhtClient = baseDhtClient.scoped(config.cache());");
+        // #1777 track 1: still scoped from the unobserved base; the declaration is now read live from the committed
+        // `[cache]` section through a supplier
+        assertThat(source).contains("var cacheDhtClient = baseDhtClient.scoped(cacheDhtConfig::get);");
     }
 }

@@ -85,15 +85,18 @@ class BatchPublishPreAppendGuardsTest {
                                                                                                             noopDeserializer()));
 
         highWater.advance(OwnershipDomain.streamPartition(STREAM, P), Epoch.epoch(0L, 1, 3));
+        var node = new StreamPartitionManagerTest.StubClusterNode(StreamPartitionManagerTest.StubApply.SUCCESS);
+
         manager = streamPartitionManager(Long.MAX_VALUE,
                                          EvictionListener.NOOP,
                                          ReplicationManager.NONE,
-                                         new StreamPartitionManagerTest.StubClusterNode(StreamPartitionManagerTest.StubApply.SUCCESS),
+                                         node,
                                          highWater,
                                          StreamOwnerEpochSource.zero(),
                                          Option.none(),
                                          LastSealedOffsetSource.none(),
                                          DurableSealedOffsetSource.none());
+        node.deliverCommittedTo(manager::onStreamConfigPut);
         createStream(1);
         var outcomes = StreamWriteRouter.localOnly(manager).publishBatch(STREAM, P, payloads(3), TS).await().unwrap();
 

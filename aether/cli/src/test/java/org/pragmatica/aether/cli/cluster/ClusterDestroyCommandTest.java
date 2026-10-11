@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 
 package org.pragmatica.aether.cli.cluster;
 
@@ -699,7 +698,7 @@ class ClusterDestroyCommandTest {
                        () -> "the phase line must name the per-node budget and the worst-case total; got:\n" + stdout());
             assertTrue(stdout().contains("Draining node core-0 (waiting up to "
                                          + ClusterDestroyCommand.DRAIN_TIMEOUT_SECONDS
-                                         + "s for DECOMMISSIONED, polling every "
+                                         + "s for the drain to complete, polling every "
                                          + ClusterDestroyCommand.DRAIN_POLL_INTERVAL_MS
                                          + "ms)"),
                        () -> "and each node must name its own ceiling BEFORE its wait begins — this is the line "

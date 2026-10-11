@@ -77,6 +77,23 @@ class LifecycleAwaitTest {
         assertThat(value).isEqualTo("msrc-6");
     }
 
+    /// A bind collision names its port and points at the fixed test-port blocks, so a future CI red is attributed in
+    /// one read; every other failure carries no such pointer (the control: a pointer on every failure is noise).
+    @Test
+    void aBindCollision_namesThePortAndTheFixedBlockGate_andOtherFailuresDoNot() {
+        var collided = Promise.<Unit> failure(new TestCause("Failed to bind to port 3003: Address already in use"));
+        var other = Promise.<Unit> failure(new TestCause("quorum not reached"));
+
+        assertThatThrownBy(() -> LifecycleAwait.settled("start cluster", unstartedCluster(), SHORT_BOUND, collided))
+            .hasMessageContaining("bind collision on port 3003")
+            .hasMessageContaining("fixed test-port block, see check-test-ports.py");
+        assertThatThrownBy(() -> LifecycleAwait.settled("start cluster", unstartedCluster(), SHORT_BOUND, other))
+            .hasMessageContaining("quorum not reached")
+            .hasMessageNotContaining("check-test-ports.py");
+        assertThat(LifecycleAwait.bindAttribution("Transport failure: java.net.BindException: Address already in use"))
+            .contains("a port the transport did not name");
+    }
+
     /// A lifecycle step that FAILED and one that never settled both leave the step undone, and both
     /// get the same named report.
     @Test

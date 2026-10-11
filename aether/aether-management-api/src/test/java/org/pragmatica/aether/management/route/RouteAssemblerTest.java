@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 
 package org.pragmatica.aether.management.route;
 
@@ -111,8 +110,8 @@ class RouteAssemblerTest {
     /// un-escape; this pins the caller's shape so the reason is next to the rule.
     @Test
     void assemble_groupPathWithSlashes_spansSegments_becauseMavenRoutesNeedIt() {
-        // ARTIFACT_GET, not ARTIFACT_INFO: the server positional-parses INFO's dotted group and
-        // does not honour the spanning form there (#1102); GET/PUT/DELETE/MAVEN_METADATA do.
+        // ARTIFACT_INFO spans too since #1102 (served by MavenProtocolRoutes, pinned by
+        // MavenProtocolRoutesInfoTest); ARTIFACT_GET stays the canonical example.
         var path = ManagementRoute.ARTIFACT_GET.assemble("org/example", "hello", "1.0.0", "hello-1.0.0.jar");
         path.onSuccess(p -> assertThat(p).isEqualTo("/repository/org/example/hello/1.0.0/hello-1.0.0.jar"));
         assertThat(path.isSuccess()).isTrue();

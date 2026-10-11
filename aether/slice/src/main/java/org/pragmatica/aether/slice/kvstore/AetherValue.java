@@ -1,13 +1,14 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.slice.kvstore;
 
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.TreeMap;
 
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.artifact.ArtifactBase;
@@ -25,10 +26,14 @@ import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.slice.generation.RewindEpoch;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.cluster.state.kvstore.AssignmentTokenBearing;
+import org.pragmatica.cluster.state.kvstore.CommunityFenced;
+import org.pragmatica.cluster.state.kvstore.IncarnationFenced;
 import org.pragmatica.cluster.state.kvstore.EpochBearing;
+import org.pragmatica.cluster.state.kvstore.GrowOnlyMergeable;
 import org.pragmatica.cluster.state.kvstore.OwnerFenced;
 import org.pragmatica.cluster.state.kvstore.LeaderAuthorized;
 import org.pragmatica.cluster.state.kvstore.VersionFenced;
+import org.pragmatica.cluster.state.kvstore.WitnessedRemoval;
 import org.pragmatica.hlc.HlcTimestamp;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
@@ -42,6 +47,124 @@ import static org.pragmatica.lang.Option.none;
 @CodecFor(ExecutionMode.class)
 @SuppressWarnings("JBCT-NAM-01")
 public sealed interface AetherValue {
+    /// The digest (size, MD5, SHA-1, SHA-256) of the content bound to one file of one coordinate, keyed by `AetherKey.ArtifactContentKey`
+    /// (#1778). The applier keeps the FIRST committed value ([GrowOnlyMergeable]: a later write merges into the
+    /// committed one and yields it unchanged), so the binding is decided once, by the consensus log.
+    record ArtifactContentValue(long size, String md5, String sha1, String sha256, long deployedAt) implements AetherValue, GrowOnlyMergeable<ArtifactContentValue> {
+        /// Whether `other` describes the same CONTENT: size, MD5, SHA-1 and SHA-256, not the deploy time. The deploy
+        /// time is the FIRST proposer's, kept with the binding so that completing an interrupted write rewrites the
+        /// file's metadata with its original time instead of a new one.
+        public boolean sameDigest(ArtifactContentValue other) {
+            return size == other.size
+                   && md5.equals(other.md5)
+                   && sha1.equals(other.sha1)
+                   && sha256.equals(other.sha256);
+        }
+
+        @Override
+        public ArtifactContentValue mergeInto(ArtifactContentValue committed) {
+            return committed;
+        }
+    }
+
+    /// One version of an artifact and whether it was archived (#1778).
+    record ArtifactVersionEntry(String version, boolean archived) {}
+
+    /// The versions of one artifact in the built-in artifact store, keyed by `AetherKey.ArtifactVersionsKey`
+    /// (#1778). A grow-only set: the applier MERGES a written value into the committed one
+    /// ([GrowOnlyMergeable]), the merge is a union that takes the higher state per version
+    /// (`present < archived`), so concurrent publishes are folded in consensus order and no writer can lose
+    /// another's version or un-archive one. A writer sends only what it adds: [#added] or [#archived].
+    record ArtifactVersionsValue(List<ArtifactVersionEntry> entries, int maxLive) implements AetherValue, GrowOnlyMergeable<ArtifactVersionsValue> {
+        /// The default bound on the PRESENT (not archived) versions of one artifact; `[slice] artifact_max_versions`.
+        public static final int DEFAULT_MAX_LIVE = 10_000;
+
+        public ArtifactVersionsValue {
+            entries = entries.stream().sorted(Comparator.comparing(ArtifactVersionEntry::version)).toList();
+        }
+
+        public static ArtifactVersionsValue added(String version) {
+            return added(version, DEFAULT_MAX_LIVE);
+        }
+
+        /// `maxLive` is the writer's bound; the applier enforces it on THIS command, so every replica decides alike.
+        public static ArtifactVersionsValue added(String version, int maxLive) {
+            return new ArtifactVersionsValue(List.of(new ArtifactVersionEntry(version, false)), maxLive);
+        }
+
+        public static ArtifactVersionsValue archived(String version) {
+            return archived(version, DEFAULT_MAX_LIVE);
+        }
+
+        public static ArtifactVersionsValue archived(String version, int maxLive) {
+            return new ArtifactVersionsValue(List.of(new ArtifactVersionEntry(version, true)), maxLive);
+        }
+
+        public static ArtifactVersionsValue empty() {
+            return new ArtifactVersionsValue(List.of(), DEFAULT_MAX_LIVE);
+        }
+
+        /// Monotone merge. A version already in the set only moves up (`present < archived`); an ARCHIVED entry is
+        /// always accepted (it never adds a present version); a NEW present version is accepted only while the
+        /// committed set holds fewer than `maxLive` present versions, otherwise it is NOT added. A present version is
+        /// never dropped and an archived one never un-archived, so the bound only ever refuses growth, loudly: the
+        /// writer re-reads the committed set and reports the refusal.
+        @Override
+        public ArtifactVersionsValue mergeInto(ArtifactVersionsValue committed) {
+            var merged = new TreeMap<String, Boolean>();
+
+            committed.entries().forEach(entry -> merged.put(entry.version(), entry.archived()));
+            entries.forEach(entry -> mergeEntry(merged, entry));
+
+            return new ArtifactVersionsValue(merged.entrySet()
+                                                   .stream()
+                                                   .map(entry -> new ArtifactVersionEntry(entry.getKey(),
+                                                                                          entry.getValue()))
+                                                   .toList(),
+                                             maxLive);
+        }
+
+        private void mergeEntry(TreeMap<String, Boolean> merged, ArtifactVersionEntry entry) {
+            if (merged.containsKey(entry.version()) || entry.archived() || liveIn(merged) < maxLive) {
+                merged.merge(entry.version(), entry.archived(), Boolean::logicalOr);
+            }
+        }
+
+        private static long liveIn(TreeMap<String, Boolean> merged) {
+            return merged.values()
+                         .stream()
+                         .filter(archived -> !archived)
+                         .count();
+        }
+
+        /// Whether `version` is in the set, archived or not.
+        public boolean contains(String version) {
+            return entries.stream()
+                          .anyMatch(entry -> entry.version()
+                                                  .equals(version));
+        }
+
+        /// Whether a NEW present version could be added under `maxLive`.
+        public boolean hasRoom(int maxLive) {
+            return live().size() < maxLive;
+        }
+
+        /// Whether `version` is in the set and flagged archived.
+        public boolean isArchived(String version) {
+            return entries.stream()
+                          .anyMatch(entry -> entry.archived() && entry.version()
+                                                                      .equals(version));
+        }
+
+        /// The versions that are present and not archived, in version-string order.
+        public List<String> live() {
+            return entries.stream()
+                          .filter(entry -> !entry.archived())
+                          .map(ArtifactVersionEntry::version)
+                          .toList();
+        }
+    }
+
     record SliceTargetValue(Version currentVersion,
                             int targetInstances,
                             int minInstances,
@@ -101,8 +224,9 @@ public sealed interface AetherValue {
         /// the slice is re-allocated under the default (#937). Rebuild through the `with*` methods
         /// instead — they thread every unchanged component through by construction, which is what
         /// makes this class of loss inexpressible rather than merely absent. #698 (owner), #936
-        /// (`minInstances`) and #937 (`placement`) were three instances of it at one such producer,
-        /// and `ClusterDeploymentState.handleAppBlueprintChange` is a second, still unfixed.
+        /// (`minInstances`) and #937 (`placement`) were three instances of it at one such producer;
+        /// `ClusterDeploymentState.handleAppBlueprintChange` was a second (#983) and now rebuilds through
+        /// [#withBlueprintDeclaration].
         public static SliceTargetValue sliceTargetValue(Version version, int instances, Option<BlueprintId> owner) {
             return new SliceTargetValue(version,
                                         instances,
@@ -229,6 +353,34 @@ public sealed interface AetherValue {
                                         maxInstances,
                                         scaleUpThreshold,
                                         scaleDownThreshold);
+        }
+
+        /// Re-applies a republished blueprint onto this committed value: version, `minInstances`, owner and the
+        /// autoscaler overrides come from the blueprint, while `placement`, which a blueprint cannot express, and
+        /// `targetInstances`, the scale the slice is running at, are carried (#983). Both are carried by
+        /// construction rather than by a caller remembering to.
+        ///
+        /// The carried count is clamped into the NEW bounds: `[minimumInstances, maxInstancesOverride]`. A count
+        /// the new bounds exclude moves to the nearest bound; where the bounds contradict each other
+        /// (`min > max`) the minimum wins. The declared instance count applies only to a first deploy, which has
+        /// no committed value and so does not come through here.
+        public SliceTargetValue withBlueprintDeclaration(Version version,
+                                                         int minimumInstances,
+                                                         Option<BlueprintId> owner,
+                                                         Option<Integer> maxInstancesOverride,
+                                                         Option<Double> scaleUpOverride,
+                                                         Option<Double> scaleDownOverride) {
+            var cappedAtMax = maxInstancesOverride.map(max -> Math.min(targetInstances, max)).or(targetInstances);
+
+            return new SliceTargetValue(version,
+                                        Math.max(minimumInstances, cappedAtMax),
+                                        minimumInstances,
+                                        owner,
+                                        placement,
+                                        System.currentTimeMillis(),
+                                        maxInstancesOverride,
+                                        scaleUpOverride,
+                                        scaleDownOverride);
         }
 
         public SliceTargetValue withVersion(Version newVersion) {
@@ -512,35 +664,249 @@ public sealed interface AetherValue {
         }
     }
 
+    /// The recorded state of a scheduled task (one row per task; per node for an ALL-mode task).
+    ///
+    /// `lastOutcome` is the outcome of the NEWEST fire whose outcome is recorded: [#OUTCOME_SUCCESS] (the callee completed
+    /// it), [#OUTCOME_FAILURE] (a failure response, or the callee's node departed), [#OUTCOME_UNKNOWN] (a REMOTE fire
+    /// whose response did not arrive within the invocation timeout: the callee may have run it, completed it or not;
+    /// nothing here can say which), or empty (no fire recorded since the field exists). An UNKNOWN outcome is neither
+    /// an execution nor a failure: it does not count in `totalExecutions` and does not move `consecutiveFailures`
+    /// (the failure streak is neither reset nor extended). The task is "unknown" exactly while its newest fire's outcome
+    /// is UNKNOWN ([#outcomeUnknown]): a later definite fire ends that, and so does the late answer of the newest fire.
+    /// Nothing that must be done by a live process is part of that condition, so no node dying can leave it stuck.
+    ///
+    /// `completionTimeouts` and `lateResolutions` are MONOTONIC counters: every fire that timed out, and every timed-out
+    /// fire whose response arrived late. Their difference approximates the fires whose outcome was never learned (it
+    /// also holds the fires still waiting for their answer, and the answers a leader change lost): an estimate, not a
+    /// gauge, deliberately: a gauge only a live process can lower sticks forever once that process is gone.
+    ///
+    /// `fireSeq` numbers the fires recorded in this row, newest highest, and never goes backwards; `newestFireAt` is when
+    /// that newest fire started. A late resolution resolves ITS OWN fire (counts) but changes `lastOutcome` only if its
+    /// fire is still the newest.
     record ScheduledTaskStateValue(long lastExecutionAt,
                                    long nextFireAt,
                                    int consecutiveFailures,
                                    int totalExecutions,
                                    String lastFailureMessage,
                                    long updatedAt,
-                                   int skippedOverlaps) implements AetherValue {
-        public static ScheduledTaskStateValue successState(long nextFireAt, int totalExecutions, int skippedOverlaps) {
-            return new ScheduledTaskStateValue(System.currentTimeMillis(),
-                                               nextFireAt,
-                                               0,
-                                               totalExecutions,
-                                               "",
-                                               System.currentTimeMillis(),
-                                               skippedOverlaps);
+                                   int skippedOverlaps,
+                                   String lastOutcome,
+                                   int fireSeq,
+                                   long newestFireAt,
+                                   int completionTimeouts,
+                                   int lateResolutions) implements AetherValue {
+        public static final String OUTCOME_SUCCESS = "SUCCESS";
+        public static final String OUTCOME_FAILURE = "FAILURE";
+        public static final String OUTCOME_UNKNOWN = "UNKNOWN";
+        /// The row of a per-node (ALL-mode) task whose node left the cluster for good while its newest fire was unknown.
+        public static final String OUTCOME_NODE_DEPARTED = "NODE_DEPARTED";
+
+        /// A row with no recorded outcome (the shape every row had before outcomes were recorded).
+        public ScheduledTaskStateValue(long lastExecutionAt,
+                                       long nextFireAt,
+                                       int consecutiveFailures,
+                                       int totalExecutions,
+                                       String lastFailureMessage,
+                                       long updatedAt,
+                                       int skippedOverlaps) {
+            this(lastExecutionAt,
+                 nextFireAt,
+                 consecutiveFailures,
+                 totalExecutions,
+                 lastFailureMessage,
+                 updatedAt,
+                 skippedOverlaps,
+                 "",
+                 0,
+                 0,
+                 0,
+                 0);
         }
 
-        public static ScheduledTaskStateValue failureState(long nextFireAt,
-                                                           int consecutiveFailures,
-                                                           int totalExecutions,
-                                                           int skippedOverlaps,
-                                                           String failureMessage) {
-            return new ScheduledTaskStateValue(System.currentTimeMillis(),
+        /// Whether the newest fire's outcome is unknown: the condition operators are told about.
+        public boolean outcomeUnknown() {
+            return OUTCOME_UNKNOWN.equals(lastOutcome);
+        }
+
+        /// The sequence number the next recorded fire of this row takes.
+        public static int nextFireSeq(Option<ScheduledTaskStateValue> prior) {
+            return prior.map(ScheduledTaskStateValue::fireSeq)
+                        .or(0) + 1;
+        }
+
+        /// A fire (started at `firedAt`) that completed: an execution, the streak reset, the next fire sequence.
+        public static ScheduledTaskStateValue successState(Option<ScheduledTaskStateValue> prior,
+                                                           long nextFireAt,
+                                                           long firedAt) {
+            var now = System.currentTimeMillis();
+
+            return new ScheduledTaskStateValue(now,
                                                nextFireAt,
-                                               consecutiveFailures,
-                                               totalExecutions,
+                                               0,
+                                               prior.map(ScheduledTaskStateValue::totalExecutions).or(0) + 1,
+                                               "",
+                                               now,
+                                               prior.map(ScheduledTaskStateValue::skippedOverlaps).or(0),
+                                               OUTCOME_SUCCESS,
+                                               nextFireSeq(prior),
+                                               firedAt,
+                                               prior.map(ScheduledTaskStateValue::completionTimeouts).or(0),
+                                               prior.map(ScheduledTaskStateValue::lateResolutions).or(0));
+        }
+
+        /// A fire (started at `firedAt`) that failed: the streak extended, not an execution, the next fire sequence.
+        public static ScheduledTaskStateValue failureState(Option<ScheduledTaskStateValue> prior,
+                                                           long nextFireAt,
+                                                           long firedAt,
+                                                           String failureMessage) {
+            var now = System.currentTimeMillis();
+
+            return new ScheduledTaskStateValue(now,
+                                               nextFireAt,
+                                               prior.map(ScheduledTaskStateValue::consecutiveFailures).or(0) + 1,
+                                               prior.map(ScheduledTaskStateValue::totalExecutions).or(0),
                                                failureMessage,
+                                               now,
+                                               prior.map(ScheduledTaskStateValue::skippedOverlaps).or(0),
+                                               OUTCOME_FAILURE,
+                                               nextFireSeq(prior),
+                                               firedAt,
+                                               prior.map(ScheduledTaskStateValue::completionTimeouts).or(0),
+                                               prior.map(ScheduledTaskStateValue::lateResolutions).or(0));
+        }
+
+        /// A REMOTE fire (started at `firedAt`) whose outcome is unknown (no response within the invocation timeout).
+        /// Everything else carries over from `prior` unchanged: not an execution, not a failure, so `totalExecutions` and
+        /// `consecutiveFailures` stay as they were; the outcome, the timeout total and the timestamps move.
+        /// `lastFailureMessage` is left alone: it still describes the last real failure. The fire takes [#nextFireSeq].
+        public static ScheduledTaskStateValue unknownOutcomeState(Option<ScheduledTaskStateValue> prior,
+                                                                  long nextFireAt,
+                                                                  long firedAt) {
+            var now = System.currentTimeMillis();
+            var seq = nextFireSeq(prior);
+
+            return prior.map(p -> new ScheduledTaskStateValue(p.lastExecutionAt(),
+                                                              nextFireAt,
+                                                              p.consecutiveFailures(),
+                                                              p.totalExecutions(),
+                                                              p.lastFailureMessage(),
+                                                              now,
+                                                              p.skippedOverlaps(),
+                                                              OUTCOME_UNKNOWN,
+                                                              seq,
+                                                              firedAt,
+                                                              p.completionTimeouts() + 1,
+                                                              p.lateResolutions()))
+                        .or(new ScheduledTaskStateValue(0,
+                                                        nextFireAt,
+                                                        0,
+                                                        0,
+                                                        "",
+                                                        now,
+                                                        0,
+                                                        OUTCOME_UNKNOWN,
+                                                        seq,
+                                                        firedAt,
+                                                        1,
+                                                        0));
+        }
+
+        /// The row a resolution is applied to: the newer, by `fireSeq`, of the committed `row` and `submitted`, the last row
+        /// the resolving manager itself wrote (the submitted one on a tie: it carries every write since). The writer is
+        /// asynchronous, so the committed row can lag what the manager has already decided: before the commit of this
+        /// fire's own UNKNOWN, or of a NEWER fire's outcome. Applying the resolution to the lagging row would write the
+        /// sequence BACKWARDS and, for an older fire's answer, overwrite the newer fire's outcome.
+        public static ScheduledTaskStateValue resolutionBase(ScheduledTaskStateValue row,
+                                                             ScheduledTaskStateValue submitted) {
+            return row.fireSeq() > submitted.fireSeq()
+                   ? row
+                   : submitted;
+        }
+
+        /// The task was removed while its newest fire was unknown: the condition ends with the task, so a task registered
+        /// again under the same key does not inherit it. Everything else, the sequence included, is kept.
+        public static ScheduledTaskStateValue conditionClearedState(ScheduledTaskStateValue base) {
+            return cleared(base, "");
+        }
+
+        /// The node that fired a per-node row left the cluster for good while its newest fire was unknown: nothing will
+        /// ever write that row again, so the condition ends with the node ([#OUTCOME_NODE_DEPARTED]). Everything else is kept.
+        public static ScheduledTaskStateValue nodeDepartedState(ScheduledTaskStateValue base) {
+            return cleared(base, OUTCOME_NODE_DEPARTED);
+        }
+
+        private static ScheduledTaskStateValue cleared(ScheduledTaskStateValue base, String outcome) {
+            return new ScheduledTaskStateValue(base.lastExecutionAt(),
+                                               base.nextFireAt(),
+                                               base.consecutiveFailures(),
+                                               base.totalExecutions(),
+                                               base.lastFailureMessage(),
                                                System.currentTimeMillis(),
-                                               skippedOverlaps);
+                                               base.skippedOverlaps(),
+                                               outcome,
+                                               base.fireSeq(),
+                                               base.newestFireAt(),
+                                               base.completionTimeouts(),
+                                               base.lateResolutions());
+        }
+
+        /// The fire numbered `fireSeq`, recorded as UNKNOWN, was answered LATE with success (#1723): it was an execution
+        /// after all. It is counted in `totalExecutions` and `lateResolutions`. When it is still the NEWEST fire it also
+        /// becomes the last outcome and resets the failure streak, as any success does; when a newer fire has been
+        /// recorded since, that fire's outcome stands.
+        public static ScheduledTaskStateValue lateSuccessState(ScheduledTaskStateValue base, int fireSeq) {
+            var now = System.currentTimeMillis();
+            var newest = base.fireSeq() == fireSeq;
+
+            return new ScheduledTaskStateValue(newest
+                                               ? now
+                                               : base.lastExecutionAt(),
+                                               base.nextFireAt(),
+                                               newest
+                                               ? 0
+                                               : base.consecutiveFailures(),
+                                               base.totalExecutions() + 1,
+                                               base.lastFailureMessage(),
+                                               now,
+                                               base.skippedOverlaps(),
+                                               newest
+                                               ? OUTCOME_SUCCESS
+                                               : base.lastOutcome(),
+                                               base.fireSeq(),
+                                               base.newestFireAt(),
+                                               base.completionTimeouts(),
+                                               base.lateResolutions() + 1);
+        }
+
+        /// The fire numbered `fireSeq`, recorded as UNKNOWN, was answered LATE with a failure (#1723): a failure after all.
+        /// It is counted in `lateResolutions`. When it is still the NEWEST fire it also becomes the last outcome and
+        /// extends the streak; when a newer fire has been recorded since, that fire's outcome and the streak stand.
+        public static ScheduledTaskStateValue lateFailureState(ScheduledTaskStateValue base,
+                                                               int fireSeq,
+                                                               String failureMessage) {
+            var now = System.currentTimeMillis();
+            var newest = base.fireSeq() == fireSeq;
+
+            return new ScheduledTaskStateValue(newest
+                                               ? now
+                                               : base.lastExecutionAt(),
+                                               base.nextFireAt(),
+                                               newest
+                                               ? base.consecutiveFailures() + 1
+                                               : base.consecutiveFailures(),
+                                               base.totalExecutions(),
+                                               newest
+                                               ? failureMessage
+                                               : base.lastFailureMessage(),
+                                               now,
+                                               base.skippedOverlaps(),
+                                               newest
+                                               ? OUTCOME_FAILURE
+                                               : base.lastOutcome(),
+                                               base.fireSeq(),
+                                               base.newestFireAt(),
+                                               base.completionTimeouts(),
+                                               base.lateResolutions() + 1);
         }
 
         /// Records a skipped fixed-rate fire (previous invocation still in flight). Preserves every
@@ -554,7 +920,12 @@ public sealed interface AetherValue {
                                                               p.totalExecutions(),
                                                               p.lastFailureMessage(),
                                                               skippedAt,
-                                                              p.skippedOverlaps() + 1))
+                                                              p.skippedOverlaps() + 1,
+                                                              p.lastOutcome(),
+                                                              p.fireSeq(),
+                                                              p.newestFireAt(),
+                                                              p.completionTimeouts(),
+                                                              p.lateResolutions()))
                         .or(new ScheduledTaskStateValue(0, 0, 0, 0, "", skippedAt, 1));
         }
     }
@@ -804,7 +1175,7 @@ public sealed interface AetherValue {
     /// Optional-field idiom mirrors [DhtPartitionOwnershipValue.ownerCommunityId]: empty-string is
     /// the canonical "absent" form, normalized in the compact constructor so a `null` from a
     /// wire/codec edge collapses to `""` (preserving `equals` with the role-only constructors).
-    record ActivationDirectiveValue(String role, String communityId, String governorHint) implements AetherValue {
+    record ActivationDirectiveValue(String role, String communityId, String governorHint) implements AetherValue, CommunityFenced {
         public static final String CORE = "CORE";
         public static final String WORKER = "WORKER";
 
@@ -822,6 +1193,13 @@ public sealed interface AetherValue {
         /// `communityId`/`governorHint` default empty (CORE or community-less WORKER semantics).
         public ActivationDirectiveValue(String role) {
             this(role, "", "");
+        }
+
+        /// H11 (#1840): the committed non-empty community of a NodeId is final; see [CommunityFenced].
+        /// A CORE directive carries no community, so it fences nothing.
+        @Override
+        public String fenceCommunity() {
+            return communityId;
         }
 
         public static ActivationDirectiveValue core() {
@@ -1433,9 +1811,35 @@ public sealed interface AetherValue {
                                  String security,
                                  String declaredSecurity,
                                  int pathArity,
-                                 List<String> spacers) {
+                                 List<String> spacers,
+                                 List<Integer> spacerSlots) {
             public RouteEntry {
                 spacers = List.copyOf(spacers);
+                spacerSlots = List.copyOf(spacerSlots);
+            }
+
+            /// An entry that does not carry where its literals sit (every shape before #1206 knew only that they exist).
+            public RouteEntry(String httpMethod,
+                              String pathPrefix,
+                              String sliceMethod,
+                              String state,
+                              int weight,
+                              long registeredAt,
+                              String security,
+                              String declaredSecurity,
+                              int pathArity,
+                              List<String> spacers) {
+                this(httpMethod,
+                     pathPrefix,
+                     sliceMethod,
+                     state,
+                     weight,
+                     registeredAt,
+                     security,
+                     declaredSecurity,
+                     pathArity,
+                     spacers,
+                     List.of());
             }
 
             public static RouteEntry activeRoute(String httpMethod,
@@ -1463,6 +1867,26 @@ public sealed interface AetherValue {
                                                  String declaredSecurity,
                                                  int pathArity,
                                                  List<String> spacers) {
+                return activeRoute(httpMethod,
+                                   pathPrefix,
+                                   sliceMethod,
+                                   security,
+                                   declaredSecurity,
+                                   pathArity,
+                                   spacers,
+                                   List.of());
+            }
+
+            /// #1206: `spacerSlots` says WHERE each literal sits among the trailing segments, so two routes that differ only in
+            /// the position of a literal are told apart by whoever reads the committed table (the collision announcer).
+            public static RouteEntry activeRoute(String httpMethod,
+                                                 String pathPrefix,
+                                                 String sliceMethod,
+                                                 String security,
+                                                 String declaredSecurity,
+                                                 int pathArity,
+                                                 List<String> spacers,
+                                                 List<Integer> spacerSlots) {
                 return new RouteEntry(httpMethod,
                                       pathPrefix,
                                       sliceMethod,
@@ -1472,7 +1896,8 @@ public sealed interface AetherValue {
                                       security,
                                       declaredSecurity,
                                       pathArity,
-                                      spacers);
+                                      spacers,
+                                      spacerSlots);
             }
 
             public static RouteEntry activeRoute(String httpMethod, String pathPrefix, String sliceMethod) {
@@ -1569,6 +1994,10 @@ public sealed interface AetherValue {
     /// from the committed value ([#nextVersion]) and confirms after its apply resolves by re-reading
     /// the committed value and comparing it to the one it wrote ([VersionFenced]'s protocol).
     ///
+    /// #806: the holder renews the lease while it works (each renewal is the next `lockVersion` with a
+    /// later `expiresAt`), and the lock is a [WitnessedRemoval] — its release carries the value the holder
+    /// last wrote, so a holder whose claim was superseded cannot delete its successor's lock.
+    ///
     /// Wire-format note: this adds a record component to a committed AetherValue (generated codec and
     /// `KVStoreSerializer` text form both change), following the #805 `outcomeVersion` precedent. rc4
     /// promises no cross-rc wire compatibility; that contract is #434/#666's.
@@ -1576,7 +2005,7 @@ public sealed interface AetherValue {
                                     NodeId heldBy,
                                     long acquiredAt,
                                     long expiresAt,
-                                    long lockVersion) implements AetherValue, VersionFenced {
+                                    long lockVersion) implements AetherValue, WitnessedRemoval {
         /// The version a claim against an ABSENT key carries; the applier does not fence a first write.
         public static final long FIRST_VERSION = 1L;
 
@@ -1709,7 +2138,8 @@ public sealed interface AetherValue {
                                        long rewindIncarnation,
                                        long rewindGeneration,
                                        long rewindSequence,
-                                       boolean rewind) implements AetherValue, AssignmentTokenBearing, EpochBearing<RewindEpoch> {
+                                       boolean rewind,
+                                       Epoch ownerEpoch) implements AetherValue, AssignmentTokenBearing, EpochBearing<RewindEpoch> {
         @Override
         public Object guardToken() {
             return token;
@@ -1723,13 +2153,23 @@ public sealed interface AetherValue {
         public static StreamCursorCheckpointValue streamCursorCheckpointValue(long committedOffset,
                                                                               ConsumerAssignmentValue.AssignmentToken token,
                                                                               RewindEpoch epoch) {
+            return streamCursorCheckpointValue(committedOffset, token, epoch, Epoch.ZERO);
+        }
+
+        /// A checkpoint that also records the owner epoch the cursor was read under (#1873, KIP-320): a resume presents it to
+        /// the partition's owner, which refuses a cursor that belongs to a replaced lineage. [Epoch#ZERO] is "no claim".
+        public static StreamCursorCheckpointValue streamCursorCheckpointValue(long committedOffset,
+                                                                              ConsumerAssignmentValue.AssignmentToken token,
+                                                                              RewindEpoch epoch,
+                                                                              Epoch ownerEpoch) {
             return new StreamCursorCheckpointValue(committedOffset,
                                                    System.currentTimeMillis(),
                                                    token,
                                                    epoch.incarnation(),
                                                    epoch.generation(),
                                                    epoch.rewind(),
-                                                   false);
+                                                   false,
+                                                   ownerEpoch);
         }
 
         /// The rewind record: the group's cursor moved to `fromOffset` under the minted `epoch`, written
@@ -1743,7 +2183,8 @@ public sealed interface AetherValue {
                                                    epoch.incarnation(),
                                                    epoch.generation(),
                                                    epoch.rewind(),
-                                                   true);
+                                                   true,
+                                                   Epoch.ZERO);
         }
 
         public RewindEpoch rewindEpoch() {
@@ -1846,7 +2287,16 @@ public sealed interface AetherValue {
         }
     }
 
-    record ClusterConfigValue(String tomlContent,
+    /// The committed cluster configuration.
+    ///
+    /// `tomlContent` is TYPED by whether an operator source configuration exists (#1812): [Option#none()]
+    /// is the self-bootstrap seed ([#bootstrapSeed]), written at formation before any `cluster apply`, and
+    /// [Option#some] carries the committed, parseable TOML. The seed used to be the empty string, so "no
+    /// config yet" and "config" shared one type and each reader distinguished them ad hoc: some guarded
+    /// with `isBlank()`, others parsed unguarded and failed on the seed with "no config_version", which
+    /// disabled provisioning on every seed-only cluster. A reader now cannot reach the TOML without
+    /// deciding what the seed means.
+    record ClusterConfigValue(Option<String> tomlContent,
                               String clusterName,
                               String version,
                               List<TopologyEntry> desiredTopology,
@@ -1947,6 +2397,26 @@ public sealed interface AetherValue {
                                           System.currentTimeMillis());
         }
 
+        /// The self-bootstrap seed: desired shape only, no operator source configuration.
+        public static ClusterConfigValue bootstrapSeed(String clusterName,
+                                                       String version,
+                                                       List<TopologyEntry> desiredTopology,
+                                                       int coreMin,
+                                                       int coreMax,
+                                                       String deploymentType,
+                                                       long configVersion) {
+            return new ClusterConfigValue(Option.none(),
+                                          clusterName,
+                                          version,
+                                          desiredTopology,
+                                          coreMin,
+                                          coreMax,
+                                          deploymentType,
+                                          configVersion,
+                                          System.currentTimeMillis());
+        }
+
+        /// A committed operator configuration; `tomlContent` is the applied, parsed-and-validated TOML.
         public static ClusterConfigValue clusterConfigValue(String tomlContent,
                                                             String clusterName,
                                                             String version,
@@ -1955,7 +2425,7 @@ public sealed interface AetherValue {
                                                             int coreMax,
                                                             String deploymentType,
                                                             long configVersion) {
-            return new ClusterConfigValue(tomlContent,
+            return new ClusterConfigValue(Option.some(tomlContent),
                                           clusterName,
                                           version,
                                           desiredTopology,
@@ -1975,7 +2445,7 @@ public sealed interface AetherValue {
                                                             String deploymentType,
                                                             long configVersion,
                                                             long updatedAt) {
-            return new ClusterConfigValue(tomlContent,
+            return new ClusterConfigValue(Option.some(tomlContent),
                                           clusterName,
                                           version,
                                           desiredTopology,
@@ -2120,7 +2590,15 @@ public sealed interface AetherValue {
         }
     }
 
-    record StreamConfigValue(StreamConfig config, long createdAt) implements AetherValue {
+    /// #1278: fenced on the stream's incarnation ([IncarnationFenced]), so while a life of the name is committed no
+    /// other life can commit over it — concurrent first creates resolve first-wins, and a recreate commits only after
+    /// the removal of the old life has applied.
+    record StreamConfigValue(StreamConfig config, long createdAt) implements AetherValue, IncarnationFenced {
+        @Override
+        public long fenceIncarnation() {
+            return config.incarnation();
+        }
+
         public static StreamConfigValue streamConfigValue(StreamConfig config) {
             return new StreamConfigValue(config, System.currentTimeMillis());
         }
@@ -2182,10 +2660,44 @@ public sealed interface AetherValue {
     /// There is no `ownerCommunityId` — streams have no community arc (that field is DHT-specific). The
     /// `ownerEpoch` is sourced from the committed generation epoch (`Epoch.epoch(incarnation, rabiaTerm, 0)`); the
     /// `ownershipTerm` is a monotonic per-partition takeover counter, bumped on each owner change.
+    ///
+    /// #1730: the record also carries the partition's committed in-sync replica set (`isr`, the owner included) and
+    /// its change counter `isrVersion`. Owner and ISR live in ONE record so an election from the ISR and the ISR it
+    /// leaves behind commit atomically. A CF ≥ 2 publish is acknowledged only once every ISR member holds it, and
+    /// the ISR changes only through a guarded consensus write ([KVCommand.LeaderTransaction] whose mutation expects
+    /// the exact current record) — never by a node's local view.
+    ///
+    /// `failoverRefused` (#1730, owner ruling): the leader found the owner dead and no ISR member live, so it elected
+    /// nobody (unclean failover is off). Committing that verdict — instead of only computing it — makes the refusal a
+    /// single committed TRANSITION: the guarded write that sets it (and the one that clears it, when an owner is
+    /// elected or returns) is accepted exactly once, and its committer is the one node that announces it.
     record StreamPartitionOwnershipValue(NodeId owner,
                                          Epoch ownerEpoch,
                                          long ownershipTerm,
-                                         HlcTimestamp transferredAt) implements AetherValue, EpochBearing<Epoch> {
+                                         HlcTimestamp transferredAt,
+                                         List<NodeId> isr,
+                                         long isrVersion,
+                                         boolean failoverRefused,
+                                         List<NodeId> fenced,
+                                         long failoverRefusalSeq,
+                                         List<EpochStart> epochStarts) implements AetherValue, EpochBearing<Epoch> {
+        /// Most epoch starts one record keeps (#1730 phase 2). Beyond it the oldest are folded into the oldest one kept, never
+        /// dropped (see `capped`), so the oldest kept start is a lower bound on every offset a later epoch re-assigned.
+        public static final int EPOCH_STARTS_MAX = 16;
+        /// Most members one record remembers as fenced. A member that left for good is never unfenced, so the list is
+        /// bounded here: the oldest entry is forgotten first. A forgotten member is no longer fenced, so if it is still
+        /// registered with the owner as caught up and invisible to the leader, the owner re-expands it and the leader
+        /// fences it again. That fight is unreachable while the core has [#FENCED_MAX] or fewer members (the registry
+        /// holds at most the replication factor, which never exceeds the core size) and perpetual beyond it.
+        public static final int FENCED_MAX = 16;
+
+        /// Whether `node` is named in this record's COMMITTED in-sync set: the set is real (`isrVersion > 0`, a record minted before
+        /// #1730 carries only its owner) and contains `node`. Such a node holds every acknowledged record the set was
+        /// acknowledging, which is what both promotion gates' bounded escape (#2080) and the divergent-peer relaxation rest on.
+        public boolean committedIsrNames(NodeId node) {
+            return isrVersion > 0 && isr.contains(node);
+        }
+
         /// Ownership fence (#345 piece 1a): the owner's `ownerEpoch` is the fencing token, so the Rabia
         /// applier rejects a deposed owner's strictly-older-epoch ownership write for free (it fences
         /// ANY `EpochBearing` value). A stale-owner takeover at the same epoch (bumping only
@@ -2193,6 +2705,28 @@ public sealed interface AetherValue {
         @Override
         public Epoch fenceEpoch() {
             return ownerEpoch;
+        }
+
+        /// A record with no refusal yet counted (`failoverRefusalSeq` 0) and the given epoch starts.
+        public StreamPartitionOwnershipValue(NodeId owner,
+                                             Epoch ownerEpoch,
+                                             long ownershipTerm,
+                                             HlcTimestamp transferredAt,
+                                             List<NodeId> isr,
+                                             long isrVersion,
+                                             boolean failoverRefused,
+                                             List<NodeId> fenced,
+                                             List<EpochStart> epochStarts) {
+            this(owner,
+                 ownerEpoch,
+                 ownershipTerm,
+                 transferredAt,
+                 isr,
+                 isrVersion,
+                 failoverRefused,
+                 fenced,
+                 0L,
+                 epochStarts);
         }
 
         public StreamPartitionOwnershipValue {
@@ -2203,13 +2737,260 @@ public sealed interface AetherValue {
             if (transferredAt == null) {
                 transferredAt = HlcTimestamp.ZERO;
             }
+
+            isr = isr == null || isr.isEmpty()
+                  ? List.of(owner)
+                  : List.copyOf(isr);
+            fenced = fenced == null
+                     ? List.of()
+                     : List.copyOf(fenced.size() > FENCED_MAX
+                                   ? fenced.subList(fenced.size() - FENCED_MAX, fenced.size())
+                                   : fenced);
+            epochStarts = epochStarts == null
+                          ? List.of()
+                          : capped(epochStarts);
+        }
+
+        /// The newest [#EPOCH_STARTS_MAX] starts. The starts it drops are folded, not forgotten: the oldest kept start takes the
+        /// LOWEST offset of the dropped ones, so it stays a lower bound of every offset that a later epoch may have re-assigned
+        /// for a consumer older than it (`EpochValidation` resumes such a consumer at it: it may redeliver, it never skips).
+        /// Starts increase in offset, so the lowest dropped one is the oldest. What the folded entry still asserts EXACTLY is
+        /// that the OLDEST DROPPED epoch (`coversFrom`) began at its offset; its own epoch did not (see [EpochStart#provesAfter]).
+        private static List<EpochStart> capped(List<EpochStart> starts) {
+            if (starts.size() <= EPOCH_STARTS_MAX) {
+                return List.copyOf(starts);
+            }
+
+            var dropped = starts.size() - EPOCH_STARTS_MAX;
+            var kept = new ArrayList<>(starts.subList(dropped, starts.size()));
+            var oldest = kept.getFirst();
+            var lowest = starts.getFirst();
+
+            kept.set(0,
+                     new EpochStart(oldest.epoch(),
+                                    Math.min(oldest.startOffset(), lowest.startOffset()),
+                                    lowest.coversFrom()));
+
+            return List.copyOf(kept);
+        }
+
+        /// A record whose ISR is the owner alone: the shape of every record written before #1730, and of a
+        /// partition whose other replicas have not joined yet.
+        public static StreamPartitionOwnershipValue streamPartitionOwnershipValue(NodeId owner,
+                                                                                  Epoch ownerEpoch,
+                                                                                  long ownershipTerm,
+                                                                                  HlcTimestamp transferredAt) {
+            return new StreamPartitionOwnershipValue(owner,
+                                                     ownerEpoch,
+                                                     ownershipTerm,
+                                                     transferredAt,
+                                                     List.of(owner),
+                                                     0L,
+                                                     false,
+                                                     List.of(),
+                                                     0L,
+                                                     List.of());
         }
 
         public static StreamPartitionOwnershipValue streamPartitionOwnershipValue(NodeId owner,
                                                                                   Epoch ownerEpoch,
                                                                                   long ownershipTerm,
-                                                                                  HlcTimestamp transferredAt) {
-            return new StreamPartitionOwnershipValue(owner, ownerEpoch, ownershipTerm, transferredAt);
+                                                                                  HlcTimestamp transferredAt,
+                                                                                  List<NodeId> isr,
+                                                                                  long isrVersion) {
+            return new StreamPartitionOwnershipValue(owner,
+                                                     ownerEpoch,
+                                                     ownershipTerm,
+                                                     transferredAt,
+                                                     isr,
+                                                     isrVersion,
+                                                     false,
+                                                     List.of(),
+                                                     0L,
+                                                     List.of());
+        }
+
+        /// A record with ISR `isr` and fenced set `fenced` (#1883).
+        public static StreamPartitionOwnershipValue streamPartitionOwnershipValue(NodeId owner,
+                                                                                  Epoch ownerEpoch,
+                                                                                  long ownershipTerm,
+                                                                                  HlcTimestamp transferredAt,
+                                                                                  List<NodeId> isr,
+                                                                                  long isrVersion,
+                                                                                  List<NodeId> fenced) {
+            return new StreamPartitionOwnershipValue(owner,
+                                                     ownerEpoch,
+                                                     ownershipTerm,
+                                                     transferredAt,
+                                                     isr,
+                                                     isrVersion,
+                                                     false,
+                                                     fenced,
+                                                     0L,
+                                                     List.of());
+        }
+
+        /// A record with ISR `isr`, fenced set `fenced` and the epoch starts `epochStarts` the new owner inherits (#1730 phase 2):
+        /// a failover bumps the epoch but keeps the history of the earlier ones, so a consumer asleep across it is still checked.
+        public static StreamPartitionOwnershipValue streamPartitionOwnershipValue(NodeId owner,
+                                                                                  Epoch ownerEpoch,
+                                                                                  long ownershipTerm,
+                                                                                  HlcTimestamp transferredAt,
+                                                                                  List<NodeId> isr,
+                                                                                  long isrVersion,
+                                                                                  List<NodeId> fenced,
+                                                                                  List<EpochStart> epochStarts) {
+            return new StreamPartitionOwnershipValue(owner,
+                                                     ownerEpoch,
+                                                     ownershipTerm,
+                                                     transferredAt,
+                                                     isr,
+                                                     isrVersion,
+                                                     false,
+                                                     fenced,
+                                                     0L,
+                                                     epochStarts);
+        }
+
+        /// The same ownership with ISR `isr`, one ISR change later.
+        public StreamPartitionOwnershipValue withIsr(List<NodeId> isr) {
+            return new StreamPartitionOwnershipValue(owner,
+                                                     ownerEpoch,
+                                                     ownershipTerm,
+                                                     transferredAt,
+                                                     isr,
+                                                     isrVersion + 1,
+                                                     failoverRefused,
+                                                     fenced,
+                                                     failoverRefusalSeq,
+                                                     epochStarts);
+        }
+
+        /// The same ownership with ISR `isr` and fenced set `fenced`, one ISR change later (#1883). `fenced` is the set of
+        /// members the leader removed from the ISR because its own liveness view does not list them; the owner never
+        /// expands a fenced member, so the two writers read ONE liveness input. Bounded by [#FENCED_MAX] at construction, newest kept.
+        public StreamPartitionOwnershipValue withIsrAndFenced(List<NodeId> isr, List<NodeId> fenced) {
+            return new StreamPartitionOwnershipValue(owner,
+                                                     ownerEpoch,
+                                                     ownershipTerm,
+                                                     transferredAt,
+                                                     isr,
+                                                     isrVersion + 1,
+                                                     failoverRefused,
+                                                     fenced,
+                                                     failoverRefusalSeq,
+                                                     epochStarts);
+        }
+
+        /// The same ownership and ISR with the failover verdict `refused`. Each transition INTO refused counts one more
+        /// in `failoverRefusalSeq` WITHIN AN OWNERSHIP TERM (a move mints a fresh record, so the count restarts at 0 and the
+        /// raised term keeps ids distinct), committed with the flag, so every genuine refusal of a partition is a distinct event
+        /// (a refusal that resolves by the owner returning and recurs changes nothing else in the record).
+        public StreamPartitionOwnershipValue withFailoverRefused(boolean refused) {
+            return new StreamPartitionOwnershipValue(owner,
+                                                     ownerEpoch,
+                                                     ownershipTerm,
+                                                     transferredAt,
+                                                     isr,
+                                                     isrVersion,
+                                                     refused,
+                                                     fenced,
+                                                     refused && !failoverRefused
+                                                     ? failoverRefusalSeq + 1
+                                                     : failoverRefusalSeq,
+                                                     epochStarts);
+        }
+
+        /// The start of the newest epoch this record names, if any.
+        public Option<EpochStart> lastEpochStart() {
+            return Option.from(epochStarts.stream().reduce((_, later) -> later));
+        }
+
+        /// The same record with the owner of `ownerEpoch` recorded as beginning to write at `startOffset` (#1730 phase 2).
+        /// Recording the epoch that is already the newest start changes nothing.
+        public StreamPartitionOwnershipValue withEpochStart(long startOffset) {
+            var next = new EpochStart(ownerEpoch, startOffset);
+
+            return lastEpochStart().filter(next::equals)
+                                 .isPresent()
+                   ? this
+                   : withStarts(append(epochStarts, next));
+        }
+
+        /// The same owner after its ring restarted (no WAL, or a rebuilt ring): a new epoch one ownership term later,
+        /// beginning at `startOffset` (#1730 phase 2, KIP-320). A consumer holding the old epoch is then checked against
+        /// this start instead of being served the re-assigned offsets as if nothing happened.
+        public StreamPartitionOwnershipValue restarted(long startOffset, HlcTimestamp at) {
+            var term = ownershipTerm + 1L;
+            var epoch = ownerEpoch.withCounter(term);
+
+            return new StreamPartitionOwnershipValue(owner,
+                                                     epoch,
+                                                     term,
+                                                     at,
+                                                     isr,
+                                                     isrVersion + 1,
+                                                     failoverRefused,
+                                                     fenced,
+                                                     failoverRefusalSeq,
+                                                     append(epochStarts, new EpochStart(epoch, startOffset)));
+        }
+
+        private StreamPartitionOwnershipValue withStarts(List<EpochStart> starts) {
+            return new StreamPartitionOwnershipValue(owner,
+                                                     ownerEpoch,
+                                                     ownershipTerm,
+                                                     transferredAt,
+                                                     isr,
+                                                     isrVersion + 1,
+                                                     failoverRefused,
+                                                     fenced,
+                                                     failoverRefusalSeq,
+                                                     starts);
+        }
+
+        /// `next` appended after the starts it does not supersede: an epoch that begins at or below an earlier start re-assigns
+        /// those offsets (a restart that lost its tail, a failover to a shorter copy, a re-created stream beginning at 0), so the
+        /// earlier starts at or above it describe records that no longer exist and are dropped. Verdicts for a consumer older
+        /// than `next` are unchanged (it is judged against the first start that follows its epoch, which is `next` or an earlier
+        /// one that `next` supersedes); only a consumer older than EVERY kept start can tell a new life from an old one.
+        private static List<EpochStart> append(List<EpochStart> starts, EpochStart next) {
+            var all = new ArrayList<>(starts.stream().filter(start -> start.startOffset() < next.startOffset()).toList());
+
+            all.add(next);
+
+            return all;
+        }
+    }
+
+    /// One owner epoch of a stream partition and the offset its owner began writing at (#1730 phase 2, Kafka's leader
+    /// epoch start offset). `StreamPartitionOwnershipValue#epochStarts` lists the newest ones, oldest first: a consumer that
+    /// read under an older epoch is valid only while its cursor does not pass the start of the epoch that followed.
+    ///
+    /// `coversFrom` is the OLDEST epoch this entry stands for: its own epoch unless the record's cap folded older starts into it,
+    /// in which case the oldest dropped epoch, the one that really began at `startOffset` (a re-fold keeps the older). So an
+    /// entry proves "every epoch from `coversFrom` to `epoch` began at or above `startOffset`, and `coversFrom` began AT it",
+    /// and a loss from `startOffset` is proven for a consumer only when `coversFrom` is later than the consumer's epoch.
+    /// A null or [Epoch#ZERO] `coversFrom` means "unfolded" and is read as the entry's own epoch (the two-argument constructor, and a
+    /// value that carries no fold). The substitution is deliberate and is pinned by a round trip through the node codec in
+    /// which a FOLDED entry's `coversFrom` must come back unchanged (`EpochStartCodecTest`), so a codec that dropped the field
+    /// would not hide behind it.
+    @Codec
+    record EpochStart(Epoch epoch, long startOffset, Epoch coversFrom) {
+        public EpochStart {
+            coversFrom = coversFrom == null || coversFrom.equals(Epoch.ZERO)
+                         ? epoch
+                         : coversFrom;
+        }
+
+        public EpochStart(Epoch epoch, long startOffset) {
+            this(epoch, startOffset, epoch);
+        }
+
+        /// Whether this entry proves that an epoch AFTER `consumerEpoch` began at [#startOffset()]: it stands for no epoch the
+        /// consumer itself read under.
+        public boolean provesAfter(Epoch consumerEpoch) {
+            return coversFrom.compareTo(consumerEpoch) > 0;
         }
     }
 
@@ -2247,11 +3028,175 @@ public sealed interface AetherValue {
                                     String intendedRole,
                                     CapacityReservationPhase phase) implements AetherValue, org.pragmatica.cluster.state.kvstore.LeaderAuthorized {}
 
+    /// #2062: the admission marker of an EXTERNAL node's capacity reservation. A node that joins while its reservation is present bumps the marker; a release of
+    /// the reservation is committed only against the marker value it read (a read witness), so a release that began before the join cannot commit after it.
+    /// It is a separate value, so [CapacityReservationValue] keeps its wire shape and an older writer's bytes still decode (a rolling upgrade is mixed-version).
+    /// `released` is the EXTERNAL reservation the last release of the node deleted, written by the release itself in the same transaction: a node that joins
+    /// when its reservation is already gone (whichever leader released it, however long before) is admitted again from it.
+    /// `supersededBy` is the retirement tombstone: the node was retired by a replacement (the id of the node that replaced it), so its identity is SUPERSEDED. A
+    /// join of a superseded id is refused and the node evicted, never admitted again: that would add a core beside its replacement.
+    record CapacityAdmissionValue(long admissions,
+                                  Option<CapacityReservationValue> released,
+                                  Option<String> supersededBy) implements AetherValue, org.pragmatica.cluster.state.kvstore.LeaderAuthorized {
+        public CapacityAdmissionValue(long admissions) {
+            this(admissions, Option.none(), Option.none());
+        }
+
+        public CapacityAdmissionValue(long admissions, Option<CapacityReservationValue> released) {
+            this(admissions, released, Option.none());
+        }
+    }
+
     @Codec
     enum CapacityReservationPhase {
         DISPATCHED,
         OBSERVED,
         RELEASED,
+        UNKNOWN
+    }
+
+    /// #1543: `replacement` is the fresh-id node taking over from the key's original. Leader-committed;
+    /// `phaseDeadlineMs` bounds the current phase so every replacement ends in a terminal phase.
+    ///
+    /// Part E drives it: `source` is the original's provisioning source (`""` when the original had none),
+    /// `targetVersion` the version the replacement must run before the swap is kept (`""` = no version gate),
+    /// `mode` is `CTM` (the leader provisions the replacement) or `EXTERNAL` (the operator starts the chosen id),
+    /// `attempt` counts re-entries of the current phase, `reason` carries why a phase ended badly (`""` otherwise) and
+    /// `epoch` is bumped on every committed transition so a stale writer's compare-and-set cannot land.
+    record NodeReplacementValue(NodeId replacement,
+                                String role,
+                                NodeReplacementPhase phase,
+                                long phaseDeadlineMs,
+                                String source,
+                                String targetVersion,
+                                String mode,
+                                int attempt,
+                                String reason,
+                                long epoch) implements AetherValue, org.pragmatica.cluster.state.kvstore.LeaderAuthorized {
+        public static final String MODE_CTM = "CTM";
+        public static final String MODE_EXTERNAL = "EXTERNAL";
+
+        /// The record as part D pins it: no source, no version gate, CTM mode, first attempt, no reason, epoch 0.
+        public NodeReplacementValue(NodeId replacement, String role, NodeReplacementPhase phase, long phaseDeadlineMs) {
+            this(replacement, role, phase, phaseDeadlineMs, "", "", MODE_CTM, 0, "", 0L);
+        }
+
+        /// The same record in `next` phase with its own deadline, the epoch advanced and `reason` set. `attempt` counts how often
+        /// the SAME phase was committed again (a marker such as join-overdue or drain-blocked); a new phase starts at 0.
+        public NodeReplacementValue advanced(NodeReplacementPhase next, long deadlineMs, String why) {
+            return new NodeReplacementValue(replacement,
+                                            role,
+                                            next,
+                                            deadlineMs,
+                                            source,
+                                            targetVersion,
+                                            mode,
+                                            next == phase
+                                            ? attempt + 1
+                                            : 0,
+                                            why,
+                                            epoch + 1);
+        }
+    }
+
+    /// #2062: why the termination of a retired node's instance is not confirmed (`cause`), and whether the provider ever listed the instance
+    /// (`seen`): only for a node it listed does a later empty listing mean "gone", so a new leader re-checking the mark keeps that memory. `absent`
+    /// is set when a listing SUCCEEDED and did not contain the instance: no listing can ever confirm such a mark, so it is not re-checked. A listing
+    /// that FAILED proves nothing, and a mark that only ever met failures keeps `absent` false and keeps being re-checked.
+    record UnconfirmedTerminationValue(String cause, boolean seen, boolean absent) implements AetherValue, org.pragmatica.cluster.state.kvstore.LeaderAuthorized {}
+
+    /// #1543 replacement steps. `DONE` and `ROLLED_BACK` are terminal and inert; `FAILED_KEPT_BOTH` is terminal
+    /// and keeps both nodes until an operator settles it. `REVERTING` swaps the original back into the electorate
+    /// after a failed canary, before the replacement is terminated.
+    @Codec
+    enum NodeReplacementPhase {
+        PROVISIONING,
+        JOINING,
+        SWAPPING,
+        CANARY,
+        DRAINING_OLD,
+        RETIRING_OLD,
+        DONE,
+        ROLLED_BACK,
+        FAILED_KEPT_BOTH,
+        REVERTING,
+        UNKNOWN
+    }
+
+    /// #1543 part F: the rolling-upgrade run. `order` lists the ORIGINAL nodes to replace (cores with the leader last, then
+    /// workers); `index` is how many are done; `inFlight` is the original whose replacement is running (`""` = none). A node
+    /// replaced during the run leaves the cluster under its old id, so the list is of ids that disappear: progress is the index plus
+    /// the replacement records, and a node is skipped once it is gone or already reports the target version. `stop` is an operator's
+    /// request that takes effect when the replacement in flight reaches a terminal state, never mid-phase. `epoch` is bumped on every
+    /// committed transition.
+    record UpgradeRunValue(String targetVersion,
+                           List<NodeId> order,
+                           int index,
+                           String inFlight,
+                           UpgradeRunState state,
+                           UpgradeStop stop,
+                           String reason,
+                           long startedAtMs,
+                           long updatedAtMs,
+                           long epoch) implements AetherValue, org.pragmatica.cluster.state.kvstore.LeaderAuthorized {
+        public UpgradeRunValue {
+            order = List.copyOf(order);
+        }
+
+        public UpgradeRunValue with(int newIndex,
+                                    String newInFlight,
+                                    UpgradeRunState newState,
+                                    UpgradeStop newStop,
+                                    String newReason,
+                                    long now) {
+            return new UpgradeRunValue(targetVersion,
+                                       order,
+                                       newIndex,
+                                       newInFlight,
+                                       newState,
+                                       newStop,
+                                       newReason,
+                                       startedAtMs,
+                                       now,
+                                       epoch + 1);
+        }
+
+        public UpgradeRunValue withOrder(List<NodeId> newOrder, long now) {
+            return new UpgradeRunValue(targetVersion,
+                                       newOrder,
+                                       index,
+                                       inFlight,
+                                       state,
+                                       stop,
+                                       reason,
+                                       startedAtMs,
+                                       now,
+                                       epoch + 1);
+        }
+
+        public boolean live() {
+            return state == UpgradeRunState.RUNNING || state == UpgradeRunState.PAUSED;
+        }
+    }
+
+    /// A run is `RUNNING` (the reconciler advances it), `PAUSED` (needs an operator; resumable), or ended: `COMPLETED` (every node
+    /// reports the target version) or `ABORTED`. `UNKNOWN` is the decode sentinel: inert, never advanced.
+    @Codec
+    enum UpgradeRunState {
+        RUNNING,
+        PAUSED,
+        COMPLETED,
+        ABORTED,
+        UNKNOWN
+    }
+
+    /// An operator's pending request, applied when the replacement in flight is terminal. `UNKNOWN` (an ordinal this node does not
+    /// have) is read as a PAUSE: automation stops rather than guess.
+    @Codec
+    enum UpgradeStop {
+        NONE,
+        PAUSE,
+        ABORT,
         UNKNOWN
     }
 
@@ -2586,4 +3531,87 @@ public sealed interface AetherValue {
             return new EntityFoldCheckpointValue(throughOffset, blockIdHex, System.currentTimeMillis());
         }
     }
+
+    /// The phase of a live DHT replication change (#1777, CTO ruling R1b).
+    @Codec
+    enum DhtReplicationStage {
+        /// Committed; members are applying the new factors. Readers and writers use the transitional quorums.
+        APPLYING,
+        /// Every expected member reported the change applied, so every write from now on is acked at W_t or higher.
+        /// Every core re-runs its catch-up for it.
+        WRITERS_SWITCHED,
+        /// Every core caught up after the writers switched: the new quorums apply cluster-wide.
+        SETTLED,
+        /// Wire sentinel: an ordinal this node cannot name decodes here. Never SETTLED, so a node that cannot read the
+        /// stage keeps the transitional quorums. Must stay LAST.
+        UNKNOWN
+    }
+
+    /// The cluster's latest DHT replication change, under [AetherKey.DhtReplicationChangeKey] (#1777, CTO ruling R1b).
+    /// The switch to the new quorums is cluster-wide and committed: every node keeps W_t = max(W_old, W_new) and
+    /// R_t = max(R_old, R_new) until this record reaches [DhtReplicationStage#SETTLED].
+    ///
+    /// - `version` — the committed cluster configuration version that carried the factors, which every report is
+    ///   compared against: a report for an earlier version never advances this change.
+    /// - `replicationFactor`, `confirmationFactor` — the factors this change installed.
+    /// - `floorWriteQuorum`, `floorReadQuorum` — the strictest quorums of the factors it replaced, and of every earlier
+    ///   change still unsettled when it was committed.
+    /// - `sourceReplicationFactor` — the largest replication factor across those changes: the replica set at that factor
+    ///   contains every replica set involved, and is what a core catches up from.
+    /// - `since` — when the leader committed it (wall-clock ms), so the age survives a leader change.
+    /// - `overdue` — the leader committed that the change has been unsettled for longer than the operator-attention
+    ///   bound; it is the dedupe of the entering/leaving events.
+    ///
+    /// Leader-authorized: only a compare-and-set leader transaction writes it, so a stale leader, or a transition
+    /// computed from a superseded record, is refused.
+    record DhtReplicationChangeValue(long version,
+                                     int replicationFactor,
+                                     int confirmationFactor,
+                                     int floorWriteQuorum,
+                                     int floorReadQuorum,
+                                     int sourceReplicationFactor,
+                                     DhtReplicationStage stage,
+                                     long since,
+                                     boolean overdue) implements AetherValue, LeaderAuthorized {
+        public DhtReplicationChangeValue {
+            if (stage == null) {
+                stage = DhtReplicationStage.UNKNOWN;
+            }
+        }
+
+        public DhtReplicationChangeValue withStage(DhtReplicationStage next) {
+            return new DhtReplicationChangeValue(version,
+                                                 replicationFactor,
+                                                 confirmationFactor,
+                                                 floorWriteQuorum,
+                                                 floorReadQuorum,
+                                                 sourceReplicationFactor,
+                                                 next,
+                                                 since,
+                                                 overdue);
+        }
+
+        public DhtReplicationChangeValue withOverdue(boolean next) {
+            return new DhtReplicationChangeValue(version,
+                                                 replicationFactor,
+                                                 confirmationFactor,
+                                                 floorWriteQuorum,
+                                                 floorReadQuorum,
+                                                 sourceReplicationFactor,
+                                                 stage,
+                                                 since,
+                                                 next);
+        }
+
+        public boolean settled() {
+            return stage == DhtReplicationStage.SETTLED;
+        }
+    }
+
+    /// What one member reports about the latest DHT replication change, under [AetherKey.DhtReplicationReportKey]
+    /// (#1777, CTO ruling R1b): `appliedVersion` is the configuration version whose factors it uses, and
+    /// `caughtUpVersion` the change whose writers-switched catch-up it completed ([DhtReplicationStage#WRITERS_SWITCHED]).
+    /// Either is `-1` before the first. `replica` says the member holds DHT partitions (a core): its catch-up is part of
+    /// the settle. A worker holds none and reports what it applied only.
+    record DhtReplicationReportValue(long appliedVersion, long caughtUpVersion, boolean replica) implements AetherValue {}
 }

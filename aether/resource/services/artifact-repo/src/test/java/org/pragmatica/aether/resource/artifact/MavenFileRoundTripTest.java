@@ -1,12 +1,12 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 
 package org.pragmatica.aether.resource.artifact;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.resource.artifact.MavenProtocolHandler.MavenResponse;
 import org.pragmatica.dht.DHTClient;
 import org.pragmatica.dht.Partition;
@@ -35,12 +35,14 @@ class MavenFileRoundTripTest {
 
     private ConcurrentHashMap<String, byte[]> dht;
     private MavenProtocolHandler handler;
+    private ArtifactStore store;
 
     @BeforeEach
     void setup() {
         dht = new ConcurrentHashMap<>();
         var storage = StorageInstance.storageInstance("test-artifacts", List.of(MemoryTier.memoryTier(64 * 1024 * 1024)));
-        handler = MavenProtocolHandler.mavenProtocolHandler(ArtifactStore.artifactStore(mapDht(), storage));
+        store = ArtifactStore.artifactStore(mapDht(), storage);
+        handler = MavenProtocolHandler.mavenProtocolHandler(store);
     }
 
     @Test
@@ -84,50 +86,118 @@ class MavenFileRoundTripTest {
         assertThat(get(BASE + "-javadoc.jar").statusCode()).isEqualTo(404);
     }
 
-    // verify-1132 B1: Maven 3 deploys every SNAPSHOT under a timestamped unique name; each file of
-    // that deploy is its own entry under the SNAPSHOT version, and the plain SNAPSHOT name reads it.
+    // verify-1132 B1 parsed Maven 3's timestamped SNAPSHOT names file by file; #1778 refuses SNAPSHOT versions in
+    // the built-in store, so each of those PUTs is now a 400 that names the SNAPSHOT policy and stores nothing.
     @Test
-    void timestampedSnapshotDeploy_keysEveryFileSeparately() {
+    void timestampedSnapshotDeploy_isRefusedForEveryFile_andStoresNothing() {
         var dir = "/repository/org/example/lib/1.0.0-SNAPSHOT/lib-1.0.0-20260914.010203-1";
 
-        assertThat(body(put(dir + ".jar", JAR))).contains("\"status\":\"uploaded\"");
-        assertThat(body(put(dir + ".pom", POM))).contains("\"status\":\"uploaded\"");
-        assertThat(body(put(dir + "-sources.jar", SOURCES))).as("a timestamped -sources.jar is not the jar")
-                                                            .contains("\"status\":\"uploaded\"");
-        assertThat(body(put(dir + "-javadoc.jar", JAVADOC))).contains("\"status\":\"uploaded\"");
+        for (var suffix : List.of(".jar", ".pom", "-sources.jar", "-javadoc.jar")) {
+            var refused = put(dir + suffix, JAR);
 
-        assertThat(get(dir + "-sources.jar").content()).isEqualTo(SOURCES);
-        assertThat(get(dir + "-javadoc.jar").content()).isEqualTo(JAVADOC);
-        assertThat(get(dir + ".jar").content()).isEqualTo(JAR);
-        assertThat(get(dir + ".pom").content()).isEqualTo(POM);
-        assertThat(get("/repository/org/example/lib/1.0.0-SNAPSHOT/lib-1.0.0-SNAPSHOT-sources.jar").content())
-            .as("the plain SNAPSHOT name addresses the same file").isEqualTo(SOURCES);
+            assertThat(refused.statusCode()).as(suffix).isEqualTo(400);
+            assertThat(body(refused)).contains("SNAPSHOT");
+        }
 
-        assertThat(dht.keySet()).containsExactlyInAnyOrder(
-            "artifacts/org.example/lib/1.0.0-SNAPSHOT/jar/meta",
-            "artifacts/org.example/lib/1.0.0-SNAPSHOT/pom/meta",
-            "artifacts/org.example/lib/1.0.0-SNAPSHOT/sources.jar/meta",
-            "artifacts/org.example/lib/1.0.0-SNAPSHOT/javadoc.jar/meta",
-            "artifacts/org.example/lib/1.0.0-SNAPSHOT/files",
-            "artifacts/org.example/lib/versions");
-
-        var xml = body(get("/repository/org/example/lib/maven-metadata.xml"));
-
-        assertThat(xml.split("<version>1.0.0-SNAPSHOT</version>", -1)).as("listed once").hasSize(2);
+        assertThat(dht).as("nothing was written for a refused SNAPSHOT").isEmpty();
+        assertThat(get("/repository/org/example/lib/maven-metadata.xml").statusCode()).isEqualTo(404);
     }
 
     @Test
     void mavenMetadata_latestAndReleaseFollowVersionOrder_notDeployOrder() {
-        put("/repository/org/example/lib/2.0.0-SNAPSHOT/lib-2.0.0-SNAPSHOT.jar", JAR);
+        put("/repository/org/example/lib/2.0.0-rc1/lib-2.0.0-rc1.jar", JAR);
         put("/repository/org/example/lib/1.0.0/lib-1.0.0.jar", JAR);
         put("/repository/org/example/lib/1.0.0-rc4/lib-1.0.0-rc4.jar", JAR);
 
         var xml = body(get("/repository/org/example/lib/maven-metadata.xml"));
 
-        assertThat(xml).contains("<latest>2.0.0-SNAPSHOT</latest>");
-        assertThat(xml).contains("<release>1.0.0</release>");
+        assertThat(xml).contains("<latest>2.0.0-rc1</latest>");
         assertThat(xml.indexOf("<version>1.0.0-rc4</version>")).isLessThan(xml.indexOf("<version>1.0.0</version>"));
-        assertThat(xml.indexOf("<version>1.0.0</version>")).isLessThan(xml.indexOf("<version>2.0.0-SNAPSHOT</version>"));
+        assertThat(xml.indexOf("<version>1.0.0</version>")).isLessThan(xml.indexOf("<version>2.0.0-rc1</version>"));
+    }
+
+    private static final String METADATA = "/repository/org/example/lib/maven-metadata.xml";
+    private static final java.util.Map<String, String> CHECKSUM_ALGORITHMS = java.util.Map.of(".md5", "MD5",
+                                                                                              ".sha1", "SHA-1",
+                                                                                              ".sha256", "SHA-256",
+                                                                                              ".sha512", "SHA-512");
+
+    /// #1833 — the request sequence of a standard `mvn deploy` followed by a resolving client: the
+    /// artifact files and their sidecars, then the metadata and ITS sidecars (Gradle sends all four
+    /// algorithms, Maven md5 and sha1), then a fetch of the metadata and of each checksum. Every
+    /// metadata sidecar PUT used to be a 400 for sha256/sha512 and every metadata checksum GET a 400.
+    @Test
+    void mavenDeployShapedSequence_metadataChecksumsAreAcceptedAndServed() {
+        put(BASE + ".jar", JAR);
+        put(BASE + ".jar.sha1", "ignored".getBytes(StandardCharsets.UTF_8));
+        put(BASE + ".pom", POM);
+        var metadataPut = put(METADATA, "<metadata/>".getBytes(StandardCharsets.UTF_8));
+
+        assertThat(metadataPut.statusCode()).isLessThan(300);
+        assertThat(body(metadataPut)).as("the metadata PUT says the bytes were not stored")
+                                     .contains("\"status\":\"derived\"")
+                                     .contains("not stored");
+
+        for (var suffix : CHECKSUM_ALGORITHMS.keySet()) {
+            var uploaded = put(METADATA + suffix, "client-side-digest".getBytes(StandardCharsets.UTF_8));
+
+            assertThat(uploaded.statusCode()).as("PUT metadata%s", suffix).isLessThan(300);
+            assertThat(body(uploaded)).as("PUT metadata%s says what happened to the bytes", suffix)
+                                      .contains("\"status\":\"derived\"")
+                                      .contains("not stored");
+        }
+
+        var metadata = get(METADATA);
+
+        assertThat(metadata.statusCode()).isEqualTo(200);
+
+        for (var entry : CHECKSUM_ALGORITHMS.entrySet()) {
+            var checksum = get(METADATA + entry.getKey());
+
+            assertThat(checksum.statusCode()).as("GET metadata%s", entry.getKey()).isEqualTo(200);
+            assertThat(body(checksum)).as("metadata%s is the digest of the exact GET body", entry.getKey())
+                                      .isEqualTo(digest(entry.getValue(), metadata.content()));
+        }
+    }
+
+    /// The metadata and its checksum are two requests. A wall-clock `<lastUpdated>` made the second
+    /// render differ from the first whenever a second boundary fell between them, so the sidecar could
+    /// never be trusted to match; the rendering must be a pure function of the version set.
+    @Test
+    void metadata_isIdenticalAcrossASecondBoundary_soItsChecksumCanBeTrusted() throws InterruptedException {
+        put(BASE + ".jar", JAR);
+
+        var first = get(METADATA).content();
+
+        Thread.sleep(1100);
+
+        assertThat(get(METADATA).content()).isEqualTo(first);
+        assertThat(new String(first, StandardCharsets.UTF_8)).as("<lastUpdated> stays, derived from the stored deploy time")
+                                                             .contains("<lastUpdated>" + lastUpdatedOf("org.example:lib:1.0.0") + "</lastUpdated>");
+        assertThat(body(get(METADATA + ".sha256"))).isEqualTo(digest("SHA-256", first));
+    }
+
+    @Test
+    void metadataChecksums_ofAnArtifactWithNoVersions_are404() {
+        for (var suffix : CHECKSUM_ALGORITHMS.keySet()) {
+            assertThat(get(METADATA + suffix).statusCode()).as("GET metadata%s", suffix).isEqualTo(404);
+        }
+    }
+
+    /// What the store persisted for the version's primary file at deploy time, formatted the way Maven writes it.
+    private String lastUpdatedOf(String coordinates) {
+        var deployedAt = store.metadata(Artifact.artifact(coordinates).unwrap()).await().unwrap().unwrap().deployedAt();
+
+        return java.time.format.DateTimeFormatter.ofPattern("yyyyMMddHHmmss")
+                                                 .format(java.time.Instant.ofEpochMilli(deployedAt).atOffset(java.time.ZoneOffset.UTC));
+    }
+
+    private static String digest(String algorithm, byte[] content) {
+        try {
+            return java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance(algorithm).digest(content));
+        } catch (java.security.NoSuchAlgorithmException e) {
+            throw new AssertionError(e);
+        }
     }
 
     private MavenResponse put(String path, byte[] content) {

@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.resource.interceptor;
 
 import org.pragmatica.aether.slice.MethodInterceptor;
@@ -20,6 +19,9 @@ import org.slf4j.LoggerFactory;
 /// does not fail a call whose business work already succeeded. The failure is logged at DEBUG —
 /// a per-call WARN during a DHT outage would be an unbounded log on the hottest path (#718's
 /// lesson); the outage itself is visible on the backend's own side.
+///
+/// `cacheName` names the shared backend in those log lines; [CacheInterceptorFactory] supplies it,
+/// and an interceptor built directly over a backend carries none.
 @SuppressWarnings("unchecked")
 public record CacheMethodInterceptor(CacheBackend cache,
                                      CacheStrategy strategy,
@@ -28,7 +30,7 @@ public record CacheMethodInterceptor(CacheBackend cache,
     private static final Logger log = LoggerFactory.getLogger(CacheMethodInterceptor.class);
 
     public CacheMethodInterceptor(CacheBackend cache, CacheStrategy strategy, Fn1<Object, ?> keyExtractor) {
-        this(cache, strategy, keyExtractor, Option.empty());
+        this(cache, strategy, keyExtractor, Option.none());
     }
 
     @Override

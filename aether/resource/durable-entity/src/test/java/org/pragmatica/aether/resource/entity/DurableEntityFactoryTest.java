@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.resource.entity;
 
 import io.netty.buffer.ByteBuf;
@@ -176,6 +175,29 @@ class DurableEntityFactoryTest {
         }
     }
 
+    /// Make-before-break, as far as one node can make it. `retract` is what asks for the immediate
+    /// ownership reconcile (the node's `EntityOwnershipReconciler` runs a pass on it), so it has to be issued
+    /// BEFORE the forward target disappears: the other order removes the node's ability to answer first and
+    /// only then starts the clock on moving ownership away, widening the window in which a committed owner
+    /// has nothing to serve a forwarded request with.
+    @Nested
+    class UnloadSequencing {
+        @Test
+        void close_retractsTheKeyspace_beforeUnregisteringTheForwardTarget() {
+            unloadFixture().onFailure(DurableEntityFactoryTest::failCause)
+                           .onSuccess(fixture -> {
+                               var entity = provisioned(fixture);
+
+                               fixture.events().clear();
+                               closeOnce(entity);
+
+                               assertThat(fixture.events())
+                                   .as("the hosting declaration must be retracted first — that is what requests the reconcile")
+                                   .containsSubsequence("retract:" + KEYSPACE, "unregister:" + KEYSPACE);
+                           });
+        }
+    }
+
     // ---- unload helpers ------------------------------------------------------------------------
 
     private record UnloadFixture(DurableEntityConfig config,
@@ -183,13 +205,15 @@ class DurableEntityFactoryTest {
                                  RecordingRegistrar registrar,
                                  RecordingForwardRegistry registry,
                                  EntityCheckpointDriver driver,
-                                 EntityTimerDriver timerDriver) {}
+                                 EntityTimerDriver timerDriver,
+                                 List<String> events) {}
 
     /// A fully-wired provisioning context — the shape `AetherNode.registerEntityExtensionsOnSpi`
     /// produces — with the three unload collaborators reachable so the test can watch them.
     private static Result<UnloadFixture> unloadFixture() {
-        var registrar = new RecordingRegistrar();
-        var registry = new RecordingForwardRegistry();
+        var events = new ArrayList<String>();
+        var registrar = new RecordingRegistrar(events);
+        var registry = new RecordingForwardRegistry(events);
         var driver = EntityCheckpointDriver.entityCheckpointDriver();
         // Both entity drivers, because `registerEntityExtensionsOnSpi` registers both together and
         // unconditionally: a fixture carrying only one is not the shape a node produces, and the factory
@@ -204,7 +228,8 @@ class DurableEntityFactoryTest {
                                                         registrar,
                                                         registry,
                                                         driver,
-                                                        timerDriver));
+                                                        timerDriver,
+                                                        events));
     }
 
     private static void assertUnloadReleasesEverything(UnloadFixture fixture) {
@@ -464,6 +489,15 @@ class DurableEntityFactoryTest {
     private static final class RecordingRegistrar implements EntityKeyspaceRegistrar {
         private final List<String> declared = new ArrayList<>();
         private final List<String> retracted = new ArrayList<>();
+        private final List<String> events;
+
+        RecordingRegistrar() {
+            this(new ArrayList<>());
+        }
+
+        RecordingRegistrar(List<String> events) {
+            this.events = events;
+        }
 
         @Override
         public Unit declare(String keyspace, int partitionCount) {
@@ -475,6 +509,7 @@ class DurableEntityFactoryTest {
         @Override
         public Unit retract(String keyspace) {
             retracted.add(keyspace);
+            events.add("retract:" + keyspace);
 
             return Unit.unit();
         }
@@ -485,6 +520,15 @@ class DurableEntityFactoryTest {
     private static final class RecordingForwardRegistry implements EntityForwardRegistry {
         private final List<String> registered = new ArrayList<>();
         private final List<String> unregistered = new ArrayList<>();
+        private final List<String> events;
+
+        RecordingForwardRegistry() {
+            this(new ArrayList<>());
+        }
+
+        RecordingForwardRegistry(List<String> events) {
+            this.events = events;
+        }
 
         @Override
         @Contract
@@ -496,6 +540,7 @@ class DurableEntityFactoryTest {
         @Contract
         public void unregister(String keyspace) {
             unregistered.add(keyspace);
+            events.add("unregister:" + keyspace);
         }
     }
 

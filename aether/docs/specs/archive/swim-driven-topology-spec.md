@@ -1,11 +1,10 @@
-<!--
-SPDX-License-Identifier: BUSL-1.1
-Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
--->
+<!-- SPDX-License-Identifier: Apache-2.0 -->
+<!-- Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko -->
+<!-- Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms. -->
 
 # SWIM-Driven Topology Spec
 
-> ⛔ **SUPERSEDED by [`cluster-topology-overhaul-spec.md`](cluster-topology-overhaul-spec.md) (2026-06-10).** SWIM→QUIC-direct mapping reversed by the June hardening wave; replaced by the FSM-mediated desired-set model. KEEP §5 (ANNOUNCE protocol — load-bearing wire format of record); §6 lifecycle table + Decisions 6–8 obsolete. Do not delete.
+> ⛔ **SUPERSEDED by [`cluster-topology-overhaul-spec.md`](../cluster-topology-overhaul-spec.md) (2026-06-10).** SWIM→QUIC-direct mapping reversed by the June hardening wave; replaced by the FSM-mediated desired-set model. KEEP §5 (ANNOUNCE protocol — load-bearing wire format of record); §6 lifecycle table + Decisions 6–8 obsolete. Do not delete.
 
 ## 1. Status & Scope
 

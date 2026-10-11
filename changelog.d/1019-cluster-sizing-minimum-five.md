@@ -28,20 +28,19 @@
   a **structural** floor of 3 — below three no majority quorum exists at all. **Existing 3-node
   clusters keep booting; new ones cannot be created below 5.**
   `[verified: CoreWorkerSplitTest$CoreBelowMinimum, ClusterBootstrapConfigValidatorTest$ConsensusTierMaximum.validate_succeeds_atTheStructuralFloorOfThree]`
-- **The two boot-path gates refuse differently, and an earlier draft of this fragment said they did
-  not.** Both run on every node boot, so neither is an authoring gate — but only one of them stops a
-  boot. `ClusterSizeGate` genuinely refuses: `Main#enforceMinimumClusterSize` pipes its failure into
-  `Main#abortBoot`, so raising ITS floor to 5 really would stop the first node of a rolling upgrade
-  from restarting and strand clusters running today. `ConfigValidator` does **not** refuse:
-  `Main#loadConfigFile` is `ConfigLoader.load(path).onFailure(log::error).option()`, so its failure is
-  logged and **discarded** and the node boots with no config at all — losing its TLS, port and secret
-  settings, reporting `configuredClusterNodes` as 0, and (on a cloud node whose discovery arm then
-  goes inert) aborting later in `ClusterSizeGate.enforce(0)` with a diagnostic that names neither the
-  file nor the floor. Round 1 gave the first mechanism as the reason for both. The conclusion — keep
-  both at 3 — is unchanged; the reason for half of it was wrong, and a rationale naming the wrong
-  enforcer is the kind that never gets corrected.
-  `[verified: ConfigLoaderTest.load_validationFailure_becomesAnEmptyOptionRatherThanAnAbort pins the discard's near half — a rejected config yields an EMPTY Option through the composition Main uses]`
-  `[unverified: that Main#loadConfigFile itself continues past the empty Option — read at Main.java#loadConfigFile, not executed; no test in this PR boots a node]`
+- **Both boot-path gates refuse, by different mechanisms.** (An earlier draft of this fragment said
+  `ConfigValidator` did not refuse: it was true of the code at the time and was fixed by #2052.) Both run
+  on every node boot, so neither is an authoring gate. `ClusterSizeGate`: `Main#enforceMinimumClusterSize`
+  pipes its failure into `Main#abortBoot` (exit 1), so raising ITS floor to 5 really would stop the first
+  node of a rolling upgrade from restarting and strand clusters running today. `ConfigValidator`: for a
+  node GIVEN a config file (`--config=`), `ConfigLoader.load` runs it, and since #2052 a failure makes
+  `Main#resolveConfig` fail and `Main#refuseConfig` exit **65** with a `FATAL: refusing to start` line
+  naming the file and the cause on stderr and in the log (before #2052 the failure was logged and discarded
+  and the node booted with no config at all, losing its TLS, port and secret settings). Raising its floor
+  would therefore also stop a running cluster from restarting. The conclusion of round 1 — keep both at 3,
+  and enforce the policy minimum where configs are CREATED — is unchanged; the reason given for half of it
+  was wrong, and a rationale naming the wrong enforcer is the kind that never gets corrected.
+  `[verified: ConfigLoaderTest.load_validationFailure_isAFailureResultWithACause_notAnEmptyValue (the rejected config is a failure Result with a cause), MainConfigGivenBootTest.aGivenConfigThatFailsValidation_refusesToStart (a real Main in a child JVM exits 65 on nodes = 2)]`
 - **The MAXIMUM is on the CONSENSUS tier, not the fleet — and it now holds on every path that can
   set one, not only at `init`.** `[cluster] nodes` feeds `TopologyConfig.clusterSize`, the quorum
   basis every consensus round is broadcast across, and the bound is 9 (was 7). Fleet size is bounded

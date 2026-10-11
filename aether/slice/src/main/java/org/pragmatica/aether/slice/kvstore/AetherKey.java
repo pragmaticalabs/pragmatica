@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.slice.kvstore;
 
 import org.pragmatica.aether.artifact.Artifact;
@@ -78,6 +77,70 @@ public sealed interface AetherKey extends StructuredKey permits AetherKey.Cluste
             var artifactBasePart = key.substring(PREFIX.length());
 
             return ArtifactBase.artifactBase(artifactBasePart).map(SliceTargetKey::new);
+        }
+    }
+
+    /// The versions of one artifact in the built-in artifact store (#1778): a grow-only set whose entries carry
+    /// the archived flag, kept in consensus so concurrent publishes are folded by the applier instead of racing
+    /// as a read-modify-write on the DHT. The artifact bytes and per-version metadata stay in the DHT. Backed up
+    /// with the rest of the cluster state, because the DHT keys it indexes survive a restart.
+    record ArtifactVersionsKey(ArtifactBase artifactBase) implements ClusterStateKey {
+        private static final String PREFIX = "artifact-versions/";
+
+        @Override
+        public String asString() {
+            return PREFIX + artifactBase.asString();
+        }
+
+        @Override
+        public String toString() {
+            return asString();
+        }
+
+        public static ArtifactVersionsKey artifactVersionsKey(ArtifactBase artifactBase) {
+            return new ArtifactVersionsKey(artifactBase);
+        }
+
+        public static Result<ArtifactVersionsKey> artifactVersionsKey(String key) {
+            if (!key.startsWith(PREFIX)) {
+                return ARTIFACT_VERSIONS_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
+            return ArtifactBase.artifactBase(key.substring(PREFIX.length())).map(ArtifactVersionsKey::new);
+        }
+    }
+
+    /// The content bound to one file of one coordinate in the built-in artifact store (#1778): the FIRST digest
+    /// proposed for the file is the one the Rabia applier keeps, so two uploaders racing to publish different bytes
+    /// to the same new coordinate are decided by the consensus log, and only the winner may write the file's
+    /// metadata. Never rewritten or removed.
+    record ArtifactContentKey(ArtifactBase artifactBase, String version, String file) implements ClusterStateKey {
+        private static final String PREFIX = "artifact-content/";
+
+        @Override
+        public String asString() {
+            return PREFIX + artifactBase.asString() + "/" + version + "/" + file;
+        }
+
+        @Override
+        public String toString() {
+            return asString();
+        }
+
+        public static ArtifactContentKey artifactContentKey(ArtifactBase artifactBase, String version, String file) {
+            return new ArtifactContentKey(artifactBase, version, file);
+        }
+
+        public static Result<ArtifactContentKey> artifactContentKey(String key) {
+            if (!key.startsWith(PREFIX)) {
+                return ARTIFACT_CONTENT_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
+            var parts = key.substring(PREFIX.length()).split("/", 3);
+
+            return parts.length != 3
+                   ? ARTIFACT_CONTENT_KEY_FORMAT_ERROR.apply(key).result()
+                   : ArtifactBase.artifactBase(parts[0]).map(base -> new ArtifactContentKey(base, parts[1], parts[2]));
         }
     }
 
@@ -362,21 +425,9 @@ public sealed interface AetherKey extends StructuredKey permits AetherKey.Cluste
         }
 
         private static String normalizePrefix(String path) {
-            if (!Verify.Is.present(path)) {
-                return "/";
-            }
-
-            var normalized = path.strip();
-
-            if (!normalized.startsWith("/")) {
-                normalized = "/" + normalized;
-            }
-
-            if (!normalized.endsWith("/")) {
-                normalized = normalized + "/";
-            }
-
-            return normalized;
+            return Verify.Is.present(path)
+                   ? org.pragmatica.aether.http.handler.RouteIdentity.normalizePrefix(path)
+                   : "/";
         }
     }
 
@@ -1149,6 +1200,43 @@ public sealed interface AetherKey extends StructuredKey permits AetherKey.Cluste
         }
     }
 
+    /// #2062: the admission marker of a node's EXTERNAL capacity reservation (see `AetherValue.CapacityAdmissionValue`). Runtime state.
+    record CapacityAdmissionKey(NodeId nodeId) implements RuntimeKey {
+        @Override
+        public String asString() {
+            return "capacity-admission/" + nodeId.id();
+        }
+    }
+
+    /// #1543: the pairing of a node being replaced (`original`) with the fresh-id node replacing it. Runtime
+    /// state: an in-flight replacement names nodes a restored cluster no longer has.
+    record NodeReplacementKey(NodeId original) implements RuntimeKey {
+        @Override
+        public String asString() {
+            return "node-replacement/" + original.id();
+        }
+    }
+
+    /// #2062: a retired node whose instance the CTM could not confirm terminated at the provider. Runtime state: it names nodes a restored cluster
+    /// no longer has. Written by the active topology manager when it marks the node and removed when the termination is confirmed, so a new leader
+    /// inherits every open "unconfirmed" and can close it.
+    record UnconfirmedTerminationKey(NodeId nodeId) implements RuntimeKey {
+        @Override
+        public String asString() {
+            return "unconfirmed-termination/" + nodeId.id();
+        }
+    }
+
+    /// #1543 part F: the one rolling-upgrade run of the cluster. Runtime state: a run names nodes a restored cluster no longer has.
+    record UpgradeRunKey() implements RuntimeKey {
+        public static final UpgradeRunKey INSTANCE = new UpgradeRunKey();
+
+        @Override
+        public String asString() {
+            return "upgrade-run/current";
+        }
+    }
+
     record CommunityPlacementAvailabilityKey(String communityId, String source, Option<String> zone) implements RuntimeKey {
         @Override
         public String asString() {
@@ -1333,6 +1421,10 @@ public sealed interface AetherKey extends StructuredKey permits AetherKey.Cluste
     Fn1<Cause, String> TOPIC_SUBSCRIPTION_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid topic-sub key format: %s");
 
     Fn1<Cause, String> SLICE_TARGET_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid slice-target key format: %s");
+
+    Fn1<Cause, String> ARTIFACT_CONTENT_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid artifact-content key format: %s");
+
+    Fn1<Cause, String> ARTIFACT_VERSIONS_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid artifact-versions key format: %s");
 
     Fn1<Cause, String> APP_BLUEPRINT_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid app-blueprint key format: %s");
 
@@ -2059,6 +2151,72 @@ public sealed interface AetherKey extends StructuredKey permits AetherKey.Cluste
     }
 
     Fn1<Cause, String> CLUSTER_INCARNATION_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid cluster-incarnation key format: %s");
+
+    /// Runtime (#1777, CTO ruling R1b): the cluster's latest DHT replication change and how far it has settled. The
+    /// leader commits it; every node derives its DHT quorums from it. Runtime, so never backed up: the DHT store is in
+    /// memory, so after a cold restart there is nothing written under older factors to protect.
+    record DhtReplicationChangeKey() implements RuntimeKey {
+        private static final String KEY = "dht-replication-change";
+
+        @SuppressWarnings("JBCT-VO-02")
+        public static final DhtReplicationChangeKey SINGLETON = new DhtReplicationChangeKey();
+
+        @Override
+        public String asString() {
+            return KEY;
+        }
+
+        @Override
+        public String toString() {
+            return asString();
+        }
+
+        @SuppressWarnings("JBCT-VO-02")
+        public static DhtReplicationChangeKey dhtReplicationChangeKey() {
+            return SINGLETON;
+        }
+
+        public static Result<DhtReplicationChangeKey> dhtReplicationChangeKey(String key) {
+            if (!KEY.equals(key)) {
+                return DHT_REPLICATION_CHANGE_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
+            return success(SINGLETON);
+        }
+    }
+
+    Fn1<Cause, String> DHT_REPLICATION_CHANGE_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid dht-replication-change key format: %s");
+
+    /// Runtime (#1777, CTO ruling R1b): one member's report on the latest DHT replication change — what it applied and
+    /// what it caught up for. Written by the member itself (a worker through its forwarding cluster node), read by the
+    /// leader, removed by the leader once its membership view holds the member `Dead`. Never projected to workers.
+    record DhtReplicationReportKey(NodeId nodeId) implements RuntimeKey {
+        private static final String PREFIX = "dht-replication-report/";
+
+        @Override
+        public String asString() {
+            return PREFIX + nodeId.id();
+        }
+
+        @Override
+        public String toString() {
+            return asString();
+        }
+
+        public static DhtReplicationReportKey dhtReplicationReportKey(NodeId nodeId) {
+            return new DhtReplicationReportKey(nodeId);
+        }
+
+        public static Result<DhtReplicationReportKey> dhtReplicationReportKey(String key) {
+            if (!key.startsWith(PREFIX) || key.length() == PREFIX.length()) {
+                return DHT_REPLICATION_REPORT_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
+            return NodeId.nodeId(key.substring(PREFIX.length())).map(DhtReplicationReportKey::new);
+        }
+    }
+
+    Fn1<Cause, String> DHT_REPLICATION_REPORT_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid dht-replication-report key format: %s");
 
     /// Runtime (#1533): the committed outcome of this incarnation's restore decision. Every node's submit
     /// path refuses writes to backed-up keys until it holds a terminal outcome, so no seeder can race a

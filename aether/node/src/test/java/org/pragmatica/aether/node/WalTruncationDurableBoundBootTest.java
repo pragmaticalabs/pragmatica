@@ -6,8 +6,6 @@
 package org.pragmatica.aether.node;
 
 import java.io.IOException;
-import java.io.UncheckedIOException;
-import java.net.ServerSocket;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
@@ -151,10 +149,15 @@ class WalTruncationDurableBoundBootTest {
     private Path walFile() throws IOException {
         try (Stream<Path> files = Files.walk(tempDir)) {
             return files.filter(path -> path.getFileName().toString().equals(PARTITION + ".wal"))
-                        .filter(path -> path.getParent().getFileName().toString().equals(STREAM))
+                        .filter(path -> isStreamDir(path.getParent().getFileName().toString()))
                         .findFirst()
                         .orElseThrow(() -> new AssertionError("fixture: no " + STREAM + "/" + PARTITION + ".wal under " + tempDir));
         }
+    }
+
+    /// `<stream>` or, for a stream created through the cluster, `<stream>@<incarnation>` (#1278 review).
+    private static boolean isStreamDir(String name) {
+        return name.equals(STREAM) || name.startsWith(STREAM + "@");
     }
 
     /// The publish-path create: the ring is materialized locally before it returns and the config commit is
@@ -188,7 +191,7 @@ class WalTruncationDurableBoundBootTest {
 
     private AetherNodeConfig minimalConfig() {
         var self = NodeId.nodeId("wal-durable-bound-boot-test").unwrap();
-        var selfInfo = NodeInfo.nodeInfo(self, nodeAddress("localhost", freePort()).unwrap());
+        var selfInfo = NodeInfo.nodeInfo(self, nodeAddress("localhost", ClusterTestPorts.freeClusterPort()).unwrap());
         // Everything on disk lands under tempDir: `content` and the stream data dir derive from this path.
         var artifactsConfig = new StorageConfig(8L * 1024 * 1024,
                                                 DISK_MAX_BYTES,
@@ -216,13 +219,5 @@ class WalTruncationDurableBoundBootTest {
                                 .managementHttpProtocol(HttpProtocol.H1)
                                 .storageConfig(Map.of("artifacts", artifactsConfig))
                                 .build();
-    }
-
-    private static int freePort() {
-        try (var socket = new ServerSocket(0)) {
-            return socket.getLocalPort();
-        } catch (IOException e) {
-            throw new UncheckedIOException(e);
-        }
     }
 }

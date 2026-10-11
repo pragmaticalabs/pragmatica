@@ -151,6 +151,16 @@ public interface ClusterTopologyManager extends TopologyManager {
                                                        Set<NodeId> clusterMembers,
                                                        NodeRole intendedRole);
 
+    /// The source-explicit form: the replacement is stamped with `sourceName`, the source the node it replaces came from
+    /// (#1543 worker replacement). Implementations that do not distinguish sources ignore it.
+    default Promise<ProvisionDisposition> provisionReplacement(NodeId newNodeId,
+                                                               Option<NodeId> failedPeer,
+                                                               Set<NodeId> clusterMembers,
+                                                               NodeRole intendedRole,
+                                                               org.pragmatica.aether.environment.SourceName sourceName) {
+        return provisionReplacement(newNodeId, failedPeer, clusterMembers, intendedRole);
+    }
+
     /// Membership v2 / E2 — drain a specific node. Targets either the operator/scale-down
     /// flow or the overprovision-drain path. `reason` is observability-only at this layer except for
     /// [`DrainReason#isSurplusTrim`], which makes the grace-terminate backstop re-check before reaping
@@ -163,6 +173,11 @@ public interface ClusterTopologyManager extends TopologyManager {
     boolean usesExplicitCommunities();
     void installCommunityPlacement(CommunityPlacementReconciler reconciler);
 
+    /// The community placement reconciler installed on this manager, if any. Read-only, for the boot test that pins the node's wiring.
+    default org.pragmatica.lang.Option<CommunityPlacementReconciler> installedCommunityPlacement() {
+        return org.pragmatica.lang.Option.none();
+    }
+
     default org.pragmatica.lang.Unit setHierarchyStateWriter(HierarchyStateWriter writer) {
         return org.pragmatica.lang.Unit.unit();
     }
@@ -172,14 +187,104 @@ public interface ClusterTopologyManager extends TopologyManager {
         return org.pragmatica.lang.Unit.unit();
     }
 
-    /// Core retirement requires a durable successor installation certificate.
-    default org.pragmatica.lang.Unit setRetirementAllowed(java.util.function.Predicate<NodeId> predicate) {
+    /// Core retirement requires a durable successor installation certificate. `none()` means the node is
+    /// retirable now; otherwise the reason it is not. A refused reap is logged with that reason and retried (#1804).
+    default org.pragmatica.lang.Unit setRetirementRefusal(Function<NodeId, Option<String>> refusal) {
+        return org.pragmatica.lang.Unit.unit();
+    }
+
+    /// #2062: the manager owns the unconfirmed-termination lifecycle. Marks `node` as retired with an instance whose termination is NOT confirmed and
+    /// raises `instance-termination-unconfirmed` (once per node). While this manager is the active leader it re-checks every marked node at a low
+    /// bounded rate and raises `instance-termination-confirmed` on a real confirmation. Every raiser goes through here; nothing raises the pair
+    /// directly. Default: nothing (a manager that cannot confirm).
+    default org.pragmatica.lang.Unit markUnconfirmed(NodeId node, String cause) {
+        return org.pragmatica.lang.Unit.unit();
+    }
+
+    /// #2062: where the persisted "termination not confirmed" marks are read from (the replicated store), so that a new leader inherits every
+    /// open mark. Default: none.
+    default org.pragmatica.lang.Unit setUnconfirmedMarks(java.util.function.Supplier<java.util.Map<NodeId, org.pragmatica.aether.slice.kvstore.AetherValue.UnconfirmedTerminationValue>> reader) {
+        return org.pragmatica.lang.Unit.unit();
+    }
+
+    /// The replicated marks this manager reads (readable so that the node's wiring can be pinned).
+    default java.util.Map<NodeId, org.pragmatica.aether.slice.kvstore.AetherValue.UnconfirmedTerminationValue> unconfirmedMarks() {
+        return java.util.Map.of();
+    }
+
+    /// The sink the unconfirmed-termination events go to (readable so that the node's wiring can be pinned).
+    default org.pragmatica.utility.warning.OperatorWarningSink operatorWarningSink() {
+        return org.pragmatica.utility.warning.OperatorWarningSink.logOnly();
+    }
+
+    /// #2062: where the unconfirmed-termination operator events go (default: nowhere, the log line stands).
+    default org.pragmatica.lang.Unit setOperatorWarningSink(org.pragmatica.utility.warning.OperatorWarningSink sink) {
+        return org.pragmatica.lang.Unit.unit();
+    }
+
+    /// #2062: the node was retired by `replacement`: its admission marker becomes a retirement tombstone, so its identity, if it rejoins, is refused. Default: nothing.
+    default org.pragmatica.lang.Unit supersedeAdmission(NodeId node, NodeId replacement) {
+        return org.pragmatica.lang.Unit.unit();
+    }
+
+    /// #2062: the node is gone for good (retired by a replacement): its admission marker is deleted ([NodeLifecycleManager#forgetAdmission]). Default: nothing.
+    default org.pragmatica.lang.Unit forgetAdmission(NodeId node) {
+        return org.pragmatica.lang.Unit.unit();
+    }
+
+    /// What the leader knows of the instance behind a dropped in-flight replacement (#1111).
+    enum DroppedInstance {
+        /// The provider has listed the instance: an empty listing later means it is gone.
+        LISTED,
+        /// A create returned an instance, but no listing has shown it: an empty listing proves nothing yet (listings lag creation).
+        CREATED,
+        /// The create FAILED, so the instance may never have existed: only repeated successful empty listings confirm it absent.
+        MAYBE
+    }
+
+    /// #1111: the leader dropped the in-flight auto-heal replacement minted as `node` (the per-source ceiling, a FAILED or repeatedly absent
+    /// listing, or a failed create) without it joining. Whatever the provider holds under that identity is looked up by its node-id label and
+    /// terminated through the confirmed reap, with a WARN naming the source, node and instance id; a failed termination ends in the same
+    /// unconfirmed mark and event as a retirement. A [DroppedInstance#MAYBE] drop whose instance is confirmed absent ends quietly. A node that
+    /// shows life is never terminated. Default: nothing.
+    default org.pragmatica.lang.Unit reapDroppedReplacement(NodeId node, String reason, DroppedInstance knowledge) {
+        return org.pragmatica.lang.Unit.unit();
+    }
+
+    /// #1543: the committed replacement pairings, read by worker surplus selection.
+    default org.pragmatica.lang.Unit setNodeReplacements(NodeReplacementIndex index) {
         return org.pragmatica.lang.Unit.unit();
     }
 
     Promise<Unit> provisionPlacementNode(org.pragmatica.aether.slice.kvstore.AetherValue.CommunityPlacementOperationValue operation);
 
     Promise<Unit> drainNode(NodeId targetNodeId, DrainReason reason);
+
+    /// #1543: terminate the provider instance of a retired node and CONFIRM it is gone. Succeeds only when a provider listing shows no
+    /// instance of `node` that is provisioning, running or in a state the provider cannot state; every other outcome is a failure
+    /// carrying why (the refusal, the provider error, the instance still listed). A failed listing is a failure, never "gone".
+    ///
+    /// An EMPTY listing proves absence only for an instance the provider has listed before (`seenBefore`, see [#instanceListed]) or
+    /// one this call listed and terminated: providers' listings lag creation and omit what they cannot attribute (an unlabelled
+    /// VM), so an instance never listed stays unconfirmed, with a failure that names the node. Idempotent: a repeat finds the
+    /// listing empty after the terminate it already did only if it saw the instance, so a new leader that never saw it re-asks.
+    /// Honours the retirement refusal of [#drainNode] (a voter is not reaped). Reusable by any retirement path.
+    default Promise<Unit> reapRetired(NodeId node,
+                                      org.pragmatica.aether.environment.SourceName source,
+                                      boolean seenBefore) {
+        return org.pragmatica.lang.utils.Causes.cause("reap of " + node.id()
+                                                     + ": this topology manager cannot confirm termination")
+                                               .promise();
+    }
+
+    /// #1543: whether the provider lists at least one instance (in any status) of `node`: the observation that lets a later empty
+    /// listing count as "gone". A failed listing is a failure.
+    default Promise<Boolean> instanceListed(NodeId node, org.pragmatica.aether.environment.SourceName source) {
+        return org.pragmatica.lang.utils.Causes.cause("listing of " + node.id()
+                                                     + ": this topology manager cannot list instances")
+                                               .promise();
+    }
+
     /// #1049 — what the compute provider reports about the instance behind the auto-heal replacement
     /// minted as `nodeId`: [ReplacementInstanceState#PRESENT] while it provisions or runs,
     /// [ReplacementInstanceState#FAILED] once every listed instance is stopping or terminated,

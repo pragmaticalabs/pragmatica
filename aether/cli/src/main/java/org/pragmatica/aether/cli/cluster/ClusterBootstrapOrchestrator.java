@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.cli.cluster;
 
 import java.nio.charset.StandardCharsets;
@@ -14,6 +13,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
+import java.util.stream.IntStream;
 
 import org.pragmatica.aether.config.cluster.ClusterBootstrapConfig;
 import org.pragmatica.aether.environment.ClusterName;
@@ -147,7 +147,25 @@ public sealed interface ClusterBootstrapOrchestrator permits ClusterBootstrapOrc
                                                            BootstrapState state,
                                                            List<SshPublicKey> sshPublicKeys,
                                                            String rawTomlContent) {
+        return resumeFromState(config, state, sshPublicKeys, rawTomlContent, ClusterBootstrapOrchestrator::runPhaseChain);
+    }
+
+    /// `chain` is the phase runner the resumed context is handed to — production passes [#runPhaseChain];
+    /// a test passes a capturing one, so what the DEPLOY phase would SEE on resume is observable.
+    static Result<BootstrapResult> resumeFromState(ClusterBootstrapConfig config,
+                                                   BootstrapState state,
+                                                   List<SshPublicKey> sshPublicKeys,
+                                                   String rawTomlContent,
+                                                   Function<BootstrapContext, Result<BootstrapResult>> chain) {
         System.out.println("Resuming bootstrap for cluster '" + state.clusterName() + "' from persisted state");
+
+        return chain.apply(resumeContext(config, state, sshPublicKeys, rawTomlContent));
+    }
+
+    static BootstrapContext resumeContext(ClusterBootstrapConfig config,
+                                          BootstrapState state,
+                                          List<SshPublicKey> sshPublicKeys,
+                                          String rawTomlContent) {
         var resumedSecret = state.clusterSecret().isEmpty()
                             ? generateClusterSecret()
                             : state.clusterSecret();
@@ -162,7 +180,65 @@ public sealed interface ClusterBootstrapOrchestrator permits ClusterBootstrapOrc
                                   .withClusterSecret(resumedSecret)
                                   .withRawTomlContent(rawTomlContent);
 
-        return runPhaseChain(ctx);
+        return rehydrateNodes(ctx);
+    }
+
+    /// #1543 — a resumed run starts with an EMPTY node list: PROVISION and COLLECT_ADDRESSES are skipped
+    /// when COMPLETED, so DEPLOY_RUNTIME used to iterate zero nodes and report success having started
+    /// nothing. The state file already holds the ids and addresses in provisioning order, so they are
+    /// rebuilt from it; without them the per-node started ledger would have nothing to be consulted for.
+    /// `serverId` is the provider handle, which only the SSH/FORGE launch paths read (as a type tag);
+    /// a cloud node's real server id stays in the ledger's `ProvisionedVm` records.
+    static BootstrapContext rehydrateNodes(BootstrapContext ctx) {
+        var state = ctx.state();
+        var ids = state.provisionedNodeIds();
+        var ips = state.collectedAddresses();
+        var provisioned = state.phases().get(BootstrapPhase.PROVISION) == PhaseStatus.COMPLETED && state.phases()
+                                                                                                        .get(BootstrapPhase.COLLECT_ADDRESSES) == PhaseStatus.COMPLETED;
+
+        if (!provisioned || ids.isEmpty() || ids.size() != ips.size()) {
+            return ctx;
+        }
+
+        var nodes = IntStream.range(0,
+                                    ids.size())
+                             .mapToObj(i -> provisionedFromPersisted(ctx,
+                                                                     ids.get(i),
+                                                                     ips.get(i)))
+                             .toList();
+        var addresses = IntStream.range(0,
+                                        ids.size())
+                                 .mapToObj(i -> NodeAddress.fromPersisted(ids.get(i),
+                                                                          ips.get(i)))
+                                 .toList();
+
+        return ctx.withNodes(nodes)
+                  .withAddresses(addresses);
+    }
+
+    private static ProvisionedNode provisionedFromPersisted(BootstrapContext ctx, String nodeId, String persisted) {
+        var address = NodeAddress.fromPersisted(nodeId, persisted);
+
+        return ProvisionedNode.provisionedNode(nodeId,
+                                               serverTag(ctx.config(), nodeId),
+                                               address.publicIp(),
+                                               address.managementPort());
+    }
+
+    private static String serverTag(ClusterBootstrapConfig config, String nodeId) {
+        return config.sources()
+                     .entrySet()
+                     .stream()
+                     .filter(entry -> BootstrapPhaseProvision.belongsTo(nodeId,
+                                                                        SourceName.sourceNameOrDefault(entry.getKey())))
+                     .findFirst()
+                     .map(entry -> switch (entry.getValue()
+                                                .type()) {
+            case SSH -> "ssh";
+            case FORGE -> "forge";
+            case CLOUD, DOCKER -> "";
+        })
+                     .orElse("");
     }
 
     private static Result<BootstrapResult> runPhaseChain(BootstrapContext ctx) {
@@ -654,6 +730,34 @@ public sealed interface ClusterBootstrapOrchestrator permits ClusterBootstrapOrc
             }
         }
 
+        /// A DOCKER source with management TLS declared (`[operations.tls] auto_generate = true`, the default) (#2089).
+        /// A docker node is created by `docker run` from the image's baked configuration, which serves the management API over plain
+        /// HTTP (`[cluster] tls = false`) and has no channel to receive TLS material, so the declared setting could not be honoured. Bootstrap
+        /// refuses before any container exists instead of quietly speaking HTTP to a cluster the config says is TLS.
+        record DockerSourceDeclaresTls(String sourceName) implements BootstrapError {
+            @Override
+            public String message() {
+                return "Source '" + sourceName
+                     + "' is a docker source, but the config declares management TLS ([operations.tls] auto_generate"
+                     + " is true, the default). Docker nodes serve the management API over plain HTTP and cannot honour it. Set"
+                     + " `[operations.tls] auto_generate = false` explicitly to bootstrap a docker cluster over HTTP.";
+            }
+        }
+
+        /// A docker source beside a non-docker source of any role (#2089). Docker nodes name each other by container
+        /// name on the docker network; cloud and ssh cores by address. The two kinds cannot share one reachable peer list, a list per
+        /// kind would silently form two clusters, and docker workers would boot with an empty core list, so bootstrap refuses the config.
+        record DockerCoresMixedWithOtherCores(String dockerSource, String otherSource) implements BootstrapError {
+            @Override
+            public String message() {
+                return "Docker source '" + dockerSource
+                     + "' cannot be combined with source '" + otherSource
+                     + "'. Docker nodes reach each other by"
+                     + " container name and the others by address, so they cannot share one cluster peer list. Put the whole cluster in"
+                     + " docker sources, or use no docker source.";
+            }
+        }
+
         record AddressCollectionFailed(String sourceName, String detail) implements BootstrapError {
             @Override
             public String message() {
@@ -665,6 +769,20 @@ public sealed interface ClusterBootstrapOrchestrator permits ClusterBootstrapOrc
             @Override
             public String message() {
                 return "Runtime deployment failed for node '" + nodeId + "': " + detail;
+            }
+        }
+
+        /// #1543 — a node id is launched ONCE. Raised when a start would be a second launch under the same
+        /// id: the host already holds an `aether-node`, or `--resume` found a node an earlier run started
+        /// that is not healthy. Membership refuses a same-NodeId restart (terminal removal), so there is
+        /// nothing to retry — the only ways forward are to destroy the cluster or replace the node.
+        record NodeAlreadyStarted(String nodeId, String detail) implements BootstrapError {
+            @Override
+            public String message() {
+                return "Node '" + nodeId
+                     + "' was already started and will not be started again: " + detail
+                     + ". A node id is launched once and a same-id restart is refused by membership;"
+                     + " destroy the cluster ('aether cluster destroy') or replace the node under a fresh id.";
             }
         }
 

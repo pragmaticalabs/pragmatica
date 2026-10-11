@@ -14,10 +14,10 @@
 | C2 | `seed_cluster_config` succeeds — operator config is planted in KV-Store for subsequent scale-validator decisions | `aether/docs/specs/cluster-config-spec.md §seed` `[CONTRACT-GAP]` (helper-level contract, not formally specced) |
 | C3 | Scale validator rejects targets below minimum quorum (coreCount=1, coreCount=2) with HTTP 4xx | `aether/docs/specs/cluster-deployment-manager-spec.md §scale-validator` `[CONTRACT-GAP]` (validator rules documented only in `ClusterScaleHandler` source); minimum quorum implied by `membership-architecture-v2-spec.md §quorum` |
 | C4 | Scale validator rejects targets above configured maximum (coreCount=20) with HTTP 4xx | `[CONTRACT-GAP]` (max-core configuration referenced only in `ClusterScaleHandler` + `ClusterConfig`) |
-| C5 | Cluster shape + health preserved across rejected scale operations | `aether/docs/specs/test-readiness-contract.md §1.1`, `§3 (api/health row)` |
+| C5 | Cluster shape + health preserved across rejected scale operations | `aether/docs/specs/test-readiness-contract.md §1.1`, `§3 (api/v1/health row)` |
 | C6 | Scale up 5→7: CTM provisions 2 additional cores; `member_count == 7` within budget; cluster reports `"healthy"` | `aether/docs/specs/cluster-deployment-manager-spec.md §scale-up`; `aether/docs/specs/test-readiness-contract.md §2.1` `[CONTRACT-GAP]` (CTM scale-up SLA in code) |
 | C7 | Scale down 7→5 under sustained load: `member_count == 5` within budget; error rate < operational-event tier 2.0% | `aether/docs/specs/test-readiness-contract.md §4` (Operational events tier = 2.0%) |
-| C8 | Final cluster state at 5 nodes is healthy | `aether/docs/specs/test-readiness-contract.md §3 (api/health row)` |
+| C8 | Final cluster state at 5 nodes is healthy | `aether/docs/specs/test-readiness-contract.md §3 (api/v1/health row)` |
 | C9 | No data loss across topology change: artifact pushed pre-scale survives 7→5 with byte-for-byte SHA-256 equality | `aether/docs/specs/dht-replication-spec.md §rebalance` `[CONTRACT-GAP]` (no canonical DHT-rebalance no-loss spec; behavior described in `aether/docs/internal/architecture/dht.md`); contract closed in commit c68a3ec37 — was previously the audit's egregious tautology |
 
 ---

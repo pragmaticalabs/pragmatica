@@ -22,8 +22,8 @@ class EmberIdentityStorageTest {
     }
 
     @Test void defaultStorageIsStablePerNodeAndIsolatedAcrossHarnesses() {
-        var first = EmberCluster.emberCluster(3, 34000, 34100, 34200, "storage");
-        var second = EmberCluster.emberCluster(3, 34300, 34400, 34500, "storage");
+        var first = EmberCluster.emberCluster(3, EmberTestPorts.POOL_FIRST, EmberTestPorts.POOL_FIRST + 100, EmberTestPorts.POOL_FIRST + 200, "storage");
+        var second = EmberCluster.emberCluster(3, EmberTestPorts.POOL_FIRST + 300, EmberTestPorts.POOL_FIRST + 400, EmberTestPorts.POOL_FIRST + 500, "storage");
         var node = new NodeId("storage-1");
         var initial = first.perNodeStorageConfig(node).get("artifacts");
         assertThat(first.perNodeStorageConfig(node).get("artifacts")).isEqualTo(initial);
@@ -34,7 +34,7 @@ class EmberIdentityStorageTest {
     }
 
     @Test void explicitPersistentBaseRemainsAuthoritative(@TempDir Path directory) {
-        var cluster = EmberCluster.emberCluster(3, 34600, 34700, 34800, "storage");
+        var cluster = EmberCluster.emberCluster(3, EmberTestPorts.POOL_FIRST + 600, EmberTestPorts.POOL_FIRST + 700, EmberTestPorts.POOL_FIRST + 800, "storage");
         cluster.withDataBaseDir(directory);
         var config = cluster.perNodeStorageConfig(new NodeId("storage-1")).get("artifacts");
         assertThat(Path.of(config.snapshotPath())).isEqualTo(directory.resolve("storage-1/metadata-snapshots"));

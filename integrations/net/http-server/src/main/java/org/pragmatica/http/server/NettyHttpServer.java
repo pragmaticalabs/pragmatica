@@ -15,6 +15,7 @@
  */
 package org.pragmatica.http.server;
 
+import java.net.InetSocketAddress;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -27,6 +28,7 @@ import org.pragmatica.http.websocket.WebSocketEndpoint;
 import org.pragmatica.http.websocket.WebSocketHandler;
 import org.pragmatica.http.websocket.WebSocketMessage;
 import org.pragmatica.http.websocket.WebSocketSession;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
@@ -166,7 +168,33 @@ final class NettyHttpServer implements HttpServer {
                                             EventLoopGroup bossGroup,
                                             EventLoopGroup workerGroup,
                                             boolean ownsGroups) {
-        var sslContext = config.tls().await().flatMap(TlsContextFactory::create).option();
+        return config.tls()
+                     .map(tls -> TlsContextFactory.createServer(tls).map(Option::some))
+                     .or(Result.success(Option.<SslContext> empty()))
+                     .fold(cause -> tlsBuildFailed(config, cause, ownsGroups, bossGroup, workerGroup),
+                           sslContext -> bindConfigured(config, handler, bossGroup, workerGroup, ownsGroups, sslContext));
+    }
+
+    /// A TLS configuration that fails to build refuses startup: serving plain HTTP on a port the operator
+    /// configured for TLS would be fail-open.
+    private static Promise<HttpServer> tlsBuildFailed(HttpServerConfig config,
+                                                      Cause cause,
+                                                      boolean ownsGroups,
+                                                      EventLoopGroup bossGroup,
+                                                      EventLoopGroup workerGroup) {
+        var failure = new HttpServerError.TlsFailed(config.name(), config.port(), cause);
+
+        log.error("HTTP server '{}' will not start: {}", config.name(), failure.message());
+
+        return releaseGroupsOnBindFailure(ownsGroups, bossGroup, workerGroup).fold(_ -> failure.promise());
+    }
+
+    private static Promise<HttpServer> bindConfigured(HttpServerConfig config,
+                                                      BiConsumer<HttpRequest, ResponseWriter> handler,
+                                                      EventLoopGroup bossGroup,
+                                                      EventLoopGroup workerGroup,
+                                                      boolean ownsGroups,
+                                                      Option<SslContext> sslContext) {
         var socketOptions = config.socketOptions();
         var bootstrap = new ServerBootstrap().group(bossGroup, workerGroup)
                                              .channel(NioServerSocketChannel.class)
@@ -195,9 +223,10 @@ final class NettyHttpServer implements HttpServer {
                                boolean ownsGroups) {
         if (future.isSuccess()) {
             var protocol = sslContext.map(_ -> "HTTPS").or("HTTP");
+            var boundPort = ((InetSocketAddress) future.channel().localAddress()).getPort();
 
-            log.info("{} server '{}' started on port {}", protocol, config.name(), config.port());
-            promise.succeed(new NettyHttpServer(config.port(),
+            log.info("{} server '{}' started on port {}", protocol, config.name(), boundPort);
+            promise.succeed(new NettyHttpServer(boundPort,
                                                 Option.option(bossGroup),
                                                 Option.option(workerGroup),
                                                 Option.option(future.channel()),

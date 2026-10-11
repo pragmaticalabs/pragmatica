@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.resource.interceptor;
 
 import java.util.concurrent.ConcurrentHashMap;
@@ -41,14 +40,7 @@ import org.pragmatica.lang.Promise;
 @SuppressWarnings("unchecked")
 public record IdempotencyMethodInterceptor(CacheBackend store,
                                            ConcurrentHashMap<Object, Promise<Object>> claims,
-                                           Fn1<Object, ?> keyExtractor,
-                                           Option<String> storeName) implements MethodInterceptor {
-    public IdempotencyMethodInterceptor(CacheBackend store,
-                                        ConcurrentHashMap<Object, Promise<Object>> claims,
-                                        Fn1<Object, ?> keyExtractor) {
-        this(store, claims, keyExtractor, Option.empty());
-    }
-
+                                           Fn1<Object, ?> keyExtractor) implements MethodInterceptor {
     public static IdempotencyMethodInterceptor idempotencyMethodInterceptor(CacheBackend store,
                                                                             Fn1<Object, ?> keyExtractor) {
         return new IdempotencyMethodInterceptor(store, new ConcurrentHashMap<>(), keyExtractor);

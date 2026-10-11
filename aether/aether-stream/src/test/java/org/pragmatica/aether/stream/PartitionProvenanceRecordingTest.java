@@ -396,14 +396,23 @@ class PartitionProvenanceRecordingTest {
             manager.partitionFlags(recordingFlags(raised));
         }
 
+        /// #1730 phase 2: the mismatch quarantines at once but raises nothing, because the backfill may repair it (an ordinary
+        /// failover): the durable flag is raised only when the repair is REFUSED, once per process. The old premise (flag at
+        /// detection) blocked the partition cluster-wide for a divergence the replica then healed by itself.
         @Test
-        void n13Mismatch_raisesMarkedDiverged_once() {
+        void n13Mismatch_raisesNothingAtDetection_andMarkedDivergedOnceWhenTheRepairIsRefused() {
             for (var offset = 0; offset < 5; offset++) {
                 live(offset, E1);
             }
 
             install(5, 8, at(E1, 0), at(E2, 3));
             install(5, 8, at(E1, 0), at(E2, 3));
+
+            assertThat(raised).as("detection alone flags nothing").isEmpty();
+            assertThat(manager.quarantinedAt(STREAM, PARTITION).isPresent()).as("the local fence is up").isTrue();
+
+            manager.quarantineView().flagUnrepaired(STREAM, PARTITION);
+            manager.quarantineView().flagUnrepaired(STREAM, PARTITION);
 
             assertThat(raised).extracting(AetherValue.PartitionRecoveryReason::kind)
                               .containsExactly(AetherValue.PartitionRecoveryReasonKind.MARKED_DIVERGED);
@@ -441,6 +450,23 @@ class PartitionProvenanceRecordingTest {
             assertThat(raised).extracting(AetherValue.PartitionRecoveryReason::kind)
                               .containsExactly(AetherValue.PartitionRecoveryReasonKind.LOCAL_MISMATCH);
             assertThat(raised.getFirst().evidence()).contains("above head 0");
+        }
+
+        /// A page from a source that VOUCHED for an empty history (it keeps no log: non-durable, Forge) is applied, as before the
+        /// #1730 phase 2 vouched-flag redesign: the receiver cannot tell it from any other empty slice here, and refusing it
+        /// would keep a WAL replica of a log-less owner from ever catching up. Related to #1938 (such a copy is later quarantined
+        /// at its next re-verify, a separate defect). Red under "refuse every empty slice" (the 51e78b7e0 guard).
+        @Test
+        void emptySliceFromASourceThatKeepsNoLog_isApplied() {
+            var applied = manager.applyAttributed(STREAM, PARTITION, 0, 2, List.of(), () -> {
+                for (var offset = 0; offset <= 2; offset++) {
+                    caughtUp(offset);
+                }
+                return Result.success(3L);
+            });
+
+            assertThat(applied.isSuccess()).isTrue();
+            assertThat(manager.nextExpectedOffset(STREAM, PARTITION)).isEqualTo(3L);
         }
 
         @Test

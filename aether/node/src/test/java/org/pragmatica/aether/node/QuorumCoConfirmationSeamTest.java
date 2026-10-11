@@ -85,6 +85,7 @@ class QuorumCoConfirmationSeamTest {
         var intents = new ArrayList<QuorumLossIntent>();
         var detector = QuorumLossDetector.quorumLossDetector(membershipConfig(),
                                                              VOTERS::size,
+                                                             () -> strictVoterCount(fsm),
                                                              TimeSource.system(),
                                                              scheduler);
 
@@ -93,11 +94,11 @@ class QuorumCoConfirmationSeamTest {
                                                                                       _ -> SwimHealth.SUSPECTED,
                                                                                       VOTERS));
         fsm.seed(VOTERS);
-        detector.onMemberCountChanged(strictVoterCount(fsm));
+        detector.reevaluate();
         assertThat(detector.isArmed()).as("arming: a formed five-core cluster").isTrue();
 
         List.of(PEER_B, PEER_C, PEER_D, PEER_E).forEach(peer -> fsm.onSwimSuspect(peer, 1L));
-        detector.onMemberCountChanged(strictVoterCount(fsm));
+        detector.reevaluate();
         scheduler.fireAll();
 
         assertThat(intents).as("at T every peer is still FSM-SUSPECT and SWIM-SUSPECTED: suppressed").isEmpty();

@@ -5,10 +5,15 @@
 package org.pragmatica.aether.update;
 
 import org.pragmatica.aether.artifact.ArtifactBase;
+import org.pragmatica.http.HttpStatus;
+import org.pragmatica.http.HttpStatusAware;
 import org.pragmatica.lang.Cause;
 
 
-public sealed interface AbTestDeploymentError extends Cause {
+/// #833/#954: every variant carries its own status. Untyped, each reached the management routes as a 500, so a
+/// conclude naming an unknown test or variant, a duplicate create, and the manager's own not-leader refusal read
+/// on the wire as a server fault.
+public sealed interface AbTestDeploymentError extends Cause, HttpStatusAware {
     record TestNotFound(String testId) implements AbTestDeploymentError {
         public static TestNotFound testNotFound(String testId) {
             return new TestNotFound(testId);
@@ -17,6 +22,11 @@ public sealed interface AbTestDeploymentError extends Cause {
         @Override
         public String message() {
             return "A/B test not found: " + testId;
+        }
+
+        @Override
+        public HttpStatus httpStatus() {
+            return HttpStatus.NOT_FOUND;
         }
     }
 
@@ -29,6 +39,11 @@ public sealed interface AbTestDeploymentError extends Cause {
         public String message() {
             return "A/B test already in progress for " + artifactBase;
         }
+
+        @Override
+        public HttpStatus httpStatus() {
+            return HttpStatus.CONFLICT;
+        }
     }
 
     record InvalidTestState(AbTestState from, AbTestState to) implements AbTestDeploymentError {
@@ -39,6 +54,11 @@ public sealed interface AbTestDeploymentError extends Cause {
         @Override
         public String message() {
             return "Invalid A/B test state transition from " + from + " to " + to;
+        }
+
+        @Override
+        public HttpStatus httpStatus() {
+            return HttpStatus.CONFLICT;
         }
     }
 
@@ -51,6 +71,11 @@ public sealed interface AbTestDeploymentError extends Cause {
         public String message() {
             return "Initial deployment for " + artifactBase + " (no previous version)";
         }
+
+        @Override
+        public HttpStatus httpStatus() {
+            return HttpStatus.CONFLICT;
+        }
     }
 
     record VariantNotFound(String testId, String variant) implements AbTestDeploymentError {
@@ -62,6 +87,11 @@ public sealed interface AbTestDeploymentError extends Cause {
         public String message() {
             return "Variant '" + variant + "' not found in A/B test " + testId;
         }
+
+        @Override
+        public HttpStatus httpStatus() {
+            return HttpStatus.BAD_REQUEST;
+        }
     }
 
     enum NotLeader implements AbTestDeploymentError {
@@ -69,6 +99,10 @@ public sealed interface AbTestDeploymentError extends Cause {
         @Override
         public String message() {
             return "A/B test operations can only be performed by the leader node";
+        }
+        @Override
+        public HttpStatus httpStatus() {
+            return HttpStatus.CONFLICT;
         }
     }
 }

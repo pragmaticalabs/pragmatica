@@ -9,6 +9,7 @@ import java.util.Map;
 import java.util.function.Supplier;
 import java.util.stream.Stream;
 
+import org.pragmatica.aether.api.ManagementServerError;
 import org.pragmatica.aether.api.ManagementApiResponses.DeclarativeConsumerAssignment;
 import org.pragmatica.aether.api.ManagementApiResponses.DeclarativeConsumerDetail;
 import org.pragmatica.aether.api.ManagementApiResponses.DeclarativeConsumerPartition;
@@ -24,6 +25,7 @@ import org.pragmatica.aether.management.route.ManagementRoute;
 import org.pragmatica.aether.node.ManageableNode;
 import org.pragmatica.aether.slice.RetentionPolicy;
 import org.pragmatica.aether.slice.StreamConfig;
+import org.pragmatica.aether.slice.resource.ResourceAddress;
 import org.pragmatica.aether.slice.kvstore.AetherKey.StreamConfigKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.StreamConfigValue;
 import org.pragmatica.aether.stream.StreamCreateOutcome;
@@ -54,7 +56,7 @@ import org.pragmatica.lang.utils.Causes;
 
 
 public final class StreamRoutes implements RouteSource {
-    private static final Cause MISSING_STREAM_NAME = Causes.cause("Missing stream name");
+    private static final Cause MISSING_STREAM_NAME = new ManagementServerError.InvalidRequest("Missing stream name");
 
     /// The refusal carries the status the pre-auth path gate answers with (405, see
     /// `ManagementServer.rejectSystemStreamWrite`): a bare `Causes.cause` is not `HttpStatusAware`
@@ -147,7 +149,10 @@ public final class StreamRoutes implements RouteSource {
                          ManagementRoutes.<StreamHydrationResponse> route(ManagementRoute.STREAM_HYDRATION).toJson(this::streamHydration),
                          ManagementRoutes.<DeclarativeConsumersResponse> route(ManagementRoute.STREAM_DECLARATIVE_CONSUMERS).toJson(this::declarativeConsumers),
                          ManagementRoutes.<StreamConsumersResponse> route(ManagementRoute.STREAM_CONSUMERS)
-                                         .withPath(PathParameter.aString())
+                                         .withPath(PathParameter.aString(),
+                                                   PathParameter.aString(),
+                                                   PathParameter.aString(),
+                                                   PathParameter.spacer("consumers"))
                                          .toResult(this::streamConsumers)
                                          .asJson(),
                          ManagementRoutes.<GroupStatusResponse> route(ManagementRoute.CONSUMER_GROUP_JOIN)
@@ -334,9 +339,15 @@ public final class StreamRoutes implements RouteSource {
                                                                                                                                                            "latest")));
     }
 
-    private Result<StreamConsumersResponse> streamConsumers(String name) {
-        return streamManager().allPartitionInfo(name)
-                            .map(partitions -> new StreamConsumersResponse(name, partitions));
+    /// `GET /streams/{namespace}/{stream}/{version}/consumers` -- the route's path carries the whole catalog address, so the
+    /// engine is asked by the key that address maps to, the same one the catalog-scoped stream routes use (#1921). `consumersLiteral`
+    /// binds the trailing `spacer("consumers")` segment, which `RequestContext.matchPath` binds positionally like any other slot.
+    private Result<StreamConsumersResponse> streamConsumers(String namespace,
+                                                            String stream,
+                                                            String version,
+                                                            String consumersLiteral) {
+        return RequestParse.asRequest(ResourceAddress.resourceAddress(namespace, stream, version)).flatMap(address -> StreamErrorStatus.typed(streamManager().allPartitionInfo(StreamManager.engineKey(address))).map(partitions -> new StreamConsumersResponse(address.asString(),
+                                                                                                                                                                                                                                                                partitions)));
     }
 
     /// #742 — same guard as `StreamApiRoutes#createStream(StreamCreateRequest)`, for the same reason: the target stream name is
@@ -353,13 +364,12 @@ public final class StreamRoutes implements RouteSource {
             return Result.failure(SYSTEM_STREAM_GROUP_FORBIDDEN);
         }
 
-        return coordinator.joinGroup(request.groupId(),
-                                     request.streamName(),
-                                     request.partitionCount(),
-                                     request.consumerId(),
-                                     nodeSupplier.get().self())
-                          .map(_ -> new GroupStatusResponse(request.groupId(),
-                                                            coordinator.groupStatus(request.groupId())));
+        return CoordinatorRefusal.typed(coordinator.joinGroup(request.groupId(),
+                                                              request.streamName(),
+                                                              request.partitionCount(),
+                                                              request.consumerId(),
+                                                              nodeSupplier.get().self())).map(_ -> new GroupStatusResponse(request.groupId(),
+                                                                                                                           coordinator.groupStatus(request.groupId())));
     }
 
     Result<GroupStatusResponse> leaveGroup(LeaveGroupRequest request) {
@@ -371,11 +381,10 @@ public final class StreamRoutes implements RouteSource {
             return Result.failure(SYSTEM_STREAM_GROUP_FORBIDDEN);
         }
 
-        return coordinator.leaveGroup(request.groupId(),
-                                      request.streamName(),
-                                      request.consumerId())
-                          .map(_ -> new GroupStatusResponse(request.groupId(),
-                                                            coordinator.groupStatus(request.groupId())));
+        return CoordinatorRefusal.typed(coordinator.leaveGroup(request.groupId(),
+                                                               request.streamName(),
+                                                               request.consumerId())).map(_ -> new GroupStatusResponse(request.groupId(),
+                                                                                                                       coordinator.groupStatus(request.groupId())));
     }
 
     private static boolean isBlank(String value) {

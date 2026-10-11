@@ -15,10 +15,6 @@
     <name>E2E Test Slice - Versioned Service</name>
     <description>Two-version test slice for #198 API path-mode versioning - serves /v1/ and /v2/ routes</description>
 
-    <properties>
-        <maven.deploy.skip>true</maven.deploy.skip>
-    </properties>
-
     <dependencies>
         <dependency>
             <groupId>org.pragmatica-lite.aether</groupId>

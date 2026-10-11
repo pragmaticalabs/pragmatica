@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.resource.entity;
 
 import org.pragmatica.consensus.NodeId;
@@ -109,6 +108,36 @@ public interface EntityOwnerForward {
     /// deleted-key token is success), so the outcome IS the success or failure, and there is nothing else
     /// to carry back.
     Promise<Unit> forwardCancelTimer(NodeId owner, String keyspace, byte[] key, String token);
+
+    /// A forward that never left this node: its command can be neither applied nor delivered later, so a retry is safe
+    /// (#1973). Produced when the transport refuses the send (`NoPeerState`, `ConnectionDead`, `BackpressureRefused`,
+    /// `EncodeFailed`) or the caller's budget is already spent, and when the owner refuses an arrived-expired command before
+    /// touching the entity.
+    ///
+    /// The guarantee holds because of two mechanisms, and both are needed: the send is reported as refused only when the
+    /// transport did not write the frame, and an entity forward frame is [org.pragmatica.consensus.net.NoOfflineBuffering],
+    /// so a frame that finds its connection dead or absent is DROPPED rather than held in the peer's offline buffer and
+    /// delivered on reattach after the caller was told it was not sent. [Cause.Transient]: an app route answers 503 with
+    /// "safe to retry" in the body. Contrast [ForwardTimedOut], where the command WAS sent and the outcome is unknown.
+    /// A frame that the transport wrote after its captured connection died (the peer rebound to a live one) is reported as
+    /// the write it was, so it is never mistaken for this cause.
+    record ForwardNotSent(String detail) implements Cause.Transient {
+        @Override
+        public String message() {
+            return detail;
+        }
+    }
+
+    /// A forward that WAS sent and whose answer never came within the wait: the owner may or may not have applied the
+    /// command. Also [Cause.Transient], so an app route answers 503 like every transient cause (owner ruling bcfb04232:
+    /// 503 means "transient, retry later", never "not executed"), but its message says the outcome is UNKNOWN. A client
+    /// that retries a non-idempotent command after it can repeat the effect; contrast [ForwardNotSent], which is safe to retry.
+    record ForwardTimedOut(String detail) implements Cause.Transient {
+        @Override
+        public String message() {
+            return detail;
+        }
+    }
 
     /// A refusal that crossed the forward wire. `failureType` is the OWNER-side cause's simple class
     /// name, carried explicitly because the wire otherwise flattens causes to message strings — and a

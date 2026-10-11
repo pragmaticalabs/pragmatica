@@ -7,6 +7,7 @@ package org.pragmatica.aether.stream.forward;
 import java.util.Arrays;
 import java.util.List;
 
+import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.stream.VisibleBounds;
 import org.pragmatica.aether.stream.provenance.ProvenanceEntry;
 import org.pragmatica.consensus.NodeId;
@@ -18,6 +19,9 @@ import org.pragmatica.serialization.Codec;
 
 @Codec
 public sealed interface StreamForwardMessage extends ProtocolMessage {
+    /// `ReadForwardResponse#divergenceResumeAt` of an answer that is not a divergence.
+    long NO_DIVERGENCE = -1L;
+
     @Override
     default StreamType streamType() {
         return StreamType.FORWARD;
@@ -126,14 +130,23 @@ public sealed interface StreamForwardMessage extends ProtocolMessage {
                        long fromOffset,
                        int maxEvents,
                        boolean linearizable,
-                       boolean catchup) implements StreamForwardMessage {
+                       boolean catchup,
+                       Epoch consumerEpoch) implements StreamForwardMessage {
         public static ReadForward readForward(NodeId sender,
                                               String correlationId,
                                               String streamName,
                                               int partition,
                                               long fromOffset,
                                               int maxEvents) {
-            return new ReadForward(sender, correlationId, streamName, partition, fromOffset, maxEvents, false, false);
+            return new ReadForward(sender,
+                                   correlationId,
+                                   streamName,
+                                   partition,
+                                   fromOffset,
+                                   maxEvents,
+                                   false,
+                                   false,
+                                   Epoch.ZERO);
         }
 
         public static ReadForward readForward(NodeId sender,
@@ -150,7 +163,8 @@ public sealed interface StreamForwardMessage extends ProtocolMessage {
                                    fromOffset,
                                    maxEvents,
                                    linearizable,
-                                   false);
+                                   false,
+                                   Epoch.ZERO);
         }
 
         public static ReadForward readForward(NodeId sender,
@@ -168,7 +182,29 @@ public sealed interface StreamForwardMessage extends ProtocolMessage {
                                    fromOffset,
                                    maxEvents,
                                    linearizable,
-                                   catchup);
+                                   catchup,
+                                   Epoch.ZERO);
+        }
+
+        /// A consumer read that carries the owner epoch the consumer last read under (#1730 phase 2 / #1873, KIP-320): the
+        /// serving node checks the consumer's cursor against the epochs it knows and answers a typed divergence instead of
+        /// serving offsets the consumer's lineage no longer owns. [Epoch#ZERO] claims no epoch.
+        public static ReadForward validatedReadForward(NodeId sender,
+                                                       String correlationId,
+                                                       String streamName,
+                                                       int partition,
+                                                       long fromOffset,
+                                                       int maxEvents,
+                                                       Epoch consumerEpoch) {
+            return new ReadForward(sender,
+                                   correlationId,
+                                   streamName,
+                                   partition,
+                                   fromOffset,
+                                   maxEvents,
+                                   false,
+                                   false,
+                                   consumerEpoch);
         }
     }
 
@@ -182,6 +218,17 @@ public sealed interface StreamForwardMessage extends ProtocolMessage {
     /// read only (empty on every other answer): the source's slice a catch-up apply checks and installs before
     /// applying the events, so every caught-up record is attributed to the epoch that first wrote it. Same
     /// precedent: a widening of this pinned record rather than a second round trip.
+    ///
+    /// `historyVouched` is true only on that replica catch-up answer: the source treated the reader as a replica and
+    /// `history` is what it keeps, which is EMPTY only when it keeps no log. Every other answer -- a consumer read, which
+    /// is what a node the source does not yet list as a replica gets (#1235) -- is not vouched, so an empty `history`
+    /// there means "not answered as a replica", never "keeps no history". The receiver of a catch-up refuses records it
+    /// cannot attribute from an unvouched answer and pulls again.
+    ///
+    /// `refusal` (#1967) is the typed refusal of a failed read -- the code and the values the cause is built from, so
+    /// the caller rebuilds the cause a local read of the same partition would have produced instead of parsing
+    /// `errorMessage`. Empty on a success, on a divergence (own slots) and on a failure no read is known to raise, which
+    /// travels as `errorMessage` alone. Widened onto this record for the same reason as the slots above.
     record ReadForwardResponse(NodeId sender,
                                String correlationId,
                                boolean success,
@@ -190,7 +237,12 @@ public sealed interface StreamForwardMessage extends ProtocolMessage {
                                String errorMessage,
                                long earliestRetained,
                                long visibleHead,
-                               List<ProvenanceEntry> history) implements StreamForwardMessage {
+                               List<ProvenanceEntry> history,
+                               boolean historyVouched,
+                               Epoch ownerEpoch,
+                               long divergenceResumeAt,
+                               long divergenceLossFrom,
+                               Option<ReadRefusal> refusal) implements StreamForwardMessage {
         public ReadForwardResponse {
             events = List.copyOf(events);
             history = List.copyOf(history);
@@ -214,7 +266,12 @@ public sealed interface StreamForwardMessage extends ProtocolMessage {
                                            "",
                                            bounds.earliestRetained(),
                                            bounds.visibleHead(),
-                                           List.of());
+                                           List.of(),
+                                           false,
+                                           Epoch.ZERO,
+                                           NO_DIVERGENCE,
+                                           NO_DIVERGENCE,
+                                           Option.none());
         }
 
         public static ReadForwardResponse truncatedResponse(NodeId sender,
@@ -235,7 +292,12 @@ public sealed interface StreamForwardMessage extends ProtocolMessage {
                                            "",
                                            bounds.earliestRetained(),
                                            bounds.visibleHead(),
-                                           List.of());
+                                           List.of(),
+                                           false,
+                                           Epoch.ZERO,
+                                           NO_DIVERGENCE,
+                                           NO_DIVERGENCE,
+                                           Option.none());
         }
 
         public static ReadForwardResponse failureResponse(NodeId sender, String correlationId, String errorMessage) {
@@ -247,7 +309,34 @@ public sealed interface StreamForwardMessage extends ProtocolMessage {
                                            errorMessage,
                                            VisibleBounds.NONE,
                                            VisibleBounds.NONE,
-                                           List.of());
+                                           List.of(),
+                                           false,
+                                           Epoch.ZERO,
+                                           NO_DIVERGENCE,
+                                           NO_DIVERGENCE,
+                                           Option.none());
+        }
+
+        /// A failed read whose cause the caller rebuilds from `refusal`; `errorMessage` stays the client-safe text, for a
+        /// caller that does not know the code.
+        public static ReadForwardResponse refusalResponse(NodeId sender,
+                                                          String correlationId,
+                                                          ReadRefusal refusal,
+                                                          String errorMessage) {
+            return new ReadForwardResponse(sender,
+                                           correlationId,
+                                           false,
+                                           List.of(),
+                                           false,
+                                           errorMessage,
+                                           VisibleBounds.NONE,
+                                           VisibleBounds.NONE,
+                                           List.of(),
+                                           false,
+                                           Epoch.ZERO,
+                                           NO_DIVERGENCE,
+                                           NO_DIVERGENCE,
+                                           Option.some(refusal));
         }
 
         /// This answer carrying the serving node's owner-epoch history (#1596): a replica catch-up read's.
@@ -260,7 +349,61 @@ public sealed interface StreamForwardMessage extends ProtocolMessage {
                                            errorMessage,
                                            earliestRetained,
                                            visibleHead,
-                                           sourceHistory);
+                                           sourceHistory,
+                                           true,
+                                           ownerEpoch,
+                                           divergenceResumeAt,
+                                           divergenceLossFrom,
+                                           refusal);
+        }
+
+        /// This answer stamped with the owner epoch the serving node answered under (#1730 phase 2 / #1873): the epoch a
+        /// validated consumer read adopts.
+        public ReadForwardResponse withOwnerEpoch(Epoch epoch) {
+            return new ReadForwardResponse(sender,
+                                           correlationId,
+                                           success,
+                                           events,
+                                           truncated,
+                                           errorMessage,
+                                           earliestRetained,
+                                           visibleHead,
+                                           history,
+                                           historyVouched,
+                                           epoch,
+                                           divergenceResumeAt,
+                                           divergenceLossFrom,
+                                           refusal);
+        }
+
+        /// A consumer read refused because its cursor belongs to a replaced lineage (#1730 phase 2 / #1873): the serving
+        /// node's epoch `ownerEpoch` began at `resumeAt`, and the consumer re-reads from there. Typed on the wire, so the
+        /// client never has to parse a message.
+        public static ReadForwardResponse epochDivergedResponse(NodeId sender,
+                                                                String correlationId,
+                                                                Epoch ownerEpoch,
+                                                                long resumeAt,
+                                                                long lossFrom,
+                                                                String message) {
+            return new ReadForwardResponse(sender,
+                                           correlationId,
+                                           false,
+                                           List.of(),
+                                           false,
+                                           message,
+                                           VisibleBounds.NONE,
+                                           VisibleBounds.NONE,
+                                           List.of(),
+                                           false,
+                                           ownerEpoch,
+                                           resumeAt,
+                                           lossFrom,
+                                           Option.none());
+        }
+
+        /// Whether this is the typed divergence answer.
+        public boolean epochDiverged() {
+            return divergenceResumeAt >= 0L;
         }
 
         /// The serving node's bounds, or none when it held no ring (or the read failed).

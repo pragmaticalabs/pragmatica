@@ -185,6 +185,6 @@ class SourceComputeRegistryTest {
     }
 
     private static ClusterConfigValue value(String toml) {
-        return new ClusterConfigValue(toml, "test", "1.0.0", List.of(), 3, 9, "test", 1L, 1L);
+        return new ClusterConfigValue(Option.some(toml), "test", "1.0.0", List.of(), 3, 9, "test", 1L, 1L);
     }
 }

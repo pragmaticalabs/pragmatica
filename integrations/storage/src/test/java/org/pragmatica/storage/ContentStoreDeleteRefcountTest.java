@@ -11,6 +11,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.utils.Causes;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
@@ -229,6 +230,74 @@ class ContentStoreDeleteRefcountTest {
             assertThat(usedByFirst + CHUNK_SIZE).as("locator: the tier must refuse the second document's first chunk")
                       .isGreaterThan(750);
             assertThat(refCountsOf(firstChunks)).as("locator: the previous chunks keep their credit").containsOnly(1);
+        }
+    }
+
+    /// #1437 -- a chunked put that fails part-way left the chunks it had already stored at refCount 1 behind no
+    /// manifest. The existing failing-overwrite fixture refuses the FIRST chunk, so nothing had been stored
+    /// yet; these refuse a LATER chunk, and the manifest swap, which is what exposes it.
+    @Nested
+    class PartiallyFailedChunkedPut {
+        /// Sized by measurement, not guessed: the tier holds the first document plus exactly one more
+        /// chunk, so the second document's first fresh chunk lands and the next is refused.
+        private long usedByFirstDocument() {
+            wire(ONE_MB);
+            putContent(NAME, generateContent(CHUNK_SIZE * 3 + 15, 1));
+
+            return memoryTier.usedBytes();
+        }
+
+        @Test
+        void put_whoseLaterChunkIsRefused_releasesTheChunksAlreadyStored() {
+            var first = generateContent(CHUNK_SIZE * 3 + 15, 1);
+            var second = generateContent(CHUNK_SIZE * 3, 2);
+            var used = usedByFirstDocument();
+
+            wire(used + CHUNK_SIZE);
+            var firstManifest = putContent(NAME, first);
+            var firstChunks = chunkIdsOf(firstManifest);
+            var failed = store.put(OTHER_NAME, second).await();
+
+            assertThat(failed.isFailure()).as("the fixture must refuse a LATER chunk, or this proves nothing").isTrue();
+            assertThat(collectAfterGrace(gc)).as("the one chunk the failed put stored must be collectable, not leaked")
+                      .isEqualTo(1);
+            assertReadable(NAME, first);
+            assertThat(refCountsOf(firstChunks)).as("locator: the first document's chunks are untouched").containsOnly(1);
+        }
+
+        /// The over-count the ticket names: a chunk the new content shares with an existing document is
+        /// credited by the failed put and, unreleased, can never reach zero even after that document goes.
+        @Test
+        void put_whoseLaterChunkIsRefused_returnsASharedChunkToItsPriorCount() {
+            var first = generateContent(CHUNK_SIZE * 3 + 15, 1);
+            var sharesFirstChunk = new byte[CHUNK_SIZE * 3];
+            var used = usedByFirstDocument();
+
+            System.arraycopy(first, 0, sharesFirstChunk, 0, CHUNK_SIZE);
+            System.arraycopy(generateContent(CHUNK_SIZE * 2, 3), 0, sharesFirstChunk, CHUNK_SIZE, CHUNK_SIZE * 2);
+            wire(used + CHUNK_SIZE);
+            var firstChunks = chunkIdsOf(putContent(NAME, first));
+            var failed = store.put(OTHER_NAME, sharesFirstChunk).await();
+
+            assertThat(failed.isFailure()).isTrue();
+            assertThat(refCountOf(firstChunks.getFirst())).as("the shared chunk is back to the one credit its document holds")
+                      .isEqualTo(1);
+
+            deleteContent(NAME);
+
+            assertThat(collectAfterGrace(gc)).as("deleting the only document must free all four of its chunks and the manifest, plus the fresh chunk the failed put stored")
+                      .isEqualTo(6);
+        }
+
+        @Test
+        void put_whoseManifestSwapFails_releasesEveryChunkItStored() {
+            var content = generateContent(CHUNK_SIZE * 3, 2);
+
+            storage.failNextSwapRef();
+            var failed = store.put(NAME, content).await();
+
+            assertThat(failed.isFailure()).as("the fixture must fail the manifest swap").isTrue();
+            assertThat(collectAfterGrace(gc)).as("all three chunks of the failed put must be collectable").isEqualTo(3);
         }
     }
 
@@ -618,11 +687,16 @@ class ContentStoreDeleteRefcountTest {
         private final StorageInstance delegate;
         private final AtomicBoolean holdPut = new AtomicBoolean();
         private final AtomicBoolean holdDropRef = new AtomicBoolean();
+        private final AtomicBoolean failNextSwapRef = new AtomicBoolean();
         private final Promise<Unit> putGate = Promise.promise();
         private final Promise<Unit> dropRefGate = Promise.promise();
 
         GatedStorage(StorageInstance delegate) {
             this.delegate = delegate;
+        }
+
+        void failNextSwapRef() {
+            failNextSwapRef.set(true);
         }
 
         void holdNextPut() {
@@ -697,6 +771,10 @@ class ContentStoreDeleteRefcountTest {
 
         @Override
         public Promise<RefSwap> swapRef(String name, byte[] content) {
+            if (failNextSwapRef.compareAndSet(true, false)) {
+                return Causes.cause("injected swapRef failure").promise();
+            }
+
             return delegate.swapRef(name, content);
         }
 

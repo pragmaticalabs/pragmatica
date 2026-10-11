@@ -1562,7 +1562,7 @@ Extracted from `DashboardWebSocketHandler.java` and `DashboardMetricsPublisher.j
 | Endpoint | Layer | Usage |
 |----------|-------|-------|
 | `GET /api/status` | 1 (fallback) | Polling fallback for /ws/status |
-| `GET /api/health` | 1 | Health banner data |
+| `GET /api/v1/health` | 1 | Health banner data |
 | `GET /api/events` | 1 (initial) | Initial event history on page load |
 | `GET /api/events?since=` | 1 (fallback) | Polling fallback for /ws/events |
 | `GET /api/node-metrics` | 1 | Per-node CPU/heap |

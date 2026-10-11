@@ -111,6 +111,75 @@ class ScheduledTaskRoutesTriggerTest {
         }
     }
 
+    /// #1930: the manual trigger shares the scheduler's in-flight claim so a manual run cannot overlap a scheduled fire.
+    /// For a REMOTE callee it used to release that claim when the request was enqueued, while the callee was still running:
+    /// a scheduled fire could then overlap the manual run. The claim is held until the callee COMPLETES, whatever the
+    /// answer to the caller ("triggered" is returned at once, it is about dispatch).
+    @Nested
+    class RemoteCallee {
+        @Test
+        void trigger_holdsTheClaimUntilTheCalleeCompletes_notUntilTheRequestIsEnqueued() {
+            registry.addTask(SECTION, ARTIFACT, METHOD);
+            var running = Promise.<Unit> promise();
+
+            invoker.completion = running;
+            var key = ScheduledTaskKey.scheduledTaskKey(SECTION, artifact(ARTIFACT), new MethodName(METHOD));
+
+            var response = routes().triggerForTest(SECTION, ARTIFACT, METHOD).await();
+
+            assertThat(response.isSuccess()).as("the caller is told the task was triggered: %s", response).isTrue();
+            assertThat(manager.claimed).as("the callee is still running: the claim must stay held, or a scheduled fire overlaps it").contains(key);
+
+            running.succeed(Unit.unit());
+            awaitReleased(key);
+
+            assertThat(manager.claimed).as("released once the callee completed").doesNotContain(key);
+        }
+
+        @Test
+        void trigger_releasesTheClaimWhenTheCompletionFails() {
+            registry.addTask(SECTION, ARTIFACT, METHOD);
+            var running = Promise.<Unit> promise();
+
+            invoker.completion = running;
+            var key = ScheduledTaskKey.scheduledTaskKey(SECTION, artifact(ARTIFACT), new MethodName(METHOD));
+
+            routes().triggerForTest(SECTION, ARTIFACT, METHOD).await();
+            running.fail(org.pragmatica.lang.utils.Causes.cause("callee failed"));
+            awaitReleased(key);
+
+            assertThat(manager.claimed).as("a failed completion also ends the run").doesNotContain(key);
+        }
+    }
+
+    /// #1930: a callee hosted on THIS node is awaited to its end, as before the claim was extended: the route answers only
+    /// when the callee completed, and holds the claim until then. A remote callee is answered at dispatch (see above); this
+    /// is the branch that distinguishes the two, and without it the route would answer "triggered" for a local task that is
+    /// still running.
+    @Nested
+    class LocalCallee {
+        @Test
+        void trigger_awaitsALocalCalleeToItsEnd_andHoldsTheClaimUntilThen() {
+            registry.addTask(SECTION, ARTIFACT, METHOD);
+            var running = Promise.<Unit> promise();
+
+            invoker.local = true;
+            invoker.completion = running;
+            var key = ScheduledTaskKey.scheduledTaskKey(SECTION, artifact(ARTIFACT), new MethodName(METHOD));
+
+            var answer = routes().triggerForTest(SECTION, ARTIFACT, METHOD);
+
+            assertThat(answer.isResolved()).as("a local callee still running: the trigger has not answered").isFalse();
+            assertThat(manager.claimed).as("and still holds the claim").contains(key);
+
+            running.succeed(Unit.unit());
+
+            assertThat(answer.await().isSuccess()).as("answered once the callee completed").isTrue();
+            awaitReleased(key);
+            assertThat(manager.claimed).as("released once it completed").doesNotContain(key);
+        }
+    }
+
     @Nested
     class ConflictGuard {
         @Test
@@ -137,6 +206,15 @@ class ScheduledTaskRoutesTriggerTest {
     }
 
     // --- helpers ---
+
+    /// `onResult` dependents of a pending promise run off the completing thread.
+    private void awaitReleased(ScheduledTaskKey key) {
+        var deadline = System.currentTimeMillis() + 3_000L;
+
+        while (manager.claimed.contains(key) && System.currentTimeMillis() < deadline) {
+            Thread.onSpinWait();
+        }
+    }
 
     private static Artifact artifact(String s) {
         return Artifact.artifact(s).unwrap();
@@ -203,8 +281,13 @@ class ScheduledTaskRoutesTriggerTest {
 
     private record Invocation(String artifact, String method) {}
 
+    /// Models a REMOTE callee faithfully (#1930): the fire-and-forget `invoke` resolves at once (the request was handed to
+    /// the transport), while the completion-aware call settles only when the test completes `completion`. `hasLocalSlice`
+    /// is false: the callee is hosted elsewhere.
     private static final class RecordingInvoker {
         final List<Invocation> invocations = new CopyOnWriteArrayList<>();
+        volatile Promise<Unit> completion = Promise.success(Unit.unit());
+        volatile boolean local = false;
 
         SliceInvoker asSliceInvoker() {
             return (SliceInvoker) Proxy.newProxyInstance(
@@ -216,6 +299,15 @@ class ScheduledTaskRoutesTriggerTest {
                         var methodName = (MethodName) args[1];
                         invocations.add(new Invocation(slice.asString(), methodName.name()));
                         return Promise.success(Unit.unit());
+                    }
+                    if ("invokeAwaitingCompletion".equals(method.getName()) && args != null && args.length >= 3) {
+                        var slice = (Artifact) args[0];
+                        var methodName = (MethodName) args[1];
+                        invocations.add(new Invocation(slice.asString(), methodName.name()));
+                        return completion;
+                    }
+                    if ("hasLocalSlice".equals(method.getName())) {
+                        return local;
                     }
                     throw new UnsupportedOperationException("Not implemented in test proxy: " + method.getName());
                 }

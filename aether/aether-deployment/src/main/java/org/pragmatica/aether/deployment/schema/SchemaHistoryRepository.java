@@ -212,7 +212,7 @@ final class DefaultSchemaHistoryRepository implements SchemaHistoryRepository {
     }
 
     private Promise<Unit> applySteps(SqlConnector connector, List<Step> steps) {
-        var type = connector.config().effectiveType();
+        var type = connector.databaseType();
         var result = Promise.unitPromise();
 
         for (var statement : renderStatements(steps, type)) {

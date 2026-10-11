@@ -157,7 +157,7 @@ class HierarchicalLoadedMovementTest {
     private void changeDestination(String destination) {
         var node = leader();
         var before = node.kvStore().getTyped(AetherKey.ClusterConfigKey.CURRENT, AetherValue.ClusterConfigValue.class).unwrap();
-        var value = new AetherValue.ClusterConfigValue(policy(destination), "loaded-movement", "1.0.0",
+        var value = new AetherValue.ClusterConfigValue(Option.some(policy(destination)), "loaded-movement", "1.0.0",
             List.of(new AetherValue.TopologyEntry("default", "core", 5), new AetherValue.TopologyEntry("east", "worker", 0),
                 new AetherValue.TopologyEntry("west", "worker", 0)), 5, 5, "forge", before.configVersion() + 1, System.currentTimeMillis());
         var id = UUID.randomUUID().toString();

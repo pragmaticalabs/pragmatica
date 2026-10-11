@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 
 package org.pragmatica.aether.config;
 
@@ -208,7 +207,9 @@ class AppHttpSecurityIntegrationTest {
         }
 
         @Test
-        void jwtMode_noJwksUrl_resultsInEmptyJwtConfig() {
+        void jwtMode_noJwksUrl_isRefusedAtLoad() {
+            // #909: this test used to assert the load SUCCEEDED with an empty jwtConfig, i.e. it specified
+            // the defect. See ConfigLoaderJwtRefusalTest for the full refusal grid.
             var toml = MINIMAL_CLUSTER + """
 
                 [app-http]
@@ -217,11 +218,8 @@ class AppHttpSecurityIntegrationTest {
                 """;
 
             ConfigLoader.loadFromString(toml)
-                .onFailure(cause -> fail(cause.message()))
-                .onSuccess(config -> {
-                    assertThat(config.appHttp().securityMode()).isEqualTo(SecurityMode.JWT);
-                    assertThat(config.appHttp().jwtConfig().isEmpty()).isTrue();
-                });
+                .onSuccess(_ -> fail("security_mode = jwt without jwks_url must be refused at load"))
+                .onFailure(cause -> assertThat(cause.message()).contains("jwks_url"));
         }
     }
 

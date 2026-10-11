@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.setup.generators;
 
 import java.nio.file.Path;
@@ -47,7 +46,7 @@ public final class DockerGenerator implements Generator {
         var startPath = writeScript(outputDir, "start.sh", generateStartScript(), generatedFiles);
         var stopPath = writeScript(outputDir, "stop.sh", generateStopScript(), generatedFiles);
 
-        writeScript(outputDir, "status.sh", generateStatusScript(), generatedFiles);
+        writeScript(outputDir, "status.sh", generateStatusScript(config), generatedFiles);
         var instructions = formatInstructions(config, outputDir);
 
         return GeneratorOutput.generatorOutput(outputDir, generatedFiles, startPath, stopPath, instructions);
@@ -118,7 +117,15 @@ public final class DockerGenerator implements Generator {
         var gc = gcFlag(config);
         var nodeNames = buildNodeNames(nodes);
         var peerList = buildPeerList(nodeNames, clusterPort);
-        var services = buildServices(nodes, nodeNames, dockerConf, mgmtPort, clusterPort, peerList, heap, gc);
+        var services = buildServices(nodes,
+                                     nodeNames,
+                                     dockerConf,
+                                     mgmtPort,
+                                     clusterPort,
+                                     peerList,
+                                     heap,
+                                     gc,
+                                     config.tlsEnabled());
 
         return formatComposeFile(services, dockerConf.network());
     }
@@ -142,7 +149,8 @@ public final class DockerGenerator implements Generator {
                                  int clusterPort,
                                  String peerList,
                                  String heap,
-                                 String gc) {
+                                 String gc,
+                                 boolean tls) {
         return IntStream.range(0, nodes)
                         .mapToObj(i -> serviceYaml(i,
                                                    nodeNames.get(i),
@@ -151,7 +159,8 @@ public final class DockerGenerator implements Generator {
                                                    clusterPort,
                                                    peerList,
                                                    heap,
-                                                   gc))
+                                                   gc,
+                                                   tls))
                         .collect(Collectors.joining("\n"));
     }
 
@@ -178,7 +187,8 @@ public final class DockerGenerator implements Generator {
                                int clusterPort,
                                String peerList,
                                String heap,
-                               String gc) {
+                               String gc,
+                               boolean tls) {
         var hostMgmtPort = mgmtPort + index;
         var hostClusterPort = clusterPort + index;
 
@@ -192,7 +202,8 @@ public final class DockerGenerator implements Generator {
                                  hostClusterPort,
                                  dockerConf.network(),
                                  heap,
-                                 gc);
+                                 gc,
+                                 tls);
     }
 
     private String formatServiceYaml(String nodeName,
@@ -205,7 +216,8 @@ public final class DockerGenerator implements Generator {
                                      int hostClusterPort,
                                      String network,
                                      String heap,
-                                     String gc) {
+                                     String gc,
+                                     boolean tls) {
         return String.format("""
               %s:
                 image: %s
@@ -223,7 +235,7 @@ public final class DockerGenerator implements Generator {
                 networks:
                   - %s
                 healthcheck:
-                  test: ["CMD", "curl", "-f", "http://localhost:%d/health"]
+                  test: %s
                   interval: 10s
                   timeout: 5s
                   retries: 3
@@ -244,7 +256,21 @@ public final class DockerGenerator implements Generator {
                              hostClusterPort,
                              clusterPort,
                              network,
-                             mgmtPort);
+                             healthcheckTest(tls, mgmtPort));
+    }
+
+    /// The probe runs INSIDE the node image, which ships `wget` (not `curl`), against the unversioned,
+    /// unauthenticated `/health/live` route. A TLS-enabled management listener serves HTTPS, so the TLS
+    /// form tries HTTPS first (self-generated CA, so no verification) and then HTTP, exactly as the node
+    /// image's own HEALTHCHECK does.
+    static String healthcheckTest(boolean tls, int mgmtPort) {
+        var live = "localhost:" + mgmtPort + "/health/live";
+
+        return tls
+               ? "[\"CMD-SHELL\", \"wget -q --spider --no-check-certificate https://" + live
+                + " || wget -q --spider http://" + live
+                + " || exit 1\"]"
+               : "[\"CMD\", \"wget\", \"--spider\", \"-q\", \"http://" + live + "\"]";
     }
 
     private String gcFlag(AetherConfig config) {
@@ -324,7 +350,11 @@ public final class DockerGenerator implements Generator {
             """;
     }
 
-    private String generateStatusScript() {
+    private String generateStatusScript(AetherConfig config) {
+        var scheme = config.tlsEnabled()
+                     ? "https"
+                     : "http";
+
         return """
             #!/bin/bash
 
@@ -335,9 +365,9 @@ public final class DockerGenerator implements Generator {
             echo "=== Node Health ==="
             for port in $(seq $MANAGEMENT_PORT $((MANAGEMENT_PORT + NODES - 1))); do
                 echo -n "Node on port $port: "
-                curl -s http://localhost:$port/health 2>/dev/null || echo "unreachable"
+                curl -sk %s://localhost:$port/health/ready 2>/dev/null || echo "unreachable"
             done
-            """;
+            """.formatted(scheme);
     }
 
     @SuppressWarnings("JBCT-SEQ-01")

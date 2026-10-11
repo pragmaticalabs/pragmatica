@@ -38,6 +38,10 @@ import org.pragmatica.lang.Cause;
 /// - [`PeerUnreachable`] — local transport reports death evidence for the peer;
 ///   SWIM may shorten its suspect window for this peer from the default toward a
 ///   configured floor. Its [`HintOrigin`] decides how long SWIM believes it (#1061).
+/// - [`IdentityRefuted`] — local transport dialed the peer's address and a DIFFERENT identity
+///   answered (the address was recycled to another node). It is evidence about the dialed
+///   identity only — never about the claimant — and SWIM consults it solely to stop shielding a
+///   never-HEALTHY peer behind the cold-boot FAULTY suppression (#1830).
 public sealed interface TransportObservation {
     NodeId peer();
 
@@ -63,4 +67,9 @@ public sealed interface TransportObservation {
     record PeerResponsive(NodeId peer) implements TransportObservation {}
 
     record PeerUnreachable(NodeId peer, Cause cause, HintOrigin origin) implements TransportObservation {}
+
+    /// A dial to `peer`'s address completed a handshake whose Hello came from `claimant` (#1830).
+    /// `peer` is the refuted identity; `claimant` is a live node now answering at that address and is
+    /// never the subject of this observation.
+    record IdentityRefuted(NodeId peer, NodeId claimant) implements TransportObservation {}
 }

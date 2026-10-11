@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.environment.hetzner;
 
 import java.util.HashMap;
@@ -198,12 +197,6 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
     }
 
     @Override
-    public Promise<Unit> restart(InstanceId id) {
-        return parseServerId(id).async()
-                            .flatMap(this::rebootServer);
-    }
-
-    @Override
     public Promise<Unit> applyTags(InstanceId id, Map<String, String> tags) {
         return parseServerId(id).async()
                             .flatMap(serverId -> mergeLabels(serverId, tags));
@@ -228,10 +221,6 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
 
     private Promise<Unit> destroyServer(long serverId) {
         return client.deleteServer(serverId);
-    }
-
-    private Promise<Unit> rebootServer(long serverId) {
-        return client.rebootServer(serverId);
     }
 
     /// #442 v2b — Hetzner's label update REPLACES the server's whole label map, so a partial
@@ -946,6 +935,8 @@ public record HetznerComputeProvider(HetznerClient client, HetznerEnvironmentCon
                                                      String attemptedLocation,
                                                      Cause cause) {
         return switch (cause) {
+            // #1111: the server EXISTS (it was created, then failed readiness): the typed cause reaches the caller, never flattened into a rejection.
+            case EnvironmentError.ProvisionReadinessTimeout timeout -> timeout;
             case HetznerError.ApiError apiError when CAPACITY_UNAVAILABLE_CODE.equals(apiError.code()) -> EnvironmentError.capacityUnavailable(attemptedLocation,
                                                                                                                                                new RuntimeException(cause.message()));
             default -> EnvironmentError.provisionFailed(attemptedServerType,

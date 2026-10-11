@@ -17,20 +17,20 @@ below runs three nodes; see "Single machine (three containers)" in
 
 ### Dockerfiles
 
-#### `docker/aether-node/Dockerfile`
+#### `aether/docker/aether-node/Dockerfile`
 
 Node container based on `eclipse-temurin:25-noble`:
 - Multi-stage build for smaller images
 - Proper Java options for containers
 - Health check endpoint
 
-#### `docker/aether-forge/Dockerfile`
+#### `aether/docker/aether-forge/Dockerfile`
 
 Forge simulator container for load testing and chaos experiments.
 
 ### Docker Compose
 
-#### `docker/docker-compose.yml`
+#### `aether/docker/docker-compose.yml`
 
 3-node cluster configuration:
 
@@ -64,15 +64,16 @@ services:
 ### Single machine (three containers)
 
 ```bash
-cd docker
+cd aether/docker                             # from the repository root
 export AETHER_CLUSTER_SECRET=<your-secret>   # required, no default is shipped
+export AETHER_VERSION=<image-tag>            # required, no default; for --build use the checkout's pom version
 docker compose up --build
 ```
 
 ### Start with Forge Simulator
 
 ```bash
-cd docker
+cd aether/docker                             # needs AETHER_CLUSTER_SECRET and AETHER_VERSION exported, as above
 docker compose --profile forge up --build
 ```
 

@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.environment;
 
 import java.util.List;
@@ -26,10 +25,6 @@ public interface ComputeProvider {
     Promise<Unit> terminate(InstanceId instanceId);
     Promise<List<InstanceInfo>> listInstances();
     Promise<InstanceInfo> instanceStatus(InstanceId instanceId);
-
-    default Promise<Unit> restart(InstanceId id) {
-        return EnvironmentError.operationNotSupported("restart").promise();
-    }
 
     default Promise<Unit> applyTags(InstanceId id, Map<String, String> tags) {
         return EnvironmentError.operationNotSupported("applyTags").promise();

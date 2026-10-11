@@ -74,4 +74,29 @@ public sealed interface TlsError extends Cause {
     static TlsError wrongMode(String details) {
         return new WrongMode(details);
     }
+
+    /// A server's TLS configuration (`side`: `server` for incoming, `client` for outgoing connections) could not be built,
+    /// so the server refuses to start rather than run in plain text.
+    record ServerTlsRefused(String serverName, String side, Cause cause) implements TlsError {
+        @Override
+        public String message() {
+            return "TLS (" + side
+                 + ") configuration of server '" + serverName
+                 + "' failed to build: " + cause.message()
+                 + "; refusing to start without TLS";
+        }
+    }
+
+    /// The private key does not belong to the certificate: each half is valid, so a TLS context would build and then
+    /// complete no handshake.
+    record KeyDoesNotMatchCertificate() implements TlsError {
+        @Override
+        public String message() {
+            return "the private key does not match the certificate's public key";
+        }
+    }
+
+    static TlsError keyDoesNotMatchCertificate() {
+        return new KeyDoesNotMatchCertificate();
+    }
 }

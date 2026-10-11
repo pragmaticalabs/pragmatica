@@ -169,6 +169,25 @@ class ClusterDeploymentStateWorkerRemovalTest {
                     .contains(WORKER_1);
         }
 
+        /// #1717 (measured on bigboy): a worker with NO slice footprint (no NodeArtifactKey, no routes, no slice
+        /// rows) produced an empty consensus batch, `apply(empty)` failed with "Command batch is empty", and the
+        /// chained directive removal never ran: the directive, hence the roster entry and COMMUNITY_MEMBER_LEFT,
+        /// stayed. The directive removal must not depend on the footprint batch having anything in it.
+        @Test
+        void workerLeave_withNoSliceFootprint_stillRemovesTheDirective() {
+            joinWorker(WORKER_1);
+            var directiveKey = ActivationDirectiveKey.activationDirectiveKey(WORKER_1);
+            kvStore.put(directiveKey, ActivationDirectiveValue.worker(COMMUNITY_ID, ""));
+            assertThat(kvStore.get(directiveKey).isPresent()).as("precondition: the directive is committed").isTrue();
+
+            leaveWorker(WORKER_1);
+
+            assertThat(kvStore.get(directiveKey))
+                    .as("#1717: a departed worker's activation directive must be removed even when it has no slice footprint")
+                    .isEqualTo(Option.empty());
+            assertThat(activeState().workerNodes()).doesNotContain(WORKER_1);
+        }
+
         @Test
         void workerLeave_departedWorker_clearsAllocationPoolAndKvFootprint() {
             joinWorker(WORKER_1);
@@ -679,6 +698,11 @@ class ClusterDeploymentStateWorkerRemovalTest {
         // committed into the shared KV store, so a subsequent read (community existence, KV-cleanup
         // assertions) observes it.
         @Override public <R> Promise<List<R>> apply(List<KVCommand<AetherKey>> batch) {
+            // Faithful to the engine (RabiaEngine rejects an empty batch): a stub that accepted it hid #1717.
+            if (batch.isEmpty()) {
+                return new org.pragmatica.consensus.ConsensusError.CommandBatchIsEmpty().promise();
+            }
+
             commands.addAll(batch);
             batches.add(List.copyOf(batch));
             return Promise.success(committed.process(committed.createBatch(batch)));

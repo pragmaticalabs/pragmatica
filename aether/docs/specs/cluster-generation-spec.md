@@ -495,14 +495,14 @@ Every node receives snapshots via ping and updates projections:
 | `HttpRouteRegistry` | `coreMembers` + `communities` for route presence | `NodeRoutesKey` watch stays, but ACTIVE transition is epoch-fenced |
 | `NodeDeploymentManager` | current `epoch` for ROUTING → ACTIVE gate | Timer-based ROUTING wait → epoch-fenced |
 | `QuicClusterNetwork` | informational only | No longer authoritative writer — emits only `TransportObservation` (local OBSERVATION stream); the cluster-canonical `MembershipDecision.NodeRemoved` comes exclusively from `TopologyObserver.publishMembershipDeltas`. See `membership-architecture-v2-spec.md` (typed-stream split). |
-| Dashboard / `/api/cluster/topology` | core+communities+partitions | Single source |
+| Dashboard / `/api/v1/cluster/topology` | core+communities+partitions | Single source |
 
 ## 13. What gets deleted
 
 ### 13.1 Code
 
 - `TopologyObserver`: `handleAddNodeMessage`, `handleRemoveNodeMessage`, `handleSetClusterSize`, `tombstonedNodes`, `evictLongSuspectedPeers`, `initReconcile` timer → DELETED. Becomes a thin projection of `ClusterGenerationSnapshot`.
-- `TopologyManagementMessage.AddNode / RemoveNode / SetClusterSize` records + their router wiring (`RabiaNode:197-199`, `PassiveNode:114-116`) → DELETED.
+- `TopologyManagementMessage.AddNode / RemoveNode / SetClusterSize` records + their router wiring (`RabiaNode:197-199`; `PassiveNode:114-116` too, a class removed in rc4 with no caller, #2033) → DELETED.
 - `QuicClusterNetwork`: `onPostEstablishGraceComplete` flush-nodeRemoved, `onQuorumLossConfirmed` flush, quorum-loss hysteresis buffers → DELETED or demoted to health hints.
 - `CoreSwimHealthDetector.onMemberFaulty`: no longer emits `RemoveNode` directly; emits `SwimHint` to HealthReconciler.
 - `ClusterTopologyManagerRecord`: `scheduleRecheck` timer, `attemptProvisionAfterHysteresis` timer, `deficitHysteresis` → REPLACED by snapshot-delta reactions.

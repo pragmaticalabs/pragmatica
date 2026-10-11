@@ -1,5 +1,6 @@
 package org.pragmatica.config;
 
+import java.lang.invoke.MethodType;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
@@ -89,6 +90,33 @@ public final class ProviderBasedConfigService implements ConfigService {
     @Override
     public Result<Option<Boolean>> getBoolean(String key) {
         return provider.getBoolean(key);
+    }
+
+    /// Whether `path` is a SECTION a record can bind from: something is keyed UNDER it. [#hasSection] also
+    /// answers true for a path that exists only as a scalar key (`retention = "time"` makes
+    /// `streams.x.retention` a "section"), which is right for asking whether a name is configured at all and wrong
+    /// for deciding to bind a record there: the record then fails on its first required field. A scalar where a
+    /// record is expected is NOT a record section, so a nested record falls to its default (or `none()` for an
+    /// `Option`) exactly as if the key were absent. That is the explicit choice for shorthand keys such as a
+    /// stream's `retention = "time"`, which the stream parser, not this binder, interprets (#822).
+    private boolean hasRecordSection(String path) {
+        var prefix = path + ".";
+
+        return provider.keys()
+                       .stream()
+                       .anyMatch(key -> key.startsWith(prefix));
+    }
+
+    /// A key that holds a SCALAR where a record is expected is an operator error, not an absent section: treating it
+    /// as absent bound the record's default (or `none()`) and dropped what the operator wrote (`json = "snake_case"`
+    /// where a `[http.x.json]` table was expected). It is a [ConfigError.TypeMismatch] naming the key and saying a
+    /// table was expected; the value is not echoed, since a misplaced scalar can be a credential.
+    private Option<Result<Object>> scalarWhereTableExpected(String path, Class<?> recordType) {
+        return provider.getString(path)
+                       .map(_ -> ConfigError.typeMismatch(path,
+                                                          "a table of keys for " + recordType.getSimpleName(),
+                                                          "a scalar value")
+                                            .result());
     }
 
     private static boolean hasSectionPrefix(String key, String prefix, String section) {
@@ -294,7 +322,7 @@ public final class ProviderBasedConfigService implements ConfigService {
             return IndexedValue.indexedValue(index, derived.unwrap());
         }
 
-        return getDefaultComponentValue(configClass, component, index);
+        return getDefaultComponentValue(section, configClass, component, index);
     }
 
     private static Option<Object> deriveNameFromSectionSuffix(String section, RecordComponent component) {
@@ -472,8 +500,8 @@ public final class ProviderBasedConfigService implements ConfigService {
 
         var nestedSection = section + "." + toSnakeCase(key);
 
-        if (!hasSection(nestedSection)) {
-            return some(findDefaultOrError(type, nestedSection));
+        if (!hasRecordSection(nestedSection)) {
+            return some(scalarWhereTableExpected(nestedSection, type).or(() -> findDefaultOrError(type, nestedSection)));
         }
 
         return some((Result<Object>) bindToClass(nestedSection, type));
@@ -656,13 +684,43 @@ public final class ProviderBasedConfigService implements ConfigService {
         return extracted.fold(cause -> cause instanceof ConfigError.SectionNotFound, _ -> false);
     }
 
-    private static Result<IndexedValue> getDefaultComponentValue(Class<?> configClass,
+    /// What may stand in for an absent component, in order: the record's `DEFAULT` instance, then a public
+    /// static final `DEFAULT_<COMPONENT>` constant of the component's type. The per-field form exists for
+    /// records that must NOT have a whole-record default because some component has none (an `SmtpConfig` with
+    /// a `DEFAULT` would silently supply a host); each component that has a default declares it, and one that
+    /// does not stays required. Nothing left: [ConfigError.MissingField] naming the key, never "section
+    /// not found" (#822).
+    private static Result<IndexedValue> getDefaultComponentValue(String section,
+                                                                 Class<?> configClass,
                                                                  RecordComponent component,
                                                                  int index) {
         return lookupDefaultField(configClass).flatMap(defaultInstance -> invokeAccessor(defaultInstance, component))
+                                 .orElse(() -> lookupFieldDefault(configClass, component))
                                  .map(value -> new IndexedValue(index, value))
-                                 .toResult(ConfigError.sectionNotFound(configClass.getSimpleName()
-                                                                      + "." + component.getName()));
+                                 .toResult(ConfigError.missingField(section + "." + toSnakeCase(component.getName()),
+                                                                    configClass.getSimpleName()
+                                                                   + "." + component.getName()));
+    }
+
+    private static Option<Object> lookupFieldDefault(Class<?> configClass, RecordComponent component) {
+        var constant = "DEFAULT_" + toSnakeCase(component.getName()).toUpperCase();
+
+        try {
+            var field = configClass.getField(constant);
+            var modifiers = field.getModifiers();
+
+            if (Modifier.isStatic(modifiers) && Modifier.isFinal(modifiers)) {
+                return option(field.get(configClass)).filter(value -> wrapperOf(component.getType()).isInstance(value));
+            }
+        } catch (NoSuchFieldException | IllegalAccessException e) {}
+
+        return none();
+    }
+
+    private static Class<?> wrapperOf(Class<?> type) {
+        return MethodType.methodType(type)
+                         .wrap()
+                         .returnType();
     }
 
     private static Option<Object> invokeAccessor(Object instance, RecordComponent component) {
@@ -753,8 +811,8 @@ public final class ProviderBasedConfigService implements ConfigService {
             return unsupportedOptionError(fullKey, innerClass);
         }
 
-        if (!hasSection(fullKey)) {
-            return success(none());
+        if (!hasRecordSection(fullKey)) {
+            return scalarWhereTableExpected(fullKey, innerClass).or(() -> success(none()));
         }
 
         return bindToClass(fullKey, innerClass).map(Option::option);

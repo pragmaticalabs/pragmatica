@@ -84,6 +84,14 @@ final class QuicLaneDataHandler extends SimpleChannelInboundHandler<ByteBuf> {
     @Contract
     @SuppressWarnings("JBCT-PAT-01")  // Adapter boundary: catch deserialization errors from external input
     protected void channelRead0(ChannelHandlerContext ctx, ByteBuf buf) {
+        if (!buf.isReadable()) {
+            // #1727 (M1) — the lane-end marker (see QuicPeerConnection#laneEndFrame): the other side
+            // finished this lane. Released here, not on the FIN, which quiche may never surface.
+            streamEnded(ctx);
+
+            return;
+        }
+
         var bytes = new byte[buf.readableBytes()];
 
         buf.readBytes(bytes);
@@ -159,6 +167,6 @@ final class QuicLaneDataHandler extends SimpleChannelInboundHandler<ByteBuf> {
     @Contract
     public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
         log.error("Error processing message from peer {} on lane {}", peerId, lane, cause);
-        ctx.close();
+        QuicPeerConnection.endLaneThenClose(ctx);
     }
 }

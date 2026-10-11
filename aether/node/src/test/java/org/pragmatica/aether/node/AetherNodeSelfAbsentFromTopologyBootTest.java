@@ -53,7 +53,7 @@ class AetherNodeSelfAbsentFromTopologyBootTest {
     void aetherNode_refusesBoot_whenSelfIsAbsentFromItsOwnTopology() {
         var self = NodeId.nodeId("self-absent-boot-test").unwrap();
         var other = NodeId.nodeId("some-other-node").unwrap();
-        var otherInfo = NodeInfo.nodeInfo(other, nodeAddress("localhost", 39471).unwrap());
+        var otherInfo = NodeInfo.nodeInfo(other, nodeAddress("localhost", 1999).unwrap());
         var config = AetherNodeConfig.builder()
                                      .self(self)
                                      .coreNodes(List.of(otherInfo))

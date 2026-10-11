@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: BUSL-1.1
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
+// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
+// See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.worker.metadata;
 
 import java.util.function.Function;
@@ -52,7 +54,9 @@ public record WorkerMetadataChannel(boolean worker,
                                                               Consumer<String> report,
                                                               BiConsumer<NodeId, String> reportRejection,
                                                               WorkerMetadataLimits limits,
-                                                              LongSupplier clusterIncarnation) {
+                                                              LongSupplier clusterIncarnation,
+                                                              Supplier<Result<WorkerMetadataMessage.DhtReplication>> dhtReplication,
+                                                              Consumer<WorkerMetadataMessage.DhtReplication> dhtReplicationReceived) {
         return new WorkerMetadataChannel(worker,
                                          coreReady,
                                          new WorkerMetadataServer(self,
@@ -64,7 +68,8 @@ public record WorkerMetadataChannel(boolean worker,
                                                                   directory,
                                                                   limits,
                                                                   reportRejection,
-                                                                  clusterIncarnation),
+                                                                  clusterIncarnation,
+                                                                  dhtReplication),
                                          new WorkerMetadataClient(self,
                                                                   store,
                                                                   codec,
@@ -75,7 +80,8 @@ public record WorkerMetadataChannel(boolean worker,
                                                                   endpointDirectoryReceived,
                                                                   projectionReady,
                                                                   report,
-                                                                  limits));
+                                                                  limits,
+                                                                  dhtReplicationReceived));
     }
 
     public Unit onManifestRequest(WorkerMetadataMessage.ManifestRequest request) {

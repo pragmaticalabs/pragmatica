@@ -37,9 +37,9 @@ type = "container"
 # Must match a tag published by .github/workflows/release.yml, which derives the tag
 # from the pushed git tag (VERSION=${GITHUB_REF#refs/tags/v}). The moving candidate tag
 # v1.0.0-rc4-candidate therefore publishes :1.0.0-rc4-candidate. This key is the ONLY
-# live pin: `aether cluster bootstrap` reads it. (deploy-cloud.sh also sets AETHER_IMAGE,
-# but that variable has no consuming reference and pulls nothing — an earlier comment here
-# claimed the script "swallows a failed pull"; it never performs one.)
+# live pin: `aether cluster bootstrap` reads it. (deploy-cloud.sh used to carry a second,
+# hard-coded copy as AETHER_IMAGE; it had no consuming reference, pulled nothing, went stale
+# a release behind this key, and was removed.)
 image = "ghcr.io/pragmaticalabs/aether-node:1.0.0-rc4-candidate"
 
 [deployment.zones]

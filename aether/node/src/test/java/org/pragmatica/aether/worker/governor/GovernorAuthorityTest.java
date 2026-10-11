@@ -112,13 +112,49 @@ class GovernorAuthorityTest {
         assertThat(store.getTyped(KEY, GovernorAnnouncementValue.class).unwrap()).isEqualTo(incumbent);
     }
 
+    /// The nominee's directive is a read witness of the claim's transaction (H13): a directive that is
+    /// REPLACED before apply refuses the claim. Reassigning by a bare `Put` is no longer possible (H11), so the
+    /// directive is removed and re-created in another community; creation where none exists stays allowed.
     @Test
     void candidateReassignedBeforeApply_claimIsRejected() {
         leader(CORE, 1);
-        beforeApply.set(() -> store.process(store.createBatch(List.of(
-            new KVCommand.Put<>(AetherKey.ActivationDirectiveKey.activationDirectiveKey(A), AetherValue.ActivationDirectiveValue.worker("other", ""))))));
+        var directiveKey = AetherKey.ActivationDirectiveKey.activationDirectiveKey(A);
+        beforeApply.set(() -> {
+            store.process(store.createBatch(List.of(new KVCommand.Remove<>(directiveKey))));
+            store.process(store.createBatch(List.of(new KVCommand.Put<>(directiveKey, AetherValue.ActivationDirectiveValue.worker("other", "")))));
+        });
         assertThat(request(A, 0).authority().isEmpty()).isTrue();
         assertThat(store.get(KEY).isEmpty()).isTrue();
+    }
+
+    /// H11: a bare `Put` naming another community for a committed directive is refused at commit, so the
+    /// directive is unchanged and the claim that was in flight is still granted.
+    @Test
+    void communityReassignmentByPut_isRefusedAtCommit_directiveUnchanged_claimStillGranted() {
+        leader(CORE, 1);
+        var directiveKey = AetherKey.ActivationDirectiveKey.activationDirectiveKey(A);
+        beforeApply.set(() -> store.process(store.createBatch(List.of(
+            new KVCommand.Put<>(directiveKey, AetherValue.ActivationDirectiveValue.worker("other", ""))))));
+        assertThat(request(A, 0).authority().unwrap().governorId()).isEqualTo(A);
+        assertThat(store.getTyped(directiveKey, AetherValue.ActivationDirectiveValue.class).unwrap())
+            .isEqualTo(AetherValue.ActivationDirectiveValue.worker("c", ""));
+    }
+
+    /// The nominee's committed directive is read as role WORKER AND the claimed community (H13). The core's
+    /// directive here names the community, so only the ROLE can be what refuses it, and its id sorts first so
+    /// that without the role check it would be the nominated candidate.
+    @Test
+    void coreRoleNominee_claimIsRefused_byRoleNotByCommunity() {
+        var coreNominee = new NodeId("a-core");
+        store.process(store.createBatch(List.of(new KVCommand.Put<>(AetherKey.ActivationDirectiveKey.activationDirectiveKey(coreNominee),
+            new AetherValue.ActivationDirectiveValue(AetherValue.ActivationDirectiveValue.CORE, "c", "")))));
+        members.set(List.of(coreNominee, A, B));
+        leader(CORE, 1);
+        assertThat(request(coreNominee, 0).authority().isEmpty()).isTrue();
+        assertThat(store.get(KEY).isEmpty()).isTrue();
+        assertThat(authority.reconcile("c", coreNominee, 0, "core:9").await().unwrap().isEmpty()).as("recovery path refuses the core too").isTrue();
+        assertThat(store.get(KEY).isEmpty()).isTrue();
+        assertThat(authority.reconcile("c", A, 0, "a:9").await().unwrap().unwrap().governorId()).as("control: a worker in the same setup is granted").isEqualTo(A);
     }
 
     @Test

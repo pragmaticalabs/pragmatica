@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.setup.generators;
 
 import java.nio.file.Path;
@@ -190,14 +189,21 @@ public final class KubernetesGenerator implements Generator {
         var mgmtPort = config.cluster().ports().management();
         var clusterPort = config.cluster().ports().cluster();
 
-        return formatStatefulSet(namespace, nodes, mgmtPort, clusterPort, resources);
+        return formatStatefulSet(namespace, nodes, mgmtPort, clusterPort, resources, config.tlsEnabled());
     }
 
     private String formatStatefulSet(String namespace,
                                      int nodes,
                                      int mgmtPort,
                                      int clusterPort,
-                                     ResourcesConfig resources) {
+                                     ResourcesConfig resources,
+                                     boolean tls) {
+        // The management listener serves HTTPS when tls is on; an httpGet probe defaults to HTTP and
+        // would never succeed. The kubelet does not verify the certificate for httpGet probes.
+        var scheme = tls
+                     ? "\n            scheme: HTTPS"
+                     : "";
+
         return String.format("""
             apiVersion: apps/v1
             kind: StatefulSet
@@ -242,14 +248,14 @@ public final class KubernetesGenerator implements Generator {
                         memory: "%s"
                     readinessProbe:
                       httpGet:
-                        path: /health
-                        port: management
+                        path: /health/ready
+                        port: management%s
                       initialDelaySeconds: 10
                       periodSeconds: 5
                     livenessProbe:
                       httpGet:
-                        path: /health
-                        port: management
+                        path: /health/live
+                        port: management%s
                       initialDelaySeconds: 30
                       periodSeconds: 10
             """,
@@ -261,7 +267,9 @@ public final class KubernetesGenerator implements Generator {
                              resources.cpuRequest(),
                              resources.memoryRequest(),
                              resources.cpuLimit(),
-                             resources.memoryLimit());
+                             resources.memoryLimit(),
+                             scheme,
+                             scheme);
     }
 
     private String generateHeadlessService(AetherConfig config) {

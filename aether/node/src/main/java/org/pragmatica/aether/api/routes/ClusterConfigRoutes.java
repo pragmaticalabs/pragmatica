@@ -11,6 +11,7 @@ import java.util.function.Supplier;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
+import org.pragmatica.aether.api.ManagementServerError;
 import org.pragmatica.aether.api.ManagementApiResponses.ApplyConfigRequest;
 import org.pragmatica.aether.api.ManagementApiResponses.ApplyConfigResponse;
 import org.pragmatica.aether.api.ManagementApiResponses.CertificateStatusResponse;
@@ -32,11 +33,14 @@ import org.pragmatica.aether.config.cluster.ClusterBootstrapConfigDiff;
 import org.pragmatica.aether.config.cluster.ClusterBootstrapConfigParser;
 import org.pragmatica.aether.config.cluster.ClusterBootstrapConfigValidator;
 import org.pragmatica.aether.config.cluster.ClusterConfigError;
+import org.pragmatica.aether.config.cluster.ClusterUpgradeToml;
 import org.pragmatica.aether.config.cluster.DiffAction;
 import org.pragmatica.aether.config.cluster.DiffPlan;
 import org.pragmatica.aether.deployment.cluster.ClusterConfigApplier;
 import org.pragmatica.aether.deployment.cluster.ClusterReplication;
 import org.pragmatica.aether.deployment.cluster.ClusterTopologyManager;
+import org.pragmatica.aether.deployment.cluster.UpgradeRunService;
+import org.pragmatica.aether.slice.kvstore.AetherValue.UpgradeRunValue;
 import org.pragmatica.aether.deployment.membership.view.MembershipView;
 import org.pragmatica.aether.metrics.NodeReportedState;
 import org.pragmatica.aether.management.route.ManagementRoute;
@@ -63,6 +67,7 @@ import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
 import org.pragmatica.net.tcp.security.CertificateRenewalScheduler;
 
 import org.slf4j.Logger;
@@ -119,7 +124,9 @@ public final class ClusterConfigRoutes implements RouteSource {
     }
 
     private static ClusterConfigResponse toConfigResponse(ClusterConfigValue config) {
-        return new ClusterConfigResponse(config.tomlContent(),
+        // HTTP boundary: the response keeps its `String` field, and the bootstrap seed (no source TOML)
+        // renders as "", which the CLI readers already report as "no stored config".
+        return new ClusterConfigResponse(config.tomlContent().or(""),
                                          config.clusterName(),
                                          config.version(),
                                          config.coreCount(),
@@ -436,36 +443,33 @@ public final class ClusterConfigRoutes implements RouteSource {
         return storeUpdatedConfig(desired, tomlContent, INITIAL_CONFIG_VERSION);
     }
 
-    private Promise<Object> processApply(ClusterConfigValue stored,
-                                         ClusterBootstrapConfig desired,
-                                         ApplyConfigRequest request) {
-        if (isBootstrapSeed(stored)) {
-            return storeUpdatedConfig(desired, request.tomlContent(), stored.configVersion() + 1);
-        }
-
-        return checkVersionAsync(stored.configVersion(),
-                                 request.expectedVersion()).flatMap(_ -> rebuildStoredConfigAsync(stored))
-                                .flatMap(storedConfig -> executeDiff(stored, storedConfig, desired, request));
-    }
-
-    /// The BootstrapModule self-seed is REPLACED, never diffed — package-visible so the decision can
-    /// be unit-tested without standing up a node + KV store.
+    /// The BootstrapModule self-seed is REPLACED, never diffed.
     ///
-    /// Every node self-seeds a `ClusterConfigValue` at formation carrying `tomlContent=""` and a
-    /// core-only topology, so a cluster has a committed config before the operator's TOML ever
-    /// arrives. That seed holds no diffable document: [#rebuildStoredConfigAsync] parses
-    /// `tomlContent`, and the empty string cannot clear the parser's top-level `config_version`
-    /// gate — so every apply against a freshly formed cluster failed at exactly that point. Combined
-    /// with the swallowed-failure fall-through this route used to have, the operator's real TOML
-    /// (worker counts included) was dropped while the POST answered success, and RFC-0017 worker
-    /// provisioning had nothing to reconcile.
+    /// Every node self-seeds a `ClusterConfigValue` at formation carrying no source TOML
+    /// ([ClusterConfigValue#tomlContent] is empty) and a core-only topology, so a cluster has a committed
+    /// config before the operator's TOML ever arrives. That seed holds no diffable document. When it was
+    /// the empty string, the diff path parsed it, the parser's top-level `config_version` gate refused it,
+    /// and every apply against a freshly formed cluster failed there; combined with the swallowed-failure
+    /// fall-through this route used to have, the operator's real TOML (worker counts included) was dropped
+    /// while the POST answered success. The typed shape (#1812) makes the seed a branch of this fold rather
+    /// than a predicate each reader re-derives.
     ///
     /// Replacement is what BootstrapModule's own comment — "Bootstrap replaces it with the real
     /// per-source spec at formation" — already promised; the version still advances by one, so the
     /// RFC-0018 successor fence is satisfied and the write is confirmed like any other.
-    static boolean isBootstrapSeed(ClusterConfigValue stored) {
+    private Promise<Object> processApply(ClusterConfigValue stored,
+                                         ClusterBootstrapConfig desired,
+                                         ApplyConfigRequest request) {
         return stored.tomlContent()
-                     .isBlank();
+                     .fold(() -> storeUpdatedConfig(desired,
+                                                    request.tomlContent(),
+                                                    stored.configVersion() + 1),
+                           toml -> checkVersionAsync(stored.configVersion(),
+                                                     request.expectedVersion()).flatMap(_ -> ClusterBootstrapConfigParser.parse(toml).async())
+                                                    .flatMap(storedConfig -> executeDiff(stored,
+                                                                                         storedConfig,
+                                                                                         desired,
+                                                                                         request)));
     }
 
     /// Pure decision for the #289 fence — package-visible so it can be unit-tested without standing up
@@ -563,13 +567,14 @@ public final class ClusterConfigRoutes implements RouteSource {
 
     private Result<List<KVCommand.ReadWitness<AetherKey>>> retirementGuards(Option<ClusterConfigValue> before,
                                                                             ClusterConfigValue after) {
-        var previous = before.flatMap(value -> ClusterBootstrapConfigParser.parse(value.tomlContent()).option())
+        var previous = before.flatMap(ClusterConfigValue::tomlContent)
+                             .flatMap(toml -> ClusterBootstrapConfigParser.parse(toml).option())
                              .map(ClusterBootstrapConfig::communities)
                              .or(Map.of());
-        var next = ClusterBootstrapConfigParser.parse(after.tomlContent())
-                                               .option()
-                                               .map(ClusterBootstrapConfig::communities)
-                                               .or(Map.of());
+        var next = after.tomlContent()
+                        .flatMap(toml -> ClusterBootstrapConfigParser.parse(toml).option())
+                        .map(ClusterBootstrapConfig::communities)
+                        .or(Map.of());
         var guards = new java.util.ArrayList<KVCommand.ReadWitness<AetherKey>>();
 
         for (var id : previous.keySet()) {
@@ -617,10 +622,6 @@ public final class ClusterConfigRoutes implements RouteSource {
         return ClusterBootstrapConfigParser.parse(tomlContent).flatMap(ClusterBootstrapConfigValidator::validate);
     }
 
-    private static Promise<ClusterBootstrapConfig> rebuildStoredConfigAsync(ClusterConfigValue stored) {
-        return ClusterBootstrapConfigParser.parse(stored.tomlContent()).async();
-    }
-
     private static Promise<Object> checkVersionAsync(long storedVersion, long expectedVersion) {
         if (expectedVersion != 0 && storedVersion != expectedVersion) {
             return new ClusterConfigError.VersionConflict(expectedVersion, storedVersion).promise();
@@ -638,7 +639,7 @@ public final class ClusterConfigRoutes implements RouteSource {
                                                                        .value()).findFirst().orElse("unknown");
         // KV boundary: `ClusterConfigValue` keeps a `String` cluster name (the `aether/slice` module
         // deliberately does not depend on this layer), so the parsed name is rendered here.
-        var configValue = new ClusterConfigValue(tomlContent,
+        var configValue = new ClusterConfigValue(Option.some(tomlContent),
                                                  cluster.name().value(),
                                                  cluster.version(),
                                                  topologyOf(desired),
@@ -699,11 +700,11 @@ public final class ClusterConfigRoutes implements RouteSource {
         var role = effectiveRole(nonBlank(request.role()));
         var source = nonBlank(request.source());
 
-        if (role.equals(org.pragmatica.aether.config.cluster.NodeRole.WORKER.value()) && ClusterBootstrapConfigParser.parse(stored.tomlContent())
-                                                                                                                     .option()
-                                                                                                                     .filter(value -> !value.communities()
-                                                                                                                                            .isEmpty())
-                                                                                                                     .isPresent()) {
+        if (role.equals(org.pragmatica.aether.config.cluster.NodeRole.WORKER.value()) && stored.tomlContent()
+                                                                                               .flatMap(toml -> ClusterBootstrapConfigParser.parse(toml).option())
+                                                                                               .filter(value -> !value.communities()
+                                                                                                                      .isEmpty())
+                                                                                               .isPresent()) {
             return new ClusterConfigError.ParseFailed("Explicit communities own worker capacity; change community.target_size").promise();
         }
 
@@ -852,18 +853,70 @@ public final class ClusterConfigRoutes implements RouteSource {
     private Promise<UpgradeResponse> initiateUpgrade(ClusterConfigValue stored, UpgradeRequest request) {
         var currentVersion = stored.version();
         var targetVersion = request.targetVersion();
+        var runs = nodeSupplier.get().upgradeRunService();
 
         if (currentVersion.equals(targetVersion)) {
-            return new UpgradeError.AlreadyAtVersion(targetVersion).promise();
+            // A re-issued upgrade: the version is already stored, so the only thing left to do is the run, if one is still owed.
+            return runs.start(targetVersion)
+                       .map(_ -> new UpgradeResponse("INITIATED", currentVersion, targetVersion))
+                       .mapError(cause -> nothingOwed(cause)
+                                          ? new UpgradeError.AlreadyAtVersion(targetVersion)
+                                          : cause);
         }
 
-        log.info("Cluster upgrade initiated: {} -> {}",
-                 currentVersion,
-                 targetVersion);
+        if (runs.status().filter(UpgradeRunValue::live).isPresent()) {
+            return new ManagementServerError.Conflict("An upgrade run to " + runs.status()
+                                                                                 .unwrap()
+                                                                                 .targetVersion()
+                                                     + " is still live; pause/resume/abort it (GET /api/v1/upgrade/status), or wait for it to end").promise();
+        }
 
-        return storeUpgradedVersion(stored, targetVersion).map(_ -> new UpgradeResponse("INITIATED",
-                                                                                        currentVersion,
-                                                                                        targetVersion));
+        return checkVersionAsync(stored.configVersion(),
+                                 request.expectedVersion()).flatMap(_ -> Promise.resolved(fenceUpgradeWrite(stored,
+                                                                                                            request.expectedVersion())))
+                                .flatMap(_ -> upgradedToml(stored, targetVersion).async())
+                                .flatMap(toml -> {
+                                             log.info("Cluster upgrade initiated: {} -> {}",
+                                                      currentVersion,
+                                                      targetVersion);
+
+                                             return storeUpgradedVersion(stored, toml, targetVersion).flatMap(_ -> startRun(runs,
+                                                                                                                            targetVersion))
+                                                                        .map(_ -> new UpgradeResponse("INITIATED",
+                                                                                                      currentVersion,
+                                                                                                      targetVersion));
+                                         });
+    }
+
+    /// Nothing to start: every node already reports the version, a run towards it is already live, or this node has no run service. Any other
+    /// refusal (not the leader, a concurrent change) is a real answer and is surfaced.
+    private static boolean nothingOwed(Cause cause) {
+        return cause instanceof UpgradeRunService.Refusal.NothingToReplace || cause instanceof UpgradeRunService.Refusal.AlreadyRunning || cause instanceof UpgradeRunService.Refusal.Unavailable;
+    }
+
+    /// #1543 F: the version is stored, so the rolling replacement of the running nodes follows. Nothing to replace (every node already
+    /// reports it) and a node without the service leave the stored version as the whole effect, as before; any other refusal is surfaced.
+    private static Promise<Unit> startRun(UpgradeRunService runs, String targetVersion) {
+        return runs.start(targetVersion)
+                   .map(_ -> Option.<Cause> none())
+                   .recover(Option::some)
+                   .flatMap(failure -> failure.filter(cause -> !(cause instanceof UpgradeRunService.Refusal.NothingToReplace || cause instanceof UpgradeRunService.Refusal.Unavailable))
+                                              .fold(Promise::unitPromise,
+                                                    cause -> cause.<Unit> promise()));
+    }
+
+    /// #1424: the client-side fence on the upgrade path, the third mutating cluster-config route to carry it
+    /// (apply-config #289, scale #1086). Without it two operators issuing different `targetVersion`s, or an
+    /// upgrade landing beside a scale or apply, resolved as last intent wins: the store-level successor CAS
+    /// closes the lost UPDATE, but nothing let an operator say "upgrade only if the config is still at version
+    /// N". [#checkVersionAsync] refuses a stale non-zero version; this refuses the `expectedVersion=0` wildcard
+    /// it would otherwise honour, exactly as [#fenceScaleWrite] does, because every stored config an upgrade can
+    /// reach is populated (`INITIAL_CONFIG_VERSION`; the bootstrap seed is stamped 1). Placed after the
+    /// already-at-version check, so a no-op upgrade keeps its own answer.
+    private static Result<Unit> fenceUpgradeWrite(ClusterConfigValue stored, long expectedVersion) {
+        return isUnfencedOverwrite(stored.configVersion(), expectedVersion)
+               ? new ClusterConfigError.UnfencedOverwrite(stored.configVersion()).result()
+               : Result.unitResult();
     }
 
     /// Commit the complete desired config with its expected version and current leader in one
@@ -879,48 +932,80 @@ public final class ClusterConfigRoutes implements RouteSource {
     private Promise<ClusterConfigValue> commitFencedConfig(ClusterConfigValue intended) {
         var node = nodeSupplier.get();
         var expected = storedClusterConfig();
+        var committedLeader = node.kvStore()
+                                  .getTyped(org.pragmatica.cluster.state.kvstore.LeaderKey.INSTANCE,
+                                            org.pragmatica.cluster.state.kvstore.LeaderValue.class);
+        // No committed leader is an election in progress, which is transient (503, as the forward layer answers it).
+        // A committed leader that is not this node is a state this node refuses (409): retry against the leader.
+        if (committedLeader.isEmpty()) {
+            return new ManagementServerError.ServiceUnavailable("No core leader is committed yet; an election is in progress. Retry shortly.").<ClusterConfigValue> promise();
+        }
 
-        return node.kvStore()
-                   .getTyped(org.pragmatica.cluster.state.kvstore.LeaderKey.INSTANCE,
-                             org.pragmatica.cluster.state.kvstore.LeaderValue.class)
-                   .filter(leader -> node.isLeader())
-                   .fold(() -> org.pragmatica.lang.utils.Causes.cause("Current core leader required for config update")
-                                                               .promise(),
-                         leader -> {
-                             var id = java.util.UUID.randomUUID()
-                                                    .toString();
-                             var mutation = new KVCommand.Mutation<AetherKey, AetherValue>(ClusterConfigKey.CURRENT,
-                                                                                           expected.map(value -> value),
-                                                                                           Option.some(intended));
+        return committedLeader.filter(leader -> node.isLeader())
+                              .fold(() -> new ManagementServerError.Conflict("Current core leader required for config update").<ClusterConfigValue> promise(),
+                                    leader -> {
+                                        var id = java.util.UUID.randomUUID()
+                                                               .toString();
+                                        var mutation = new KVCommand.Mutation<AetherKey, AetherValue>(ClusterConfigKey.CURRENT,
+                                                                                                      expected.map(value -> value),
+                                                                                                      Option.some(intended));
 
-                             return retirementGuards(expected, intended).async()
-                                                    .flatMap(guards -> {
-                                                                 var command = new KVCommand.LeaderTransaction<AetherKey, AetherValue>(ClusterConfigKey.CURRENT,
-                                                                                                                                       id,
-                                                                                                                                       leader,
-                                                                                                                                       guards,
-                                                                                                                                       List.of(mutation));
+                                        return retirementGuards(expected, intended).async()
+                                                               .flatMap(guards -> {
+                                                                            var command = new KVCommand.LeaderTransaction<AetherKey, AetherValue>(ClusterConfigKey.CURRENT,
+                                                                                                                                                  id,
+                                                                                                                                                  leader,
+                                                                                                                                                  guards,
+                                                                                                                                                  List.of(mutation));
 
-                                                                 return node.<Object> apply(List.of(command))
-                                                                            .flatMap(results -> {
-                                                                                         var accepted = results.stream()
-                                                                                                               .filter(KVCommand.TransactionResult.class::isInstance)
-                                                                                                               .map(KVCommand.TransactionResult.class::cast)
-                                                                                                               .anyMatch(result -> result.transactionId()
-                                                                                                                                         .equals(id) && result.accepted());
+                                                                            return node.<Object> apply(List.of(command))
+                                                                                       .flatMap(results -> {
+                                                                                                    var accepted = results.stream()
+                                                                                                                          .filter(KVCommand.TransactionResult.class::isInstance)
+                                                                                                                          .map(KVCommand.TransactionResult.class::cast)
+                                                                                                                          .anyMatch(result -> result.transactionId()
+                                                                                                                                                    .equals(id) && result.accepted());
 
-                                                                                         return accepted
-                                                                                                ? Promise.success(intended)
-                                                                                                : new ClusterConfigError.VersionConflict(intended.configVersion(),
-                                                                                                                                         storedClusterConfig().map(ClusterConfigValue::configVersion)
-                                                                                                                                                            .or(0L)).promise();
-                                                                                     });
-                                                             });
-                         });
+                                                                                                    return accepted
+                                                                                                           ? Promise.success(intended)
+                                                                                                           : new ClusterConfigError.VersionConflict(intended.configVersion(),
+                                                                                                                                                    storedClusterConfig().map(ClusterConfigValue::configVersion)
+                                                                                                                                                                       .or(0L)).promise();
+                                                                                                });
+                                                                        });
+                                    });
     }
 
-    private Promise<Object> storeUpgradedVersion(ClusterConfigValue stored, String targetVersion) {
-        var configValue = new ClusterConfigValue(stored.tomlContent(),
+    /// #1543 part C: the committed TOML's `[cluster] version` is what replacements render (image tag, jar URL),
+    /// so the upgrade rewrites it — the TOML stays the single source of truth and a later `apply` of that TOML
+    /// cannot revert the upgrade. Refused (409) when a role's runtime profile pins the launch artifact, which
+    /// would make the new version a recorded no-op. A seed with no committed TOML has nothing to rewrite and
+    /// renders no replacement user data, so only the stored version moves, as before.
+    private static Result<Option<String>> upgradedToml(ClusterConfigValue stored, String targetVersion) {
+        return stored.tomlContent()
+                     .fold(() -> Result.success(Option.<String> none()),
+                           toml -> upgradeToml(toml, targetVersion));
+    }
+
+    private static Result<Option<String>> upgradeToml(String toml, String targetVersion) {
+        return ClusterBootstrapConfigParser.parse(toml)
+                                           .flatMap(config -> pinnedRefusal(config, targetVersion))
+                                           .flatMap(_ -> ClusterUpgradeToml.withVersion(toml, targetVersion))
+                                           .map(Option::some);
+    }
+
+    private static Result<Unit> pinnedRefusal(ClusterBootstrapConfig config, String targetVersion) {
+        var pinned = ClusterUpgradeToml.pinnedRuntimeProfiles(config);
+
+        return pinned.isEmpty()
+               ? Result.unitResult()
+               : new ClusterConfigError.UpgradeVersionPinned(targetVersion, pinned).result();
+    }
+
+    private Promise<Object> storeUpgradedVersion(ClusterConfigValue stored, Option<String> toml, String targetVersion) {
+        var configValue = new ClusterConfigValue(toml.isPresent()
+                                                 ? toml
+                                                 : stored.tomlContent(),
                                                  stored.clusterName(),
                                                  targetVersion,
                                                  stored.desiredTopology(),

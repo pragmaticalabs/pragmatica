@@ -41,6 +41,9 @@ SKIP_IMAGE_PUSH=false
 KEEP_ON_FAILURE_FLAG=""
 
 RESULTS_FILE="$(mktemp /tmp/aether-test-results.XXXXXX)"
+# Run-level warnings (log_run_warning in lib/common.sh): one line per warning, shared by every suite process, reported in
+# each suite's summary, the end-of-run report and test-results.json.
+export RUN_WARNINGS_FILE="$(mktemp /tmp/aether-run-warnings.XXXXXX)"
 RESULTS_JSON="${SCRIPT_DIR}/test-results.json"
 TIMINGS_FILE="$(mktemp /tmp/aether-test-timings.XXXXXX)"
 # Child processes (suites) may record per-await durations here.
@@ -432,6 +435,9 @@ run_suite() {
     export SUITE_START_EPOCH="$start_time"
     export SUITE_FAILCAP_DIR
     SUITE_FAILCAP_DIR=$(mktemp -d "${TMPDIR:-/tmp}/aether-failcap-${suite_name}.XXXXXX" 2>/dev/null) || SUITE_FAILCAP_DIR=""
+    # Cloud VM registry for this suite: start empty (no VM from a previous run), remember what exists now.
+    capture_forget_vms "$target_cluster" "$suite_name"
+    capture_remember_vms "$target_cluster" "$suite_name"
     rm -f "$restore_marker"
     export SUITE_RESTORE_FAILED_MARKER="$restore_marker"
     local suite_pass=0 suite_fail=0
@@ -473,7 +479,7 @@ run_suite() {
         capture_node_logs "$suite_name" "$target_cluster" "$start_time" || true
     fi
 
-    echo "{\"suite\":\"${suite_name}\",\"status\":\"${status}\",\"pass\":${suite_pass},\"fail\":${suite_fail},\"duration\":${duration}}" >> "$RESULTS_FILE"
+    echo "{\"suite\":\"${suite_name}\",\"status\":\"${status}\",\"pass\":${suite_pass},\"fail\":${suite_fail},\"duration\":${duration},$(run_warnings_json "$suite_name")}" >> "$RESULTS_FILE"
 
     log_info "${suite_name}: ${suite_pass} passed, ${suite_fail} failed (${duration}s)"
 
@@ -780,11 +786,14 @@ deploy_docker() {
     if [ "$host" = "localhost" ]; then
         docker compose -f "$COMPOSE_B" down -v 2>/dev/null || true
         _local_cleanup_zombies "b"
+        # #1968: the backup remote is an external volume, created fresh for this cluster (a restart restores from it).
+        bash -c "$(backup_remote_init_script)" >/dev/null
         docker compose -f "$COMPOSE_B" up -d 2>&1 | tail -5
     else
         remote_scp "$COMPOSE_B" "~/docker-compose-b.yml"
         remote_exec "cd ~ && docker rm -f \$(docker ps -aq --filter name=aether-b-node-) 2>/dev/null; docker rm -f \$(docker ps -aq --filter name=aether-default-node-) 2>/dev/null || true; docker compose -f docker-compose-b.yml down -v 2>/dev/null || true"
         cleanup_cluster_zombies "b"
+        remote_exec "$(backup_remote_init_script)" >/dev/null
         remote_exec "cd ~ && docker compose -f docker-compose-b.yml up -d 2>&1 | tail -5"
         # Capture-before-heal: streamed log files survive the `docker rm` auto-heal performs
         # on a dying node — without this, the container's death destroys its own evidence.
@@ -803,7 +812,7 @@ bootstrap_cloud_cluster_a() {
     # Default CLUSTER_A_MGMT/APP point at docker-compose host-mapped ports (5150/8070),
     # which don't exist on Hetzner VMs (mgmt=8080, app=8070 per cloud-hetzner.toml).
     local cluster_a_ip
-    cluster_a_ip=$(BOOTSTRAP_CLUSTER_NAME="$CLUSTER_A_NAME" CLOUD_SOURCE_NAME="hetzner-eu" cloud_public_ip node-1)
+    cluster_a_ip=$(BOOTSTRAP_CLUSTER_NAME="$CLUSTER_A_NAME" CLOUD_SOURCE_NAME="hetzner-eu" cloud_public_ip node-1) || cluster_a_ip=""
     if [ -n "$cluster_a_ip" ]; then
         CLUSTER_A_MGMT="http://${cluster_a_ip}:8080"
         CLUSTER_A_APP_DIRECT="http://${cluster_a_ip}:8070"
@@ -823,7 +832,7 @@ bootstrap_cloud_cluster_b() {
     aether cluster bootstrap "$CLOUD_TOML_B" --cluster "$CLUSTER_B_NAME" --yes --wait --timeout 600 ${KEEP_ON_FAILURE_FLAG:+"$KEEP_ON_FAILURE_FLAG"}
     # Cloud override: derive endpoints from the freshly-provisioned VM's public IP.
     local cluster_b_ip
-    cluster_b_ip=$(BOOTSTRAP_CLUSTER_NAME="$CLUSTER_B_NAME" CLOUD_SOURCE_NAME="hetzner-eu" cloud_public_ip node-1)
+    cluster_b_ip=$(BOOTSTRAP_CLUSTER_NAME="$CLUSTER_B_NAME" CLOUD_SOURCE_NAME="hetzner-eu" cloud_public_ip node-1) || cluster_b_ip=""
     if [ -n "$cluster_b_ip" ]; then
         CLUSTER_B_MGMT="http://${cluster_b_ip}:8080"
         CLUSTER_B_APP_DIRECT="http://${cluster_b_ip}:8070"
@@ -911,6 +920,7 @@ teardown() {
                 docker rm -f $(docker ps -aq --filter "name=aether-a-node-" --filter "name=aether-b-node-") 2>/dev/null || true
                 docker compose -f "$COMPOSE_A" down -v 2>/dev/null || true
                 docker compose -f "$COMPOSE_B" down -v 2>/dev/null || true
+                docker volume rm -f "$BACKUP_REMOTE_VOLUME" 2>/dev/null || true
             else
                 # Stop the capture-before-heal streamers BEFORE removing their containers,
                 # so the daemon is not left re-attaching to a cluster being torn down.
@@ -918,7 +928,7 @@ teardown() {
                 # Same order on remote: sweep CTM containers before compose down
                 remote_exec "docker rm -f \$(docker ps -aq --filter name=aether-a-node-) 2>/dev/null; docker rm -f \$(docker ps -aq --filter name=aether-b-node-) 2>/dev/null; docker rm -f \$(docker ps -aq --filter name=aether-default-node-) 2>/dev/null || true"
                 remote_exec "docker compose -f ~/docker-compose-a.yml down -v 2>/dev/null || true"
-                remote_exec "docker compose -f ~/docker-compose-b.yml down -v 2>/dev/null || true"
+                remote_exec "docker compose -f ~/docker-compose-b.yml down -v 2>/dev/null || true; docker volume rm -f ${BACKUP_REMOTE_VOLUME} 2>/dev/null || true; rm -f ~/.aether-b-generation"
             fi
             ;;
         cloud)
@@ -1035,6 +1045,12 @@ print_results() {
     echo "========================================"
     printf "  Total: %d | Passed: %d | Failed: %d | Skipped: %d | Unrecoverable: %d\n" \
         "$total" "$passed" "$failed" "$skipped" "$unrecoverable"
+    local nwarn
+    nwarn=$(_run_warning_lines)
+    if [ "$nwarn" -gt 0 ]; then
+        printf "  Warnings: %d (a green run with warnings is not a clean run)\n" "$nwarn"
+        sed 's/^/    [WARN] /' "$RUN_WARNINGS_FILE"
+    fi
     echo "========================================"
 
     print_timing_report
@@ -1107,7 +1123,7 @@ fi
 # subprocess, while ENV_TYPE itself was later set to "cloud".
 #
 # That split the harness in half: functions branching on ENV_TYPE took cloud paths, and
-# the six that branch on CLOUD_MODE (kill_node, start_node, restart_all_nodes, ...) took
+# the six that branch on CLOUD_MODE (kill_node, restart_all_nodes, ...) took
 # DOCKER paths on a cloud run. Measured 2026-09-18: restore_cluster_baseline escalated to
 # restart_all_nodes, which ran a docker-compose cycle over SSH to the remote host, timed
 # out, and declared a merely-degraded cloud cluster "unrecoverable" — hard-skipping
@@ -1201,6 +1217,12 @@ if [ "$ENV_TYPE" = "cloud" ]; then
     # baselined database and the server correctly answered 409 (#1228).
     reset_cloud_pg_database "${PG_DB}_testpersistence" \
         || log_warn "could not reset PG database ${PG_DB}_testpersistence — suite 10 (test-persistence) will fail if it runs"
+    # Cluster B's OWN copy (env/cloud-hetzner-b.toml, cloud-hetzner-jvm-b.toml: database.testpersistence ->
+    # ${PG_DB}_testpersistence_b). Without that section, and this database, test-persistence deployed on B (by
+    # 13-edge-cases) fails its schema migration and stays LOADED forever. Separate from A's so B's V900 cannot
+    # collide with suite 10's baselines on the shared PG VM. Reset like A's: a fresh database per run.
+    reset_cloud_pg_database "${PG_DB}_testpersistence_b" \
+        || log_warn "could not reset PG database ${PG_DB}_testpersistence_b — test-persistence on cluster B will fail its schema migration if it is deployed"
 fi
 
 # --- Step 1.5: CLI / node-image version-parity preflight (#440) ---
@@ -1457,7 +1479,7 @@ FINAL_RESULT=$?
 set -e
 
 # Cleanup temp files (teardown runs from EXIT trap installed earlier)
-rm -f "$RESULTS_FILE" "$TIMINGS_FILE"
+rm -f "$RESULTS_FILE" "$TIMINGS_FILE" "$RUN_WARNINGS_FILE"
 
 RUN_REACHED_END=true
 exit "$FINAL_RESULT"

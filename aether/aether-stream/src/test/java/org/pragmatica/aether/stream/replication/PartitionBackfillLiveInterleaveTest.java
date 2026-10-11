@@ -14,14 +14,17 @@ import org.pragmatica.aether.stream.OffHeapRingBuffer;
 import org.pragmatica.aether.stream.StreamError;
 import org.pragmatica.aether.stream.StreamPartitionManager;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.lang.utils.Causes;
 
 import java.util.List;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Supplier;
 import java.util.stream.IntStream;
 
 import static java.nio.charset.StandardCharsets.UTF_8;
@@ -90,10 +93,11 @@ class PartitionBackfillLiveInterleaveTest {
         handler.onReplicateEvents(liveBatch(0, REPLICA_PREFIX));
         assertThat(replica.nextExpectedOffset(STREAM, PARTITION)).isEqualTo(REPLICA_PREFIX);
 
-        // 1. Backfill starts: fromOffset = local head + 1 = 13; the owner's catch-up response is in flight.
+        // 1. Backfill starts: it requests the overlap window below local head + 1 = 13 (here all of 0..12), compared with the
+        // owner's records; the owner's catch-up response is in flight.
         var run = backfill.backfill(STREAM, PARTITION);
         assertThat(catchupRequests).extracting(ReplicationMessage.CatchupRequest::fromOffset)
-                                   .containsExactly((long) REPLICA_PREFIX);
+                                   .containsExactly(0L);
 
         // 2. The owner's live batch for offset 13 arrives first and is applied at 13.
         handler.onReplicateEvents(liveBatch(13, 1));
@@ -253,7 +257,7 @@ class PartitionBackfillLiveInterleaveTest {
     @Test
     void quarantine_divergentHeldEntry_backfillMustNotPromoteCaughtUp() {
         var handler = receiveHandler();
-        var backfill = backfill();
+        var backfill = backfillWithoutRepair();
 
         handler.onReplicateEvents(liveBatch(0, REPLICA_PREFIX));
         replica.appendRecovered(STREAM, PARTITION, 13L, "forged-13".getBytes(UTF_8), 1013L).unwrap();
@@ -278,7 +282,7 @@ class PartitionBackfillLiveInterleaveTest {
     @Test
     void quarantine_caughtUpReplicaMeetsDivergence_isDemotedBelowIt_sendsNoCompletionAck() {
         var handler = receiveHandler();
-        var backfill = backfill();
+        var backfill = backfillWithoutRepair();
 
         handler.onReplicateEvents(liveBatch(0, REPLICA_PREFIX));
         var first = backfill.backfill(STREAM, PARTITION);
@@ -298,9 +302,12 @@ class PartitionBackfillLiveInterleaveTest {
         assertThat(backfillAcks).as("no completion ack from a quarantined partition").isEmpty();
     }
 
-    /// #1505 F2: the quarantine is ALSO checked at the terminal step of an in-flight run, not only at entry. The
-    /// run requests 14; while it is in flight the live path meets a divergent entry at 13. The empty response then
-    /// takes the #559 at-owner-tail path, and the owner's probed tail (13) would promote self. It must not.
+    /// #1505 F2: the quarantine is ALSO checked at the terminal step of an in-flight run, not only at entry. The replica holds 0..13 and
+    /// the run requests the overlap window (from 0, #1730 phase 2); while it is in flight the live path meets a divergent entry at 13.
+    /// The owner answers the requested window truthfully (0..14, what its ring holds), the apply refuses the divergent 13, and the run
+    /// must neither promote nor ack. (The earlier form of this test answered an EMPTY response to the window request, which the
+    /// production owner cannot produce for a replica that holds data, so it pinned nothing; the #559 at-owner-tail path it aimed at is
+    /// unreachable for such a replica now.)
     @Test
     void quarantine_recordedWhileRunInFlight_blocksTheAtOwnerTailPromotion() {
         var handler = receiveHandler();
@@ -308,11 +315,11 @@ class PartitionBackfillLiveInterleaveTest {
 
         handler.onReplicateEvents(liveBatch(0, REPLICA_PREFIX + 1));
         var run = backfill.backfill(STREAM, PARTITION);
-        assertThat(catchupRequests).extracting(ReplicationMessage.CatchupRequest::fromOffset).containsExactly(14L);
+        assertThat(catchupRequests).extracting(ReplicationMessage.CatchupRequest::fromOffset).containsExactly(0L);
 
         handler.onReplicateEvents(replicateEvents(owner, STREAM, PARTITION, 13, List.of("forged-13".getBytes(UTF_8)), List.of(1013L), Epoch.ZERO));
-        catchupInFlight.resolve(Result.success(response(14, List.of(), List.of())));
-        probeAnswer.resolve(Result.success(13L));
+        catchupInFlight.resolve(Result.success(ownerResponse(0, 15)));
+        probeAnswer.resolve(Result.success(14L));
 
         assertThat(run.await().isFailure()).isTrue();
         assertThat(selfDescriptor().state()).isNotEqualTo(ReplicationState.CAUGHT_UP);
@@ -388,6 +395,34 @@ class PartitionBackfillLiveInterleaveTest {
     }
 
     private PartitionBackfill backfill() {
+        return backfillOver(replica.quarantineView());
+    }
+
+    /// A quarantine whose repair is refused (#1730 phase 2: below the ring's retained range, or a failed cut). What a
+    /// quarantined partition must never do while the divergent entry is held, refuse to pull, promote or ack, is pinned
+    /// through it; a repair that succeeds is pinned by `ReplicaDivergentTailRepairTest`.
+    private PartitionBackfill backfillWithoutRepair() {
+        var real = replica.quarantineView();
+
+        return backfillOver(new QuarantineView() {
+            @Override
+            public Option<Long> quarantinedAt(String stream, int partition) {
+                return real.quarantinedAt(stream, partition);
+            }
+
+            @Override
+            public <T> Option<T> unlessQuarantined(String stream, int partition, Supplier<T> promotion) {
+                return real.unlessQuarantined(stream, partition, promotion);
+            }
+
+            @Override
+            public Result<Option<Long>> repair(String stream, int partition, RepairAuthority authority) {
+                return Causes.cause("repair refused").result();
+            }
+        });
+    }
+
+    private PartitionBackfill backfillOver(QuarantineView quarantine) {
         return partitionBackfill(registry,
                                  replica.alignedRecovery(),
                                  this::deferredCatchup,
@@ -401,7 +436,7 @@ class PartitionBackfillLiveInterleaveTest {
                                  () -> MEMBERS,
                                  CommittedStreamOwnerSource.none(),
                                  replica::syncReplicated,
-                                 replica.quarantineView());
+                                 quarantine);
     }
 
     private Promise<ReplicationMessage.CatchupResponse> deferredCatchup(NodeId target,

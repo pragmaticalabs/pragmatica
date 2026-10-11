@@ -1,7 +1,6 @@
-// SPDX-License-Identifier: BUSL-1.1
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
-// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
-// See LICENSE in the repository root for full terms.
+// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.resource.entity;
 
 import org.pragmatica.lang.Cause;
@@ -90,23 +89,6 @@ public sealed interface EntityError extends Cause {
             return "Durable entity timer schedule for key '" + key
                  + "' arrived with a negative delay of " + delayMillis
                  + " ms — a timer cannot be scheduled into the past";
-        }
-    }
-
-    /// A timer operation reached a backing that has no durable log to hold a pending timer in — the
-    /// HA-only in-memory cut (`InMemoryDurableEntity`, `FencedDurableEntity`, both test-only fixtures in this
-    /// module's test sources since #1270). It declines with this typed
-    /// cause rather than silently no-op'ing, because a timer that is accepted and never fires is worse than
-    /// one that is refused.
-    ///
-    /// **A running node never answers this.** [DurableEntityFactory] provisions only the fenced-log
-    /// [PartitionFencedDurableEntity], where [DurableEntity#scheduleTimer] and
-    /// [DurableEntity#cancelTimer] are ordinary fenced writes (#345 I4). This is the answer of the
-    /// in-memory backings alone, which unit tests and harnesses construct directly.
-    record TimerNotSupported(String key) implements EntityError {
-        @Override
-        public String message() {
-            return "Durable entity timers are not yet supported for key: " + key;
         }
     }
 
@@ -207,6 +189,29 @@ public sealed interface EntityError extends Cause {
                  + "' refused: no owner is committed yet for arc (" + keyspace
                  + ", " + partition
                  + ") — transient, retry once the ownership reconcile has converged";
+        }
+    }
+
+    /// The request reached a node that the COMMITTED state names as the owner (or a host) of the entity
+    /// key's keyspace, but that cannot serve it right now: either the keyspace's slice has unloaded there and
+    /// ownership has not yet been re-minted elsewhere (the handoff window of a rebalance), or it is still
+    /// loading — declared as a host before its forward target or partition ring is in place.
+    ///
+    /// **This is TRANSIENT and self-clearing**, and it is the answer that replaces a terminal
+    /// "no entity registered for keyspace" for that window. Unloading retracts the node's hosting
+    /// declaration and unregisters its forward target at once, but the committed owner record leaves the
+    /// node only when the leader re-mints it over the remaining hosts — so for that interval the committed
+    /// owner has nothing to answer with. Answering terminally there made a healthy rebalance read as a
+    /// permanent refusal to every caller; the caller retries, and the retry reaches the new owner.
+    ///
+    /// Distinct from [OwnershipNotYetCommitted], where NOBODY owns the arc yet, and from [NotCurrentOwner],
+    /// a stable "someone else owns this". `reason` carries the owner's own wording verbatim, so a
+    /// not-ready answer that crossed the forward wire under another name (e.g. `FoldInProgress`) keeps it.
+    record OwnerTransitioning(String key, String reason) implements EntityError, Cause.Transient {
+        @Override
+        public String message() {
+            return "Durable entity operation for key '" + key
+                 + "' reached an owner that is transitioning (loading or handing off) — transient, retry: " + reason;
         }
     }
 

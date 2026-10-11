@@ -42,7 +42,9 @@ public enum DrainReason {
     JOIN_GRACE_REAP,
     QUORUM_LOSS,
     COMMANDED,
-    CORE_ABSENCE;
+    CORE_ABSENCE,
+    /// #1543: the node was REPLACED by a fresh-id node and is being retired. A decision, not a surplus trim: reaped as issued.
+    REPLACED;
     /// Whether this reason trims a SURPLUS — a node removed only because the cluster had more than it
     /// needed. Such a decision goes stale when the cluster later falls short, so the drain-grace
     /// backstop re-checks before reaping (#1050). `JOIN_GRACE_REAP` is deliberately NOT a surplus
@@ -53,7 +55,7 @@ public enum DrainReason {
     public boolean isSurplusTrim() {
         return switch (this) {
             case OVERPROVISION_SCALE_DOWN, OVERPROVISION_PARTITION_HEAL -> true;
-            case OPERATOR_COMMAND, JOIN_GRACE_REAP, QUORUM_LOSS, COMMANDED, CORE_ABSENCE -> false;
+            case OPERATOR_COMMAND, JOIN_GRACE_REAP, QUORUM_LOSS, COMMANDED, CORE_ABSENCE, REPLACED -> false;
         };
     }
 }
