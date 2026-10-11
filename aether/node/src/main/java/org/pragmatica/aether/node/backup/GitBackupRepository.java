@@ -52,6 +52,16 @@ public record GitBackupRepository(Path dir,
     /// Bound on any single git command — long enough for a push over a slow link, short enough that a
     /// hung remote cannot stall the backup worker indefinitely.
     public static final TimeSpan DEFAULT_TIMEOUT = TimeSpan.timeSpan(60).seconds();
+
+    /// git's auto-maintenance after a commit or fetch daemonizes and keeps writing into the repository after the
+    /// command returned — past a stopped worker (#2095). Kept in the foreground it still compacts the repository
+    /// (a commit adds ~23 KB of loose objects), but inside the git command, so nothing writes after it returns.
+    /// This reaches the local repository only: a path remote's `receive-pack` does not inherit the client's `-c`.
+    private static final List<String> FOREGROUND_MAINTENANCE = List.of("-c",
+                                                                       "gc.autoDetach=false",
+                                                                       "-c",
+                                                                       "maintenance.autoDetach=false");
+
     private static final String REMOTE_NAME = "origin";
     private static final String REMOTE_REF = "refs/remotes/" + REMOTE_NAME + "/";
 
@@ -297,6 +307,7 @@ public record GitBackupRepository(Path dir,
         var command = new ArrayList<String>();
 
         command.add("git");
+        command.addAll(FOREGROUND_MAINTENANCE);
         command.add("-C");
         command.add(dir.toString());
         command.addAll(args);
