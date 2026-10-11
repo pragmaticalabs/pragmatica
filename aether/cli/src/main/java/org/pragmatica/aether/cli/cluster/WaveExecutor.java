@@ -629,9 +629,7 @@ public final class WaveExecutor {
         return success(totalRemoved);
     }
 
-    static Result<Integer> executeRemoval(DiffAction action,
-                                                  ClusterBootstrapConfig stored,
-                                                  int managementPort) {
+    static Result<Integer> executeRemoval(DiffAction action, ClusterBootstrapConfig stored, int managementPort) {
         return switch (action) {
             case DiffAction.RemoveSource a -> destroyEntireSource(a.sourceName(), stored, managementPort);
             case DiffAction.RemoveRole a -> destroyRole(a.sourceName(), a.role(), a.count(), stored, managementPort);
@@ -654,7 +652,10 @@ public final class WaveExecutor {
                                                                                             managementPort));
     }
 
-    private static Result<Integer> destroyAllRoles(ClusterName clusterName, SourceName sourceName, SourceProfile source, int managementPort) {
+    private static Result<Integer> destroyAllRoles(ClusterName clusterName,
+                                                   SourceName sourceName,
+                                                   SourceProfile source,
+                                                   int managementPort) {
         var totalDestroyed = 0;
 
         for (var entry : source.roles().entrySet()) {
@@ -728,7 +729,11 @@ public final class WaveExecutor {
                                                 int count,
                                                 int managementPort) {
         return source.type() == SourceType.DOCKER
-               ? ProviderResolver.resolveDockerComputeWithoutBackup().flatMap(compute -> destroyDockerNodes(compute, clusterName, sourceName, role, count))
+               ? ProviderResolver.resolveDockerComputeWithoutBackup().flatMap(compute -> destroyDockerNodes(compute,
+                                                                                                            clusterName,
+                                                                                                            sourceName,
+                                                                                                            role,
+                                                                                                            count))
                : dispatchDestroy(sourceName, source, role, count, managementPort);
     }
 
@@ -736,17 +741,30 @@ public final class WaveExecutor {
     /// order). Fewer matching containers than `count` is a refusal, not a partial removal: terminating whatever happens to match could remove a
     /// node the plan did not name.
     @SuppressWarnings("JBCT-EX-01")
-    static Result<Unit> destroyDockerNodes(ComputeProvider compute, ClusterName clusterName, SourceName sourceName, NodeRole role, int count) {
-        var found = compute.listInstances(Map.of("aether.cluster", clusterName.value(), "aether.role", role.value(), "aether.source", sourceName.value()))
+    static Result<Unit> destroyDockerNodes(ComputeProvider compute,
+                                           ClusterName clusterName,
+                                           SourceName sourceName,
+                                           NodeRole role,
+                                           int count) {
+        var found = compute.listInstances(Map.of("aether.cluster",
+                                                 clusterName.value(),
+                                                 "aether.role",
+                                                 role.value(),
+                                                 "aether.source",
+                                                 sourceName.value()))
                            .await();
 
         return found.flatMap(instances -> newestNodeIds(instances, sourceName, role, count))
                     .flatMap(ids -> CloudProviderSupport.destroyVia(compute, ids).await());
     }
 
-    private static Result<List<String>> newestNodeIds(List<InstanceInfo> instances, SourceName sourceName, NodeRole role, int count) {
+    private static Result<List<String>> newestNodeIds(List<InstanceInfo> instances,
+                                                      SourceName sourceName,
+                                                      NodeRole role,
+                                                      int count) {
         var ids = instances.stream()
-                           .map(info -> info.nodeId().or(info.id().value()))
+                           .map(info -> info.nodeId()
+                                            .or(info.id().value()))
                            .sorted(Comparator.reverseOrder())
                            .toList();
 
@@ -892,8 +910,11 @@ public final class WaveExecutor {
         record ScaleDownShort(SourceName sourceName, NodeRole role, int wanted, List<String> found) implements ApplyError {
             @Override
             public String message() {
-                return "cannot remove " + wanted + " " + role.value() + " node(s) of docker source '" + sourceName
-                     + "': only " + found.size() + " container(s) carry its labels (" + found
+                return "cannot remove " + wanted
+                     + " " + role.value()
+                     + " node(s) of docker source '" + sourceName
+                     + "': only " + found.size()
+                     + " container(s) carry its labels (" + found
                      + "). Nothing was removed.";
             }
         }
