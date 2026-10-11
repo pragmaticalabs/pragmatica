@@ -632,7 +632,10 @@ public interface SystemTags {
         // #2062: the admission marker of an EXTERNAL capacity reservation — 2134..2137 belong to the rolling-upgrade run state (#1543 F1/F2, open PRs)
         pin(table, 2138, "org.pragmatica.aether.slice.kvstore.AetherKey.CapacityAdmissionKey");
         pin(table, 2139, "org.pragmatica.aether.slice.kvstore.AetherValue.CapacityAdmissionValue");
-        // ---- 2140..16383 RESERVED ----
+        // #1967: the typed read refusal a forwarded read carries -- next free after 2139
+        pin(table, 2140, "org.pragmatica.aether.stream.forward.ReadRefusal");
+        pin(table, 2141, "org.pragmatica.aether.stream.forward.ReadRefusal.Kind");
+        // ---- 2142..16383 RESERVED ----
         rejectDuplicateTags(table);
 
         return Map.copyOf(table);
