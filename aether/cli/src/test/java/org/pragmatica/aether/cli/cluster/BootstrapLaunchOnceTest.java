@@ -16,6 +16,7 @@ import org.pragmatica.aether.config.cluster.InfrastructureConfig;
 import org.pragmatica.aether.config.cluster.LoadBalancerMode;
 import org.pragmatica.aether.config.cluster.NetworkingType;
 import org.pragmatica.aether.config.cluster.NodeRole;
+import org.pragmatica.aether.config.cluster.NodeUserDataRenderer;
 import org.pragmatica.aether.config.cluster.OperationsConfig;
 import org.pragmatica.aether.config.cluster.PortMapping;
 import org.pragmatica.aether.config.cluster.ReplacementNodeConfigComposer;
@@ -489,11 +490,11 @@ class BootstrapLaunchOnceTest {
                                                              7000,
                                                              8080,
                                                              "eu-1-core-0:203.0.113.10:7000",
-                                                             SECRET,
                                                              name -> null);
 
-        var present = runWithStub("docker", "[ \"$1\" = ps ] && [ \"$2\" = -a ] && echo aether-node; [ \"$1\" = run ] && echo RAN-DOCKER-RUN; exit 0", command);
-        var absent = runWithStub("docker", "[ \"$1\" = ps ] && echo other-container; [ \"$1\" = run ] && echo RAN-DOCKER-RUN; exit 0", command);
+        var paths = new Staged(BootstrapPhaseDeploy.CONTAINER_SECRET_STAGED, NodeUserDataRenderer.CONTAINER_SECRET_HOST_FILE);
+        var present = runStaged("docker", "[ \"$1\" = ps ] && [ \"$2\" = -a ] && echo aether-node; [ \"$1\" = run ] && echo RAN-DOCKER-RUN; exit 0", command, paths);
+        var absent = runStaged("docker", "[ \"$1\" = ps ] && echo other-container; [ \"$1\" = run ] && echo RAN-DOCKER-RUN; exit 0", command, paths);
 
         assertThat(present.exit()).isEqualTo(BootstrapPhaseDeploy.ALREADY_PRESENT_EXIT);
         assertThat(present.output()).contains(BootstrapPhaseDeploy.ALREADY_PRESENT_MARKER).doesNotContain("RAN-DOCKER-RUN");
@@ -510,7 +511,6 @@ class BootstrapLaunchOnceTest {
                                                                 7000,
                                                                 8080,
                                                                 "eu-1-core-0:203.0.113.10:7000",
-                                                                SECRET,
                                                                 CLUSTER,
                                                                 name -> null);
         var active = runWithStub("systemctl",
@@ -532,7 +532,6 @@ class BootstrapLaunchOnceTest {
                                                                 7000,
                                                                 8080,
                                                                 "eu-1-core-0:203.0.113.10:7000",
-                                                                SECRET,
                                                                 CLUSTER,
                                                                 name -> null);
         var failed = runWithStub("systemctl",
@@ -558,7 +557,6 @@ class BootstrapLaunchOnceTest {
                                                                     7000,
                                                                     8080,
                                                                     "eu-1-core-0:203.0.113.10:7000",
-                                                                    SECRET,
                                                                     CLUSTER,
                                                                     name -> null)
                                                 .replace(BootstrapPhaseDeploy.JVM_STARTED_MARKER, marker.toString());
@@ -581,7 +579,6 @@ class BootstrapLaunchOnceTest {
                                                                 7000,
                                                                 8080,
                                                                 "eu-1-core-0:203.0.113.10:7000",
-                                                                SECRET,
                                                                 CLUSTER,
                                                                 name -> null);
 
@@ -602,7 +599,6 @@ class BootstrapLaunchOnceTest {
                                                                 7000,
                                                                 8080,
                                                                 "eu-1-core-0:203.0.113.10:7000",
-                                                                SECRET,
                                                                 CLUSTER,
                                                                 name -> null);
         var exitedCleanly = runWithStub("systemctl",
@@ -611,6 +607,82 @@ class BootstrapLaunchOnceTest {
 
         assertThat(exitedCleanly.exit()).isEqualTo(BootstrapPhaseDeploy.ALREADY_PRESENT_EXIT);
         assertThat(exitedCleanly.output()).contains(BootstrapPhaseDeploy.ALREADY_PRESENT_MARKER);
+    }
+
+    /// #828 — the STAGED secret must be gone on EVERY exit of the launch line (the guard's refusal included: the guard `exit`s,
+    /// so it runs in a subshell and the `rm` sits outside it), and the INSTALLED secret (the bind-mount source) must only be
+    /// replaced when the start is allowed. The command's fixed remote paths are substituted by temp files so the real shell
+    /// runs it.
+    @Test
+    void containerStart_removesTheStagedSecret_onRefusal_onFailure_andOnSuccess_andOnlyInstallsWhenAllowed() throws Exception {
+        var command = BootstrapPhaseDeploy.buildStartCommand("img:1", CLUSTER, "eu-1-core-0", NodeRole.CORE, sourceNameOrDefault("eu-1"),
+                                                             Option.empty(), 7000, 8080, "eu-1-core-0:203.0.113.10:7000", name -> null);
+        var paths = new Staged(BootstrapPhaseDeploy.CONTAINER_SECRET_STAGED, NodeUserDataRenderer.CONTAINER_SECRET_HOST_FILE);
+        var refused = runStaged("docker", "[ \"$1\" = ps ] && echo aether-node; exit 0", command, paths);
+        var failed = runStaged("docker", "[ \"$1\" = run ] && exit 5; exit 0", command, paths);
+        var started = runStaged("docker", "[ \"$1\" = run ] && echo \"ARGS: $*\"; exit 0", command, paths);
+
+        assertThat(refused.exit()).isEqualTo(BootstrapPhaseDeploy.ALREADY_PRESENT_EXIT);
+        assertThat(refused.stagedLeft()).as("refusal: %s", refused.output()).isFalse();
+        assertThat(refused.installed()).as("a refused start must not overwrite the running node's secret file").isEqualTo(ORIGINAL);
+        assertThat(failed.exit()).as("docker run's own status is preserved").isEqualTo(5);
+        assertThat(failed.stagedLeft()).isFalse();
+        assertThat(started.exit()).as(started.output()).isZero();
+        assertThat(started.stagedLeft()).isFalse();
+        assertThat(started.installed()).as("positive control: the sentinel reached the installed file").isEqualTo(SECRET);
+        assertThat(started.output()).as("the docker run argv names the file, never the value").contains("AETHER_CLUSTER_SECRET_FILE=")
+                                    .doesNotContain(SECRET).doesNotContain("--env-file");
+    }
+
+    @Test
+    void jvmStart_removesTheStagedSecret_onRefusal_andOnSuccess_andPointsTheUnitAtTheFile() throws Exception {
+        var command = BootstrapPhaseDeploy.buildJvmStartCommand("eu-1-core-0", NodeRole.CORE, sourceNameOrDefault("eu-1"), Option.empty(),
+                                                                7000, 8080, "eu-1-core-0:203.0.113.10:7000", CLUSTER, name -> null);
+        var paths = new Staged(BootstrapPhaseDeploy.JVM_SECRET_STAGED, NodeUserDataRenderer.JVM_SECRET_FILE);
+        var refused = runStaged("systemctl", "[ \"$1\" = is-active ] && exit 0; exit 1", command, paths);
+
+        assertThat(refused.exit()).isEqualTo(BootstrapPhaseDeploy.ALREADY_PRESENT_EXIT);
+        assertThat(refused.stagedLeft()).as("refusal: %s", refused.output()).isFalse();
+        assertThat(refused.installed()).isEqualTo(ORIGINAL);
+        assertThat(command).doesNotContain(SECRET);
+
+        var started = runStaged("systemctl", "[ \"$1\" = start ] && echo STARTED; exit 1", command, paths);
+
+        assertThat(started.output()).as("systemctl is-active/is-failed exit 1, show prints nothing, start succeeds").contains("STARTED");
+        assertThat(started.stagedLeft()).isFalse();
+        assertThat(started.installed()).as("positive control: the sentinel reached the installed file").isEqualTo(SECRET);
+        assertThat(started.envFileContent()).contains("AETHER_CLUSTER_SECRET_FILE=").doesNotContain(SECRET).contains("AETHER_NODE_ID=eu-1-core-0");
+    }
+
+    private static final String ORIGINAL = "the-running-nodes-secret";
+
+    private record Staged(String stagedPath, String installedPath) {}
+
+    private record RanStaged(int exit, String output, boolean stagedLeft, String installed, String envFileContent) {}
+
+    private static RanStaged runStaged(String stubName, String stubBody, String command, Staged paths) throws Exception {
+        var dir = Files.createTempDirectory("launch-once-secret-");
+        var staged = dir.resolve("staged");
+        var installed = dir.resolve("installed");
+        var envFile = dir.resolve("node.env");
+
+        try {
+            Files.writeString(staged, SECRET);
+            Files.writeString(installed, ORIGINAL);
+            var ran = runWithStub(stubName, stubBody, command.replace(paths.stagedPath(), staged.toString())
+                                                             .replace(paths.installedPath(), installed.toString())
+                                                             .replace(" -o 1000 -g 1000", "")
+                                                             .replace("install -d -m 0755 " + NodeUserDataRenderer.JVM_ENV_DIR, "true")
+                                                             .replace(NodeUserDataRenderer.JVM_ENV_FILE_PATH, envFile.toString())
+                                                             .replace(BootstrapPhaseDeploy.JVM_STARTED_MARKER, dir.resolve("started").toString()));
+
+            return new RanStaged(ran.exit(), ran.output(), Files.exists(staged), Files.readString(installed),
+                                 Files.exists(envFile) ? Files.readString(envFile) : "");
+        } finally {
+            try (var files = Files.walk(dir)) {
+                files.sorted(Comparator.reverseOrder()).forEach(path -> path.toFile().delete());
+            }
+        }
     }
 
     private record Ran(int exit, String output) {}
@@ -903,6 +975,30 @@ class BootstrapLaunchOnceTest {
         assertThat(result.map(c -> c.state().startedNodeIds()).or(List.of()))
             .as("what markPhaseCompleted saves")
             .containsExactlyInAnyOrderElementsOf(concat(DC, EU));
+    }
+
+    /// #828 — through the production entry point: the real DEPLOY phase must hand its scp to the CLOUD path too, or the
+    /// cloud launch reads a secret file that was never pushed. Every started host (cloud and SSH source) gets one.
+    @Test
+    void deployPhase_pushesTheSecretFileToEveryStartedHost_cloudAndSsh() {
+        var ctx = multiSourceContext(RuntimeType.CONTAINER);
+
+        assertThat(BootstrapStatePersistence.save(ctx.state()).isSuccess()).isTrue();
+        var pushed = new ConcurrentLinkedQueue<String>();
+        Fn3<Result<String>, String, String, SshConfig> ssh = (host, command, cfg) -> Result.success("");
+        Fn4<Result<Unit>, String, String, String, SshConfig> scp = (local, host, remote, cfg) -> {
+            if (remote.equals(BootstrapPhaseDeploy.CONTAINER_SECRET_STAGED)) {
+                pushed.add(host);
+            }
+
+            return Result.unitResult();
+        };
+
+        var result = BootstrapPhaseDeploy.execute(ctx, url -> Result.success("OK"), ssh, scp, envWithKey());
+
+        assertThat(result.isSuccess()).as(() -> "deploy: " + result).isTrue();
+        assertThat(List.copyOf(pushed)).as("one secret push per started host").containsExactlyInAnyOrderElementsOf(
+            concat(DC, EU).stream().map(id -> ctx.nodes().stream().filter(n -> n.nodeId().equals(id)).findFirst().orElseThrow().publicIp()).toList());
     }
 
     /// R1: through `resumeFromState` itself — the resumed context handed to the phase chain must carry the
