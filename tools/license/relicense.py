@@ -48,11 +48,13 @@ def bsl_paths():
 
 
 def read(path):
-    return (ROOT / path).read_text(encoding="utf-8", errors="surrogateescape", newline="")
+    with open(ROOT / path, encoding="utf-8", errors="surrogateescape", newline="") as f:
+        return f.read()
 
 
 def write(path, text):
-    (ROOT / path).write_text(text, encoding="utf-8", errors="surrogateescape", newline="")
+    with open(ROOT / path, "w", encoding="utf-8", errors="surrogateescape", newline="") as f:
+        f.write(text)
 
 
 def tracked():
