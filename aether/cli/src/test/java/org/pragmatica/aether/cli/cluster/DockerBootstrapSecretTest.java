@@ -158,6 +158,7 @@ class DockerBootstrapSecretTest {
         var hostEnv = ((org.pragmatica.aether.environment.docker.DockerComputeProvider) provider).hostEnv();
 
         assertThat(hostEnv.apply(ProviderResolver.CLUSTER_SECRET_VAR)).isEqualTo(MINTED);
+        assertThat(hostEnv.apply("AETHER_CLUSTER_SECRET_FILE")).as("#828: the operator's own file variable never reaches the node's resolution").isNull();
         assertThat(hostEnv.apply("PATH")).as("every other name is the process environment").isEqualTo(System.getenv("PATH"));
     }
 
