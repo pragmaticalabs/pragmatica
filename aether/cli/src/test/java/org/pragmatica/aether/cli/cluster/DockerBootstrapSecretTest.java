@@ -37,9 +37,25 @@ class DockerBootstrapSecretTest {
     private final List<List<String>> commands = new CopyOnWriteArrayList<>();
     private final ConcurrentHashMap<String, String> namesByContainerId = new ConcurrentHashMap<>();
 
-    private final DockerCommandRunner runner = command -> {
+    private final List<byte[]> stdins = new CopyOnWriteArrayList<>();
+
+    private final DockerCommandRunner runner = new DockerCommandRunner() {
+        @Override
+        public Promise<String> execute(List<String> command) {
+            return answer(command);
+        }
+
+        @Override
+        public Promise<String> execute(List<String> command, byte[] stdin) {
+            stdins.add(stdin);
+
+            return answer(command);
+        }
+    };
+
+    private Promise<String> answer(List<String> command) {
         commands.add(command);
-        if (command.contains("run")) {
+        if (command.contains("run") || command.contains("create")) {
             var id = "cid-" + commands.size();
 
             namesByContainerId.put(id, command.get(command.indexOf("--name") + 1));
@@ -54,7 +70,7 @@ class DockerBootstrapSecretTest {
         }
 
         return Promise.success("");
-    };
+    }
 
     @BeforeEach
     void install() {
@@ -102,7 +118,7 @@ class DockerBootstrapSecretTest {
     }
 
     private List<List<String>> runCommands() {
-        return commands.stream().filter(command -> command.contains("run")).toList();
+        return commands.stream().filter(command -> command.contains("run") || command.contains("create")).toList();
     }
 
     @Test
@@ -118,7 +134,17 @@ class DockerBootstrapSecretTest {
         assertThat(result.<String> fold(cause -> cause.message(), nodes -> "ok")).isEqualTo("ok");
         assertThat(runCommands()).hasSize(3);
         for (var command : runCommands()) {
-            assertThat(command).as("the CLI's secret, once").filteredOn(arg -> arg.startsWith("AETHER_CLUSTER_SECRET=")).containsExactly("AETHER_CLUSTER_SECRET=" + MINTED);
+            assertThat(command).as("#828: the node is told where the secret FILE is, never the value").contains("AETHER_CLUSTER_SECRET_FILE=/tmp/aether-cluster-secret")
+                               .noneMatch(arg -> arg.contains(MINTED) || arg.startsWith("AETHER_CLUSTER_SECRET="));
+        }
+
+        assertThat(commands.stream().flatMap(List::stream)).as("the CLI's secret is on no argv").noneMatch(arg -> arg.contains(MINTED));
+        assertThat(stdins).as("one credential archive per node").hasSize(3);
+        for (var archive : stdins) {
+            var text = new String(archive, java.nio.charset.StandardCharsets.UTF_8);
+
+            assertThat(text).as("positive control: the CLI's secret, once, in the file the node reads").contains(MINTED);
+            assertThat(text.split(java.util.regex.Pattern.quote(MINTED), -1)).hasSize(2);
         }
     }
 
@@ -132,7 +158,31 @@ class DockerBootstrapSecretTest {
         var hostEnv = ((org.pragmatica.aether.environment.docker.DockerComputeProvider) provider).hostEnv();
 
         assertThat(hostEnv.apply(ProviderResolver.CLUSTER_SECRET_VAR)).isEqualTo(MINTED);
+        assertThat(hostEnv.apply("AETHER_CLUSTER_SECRET_FILE")).as("#828: the operator's own file variable never reaches the node's resolution").isNull();
         assertThat(hostEnv.apply("PATH")).as("every other name is the process environment").isEqualTo(System.getenv("PATH"));
+    }
+
+    /// #828 — the operator's own `AETHER_CLUSTER_SECRET_FILE` (the adoption path of this change) names THEIR file, not this cluster's.
+    /// Left visible, it conflicts with the CLI-minted secret and refuses every docker-source bootstrap. The ambient is stated here, not
+    /// inherited: set to a file holding a different secret, the provider must still resolve the CLI's secret and launch.
+    @Test
+    void anAmbientSecretFile_doesNotLeakIntoTheBootstrapProvider_andTheCliSecretStillWins() throws Exception {
+        var operatorFile = java.nio.file.Files.createTempFile("operator-secret-", ".txt");
+
+        try {
+            java.nio.file.Files.writeString(operatorFile, "the-operators-own-secret\n");
+            java.util.function.Function<String, String> ambient = name -> name.equals("AETHER_CLUSTER_SECRET_FILE") ? operatorFile.toString() : null;
+            var hostEnv = ProviderResolver.bootstrapHostEnv(MINTED, ambient::apply);
+
+            assertThat(hostEnv.apply("AETHER_CLUSTER_SECRET")).isEqualTo(MINTED);
+            assertThat(hostEnv.apply("AETHER_CLUSTER_SECRET_FILE")).as("the operator's file variable is not the node's").isNull();
+            assertThat(org.pragmatica.aether.environment.ClusterSecretSource.resolve(hostEnv::apply).unwrap().unwrap()).isEqualTo(MINTED);
+            assertThat(org.pragmatica.aether.environment.ClusterSecretSource.resolve(ambient::apply).unwrap().unwrap())
+                .as("control: unfiltered, the ambient file would have been a different secret").isEqualTo("the-operators-own-secret");
+            assertThat(hostEnv.apply("SOME_OTHER_NAME")).as("every other name is the ambient one").isNull();
+        } finally {
+            java.nio.file.Files.deleteIfExists(operatorFile);
+        }
     }
 
     @Test

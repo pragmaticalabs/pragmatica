@@ -3,12 +3,14 @@
 // Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.
 package org.pragmatica.aether.environment.docker;
 
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 
 import org.pragmatica.aether.environment.ClusterName;
+import org.pragmatica.aether.environment.ClusterSecretSource;
 import org.pragmatica.aether.environment.ClusterIdentityEnv;
 import org.pragmatica.aether.environment.ComputeProvider;
 import org.pragmatica.aether.environment.EnvironmentError;
@@ -52,6 +54,17 @@ public record DockerComputeProvider(DockerCommandRunner runner, DockerConfig con
                                                                       DockerConfig config,
                                                                       Fn1<String, String> hostEnv) {
         return success(new DockerComputeProvider(runner, config, hostEnv));
+    }
+
+    /// Makes sure the configured network exists before any container is started on it (#2131), creating it labelled with `clusterName` when absent.
+    public Promise<DockerNetwork.Ensured> ensureNetwork(String clusterName) {
+        return DockerNetwork.ensure(runner, config.networkName(), clusterName);
+    }
+
+    /// Removes the network named `networkName` (the one the LEDGER recorded, which can differ from the configured one today) if it carries
+    /// `clusterName`'s label and is empty; see [DockerNetwork#removeIfOwnedAndEmpty].
+    public Promise<DockerNetwork.Removal> removeNetworkIfOwnedAndEmpty(String networkName, String clusterName) {
+        return DockerNetwork.removeIfOwnedAndEmpty(runner, networkName, clusterName);
     }
 
     @Override
@@ -107,14 +120,46 @@ public record DockerComputeProvider(DockerCommandRunner runner, DockerConfig con
                       .or(() -> IdGenerator.generate(ProvisionContext.coreNodeNamePrefix(cluster)));
     }
 
-    private Promise<InstanceInfo> provisionWithIdentity(ProvisionRequest request, String containerName) {
-        var command = buildRunCommand(request, containerName);
+    /// Where a provider-minted node finds each credential file (#828): `/tmp/aether-<slug>`, copied in owned by the image's
+    /// `aether` user (uid/gid 1000), mode 0400, and named to the node by `<VAR>_FILE`.
+    static final String SECRET_DIRECTORY = "/tmp";
+    static final int NODE_UID = 1000;
 
-        return runner.execute(command)
-                     .map(containerId -> toProvisionedInfo(containerId, containerName, request))
-                     .flatMap(info -> confirmRunning(info,
-                                                     ReadinessPolicy.dockerDefault()))
-                     .onFailure(cause -> rollbackOnProvisionFailure(containerName, cause));
+    static String credentialFileName(String plainVar) {
+        return "aether-" + ClusterSecretSource.slug(plainVar);
+    }
+
+    static String credentialPath(String plainVar) {
+        return SECRET_DIRECTORY + "/" + credentialFileName(plainVar);
+    }
+
+    private Promise<InstanceInfo> provisionWithIdentity(ProvisionRequest request, String containerName) {
+        return resolveCredentials().async()
+                                 .flatMap(credentials -> launch(request, containerName, credentials))
+                                 .map(containerId -> toProvisionedInfo(containerId, containerName, request))
+                                 .flatMap(info -> confirmRunning(info,
+                                                                 ReadinessPolicy.dockerDefault()))
+                                 .onFailure(cause -> rollbackOnProvisionFailure(containerName, cause));
+    }
+
+    /// The credentials this node is minted with, by variable name, from the leader's environment (value or `_FILE`). The
+    /// configured `apiKey` is authoritative for `AETHER_API_KEY`. A conflicting, unreadable or empty `_FILE` fails the provision.
+    private Result<Map<String, String>> resolveCredentials() {
+        var found = new java.util.LinkedHashMap<String, String>();
+
+        for (var name : ClusterSecretSource.FILE_DELIVERED_ENVS) {
+            var resolved = ClusterSecretSource.AETHER_API_KEY_ENV.equals(name) && !config.apiKey().isBlank()
+                           ? Result.success(Option.some(config.apiKey()))
+                           : ClusterSecretSource.resolve(hostEnv, name);
+
+            if (resolved.isFailure()) {
+                return resolved.map(_ -> found);
+            }
+
+            resolved.unwrap().onPresent(value -> found.put(name, value));
+        }
+
+        return Result.success(found);
     }
 
     /// bootstrap list (3-part `nodeId:host:port` entries) so the new container can join
@@ -248,7 +293,42 @@ public record DockerComputeProvider(DockerCommandRunner runner, DockerConfig con
         return EnvironmentError.operationNotSupported("applyTags (Docker labels are immutable after creation)").promise();
     }
 
-    private List<String> buildRunCommand(ProvisionRequest request, String containerName) {
+    /// Without credentials, the plain `docker run -d`. With them: `docker create`, the credential files copied in over stdin as a
+    /// tar owned by the node user (mode 0400), then `docker start`. A bind mount would name a path on the daemon's host, which
+    /// this process (usually itself a container holding the docker socket) cannot write; `docker cp` goes through the daemon.
+    /// The values are on no argv and in no container env, and the files live in the container's own layer, so they die with
+    /// the container and survive a restart of it.
+    private Promise<String> launch(ProvisionRequest request, String containerName, Map<String, String> credentials) {
+        return credentials.isEmpty()
+               ? runner.execute(buildRunCommand(request, containerName, List.of()))
+               : runner.execute(buildCreateCommand(request,
+                                                   containerName,
+                                                   List.copyOf(credentials.keySet())))
+                       .flatMap(id -> copyCredentials(containerName, credentials).flatMap(_ -> runner.execute(List.of("docker",
+                                                                                                                      "start",
+                                                                                                                      containerName)))
+                                                     .map(_ -> id));
+    }
+
+    private List<String> buildCreateCommand(ProvisionRequest request, String containerName, List<String> fileVars) {
+        var command = new ArrayList<>(buildRunCommand(request, containerName, fileVars));
+
+        command.set(1, "create");
+        command.remove(2);
+
+        return List.copyOf(command);
+    }
+
+    private Promise<String> copyCredentials(String containerName, Map<String, String> credentials) {
+        var files = new java.util.LinkedHashMap<String, byte[]>();
+
+        credentials.forEach((name, value) -> files.put(credentialFileName(name), value.getBytes(StandardCharsets.UTF_8)));
+
+        return runner.execute(List.of("docker", "cp", "-", containerName + ":" + SECRET_DIRECTORY),
+                              SingleFileTar.filesTar(files, 0400, NODE_UID, NODE_UID));
+    }
+
+    private List<String> buildRunCommand(ProvisionRequest request, String containerName, List<String> fileVars) {
         var ctx = request.context();
         var role = roleOrDefault(ctx);
         var cluster = clusterLabelValue(ctx);
@@ -259,7 +339,6 @@ public record DockerComputeProvider(DockerCommandRunner runner, DockerConfig con
         var peers = ctx.peers().or("");
         var coreMax = String.valueOf(ctx.coreMax());
         var provisionedBy = ctx.provisionedBy();
-        var apiKey = config.apiKey();
         var command = new ArrayList<>(List.of("docker",
                                               "run",
                                               "-d",
@@ -313,9 +392,7 @@ public record DockerComputeProvider(DockerCommandRunner runner, DockerConfig con
                                               "-e",
                                               "PEERS=" + peers,
                                               "-e",
-                                              "CORE_MAX=" + coreMax,
-                                              "-e",
-                                              "AETHER_API_KEY=" + apiKey));
+                                              "CORE_MAX=" + coreMax));
 
         if (!provisionedBy.isEmpty()) {
             command.add("-e");
@@ -344,10 +421,11 @@ public record DockerComputeProvider(DockerCommandRunner runner, DockerConfig con
         // loses identity vars). Dedupe (alreadyEmitted) against vars already emitted above:
         // AETHER_CLUSTER_NAME (from clusterLabelValue(ctx) — authoritative, equals the label),
         // AETHER_PROVISIONED_BY (from ctx.provisionedBy()), AETHER_API_KEY (from config.apiKey()).
-        // AETHER_CLUSTER_SECRET still rides the loop verbatim (a cluster-wide constant with no
-        // per-provision authoritative source, unlike the name).
+        // AETHER_CLUSTER_SECRET is deliberately NOT forwarded (#828): the value would sit on this process's docker argv and in the
+        // container's env (`docker inspect`). It travels as a file, see [#launch].
         ClusterIdentityEnv.IDENTITY_VARS.stream()
                                         .filter(name -> !ClusterIdentityEnv.NODE_OWN_VARS.contains(name))
+                                        .filter(name -> !ClusterSecretSource.FILE_DELIVERED_ENVS.contains(name))
                                         .forEach(name -> propagateEnvVar(command, name));
         ClusterIdentityEnv.DOCKER_INFRA_VARS.forEach(name -> propagateEnvVar(command, name));
         // #1968: the backup configuration is environment-driven for a Docker node (it has no node TOML of its own), so a
@@ -384,6 +462,11 @@ public record DockerComputeProvider(DockerCommandRunner runner, DockerConfig con
 
         addSpecLabels(command, ctx.extraTags());
         addPlacementLabels(command, request.zone());
+        for (var name : fileVars) {
+            command.add("-e");
+            command.add(ClusterSecretSource.fileVar(name) + "=" + credentialPath(name));
+        }
+
         command.add(config.imageName());
 
         return List.copyOf(command);

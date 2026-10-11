@@ -34,6 +34,7 @@ import static org.pragmatica.aether.stream.StreamPartitionManager.streamPartitio
 /// refuses bare names — and, by the #1282 order pinned in `StreamRoutesReservedPrefixTest`, the
 /// `system:` spelling — so the cycle is driven through the catalog-form create.)
 class StreamRoutesEngineKeyRoundTripTest {
+    private static final String NAMESPACE = "com.example.diag";
     private static final String STREAM_NAME = "diagnostics";
     private static final String VERSION = "1.0.0";
 
@@ -66,18 +67,18 @@ class StreamRoutesEngineKeyRoundTripTest {
                                                              ConsumerGroupCoordinator.noOp(),
                                                              ConsumerGroupRegistry.consumerGroupRegistry());
 
-            // CREATE: catalog-form `system`-namespace address, minted under the bare-name engine key.
-            apiRoutes.createStream(StreamManager.SYSTEM_NAMESPACE,
+            // CREATE: catalog-form address, minted under the full-address engine key.
+            apiRoutes.createStream(NAMESPACE,
                                    STREAM_NAME,
                                    VERSION,
                                    new StreamApiRoutes.CreateRequest(1))
                      .onFailure(cause -> fail("stream create must succeed: " + cause))
                      .onSuccess(response -> assertThat(response.status()).isEqualTo("created"));
-            assertThat(manager.streamInfo(STREAM_NAME).isPresent()).as("minted under the bare-name engine key").isTrue();
+            assertThat(manager.streamInfo(NAMESPACE + ":" + STREAM_NAME + ":" + VERSION).isPresent()).as("minted under the full-address engine key").isTrue();
 
-            // PUBLISH: catalog-form `system`-namespace address must resolve to the SAME bare-name
+            // PUBLISH: catalog-form address must resolve to the SAME full-address
             // engine key CREATE minted, not a shadow stream materialized under a different key.
-            apiRoutes.publishEvent(StreamManager.SYSTEM_NAMESPACE,
+            apiRoutes.publishEvent(NAMESPACE,
                                    STREAM_NAME,
                                    VERSION,
                                    new StreamApiRoutes.PublishRequest("payload", null))
@@ -88,7 +89,7 @@ class StreamRoutesEngineKeyRoundTripTest {
 
             // DELETE: same catalog-form address, same engine-key resolution — must tear down the
             // SAME stream PUBLISH just wrote to, not fail "not found" against a different key.
-            apiRoutes.deleteStream(StreamManager.SYSTEM_NAMESPACE, STREAM_NAME, VERSION)
+            apiRoutes.deleteStream(NAMESPACE, STREAM_NAME, VERSION)
                      .onFailure(cause -> fail("delete against the system-namespace address must resolve to the "
                                               + "SAME engine key publish used: " + cause))
                      .onSuccess(response -> assertThat(response.status()).isEqualTo("deleted"));

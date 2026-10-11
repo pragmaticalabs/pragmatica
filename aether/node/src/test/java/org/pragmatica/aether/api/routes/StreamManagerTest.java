@@ -11,10 +11,10 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 class StreamManagerTest {
     @Test
-    void engineKey_systemNamespaceAddress_returnsBareName() {
+    void engineKey_systemNamespaceAddress_returnsFullCatalogAddress() {
         var address = ResourceAddress.resourceAddress("system", "diagnostics", "1.0.0").unwrap();
 
-        assertThat(StreamManager.engineKey(address)).isEqualTo("diagnostics");
+        assertThat(StreamManager.engineKey(address)).isEqualTo("system:diagnostics:1.0.0");
     }
 
     @Test
@@ -34,9 +34,9 @@ class StreamManagerTest {
     }
 
     @Test
-    void systemAddress_engineKeyRoundTrip_returnsBareName() {
+    void systemAddress_engineKeyRoundTrip_returnsFullCatalogAddress() {
         var address = StreamManager.systemAddress("harness-probe").unwrap();
 
-        assertThat(StreamManager.engineKey(address)).isEqualTo("harness-probe");
+        assertThat(StreamManager.engineKey(address)).isEqualTo("system:harness-probe:1.0.0");
     }
 }

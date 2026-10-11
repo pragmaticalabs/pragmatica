@@ -32,7 +32,8 @@ public sealed interface StreamForwardMessage extends ProtocolMessage {
                           String streamName,
                           int partition,
                           byte[] payload,
-                          long timestamp) implements StreamForwardMessage {
+                          long timestamp,
+                          boolean systemWriter) implements StreamForwardMessage {
         public PublishForward {
             payload = payload.clone();
         }
@@ -43,7 +44,19 @@ public sealed interface StreamForwardMessage extends ProtocolMessage {
                                                     int partition,
                                                     byte[] payload,
                                                     long timestamp) {
-            return new PublishForward(sender, correlationId, streamName, partition, payload, timestamp);
+            return new PublishForward(sender, correlationId, streamName, partition, payload, timestamp, false);
+        }
+
+        /// `systemWriter` (#1338): set only by the sending node's own system publisher. The owner appends a forwarded
+        /// write to a `system:` stream only when it is set.
+        public static PublishForward publishForward(NodeId sender,
+                                                    String correlationId,
+                                                    String streamName,
+                                                    int partition,
+                                                    byte[] payload,
+                                                    long timestamp,
+                                                    boolean systemWriter) {
+            return new PublishForward(sender, correlationId, streamName, partition, payload, timestamp, systemWriter);
         }
 
         @Override
@@ -59,7 +72,8 @@ public sealed interface StreamForwardMessage extends ProtocolMessage {
                    && streamName.equals(other.streamName)
                    && partition == other.partition
                    && Arrays.equals(payload, other.payload)
-                   && timestamp == other.timestamp;
+                   && timestamp == other.timestamp
+                   && systemWriter == other.systemWriter;
         }
 
         @Override
@@ -71,6 +85,7 @@ public sealed interface StreamForwardMessage extends ProtocolMessage {
             result = 31 * result + Integer.hashCode(partition);
             result = 31 * result + Arrays.hashCode(payload);
             result = 31 * result + Long.hashCode(timestamp);
+            result = 31 * result + Boolean.hashCode(systemWriter);
 
             return result;
         }

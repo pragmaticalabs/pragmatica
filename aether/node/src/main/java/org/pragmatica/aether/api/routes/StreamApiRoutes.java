@@ -863,7 +863,7 @@ public final class StreamApiRoutes implements RouteSource {
     /// barrier).
     ///
     /// Engine key via [StreamManager#engineKey], not `addr.asString()`: a `system`-namespace address
-    /// must resolve to the bare name the engine keys operator-created flat streams by, or this publish
+    /// must resolve to its full address, the name the stream is created under, or this publish
     /// materializes a stream under a different key than the one STREAM_CREATE minted.
     private Promise<Long> publishOne(ResourceAddress addr, PublishRequest request) {
         var streamName = StreamManager.engineKey(addr);
@@ -1175,7 +1175,7 @@ public final class StreamApiRoutes implements RouteSource {
     }
 
     /// Engine key via [StreamManager#engineKey] — same reasoning as [#publishOne]: a `system`-namespace
-    /// address must resolve to the bare name the engine keys the stream by, or this deletes the wrong key.
+    /// address must resolve to the full address the engine keys the stream by, or this deletes the wrong key.
     ///
     /// #1224: releases the catalog reference this address holds, in addition to the pre-existing
     /// physical ring teardown — a stream created before this migration (or one this handler itself

@@ -33,7 +33,13 @@ class SystemStreamsTest {
 
     @Test
     void isForbiddenEngineKey_clusterEvents_isTrue() {
-        assertThat(SystemStreams.isForbiddenEngineKey("cluster-events")).isTrue();
+        assertThat(SystemStreams.isForbiddenEngineKey("system:cluster-events:1.0.0")).isTrue();
+    }
+
+    /// #1338: a user stream whose bare name is a system stream's bare name is NOT the system stream.
+    @Test
+    void isForbiddenEngineKey_bareNameOfASystemStream_isFalse() {
+        assertThat(SystemStreams.isForbiddenEngineKey("cluster-events")).isFalse();
     }
 
     @Test

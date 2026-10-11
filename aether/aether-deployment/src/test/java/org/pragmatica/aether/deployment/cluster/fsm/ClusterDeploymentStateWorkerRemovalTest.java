@@ -232,6 +232,8 @@ class ClusterDeploymentStateWorkerRemovalTest {
             kvStore.put(NodeArtifactKey.nodeArtifactKey(WORKER_1, ARTIFACT), NodeArtifactValue.nodeArtifactValue(SliceState.ACTIVE));
             // #699: unowned blueprint, so schemaRequired stays at the historical default (true).
             activeState().blueprints().put(ARTIFACT, Blueprint.blueprint(ARTIFACT, 1, 1, Option.empty(), true));
+            // #1109: the leader allocates only for a COMMITTED target.
+            kvStore.put(SliceTargetKey.sliceTargetKey(ARTIFACT.base()), SliceTargetValue.sliceTargetValue(ARTIFACT.version(), 1));
             cluster.commands.clear();
 
             leaveWorker(WORKER_1);

@@ -437,6 +437,9 @@ class BestEffortOutcomeMergeTest {
             var slice = ResolvedSlice.resolvedSlice(artifact, 3, false).unwrap();
             var expanded = ExpandedBlueprint.expandedBlueprint(OWNER, List.of(slice));
 
+            // #1974: committed before its apply is tracked; a rollback of a deleted blueprint writes nothing.
+            kvStore.applyBatch(List.of(new KVCommand.Put<>(AppBlueprintKey.appBlueprintKey(OWNER),
+                                                           AppBlueprintValue.appBlueprintValue(expanded))));
             activeState().inFlightBlueprints()
                          .put(OWNER,
                               ClusterDeploymentState.Active.InFlightBlueprint.inFlightBlueprint(OWNER,
