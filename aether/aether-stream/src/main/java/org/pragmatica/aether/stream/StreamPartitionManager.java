@@ -2126,6 +2126,69 @@ public final class StreamPartitionManager implements AutoCloseable {
         if (ring.visibleOffset() >= 0) {
             announceVisible(head.streamName(), head.partition(), ring.visibleOffset());
         }
+        retransmitTail(head.streamName(), head.partition(), ring);
+    }
+
+    /// How an owner's unacknowledged tail is tracked between ticks (#2087): the visible position and head last seen, and how many
+    /// consecutive ticks neither moved.
+    private record TailWatch(long visible, long head, int quietTicks) {}
+
+    /// Ticks of no progress before an owner re-offers its unacknowledged tail, and the most events a retransmit carries.
+    private static final int TAIL_RETRANSMIT_AFTER_TICKS = 5;
+    private static final int TAIL_RETRANSMIT_MAX_EVENTS = 256;
+
+    private final ConcurrentHashMap<String, TailWatch> tailWatch = new ConcurrentHashMap<>();
+
+    /// #2087: acknowledgements are cumulative and are produced only as the reply to a replicated batch, so a tail the owner holds
+    /// above its visible position -- inherited at a promotion, or left by a lost batch or acknowledgement -- would stay uncommitted
+    /// on a quiet partition until some later publish. The owner therefore re-offers it as an ordinary batch once nothing has moved
+    /// for [#TAIL_RETRANSMIT_AFTER_TICKS] ticks: replicas verify what they already hold and acknowledge it at the end (or land what
+    /// they lack), and the owner's visible position then advances through the usual acknowledgement path. Only an activated owner
+    /// does it, and it stops by itself once visible reaches the head. Bound: [#TAIL_RETRANSMIT_MAX_EVENTS] events per partition
+    /// per five ticks while a tail is unacknowledged, nothing otherwise.
+    @Contract
+    private void retransmitTail(String streamName, int partition, OffHeapRingBuffer ring) {
+        var key = partitionKeyOf(streamName, partition);
+        var visible = ring.visibleOffset();
+        var head = ring.headOffset();
+
+        if (visible >= head || placementRoleSupplier.roleFor(streamName, partition) != Role.OWNER || ownerServeGate.admit(streamName, partition).isFailure()) {
+            tailWatch.remove(key);
+
+            return;
+        }
+
+        var watch = tailWatch.merge(key,
+                                    new TailWatch(visible, head, 0),
+                                    (known, now) -> known.visible() == now.visible() && known.head() == now.head()
+                                                    ? new TailWatch(now.visible(), now.head(), known.quietTicks() + 1)
+                                                    : now);
+
+        if (watch.quietTicks() >= TAIL_RETRANSMIT_AFTER_TICKS) {
+            tailWatch.put(key, new TailWatch(visible, head, 0));
+            offerTail(streamName, partition, ring, visible + 1);
+        }
+    }
+
+    @Contract
+    private void offerTail(String streamName, int partition, OffHeapRingBuffer ring, long from) {
+        ring.readAppended(from, TAIL_RETRANSMIT_MAX_EVENTS)
+            .onSuccess(events -> offerEvents(streamName, partition, from, events))
+            .onFailure(cause -> log.debug("Tail retransmit of {}[{}] from {} not offered: {}", streamName, partition, from, cause.message()));
+    }
+
+    @Contract
+    private void offerEvents(String streamName, int partition, long from, List<OffHeapRingBuffer.RawEvent> events) {
+        if (events.isEmpty() || events.getFirst().offset() != from) {
+            return;
+        }
+
+        replicationManager.replicateEvents(streamName,
+                                           partition,
+                                           from,
+                                           events.stream().map(OffHeapRingBuffer.RawEvent::data).toList(),
+                                           events.stream().map(OffHeapRingBuffer.RawEvent::timestamp).toList(),
+                                           ownerEpochSource.currentOwnerEpoch(streamName, partition));
     }
 
     /// #2087: the owner told this replica how far its visible position reaches. Ignored on the owner itself (it is the

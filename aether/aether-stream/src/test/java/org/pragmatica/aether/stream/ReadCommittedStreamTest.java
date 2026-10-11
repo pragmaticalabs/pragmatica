@@ -325,6 +325,109 @@ class ReadCommittedStreamTest {
         assertThat(readLocal(manager)).as("compared with the owner is not acknowledged by the peers").isEmpty();
     }
 
+    /// An owner's unacknowledged tail is re-offered on the tick, so it commits without a new publish (#2087).
+    @Nested
+    class TailRetransmit {
+        private final List<ReplicationMessage.ReplicateEvents> sent = new CopyOnWriteArrayList<>();
+
+        private ReplicationManager replication() {
+            return replicationManager(SELF, registryWithPeers(), (target, message) -> {
+                if (message instanceof ReplicationMessage.ReplicateEvents events) {
+                    sent.add(events);
+                }
+            });
+        }
+
+        private void tick(int times) {
+            for (var i = 0; i < times; i++) {
+                manager.repeatVisible();
+            }
+        }
+
+        @Test
+        void unacknowledgedTail_isReofferedAfterFiveQuietTicks_once_underTheCurrentEpoch() {
+            var replication = replication();
+
+            manager = streamPartitionManager(Long.MAX_VALUE, EvictionListener.NOOP, replication);
+            manager.ownerEpochSource((_, _) -> EPOCH_2);
+            createStream(manager, 3, 3);
+            publish(manager, "e0");
+            publish(manager, "e1");
+            publish(manager, "e2");
+            var live = sent.size();
+
+            assertThat(live).as("control: the live batches went to both replicas, one event each").isEqualTo(6);
+
+            tick(5);
+
+            assertThat(sent).as("five ticks: the first only starts the watch and four are quiet").hasSize(live);
+
+            tick(1);
+
+            assertThat(sent).as("the sixth tick re-offers the tail").hasSize(live + 2);
+            var offered = sent.get(live);
+
+            assertThat(offered.fromOffset()).isZero();
+            assertThat(offered.payloads()).hasSize(3);
+            assertThat(offered.ownerEpoch()).isEqualTo(EPOCH_2);
+
+            tick(1);
+
+            assertThat(sent).as("the counter restarted: no second offer on the next tick").hasSize(live + 2);
+        }
+
+        @Test
+        void aCommittedTail_isNeverReoffered() {
+            var replication = replication();
+
+            manager = streamPartitionManager(Long.MAX_VALUE, EvictionListener.NOOP, replication);
+            createStream(manager, 3, 3);
+            var offset = publish(manager, "e0");
+            var live = sent.size();
+
+            replication.handleAck(replicateAck(PEER, STREAM, PARTITION, offset));
+            replication.handleAck(replicateAck(PEER2, STREAM, PARTITION, offset));
+            tick(12);
+
+            assertThat(sent).as("visible reached the head: nothing to re-offer").hasSize(live);
+        }
+
+        @Test
+        void aReplica_andAnOwnerThatIsNotActivated_neverReoffer() {
+            manager = streamPartitionManager(Long.MAX_VALUE, EvictionListener.NOOP, replication());
+            createStream(manager, 3, 3);
+            publish(manager, "e0");
+            var live = sent.size();
+
+            manager.placementRoleSupplier((_, _) -> ReplicaSetController.Role.REPLICA);
+            tick(12);
+            assertThat(sent).as("a replica").hasSize(live);
+
+            manager.placementRoleSupplier((_, _) -> ReplicaSetController.Role.OWNER);
+            manager.ownerServeGate((_, _) -> org.pragmatica.lang.Result.failure(org.pragmatica.lang.utils.Causes.cause("not activated")));
+            tick(12);
+            assertThat(sent).as("an owner whose activation gate refuses").hasSize(live);
+        }
+
+        @Test
+        void aRetransmit_carriesAtMost256Events_fromTheVisiblePosition() {
+            manager = streamPartitionManager(Long.MAX_VALUE, EvictionListener.NOOP, replication());
+            createStream(manager, 3, 3);
+            for (var i = 0; i < 300; i++) {
+                publish(manager, "e" + i);
+            }
+            var live = sent.size();
+
+            tick(6);
+
+            var offered = sent.subList(live, sent.size());
+
+            assertThat(offered).hasSize(2);
+            assertThat(offered.getFirst().payloads()).hasSize(256);
+            assertThat(offered.getFirst().fromOffset()).isZero();
+        }
+    }
+
     @Nested
     class Silence {
 
