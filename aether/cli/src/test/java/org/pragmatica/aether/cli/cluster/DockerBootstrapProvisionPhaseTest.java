@@ -203,22 +203,54 @@ class DockerBootstrapProvisionPhaseTest {
         assertThat(entries(requests.getFirst())).as("the survivor still carries the full list").hasSize(3);
     }
 
+    private static final String LOCAL_3_CORES_2_WORKERS = """
+
+            [source.local]
+            type = "docker"
+            zone = "z1"
+
+            [source.local.core]
+            count = 3
+
+            [source.local.worker]
+            count = 2
+            """;
+
+    /// The ledger must record every provisioned node whatever the id the provider was given: `isDockerCluster` (destroy's published-port gate, #2089)
+    /// reads it, and a docker bootstrap whose ledger came out empty brought back "Connection refused for every drain".
     @Test
-    void provisionedNodes_areLabelledDistinctly_zoneAndProvisionedByAreStamped() {
-        var result = runPhase(config("""
-
-                [source.local]
-                type = "docker"
-                zone = "z1"
-
-                [source.local.core]
-                count = 3
-                """));
+    void dockerBootstrap_ledgerHoldsOneDockerVmPerNode_andDestroyRecognisesTheCluster() {
+        var result = runPhase(config(LOCAL_3_CORES_2_WORKERS));
 
         assertThat(result.isSuccess()).isTrue();
-        List<String> labels = result.<List<String>> fold(cause -> List.of(), ctx -> ctx.nodes().stream().map(node -> node.nodeId()).toList());
+        var state = result.<BootstrapState> fold(cause -> BootstrapState.initialState(ClusterName.clusterName("dock").unwrap(), "h", "now"), ctx -> ctx.state());
+        var vms = state.createdResources()
+                       .stream()
+                       .filter(CreatedResource.ProvisionedVm.class::isInstance)
+                       .map(CreatedResource.ProvisionedVm.class::cast)
+                       .toList();
 
-        assertThat(labels).as("per-node labels are source-role-index, distinct").containsExactly("local-core-0", "local-core-1", "local-core-2");
+        assertThat(vms).as("one ProvisionedVm per node").hasSize(5);
+        assertThat(vms).allMatch(vm -> "docker".equals(vm.provider()) && "local".equals(vm.sourceName()));
+        assertThat(vms.stream().filter(vm -> "core".equals(vm.role())).count()).isEqualTo(3);
+        assertThat(vms.stream().filter(vm -> "worker".equals(vm.role())).count()).isEqualTo(2);
+        assertThat(ClusterDestroyCommand.isDockerCluster(Option.some(state))).as("destroy recognises the docker cluster").isTrue();
+    }
+
+    /// The id recorded for a node is the CLI's attribution key (`<source>-<role>-<index>`): deploy, post and the ledger parse it. The container's own
+    /// identity travels in the provision context, planned by the CLI for every node (workers included) so the provider mints nothing (#1027).
+    @Test
+    void provisionedNodes_areKeyedByTheLabel_andTheContextCarriesDistinctPlannedContainerIds() {
+        var result = runPhase(config(LOCAL_3_CORES_2_WORKERS));
+
+        assertThat(result.isSuccess()).isTrue();
+        List<String> keys = result.<List<String>> fold(cause -> List.of(), ctx -> ctx.nodes().stream().map(node -> node.nodeId()).toList());
+        var contextIds = requests.stream().map(request -> request.context().nodeId().or("<none>")).toList();
+
+        assertThat(keys).containsExactly("local-core-0", "local-core-1", "local-core-2", "local-worker-0", "local-worker-1");
+        assertThat(keys).allMatch(key -> BootstrapPhaseProvision.belongsTo(key, org.pragmatica.aether.environment.SourceName.sourceNameOrDefault("local")));
+        assertThat(contextIds).as("every node, workers included, was handed a planned container id").doesNotContain("<none>").doesNotHaveDuplicates();
+        assertThat(contextIds).allMatch(id -> id.startsWith("aether-dock-node-"));
         for (var request : requests) {
             assertThat(request.zone()).isEqualTo("z1");
             assertThat(request.context().provisionedBy()).isEqualTo(ProvisionContext.PROVISIONED_BY_BOOTSTRAP);

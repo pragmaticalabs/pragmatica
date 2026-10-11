@@ -167,4 +167,16 @@ class ProvisionContextTest {
             assertThat(a).isNotEqualTo(b);
         }
     }
+
+    /// #1027: a context that carries a node id is honoured as is; only an empty context mints. Killing "resolveNodeId ignores the context id" here, in the
+    /// module that owns it, instead of only in a provider suite.
+    @Test
+    void resolveNodeId_honoursTheContextId_andMintsOnlyWhenAbsent() {
+        var withId = ProvisionContext.forBootstrap(clusterName("dock").unwrap(), "core", sourceNameOrDefault("s"), "aether-dock-node-planned");
+        var withoutId = ProvisionContext.provisionContext(maybeClusterName("dock"), "core", sourceNameOrDefault("s"), ProvisionContext.PROVISIONED_BY_BOOTSTRAP);
+
+        assertThat(withId.resolveNodeId()).isEqualTo("aether-dock-node-planned");
+        assertThat(withoutId.resolveNodeId()).startsWith("aether-dock-node-");
+        assertThat(withoutId.resolveNodeId()).as("a minted id is fresh each time").isNotEqualTo(withoutId.resolveNodeId());
+    }
 }
