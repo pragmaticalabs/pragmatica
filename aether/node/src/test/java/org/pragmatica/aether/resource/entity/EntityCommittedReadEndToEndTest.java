@@ -2,7 +2,7 @@
 // Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
 // Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.
 // See LICENSE in the repository root for full terms.
-package org.pragmatica.aether.node;
+package org.pragmatica.aether.resource.entity;
 
 import java.nio.charset.StandardCharsets;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -14,9 +14,6 @@ import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.dht.CommittedPartitionOwnerSource.CommittedOwner;
 import org.pragmatica.aether.dht.EntityPartitionArc;
 import org.pragmatica.aether.resource.Mutator;
-import org.pragmatica.aether.resource.entity.DurableEntity;
-import org.pragmatica.aether.resource.entity.EntityLogError;
-import org.pragmatica.aether.resource.entity.PartitionFencedDurableEntity;
 import org.pragmatica.aether.slice.ReplicationFactors;
 import org.pragmatica.aether.slice.generation.Epoch;
 import org.pragmatica.aether.stream.EvictionListener;
@@ -170,7 +167,7 @@ class EntityCommittedReadEndToEndTest {
         return EntityPartitionArc.arcName(KEYSPACE);
     }
 
-    private static org.pragmatica.aether.resource.entity.EntityLogSubstrate substrate(StreamPartitionManager manager) {
+    private static EntityLogSubstrate substrate(StreamPartitionManager manager) {
         return streamEntityLogSubstrate(manager,
                                         (_, _) -> new StreamPartitionManager.ReplicaCatchupSource.CatchupView(0, true),
                                         null,
@@ -181,7 +178,7 @@ class EntityCommittedReadEndToEndTest {
                                         null);
     }
 
-    private DurableEntity<String, Integer, IntOp> entity(org.pragmatica.aether.resource.entity.EntityLogSubstrate substrate, NodeId self) {
+    private DurableEntity<String, Integer, IntOp> entity(EntityLogSubstrate substrate, NodeId self) {
         return PartitionFencedDurableEntity.<String, Integer, IntOp> partitionFencedDurableEntity(KEYSPACE,
                                                                                                   substrate,
                                                                                                   EntityPartitionArc.entityPartitionArc(KEYSPACE, 1),
