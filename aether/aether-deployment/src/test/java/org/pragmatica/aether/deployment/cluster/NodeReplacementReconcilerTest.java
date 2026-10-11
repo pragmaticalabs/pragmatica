@@ -114,7 +114,8 @@ class NodeReplacementReconcilerTest {
                                    handoffSettled,
                                    drainRefusal,
                                    oldInstanceGone,
-                                   reapFailure);
+                                   reapFailure,
+                                   "");
         }
 
         @Override

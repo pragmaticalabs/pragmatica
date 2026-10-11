@@ -130,6 +130,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                     Set<NodeId> seenInstances,
                                     Set<NodeId> confirmedReaps,
                                     Set<NodeId> listedAbsent,
+                                    ConcurrentHashMap<NodeId, String> knownInstanceIds,
                                     Set<NodeId> drainGraceChains,
                                     ConcurrentHashMap<NodeId, Long> incarnations,
                                     ConcurrentHashMap<NodeId, Long> failedReaps,
@@ -140,6 +141,10 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     private static final Logger log = LoggerFactory.getLogger(ClusterTopologyManager.class);
     private static final int MINIMUM_CLUSTER_SIZE = 3;
     private static final int MAX_CONSECUTIVE_PROVISIONING_FAILURES = 3;
+
+    /// Names the operator command that closes a mark after the operator verified at the provider and terminated the instance by hand. Takes the node id.
+    private static final String CLEAR_HINT = "; after you have verified and terminated it, clear this warning cluster-wide with: aether cluster clear-unconfirmed {} --instance <provider-instance-id|unknown>";
+
     private static final String NO_RETIREMENT_CHECK = "no retirement check is wired";
     /// #1804: a refused reap is re-evaluated once per provisioning window, for an hour at the default window —
     /// longer than the slowest voter handoff observed (14 min) with margin, bounded so a node that never becomes
@@ -273,6 +278,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                                 ConcurrentHashMap.newKeySet(),
                                                 ConcurrentHashMap.newKeySet(),
                                                 ConcurrentHashMap.newKeySet(),
+                                                new ConcurrentHashMap<>(),
                                                 ConcurrentHashMap.newKeySet(),
                                                 new ConcurrentHashMap<>(),
                                                 new ConcurrentHashMap<>(),
@@ -1748,6 +1754,10 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     /// phase-NORMAL / operator reset via [#resetProvisioningCircuit].
     @Contract
     private void recordProvisioningFailure(Cause cause) {
+        if (cause instanceof FleetInventoryInitializing) {
+            return;
+        }
+
         var failures = consecutiveProvisioningFailures.incrementAndGet();
 
         lastProvisionFailureRef.set(new LastProvisionFailure(cause.message(), nowMs()));
@@ -1892,6 +1902,8 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
 
                                             if (!listed.isEmpty()) {
                                             seenInstances.add(node);
+                                            knownInstanceIds.put(node,
+                                                                 instanceIds(listed));
                                         } else if (!seen) {
                                             listedAbsent.add(node);
                                         }
@@ -2493,10 +2505,10 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     /// warning, and says so. One that only ever met FAILED listings proves nothing about the instance: it is re-checked, and says that listing is failing.
     private void raiseUnconfirmedEvent(NodeId nodeId, String cause, boolean seen, boolean absent) {
         var template = absent
-                       ? "The cluster cannot confirm the termination of the instance of retired node {} ({}): a listing succeeded and has never shown an instance of it, and the cluster will not re-check; it may still be running at the provider and billing: verify at the provider and terminate it by hand"
+                       ? "The cluster cannot confirm the termination of the instance of retired node {} ({}): a listing succeeded and has never shown an instance of it, and the cluster will not re-check; it may still be running at the provider and billing: verify at the provider and terminate it by hand" + CLEAR_HINT
                        : seen
-                         ? "The termination of the instance of retired node {} is not confirmed ({}); it may still be running at the provider and billing: terminate it, then the cluster confirms it by listing"
-                         : "The termination of the instance of retired node {} is not confirmed ({}): no successful listing has shown the instance, so it is not known whether it exists (a failing listing proves nothing); it may still be running at the provider and billing; the cluster keeps re-checking and confirms it once a listing shows the instance and it is terminated, and cannot confirm an instance you terminate yourself";
+                         ? "The termination of the instance of retired node {} is not confirmed ({}); it may still be running at the provider and billing: terminate it, then the cluster confirms it by listing; if you terminated it yourself instead" + CLEAR_HINT
+                         : "The termination of the instance of retired node {} is not confirmed ({}): no successful listing has shown the instance, so it is not known whether it exists (a failing listing proves nothing); it may still be running at the provider and billing; the cluster keeps re-checking and confirms it once a listing shows the instance and it is terminated, and cannot confirm an instance you terminate yourself" + CLEAR_HINT;
 
         org.pragmatica.utility.warning.OperatorWarnings.raise(log,
                                                               warningSink.get(),
@@ -2504,14 +2516,268 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                                               nodeId.id(),
                                                               template,
                                                               nodeId.id(),
-                                                              cause);
+                                                              cause,
+                                                              nodeId.id());
+    }
+
+    @Override
+    public Promise<Unit> clearUnconfirmed(NodeId nodeId, String operator, String attestedInstance, boolean force) {
+        if (!active.get()) {
+            return new UnconfirmedClearRefusal.NotActive().promise();
+        }
+
+        var persisted = Option.option(persistedMarks.get().get().get(nodeId));
+
+        if (persisted.isEmpty() && !unconfirmedReaps.contains(nodeId)) {
+            return new UnconfirmedClearRefusal.NotMarked(nodeId).promise();
+        }
+
+        if (liveness.demonstrablyLive(nodeId)) {
+            return new UnconfirmedClearRefusal.NodeLive(nodeId).promise();
+        }
+
+        var generation = incarnation(nodeId);
+        var cause = persisted.map(AetherValue.UnconfirmedTerminationValue::cause).or("mark not persisted");
+        var known = Option.option(knownInstanceIds.get(nodeId)).or("never listed");
+
+        return providerState(nodeId, attestedInstance, force).flatMap(seen -> stillClearable(nodeId, generation).flatMap(_ -> deleteExactMark(nodeId,
+                                                                                                                                              persisted))
+                                                                                            .flatMap(_ -> afterClear(nodeId,
+                                                                                                                     generation,
+                                                                                                                     new Cleared(operator,
+                                                                                                                                 attestedInstance,
+                                                                                                                                 force,
+                                                                                                                                 seen.state(),
+                                                                                                                                 known,
+                                                                                                                                 cause),
+                                                                                                                     seen)));
+    }
+
+    /// The provider reads took time: a node that rejoined while they ran is a new incarnation (nothing to clear), and one that shows life now is never cleared.
+    /// Asked again at the commit, after the reads, fenced by the incarnation read before them.
+    private Promise<Unit> stillClearable(NodeId nodeId, long generation) {
+        if (!sameIncarnation(nodeId, generation)) {
+            return new UnconfirmedClearRefusal.Changed(nodeId).promise();
+        }
+
+        return liveness.demonstrablyLive(nodeId)
+               ? new UnconfirmedClearRefusal.NodeLive(nodeId).promise()
+               : Promise.unitPromise();
+    }
+
+    /// What the operator's clear is audited with: who, what they attest, whether they overrode the provider check and what the provider showed.
+    private record Cleared(String operator,
+                           String attested,
+                           boolean forced,
+                           String providerState,
+                           String known,
+                           String cause) {}
+
+    /// Looks the instance up at the node's source provider two ways, and refuses on either: by the node's LABELS (a wrong or `unknown` attested id cannot
+    /// hide a listed instance) and, when the operator names an id, by that ID (an instance the operator names that the provider shows without the node's
+    /// labels is refused too). A listed instance that is not terminated, or a read that fails (a not-found for the id is an answer, not a failure), refuses
+    /// the clear unless forced; the state seen is returned for the event. An EXTERNAL node has no provider of ours to ask: refused unless forced.
+    private Promise<ProviderSeen> providerState(NodeId nodeId, String attested, boolean force) {
+        if (lifecycleManager.externalNode(nodeId)) {
+            return force
+                   ? Promise.success(new ProviderSeen(EXTERNAL_STATE, false, true))
+                   : new UnconfirmedClearRefusal.ExternalNodeUnchecked(nodeId).promise();
+        }
+
+        var source = lifecycleManager.sourceOf(nodeId).or(SourceName.DEFAULT);
+
+        return lifecycleManager.readInstancesForNode(nodeId, source)
+                               .fold(labelled -> readById(attested, source).flatMap(byId -> judge(nodeId,
+                                                                                                  labelled,
+                                                                                                  byId,
+                                                                                                  force)));
+    }
+
+    /// What the provider reads showed: the state for the event, and whether NO read showed the instance live or failed (only then may the clear return the capacity).
+    private record ProviderSeen(String state, boolean nothingLive, boolean external) {}
+
+    private static final String EXTERNAL_STATE = "external node: no provider to check";
+    private static final String UNKNOWN_INSTANCE = "unknown";
+
+    /// What the by-id read answered. `Skipped`: the operator attested `unknown`, there is no id to read.
+    private sealed interface ByIdRead {
+        record Skipped() implements ByIdRead {}
+
+        record NotFound(String id) implements ByIdRead {}
+
+        record Found(org.pragmatica.aether.environment.InstanceInfo info) implements ByIdRead {}
+
+        record Failed(String id, Cause cause) implements ByIdRead {}
+    }
+
+    private Promise<ByIdRead> readById(String attested, SourceName source) {
+        if (attested.equals(UNKNOWN_INSTANCE)) {
+            return Promise.success(new ByIdRead.Skipped());
+        }
+
+        return lifecycleManager.instanceStatus(new org.pragmatica.aether.environment.InstanceId(attested),
+                                               source)
+                               .fold(result -> Promise.success(result.fold(cause -> byIdFailure(attested, cause),
+                                                                           ByIdRead.Found::new)));
+    }
+
+    private static ByIdRead byIdFailure(String attested, Cause cause) {
+        return cause instanceof org.pragmatica.aether.environment.EnvironmentError.InstanceNotFound
+               ? new ByIdRead.NotFound(attested)
+               : new ByIdRead.Failed(attested, cause);
+    }
+
+    private static Promise<ProviderSeen> judge(NodeId nodeId,
+                                               org.pragmatica.lang.Result<List<org.pragmatica.aether.environment.InstanceInfo>> labelled,
+                                               ByIdRead byId,
+                                               boolean force) {
+        var labelledInstances = labelled.fold(_ -> List.<org.pragmatica.aether.environment.InstanceInfo> of(),
+                                              listed -> listed);
+        var found = byId instanceof ByIdRead.Found(var info)
+                    ? List.of(info)
+                    : List.<org.pragmatica.aether.environment.InstanceInfo> of();
+        var running = java.util.stream.Stream.concat(found.stream(),
+                                                     labelledInstances.stream())
+                                             .filter(instance -> !(instance.status() instanceof InstanceStatus.Terminated))
+                                             .toList();
+        var unreachable = unreachableCause(labelled, byId);
+
+        if (!running.isEmpty() && !force) {
+            var first = running.getFirst();
+
+            return new UnconfirmedClearRefusal.InstanceStillListed(nodeId,
+                                                                   first.id().value(),
+                                                                   statusName(first)).promise();
+        }
+
+        if (unreachable.isPresent() && !force) {
+            return new UnconfirmedClearRefusal.ProviderUnreachable(nodeId, unreachable.unwrap()).promise();
+        }
+
+        return Promise.success(new ProviderSeen(stateSeen(labelled, byId),
+                                                running.isEmpty() && unreachable.isEmpty(),
+                                                false));
+    }
+
+    private static Option<String> unreachableCause(org.pragmatica.lang.Result<List<org.pragmatica.aether.environment.InstanceInfo>> labelled,
+                                                   ByIdRead byId) {
+        var labelFailure = labelled.fold(cause -> Option.some(cause.message()),
+                                         _ -> Option.<String> none());
+
+        if (labelFailure.isPresent()) {
+            return labelFailure;
+        }
+
+        return byId instanceof ByIdRead.Failed(var id, var cause)
+               ? Option.some("instance " + id + ": " + cause.message())
+               : Option.none();
+    }
+
+    private static String stateSeen(org.pragmatica.lang.Result<List<org.pragmatica.aether.environment.InstanceInfo>> labelled,
+                                    ByIdRead byId) {
+        var byLabels = labelled.fold(cause -> "provider unreachable: " + cause.message(),
+                                     listed -> listed.isEmpty()
+                                               ? "no instance listed"
+                                               : describe(listed));
+
+        return switch (byId) {
+            case ByIdRead.Skipped _ -> byLabels;
+            case ByIdRead.NotFound(var id) -> byLabels + "; by id " + id + ": not found";
+            case ByIdRead.Found(var info) -> byLabels + "; by id " + info.id().value() + ": " + statusName(info);
+            case ByIdRead.Failed(var id, var cause) -> byLabels + "; by id " + id + ": unreachable: " + cause.message();
+        };
+    }
+
+    private static String describe(List<org.pragmatica.aether.environment.InstanceInfo> listed) {
+        return listed.stream()
+                     .map(instance -> instance.id()
+                                              .value() + "=" + statusName(instance))
+                     .collect(java.util.stream.Collectors.joining(","));
+    }
+
+    private static String statusName(org.pragmatica.aether.environment.InstanceInfo instance) {
+        return instance.status()
+                       .getClass()
+                       .getSimpleName()
+                       .toUpperCase();
+    }
+
+    /// The delete carries the exact value read, so a mark replaced since (a later incarnation's) fails the commit and survives.
+    private Promise<Unit> deleteExactMark(NodeId nodeId, Option<AetherValue.UnconfirmedTerminationValue> persisted) {
+        return persisted.fold(Promise::unitPromise,
+                              mark -> hierarchyWriter.get()
+                                                     .commit(List.of(new KVCommand.Mutation<AetherKey, AetherValue>(new AetherKey.UnconfirmedTerminationKey(nodeId),
+                                                                                                                    Option.some((AetherValue) mark),
+                                                                                                                    Option.none())),
+                                                             List.of())
+                                                     .mapError(_ -> new UnconfirmedClearRefusal.Changed(nodeId)));
+    }
+
+    private Promise<Unit> afterClear(NodeId nodeId, long generation, Cleared cleared, ProviderSeen seen) {
+        if (sameIncarnation(nodeId, generation)) {
+            unconfirmedReaps.remove(nodeId);
+        }
+
+        returnCapacity(nodeId, generation, seen);
+        org.pragmatica.utility.warning.OperatorWarnings.raise(log,
+                                                              warningSink.get(),
+                                                              org.pragmatica.utility.warning.OperatorWarningCode.INSTANCE_TERMINATION_CLEARED,
+                                                              nodeId.id(),
+                                                              "Operator {} cleared the unconfirmed termination of retired node {}: the operator attests instance {} was verified and terminated by hand (forced={}; provider state: {}; the cluster knew instance: {}; the mark said: {})",
+                                                              cleared.operator(),
+                                                              nodeId.id(),
+                                                              cleared.attested(),
+                                                              cleared.forced(),
+                                                              cleared.providerState(),
+                                                              cleared.known(),
+                                                              cleared.cause());
+
+        return Promise.unitPromise();
+    }
+
+    /// Only a clear that committed returns capacity, and only what Aether itself reserved for the node. A node with a provider instance gets its confirmed
+    /// reservation back when every read showed no instance live (and none failed). An EXTERNAL node (the operator started it, no provider of ours behind it)
+    /// gets its external reservation back through the fenced external release, which is nothing when the release is refused or there is none. A node that
+    /// shows life again, or a new incarnation, keeps what it holds.
+    private void returnCapacity(NodeId nodeId, long generation, ProviderSeen seen) {
+        if (!sameIncarnation(nodeId, generation) || liveness.demonstrablyLive(nodeId)) {
+            return;
+        }
+
+        var returned = seen.external()
+                       ? lifecycleManager.releaseExternal(nodeId)
+                       : seen.nothingLive()
+                         ? lifecycleManager.releaseAfterOperatorClear(nodeId,
+                                                                      lifecycleManager.sourceOf(nodeId)
+                                                                                      .or(SourceName.DEFAULT))
+                         : Promise.unitPromise();
+
+        returned.onFailure(cause -> log.warn("CTM: the capacity of cleared node {} was not returned: {}",
+                                             nodeId,
+                                             cause.message()));
+    }
+
+    private static String instanceIds(List<org.pragmatica.aether.environment.InstanceInfo> listed) {
+        return listed.stream()
+                     .map(info -> info.id()
+                                      .value())
+                     .collect(java.util.stream.Collectors.joining(","));
     }
 
     /// Writes (or, with an empty value, removes) the replicated mark for `nodeId`. A failed write is logged: the in-memory mark and the event stand,
     /// and the next leader simply does not inherit it.
     private void writeMark(NodeId nodeId, Option<AetherValue.UnconfirmedTerminationValue> value) {
+        writeMark(nodeId,
+                  Option.option(persistedMarks.get().get().get(nodeId)).map(mark -> (AetherValue) mark),
+                  value);
+    }
+
+    /// The write carries the value the caller READ as its expected previous value: a mark cleared (or replaced) since fails the commit instead of being
+    /// re-created or overwritten by a decision made on a stale read.
+    private void writeMark(NodeId nodeId,
+                           Option<AetherValue> existing,
+                           Option<AetherValue.UnconfirmedTerminationValue> value) {
         var key = new AetherKey.UnconfirmedTerminationKey(nodeId);
-        var existing = Option.option(persistedMarks.get().get().get(nodeId)).map(mark -> (AetherValue) mark);
 
         hierarchyWriter.get()
                        .commit(List.of(new KVCommand.Mutation<AetherKey, AetherValue>(key,
@@ -2562,14 +2828,22 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
             return;
         }
 
+        var generation = incarnation(nodeId);
+
         reapRetired(nodeId,
                     lifecycleManager.sourceOf(nodeId).or(SourceName.DEFAULT),
-                    seen).onFailure(_ -> operatorOnlyOnceAbsent(nodeId, persisted));
+                    seen).onFailure(_ -> operatorOnlyOnceAbsent(nodeId, persisted, generation));
     }
 
     /// A mark that met only failed listings is re-checked; the first re-check whose listing SUCCEEDS and shows no instance turns it into the operator
     /// warning it would have been had that listing come first: the mark is rewritten and the event raised again, with the text that asks for a hand.
-    private void operatorOnlyOnceAbsent(NodeId nodeId, Option<AetherValue.UnconfirmedTerminationValue> persisted) {
+    private void operatorOnlyOnceAbsent(NodeId nodeId,
+                                        Option<AetherValue.UnconfirmedTerminationValue> persisted,
+                                        long generation) {
+        if (!unconfirmedReaps.contains(nodeId) || !sameIncarnation(nodeId, generation)) {
+            return;
+        }
+
         var wasAbsent = persisted.map(AetherValue.UnconfirmedTerminationValue::absent).or(false);
 
         if (wasAbsent || seenInstances.contains(nodeId) || !listedAbsent.contains(nodeId)) {
@@ -2581,6 +2855,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
 
         raiseUnconfirmedEvent(nodeId, cause, false, true);
         writeMark(nodeId,
+                  persisted.map(mark -> (AetherValue) mark),
                   Option.some(new AetherValue.UnconfirmedTerminationValue(cause, false, true)));
     }
 
@@ -2709,6 +2984,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         replacementSources.remove(nodeId);
         confirmedReaps.remove(nodeId);
         seenInstances.remove(nodeId);
+        knownInstanceIds.remove(nodeId);
         listedAbsent.remove(nodeId);
         failedReaps.remove(nodeId);
         var marked = unconfirmedReaps.remove(nodeId);

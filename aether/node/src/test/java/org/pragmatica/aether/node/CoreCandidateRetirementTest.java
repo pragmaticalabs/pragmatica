@@ -98,4 +98,19 @@ class CoreCandidateRetirementTest {
         assertThat(AetherNode.excludedCores(counted, installed, history, installed, Set.of(B))).containsExactly(DEAD);
         assertThat(AetherNode.excludedCores(counted, installed, history, installed, Set.of())).containsExactlyInAnyOrder(B, DEAD);
     }
+
+    /// #2098: only positive evidence makes a voter failed. A voter absent from the readiness observations and alive in membership is
+    /// merely unobserved, and stays unobserved-not-failed however long the leader has been leading.
+    @Test void failedVoters_areOnlyThoseWithPositiveEvidence() {
+        var members = java.util.Map.of(A, "Member", B, "Member", C, "Dead", DEAD, "Departing");
+
+        assertThat(FailedVoterEvidence.failedVoters(Set.of(B), members)).containsExactlyInAnyOrder(B, C, DEAD);
+        assertThat(FailedVoterEvidence.failedVoters(Set.of(), java.util.Map.of(A, "Member", B, "Member"))).isEmpty();
+    }
+
+    @Test void observedNotReady_excludesReady_andIsEmptyForNoObservation() {
+        assertThat(FailedVoterEvidence.observedNotReady(java.util.Map.of(A, org.pragmatica.aether.metrics.NodeReportedState.READY,
+                                                               B, org.pragmatica.aether.metrics.NodeReportedState.DRAINING))).containsExactly(B);
+        assertThat(FailedVoterEvidence.observedNotReady(java.util.Map.of())).isEmpty();
+    }
 }

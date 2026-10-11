@@ -3658,6 +3658,8 @@ public interface AetherNode extends ManageableNode {
                                                                                                    .filter(coreAdmission::isAllowed)
                                                                                                    .collect(Collectors.toUnmodifiableSet()),
                                                                           nodeReplacements::voterSwaps,
+                                                                          FailedVoterEvidence.forNode(metricsCollector,
+                                                                                                      membershipFsmRef::get),
                                                                           clusterNode::reconfigure);
 
         periodicTasks.defer(() -> SharedScheduler.scheduleAtFixedRate(() -> coreVoterReconciler.reconcile()

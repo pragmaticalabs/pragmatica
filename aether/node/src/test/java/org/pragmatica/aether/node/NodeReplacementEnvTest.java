@@ -71,12 +71,18 @@ class NodeReplacementEnvTest {
 
     NodeReplacementEnvTest() {
         states.put(OLD, "Member");
+        commitSourceConfig();
         when(ctm.provisionReplacement(any(), any(), any(), any(), any())).thenReturn(Promise.success(ProvisionDisposition.dispatched()));
         when(ctm.sourceOfSourcelessNode(any())).thenReturn(org.pragmatica.lang.Result.success(DOCK));
         when(ctm.drainNode(any(), any())).thenAnswer(call -> Promise.unitPromise());
         when(ctm.reapRetired(any(), any(), anyBoolean())).thenAnswer(call -> Promise.unitPromise());
         when(ctm.instanceListed(any(), any())).thenAnswer(call -> Promise.success(true));
         wiring = NodeReplacementWiring.wire(inputs(NodeReplacementPlanner.Timings.parse("60000,60000,60000,60000,0,60000,60000")));
+    }
+
+    private void commitSourceConfig() {
+        stored.put(AetherKey.ClusterConfigKey.CURRENT,
+                   new AetherValue.ClusterConfigValue(Option.none(), "test", "1.0.0", List.of(), 3, 3, "", 1L, 0L));
     }
 
     @SuppressWarnings("unchecked")
@@ -223,11 +229,131 @@ class NodeReplacementEnvTest {
 
         commands.clear();
         stored.clear();
+        commitSourceConfig();
         index.remove(new AetherKey.NodeReplacementKey(OLD));
         record(NodeReplacementPhase.PROVISIONING, 999_999L);
         wiring.reconciler().reconcile().await();
 
         verify(ctm).provisionReplacement(any(), any(), any(), any(), any());
+    }
+
+    // ---- #2098: a startup ordering is not a refusal ---------------------------------------------------------------------
+
+    /// The replacement starts before the bootstrap source configuration is committed: the fleet inventory cannot be initialized yet, which
+    /// is a wait, not a refusal. The provision is deferred (nothing is dispatched, nothing is rolled back), and DONE once the configuration
+    /// is committed. Red at rc4: the CTM refusal ("Committed source configuration required for fleet inventory") became ROLLED_BACK.
+    @Test
+    void provisioningBeforeTheSourceConfigIsCommitted_isDeferred_thenDispatchedOnceItIs() {
+        stored.remove(AetherKey.ClusterConfigKey.CURRENT);
+        record(NodeReplacementPhase.PROVISIONING, 999_999L);
+        wiring.reconciler().reconcile().await();
+
+        verify(ctm, never()).provisionReplacement(any(), any(), any(), any(), any());
+        assertThat(commands).as("deferred: no phase committed, in particular no roll back").isEmpty();
+
+        commitSourceConfig();
+        wiring.reconciler().reconcile().await();
+
+        verify(ctm).provisionReplacement(any(), any(), any(), any(), any());
+        assertThat(committedRecord().phase()).isEqualTo(NodeReplacementPhase.JOINING);
+    }
+
+    /// Bounded by the provisioning deadline: a configuration that never appears ends the replacement, and its cause names the missing
+    /// committed configuration instead of a bare deadline.
+    @Test
+    void aSourceConfigThatNeverAppears_endsAtTheDeadline_namingTheMissingConfig() {
+        stored.remove(AetherKey.ClusterConfigKey.CURRENT);
+        record(NodeReplacementPhase.PROVISIONING, 500L);
+        now = 2_000L;
+        wiring.reconciler().reconcile().await();
+
+        var committed = committedRecord();
+
+        assertThat(committed.phase()).isEqualTo(NodeReplacementPhase.ROLLED_BACK);
+        assertThat(committed.reason()).contains("provisioning deadline").contains("committed source configuration is missing");
+    }
+
+    /// Control: a counting ledger needs no configuration, and a deadline with a committed configuration keeps its bare cause.
+    @Test
+    void theBlocker_isAbsentWhenTheLedgerCountsOrTheConfigIsCommitted() {
+        assertThat(NodeReplacementWiring.inventoryBlocker(storeOver(Map.of())).isPresent()).isTrue();
+        assertThat(NodeReplacementWiring.inventoryBlocker(storeOver(Map.of(AetherKey.CapacityLedgerKey.INSTANCE, new CapacityLedgerValue(5, 1, true)))).isPresent()).isFalse();
+        assertThat(NodeReplacementWiring.inventoryBlocker(storeOver(Map.of(AetherKey.CapacityLedgerKey.INSTANCE, new CapacityLedgerValue(5, 1, false)))).isPresent()).isTrue();
+        assertThat(NodeReplacementWiring.inventoryBlocker(storeOver(Map.of(AetherKey.ClusterConfigKey.CURRENT, stored.get(AetherKey.ClusterConfigKey.CURRENT)))).isPresent()).isFalse();
+    }
+
+    /// F5: the CTM's other transient, an inventory initialization still in progress, defers like the missing configuration: nothing is rolled
+    /// back, and the next tick dispatches.
+    @Test
+    void provisioningDuringInventoryInitialization_isDeferred_thenDispatched() {
+        when(ctm.provisionReplacement(any(), any(), any(), any(), any()))
+            .thenReturn(new org.pragmatica.aether.deployment.cluster.FleetInventoryInitializing().<ProvisionDisposition> promise())
+            .thenReturn(Promise.success(ProvisionDisposition.dispatched()));
+        record(NodeReplacementPhase.PROVISIONING, 999_999L);
+        wiring.reconciler().reconcile().await();
+
+        assertThat(commands).as("deferred: no phase committed, in particular no roll back").isEmpty();
+
+        wiring.reconciler().reconcile().await();
+
+        assertThat(committedRecord().phase()).isEqualTo(NodeReplacementPhase.JOINING);
+    }
+
+    /// F5: an initialization that never finishes ends at the provisioning deadline, and the cause is named.
+    @Test
+    void anInventoryInitializationThatNeverFinishes_endsAtTheDeadline_namingIt() {
+        when(ctm.provisionReplacement(any(), any(), any(), any(), any()))
+            .thenReturn(new org.pragmatica.aether.deployment.cluster.FleetInventoryInitializing().<ProvisionDisposition> promise());
+        record(NodeReplacementPhase.PROVISIONING, 500L);
+        now = 100L;
+        wiring.reconciler().reconcile().await();
+        now = 2_000L;
+        wiring.reconciler().reconcile().await();
+
+        var committed = committedRecord();
+
+        assertThat(committed.phase()).isEqualTo(NodeReplacementPhase.ROLLED_BACK);
+        assertThat(committed.reason()).contains("provisioning deadline").contains("Fleet inventory initialization in progress");
+    }
+
+    /// F5: the remembered wait is forgotten once the provision is dispatched, so a later provisioning deadline of that replacement does not
+    /// cite an initialization that long since finished.
+    @Test
+    void theRememberedInventoryWait_isForgottenOnceTheProvisionIsDispatched() {
+        when(ctm.provisionReplacement(any(), any(), any(), any(), any()))
+            .thenReturn(new org.pragmatica.aether.deployment.cluster.FleetInventoryInitializing().<ProvisionDisposition> promise())
+            .thenReturn(Promise.success(ProvisionDisposition.dispatched()));
+        record(NodeReplacementPhase.PROVISIONING, 999_999L);
+        wiring.reconciler().reconcile().await();
+        wiring.reconciler().reconcile().await();
+        assertThat(committedRecord().phase()).isEqualTo(NodeReplacementPhase.JOINING);
+
+        commands.clear();
+        index.remove(new AetherKey.NodeReplacementKey(OLD));
+        record(NodeReplacementPhase.PROVISIONING, 500L);
+        now = 2_000L;
+        wiring.reconciler().reconcile().await();
+
+        assertThat(committedRecord().reason()).isEqualTo("provisioning deadline");
+    }
+
+    /// Control: any other provisioning cause still fails the provision.
+    @Test
+    void anyOtherProvisioningCause_stillFailsTheProvision() {
+        when(ctm.provisionReplacement(any(), any(), any(), any(), any())).thenReturn(Causes.cause("quota").<ProvisionDisposition> promise());
+        record(NodeReplacementPhase.PROVISIONING, 999_999L);
+        wiring.reconciler().reconcile().await();
+
+        assertThat(committedRecord().phase()).isEqualTo(NodeReplacementPhase.ROLLED_BACK);
+    }
+
+    @SuppressWarnings("unchecked")
+    private static KVStore<AetherKey, AetherValue> storeOver(Map<AetherKey, AetherValue> content) {
+        var store = mock(KVStore.class);
+
+        when(store.getTyped(any(), any())).thenAnswer(call -> Option.option(content.get(call.getArgument(0))));
+
+        return store;
     }
 
     // ---- #1543: DONE only after the provider's instance is confirmed gone ----------------------------------------------

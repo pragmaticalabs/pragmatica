@@ -206,6 +206,85 @@ public interface ClusterTopologyManager extends TopologyManager {
         return org.pragmatica.lang.Unit.unit();
     }
 
+    /// #2062 (owner ruling 28992d91b): an OPERATOR clears ONE mark, by node id, after verifying at the provider and terminating the instance by hand.
+    /// `attestedInstance` is the provider instance id the operator terminated (or `unknown`). Before it clears, the manager asks the node's source provider
+    /// twice: for the node's LABELLED instances (so a wrong or `unknown` id does not hide a listed instance) and, when an id is given, for that INSTANCE by
+    /// id (so an instance the provider shows without the node's labels is not missed). Either showing an instance that is not terminated, or either read
+    /// failing (a not-found for the id is an answer), REFUSES the clear (fail closed) unless `force`, which overrides both and is recorded in the event
+    /// with the provider state seen. An EXTERNAL node has no provider of ours to ask: refused unless `force`. Also refused, with nothing cleared: no mark, a
+    /// node that shows life, a mark that changed since it was read, a manager that is not the active leader. A clear writes the exact mark it read, so a mark
+    /// of a later incarnation survives it, and closes the open warning cluster-wide. Default: not the active leader.
+    default Promise<Unit> clearUnconfirmed(NodeId node, String operator, String attestedInstance, boolean force) {
+        return new UnconfirmedClearRefusal.NotActive().promise();
+    }
+
+    default Promise<Unit> clearUnconfirmed(NodeId node, String operator, String attestedInstance) {
+        return clearUnconfirmed(node, operator, attestedInstance, false);
+    }
+
+    /// Why [#clearUnconfirmed] cleared nothing.
+    sealed interface UnconfirmedClearRefusal extends org.pragmatica.lang.Cause {
+        record NotActive() implements UnconfirmedClearRefusal {
+            @Override
+            public String message() {
+                return "Only the active leader clears an unconfirmed-termination mark";
+            }
+        }
+
+        record NotMarked(NodeId node) implements UnconfirmedClearRefusal {
+            @Override
+            public String message() {
+                return "Node " + node.id() + " has no unconfirmed-termination mark";
+            }
+        }
+
+        record NodeLive(NodeId node) implements UnconfirmedClearRefusal {
+            @Override
+            public String message() {
+                return "Node " + node.id()
+                     + " shows life in the membership; a live node is never cleared, and its instance must not be terminated";
+            }
+        }
+
+        /// The provider still lists an instance of the node that is not terminated: clearing would hide a paid orphan.
+        record InstanceStillListed(NodeId node, String instance, String state) implements UnconfirmedClearRefusal {
+            @Override
+            public String message() {
+                return "The provider still lists instance " + instance
+                     + " of " + node.id()
+                     + " (" + state
+                     + "); terminate it first, or clear with force if you accept that it stays running";
+            }
+        }
+
+        /// An EXTERNAL node (the operator started it): there is no provider of ours to ask, so the clear cannot be checked.
+        record ExternalNodeUnchecked(NodeId node) implements UnconfirmedClearRefusal {
+            @Override
+            public String message() {
+                return "External node " + node.id()
+                     + ": no provider to check this external node; use --force after confirming it is gone";
+            }
+        }
+
+        /// The provider could not be asked: the clear fails closed.
+        record ProviderUnreachable(NodeId node, String cause) implements UnconfirmedClearRefusal {
+            @Override
+            public String message() {
+                return "The provider could not be asked about the instance of " + node.id()
+                     + " (" + cause
+                     + "); nothing was cleared, retry, or clear with force if you verified it yourself";
+            }
+        }
+
+        record Changed(NodeId node) implements UnconfirmedClearRefusal {
+            @Override
+            public String message() {
+                return "The unconfirmed-termination mark of " + node.id()
+                     + " changed or the clear was not confirmed committed; read the mark again before retrying";
+            }
+        }
+    }
+
     /// #2062: where the persisted "termination not confirmed" marks are read from (the replicated store), so that a new leader inherits every
     /// open mark. Default: none.
     default org.pragmatica.lang.Unit setUnconfirmedMarks(java.util.function.Supplier<java.util.Map<NodeId, org.pragmatica.aether.slice.kvstore.AetherValue.UnconfirmedTerminationValue>> reader) {

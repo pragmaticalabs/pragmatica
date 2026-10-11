@@ -331,6 +331,8 @@ class NodeReplacementServiceTest {
     /// source it came from).
     @Test
     void provisioning_carriesTheRecordsRoleAndSource() {
+        stored.put(AetherKey.ClusterConfigKey.CURRENT,
+                   new AetherValue.ClusterConfigValue(Option.none(), "test", "1.0.0", List.of(), 3, 3, "", 1L, 0L));
         index.put(new AetherKey.NodeReplacementKey(OLD_WORKER),
                   new NodeReplacementValue(FRESH, "worker", NodeReplacementPhase.PROVISIONING, 999_999L, "hetzner-eu", "", NodeReplacementValue.MODE_CTM, 0, "", 0L));
         wiring.reconciler().reconcile().await();
