@@ -59,10 +59,18 @@ final class SharedByName<V> {
     /// [#acquire], refused when `conflict` finds `candidate` incompatible with the value ALREADY shared under
     /// `name`. The check runs inside the per-name atomic `compute`, so two mismatched acquires racing for
     /// one name cannot both pass it; a refused acquire counts no hold and leaves the shared value untouched.
-    <H> Result<H> acquireChecked(String name, V candidate, Fn2<Option<Cause>, V, V> conflict, Fn1<H, V> holderFactory) {
+    <H> Result<H> acquireChecked(String name,
+                                 V candidate,
+                                 Fn2<Option<Cause>, V, V> conflict,
+                                 Fn2<V, V, V> merge,
+                                 Fn1<H, V> holderFactory) {
         var refusal = new AtomicReference<Cause>();
         var share = shares.compute(name,
-                                   (_, existing) -> retainUnlessConflicting(existing, candidate, conflict, refusal));
+                                   (_, existing) -> retainUnlessConflicting(existing,
+                                                                            candidate,
+                                                                            conflict,
+                                                                            merge,
+                                                                            refusal));
 
         return option(refusal.get()).<Result<H>> map(Cause::result)
                      .or(() -> success(register(name, share, holderFactory)));
@@ -98,18 +106,25 @@ final class SharedByName<V> {
     private static <V> Share<V> retainUnlessConflicting(Share<V> existing,
                                                         V candidate,
                                                         Fn2<Option<Cause>, V, V> conflict,
+                                                        Fn2<V, V, V> merge,
                                                         AtomicReference<Cause> refusal) {
-        return option(existing).flatMap(share -> refusedOrNone(share, candidate, conflict, refusal))
+        return option(existing).map(share -> admitOrRefuse(share, candidate, conflict, merge, refusal))
                      .or(() -> retain(existing, candidate));
     }
 
-    private static <V> Option<Share<V>> refusedOrNone(Share<V> share,
-                                                      V candidate,
-                                                      Fn2<Option<Cause>, V, V> conflict,
-                                                      AtomicReference<Cause> refusal) {
+    /// An admitted candidate may carry knowledge the shared value lacks, so the entry takes `merge`'s result:
+    /// what the sections have said about the name accumulates, and no longer depends on who came first.
+    private static <V> Share<V> admitOrRefuse(Share<V> share,
+                                              V candidate,
+                                              Fn2<Option<Cause>, V, V> conflict,
+                                              Fn2<V, V, V> merge,
+                                              AtomicReference<Cause> refusal) {
         return conflict.apply(share.value(),
                               candidate)
-                       .map(cause -> refuse(share, cause, refusal));
+                       .fold(() -> Share.share(merge.apply(share.value(),
+                                                           candidate),
+                                               share.holders() + 1),
+                             cause -> refuse(share, cause, refusal));
     }
 
     private static <V> Share<V> refuse(Share<V> share, Cause cause, AtomicReference<Cause> refusal) {

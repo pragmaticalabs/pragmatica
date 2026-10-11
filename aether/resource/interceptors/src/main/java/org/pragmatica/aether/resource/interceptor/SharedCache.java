@@ -10,4 +10,10 @@ record SharedCache(CacheBackend backend, CacheShape shape) {
     static SharedCache sharedCache(CacheBackend backend, CacheShape shape) {
         return new SharedCache(backend, shape);
     }
+
+    /// The same backend, with the shape taking in what `incoming` knows (see [CacheShape#merged]).
+    SharedCache merged(SharedCache incoming) {
+        return sharedCache(backend,
+                           shape.merged(incoming.shape()));
+    }
 }

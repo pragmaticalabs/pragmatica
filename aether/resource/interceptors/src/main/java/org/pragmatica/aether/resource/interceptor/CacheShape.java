@@ -47,6 +47,18 @@ record CacheShape(CacheMode mode, int ttlSeconds, int maxEntries, Option<Type> k
                         .orElse(() -> differingType("cached value type", valueType, incoming.valueType, cacheName));
     }
 
+    /// Mode, TTL and capacity are already equal (a conflict was refused before this), so only the types can
+    /// grow: a type this shape never recorded is taken from `incoming`, and one it has is never replaced.
+    /// An untyped or `WRITE_AROUND` section records nothing, so it neither sets nor clears a type — the type
+    /// the shared backend is held to is the first STORING, TYPED section's, whatever provisioned before it.
+    CacheShape merged(CacheShape incoming) {
+        return new CacheShape(mode,
+                              ttlSeconds,
+                              maxEntries,
+                              keyType.orElse(() -> incoming.keyType),
+                              valueType.orElse(() -> incoming.valueType));
+    }
+
     private static Option<Type> typeAt(List<TypeToken<?>> tokens, int index, boolean present) {
         return present
                ? some(tokens.get(index).token())

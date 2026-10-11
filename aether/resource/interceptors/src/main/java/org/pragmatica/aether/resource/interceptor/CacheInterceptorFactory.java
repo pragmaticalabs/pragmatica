@@ -74,6 +74,7 @@ public final class CacheInterceptorFactory implements ResourceFactory<CacheMetho
                                      (existing, incoming) -> existing.shape()
                                                                      .conflictWith(incoming.shape(),
                                                                                    config.cacheName()),
+                                     (existing, incoming) -> existing.merged(incoming),
                                      shared -> new CacheMethodInterceptor(shared.backend(),
                                                                           config.strategy(),
                                                                           keyExtractor,

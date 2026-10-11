@@ -75,14 +75,14 @@ class CacheNameSharingTest {
     void differentKeyType_isRefused() {
         provision(base(CacheStrategy.CACHE_ASIDE), typed(KEY, BALANCE));
 
-        assertRefused(provision(base(CacheStrategy.WRITE_AROUND), typed(OTHER, UNIT)), "key type", "String", "Long");
+        assertRefused(provision(base(CacheStrategy.WRITE_AROUND), typed(OTHER, UNIT)), "key type", "java.lang.String", "java.lang.Long");
     }
 
     @Test
     void differentStoredValueType_isRefused_butAnInvalidatorsReturnTypeIsNot() {
         provision(base(CacheStrategy.CACHE_ASIDE), typed(KEY, BALANCE));
 
-        assertRefused(provision(base(CacheStrategy.WRITE_THROUGH), typed(KEY, OTHER)), "cached value type", "Integer", "Long");
+        assertRefused(provision(base(CacheStrategy.WRITE_THROUGH), typed(KEY, OTHER)), "cached value type", "java.lang.Integer", "java.lang.Long");
         assertThat(provision(base(CacheStrategy.WRITE_AROUND), typed(KEY, OTHER)).isSuccess()).isTrue();
     }
 
@@ -95,7 +95,8 @@ class CacheNameSharingTest {
         var refusal = shared.conflictWith(incoming, "account-balance").fold(() -> null, c -> c);
 
         assertThat(refusal).isNotNull();
-        assertThat(refusal.message()).contains("account-balance", "mode", "LOCAL", "DISTRIBUTED");
+        assertThat(refusal.message()).contains("account-balance",
+                                               "disagree on mode: the section provisioned first set LOCAL, this section sets DISTRIBUTED");
     }
 
     @Test
@@ -108,8 +109,79 @@ class CacheNameSharingTest {
         assertThat(factory.retains("account-balance")).isFalse();
     }
 
+    /// Pins BOTH sides: which value the section provisioned first set, and which this section sets.
     private static void assertRefused(Result<CacheMethodInterceptor> result, String setting, String shared, String incoming) {
         assertThat(result.isFailure()).isTrue();
-        result.onFailure(cause -> assertThat(cause.message()).contains("account-balance", setting, shared, incoming));
+        result.onFailure(cause -> assertThat(cause.message()).contains("account-balance",
+                                                                       "disagree on " + setting
+                                                                       + ": the section provisioned first set " + shared
+                                                                       + ", this section sets " + incoming));
+    }
+
+    private static ProvisioningContext untyped() {
+        return ProvisioningContext.provisioningContext();
+    }
+
+    /// A step of an order scenario: a storing typed section with the given value type, a WRITE_AROUND
+    /// section, or an untyped one.
+    private record Step(String name, CacheStrategy strategy, ProvisioningContext context, boolean storingTyped, boolean second) {}
+
+    private static final Step INTEGER = new Step("Integer", CacheStrategy.CACHE_ASIDE, typed(KEY, BALANCE), true, false);
+    private static final Step LONG = new Step("Long", CacheStrategy.CACHE_ASIDE, typed(KEY, OTHER), true, true);
+    private static final Step WRITE_AROUND_STEP = new Step("WriteAround", CacheStrategy.WRITE_AROUND, typed(KEY, UNIT), false, false);
+    private static final Step UNTYPED_STEP = new Step("Untyped", CacheStrategy.CACHE_ASIDE, untyped(), false, false);
+
+    private static java.util.List<java.util.List<Step>> permutations(java.util.List<Step> steps) {
+        if (steps.size() <= 1) {
+            return java.util.List.of(steps);
+        }
+        var result = new java.util.ArrayList<java.util.List<Step>>();
+        for (var step : steps) {
+            var rest = new java.util.ArrayList<>(steps);
+            rest.remove(step);
+            permutations(rest).forEach(tail -> {
+                var order = new java.util.ArrayList<Step>();
+                order.add(step);
+                order.addAll(tail);
+                result.add(order);
+            });
+        }
+        return result;
+    }
+
+    /// Whatever precedes them, of two storing sections with different value types the LATER one is refused —
+    /// first-section-wins let an Integer and a Long both in when a WRITE_AROUND or untyped section came first,
+    /// the ClassCastException v-2112 reproduced.
+    private void assertEveryOrderRefusesTheLaterStoringType(Step neutral) {
+        for (var order : permutations(java.util.List.of(neutral, INTEGER, LONG))) {
+            var local = new CacheInterceptorFactory();
+            var firstStoring = order.stream().filter(Step::storingTyped).findFirst().orElseThrow();
+
+            for (var step : order) {
+                var result = local.provision(base(step.strategy()), step.context()).await();
+                var expectRefused = step.storingTyped() && step != firstStoring;
+
+                assertThat(result.isFailure()).as("order %s, step %s", order.stream().map(Step::name).toList(), step.name())
+                                              .isEqualTo(expectRefused);
+            }
+        }
+    }
+
+    @Test
+    void everyOrder_refusesTheLaterStoringValueType_whenAWriteAroundSectionIsInTheSet() {
+        assertEveryOrderRefusesTheLaterStoringType(WRITE_AROUND_STEP);
+    }
+
+    @Test
+    void everyOrder_refusesTheLaterStoringValueType_whenAnUntypedSectionIsInTheSet() {
+        assertEveryOrderRefusesTheLaterStoringType(UNTYPED_STEP);
+    }
+
+    @Test
+    void keyType_isOrderIndependent_anUntypedSectionFirstDoesNotHideAKeyMismatch() {
+        provision(base(CacheStrategy.CACHE_ASIDE), untyped());
+        provision(base(CacheStrategy.CACHE_ASIDE), typed(KEY, BALANCE));
+
+        assertRefused(provision(base(CacheStrategy.CACHE_ASIDE), typed(OTHER, BALANCE)), "key type", "java.lang.String", "java.lang.Long");
     }
 }
