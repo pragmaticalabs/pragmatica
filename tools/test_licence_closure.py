@@ -22,7 +22,7 @@ relicense = load("relicense", HERE / "license/relicense.py")
 
 BSL_HEADER = ("// SPDX-License-Identifier: BUSL-1.1\n// Copyright (c) 2025 X\n"
               "// Licensed under Business Source License 1.1. Change Date: 2030-01-01. Change License: Apache-2.0.\n"
-              "// See LICENSE in this module for full terms.\n")
+              "// See LICENSE in the repository root for full terms.\n")
 APACHE_HEADER = ("// SPDX-License-Identifier: Apache-2.0\n// Copyright (c) 2025 X\n"
                  "// Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms.\n")
 BSL_TEXT = "Business Source License 1.1\n\nParameters\n"
@@ -32,7 +32,7 @@ LICENSE_MAP = ("Apache License, Version 2.0 (see LICENSE-APACHE-2.0): everything
                "    bsl/core/\n\nBSL 1.1 parameters\n")
 
 
-def pom(artifact, deps=(), parent=None, licenses="", modules=(), relative="../pom.xml"):
+def pom(artifact, deps=(), parent=None, licenses="", modules=(), relative="../pom.xml", published=False):
     body = '<project xmlns="http://maven.apache.org/POM/4.0.0"><modelVersion>4.0.0</modelVersion>'
     if parent:
         body += f"<parent><groupId>g</groupId><artifactId>{parent}</artifactId><version>1</version><relativePath>{relative}</relativePath></parent>"
@@ -42,6 +42,8 @@ def pom(artifact, deps=(), parent=None, licenses="", modules=(), relative="../po
     if deps:
         body += "<dependencies>" + "".join(
             f"<dependency><groupId>g</groupId><artifactId>{a}</artifactId>" + (f"<scope>{s}</scope>" if s else "") + "</dependency>" for a, s in deps) + "</dependencies>"
+    if published:
+        body += "<build><plugins><plugin><groupId>org.sonatype.central</groupId><artifactId>central-publishing-maven-plugin</artifactId></plugin></plugins></build>"
     return body + "</project>"
 
 
@@ -94,11 +96,21 @@ class GateTest(unittest.TestCase):
             write(self.root, "lib/pom.xml", pom("lib", parent="root", deps=(("core", scope),)))
             self.assertEqual(1, len(self.violations("(a)")), scope)
 
-    def test_test_scope_edge_is_info_not_a_violation(self):
+    def test_test_scope_edge_from_unpublished_module_is_info_not_a_violation(self):
         write(self.root, "lib/pom.xml", pom("lib", parent="root", deps=(("core", "test"),)))
         found, info, *_ = gate.analyse(self.root)
         self.assertEqual([], found)
         self.assertEqual(1, len(info))
+
+    def test_test_scope_edge_from_published_module_is_refused(self):
+        write(self.root, "lib/pom.xml", pom("lib", parent="root", deps=(("core", "test"),), published=True))
+        found, info, *_ = gate.analyse(self.root)
+        self.assertEqual(1, len(found))
+        self.assertEqual([], info)
+
+    def test_compile_edge_from_unpublished_module_is_still_refused(self):
+        write(self.root, "lib/pom.xml", pom("lib", parent="root", deps=(("core", "compile"),)))
+        self.assertEqual(1, len(self.violations("(a)")))
 
     def test_apache_module_with_bsl_parent_is_refused(self):
         write(self.root, "lib/pom.xml", pom("lib", parent="core", relative="../bsl/core/pom.xml"))

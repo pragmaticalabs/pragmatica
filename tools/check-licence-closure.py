@@ -4,8 +4,9 @@
     python3 tools/check-licence-closure.py [--root DIR]
 
 The BSL modules are the paths in tools/license/bsl-modules.txt; everything else is Apache-2.0. Three checks, exit 1 on any violation:
-  (a) NO APACHE MODULE DEPENDS ON A BSL MODULE: not by a compile/runtime/provided dependency, not through its parent pom. Every pom in the
-      tree is examined, not only the default reactor (forge-tests sits behind a profile). A test-scope edge is reported as info only.
+  (a) NO APACHE MODULE DEPENDS ON A BSL MODULE: not by a compile/runtime/provided dependency, not through its parent pom, and not by any
+      edge (test scope included) from a PUBLISHED module. Every pom in the tree is examined, not only the default reactor (forge-tests sits
+      behind a profile). A test-scope edge from an unpublished module (skipPublishing, e.g. dead-surface-gate) is reported as info only.
   (b) EVERY HEADER MATCHES ITS MODULE: a .java file in a BSL module starts with `// SPDX-License-Identifier: BUSL-1.1`; no file outside
       them carries it (.java, .sh and .md alike, apart from files that discuss the licence).
   (c) THE LIST AND THE LICENSE MAP AGREE: the root LICENSE names exactly the listed paths; each BSL module has a LICENSE holding the BSL text
@@ -87,7 +88,10 @@ def analyse(root):
             scope = declared_scope or managed_scope or "compile"
             edges += 1
             line = f"(a) {rel(pom)} (Apache) depends ({scope}) on {artifact} (BSL)"
-            (found if scope in STRICT else info).append(line if scope in STRICT else line + "   [test scope, info]")
+            if scope in STRICT or pc.publishes(module, poms):
+                found.append(line)
+            else:
+                info.append(line + "   [test scope, module not published, allowed]")
     # (b)
     for f in files:
         if not f.endswith((".java", ".sh", ".md")):
