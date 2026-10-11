@@ -109,6 +109,31 @@ class CacheNameSharingTest {
         assertThat(factory.retains("account-balance")).isFalse();
     }
 
+    @Test
+    void anUntypedSectionBetweenTypedOnes_doesNotClearTheRecordedKeyType() {
+        provision(base(CacheStrategy.CACHE_ASIDE), typed(OTHER, BALANCE));
+        assertThat(provision(base(CacheStrategy.CACHE_ASIDE), untyped()).isSuccess()).isTrue();
+
+        assertRefused(provision(base(CacheStrategy.WRITE_AROUND), typed(KEY, UNIT)), "key type", "java.lang.Long", "java.lang.String");
+    }
+
+    @Test
+    void admittedSections_eachTakeAHold_soTheNameSurvivesUntilTheLastIsReleased() {
+        var first = provision(base(CacheStrategy.CACHE_ASIDE), typed(KEY, BALANCE)).fold(_ -> null, v -> v);
+        var second = provision(base(CacheStrategy.WRITE_AROUND), typed(KEY, UNIT)).fold(_ -> null, v -> v);
+
+        factory.close(first).await();
+
+        assertThat(factory.retains("account-balance")).isTrue();
+        var third = provision(base(CacheStrategy.CACHE_ASIDE), typed(KEY, BALANCE)).fold(_ -> null, v -> v);
+        assertThat(third.cache()).isSameAs(second.cache());
+
+        factory.close(second).await();
+        assertThat(factory.retains("account-balance")).isTrue();
+        factory.close(third).await();
+        assertThat(factory.retains("account-balance")).isFalse();
+    }
+
     /// Pins BOTH sides: which value the section provisioned first set, and which this section sets.
     private static void assertRefused(Result<CacheMethodInterceptor> result, String setting, String shared, String incoming) {
         assertThat(result.isFailure()).isTrue();
