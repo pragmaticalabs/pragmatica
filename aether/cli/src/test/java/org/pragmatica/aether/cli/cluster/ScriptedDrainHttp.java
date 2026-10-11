@@ -138,10 +138,19 @@ final class ScriptedDrainHttp implements HttpOperations {
         return respond(step);
     }
 
+    private Step shutdownResponse = new Step.Reply(200, "{\"success\":true,\"message\":\"ok\"}");
+
+    /// The answer to every `POST /api/v1/nodes/shutdown/{id}`; success unless set.
+    ScriptedDrainHttp withShutdownResponse(Step step) {
+        shutdownResponse = step;
+
+        return this;
+    }
+
     private Step postStep(String path) {
         return path.startsWith("/api/v1/nodes/drain/")
                ? nextDrainStep()
-               : new Step.Reply(200, "{\"success\":true,\"message\":\"ok\"}");
+               : shutdownResponse;
     }
 
     /// Successive answers to the drain POST; the last one repeats. Without a sequence every POST gets `drainResponse`.
@@ -166,6 +175,25 @@ final class ScriptedDrainHttp implements HttpOperations {
                               + "\"detail\":\"Cannot drain node " + nodeId + ": it would leave com.example:slice-a:1.0.0 with 1"
                               + " ACTIVE instance(s), below its minAvailable 2. Re-run with force=true to override, which takes"
                               + " the slice below its floor.\",\"instance\":\"/api/v1/nodes/drain/" + nodeId + "\",\"requestId\":\"r-1\"}");
+    }
+
+    /// The 409 the core disruption budget answers (`NodeLifecycleRoutes#budgetExceededError`), as the management server renders it.
+    static Step budgetRefused(String nodeId) {
+        return new Step.Reply(409,
+                              "{\"type\":\"about:blank\",\"title\":\"Conflict\",\"status\":409,"
+                              + "\"detail\":\"Conflict: Disruption budget exceeded: draining " + nodeId
+                              + " would leave 1 core-scoped operational nodes, minimum is 2 (role=core; worker drains bypass this guard)\","
+                              + "\"instance\":\"/api/v1/nodes/drain/" + nodeId + "\",\"requestId\":\"r-1\"}");
+    }
+
+    static Step otherConflict(String nodeId) {
+        return new Step.Reply(409,
+                              "{\"type\":\"about:blank\",\"title\":\"Conflict\",\"status\":409,"
+                              + "\"detail\":\"Conflict: node " + nodeId + " is not READY\",\"instance\":\"/api/v1/nodes/drain/" + nodeId + "\"}");
+    }
+
+    static Step serverError() {
+        return new Step.Reply(500, "{\"status\":500,\"detail\":\"internal error\"}");
     }
 
     private Step endpointStep(String nodeId) {
