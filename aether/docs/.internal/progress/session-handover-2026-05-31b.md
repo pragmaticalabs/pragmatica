@@ -1,7 +1,6 @@
-<!--
-SPDX-License-Identifier: BUSL-1.1
-Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko
--->
+<!-- SPDX-License-Identifier: Apache-2.0 -->
+<!-- Copyright (c) 2025 Pragmatica Labs - Sergiy Yevtushenko -->
+<!-- Licensed under the Apache License, Version 2.0. See LICENSE-APACHE-2.0 in the repository root for full terms. -->
 
 # Session Handover — 2026-05-31b — #34 closed; forwarding + cluster-identity hardened; silent-death detection fixed; membership-convergence cluster remains
 

@@ -414,4 +414,4 @@ Learn more at [pragmaticalabs.io](https://pragmaticalabs.io/)
 
 ---
 
-*Pragmatica Aether is licensed under the Business Source License 1.1, converting to Apache 2.0 after four years. It's free for internal organizational use and non-production evaluation.*
+*Pragmatica Aether is Apache-2.0, except the runtime core modules, which are licensed under the Business Source License 1.1 and convert to Apache 2.0 on January 1, 2030. They are free for internal organizational use and non-production evaluation.*

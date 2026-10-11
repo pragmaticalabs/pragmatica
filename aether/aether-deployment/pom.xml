@@ -13,6 +13,14 @@
     <name>Aether Deployment</name>
     <description>Cluster and node deployment management</description>
 
+    <licenses>
+        <license>
+            <name>Business Source License 1.1</name>
+            <url>https://mariadb.com/bsl11/</url>
+            <comments>Converts to Apache License 2.0 on January 1, 2030</comments>
+        </license>
+    </licenses>
+
     <properties>
         <!-- Real-PostgreSQL atomicity test (Increment A of #338) and real-MySQL migration test
              (Increment B of #338). TEST scope only; matches the versions used by
