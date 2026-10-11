@@ -2574,6 +2574,21 @@ public final class StreamPartitionManager implements AutoCloseable {
                                           Option<Epoch> epoch,
                                           java.util.concurrent.atomic.AtomicBoolean wrote,
                                           java.util.concurrent.atomic.AtomicReference<RecoverySegment.Preserved> preserved) {
+        beginCut(streamName, partition);
+
+        return cutSteps(streamName, partition, divergedAtOffset, keep, authority, wal, ring, epoch, wrote, preserved).onFailure(_ -> endCut(streamName, partition));
+    }
+
+    private Result<Unit> cutSteps(String streamName,
+                                          int partition,
+                                          long divergedAtOffset,
+                                          long keep,
+                                          QuarantineView.RepairAuthority authority,
+                                          Option<AppendLog> wal,
+                                          OffHeapRingBuffer ring,
+                                          Option<Epoch> epoch,
+                                          java.util.concurrent.atomic.AtomicBoolean wrote,
+                                          java.util.concurrent.atomic.AtomicReference<RecoverySegment.Preserved> preserved) {
         var head = ring.headOffset();
         var prospective = new TailCut(keep, head - keep, keep + 1, head, epoch);
 
@@ -2680,8 +2695,25 @@ public final class StreamPartitionManager implements AutoCloseable {
     /// records the cut removed, so a derived view (the durable-entity fold) compares this with the value it was built under.
     private final ConcurrentHashMap<String, Long> cutGenerations = new ConcurrentHashMap<>();
 
+    /// The identity of the partition's log content, for anything derived from it (#2087 B4-cut): it changes when the ring is replaced (a
+    /// re-created stream, a re-materialization) and across every cut, and it is ODD while a cut is in progress -- from before the ring
+    /// shrinks until after -- so a view built, or checked, in that window never matches. A view is valid only if it was built under an EVEN
+    /// value equal to the current one.
     public long cutGeneration(String streamName, int partition) {
-        return cutGenerations.getOrDefault(partitionKeyOf(streamName, partition), 0L);
+        var cuts = cutGenerations.getOrDefault(partitionKeyOf(streamName, partition), 0L);
+
+        return resolvePartitionBuffer(streamName, partition).map(ring -> (ring.incarnation() << 24) + cuts)
+                                                            .or(-1L << 24);
+    }
+
+    @Contract
+    private void beginCut(String streamName, int partition) {
+        cutGenerations.merge(partitionKeyOf(streamName, partition), 1L, Long::sum);
+    }
+
+    @Contract
+    private void endCut(String streamName, int partition) {
+        cutGenerations.merge(partitionKeyOf(streamName, partition), 1L, Long::sum);
     }
 
     /// Runs inside the ring's ordered section, after the ring shrank: the quarantine this repair read is lifted, and
@@ -2696,7 +2728,7 @@ public final class StreamPartitionManager implements AutoCloseable {
         // What remains is the prefix this copy shares with its sender: verified by construction.
         unverifiedReplicas.remove(partitionKeyOf(streamName, partition));
         verifiedPrefix.remove(partitionKeyOf(streamName, partition));
-        cutGenerations.merge(partitionKeyOf(streamName, partition), 1L, Long::sum);
+        endCut(streamName, partition);
         // The owner's reported position above the cut described records that no longer exist here (#2087): what is appended
         // at those offsets next is the new lineage, visible only once the owner reports it.
         replicaCommitted.computeIfPresent(partitionKeyOf(streamName, partition),

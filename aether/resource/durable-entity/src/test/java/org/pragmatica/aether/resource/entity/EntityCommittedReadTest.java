@@ -213,6 +213,80 @@ class EntityCommittedReadTest {
         assertThat(fold.get(0, "k").isPresent()).as("offset 0 survived the cut").isTrue();
     }
 
+    /// R7: a catch-up still in flight when the log is cut belongs to the dropped fold. If its memo survived the cut, every later catch-up
+    /// would join it and wait for a read that never completes.
+    @Test
+    void aCatchUpInFlightAtTheCut_doesNotBlockTheCatchUpsAfterIt() {
+        append("k", 1);
+        entity.get("k").await();
+        substrate.log.add(EntityLogRecord.upsert("a", "2".getBytes(StandardCharsets.UTF_8)).encode());
+        substrate.blockNextRead = true;
+        var stuck = entity.get("other");
+
+        assertThat(stuck.isResolved()).as("control: the catch-up read is stuck").isFalse();
+        substrate.cutTo(0L);
+
+        assertThat(entity.get("k").await().unwrap().isPresent()).as("the fold is rebuilt from the surviving log").isTrue();
+        substrate.log.add(EntityLogRecord.upsert("b", "3".getBytes(StandardCharsets.UTF_8)).encode());
+
+        var landed = entity.get("b").await(org.pragmatica.lang.io.TimeSpan.timeSpan(3).seconds());
+
+        assertThat(landed.isSuccess()).as("a catch-up after the cut runs instead of joining the dropped one").isTrue();
+        assertThat(landed.unwrap()).isEqualTo(Option.some(3));
+    }
+
+    /// A cut that has begun but not finished (the ring has not shrunk yet, or has just shrunk) makes no fold valid: a read is refused,
+    /// and a rebuild that read the log in that window is not published.
+    @Test
+    void whileACutIsInProgress_noFoldIsServed_andARebuildInTheWindowIsNotPublished() {
+        append("k", 5);
+        assertThat(entity.get("k").await().isSuccess()).as("control").isTrue();
+
+        substrate.cutGeneration++;
+
+        var during = entity.get("k").await();
+
+        assertThat(during.isFailure()).as("odd generation: a cut is between begun and done").isTrue();
+        during.onFailure(cause -> assertThat(cause).isInstanceOf(EntityLogError.FoldInProgress.class));
+
+        substrate.cutGeneration++;
+
+        assertThat(entity.get("k").await().unwrap()).as("the cut is done: rebuilt from the log").isEqualTo(Option.some(5));
+    }
+
+    /// Checkpoint evidence (B4-cut): a checkpoint claims only committed offsets, and a cut of the uncommitted tail leaves the claim valid.
+    @Test
+    void aCutAboveTheCommittedPosition_leavesTheCheckpointClaimValid_andTheRebuiltFoldHoldsNoCutRecord() {
+        append("k", 1);
+        append("j", 2);
+        append("z", 3);
+        substrate.commitThrough(1L);
+        assertThat(fold.checkpointableThrough(0)).as("control: the claim is the committed position, not the applied one").isEqualTo(1L);
+
+        substrate.cutTo(1L);
+        fold.ready(0).await();
+
+        assertThat(fold.checkpointableThrough(0)).as("still 1: the cut removed only offset 2, above the claim").isEqualTo(1L);
+        assertThat(fold.get(0, "z").isPresent()).as("the rebuilt fold holds nothing from the cut").isFalse();
+        assertThat(fold.get(0, "j").isPresent()).isTrue();
+    }
+
+    /// A cut BELOW the committed position (outside the replication protocol: acknowledged records are on every in-sync copy) lowers the
+    /// committed position with it, so a checkpoint taken afterwards never claims a removed offset.
+    @Test
+    void aCutBelowTheCommittedPosition_cannotBeFollowedByAClaimAboveTheCut() {
+        append("k", 1);
+        append("j", 2);
+        substrate.commitThrough(1L);
+        assertThat(fold.checkpointableThrough(0)).isEqualTo(1L);
+
+        substrate.cutTo(0L);
+        fold.ready(0).await();
+
+        assertThat(fold.checkpointableThrough(0)).isEqualTo(0L);
+        assertThat(fold.get(0, "j").isPresent()).isFalse();
+    }
+
     private void append(String key, int value) {
         var record = EntityLogRecord.upsert(key, String.valueOf(value).getBytes(StandardCharsets.UTF_8)).encode();
         var offset = substrate.appendRaw(record);
@@ -235,7 +309,7 @@ class EntityCommittedReadTest {
             while (log.size() - 1L > keepThrough) {
                 log.remove(log.size() - 1);
             }
-            cutGeneration++;
+            cutGeneration += 2;
         }
 
         @Override
@@ -244,6 +318,7 @@ class EntityCommittedReadTest {
         }
 
         volatile boolean cutDuringNextRead;
+        volatile boolean blockNextRead;
 
         long appendRaw(byte[] record) {
             log.add(record);
@@ -296,9 +371,14 @@ class EntityCommittedReadTest {
 
         @Override
         public Promise<List<byte[]>> read(String keyspace, int partition, long fromOffset, int maxRecords) {
+            if (blockNextRead) {
+                blockNextRead = false;
+
+                return Promise.<List<byte[]>> promise();
+            }
             if (cutDuringNextRead) {
                 cutDuringNextRead = false;
-                cutGeneration++;
+                cutGeneration += 2;
             }
             if (fromOffset >= log.size()) {
                 return Promise.success(List.of());

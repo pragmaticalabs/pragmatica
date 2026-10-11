@@ -210,8 +210,16 @@ final class EntityFold {
     /// key whose cut write was still served). The rebuild memo is dropped so the next access rebuilds from the surviving log; until the new
     /// fold is published every client read refuses ([#getCommitted]) and no stale fold is checkpointed. The cut is the event: nothing here
     /// polls on a timer.
+    /// Whether `data` was built under the log's CURRENT identity, with no cut in progress: the log's value is even (odd means a cut is
+    /// between "begun" and "done") and equal to the one `data` was built under.
+    private boolean isCurrent(int partition, FoldedPartition data) {
+        var current = substrate.cutGeneration(keyspace, partition);
+
+        return (current & 1L) == 0L && data.generation == current;
+    }
+
     private void dropIfCut(int partition, PartitionFold fold) {
-        if (fold.published.get().generation != substrate.cutGeneration(keyspace, partition)) {
+        if (!isCurrent(partition, fold.published.get())) {
             fold.rebuild.set(null);
             fold.catchUp.set(null);
         }
@@ -249,7 +257,7 @@ final class EntityFold {
     Promise<Option<byte[]>> getCommitted(int partition, String key) {
         var data = publishedFold(partition);
 
-        if (data.generation != substrate.cutGeneration(keyspace, partition)) {
+        if (!isCurrent(partition, data)) {
             return new EntityLogError.FoldInProgress(keyspace, partition).promise();
         }
 
@@ -562,7 +570,7 @@ final class EntityFold {
     /// A checkpoint may claim only COMMITTED offsets (#2087): the contents may run ahead of the claim (replay is idempotent), but a
     /// claim above the committed position would pin retention above records a failover may still replace.
     private long committedClaim(int partition, FoldedPartition data) {
-        if (data.generation != substrate.cutGeneration(keyspace, partition)) {
+        if (!isCurrent(partition, data)) {
             return -1L;
         }
 
@@ -873,7 +881,7 @@ final class EntityFold {
     /// it last published.
     /// A fold built while the log was being cut would publish records the cut removed: it is discarded and the rebuild retried.
     private Promise<Unit> publishUnlessCut(int partition, PartitionFold fold, FoldedPartition built) {
-        return built.generation == substrate.cutGeneration(keyspace, partition)
+        return isCurrent(partition, built)
                ? Promise.success(publish(fold, built))
                : new EntityLogError.FoldInProgress(keyspace, partition).promise();
     }

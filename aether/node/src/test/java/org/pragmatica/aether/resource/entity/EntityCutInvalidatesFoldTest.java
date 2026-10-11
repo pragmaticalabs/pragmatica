@@ -171,6 +171,53 @@ class EntityCutInvalidatesFoldTest {
         created.onFailure(cause -> assertThat(cause).as("the cut write must not make the key exist").isNotInstanceOf(EntityError.EntityAlreadyExists.class));
     }
 
+    /// The window the cut opens between "the ring has not shrunk" and "the generation says so": the generation is ODD from before the ring
+    /// shrinks until after, so a fold built or checked in that window never matches. Observed from inside the cut, through the repair
+    /// authority, which the cut asks while it holds the ring's ordered section. A cut that is refused or fails must not leave it odd.
+    @Test
+    void theCutGeneration_isOddWhileACutRuns_andEvenAfterIt_refusedOrDone() throws Exception {
+        ownerEntity.create("k", 5);
+        awaitHeld(replicaManager);
+        var rawJ = EntityLogRecord.upsert("j", "9".getBytes(StandardCharsets.UTF_8)).encode();
+        var newLineage = Epoch.epoch(1L, 2L, 1L);
+
+        assertThat(replicaManager.appendRecovered(arc(), PARTITION, 0L, rawJ, 5L, newLineage).isFailure()).as("control: a divergence").isTrue();
+        var before = replicaManager.cutGeneration(arc(), PARTITION);
+        var seenWhenRefused = new java.util.concurrent.atomic.AtomicLong(-1L);
+
+        assertThat(replicaManager.repairDivergence(arc(), PARTITION, _ -> {
+            seenWhenRefused.set(replicaManager.cutGeneration(arc(), PARTITION));
+            return false;
+        }).isFailure()).as("control: the cut is refused").isTrue();
+        assertThat(seenWhenRefused.get() & 1L).as("odd while the cut runs").isEqualTo(1L);
+        assertThat(replicaManager.cutGeneration(arc(), PARTITION) & 1L).as("a refused cut leaves it even").isZero();
+
+        var seenWhenDone = new java.util.concurrent.atomic.AtomicLong(-1L);
+
+        assertThat(replicaManager.repairDivergence(arc(), PARTITION, _ -> {
+            seenWhenDone.set(replicaManager.cutGeneration(arc(), PARTITION));
+            return true;
+        }).isSuccess()).as("control: the cut proceeds").isTrue();
+        assertThat(seenWhenDone.get() & 1L).as("odd while the cut runs").isEqualTo(1L);
+        assertThat(replicaManager.cutGeneration(arc(), PARTITION)).as("even, and different from before the cut").isNotEqualTo(before).matches(value -> (value & 1L) == 0L);
+    }
+
+    /// A stream deleted and created again under the same name gets a new ring; the entity fold built over the old one must not survive into it.
+    @Test
+    void aStreamDeletedAndCreatedAgain_doesNotKeepServingTheOldFold() {
+        acksReachOwner.set(true);
+        announcementsReachReplica.set(true);
+        assertThat(ownerEntity.create("k", 5).await().isSuccess()).as("control: written and acknowledged").isTrue();
+        assertThat(ownerEntity.get("k").await().unwrap()).as("control: served").isEqualTo(Option.some(5));
+
+        assertThat(ownerManager.destroyStream(arc()).isSuccess()).isTrue();
+        substrate(ownerManager).ensureLog(KEYSPACE, 1, new ReplicationFactors(2, 2)).unwrap();
+
+        var afterRecreate = ownerEntity.get("k").await(org.pragmatica.lang.io.TimeSpan.timeSpan(10).seconds());
+
+        assertThat(String.valueOf(afterRecreate)).as("the new incarnation is empty").doesNotContain("Some(5)");
+    }
+
     private void awaitHeld(StreamPartitionManager manager) {
         var deadline = System.nanoTime() + 5_000_000_000L;
 
