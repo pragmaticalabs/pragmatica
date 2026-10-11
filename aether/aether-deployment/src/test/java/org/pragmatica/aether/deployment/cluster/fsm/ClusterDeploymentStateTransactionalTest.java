@@ -246,6 +246,8 @@ class ClusterDeploymentStateTransactionalTest {
         void restorePreviousBlueprint_putsUnderPriorVersionKey() {
             var prior = blueprint("app", V1, "slice-a");
             var failing = blueprint("app", V2, "slice-a");
+            // #1974: the blueprint is committed before its apply is tracked; a rollback of a deleted one writes nothing.
+            kvStore.put(AppBlueprintKey.appBlueprintKey(failing.id()), AppBlueprintValue.appBlueprintValue(failing));
             var inflight = ClusterDeploymentState.Active.InFlightBlueprint.inFlightBlueprint(failing.id(),
                                                                                              failing,
                                                                                              Option.some(prior));
@@ -261,6 +263,8 @@ class ClusterDeploymentStateTransactionalTest {
             var prior = blueprint("app", V1, "slice-a");
             var failing = blueprint("app", V2, "slice-a");
             var failedKey = AppBlueprintKey.appBlueprintKey(blueprintId("app", V2));
+            // #1974: the blueprint is committed before its apply is tracked; a rollback of a deleted one writes nothing.
+            kvStore.put(AppBlueprintKey.appBlueprintKey(failing.id()), AppBlueprintValue.appBlueprintValue(failing));
             var inflight = ClusterDeploymentState.Active.InFlightBlueprint.inFlightBlueprint(failing.id(),
                                                                                              failing,
                                                                                              Option.some(prior));
@@ -279,6 +283,8 @@ class ClusterDeploymentStateTransactionalTest {
         void restorePreviousBlueprint_recordsRolledBackOutcomeAtomicallyWithRestore() {
             var prior = blueprint("app", V1, "slice-a");
             var failing = blueprint("app", V2, "slice-a");
+            // #1974: the blueprint is committed before its apply is tracked; a rollback of a deleted one writes nothing.
+            kvStore.put(AppBlueprintKey.appBlueprintKey(failing.id()), AppBlueprintValue.appBlueprintValue(failing));
             var inflight = ClusterDeploymentState.Active.InFlightBlueprint.inFlightBlueprint(failing.id(),
                                                                                              failing,
                                                                                              Option.some(prior));
@@ -315,6 +321,8 @@ class ClusterDeploymentStateTransactionalTest {
         void restorePreviousBlueprint_removesFailedBlueprintKeyAtomicallyWithRestoreAndOutcome() {
             var prior = blueprint("app", V1, "slice-a");
             var failing = blueprint("app", V2, "slice-a");
+            // #1974: the blueprint is committed before its apply is tracked; a rollback of a deleted one writes nothing.
+            kvStore.put(AppBlueprintKey.appBlueprintKey(failing.id()), AppBlueprintValue.appBlueprintValue(failing));
             var inflight = ClusterDeploymentState.Active.InFlightBlueprint.inFlightBlueprint(failing.id(),
                                                                                              failing,
                                                                                              Option.some(prior));
@@ -381,6 +389,8 @@ class ClusterDeploymentStateTransactionalTest {
                                                                                     .unwrap(),
                                                                        ResolvedSlice.resolvedSlice(netNewArtifact, 3, false)
                                                                                     .unwrap()));
+            // #1974: the blueprint is committed before its apply is tracked; a rollback of a deleted one writes nothing.
+            kvStore.put(AppBlueprintKey.appBlueprintKey(failing.id()), AppBlueprintValue.appBlueprintValue(failing));
             var inflight = ClusterDeploymentState.Active.InFlightBlueprint.inFlightBlueprint(failing.id(),
                                                                                              failing,
                                                                                              Option.some(prior));
@@ -440,6 +450,8 @@ class ClusterDeploymentStateTransactionalTest {
         void unloadBlueprintSlices_deterministicFailureNoPreviousBlueprint_recordsFailedOutcomeAtomicallyWithRemoval() {
             var failing = blueprint("app", V1, "slice-a");
             var failedArtifact = artifact("slice-a", V1);
+            // #1974: the blueprint is committed before its apply is tracked; a rollback of a deleted one writes nothing.
+            kvStore.put(AppBlueprintKey.appBlueprintKey(failing.id()), AppBlueprintValue.appBlueprintValue(failing));
             var inflight = ClusterDeploymentState.Active.InFlightBlueprint.inFlightBlueprint(failing.id(), failing, Option.empty());
             activeState().inFlightBlueprints().put(failing.id(), inflight);
 
@@ -814,6 +826,7 @@ class ClusterDeploymentStateTransactionalTest {
             var expanded = blueprint("app", V1, "slice-a");
             var sliceArtifact = artifact("slice-a", V1);
 
+            kvStore.put(AppBlueprintKey.appBlueprintKey(expanded.id()), AppBlueprintValue.appBlueprintValue(expanded));
             harness.dispatch(new AppBlueprintPutReceived(appBlueprintPut(expanded)));
             assertThat(cluster.putKeys()).as("initial publish tracks the blueprint in-flight, not yet rolled back")
                                          .doesNotContain(AppBlueprintKey.appBlueprintKey(expanded.id()));

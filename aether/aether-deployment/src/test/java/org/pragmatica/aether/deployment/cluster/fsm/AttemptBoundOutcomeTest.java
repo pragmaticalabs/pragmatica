@@ -552,6 +552,22 @@ class AttemptBoundOutcomeTest {
         assertThat(outcome(leaderStore, expanded.id())).as("no outcome resurrected for a deleted blueprint").isEqualTo(Option.none());
     }
 
+    /// The blueprint is deleted while its apply is in flight, and a slice then fails permanently. The deletion
+    /// supersedes the rollback: an outcome written for a deleted id would be an orphan the status route reports.
+    @Test
+    void rollbackOfADeletedBlueprint_writesNoOutcomeForTheDeletedId() {
+        var expanded = blueprint(3);
+
+        applyBlueprint(leaderHarness, leaderStore, expanded, FIRST_ATTEMPT, 1L);
+        seed(leaderStore,
+             new KVCommand.Remove<AetherKey>(AppBlueprintKey.appBlueprintKey(expanded.id())),
+             new KVCommand.Remove<AetherKey>(DeploymentOutcomeKey.deploymentOutcomeKey(expanded.id())));
+        exhaustRetryBudgetOn(leaderHarness, SELF, SLICE);
+
+        assertThat(outcome(leaderStore, expanded.id())).as("no FAILED for a deleted blueprint").isEqualTo(Option.none());
+        assertThat(committedBlueprint(leaderStore, expanded.id())).isEqualTo(Option.none());
+    }
+
     /// P7: a rollback refused EVERY time is bounded: one submission plus MAX_OUTCOME_MERGE_ATTEMPTS (5) rebuilds.
     @Test
     void rollbackRefusedEveryTime_isSubmittedExactlySixTimes() {

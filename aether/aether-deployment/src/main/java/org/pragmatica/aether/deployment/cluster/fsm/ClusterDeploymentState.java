@@ -3365,12 +3365,21 @@ public sealed interface ClusterDeploymentState extends FsmState<ClusterDeploymen
             // after this read. The store can already be ahead of this FSM: a newer publish of the same id may
             // have committed while its notification is still queued behind the failure that triggered this
             // rollback. Fencing on that newer value would remove the newer attempt's blueprint, so a rollback
-            // does not proceed while the committed blueprint is ANOTHER attempt. An absent blueprint is not a
-            // newer publish (a delete clears it), and the fence expects it absent, so a publish landing
-            // after this read still refuses the rollback.
+            // does not proceed while the committed blueprint is ANOTHER attempt.
             if (committedByAnotherAttempt(rolledBack, inflight.attemptId())) {
                 log.info("ALL_OR_NOTHING: rollback of blueprint {} was superseded before it was built — the committed"
                         + " blueprint is no longer the attempt it rolls back, so the newer apply is left in place",
+                         inflight.id().asString());
+                onAbandoned.run();
+
+                return;
+            }
+
+            // An absent blueprint was deleted while its apply was in flight. The deletion supersedes the rollback,
+            // and an outcome written for a deleted id is an orphan record the status route would report.
+            if (rolledBack.isEmpty()) {
+                log.info("ALL_OR_NOTHING: rollback of blueprint {} was superseded — the blueprint was deleted, so no"
+                        + " outcome is written for it",
                          inflight.id().asString());
                 onAbandoned.run();
 
