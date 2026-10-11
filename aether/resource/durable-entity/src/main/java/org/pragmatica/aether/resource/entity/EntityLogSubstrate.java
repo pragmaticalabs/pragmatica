@@ -119,6 +119,20 @@ public interface EntityLogSubstrate {
         return TimeSpan.timeSpan(5).seconds();
     }
 
+    /// The identity of the log record at `offset` as THIS node's copy holds it (#2087 B4-cut): a digest of the records ending there plus the
+    /// owner epoch the node knows for it. A checkpoint records it when it is taken; a node seeding from the checkpoint compares it with its own,
+    /// because a cut can remove acknowledged records (the bounded promotion escape) and a new lineage can then grow past the offset the
+    /// checkpoint claims, so "the claim is within my log" does not mean "my log holds what the claim folded". None when the record cannot be
+    /// read here (evicted or sealed: below the sealed floor, which a cut never crosses) or the substrate keeps no lineage. The default keeps none.
+    default Option<byte[]> lineageAt(String keyspace, int partition, long offset) {
+        return Option.none();
+    }
+
+    /// [#saveCheckpoint(String, int, long, byte[])] recording `lineage` with the checkpoint. The default drops it.
+    default Promise<Unit> saveCheckpoint(String keyspace, int partition, long throughOffset, byte[] snapshot, Option<byte[]> lineage) {
+        return saveCheckpoint(keyspace, partition, throughOffset, snapshot);
+    }
+
     /// Whether this node holds `(keyspace, partition)` locally at all.
     ///
     /// Distinct from [#localLogComplete], and the distinction is the difference between a transient state
@@ -141,9 +155,19 @@ public interface EntityLogSubstrate {
     /// @param throughOffset the last log offset folded INTO `snapshot`; the fold resumes at
     ///                      `throughOffset + 1`
     /// @param snapshot      the encoded fold, as written by the entity
-    record EntityCheckpoint(long throughOffset, byte[] snapshot) {
+    /// @param lineage       the identity of the log record at `throughOffset` when the checkpoint was taken (#2087 B4-cut), or none when the
+    ///                      substrate recorded none; a node seeding from the checkpoint compares it with its own record at that offset
+    record EntityCheckpoint(long throughOffset, byte[] snapshot, Option<byte[]> lineage) {
+        public EntityCheckpoint(long throughOffset, byte[] snapshot) {
+            this(throughOffset, snapshot, Option.none());
+        }
+
         public static EntityCheckpoint entityCheckpoint(long throughOffset, byte[] snapshot) {
-            return new EntityCheckpoint(throughOffset, snapshot);
+            return new EntityCheckpoint(throughOffset, snapshot, Option.none());
+        }
+
+        public static EntityCheckpoint entityCheckpoint(long throughOffset, byte[] snapshot, Option<byte[]> lineage) {
+            return new EntityCheckpoint(throughOffset, snapshot, lineage);
         }
     }
 }

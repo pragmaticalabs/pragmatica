@@ -581,7 +581,7 @@ final class EntityFold {
     ///
     /// @param throughOffset the offset the checkpoint may claim
     /// @param snapshot      the encoded contents, folded at or beyond that offset
-    record CheckpointCandidate(long throughOffset, byte[] snapshot) {}
+    record CheckpointCandidate(long throughOffset, byte[] snapshot, Option<byte[]> lineage) {}
 
     /// A checkpoint for `partition` that claims MORE than `notAbove`, or [Option#none] when there is none —
     /// either because the fold has not advanced past `notAbove`, or because this node has nothing to say
@@ -620,7 +620,18 @@ final class EntityFold {
 
         return claim < 0L || claim <= notAbove
                ? Option.none()
-               : Option.some(new CheckpointCandidate(claim, encodedFold(data)));
+               : candidate(partition, data, claim);
+    }
+
+    /// The candidate for `claim`: the encoded contents and the lineage of the log record at `claim`, read together. A cut between the two would pair
+    /// contents folded from the removed records with the new lineage's identity, so the fold must still be the current one afterwards.
+    private Option<CheckpointCandidate> candidate(int partition, FoldedPartition data, long claim) {
+        var snapshot = encodedFold(data);
+        var lineage = substrate.lineageAt(keyspace, partition, claim);
+
+        return isCurrent(partition, data)
+               ? Option.some(new CheckpointCandidate(claim, snapshot, lineage))
+               : Option.none();
     }
 
     /// Apply every log record past the watermark, so the fold reflects the log's CURRENT head — records
@@ -821,6 +832,16 @@ final class EntityFold {
                         .recover(cause -> unreadableCheckpoint(partition, cause));
     }
 
+    /// #2087 B4-cut: a checkpoint is usable only over the lineage it was taken over. It records the identity of the log record at its claim
+    /// ([EntityLogSubstrate#lineageAt]); this node's record at that offset must have the same identity. A checkpoint without a recorded
+    /// lineage, or an offset this node cannot read (below the sealed floor, which a cut never crosses), is accepted as before.
+    private boolean lineageHolds(int partition, EntityLogSubstrate.EntityCheckpoint checkpoint) {
+        return checkpoint.lineage()
+                         .flatMap(recorded -> substrate.lineageAt(keyspace, partition, checkpoint.throughOffset())
+                                                       .map(local -> java.util.Arrays.equals(recorded, local)))
+                         .or(true);
+    }
+
     private Option<SeedCheckpoint> seedable(int partition, EntityLogSubstrate.EntityCheckpoint checkpoint) {
         var head = substrate.headOffset(keyspace, partition);
 
@@ -831,6 +852,16 @@ final class EntityFold {
                      partition,
                      checkpoint.throughOffset(),
                      head);
+
+            return Option.none();
+        }
+
+        if (!lineageHolds(partition, checkpoint)) {
+            LOG.warn("Entity keyspace '{}' partition {}: the checkpoint at offset {} was taken over a different lineage than the record this"
+                    + " node's log holds there (the log was cut and grew again); ignoring the checkpoint and folding from the log",
+                     keyspace,
+                     partition,
+                     checkpoint.throughOffset());
 
             return Option.none();
         }

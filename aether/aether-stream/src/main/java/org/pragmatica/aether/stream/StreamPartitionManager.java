@@ -3974,6 +3974,16 @@ public final class StreamPartitionManager implements AutoCloseable {
                      .or(() -> success(List.of()));
     }
 
+    /// The owner epoch this node's WAL history records for the record at `offset` (the last history entry starting at or below it), or none
+    /// for a copy that keeps no log or records none (#2087 B4-cut: part of a checkpoint's lineage identity).
+    public Option<Epoch> epochAt(String streamName, int partition, long offset) {
+        return epochHistory(streamName, partition).option()
+                                                  .flatMap(history -> Option.from(history.stream()
+                                                                                         .filter(entry -> entry.startOffset() <= offset)
+                                                                                         .reduce((earlier, later) -> later)))
+                                                  .map(ProvenanceEntry::rank);
+    }
+
     /// What this node's copy of `(streamName, partition)` says about its records' provenance (#1596): the input of
     /// [org.pragmatica.aether.stream.provenance.ProvenanceComparison] for the promotion gate and cold-restart
     /// detection. `low` is the lowest offset held locally, `head` the highest (`-1` for none).
