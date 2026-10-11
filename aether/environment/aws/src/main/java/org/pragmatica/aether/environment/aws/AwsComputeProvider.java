@@ -657,6 +657,8 @@ public record AwsComputeProvider(AwsClient client, AwsEnvironmentConfig config) 
     /// what was asked for — `InvalidParameterValue: Invalid instance type` does not.
     private static EnvironmentError toProvisionError(String instanceType, String zone, Cause cause) {
         return switch (cause) {
+            // #1111: the instance EXISTS (it was created, then failed readiness): the typed cause reaches the caller, never flattened into a rejection.
+            case EnvironmentError.ProvisionReadinessTimeout timeout -> timeout;
             case AwsError.ApiError api when INSUFFICIENT_CAPACITY_CODE.equals(api.code()) -> EnvironmentError.capacityUnavailable(zone,
                                                                                                                                   new RuntimeException(api.message()));
             case AwsError.ApiError api when SPOT_MAX_PRICE_TOO_LOW_CODE.equals(api.code()) -> EnvironmentError.provisionFailed(instanceType,

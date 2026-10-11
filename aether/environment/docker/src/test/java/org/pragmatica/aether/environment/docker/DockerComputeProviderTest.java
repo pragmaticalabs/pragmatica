@@ -223,7 +223,7 @@ class DockerComputeProviderTest {
             provider.provision(InstanceType.ON_DEMAND)
                     .await()
                     .onSuccess(info -> fail("Expected readiness failure but got phantom success: " + info))
-                    .onFailure(DockerComputeProviderTest::assertProvisionFailedError);
+                    .onFailure(cause -> assertThat(cause).as("#1111: the readiness timeout reaches the caller typed (the instance EXISTS), never flattened into a provision failure").isInstanceOf(EnvironmentError.ProvisionReadinessTimeout.class));
 
             // run, inspect (exited), rollback rm -f.
             assertThat(testRunner.allCommands).hasSize(3);
