@@ -31,6 +31,7 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.net.tcp.TlsConfig;
 
+import org.pragmatica.utility.warning.OperatorWarningSink;
 import static java.util.concurrent.TimeUnit.SECONDS;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
@@ -95,6 +96,42 @@ class NodeReplacementWiringBootTest {
         assertThat(leaderReconciler.surgeReplacementsView()).as("the leader reconciler counts the pairing's CORE replacement as capacity").containsExactly(FRESH);
         assertThat(placement.surgeView()).as("the placement reconciler is told the surge").containsExactly(FRESH);
         assertThat(placement.protectedView()).as("and which nodes a reduction must not remove").containsExactlyInAnyOrder(self, FRESH);
+    }
+
+    /// #2062 (M5): the node hands its operator-warning sink to the topology manager, so "the termination of a retired node's instance is not
+    /// confirmed" is an operator event and not only a log line. Without the wiring the CTM keeps the log-only sink.
+    @Test
+    @Timeout(value = 120, unit = SECONDS)
+    void theTopologyManager_isWiredToTheNodesOperatorWarningSink() {
+        node = bootedNode();
+
+        var sink = ((ClusterTopologyManager) accessor(node, "clusterTopologyManagerInstance")).operatorWarningSink();
+
+        assertThat(sink).as("a hand-off sink to the event aggregator, not the log-only default").isNotSameAs(OperatorWarningSink.logOnly());
+    }
+
+    /// #2062: the marks of retired nodes whose termination is unconfirmed are read from the node's replicated store, so a new leader inherits
+    /// them. Without the wiring the topology manager reads an empty map and a successor never sees an open mark.
+    @Test
+    @Timeout(value = 120, unit = SECONDS)
+    @SuppressWarnings({"rawtypes", "unchecked"})
+    void theTopologyManager_readsTheUnconfirmedMarksFromTheNodesStore() {
+        node = bootedNode();
+        var mark = new AetherValue.UnconfirmedTerminationValue("provider unreachable", true, false);
+        var leader = new org.pragmatica.cluster.state.kvstore.LeaderValue(self, 1);
+        var key = new AetherKey.UnconfirmedTerminationKey(FRESH);
+        var store = (org.pragmatica.cluster.state.kvstore.KVStore) node.kvStore();
+
+        store.process(store.createBatch(java.util.List.of(new org.pragmatica.cluster.state.kvstore.KVCommand.Put(org.pragmatica.cluster.state.kvstore.LeaderKey.INSTANCE, leader))));
+        store.process(store.createBatch(java.util.List.of(new org.pragmatica.cluster.state.kvstore.KVCommand.LeaderTransaction(key,
+                                                                                                                             java.util.UUID.randomUUID().toString(),
+                                                                                                                             leader,
+                                                                                                                             java.util.List.of(),
+                                                                                                                             java.util.List.of(new org.pragmatica.cluster.state.kvstore.KVCommand.Mutation<>(key, Option.none(), Option.some(mark)))))));
+
+        var marks = ((ClusterTopologyManager) accessor(node, "clusterTopologyManagerInstance")).unconfirmedMarks();
+
+        assertThat(marks).as("read from the replicated store").containsEntry(FRESH, mark);
     }
 
     private static Object accessor(AetherNode booted, String name) {

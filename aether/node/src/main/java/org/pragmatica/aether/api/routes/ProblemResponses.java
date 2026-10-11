@@ -8,6 +8,7 @@ import java.nio.charset.StandardCharsets;
 
 import org.pragmatica.http.ContentCategory;
 import org.pragmatica.http.ContentType;
+import org.pragmatica.http.HttpError;
 import org.pragmatica.http.HttpStatus;
 import org.pragmatica.http.HttpStatusAware;
 import org.pragmatica.http.ProblemDetail;
@@ -50,7 +51,7 @@ public final class ProblemResponses {
     /// @param requestId request identifier (extension member)
     @Contract
     public static void writeProblem(ResponseWriter response, Cause cause, String instance, String requestId) {
-        writeProblem(response, resolveStatus(cause), cause.message(), instance, requestId);
+        writeProblem(response, resolveStatus(cause), HttpError.clientMessage(cause), instance, requestId);
     }
 
     /// Write a ProblemDetail response with explicit status and detail.

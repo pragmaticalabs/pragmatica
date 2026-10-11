@@ -244,6 +244,21 @@ public final class StreamPartitionManager implements AutoCloseable {
     private final Set<String> unverifiedReplicas = ConcurrentHashMap.newKeySet();
     /// The cause of the cut refusal last reported per partition (#2084), so a repair retried against the same obstacle reports nothing more.
     private final Map<PartitionRef, String> refusedCuts = new ConcurrentHashMap<>();
+    /// Raise-before-resolve (#2004) for [#refusedCuts]: recording a refusal and raising it, and removing it and resolving it, each happen
+    /// under this monitor, so a close that lands while the refusal is being raised waits for it and delivers [refused, resumed], never
+    /// [resumed, refused] (which the aggregator drops, leaving the warning open). These race in production: the refusal is raised on the
+    /// repair path (a backfill thread), the close from the reconcile tick that releases the replica or the thread that destroys the stream. A leaf
+    /// lock: while it is held only the map and [OperatorWarnings#raise] (a log line and a bounded hand-off) run.
+    private final Object refusedCutOrder = new Object();
+
+    /// Test seam: runs after a refusal is recorded and before it is raised, inside the monitor.
+    private volatile Runnable refusalWindowHook = () -> {};
+
+    @Contract
+    void refusalWindowHook(Runnable hook) {
+        this.refusalWindowHook = hook;
+    }
+
     /// #1730 phase 2: where a replica's divergent-tail truncation is reported to the operator, late-bound
     /// ([#operatorWarnings(OperatorWarningSink)]); log-only until then.
     private volatile OperatorWarningSink operatorWarnings = OperatorWarningSink.logOnly();
@@ -2297,19 +2312,22 @@ public final class StreamPartitionManager implements AutoCloseable {
                  keep,
                  cause.message());
         if (cause instanceof StreamError.RepairPreserveFailed || cause instanceof StreamError.RepairWitnessFailed) {
-            var previous = refusedCuts.put(ref, cause.message());
+            synchronized (refusedCutOrder) {
+                var previous = refusedCuts.put(ref, cause.message());
 
-            if (!cause.message().equals(previous)) {
-                OperatorWarnings.raise(log,
-                                       operatorWarnings,
-                                       OperatorWarningCode.STREAM_DIVERGENT_TAIL_CUT_REFUSED,
-                                       streamName + "[" + partition + "]",
-                                       "Replica {}[{}] cannot cut its divergent tail back to offset {}: {}. It stays quarantined with its records "
-                                      + "untouched and the repair is retried; check the volume holding its WAL (full or read-only).",
-                                       streamName,
-                                       partition,
-                                       keep,
-                                       cause.message());
+                if (!cause.message().equals(previous)) {
+                    refusalWindowHook.run();
+                    OperatorWarnings.raise(log,
+                                           operatorWarnings,
+                                           OperatorWarningCode.STREAM_DIVERGENT_TAIL_CUT_REFUSED,
+                                           streamName + "[" + partition + "]",
+                                           "Replica {}[{}] cannot cut its divergent tail back to offset {}: {}. It stays quarantined with its records "
+                                          + "untouched and the repair is retried; check the volume holding its WAL (full or read-only).",
+                                           streamName,
+                                           partition,
+                                           keep,
+                                           cause.message());
+                }
             }
         }
     }
@@ -2324,28 +2342,32 @@ public final class StreamPartitionManager implements AutoCloseable {
 
     @Contract
     private void closeRefusedCut(PartitionRef ref, String reason) {
-        if (refusedCuts.remove(ref) != null) {
-            OperatorWarnings.raise(log,
-                                   operatorWarnings,
-                                   OperatorWarningCode.STREAM_DIVERGENT_TAIL_CUT_RESUMED,
-                                   ref.streamName() + "[" + ref.partition() + "]",
-                                   "Replica {}[{}]: the refused divergent-tail cut no longer stands -- {}.",
-                                   ref.streamName(),
-                                   ref.partition(),
-                                   reason);
+        synchronized (refusedCutOrder) {
+            if (refusedCuts.remove(ref) != null) {
+                OperatorWarnings.raise(log,
+                                       operatorWarnings,
+                                       OperatorWarningCode.STREAM_DIVERGENT_TAIL_CUT_RESUMED,
+                                       ref.streamName() + "[" + ref.partition() + "]",
+                                       "Replica {}[{}]: the refused divergent-tail cut no longer stands -- {}.",
+                                       ref.streamName(),
+                                       ref.partition(),
+                                       reason);
+            }
         }
     }
 
     @Contract
     private void cutResumed(String streamName, int partition, PartitionRef ref) {
-        if (refusedCuts.remove(ref) != null) {
-            OperatorWarnings.raise(log,
-                                   operatorWarnings,
-                                   OperatorWarningCode.STREAM_DIVERGENT_TAIL_CUT_RESUMED,
-                                   streamName + "[" + partition + "]",
-                                   "Replica {}[{}] cut its divergent tail back after the refusal that had stopped it; its records are preserved.",
-                                   streamName,
-                                   partition);
+        synchronized (refusedCutOrder) {
+            if (refusedCuts.remove(ref) != null) {
+                OperatorWarnings.raise(log,
+                                       operatorWarnings,
+                                       OperatorWarningCode.STREAM_DIVERGENT_TAIL_CUT_RESUMED,
+                                       streamName + "[" + partition + "]",
+                                       "Replica {}[{}] cut its divergent tail back after the refusal that had stopped it; its records are preserved.",
+                                       streamName,
+                                       partition);
+            }
         }
     }
 

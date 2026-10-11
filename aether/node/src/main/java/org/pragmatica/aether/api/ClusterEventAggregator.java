@@ -948,6 +948,11 @@ public final class ClusterEventAggregator {
             return;
         }
 
+        if (warning.code().closesAcrossNodes()) {
+            // #2062: the warning may have been raised by another node (a previous leader); the raiser of this recovery holds its open state.
+            openRecoverable.add(closedKey);
+        }
+
         if (replayingCheck.getAsBoolean()) {
             holdDuringReplay(closedKey, event);
 

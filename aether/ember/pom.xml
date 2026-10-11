@@ -14,6 +14,14 @@
     <name>Aether Ember</name>
     <description>Embeddable headless Aether cluster runtime</description>
 
+    <licenses>
+        <license>
+            <name>Business Source License 1.1</name>
+            <url>https://mariadb.com/bsl11/</url>
+            <comments>Converts to Apache License 2.0 on January 1, 2030</comments>
+        </license>
+    </licenses>
+
     <properties>
         <!-- CI's build-and-test job skips Ember's tests (-Dember.skipTests=true); the ember-shard-N jobs run them (#1643).
              Defaults to the global -DskipTests, which an explicit <skipTests> in the plugin config would otherwise override. -->
