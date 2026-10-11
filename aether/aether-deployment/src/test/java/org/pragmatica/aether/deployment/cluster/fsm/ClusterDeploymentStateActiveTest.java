@@ -1001,6 +1001,7 @@ class ClusterDeploymentStateActiveTest {
             commitTheTarget();
             tick(0);
             drainSink();
+            assertThat(activeState().ctx().pendingTargetPuts()).as("the submitted value is forgotten once it committed").isEmpty();
             assertThat(loadPuts()).as("exactly one LOAD once the target commits").hasSize(1);
             assertThat(codes()).containsExactly("slice-start-awaiting-target", "slice-start-deferral-ended");
             assertThat(warnings.get(1).subject()).isEqualTo(ARTIFACT + "@leader");
@@ -1038,6 +1039,19 @@ class ClusterDeploymentStateActiveTest {
 
             assertThat(codes()).containsExactly("slice-start-awaiting-target", "slice-start-deferral-ended");
             assertThat(targetPuts()).as("only the first re-submission: the blueprint is gone").hasSize(2);
+        }
+
+        @Test
+        void refusalForASliceTheMirrorDoesNotHold_neverResubmitsAPut() {
+            var undesired = Artifact.artifact("org.example:slice-undesired:1.0.0").unwrap();
+            var engine = new SliceAllocationEngine(activeState(), List.of(SELF));
+
+            engine.tryAllocate(undesired, SELF);
+            injectedClock.addAndGet(bound());
+            engine.tryAllocate(undesired, SELF);
+
+            assertThat(targetPuts()).as("only the blueprint's own put: nothing is desired for the other slice").hasSize(1);
+            assertThat(loadPuts()).isEmpty();
         }
 
         @Test
