@@ -2528,27 +2528,39 @@ public final class StreamPartitionManager implements AutoCloseable {
 
         cutWindowHook.run();
 
-        return ring.truncateSuffix(keep,
-                                   () -> cutInsideSection(streamName,
-                                                          partition,
-                                                          divergedAtOffset,
-                                                          keep,
-                                                          authority,
-                                                          wal,
-                                                          ring,
-                                                          epoch,
-                                                          wrote,
-                                                          preserved),
-                                   _ -> forgetCutState(streamName, partition, ref, divergedAtOffset, keep))
-                   .onFailure(_ -> {
-                       if (wrote.get()) {
-                       restoreWitness(streamName, partition, wal);
-                   }
-                   })
-                   .onSuccess(_ -> option(preserved.get()).onPresent(segment -> reportPreserved(streamName,
-                                                                                                partition,
-                                                                                                segment)))
-                   .map(removed -> new TailCut(keep, removed, keep + 1, keep + removed, epoch));
+        var token = new Object();
+
+        try {
+            return ring.truncateSuffix(keep,
+                                       () -> cutInsideSection(streamName,
+                                                              partition,
+                                                              divergedAtOffset,
+                                                              keep,
+                                                              authority,
+                                                              wal,
+                                                              ring,
+                                                              epoch,
+                                                              wrote,
+                                                              preserved,
+                                                              token),
+                                       _ -> {
+                                           forgetCutState(streamName, partition, ref, divergedAtOffset, keep);
+                                           endCut(streamName, partition, token);
+                                       })
+                       .onFailure(_ -> {
+                           if (wrote.get()) {
+                               restoreWitness(streamName, partition, wal);
+                           }
+                       })
+                       .onSuccess(_ -> option(preserved.get()).onPresent(segment -> reportPreserved(streamName,
+                                                                                                    partition,
+                                                                                                    segment)))
+                       .map(removed -> new TailCut(keep, removed, keep + 1, keep + removed, epoch));
+        } finally {
+            // Every exit closes the cut's bracket (#2087): the cut refused, failed in the durable copy, failed to shrink the ring, or threw. A
+            // generation left odd would refuse every entity read of the partition for good.
+            endCut(streamName, partition, token);
+        }
     }
 
     /// Test seam (#2086): runs just before the ring's ordered section is entered, i.e. at the point where the cut used to have read the
@@ -2573,11 +2585,11 @@ public final class StreamPartitionManager implements AutoCloseable {
                                           OffHeapRingBuffer ring,
                                           Option<Epoch> epoch,
                                           java.util.concurrent.atomic.AtomicBoolean wrote,
-                                          java.util.concurrent.atomic.AtomicReference<RecoverySegment.Preserved> preserved) {
-        beginCut(streamName, partition);
+                                          java.util.concurrent.atomic.AtomicReference<RecoverySegment.Preserved> preserved,
+                                          Object token) {
+        beginCut(streamName, partition, token);
 
-        return cutSteps(streamName, partition, divergedAtOffset, keep, authority, wal, ring, epoch, wrote, preserved).onFailure(_ -> endCut(streamName,
-                                                                                                                                            partition));
+        return cutSteps(streamName, partition, divergedAtOffset, keep, authority, wal, ring, epoch, wrote, preserved);
     }
 
     private Result<Unit> cutSteps(String streamName,
@@ -2707,14 +2719,26 @@ public final class StreamPartitionManager implements AutoCloseable {
                                      .or(-1L << 24);
     }
 
+    /// The cut currently open on each partition (#2087): begun inside the ring's ordered section, closed after the ring shrank or on ANY other
+    /// exit. The token makes the close idempotent and keeps it from closing a LATER cut: a close that arrives after another cut began finds a
+    /// different token and does nothing.
+    private final ConcurrentHashMap<String, Object> openCuts = new ConcurrentHashMap<>();
+
     @Contract
-    private void beginCut(String streamName, int partition) {
-        cutGenerations.merge(partitionKeyOf(streamName, partition), 1L, Long::sum);
+    private void beginCut(String streamName, int partition, Object token) {
+        var key = partitionKeyOf(streamName, partition);
+
+        openCuts.put(key, token);
+        cutGenerations.compute(key, (_, count) -> count == null ? 1L : (count & 1L) == 1L ? count : count + 1L);
     }
 
     @Contract
-    private void endCut(String streamName, int partition) {
-        cutGenerations.merge(partitionKeyOf(streamName, partition), 1L, Long::sum);
+    private void endCut(String streamName, int partition, Object token) {
+        var key = partitionKeyOf(streamName, partition);
+
+        if (openCuts.remove(key, token)) {
+            cutGenerations.compute(key, (_, count) -> count == null ? 0L : (count & 1L) == 1L ? count + 1L : count);
+        }
     }
 
     /// Runs inside the ring's ordered section, after the ring shrank: the quarantine this repair read is lifted, and
@@ -2729,7 +2753,6 @@ public final class StreamPartitionManager implements AutoCloseable {
         // What remains is the prefix this copy shares with its sender: verified by construction.
         unverifiedReplicas.remove(partitionKeyOf(streamName, partition));
         verifiedPrefix.remove(partitionKeyOf(streamName, partition));
-        endCut(streamName, partition);
         // The owner's reported position above the cut described records that no longer exist here (#2087): what is appended
         // at those offsets next is the new lineage, visible only once the owner reports it.
         replicaCommitted.computeIfPresent(partitionKeyOf(streamName, partition),

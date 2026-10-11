@@ -825,7 +825,11 @@ public final class OffHeapRingBuffer implements AutoCloseable {
         }
 
         return durableCut.get()
-                         .map(_ -> cutSuffix(keepThrough, head))
+                         .map(_ -> {
+                             afterDurableCutProbe.run();
+
+                             return cutSuffix(keepThrough, head);
+                         })
                          .onSuccess(afterCut::accept);
     }
 
@@ -874,6 +878,15 @@ public final class OffHeapRingBuffer implements AutoCloseable {
 
             Thread.onSpinWait();
         }
+    }
+
+    /// Runs under the append lock after the durable cut succeeded and before the ring shrinks. Production never sets it; a test throws from it
+    /// to make the shrink fail after the durable copy was already cut (#2087: the cut's bracket must still close).
+    private Runnable afterDurableCutProbe = NO_READ_WINDOW_PROBE;
+
+    @Contract
+    void afterDurableCutProbe(Runnable probe) {
+        afterDurableCutProbe = probe;
     }
 
     /// Test seam (#1730): see [#truncationWindowProbe]. Set before any reader thread starts.
