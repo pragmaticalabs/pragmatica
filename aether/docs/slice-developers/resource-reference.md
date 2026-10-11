@@ -826,7 +826,7 @@ Custom vendors can be added via `VendorMapping` SPI (ServiceLoader in `integrati
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `cache_name` | `String` | `"default"` | Logical cache name (shared name = shared cache instance) |
+| `cache_name` | `String` | `"default"` | Logical cache name (shared name = shared cache instance). Sections sharing a name must agree on `mode`, `ttl_seconds` and `max_entries` (`strategy` itself may differ); a section that disagrees with an earlier one is refused at provisioning, naming the setting and both values. The key and cached value types are compared only between sections whose slice factory supplied type tokens (`[key, response]`), and the value type only between sections whose strategy stores the result (not `WRITE_AROUND`); the type each name is held to is the first such typed section's, whatever was provisioned before it. A section without type tokens (for example a single-`@Key`-parameter method such as the banking `getBalance`) is not checked on type (#697) |
 | `strategy` | `CacheStrategy` | `CACHE_ASIDE` | Caching strategy (see table below) |
 | `ttl_seconds` | `int` | `300` | Time-to-live for cached entries — honoured by the local store (`LOCAL`, and the L1 of `TIERED`) only. The DHT has no expiry primitive, so `DISTRIBUTED` entries (and `TIERED`'s L2) do not expire; tracked in #279 |
 | `max_entries` | `int` | `10000` | Maximum number of entries in the local store — a hard cap with least-recently-used eviction (#279); `DISTRIBUTED` storage is bounded by the DHT, not by this field |
