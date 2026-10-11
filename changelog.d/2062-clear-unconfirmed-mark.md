@@ -9,7 +9,7 @@
   (404), and when the mark changed while the clear was committing (the delete carries the exact mark it read, so a later incarnation's mark survives). A clear
   raises `instance-termination-cleared`, which names the node, the authenticated operator, the instance the operator attests, whether the check was forced, the
   provider state seen, the instance id the cluster had listed for the node (or `never listed`) and the mark's cause, and closes the open warning cluster-wide.
-  The `instance-termination-unconfirmed` warning now names this command in every form. A missing `--instance` exits 64, like the other commands' usage errors.
+  The provider checks are reads: a refused clear leaves the node's capacity reservation and the ledger untouched, and the capacity is returned only by a clear that commits after every read showed the instance not live. Liveness is asked again at the commit, so a node that shows life, or rejoins, while the provider is being read is not cleared. The `instance-termination-unconfirmed` warning now names this command in every form. A missing `--instance` exits 64, like the other commands' usage errors.
 
 ### Fixed
 

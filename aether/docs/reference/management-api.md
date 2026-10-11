@@ -4700,6 +4700,9 @@ a not-found for the id is an answer, not a failure). `force: true` overrides bot
 "no provider to check this external node; use --force after confirming it is gone") unless `force` is given (an external node's own re-check normally confirms
 its mark once it has left the membership).
 
+The provider checks are reads with no effect on capacity: a refused clear leaves the node's reservation and the ledger as they were, and a clear that commits returns the
+capacity only when every read showed the instance not live. A node that shows life, or rejoins, while the provider is read is refused at the commit.
+
 The clear is audited: the cluster raises `instance-termination-cleared` naming the node, the authenticated operator, the instance the operator
 attests, whether the provider check was forced, the provider state seen, the instance id the cluster itself had listed for the node (or `never listed`)
 and the mark's cause; the event closes the open warning cluster-wide, like a confirmation. `400` for a missing `instance` or an id that does not parse;
