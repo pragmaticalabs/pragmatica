@@ -1054,6 +1054,65 @@ class ClusterDeploymentStateActiveTest {
             assertThat(loadPuts()).isEmpty();
         }
 
+        /// v-2128 P3: the recovery follows the target's own notification, before any reconcile tick (the allocation that notification
+        /// triggers ends the wait itself).
+        @Test
+        void recoveryFollowsTheTargetNotification_withoutWaitingForATick() {
+            tick(0);
+            tick(bound());
+            drainSink();
+            assertThat(codes()).containsExactly("slice-start-awaiting-target");
+
+            commitTheTarget();
+            drainSink();
+
+            assertThat(codes()).containsExactly("slice-start-awaiting-target", "slice-start-deferral-ended");
+        }
+
+        /// v-2128 P4: the target commits while the mirror wants 0 instances, so no allocation follows the commit; the tick's sweep must still
+        /// end the wait, or the warning would stay open for good.
+        @Test
+        void targetCommittedWithNothingToAllocate_stillEndsTheWaitOnTheNextTick() {
+            tick(0);
+            tick(bound());
+            drainSink();
+            assertThat(codes()).containsExactly("slice-start-awaiting-target");
+
+            activeState().blueprints().put(ARTIFACT, org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager.Blueprint.blueprint(
+                    ARTIFACT, 0, 0, Option.some(OWNER), true));
+            kvStore.put(TARGET_KEY, targetPuts().getFirst());
+            tick(0);
+            drainSink();
+
+            assertThat(codes()).containsExactly("slice-start-awaiting-target", "slice-start-deferral-ended");
+        }
+
+        /// v-2128 W12b: the submitted value is only reused for the version it names; a value pending for another version of the base is not
+        /// written for this one.
+        @Test
+        void pendingValueOfAnotherVersion_isNeverResubmittedForThisOne() {
+            var otherVersion = org.pragmatica.aether.artifact.Version.version("2.0.0").unwrap();
+
+            activeState().ctx().pendingTargetPuts().put(ARTIFACT.base(), SliceTargetValue.sliceTargetValue(otherVersion, 7));
+            tick(0);
+            tick(bound());
+
+            assertThat(targetPuts()).hasSize(2);
+            assertThat(targetPuts().getLast().currentVersion()).as("the re-submitted put names the refused version").isEqualTo(ARTIFACT.version());
+            assertThat(targetPuts().getLast().targetInstances()).as("and not the other version's count").isEqualTo(1);
+        }
+
+        /// v-2128 follow-up: a submitted value whose blueprint is rolled back or removed is forgotten, not kept.
+        @Test
+        void pendingValueOfARemovedBlueprint_isForgotten() {
+            assertThat(activeState().ctx().pendingTargetPuts()).as("control: the submitted value is held").isNotEmpty();
+
+            activeState().blueprints().remove(ARTIFACT);
+            tick(0);
+
+            assertThat(activeState().ctx().pendingTargetPuts()).isEmpty();
+        }
+
         @Test
         void aNewLeaderWithoutThePendingValue_resubmitsOneRebuiltFromTheMirror() {
             activeState().ctx().pendingTargetPuts().clear();

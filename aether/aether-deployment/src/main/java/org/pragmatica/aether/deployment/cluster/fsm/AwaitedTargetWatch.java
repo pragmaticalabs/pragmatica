@@ -95,7 +95,7 @@ final class AwaitedTargetWatch {
     }
 
     /// Run at the start of every reconcile tick: ends the wait of every slice whose target committed or whose blueprint is gone, and forgets the
-    /// submitted value of every target that committed.
+    /// submitted value of every target that committed or whose blueprint is gone.
     @Contract
     void sweep() {
         var ctx = active.ctx();
@@ -103,8 +103,15 @@ final class AwaitedTargetWatch {
         ctx.awaitedTargets().keySet().stream().toList().forEach(this::sweepOne);
         ctx.pendingTargetPuts()
            .entrySet()
-           .removeIf(entry -> CommittedSliceTarget.permits(ctx.kvStore(),
-                                                           entry.getKey().withVersion(entry.getValue().currentVersion())));
+           .removeIf(entry -> pendingIsMoot(entry.getKey().withVersion(entry.getValue().currentVersion())));
+    }
+
+    /// A submitted value is forgotten once its target committed, and once its blueprint is no longer desired (rolled back or removed): nothing
+    /// would ever resubmit it, so it would only linger.
+    private boolean pendingIsMoot(Artifact artifact) {
+        return ! active.blueprints()
+                       .containsKey(artifact) || CommittedSliceTarget.permits(active.ctx().kvStore(),
+                                                                              artifact);
     }
 
     private void sweepOne(Artifact artifact) {
