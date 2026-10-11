@@ -62,7 +62,7 @@ class DistributedDHTClientDerivedReplyTest {
     }
 
     private void replyViaBase(DHTMessage.GetRequest request, String value) {
-        base.onGetResponse(new DHTMessage.GetResponse(request.requestId(), new NodeId("replica-1"), Option.some(bytes(value))));
+        base.onGetResponse(new DHTMessage.GetResponse(request.requestId(), new NodeId("replica-1"), Option.some(bytes(value)), DHTMessage.Readiness.SERVING));
     }
 
     @Test
@@ -102,7 +102,8 @@ class DistributedDHTClientDerivedReplyTest {
         assertThat(gets).hasSize(1);
         routed.onGetResponse(new DHTMessage.GetResponse(gets.getFirst().requestId(),
                                                         new NodeId("replica-1"),
-                                                        Option.some(bytes("v"))));
+                                                        Option.some(bytes("v")),
+                                                        DHTMessage.Readiness.SERVING));
 
         read.await(timeSpan(2).seconds())
             .onFailure(cause -> Assertions.fail("cache read failed: " + cause.message()))
