@@ -310,54 +310,32 @@ class NodeDeploymentStateStuckReconcileTest {
         assertThat(local.state()).as("the committed %s is adopted into the local view", beyond).isEqualTo(beyond);
     }
 
-    /// The late-original hazard: the chain's own write (built from the mirror at the time) lands AFTER the timer's
-    /// re-drive, or its stream-ref Put is already in the mirror when the re-drive is built. `acquireCommand` is an
-    /// absolute Put (refCount = mirror + 1); a re-drive rebuilt from the advanced mirror would write 2 for the one
-    /// instance. Both writes of one activation attempt must carry the SAME Put.
+    /// The lost-reference hazard: `acquireCommand` is an absolute Put (refCount = applied mirror + 1). This node's first
+    /// write is lost; a SECOND holder acquires the same stream meanwhile (mirror refCount 1); the re-drive must be built
+    /// from the CURRENT mirror and write 2. Replaying the first write's snapshot (1) would leave one count for two
+    /// holders, and the first release would delete the stream under the other.
+    ///
+    /// The mirror cannot tell "another holder acquired" from "this node's own original landed late": in the second case
+    /// the same 2 is written and the instance holds one reference too many. That leak keeps the stream alive (the safe
+    /// direction) and is listed in the PR's known limits; per-holder reference entries (rc5) remove both cases.
     @Test
-    void theRedriveCarriesTheSameStreamRefPutAsTheOriginalWrite_evenWhenTheOriginalsPutIsAlreadyInTheMirror() {
+    void theRedriveCountsAHolderThatAcquiredAfterTheLostOriginal() {
         commit(SliceState.ROUTING);
         var key = seed(SliceState.ROUTING);
 
         activeState().remediateStuckRouting(key);
-        var original = streamRefPuts(cluster.batches.getFirst());
+        var lost = streamRefPuts(cluster.batches.getFirst()).getFirst();
 
-        assertThat(original).as("precondition: the re-drive carries one stream-ref Put").hasSize(1);
-        assertThat(refCount(original.getFirst())).as("one instance, one reference").isEqualTo(1);
-        // the original's Put lands in the mirror before the second timer fire builds its batch
-        applyToKv(original.getFirst());
-        seed(SliceState.ROUTING);
-        commit(SliceState.ROUTING);
+        assertThat(refCount(lost)).as("precondition: alone, the first write acquires the first reference").isEqualTo(1);
+        // the other holder's acquire lands; this node's first write never does
+        applyToKv(lost);
         cluster.batches.clear();
-
-        activeState().remediateStuckRouting(key);
-
-        var second = streamRefPuts(cluster.batches.getFirst());
-
-        assertThat(second).hasSize(1);
-        assertThat(refCount(second.getFirst()))
-                .as("rebuilt from the advanced mirror this would be 2: the instance would hold two references and never release")
-                .isEqualTo(1);
-    }
-
-    @Test
-    void aNewActivationAttemptBuildsItsStreamRefPutAgainFromTheMirror() {
         commit(SliceState.ROUTING);
-        var key = seed(SliceState.ROUTING);
 
-        activeState().remediateStuckRouting(key);
-        applyToKv(streamRefPuts(cluster.batches.getFirst()).getFirst());
-        // the node observes its slice ACTIVE (the attempt ends), the slice later restarts and re-drives a fresh attempt
-        commit(SliceState.ACTIVE);
         activeState().remediateStuckRouting(seed(SliceState.ROUTING));
-        commit(SliceState.ROUTING);
-        seed(SliceState.ROUTING);
-        cluster.batches.clear();
-
-        activeState().remediateStuckRouting(key);
 
         assertThat(refCount(streamRefPuts(cluster.batches.getFirst()).getFirst()))
-                .as("a new attempt reads the mirror afresh: the earlier attempt's reference is already counted, this is the second")
+                .as("the mirror already counts one holder, so the re-drive writes two; a snapshot would write one for two holders")
                 .isEqualTo(2);
     }
 

@@ -366,7 +366,6 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
 
             unpark(sliceKey, "the entry was removed");
             routingEpochAckTracker.clear(sliceKey);
-            ctx.endActivationAttempt(sliceKey);
             if (shouldForceCleanup(deployment)) {
                 forceCleanupSlice(sliceKey);
             }
@@ -508,7 +507,6 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
         }
 
         private void performActivation(SliceNodeKey sliceKey) {
-            ctx.endActivationAttempt(sliceKey);
             transitionTo(sliceKey, SliceState.ACTIVATING).flatMap(this::activateSliceWithTimeout)
                         .flatMap(this::registerSliceForInvocation)
                         .flatMap(this::publishTopicSubscriptions)
@@ -597,9 +595,11 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
         ///    re-drive it IN FULL ([#transitionToActiveWithStreamRefs]: ACTIVE with its endpoints plus the stream-ref
         ///    commands), never a bare ACTIVE, which would leave the stream refcounts unacquired; but only while a
         ///    committed `SliceTarget` still names this version, because a rolled-back or replaced version must not be
-        ///    started again (#1068). The stream-ref commands are those of the activation attempt (see
-        ///    [NodeDeploymentContext#acquireCommandsOfAttempt]): absolute Puts built once, so a late answer to the original
-        ///    write carries the very same Puts as the re-drive and does not acquire twice.
+        ///    started again (#1068). The stream-ref commands are rebuilt from the CURRENT applied mirror: `acquireCommand` is
+        ///    an absolute Put (refCount = mirror + 1), so replaying the original's snapshot could overwrite another holder's
+        ///    acquire and let a later release delete the entry under it. Rebuilt, the failure direction flips: if the
+        ///    original write also lands late, this instance holds one reference too many and the stream outlives its
+        ///    holders (a leak, the safe direction). Per-holder reference entries would remove both cases (rc5).
         ///  - anything else (DEACTIVATE, DEACTIVATING, FAILED, UNLOAD, UNLOADING, UNKNOWN, or no entry): the slice has
         ///    left the activation chain, so ACTIVE is never written over it. The mirror's value is adopted into local
         ///    state as its own notification would have been (an absent entry is handled as the removal it is), and the
@@ -873,7 +873,6 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
             }
 
             routingEpochAckTracker.clear(sliceKey);
-            ctx.endActivationAttempt(sliceKey);
             ctx.router().route(DeploymentCompleted.deploymentCompleted(sliceKey.artifact(), ctx.self(), ctx.nowMs()));
         }
 
@@ -1991,8 +1990,7 @@ public sealed interface NodeDeploymentState extends FsmState<NodeDeploymentState
         /// Spec §8.5: piggyback per-stream refcount increments on the same consensus round as the
         /// SliceNodeValue ACTIVE put. N active replicas ⇒ N refs (per-instance accounting).
         private Promise<SliceNodeKey> transitionToActiveWithStreamRefs(SliceNodeKey sliceKey) {
-            var refCommands = ctx.acquireCommandsOfAttempt(sliceKey,
-                                                           () -> buildStreamRefCommands(sliceKey, RefcountAction.ACQUIRE));
+            var refCommands = buildStreamRefCommands(sliceKey, RefcountAction.ACQUIRE);
 
             return updateSliceStateWithExtraCommands(sliceKey,
                                                      SliceNodeValue.sliceNodeValue(SliceState.ACTIVE),
