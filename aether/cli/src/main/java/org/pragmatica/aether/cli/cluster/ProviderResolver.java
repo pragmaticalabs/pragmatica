@@ -304,7 +304,9 @@ public final class ProviderResolver {
     }
 
     /// Both: the role's pinned image (#1543 F2) and the bootstrap's cluster secret (#2089).
-    static Result<ComputeProvider> resolveDockerCompute(SourceProfile source, Option<String> image, String clusterSecret) {
+    static Result<ComputeProvider> resolveDockerCompute(SourceProfile source,
+                                                        Option<String> image,
+                                                        String clusterSecret) {
         return resolveDockerCompute(source, image).flatMap(compute -> withClusterSecret(compute, clusterSecret));
     }
 

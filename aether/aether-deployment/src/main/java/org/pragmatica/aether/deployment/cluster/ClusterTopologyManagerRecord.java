@@ -1157,9 +1157,9 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     @Override
     public Result<SourceName> sourceOfSourcelessNode(NodeRole intendedRole) {
         return committedToml().fold(() -> Result.success(ProvisionContext.DEFAULT_SOURCE_NAME),
-                                     toml -> ClusterBootstrapConfigParser.parse(toml)
-                                                                         .fold(cause -> new ReplacementConfigUnparseable(cause.message()).<SourceName> result(),
-                                                                               config -> soleSourceDeclaring(config, intendedRole).map(SourceProfile::name)));
+                                    toml -> ClusterBootstrapConfigParser.parse(toml).fold(cause -> new ReplacementConfigUnparseable(cause.message()).<SourceName> result(),
+                                                                                          config -> soleSourceDeclaring(config,
+                                                                                                                        intendedRole).map(SourceProfile::name)));
     }
 
     private static Result<SourceProfile> soleSourceDeclaring(ClusterBootstrapConfig config, NodeRole role) {

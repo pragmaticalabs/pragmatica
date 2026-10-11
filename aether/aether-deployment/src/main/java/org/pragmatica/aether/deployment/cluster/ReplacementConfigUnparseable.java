@@ -14,6 +14,6 @@ public record ReplacementConfigUnparseable(String parseFailure) implements Cause
     @Override
     public String message() {
         return "the committed cluster configuration does not parse (" + parseFailure
-               + "), so the source of a node whose record carries none cannot be derived; fix the committed configuration";
+             + "), so the source of a node whose record carries none cannot be derived; fix the committed configuration";
     }
 }
