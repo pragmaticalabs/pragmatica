@@ -216,6 +216,8 @@ class AttemptBoundOutcomeTest {
                 .as("and the second attempt stays in progress — the stale rollback wrote nothing")
                 .isEqualTo(DeploymentOutcomeStatus.IN_PROGRESS.name());
         assertThat(outcomeAttempt(leaderStore, second.id())).isEqualTo(SECOND_ATTEMPT);
+        assertThat(cluster.transactions()).as("the stale rollback is bounded: one submission plus at most five rebuilds")
+                                          .isLessThanOrEqualTo(6);
     }
 
     /// SIBLING 2. A republish while the first attempt is still in flight captures the in-flight
@@ -1073,11 +1075,17 @@ class AttemptBoundOutcomeTest {
         private final NodeId self;
         private final KVStore<AetherKey, AetherValue> kvStore;
         private final List<List<KVCommand<AetherKey>>> held = new ArrayList<>();
+        private static final int RUNAWAY = 20;
         private boolean holding;
+        private int transactions;
 
         private HoldingClusterNode(NodeId self, KVStore<AetherKey, AetherValue> kvStore) {
             this.self = self;
             this.kvStore = kvStore;
+        }
+
+        int transactions() {
+            return transactions;
         }
 
         void hold() {
@@ -1117,6 +1125,11 @@ class AttemptBoundOutcomeTest {
         @Override public Promise<Unit> stop() {return Promise.unitPromise();}
 
         @Override public <R> Promise<List<R>> apply(List<KVCommand<AetherKey>> batch) {
+            if (batch.stream().anyMatch(KVCommand.LeaderTransaction.class::isInstance) && ++transactions > RUNAWAY) {
+                // A rollback that keeps resubmitting is cut off by failing the promise, so the test's count assertion
+                // reports it; throwing here would be swallowed by the promise chain.
+                return Promise.failure(org.pragmatica.lang.utils.Causes.cause("runaway rollback retry"));
+            }
             if (holding) {
                 held.add(List.copyOf(batch));
             } else {
