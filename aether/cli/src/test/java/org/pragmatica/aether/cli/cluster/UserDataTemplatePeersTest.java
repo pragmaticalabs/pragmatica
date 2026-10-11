@@ -157,9 +157,11 @@ class UserDataTemplatePeersTest {
         void render_emitsClusterSecretIntoTheUnitEnvFile() {
             var script = renderJvm(List.of());
 
-            assertTrue(script.contains("AETHER_CLUSTER_SECRET=${AETHER_CLUSTER_SECRET}"),
-                       "JVM mode must write AETHER_CLUSTER_SECRET into the systemd env file so "
-                       + "Main.resolveClusterSecret reads it from the process environment (env fallback path)");
+            assertTrue(script.contains("AETHER_CLUSTER_SECRET_FILE=/etc/aether/cluster-secret"),
+                       "JVM mode must point the node at the secret file via the systemd env file so "
+                       + "Main.resolveClusterSecret reads it from the file (#828)");
+            assertFalse(script.contains("AETHER_CLUSTER_SECRET=${AETHER_CLUSTER_SECRET}") || script.contains("AETHER_CLUSTER_SECRET=\""),
+                        "#828: the secret value must not be written into the unit's environment");
             assertTrue(script.contains("EnvironmentFile=-/etc/aether/node.env"),
                        "the unit must read that env file, or the secret never reaches the JVM");
         }
@@ -197,8 +199,9 @@ class UserDataTemplatePeersTest {
             var script = renderJvm(List.of());
 
             assertTrue(script.contains("chmod 600 /etc/aether/node.env"), "the env file must be owner-only");
-            assertTrue(script.indexOf("chmod 600 /etc/aether/node.env") < script.indexOf("AETHER_CLUSTER_SECRET=${AETHER_CLUSTER_SECRET}"),
-                       "permissions must be set BEFORE the secret is written, never after");
+            assertTrue(script.contains("(umask 077; install -d -m 0755 /etc/aether && printf '%s' '"),
+                       "the secret file is created under umask 077, so its bytes are never briefly world-readable");
+            assertTrue(script.contains("chmod 0400 /etc/aether/cluster-secret"), "and is read-only afterwards");
         }
     }
 

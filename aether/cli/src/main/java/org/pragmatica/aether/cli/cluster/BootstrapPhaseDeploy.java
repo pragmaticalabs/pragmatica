@@ -13,6 +13,7 @@ import java.util.stream.IntStream;
 
 import org.pragmatica.aether.cli.cluster.ClusterBootstrapOrchestrator.BootstrapContext;
 import org.pragmatica.aether.cli.cluster.ClusterBootstrapOrchestrator.BootstrapError;
+import org.pragmatica.aether.environment.ClusterSecretSource;
 import org.pragmatica.aether.config.cluster.ClusterBootstrapConfig;
 import org.pragmatica.aether.config.cluster.NodeRole;
 import org.pragmatica.aether.config.cluster.NodeUserDataRenderer;
@@ -430,8 +431,11 @@ sealed interface BootstrapPhaseDeploy {
             var secretPush = pushClusterSecret(node.nodeId(),
                                                node.publicIp(),
                                                isJvm
-                                               ? JVM_SECRET_ENV_FILE
-                                               : CONTAINER_SECRET_ENV_FILE,
+                                               ? JVM_SECRET_STAGED
+                                               : CONTAINER_SECRET_STAGED,
+                                               isJvm
+                                               ? JVM_CREDENTIALS_ENV_FILE
+                                               : CONTAINER_CREDENTIALS_ENV_FILE,
                                                clusterSecret,
                                                envLookup,
                                                sshConfig,
@@ -658,7 +662,8 @@ sealed interface BootstrapPhaseDeploy {
     /// the install-only cloud-init would otherwise have emitted ([UserDataTemplate#emitIdentityEnv]) — otherwise
     /// AETHER_INSECURE_DEV_MODE and the rest of [ClusterIdentityEnv#IDENTITY_VARS] silently drop,
     /// the C2 security gate fails, and the health poll never succeeds. AETHER_CLUSTER_SECRET is
-    /// delivered by `--env-file` ([#CONTAINER_SECRET_ENV_FILE], #828) — never inlined — and EXCLUDED from
+    /// delivered as a file bind-mounted read-only and named by `AETHER_CLUSTER_SECRET_FILE` (#828) — never inlined, never in
+    /// the container's environment — and EXCLUDED from
     /// the allow-list pass (`none()` ref) so it never appears twice. `envLookup` is injectable for unit testing.
     ///
     /// #296 — `role` is the node's OWN role, threaded from its id: the `aether-role` label is what
@@ -706,6 +711,7 @@ sealed interface BootstrapPhaseDeploy {
              + " >&2; exit " + ALREADY_PRESENT_EXIT
              + "; fi" + backupPath.map(_ -> " && install -d -m 0750 -o 1000 -g 1000 " + NodeUserDataRenderer.BACKUP_HOST_DIRECTORY)
                                   .or("")
+             + " && install -m 0400 -o 1000 -g 1000 " + CONTAINER_SECRET_STAGED + " " + NodeUserDataRenderer.CONTAINER_SECRET_HOST_FILE
              + " && docker run -d --name aether-node --restart no --network host"
              + " -l aether-cluster=" + clusterName.value()
              + " -l aether-node-id=" + nodeId
@@ -721,9 +727,15 @@ sealed interface BootstrapPhaseDeploy {
              + "\""
              + " -e PEERS=\"" + peers
              + "\""
-             + " --env-file " + CONTAINER_SECRET_ENV_FILE + identityEnvFlags(clusterName, role, source, zone, envLookup)
+             + " --mount type=bind,src=" + NodeUserDataRenderer.CONTAINER_SECRET_HOST_FILE
+             + ",dst=" + NodeUserDataRenderer.CONTAINER_SECRET_MOUNT + ",readonly"
+             + " -e " + ClusterSecretSource.SECRET_FILE_ENV + "=\"" + NodeUserDataRenderer.CONTAINER_SECRET_MOUNT + "\""
+             + (hasCredentials(envLookup)
+                ? " --env-file " + CONTAINER_CREDENTIALS_ENV_FILE
+                : "")
+             + identityEnvFlags(clusterName, role, source, zone, envLookup)
              + " " + image
-             + " ); rc=$?; rm -f " + CONTAINER_SECRET_ENV_FILE
+             + " ); rc=$?; rm -f " + CONTAINER_SECRET_STAGED + " " + CONTAINER_CREDENTIALS_ENV_FILE
              + "; exit $rc";
     }
 
@@ -759,15 +771,28 @@ sealed interface BootstrapPhaseDeploy {
         return Unit.unit();
     }
 
-    /// #828 — where the cluster secret travels. The secret is scp'd (0600) to one of these paths, read
-    /// by the launch command (`--env-file` for containers, `cat` into the systemd env file for JVMs)
-    /// and removed by the same command, so it never appears in an ssh command line (remote `ps`,
-    /// the bootstrap user's shell history). `docker inspect` still shows container env by design.
-    static String CONTAINER_SECRET_ENV_FILE = "/opt/aether/config/cluster-secret.env";
-    static String JVM_SECRET_ENV_FILE = NodeUserDataRenderer.JVM_ENV_DIR + "/cluster-secret.env";
+    /// #828 — how the cluster secret travels. It is scp'd (0600) to a STAGED path, and the launch command installs it (0400,
+    /// the node's user) at its final host path — which the container bind-mounts read-only — only AFTER the already-present
+    /// guard passes, so a refused start never overwrites the secret of the node already running there. The staged copy is
+    /// removed by the same line on every exit; the installed file is KEPT (a container start re-resolves the bind source).
+    /// The secret therefore appears in no ssh command line (remote `ps`, shell history) and not in `docker inspect`.
+    static String CONTAINER_SECRET_STAGED = "/opt/aether/config/cluster-secret.staged";
+    static String JVM_SECRET_STAGED = NodeUserDataRenderer.JVM_ENV_DIR + "/cluster-secret.staged";
+    /// Credential-class identity vars (below) have no `_FILE` reader on the node, so they still reach it as environment: a
+    /// transient env file, `--env-file` for containers or appended to the unit's env file for JVMs. Pushed only when the
+    /// operator's environment sets one, removed by the launch line. [unverified residual: they show in `docker inspect`.]
+    static String CONTAINER_CREDENTIALS_ENV_FILE = "/opt/aether/config/credentials.env";
+    static String JVM_CREDENTIALS_ENV_FILE = NodeUserDataRenderer.JVM_ENV_DIR + "/credentials.env";
     /// #828 — the identity allow-list members that are CREDENTIALS (the same class as the cluster
-    /// secret): they ride the pushed secret file instead of `-e` / printf operands.
+    /// secret): they ride the pushed credentials file instead of `-e` / printf operands.
     static List<String> SECRET_IDENTITY_VARS = List.of("AETHER_API_KEY", "AETHER_API_KEYS");
+
+    private static boolean hasCredentials(Fn1<String, String> envLookup) {
+        return SECRET_IDENTITY_VARS.stream()
+                                   .anyMatch(name -> Option.option(envLookup.apply(name))
+                                                           .filter(value -> !value.isBlank())
+                                                           .isPresent());
+    }
     static String JVM_JAR_PATH = "/opt/aether/aether-node.jar";
 
     static String buildJvmStartCommand(String nodeId,
@@ -858,10 +883,11 @@ sealed interface BootstrapPhaseDeploy {
              + "; fi" + backupPath.map(path -> " && install -d -m 0750 " + path)
                                   .or("")
              + " && install -d -m 0755 " + NodeUserDataRenderer.JVM_ENV_DIR
+             + " && install -m 0400 " + JVM_SECRET_STAGED + " " + NodeUserDataRenderer.JVM_SECRET_FILE
              + " && touch " + NodeUserDataRenderer.JVM_ENV_FILE_PATH
              + " && chmod 600 " + NodeUserDataRenderer.JVM_ENV_FILE_PATH
-             + " && { cat " + JVM_SECRET_ENV_FILE
-             + " && printf '%s\\n'" + identityEnvAssignments(clusterName, role, source, zone, envLookup)
+             + " && { printf '%s\\n' '" + ClusterSecretSource.SECRET_FILE_ENV + "=" + NodeUserDataRenderer.JVM_SECRET_FILE
+             + "'" + identityEnvAssignments(clusterName, role, source, zone, envLookup)
              + " 'AETHER_NODE_ID=" + nodeId
              + "'"
              + " 'AETHER_CLUSTER_PORT=" + clusterPort
@@ -870,10 +896,13 @@ sealed interface BootstrapPhaseDeploy {
              + "'"
              + " 'AETHER_PEERS=" + peers
              + "'"
+             + (hasCredentials(envLookup)
+                ? " && cat " + JVM_CREDENTIALS_ENV_FILE
+                : "")
              + "; } > " + NodeUserDataRenderer.JVM_ENV_FILE_PATH
              + " && touch " + JVM_STARTED_MARKER
              + " && systemctl start " + NodeUserDataRenderer.JVM_UNIT_NAME
-             + " ); rc=$?; rm -f " + JVM_SECRET_ENV_FILE
+             + " ); rc=$?; rm -f " + JVM_SECRET_STAGED + " " + JVM_CREDENTIALS_ENV_FILE
              + "; exit $rc";
     }
 
@@ -1210,7 +1239,8 @@ sealed interface BootstrapPhaseDeploy {
                                                          sshConfig))
                       .flatMap(_ -> pushClusterSecret(node.nodeId(),
                                                       node.publicIp(),
-                                                      CONTAINER_SECRET_ENV_FILE,
+                                                      CONTAINER_SECRET_STAGED,
+                                                      CONTAINER_CREDENTIALS_ENV_FILE,
                                                       clusterSecret,
                                                       envLookup,
                                                       sshConfig,
@@ -1221,13 +1251,15 @@ sealed interface BootstrapPhaseDeploy {
                       .mapToUnit();
     }
 
-    /// Pushes `AETHER_CLUSTER_SECRET=<secret>` to `remotePath` as a `0600` file via the injected scp
-    /// (#828); the CLI-host temp copy is created owner-only and deleted afterwards. A secret with a
-    /// line break cannot be carried in an env file, so it is refused rather than truncated.
+    /// Pushes the cluster secret (the raw value) to `secretPath`, and, only when the operator's environment sets a
+    /// credential-class var, `NAME=value` lines to `credentialsPath`, both as `0600` files via the injected scp (#828); the
+    /// CLI-host temp copies are created owner-only and deleted afterwards. A value with a line break cannot be carried in
+    /// these files, so it is refused rather than truncated.
     @SuppressWarnings("JBCT-EX-01")
     static Result<Unit> pushClusterSecret(String nodeId,
                                           String host,
-                                          String remotePath,
+                                          String secretPath,
+                                          String credentialsPath,
                                           String clusterSecret,
                                           Fn1<String, String> envLookup,
                                           SshConfig sshConfig,
@@ -1235,23 +1267,39 @@ sealed interface BootstrapPhaseDeploy {
         var values = new ArrayList<String>();
 
         values.add(clusterSecret);
-        var content = new StringBuilder("AETHER_CLUSTER_SECRET=").append(clusterSecret).append('\n');
+        var credentials = new StringBuilder();
 
         for (var name : SECRET_IDENTITY_VARS) {
             var value = envLookup.apply(name);
 
             if (value != null && !value.isBlank()) {
                 values.add(value);
-                content.append(name).append('=').append(value).append('\n');
+                credentials.append(name).append('=').append(value).append('\n');
             }
         }
 
         if (values.stream().anyMatch(v -> v.indexOf('\n') >= 0 || v.indexOf('\r') >= 0)) {
             return new BootstrapError.DeploymentFailed(nodeId,
-                                                       "a credential contains a line break; it cannot be delivered as an env file").result();
+                                                       "a credential contains a line break; it cannot be delivered as a file").result();
         }
 
-        return writeNodeConfigToTemp(nodeId, content.toString()).flatMap(tempPath -> {
+        return pushFile(nodeId, host, secretPath, clusterSecret, sshConfig, scpExec).flatMap(_ -> credentials.isEmpty()
+                                                                                                  ? Result.unitResult()
+                                                                                                  : pushFile(nodeId,
+                                                                                                             host,
+                                                                                                             credentialsPath,
+                                                                                                             credentials.toString(),
+                                                                                                             sshConfig,
+                                                                                                             scpExec));
+    }
+
+    private static Result<Unit> pushFile(String nodeId,
+                                         String host,
+                                         String remotePath,
+                                         String content,
+                                         SshConfig sshConfig,
+                                         Fn4<Result<Unit>, String, String, String, SshConfig> scpExec) {
+        return writeNodeConfigToTemp(nodeId, content).flatMap(tempPath -> {
             var pushed = scpExec.apply(tempPath.toString(), host, remotePath, sshConfig);
 
             Result.lift(e -> tempConfigFailure(nodeId, e.getMessage()), () -> Files.deleteIfExists(tempPath));

@@ -36,6 +36,7 @@ import org.pragmatica.aether.config.cluster.SourceCloudBindings;
 import org.pragmatica.aether.config.cluster.SourceType;
 import org.pragmatica.aether.config.cluster.SshDeploymentConfig;
 import org.pragmatica.aether.deployment.DeploymentMap;
+import org.pragmatica.aether.environment.ClusterSecretSource;
 import org.pragmatica.aether.environment.ClusterName;
 import org.pragmatica.aether.environment.AutoHealConfig;
 import org.pragmatica.aether.environment.EnvironmentError;
@@ -132,7 +133,6 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     /// longer than the slowest voter handoff observed (14 min) with margin, bounded so a node that never becomes
     /// retirable ends in an operator-visible WARN rather than a forever-timer.
     static final int REFUSED_REAP_RETRIES = 60;
-    private static final String AETHER_CLUSTER_SECRET_ENV = "AETHER_CLUSTER_SECRET";
 
     static ClusterTopologyManagerRecord clusterTopologyManagerRecord(TopologyObserver observer,
                                                                      NodeLifecycleManager lifecycleManager,
@@ -1604,10 +1604,10 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     }
 
     /// The cluster secret as the running (leader) node sees it in its own environment — the same
-    /// source the renderer's `emitIdentityEnv` reads it from, so the secret baked into the
+    /// source the renderer's `emitIdentityEnv` reads it from (`AETHER_CLUSTER_SECRET_FILE` included, #828), so the secret baked into the
     /// replacement's `AETHER_CLUSTER_SECRET` matches the live cluster's.
     private static Option<String> clusterSecretFromEnv() {
-        return Option.option(System.getenv(AETHER_CLUSTER_SECRET_ENV)).filter(s -> !s.isBlank());
+        return ClusterSecretSource.resolve(System::getenv).fold(_ -> Option.<String>none(), value -> value);
     }
 
     private static List<String> peersList(ProvisionContext context) {

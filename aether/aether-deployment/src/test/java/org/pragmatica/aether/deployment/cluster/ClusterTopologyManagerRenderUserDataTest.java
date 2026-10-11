@@ -303,7 +303,7 @@ class ClusterTopologyManagerRenderUserDataTest {
         if (secret != null && !secret.isBlank()) {
             assertThat(script)
                     .as("cluster secret is baked from the leader env when present")
-                    .contains("AETHER_CLUSTER_SECRET=\"" + secret + "\"");
+                    .contains("printf '%s' '" + secret + "' > /opt/aether/config/cluster-secret");
         }
     }
 

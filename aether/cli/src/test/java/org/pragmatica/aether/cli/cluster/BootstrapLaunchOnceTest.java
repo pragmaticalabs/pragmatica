@@ -493,8 +493,9 @@ class BootstrapLaunchOnceTest {
                                                              "eu-1-core-0:203.0.113.10:7000",
                                                              name -> null);
 
-        var present = runWithStub("docker", "[ \"$1\" = ps ] && [ \"$2\" = -a ] && echo aether-node; [ \"$1\" = run ] && echo RAN-DOCKER-RUN; exit 0", command);
-        var absent = runWithStub("docker", "[ \"$1\" = ps ] && echo other-container; [ \"$1\" = run ] && echo RAN-DOCKER-RUN; exit 0", command);
+        var paths = new Staged(BootstrapPhaseDeploy.CONTAINER_SECRET_STAGED, NodeUserDataRenderer.CONTAINER_SECRET_HOST_FILE);
+        var present = runStaged("docker", "[ \"$1\" = ps ] && [ \"$2\" = -a ] && echo aether-node; [ \"$1\" = run ] && echo RAN-DOCKER-RUN; exit 0", command, paths);
+        var absent = runStaged("docker", "[ \"$1\" = ps ] && echo other-container; [ \"$1\" = run ] && echo RAN-DOCKER-RUN; exit 0", command, paths);
 
         assertThat(present.exit()).isEqualTo(BootstrapPhaseDeploy.ALREADY_PRESENT_EXIT);
         assertThat(present.output()).contains(BootstrapPhaseDeploy.ALREADY_PRESENT_MARKER).doesNotContain("RAN-DOCKER-RUN");
@@ -609,67 +610,79 @@ class BootstrapLaunchOnceTest {
         assertThat(exitedCleanly.output()).contains(BootstrapPhaseDeploy.ALREADY_PRESENT_MARKER);
     }
 
-    /// #828 — the pushed secret file must be gone on EVERY exit of the launch line, the guard's refusal included
-    /// (the guard `exit`s, so it runs in a subshell and the `rm` sits outside it). The command's fixed remote path
-    /// is substituted by a temp file so the real shell runs it; the file exists before and must not after.
+    /// #828 — the STAGED secret must be gone on EVERY exit of the launch line (the guard's refusal included: the guard `exit`s,
+    /// so it runs in a subshell and the `rm` sits outside it), and the INSTALLED secret (the bind-mount source) must only be
+    /// replaced when the start is allowed. The command's fixed remote paths are substituted by temp files so the real shell
+    /// runs it.
     @Test
-    void containerStart_removesTheSecretFile_onRefusal_onFailure_andOnSuccess() throws Exception {
+    void containerStart_removesTheStagedSecret_onRefusal_onFailure_andOnSuccess_andOnlyInstallsWhenAllowed() throws Exception {
         var command = BootstrapPhaseDeploy.buildStartCommand("img:1", CLUSTER, "eu-1-core-0", NodeRole.CORE, sourceNameOrDefault("eu-1"),
                                                              Option.empty(), 7000, 8080, "eu-1-core-0:203.0.113.10:7000", name -> null);
-        var refused = runWithSecretFile("docker", "[ \"$1\" = ps ] && echo aether-node; exit 0", command, BootstrapPhaseDeploy.CONTAINER_SECRET_ENV_FILE);
-        var failed = runWithSecretFile("docker", "[ \"$1\" = run ] && exit 5; exit 0", command, BootstrapPhaseDeploy.CONTAINER_SECRET_ENV_FILE);
-        var started = runWithSecretFile("docker", "[ \"$1\" = run ] && echo \"ARGS: $*\"; exit 0", command, BootstrapPhaseDeploy.CONTAINER_SECRET_ENV_FILE);
+        var paths = new Staged(BootstrapPhaseDeploy.CONTAINER_SECRET_STAGED, NodeUserDataRenderer.CONTAINER_SECRET_HOST_FILE);
+        var refused = runStaged("docker", "[ \"$1\" = ps ] && echo aether-node; exit 0", command, paths);
+        var failed = runStaged("docker", "[ \"$1\" = run ] && exit 5; exit 0", command, paths);
+        var started = runStaged("docker", "[ \"$1\" = run ] && echo \"ARGS: $*\"; exit 0", command, paths);
 
         assertThat(refused.exit()).isEqualTo(BootstrapPhaseDeploy.ALREADY_PRESENT_EXIT);
-        assertThat(refused.secretFileLeft()).as("refusal: %s", refused.output()).isFalse();
+        assertThat(refused.stagedLeft()).as("refusal: %s", refused.output()).isFalse();
+        assertThat(refused.installed()).as("a refused start must not overwrite the running node's secret file").isEqualTo(ORIGINAL);
         assertThat(failed.exit()).as("docker run's own status is preserved").isEqualTo(5);
-        assertThat(failed.secretFileLeft()).isFalse();
+        assertThat(failed.stagedLeft()).isFalse();
         assertThat(started.exit()).as(started.output()).isZero();
-        assertThat(started.output()).contains("--env-file ").doesNotContain(SECRET);
-        assertThat(started.secretFileLeft()).isFalse();
+        assertThat(started.stagedLeft()).isFalse();
+        assertThat(started.installed()).as("positive control: the sentinel reached the installed file").isEqualTo(SECRET);
+        assertThat(started.output()).as("the docker run argv names the file, never the value").contains("AETHER_CLUSTER_SECRET_FILE=")
+                                    .doesNotContain(SECRET).doesNotContain("--env-file");
     }
 
     @Test
-    void jvmStart_removesTheSecretFile_onRefusal_andOnSuccess_andKeepsItOutOfArgv() throws Exception {
+    void jvmStart_removesTheStagedSecret_onRefusal_andOnSuccess_andPointsTheUnitAtTheFile() throws Exception {
         var command = BootstrapPhaseDeploy.buildJvmStartCommand("eu-1-core-0", NodeRole.CORE, sourceNameOrDefault("eu-1"), Option.empty(),
                                                                 7000, 8080, "eu-1-core-0:203.0.113.10:7000", CLUSTER, name -> null);
-        var refused = runWithSecretFile("systemctl", "[ \"$1\" = is-active ] && exit 0; exit 1", command, BootstrapPhaseDeploy.JVM_SECRET_ENV_FILE);
+        var paths = new Staged(BootstrapPhaseDeploy.JVM_SECRET_STAGED, NodeUserDataRenderer.JVM_SECRET_FILE);
+        var refused = runStaged("systemctl", "[ \"$1\" = is-active ] && exit 0; exit 1", command, paths);
 
         assertThat(refused.exit()).isEqualTo(BootstrapPhaseDeploy.ALREADY_PRESENT_EXIT);
-        assertThat(refused.secretFileLeft()).as("refusal: %s", refused.output()).isFalse();
+        assertThat(refused.stagedLeft()).as("refusal: %s", refused.output()).isFalse();
+        assertThat(refused.installed()).isEqualTo(ORIGINAL);
         assertThat(command).doesNotContain(SECRET);
 
-        var started = runWithSecretFile("systemctl", "[ \"$1\" = start ] && echo STARTED; exit 1", command, BootstrapPhaseDeploy.JVM_SECRET_ENV_FILE, true);
+        var started = runStaged("systemctl", "[ \"$1\" = start ] && echo STARTED; exit 1", command, paths);
 
         assertThat(started.output()).as("systemctl is-active/is-failed exit 1, show prints nothing, start succeeds").contains("STARTED");
-        assertThat(started.secretFileLeft()).isFalse();
-        assertThat(started.envFileContent()).as("the staged secret is merged into the unit's env file").contains("AETHER_CLUSTER_SECRET=" + SECRET)
-                                            .contains("AETHER_NODE_ID=eu-1-core-0");
+        assertThat(started.stagedLeft()).isFalse();
+        assertThat(started.installed()).as("positive control: the sentinel reached the installed file").isEqualTo(SECRET);
+        assertThat(started.envFileContent()).contains("AETHER_CLUSTER_SECRET_FILE=").doesNotContain(SECRET).contains("AETHER_NODE_ID=eu-1-core-0");
     }
 
-    private record RanWithSecret(int exit, String output, boolean secretFileLeft, String envFileContent) {}
+    private static final String ORIGINAL = "the-running-nodes-secret";
 
-    private static RanWithSecret runWithSecretFile(String stubName, String stubBody, String command, String secretPath) throws Exception {
-        return runWithSecretFile(stubName, stubBody, command, secretPath, false);
-    }
+    private record Staged(String stagedPath, String installedPath) {}
 
-    private static RanWithSecret runWithSecretFile(String stubName, String stubBody, String command, String secretPath, boolean readEnvFile) throws Exception {
-        var secretFile = Files.createTempFile("launch-once-secret-", ".env");
+    private record RanStaged(int exit, String output, boolean stagedLeft, String installed, String envFileContent) {}
+
+    private static RanStaged runStaged(String stubName, String stubBody, String command, Staged paths) throws Exception {
+        var dir = Files.createTempDirectory("launch-once-secret-");
+        var staged = dir.resolve("staged");
+        var installed = dir.resolve("installed");
+        var envFile = dir.resolve("node.env");
 
         try {
-            Files.writeString(secretFile, "AETHER_CLUSTER_SECRET=" + SECRET + "\n");
-            var ran = runWithStub(stubName, stubBody, command.replace(secretPath, secretFile.toString())
-                                                              .replace("install -d -m 0755 " + NodeUserDataRenderer.JVM_ENV_DIR, "true")
-                                                              .replace(NodeUserDataRenderer.JVM_ENV_FILE_PATH, secretFile + ".out")
-                                                              .replace(BootstrapPhaseDeploy.JVM_STARTED_MARKER, secretFile + ".started"));
-            var out = Path.of(secretFile + ".out");
+            Files.writeString(staged, SECRET);
+            Files.writeString(installed, ORIGINAL);
+            var ran = runWithStub(stubName, stubBody, command.replace(paths.stagedPath(), staged.toString())
+                                                             .replace(paths.installedPath(), installed.toString())
+                                                             .replace(" -o 1000 -g 1000", "")
+                                                             .replace("install -d -m 0755 " + NodeUserDataRenderer.JVM_ENV_DIR, "true")
+                                                             .replace(NodeUserDataRenderer.JVM_ENV_FILE_PATH, envFile.toString())
+                                                             .replace(BootstrapPhaseDeploy.JVM_STARTED_MARKER, dir.resolve("started").toString()));
 
-            return new RanWithSecret(ran.exit(), ran.output(), Files.exists(secretFile),
-                                     readEnvFile && Files.exists(out) ? Files.readString(out) : "");
+            return new RanStaged(ran.exit(), ran.output(), Files.exists(staged), Files.readString(installed),
+                                 Files.exists(envFile) ? Files.readString(envFile) : "");
         } finally {
-            Files.deleteIfExists(secretFile);
-            Files.deleteIfExists(Path.of(secretFile + ".out"));
-            Files.deleteIfExists(Path.of(secretFile + ".started"));
+            try (var files = Files.walk(dir)) {
+                files.sorted(Comparator.reverseOrder()).forEach(path -> path.toFile().delete());
+            }
         }
     }
 
@@ -975,7 +988,7 @@ class BootstrapLaunchOnceTest {
         var pushed = new ConcurrentLinkedQueue<String>();
         Fn3<Result<String>, String, String, SshConfig> ssh = (host, command, cfg) -> Result.success("");
         Fn4<Result<Unit>, String, String, String, SshConfig> scp = (local, host, remote, cfg) -> {
-            if (remote.equals(BootstrapPhaseDeploy.CONTAINER_SECRET_ENV_FILE)) {
+            if (remote.equals(BootstrapPhaseDeploy.CONTAINER_SECRET_STAGED)) {
                 pushed.add(host);
             }
 

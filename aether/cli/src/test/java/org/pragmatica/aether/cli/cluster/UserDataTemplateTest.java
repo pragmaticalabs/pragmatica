@@ -198,8 +198,9 @@ class UserDataTemplateTest {
                    "docker run must export MANAGEMENT_PORT so the management API binds the operator port");
         assertTrue(script.contains("-e PEERS=\"${AETHER_PEERS}\""),
                    "docker run must export PEERS — Dockerfile entrypoint converts it to --peers=");
-        assertTrue(script.contains("-e AETHER_CLUSTER_SECRET=\"${AETHER_CLUSTER_SECRET}\""),
-                   "docker run must export AETHER_CLUSTER_SECRET so TLS init resolves the seed");
+        assertTrue(script.contains("-e AETHER_CLUSTER_SECRET_FILE=\"/run/secrets/aether-cluster-secret\""),
+                   "docker run must name the mounted secret file so TLS init resolves the seed");
+        assertFalse(script.contains("-e AETHER_CLUSTER_SECRET="), "#828: no secret env var in the container");
     }
 
     @Test
@@ -220,8 +221,8 @@ class UserDataTemplateTest {
 
         assertTrue(script.contains("-e AETHER_CLUSTER_NAME=\"prod-cluster\""),
                    "docker run must export AETHER_CLUSTER_NAME from the threaded cluster name");
-        assertTrue(script.contains("-e AETHER_CLUSTER_SECRET=\"${AETHER_CLUSTER_SECRET}\""),
-                   "AETHER_CLUSTER_SECRET must still be emitted (shell-var form) via the allow-list");
+        assertTrue(script.contains("-e AETHER_CLUSTER_SECRET_FILE=\"/run/secrets/aether-cluster-secret\""),
+                   "the secret file reference must still be emitted via the allow-list (#828)");
     }
 
     @Test

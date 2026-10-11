@@ -26,6 +26,7 @@ import java.util.concurrent.TimeUnit;
 
 import org.pragmatica.aether.config.AlertConfig;
 import org.pragmatica.aether.config.AetherConfig;
+import org.pragmatica.aether.environment.ClusterSecretSource;
 import org.pragmatica.aether.config.ClusterConfig;
 import org.pragmatica.aether.config.ClusterSizeGate;
 import org.pragmatica.aether.environment.CloudConfig;
@@ -607,11 +608,11 @@ public record Main(String[] args) {
     /// Every resolver above takes it as a parameter so tests can state the environment rather than
     /// inherit it (SF4).
     private static Option<String> environmentClusterSecret() {
-        return Option.option(System.getenv("AETHER_CLUSTER_SECRET")).filter(s -> !s.isBlank());
+        return ClusterSecretSource.resolve(System::getenv).fold(_ -> Option.<String>none(), value -> value);
     }
 
     private static final Cause MISSING_CLUSTER_SECRET = Causes.cause("No cluster secret configured. Set 'cluster_secret' in [tls] section "
-                                                                    + "or AETHER_CLUSTER_SECRET environment variable. "
+                                                                    + "or AETHER_CLUSTER_SECRET_FILE (a file path) or AETHER_CLUSTER_SECRET environment variable. "
                                                                     + "A cluster secret is required for TLS certificate generation.");
 
     private SliceConfig parseSliceConfig(Option<AetherConfig> aetherConfig) {
@@ -630,6 +631,8 @@ public record Main(String[] args) {
     /// `java -jar` runs). GIVEN: the file must load and validate, or the node REFUSES to start. It used to log one line and boot on
     /// defaults, which silently drops the operator's TLS, port, peers and secret settings.
     private Option<AetherConfig> loadConfig() {
+        ClusterSecretSource.resolve(System::getenv).onFailure(this::refuseConfig);
+
         return resolveConfig(findArg("--config=")).onFailure(this::refuseConfig)
                             .expect("unreachable: refuseConfig exits");
     }

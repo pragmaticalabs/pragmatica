@@ -11,6 +11,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
+import org.pragmatica.aether.environment.ClusterSecretSource;
 import org.pragmatica.aether.environment.CloudConfig;
 import org.pragmatica.aether.environment.ClusterIdentityEnv;
 import org.pragmatica.config.toml.TomlDocument;
@@ -321,7 +322,7 @@ public final class ConfigLoader {
         var keyPath = doc.getString("tls", "key_path").or("");
         var caPath = doc.getString("tls", "ca_path").or("");
         var clusterSecret = doc.getString("tls", "cluster_secret")
-                               .orElse(Option.option(System.getenv("AETHER_CLUSTER_SECRET")))
+                               .orElse(() -> ClusterSecretSource.resolve(System::getenv).fold(_ -> Option.<String>none(), value -> value))
                                .or("");
 
         return new TlsConfig(autoGen, certPath, keyPath, caPath, clusterSecret);
