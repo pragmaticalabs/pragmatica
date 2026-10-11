@@ -81,6 +81,19 @@ public sealed interface EntityLogError extends Cause {
         }
     }
 
+    /// A client read of a key whose newest record is not committed yet (#2087): the record is applied on this node but the log has
+    /// not acknowledged it, and a failover could still replace it. TRANSIENT: the read clears when the record commits (a later
+    /// acknowledgement) or the lineage replaces it. Distinct from [FoldInProgress], where the whole partition is being rebuilt.
+    record NotYetCommitted(String keyspace, int partition, long offset) implements EntityLogError, Cause.Transient {
+        @Override
+        public String message() {
+            return "Entity keyspace '" + keyspace
+                 + "' partition " + partition
+                 + " holds an unacknowledged write at offset " + offset
+                 + " for this key — a read serves committed state only; retry once it is acknowledged";
+        }
+    }
+
     /// The fold for a partition failed, so the partition has NO usable state and is refusing rather than
     /// serving a partial one. Terminal until something re-drives the fold.
     record FoldFailed(String keyspace, int partition, Cause reason) implements EntityLogError {

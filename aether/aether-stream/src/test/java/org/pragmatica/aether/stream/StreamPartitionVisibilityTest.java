@@ -522,13 +522,14 @@ class StreamPartitionVisibilityTest {
             assertThat(readAll(manager)).containsExactly("e0", "e1", "e2");
         }
 
-        /// Replica control: a replica's visible position is its OWN durability (#1235 replica side), never
-        /// the owner's acks — a blind registry must not hold its replayed tail back. #1730 phase 2 narrows "at once":
-        /// the recovered tail may belong to a lineage the owner never had, so it is invisible until verified against
-        /// the committed owner (`markVerified`), and then visible by durability alone. The earlier premise (visible at
-        /// restart, before any verification) was the leak; this test was wrong, not the change.
+        /// Replica control: a replica's visible position is bounded by what the OWNER reported visible (#2087), never by
+        /// its own durability and never by the owner's acks as this node's registry sees them -- a blind registry must
+        /// not hold its replayed tail back, and an unreported record must not be served. #1730 phase 2 narrows it
+        /// further: the recovered tail may belong to a lineage the owner never had, so it is invisible until verified
+        /// against the committed owner (`markVerified`). Verification lifts that bar, not the owner's bound: the earlier
+        /// premise (visible by durability alone once verified, #1235) is the #2087 defect, and this test was wrong.
         @Test
-        void walReplay_onAReplica_isVisibleOnceVerified() {
+        void walReplay_onAReplica_isVisibleOnceVerifiedAndReportedByTheOwner() {
             manager = replicatingWalManager(replicationWithPeer(), walDir);
             manager.placementRoleSupplier((_, _) -> ReplicaSetController.Role.REPLICA);
             createStream(manager, 3, 2);
@@ -543,6 +544,10 @@ class StreamPartitionVisibilityTest {
             assertThat(readAll(manager)).as("unverified tail stays invisible").isEmpty();
 
             manager.markVerified(STREAM, PARTITION, 2L);
+
+            assertThat(readAll(manager)).as("verified, but the owner has reported nothing visible").isEmpty();
+
+            manager.commitAdvanced(STREAM, PARTITION, 2L, Epoch.ZERO);
 
             assertThat(readAll(manager)).containsExactly("r0", "r1", "r2");
         }

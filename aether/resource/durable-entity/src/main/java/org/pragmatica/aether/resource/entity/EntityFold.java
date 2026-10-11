@@ -49,6 +49,7 @@ import static org.pragmatica.lang.Unit.unit;
 final class EntityFold {
     private static final Logger LOG = LoggerFactory.getLogger(EntityFold.class);
     private static final int REPLAY_BATCH = 512;
+    private static final int PENDING_SWEEP_AT = 1024;
 
     private final String keyspace;
     private final EntityLogSubstrate substrate;
@@ -104,7 +105,12 @@ final class EntityFold {
     /// new one from the LOG — by the replay when they sit below its head, by the next [#caughtUp] when
     /// they sit above it.
     private static final class PartitionFold {
-        private final AtomicReference<FoldedPartition> published = new AtomicReference<>(new FoldedPartition());
+        private final AtomicReference<FoldedPartition> published;
+
+        private PartitionFold(long generation) {
+            this.published = new AtomicReference<>(new FoldedPartition(generation));
+        }
+
         private final AtomicReference<Promise<Unit>> rebuild = new AtomicReference<>();
         private final AtomicReference<Promise<Unit>> catchUp = new AtomicReference<>();
     }
@@ -124,11 +130,24 @@ final class EntityFold {
     /// watermark covers it — at once by [#forgetCovered], or by the next [#checkpointCandidate] for an
     /// offset that parked — so the map tracks keys written above the watermark, not every key ever written.
     private static final class FoldedPartition {
+        /// #2087 B4-cut: the log's cut count when this fold's build began ([EntityLogSubstrate#cutGeneration]). A fold whose generation
+        /// differs from the log's current one may hold records a cut removed: it is never served and never checkpointed.
+        private final long generation;
+
+        private FoldedPartition(long generation) {
+            this.generation = generation;
+        }
+
         private final Map<String, byte[]> state = new ConcurrentHashMap<>();
         private final Map<String, Map<String, PendingTimer>> timers = new ConcurrentHashMap<>();
         private final ConcurrentHashMap<String, Long> keyApplied = new ConcurrentHashMap<>();
         private final ConcurrentSkipListSet<Long> appliedAhead = new ConcurrentSkipListSet<>();
         private final AtomicLong appliedThrough = new AtomicLong(-1L);
+        /// #2087: per key, the newest offset applied that was NOT yet committed when it was applied (above the log's visible
+        /// position). A client read of such a key waits for that offset to commit ([#getCommitted]); the owner's own sequencing
+        /// reads the state directly and ignores this map. Entries leave when a read finds them committed, or in the sweep that
+        /// runs whenever the map outgrows [#PENDING_SWEEP_AT], so the map tracks the unacknowledged window, not every key.
+        private final ConcurrentHashMap<String, Long> pending = new ConcurrentHashMap<>();
     }
 
     /// Resolve once `partition` is serving. Callers gate every read and write on this.
@@ -140,6 +159,8 @@ final class EntityFold {
     /// latching the failure forever would turn a transient state into a permanent outage.
     Promise<Unit> ready(int partition) {
         var fold = partitionFold(partition);
+
+        dropIfCut(partition, fold);
         var existing = fold.rebuild.get();
 
         if (existing != null) {
@@ -185,6 +206,25 @@ final class EntityFold {
         readyWindowProbe = probe;
     }
 
+    /// #2087 B4-cut: the log was CUT since the published fold was built, so the fold may hold records the cut removed (the probe: a
+    /// key whose cut write was still served). The rebuild memo is dropped so the next access rebuilds from the surviving log; until the new
+    /// fold is published every client read refuses ([#getCommitted]) and no stale fold is checkpointed. The cut is the event: nothing here
+    /// polls on a timer.
+    /// Whether `data` was built under the log's CURRENT identity, with no cut in progress: the log's value is even (odd means a cut is
+    /// between "begun" and "done") and equal to the one `data` was built under.
+    private boolean isCurrent(int partition, FoldedPartition data) {
+        var current = substrate.cutGeneration(keyspace, partition);
+
+        return (current & 1L) == 0L && data.generation == current;
+    }
+
+    private void dropIfCut(int partition, PartitionFold fold) {
+        if (!isCurrent(partition, fold.published.get())) {
+            fold.rebuild.set(null);
+            fold.catchUp.set(null);
+        }
+    }
+
     private static void completeRebuild(PartitionFold fold, Promise<Unit> started, Result<Unit> result) {
         result.onFailure(_ -> fold.rebuild.set(null));
         started.resolve(result);
@@ -193,6 +233,52 @@ final class EntityFold {
     /// The current encoded state of `key`, or [Option#none] when it is absent. Only valid after [#ready].
     Option<byte[]> get(int partition, String key) {
         return Option.option(publishedFold(partition).state.get(key));
+    }
+
+    /// #2087: record that `key` holds an applied record at `offset` the log has not committed yet. Called after every successful
+    /// apply (append, catch-up, replay), so a promoted owner's inherited tail and a replica's unacknowledged records are tracked
+    /// the same way as the owner's own writes. An offset already committed is not recorded.
+    @Contract
+    private void notePending(int partition, FoldedPartition data, String key, long offset) {
+        if (offset > substrate.committedOffset(keyspace, partition)) {
+            data.pending.merge(key, offset, Math::max);
+            if (data.pending.size() > PENDING_SWEEP_AT) {
+                var committed = substrate.committedOffset(keyspace, partition);
+
+                data.pending.values().removeIf(recorded -> recorded <= committed);
+            }
+        }
+    }
+
+    /// The state of `key` a CLIENT read may see (#2087): only what the log has committed. A key whose newest applied record is
+    /// still above the committed position waits, bounded by [EntityLogSubstrate#commitWait], for that record to commit and is
+    /// then answered; if it does not commit in time the read fails [EntityLogError.NotYetCommitted] (transient) rather than
+    /// reveal a value a failover could still replace. Every other key is answered at once. Only valid after [#ready].
+    Promise<Option<byte[]>> getCommitted(int partition, String key) {
+        var data = publishedFold(partition);
+
+        if (!isCurrent(partition, data)) {
+            return new EntityLogError.FoldInProgress(keyspace, partition).promise();
+        }
+
+        var offset = data.pending.get(key);
+
+        if (offset == null) {
+            return Promise.success(get(partition, key));
+        }
+
+        if (offset <= substrate.committedOffset(keyspace, partition)) {
+            data.pending.remove(key, offset);
+
+            return Promise.success(get(partition, key));
+        }
+
+        return substrate.awaitCommitted(keyspace,
+                                        partition,
+                                        offset,
+                                        substrate.commitWait())
+                        .fold(result -> result.fold(_ -> new EntityLogError.NotYetCommitted(keyspace, partition, offset).<Option<byte[]>> promise(),
+                                                    _ -> getCommitted(partition, key)));
     }
 
     /// Whether `token` is STILL pending on `key`. Two callers, one question: a cancel appends a record
@@ -267,6 +353,10 @@ final class EntityFold {
                        .onSuccess(_ -> forgetCovered(data,
                                                      record.key(),
                                                      offset))
+                       .onSuccess(_ -> notePending(partition,
+                                                   data,
+                                                   record.key(),
+                                                   offset))
                        .onFailure(cause -> logUnapplicable(offset, record, cause));
     }
 
@@ -334,6 +424,11 @@ final class EntityFold {
         }
 
         return unit();
+    }
+
+    /// Package-private test hook (#2087): how many keys are tracked as holding a record the log has not committed.
+    int pendingKeys(int partition) {
+        return publishedFold(partition).pending.size();
     }
 
     /// Package-private test hook: how many keys hold a per-key offset above the watermark.
@@ -469,14 +564,24 @@ final class EntityFold {
 
         drain(data);
 
-        return data.appliedThrough.get();
+        return committedClaim(partition, data);
+    }
+
+    /// A checkpoint may claim only COMMITTED offsets (#2087): the contents may run ahead of the claim (replay is idempotent), but a
+    /// claim above the committed position would pin retention above records a failover may still replace.
+    private long committedClaim(int partition, FoldedPartition data) {
+        if (!isCurrent(partition, data)) {
+            return -1L;
+        }
+
+        return Math.min(data.appliedThrough.get(), substrate.committedOffset(keyspace, partition));
     }
 
     /// The two halves of a checkpoint, both read from ONE published fold.
     ///
     /// @param throughOffset the offset the checkpoint may claim
     /// @param snapshot      the encoded contents, folded at or beyond that offset
-    record CheckpointCandidate(long throughOffset, byte[] snapshot) {}
+    record CheckpointCandidate(long throughOffset, byte[] snapshot, Option<byte[]> lineage) {}
 
     /// A checkpoint for `partition` that claims MORE than `notAbove`, or [Option#none] when there is none —
     /// either because the fold has not advanced past `notAbove`, or because this node has nothing to say
@@ -511,10 +616,22 @@ final class EntityFold {
         var through = data.appliedThrough.get();
 
         data.keyApplied.values().removeIf(applied -> applied <= through);
+        var claim = committedClaim(partition, data);
 
-        return through < 0L || through <= notAbove
+        return claim < 0L || claim <= notAbove
                ? Option.none()
-               : Option.some(new CheckpointCandidate(through, encodedFold(data)));
+               : candidate(partition, data, claim);
+    }
+
+    /// The candidate for `claim`: the encoded contents and the lineage of the log record at `claim`, read together. A cut between the two would pair
+    /// contents folded from the removed records with the new lineage's identity, so the fold must still be the current one afterwards.
+    private Option<CheckpointCandidate> candidate(int partition, FoldedPartition data, long claim) {
+        var snapshot = encodedFold(data);
+        var lineage = substrate.lineageAt(keyspace, partition, claim);
+
+        return isCurrent(partition, data)
+               ? Option.some(new CheckpointCandidate(claim, snapshot, lineage))
+               : Option.none();
     }
 
     /// Apply every log record past the watermark, so the fold reflects the log's CURRENT head — records
@@ -612,7 +729,10 @@ final class EntityFold {
 
         for (var raw : records) {
             var applyAt = offset;
-            var applied = EntityLogRecord.decode(raw).flatMap(record -> applyCaughtUp(data, record, applyAt));
+            var applied = EntityLogRecord.decode(raw).flatMap(record -> applyCaughtUp(data, record, applyAt).onSuccess(_ -> notePending(partition,
+                                                                                                                                        data,
+                                                                                                                                        record.key(),
+                                                                                                                                        applyAt)));
 
             if (applied instanceof Result.Failure<Unit>(var cause)) {
                 return new EntityLogError.FoldFailed(keyspace, partition, cause).result();
@@ -672,7 +792,8 @@ final class EntityFold {
     }
 
     private PartitionFold partitionFold(int partition) {
-        return partitions.computeIfAbsent(partition, _ -> new PartitionFold());
+        return partitions.computeIfAbsent(partition,
+                                          _ -> new PartitionFold(substrate.cutGeneration(keyspace, partition)));
     }
 
     private FoldedPartition publishedFold(int partition) {
@@ -690,10 +811,10 @@ final class EntityFold {
             return new EntityLogError.FoldInProgress(keyspace, partition).promise();
         }
 
-        var building = new FoldedPartition();
+        var building = new FoldedPartition(substrate.cutGeneration(keyspace, partition));
 
         return usableCheckpoint(partition).flatMap(checkpoint -> restoreThenReplay(partition, building, checkpoint))
-                               .map(_ -> publish(fold, building));
+                               .flatMap(_ -> publishUnlessCut(partition, fold, building));
     }
 
     /// The checkpoint to seed from, validated HERE, at its point of use (#1533): a checkpoint pointer is
@@ -711,6 +832,23 @@ final class EntityFold {
                         .recover(cause -> unreadableCheckpoint(partition, cause));
     }
 
+    /// #2087 B4-cut: a checkpoint is usable only over the lineage it was taken over. It records the identity of the log records ending at its
+    /// claim ([EntityLogSubstrate#lineageAt]); [EntityLogSubstrate#lineageHolds] compares this node's copy with it.
+    ///   - No lineage recorded, on a substrate that records one: the checkpoint was written by code that did not, so it cannot be told from one
+    ///     taken over a lineage a cut has since removed. It is discarded and the fold is rebuilt from the log (a rebuild costs time, never state).
+    ///   - Recorded: the substrate decides. A claim at or below the sealed floor is accepted without validation, because a cut is refused at or
+    ///     below that floor (`requireAboveSealedFloor`), so the region cannot have been cut. Anywhere above it the copy validates over whatever
+    ///     records of the window it still holds, the claim record included, and a copy that cannot vouch for the owner epoch (it keeps no epoch
+    ///     history) or holds no such record discards the checkpoint: the digest alone can false-match there.
+    private boolean lineageHolds(int partition, EntityLogSubstrate.EntityCheckpoint checkpoint) {
+        return ! substrate.recordsLineage() || checkpoint.lineage()
+                                                         .map(recorded -> substrate.lineageHolds(keyspace,
+                                                                                                 partition,
+                                                                                                 checkpoint.throughOffset(),
+                                                                                                 recorded))
+                                                         .or(false);
+    }
+
     private Option<SeedCheckpoint> seedable(int partition, EntityLogSubstrate.EntityCheckpoint checkpoint) {
         var head = substrate.headOffset(keyspace, partition);
 
@@ -721,6 +859,16 @@ final class EntityFold {
                      partition,
                      checkpoint.throughOffset(),
                      head);
+
+            return Option.none();
+        }
+
+        if (!lineageHolds(partition, checkpoint)) {
+            LOG.warn("Entity keyspace '{}' partition {}: the checkpoint at offset {} was taken over a different lineage than the record this"
+                    + " node's log holds there (the log was cut and grew again); ignoring the checkpoint and folding from the log",
+                     keyspace,
+                     partition,
+                     checkpoint.throughOffset());
 
             return Option.none();
         }
@@ -769,6 +917,13 @@ final class EntityFold {
     /// refuses to write a checkpoint that does not advance the last one it wrote. The pairing half is
     /// here, in [#checkpointCandidate]; the monotonicity half is there, because only the writer knows what
     /// it last published.
+    /// A fold built while the log was being cut would publish records the cut removed: it is discarded and the rebuild retried.
+    private Promise<Unit> publishUnlessCut(int partition, PartitionFold fold, FoldedPartition built) {
+        return isCurrent(partition, built)
+               ? Promise.success(publish(fold, built))
+               : new EntityLogError.FoldInProgress(keyspace, partition).promise();
+    }
+
     private static Unit publish(PartitionFold fold, FoldedPartition built) {
         fold.published.set(built);
 
@@ -847,7 +1002,10 @@ final class EntityFold {
 
         for (var raw : records) {
             var applyAt = offset;
-            var applied = EntityLogRecord.decode(raw).flatMap(record -> applyReplayed(building, record, applyAt));
+            var applied = EntityLogRecord.decode(raw).flatMap(record -> applyReplayed(building, record, applyAt).onSuccess(_ -> notePending(partition,
+                                                                                                                                            building,
+                                                                                                                                            record.key(),
+                                                                                                                                            applyAt)));
 
             if (applied instanceof Result.Failure<Unit>(var cause)) {
                 return new EntityLogError.FoldFailed(keyspace, partition, cause).result();

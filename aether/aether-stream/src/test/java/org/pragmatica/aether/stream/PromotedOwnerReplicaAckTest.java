@@ -169,9 +169,7 @@ class PromotedOwnerReplicaAckTest {
     }
 
     private static long head(StreamPartitionManager manager) {
-        return manager.partitionInfo(STREAM, PARTITION)
-                      .map(StreamPartitionManager.PartitionInfo::headOffset)
-                      .or(-1L);
+        return manager.appendedHead(STREAM, PARTITION);
     }
 
     private static boolean eventually(java.util.function.BooleanSupplier condition) {

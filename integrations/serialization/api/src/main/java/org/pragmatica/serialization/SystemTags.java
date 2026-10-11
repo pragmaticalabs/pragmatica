@@ -635,7 +635,10 @@ public interface SystemTags {
         // #1967: the typed read refusal a forwarded read carries -- next free after 2139
         pin(table, 2140, "org.pragmatica.aether.stream.forward.ReadRefusal");
         pin(table, 2141, "org.pragmatica.aether.stream.forward.ReadRefusal.Kind");
-        // ---- 2142..16383 RESERVED ----
+        // #2087: the owner's visible position, announced to its replicas. 2140 and 2141 went to #2118, so this takes the
+        // next free slot (scanned across every open PR head and every origin branch on 2026-10-11).
+        pin(table, 2142, "org.pragmatica.aether.stream.replication.ReplicationMessage.CommitAdvance");
+        // ---- 2143..16383 RESERVED ----
         rejectDuplicateTags(table);
 
         return Map.copyOf(table);

@@ -112,7 +112,7 @@ class NoWalRestartConsumerRedeliveryTest {
         index.rebuildFromRefs(metadataStore);
         startOwner();
         committed.set(committed.get().restarted(3L, HlcTimestamp.ZERO));
-        assertThat(owner.get().partitionInfo(STREAM, PARTITION).map(StreamPartitionManager.PartitionInfo::headOffset).or(-9L)).as("control: the ring restarted at the sealed floor").isEqualTo(2L);
+        assertThat(owner.get().appendedHead(STREAM, PARTITION)).as("control: the ring (appended head) restarted at the sealed floor").isEqualTo(2L);
         publish("new", 2);
         keepWaking(() -> delivered.size() >= 4);
 

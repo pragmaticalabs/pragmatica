@@ -766,8 +766,8 @@ public final class PartitionedStreamAccess<T> implements StreamAccess<T> {
 
     private Promise<List<StreamEvent<T>>> cursorExpiredPromise(int partition, long expiredOffset) {
         return new StreamError.CursorExpired(expiredOffset,
-                                             partitionManager.partitionInfo(streamName, partition)
-                                                             .map(StreamPartitionManager.PartitionInfo::tailOffset)
+                                             partitionManager.partitionBuffer(streamName, partition)
+                                                             .map(OffHeapRingBuffer::tailOffset)
                                                              .or(0L)).promise();
     }
 

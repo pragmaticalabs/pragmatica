@@ -10,6 +10,7 @@ import org.pragmatica.aether.slice.ReplicationFactors;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.io.TimeSpan;
 
 
 /// The durable substrate an entity keyspace runs on (#345 I3): a fenced, fsync-durable, replicated log
@@ -92,6 +93,77 @@ public interface EntityLogSubstrate {
     /// therefore waits, reporting [EntityLogError.FoldInProgress], until the node's own copy is complete —
     /// which is exactly what the catch-up machinery already establishes for a replica.
     boolean localLogComplete(String keyspace, int partition);
+
+    /// The highest offset of `(keyspace, partition)` the log has COMMITTED (#2087): at or below it every record is acknowledged to
+    /// the keyspace's declared durability, so a client may be shown state derived from it. The default is "everything",
+    /// for a substrate with no acknowledgement step (in-memory, tests): nothing is held back.
+    default long committedOffset(String keyspace, int partition) {
+        return Long.MAX_VALUE;
+    }
+
+    /// Resolves once [#committedOffset] reaches `offset`, or fails once `timeout` passes (#2087). The default resolves at once.
+    default Promise<Unit> awaitCommitted(String keyspace, int partition, long offset, TimeSpan timeout) {
+        return Promise.unitPromise();
+    }
+
+    /// How many times the log of `(keyspace, partition)` has been CUT (#2087 B4-cut): a divergent tail removed from this node's copy. A fold
+    /// built before a cut may hold records the cut removed, so the fold compares this with the value it was built under and rebuilds from the
+    /// surviving log when it changed. The default (a log that is never cut) is constant.
+    default long cutGeneration(String keyspace, int partition) {
+        return 0L;
+    }
+
+    /// How long a client read waits for a pending record to commit: the replication barrier's own wait, so a read never waits
+    /// longer than the write whose acknowledgement it is waiting for (#2087).
+    default TimeSpan commitWait() {
+        return TimeSpan.timeSpan(5).seconds();
+    }
+
+    /// Whether this substrate records a lineage with the checkpoints it writes (#2087 B4-cut). When it does, a checkpoint WITHOUT one was
+    /// written by code that did not, cannot be validated against the log, and is discarded when a fold would seed from it. The default is
+    /// false: a substrate with no lineage (in-memory, tests) validates nothing.
+    default boolean recordsLineage() {
+        return false;
+    }
+
+    /// The identity [#lineageAt] answers when this copy holds the record but cannot vouch for the owner epoch it was written under (a copy
+    /// that keeps no epoch history). Empty: it is never the same lineage as anything, itself included ([#sameLineage]), so a checkpoint
+    /// recorded or checked under it is discarded rather than trusted on a digest alone.
+    byte[] UNVOUCHED = new byte[0];
+
+    /// Whether two identities name the same lineage: equal, and not [#UNVOUCHED] (equal and non-empty, so a vouched identity never equals an
+    /// unvouched one and two unvouched ones are not the same).
+    static boolean sameLineage(byte[] recorded, byte[] local) {
+        return recorded.length > 0 && java.util.Arrays.equals(recorded, local);
+    }
+
+    /// The identity of the log record at `offset` as THIS node's copy holds it (#2087 B4-cut): a digest of the records ending there plus the
+    /// owner epoch the node knows for it. A checkpoint records it when it is taken; a node seeding from the checkpoint compares it with its own,
+    /// because a cut can remove acknowledged records (the bounded promotion escape) and a new lineage can then grow past the offset the
+    /// checkpoint claims, so "the claim is within my log" does not mean "my log holds what the claim folded". [#UNVOUCHED] when the owner epoch of the
+    /// record is not known here. None when the record cannot be
+    /// read here (evicted or sealed: below the sealed floor, which a cut never crosses) or the substrate keeps no lineage. The default keeps none.
+    default Option<byte[]> lineageAt(String keyspace, int partition, long offset) {
+        return Option.none();
+    }
+
+    /// Whether this node's copy of the log still holds the lineage a checkpoint recorded at `offset` (#2087 B4-cut). The default compares with
+    /// [#lineageAt] and treats a record this copy cannot read as untouched (a substrate whose unreadable records all lie below the sealed
+    /// floor); a substrate that can keep a readable record without the rest of its window overrides it.
+    default boolean lineageHolds(String keyspace, int partition, long offset, byte[] recorded) {
+        return lineageAt(keyspace, partition, offset).map(local -> sameLineage(recorded, local))
+                        .or(true);
+    }
+
+    /// [#saveCheckpoint(String, int, long, byte[])] recording `lineage` with the checkpoint. The default drops it.
+    default Promise<Unit> saveCheckpoint(String keyspace,
+                                         int partition,
+                                         long throughOffset,
+                                         byte[] snapshot,
+                                         Option<byte[]> lineage) {
+        return saveCheckpoint(keyspace, partition, throughOffset, snapshot);
+    }
+
     /// Whether this node holds `(keyspace, partition)` locally at all.
     ///
     /// Distinct from [#localLogComplete], and the distinction is the difference between a transient state
@@ -114,9 +186,19 @@ public interface EntityLogSubstrate {
     /// @param throughOffset the last log offset folded INTO `snapshot`; the fold resumes at
     ///                      `throughOffset + 1`
     /// @param snapshot      the encoded fold, as written by the entity
-    record EntityCheckpoint(long throughOffset, byte[] snapshot) {
+    /// @param lineage       the identity of the log record at `throughOffset` when the checkpoint was taken (#2087 B4-cut), or none when the
+    ///                      substrate recorded none; a node seeding from the checkpoint compares it with its own record at that offset
+    record EntityCheckpoint(long throughOffset, byte[] snapshot, Option<byte[]> lineage) {
+        public EntityCheckpoint(long throughOffset, byte[] snapshot) {
+            this(throughOffset, snapshot, Option.none());
+        }
+
         public static EntityCheckpoint entityCheckpoint(long throughOffset, byte[] snapshot) {
-            return new EntityCheckpoint(throughOffset, snapshot);
+            return new EntityCheckpoint(throughOffset, snapshot, Option.none());
+        }
+
+        public static EntityCheckpoint entityCheckpoint(long throughOffset, byte[] snapshot, Option<byte[]> lineage) {
+            return new EntityCheckpoint(throughOffset, snapshot, lineage);
         }
     }
 }

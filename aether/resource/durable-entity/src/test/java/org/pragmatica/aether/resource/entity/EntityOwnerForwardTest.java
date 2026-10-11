@@ -376,7 +376,8 @@ class EntityOwnerForwardTest {
     void create_ownerIsMidHandoff_surfacesTheTransientCause_forEveryNotReadyName() {
         for (var failureType : List.of(EntityError.OwnerTransitioning.class.getSimpleName(),
                                        EntityError.OwnershipNotYetCommitted.class.getSimpleName(),
-                                       EntityLogError.FoldInProgress.class.getSimpleName())) {
+                                       EntityLogError.FoldInProgress.class.getSimpleName(),
+                                       EntityLogError.NotYetCommitted.class.getSimpleName())) {
             transport.refuseWith(new EntityOwnerForward.ForwardRefused(failureType, "owner not ready"));
 
             var result = entityAs(SELF, OTHER, Option.some(transport)).create("k1", 100).await();
@@ -388,6 +389,23 @@ class EntityOwnerForwardTest {
                 assertThat(cause.message()).contains("owner not ready");
             });
         }
+    }
+
+    /// #2087 (D11): the owner refuses a read of a key under an unacknowledged write with `NotYetCommitted`; it crosses the forward wire by
+    /// name and must reach the caller as the transient [EntityError.OwnerTransitioning], not as the terminal carrier.
+    @Test
+    void get_ownerRefusesAnUncommittedRead_surfacesTheTransientCause() {
+        substrate.holds = false;
+        transport.refuseWith(new EntityOwnerForward.ForwardRefused(EntityLogError.NotYetCommitted.class.getSimpleName(), "key has an unacknowledged write"));
+
+        var result = entityAs(SELF, OTHER, Option.some(transport)).get("k1").await();
+
+        assertThat(result.isFailure()).isTrue();
+        result.onFailure(cause -> {
+            assertThat(cause).isInstanceOf(EntityError.OwnerTransitioning.class);
+            assertThat(cause.isTransient()).isTrue();
+            assertThat(cause.message()).contains("unacknowledged write");
+        });
     }
 
     /// #1973: a not-sent forward stays a transient, typed cause end to end through the entity: the read of a key whose

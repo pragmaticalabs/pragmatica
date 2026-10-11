@@ -535,6 +535,60 @@ public final class StreamEntityLogSubstrate implements EntityLogSubstrate {
         return partitionManager.nextExpectedOffset(EntityPartitionArc.arcName(keyspace), partition) - 1;
     }
 
+    @Override
+    public long cutGeneration(String keyspace, int partition) {
+        return partitionManager.cutGeneration(EntityPartitionArc.arcName(keyspace), partition);
+    }
+
+    /// The log's COMMITTED position (#2087): the ring's visible position, i.e. durable here AND acknowledged by the keyspace's
+    /// confirmation peers on an owner, or reported visible by the owner on a replica. Never above the appended head.
+    @Override
+    public long committedOffset(String keyspace, int partition) {
+        return partitionManager.partitionBuffer(EntityPartitionArc.arcName(keyspace),
+                                                partition)
+                               .map(ring -> Math.min(ring.headOffset(),
+                                                     ring.visibleOffset()))
+                               .or(-1L);
+    }
+
+    /// Resolves once the committed position reaches `offset`, woken by the ring's own visible-advance listener (which runs on
+    /// the ring's notifier, never under its append lock); fails after `timeout`. The listener is registered BEFORE the position
+    /// is re-read, so an advance between the first check and the registration is not missed.
+    @Override
+    public Promise<Unit> awaitCommitted(String keyspace, int partition, long offset, TimeSpan timeout) {
+        if (committedOffset(keyspace, partition) >= offset) {
+            return Promise.unitPromise();
+        }
+
+        return partitionManager.partitionBuffer(EntityPartitionArc.arcName(keyspace),
+                                                partition)
+                               .fold(() -> Causes.cause("partition " + partition
+                                                       + " of '" + keyspace
+                                                       + "' is not held here").<Unit> promise(),
+                                     ring -> awaitVisible(ring,
+                                                          () -> committedOffset(keyspace, partition) >= offset,
+                                                          timeout));
+    }
+
+    static Promise<Unit> awaitVisible(org.pragmatica.aether.stream.OffHeapRingBuffer ring,
+                                      java.util.function.BooleanSupplier reached,
+                                      TimeSpan timeout) {
+        var committed = Promise.<Unit> promise();
+        java.util.function.LongConsumer listener = _ -> {
+            if (reached.getAsBoolean()) {
+                committed.resolve(Result.unitResult());
+            }
+        };
+
+        ring.addAppendListener(listener);
+        if (reached.getAsBoolean()) {
+            committed.resolve(Result.unitResult());
+        }
+
+        return committed.timeout(timeout)
+                        .onResultRun(() -> ring.removeAppendListener(listener));
+    }
+
     /// The earliest offset [#read] can serve here (#1240): the lowest of the offsets this node sealed, the
     /// offsets its sealer still holds in flight, and the ring's earliest. A hole between those tiers is not
     /// hidden by this answer: the read that reaches it fails `SealedRangeMissing`, which refuses the fold.
@@ -581,6 +635,81 @@ public final class StreamEntityLogSubstrate implements EntityLogSubstrate {
     /// would leave a committed pointer to a block that does not exist, which a recovering node could not
     /// distinguish from corruption.
     @Override
+    public Promise<Unit> saveCheckpoint(String keyspace,
+                                        int partition,
+                                        long throughOffset,
+                                        byte[] snapshot,
+                                        Option<byte[]> lineage) {
+        return storage.put(CheckpointFrame.frame(snapshot, lineage))
+                      .flatMap(blockId -> publishCheckpointPointer(keyspace, partition, throughOffset, blockId));
+    }
+
+    @Override
+    public boolean recordsLineage() {
+        return true;
+    }
+
+    /// The identity of this node's records ending at `offset` (#2087 B4-cut): the owner epoch it knows for it and, for each of up to the last
+    /// [CheckpointFrame#LINEAGE_WINDOW] records ending there (those it still retains), its offset and a hash of its bytes. A window rather than the one
+    /// record: after a cut a new lineage can write byte-identical records, and a checkpoint folded over the removed records would still differ in the
+    /// earlier ones. [#UNVOUCHED] when the epoch is not known here; none when the claim record is not readable.
+    @Override
+    public Option<byte[]> lineageAt(String keyspace, int partition, long offset) {
+        var floor = partitionManager.sealedFloor(EntityPartitionArc.arcName(keyspace), partition);
+
+        return offset <= floor
+               ? Option.some(CheckpointFrame.withFloor(floor, new byte[0]))
+               : windowIdentity(keyspace, partition, offset).map(body -> body.length == 0
+                                                                         ? body
+                                                                         : CheckpointFrame.withFloor(floor, body));
+    }
+
+    /// The owner epoch this copy knows for the claim record and, for each of the records it still retains of the window ending there, its offset
+    /// and a hash of its bytes ([UNVOUCHED], empty, when the epoch is not known here; none when the claim record is not readable).
+    private Option<byte[]> windowIdentity(String keyspace, int partition, long offset) {
+        var stream = EntityPartitionArc.arcName(keyspace);
+        var from = Math.max(0L, offset - CheckpointFrame.LINEAGE_WINDOW + 1L);
+
+        return readableWindow(stream, partition, from, offset).filter(events -> CheckpointFrame.endsAt(events, offset))
+                             .flatMap(events -> partitionManager.epochAt(stream, partition, offset)
+                                                                .fold(() -> Option.some(UNVOUCHED),
+                                                                      epoch -> CheckpointFrame.lineageOf(events, epoch)));
+    }
+
+    /// The records of `[from, offset]` this copy still retains: the whole window, or -- when its start was evicted -- the part from the ring's
+    /// tail. None when the claim record itself is not readable.
+    private Option<List<RawEvent>> readableWindow(String stream, int partition, long from, long offset) {
+        return partitionManager.readAppended(stream,
+                                             partition,
+                                             from,
+                                             (int)(offset - from + 1L))
+                               .fold(cause -> retainedPart(cause, stream, partition, offset),
+                                     Option::some);
+    }
+
+    private Option<List<RawEvent>> retainedPart(Cause cause, String stream, int partition, long offset) {
+        return cause instanceof StreamError.CursorExpired expired && expired.tailOffset() <= offset
+               ? partitionManager.readAppended(stream,
+                                               partition,
+                                               expired.tailOffset(),
+                                               (int)(offset - expired.tailOffset() + 1L))
+                                 .option()
+               : Option.none();
+    }
+
+    /// A claim at or below the sealed floor the checkpoint's WRITER saw is accepted without validation: that region was sealed before the
+    /// checkpoint was taken, the floor only rises, and a cut is refused at or below it, so it was never cut. The CURRENT floor proves nothing: a
+    /// cut can rewrite the claim record and the floor can then rise over the new lineage. Otherwise the copy validates over the records of the
+    /// window it still holds, the claim record included; if it holds none, or cannot vouch for the owner epoch, the answer is no.
+    @Override
+    public boolean lineageHolds(String keyspace, int partition, long offset, byte[] recorded) {
+        return CheckpointFrame.floorOf(recorded)
+                              .filter(written -> offset <= written)
+                              .isPresent() || windowIdentity(keyspace, partition, offset).map(local -> CheckpointFrame.agree(CheckpointFrame.bodyOf(recorded),
+                                                                                                                             local))
+                                                            .or(false);
+    }
+
     public Promise<Unit> saveCheckpoint(String keyspace, int partition, long throughOffset, byte[] snapshot) {
         return storage.put(snapshot)
                       .flatMap(blockId -> publishCheckpointPointer(keyspace, partition, throughOffset, blockId));
@@ -622,8 +751,8 @@ public final class StreamEntityLogSubstrate implements EntityLogSubstrate {
         return BlockId.fromHex(pointer.blockIdHex())
                       .async()
                       .flatMap(storage::get)
-                      .map(bytes -> bytes.map(snapshot -> EntityCheckpoint.entityCheckpoint(pointer.throughOffset(),
-                                                                                            snapshot)))
+                      .map(bytes -> bytes.map(block -> CheckpointFrame.unframe(pointer.throughOffset(),
+                                                                               block)))
                       .recover(_ -> Option.none());
     }
 }
