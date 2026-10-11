@@ -127,6 +127,7 @@ class NodeReplacementRealRegistryReapTest {
     private ClusterTopologyManager ctmUnderTest;
     private NodeReplacementWiring.Wiring wiring;
     private String realBinding;
+    private NodeLifecycleManager delegateLifecycle;
 
     @BeforeEach
     @SuppressWarnings({"rawtypes", "unchecked"})
@@ -138,6 +139,8 @@ class NodeReplacementRealRegistryReapTest {
         store.process(store.createBatch(List.of(new KVCommand.Put(LeaderKey.INSTANCE, LEADER))));
         put(AetherKey.ClusterConfigKey.CURRENT, new ClusterConfigValue(Option.some(CONFIG), "test", "1.0.0", List.of(), 3, 9, "test", 1L, 1L));
         var delegate = NodeLifecycleManager.nodeLifecycleManager(registry, _ -> Result.success(WEST), Option.none(), Option.none());
+
+        delegateLifecycle = delegate;
 
         lifecycle = CapacityControlledLifecycle.capacityControlledLifecycle(delegate, CORE, store, this::process, () -> true, () -> 10);
         var ctm = ctmOver(lifecycle);
@@ -1629,9 +1632,7 @@ class NodeReplacementRealRegistryReapTest {
         assertThat(persistedMark(OLD).map(m -> !m.seen() && !m.absent()).or(false)).as("not seen, and nothing proves it absent").isTrue();
         var before = lists.get();
 
-        Thread.sleep(1500);
-
-        assertThat(lists.get() - before).as("still re-checked at the normal cadence").isGreaterThanOrEqualTo(2);
+        within(30, () -> assertThat(lists.get() - before).as("still re-checked at the normal cadence").isGreaterThanOrEqualTo(2));
 
         listing.set(Promise.success(List.of(instance(OLD, "i-1", InstanceStatus.RUNNING))));
 
@@ -2312,6 +2313,9 @@ class NodeReplacementRealRegistryReapTest {
         assertThat(ctmUnderTest.clearUnconfirmed(OLD, "alice", "unknown", true).await().isSuccess()).isTrue();
 
         within(5, () -> assertThat(clearedWarning("(forced=true; provider state: external node: no provider to check; ")).isTrue());
+        settle();
+        assertThat(reservation(OLD).isPresent()).as("the ledger refuses the release as inconsistent: nothing is returned, and the clear still stands").isTrue();
+        assertThat(allocated()).isEqualTo(0);
     }
 
     private void confirmedReservation() {
@@ -2587,6 +2591,81 @@ class NodeReplacementRealRegistryReapTest {
             assertThat(result.isSuccess()).as("attested id [%s]", odd.replace("\n", "\\n")).isTrue();
             within(5, () -> assertThat(persistedMark(OLD).isEmpty()).isTrue());
         }
+    }
+
+    private long clearedEvents() {
+        return warnings.stream().filter(w -> w.startsWith("instance-termination-cleared:")).count();
+    }
+
+    /// v-2125 E3: the commit-time incarnation fence, reachable with a PERSISTED mark. The node rejoins during the (forced) clear's provider read and is marked
+    /// again with a byte-equal mark; the delete's compare-and-set on the value cannot tell the two incarnations apart, only the fence can.
+    @Test
+    void v2125e_aLaterIncarnationsEqualMark_isNotDeletedByAnEarlierClear() {
+        markWhileListingFails(OLD, "X");
+        Promise<InstanceInfo> gate = Promise.promise();
+        statusOverride.set(gate);
+
+        var clear = ctmUnderTest.clearUnconfirmed(OLD, "alice", "i-1", true);
+
+        joins(OLD);
+        within(5, () -> assertThat(persistedMark(OLD).isEmpty()).isTrue());
+        states.remove(OLD);
+        ctmUnderTest.markUnconfirmed(OLD, "X");
+        within(10, () -> assertThat(persistedMark(OLD).isPresent()).isTrue());
+        gate.succeed(instance(OLD, "i-1", InstanceStatus.TERMINATED));
+        var result = clear.await();
+
+        settle();
+        assertThat(result.isFailure()).as("an earlier incarnation's clear is refused").isTrue();
+        assertThat(persistedMark(OLD).isPresent()).as("the later incarnation's equal mark survives").isTrue();
+        assertThat(clearedEvents()).isZero();
+    }
+
+    private void replaceLedger(CapacityLedgerValue expected, CapacityLedgerValue replacement) {
+        var key = AetherKey.CapacityLedgerKey.INSTANCE;
+
+        store.process(store.createBatch(List.of(new KVCommand.LeaderTransaction(key,
+                                                                                java.util.UUID.randomUUID().toString(),
+                                                                                LEADER,
+                                                                                List.of(),
+                                                                                List.of(new KVCommand.Mutation<>(key, Option.some(expected), Option.some(replacement)))))));
+    }
+
+    /// Y6: what an external node's reservation is. The operator started the node, so Aether reserved only a slot for it (a reservation with no provider binding,
+    /// counted in the ledger). A forced clear returns exactly that slot, through the fenced external release, and makes no provider call.
+    @Test
+    void clearUnconfirmed_aForcedClearOfAnExternalNode_returnsTheSlotAetherReservedForIt_andMakesNoProviderCall() {
+        put(new AetherKey.CapacityReservationKey(OLD), new CapacityReservationValue("west", "", "core", CapacityReservationPhase.OBSERVED));
+        put(AetherKey.CapacityLedgerKey.INSTANCE, new CapacityLedgerValue(0, 1, true));
+        ctmUnderTest.deactivate();
+        // A manager whose re-check interval is an hour: otherwise the external node's own re-check confirms the mark the moment the ledger is mended.
+        var slow = newManager(lifecycle, false, 3_600_000L, warnings);
+
+        slow.markUnconfirmed(OLD, "operator's own node");
+        within(10, () -> assertThat(persistedMark(OLD).isPresent()).isTrue());
+        replaceLedger(new CapacityLedgerValue(0, 1, true), new CapacityLedgerValue(2, 2, true));
+        var providerCalls = lists.get() + terminates.get();
+
+        assertThat(slow.clearUnconfirmed(OLD, "alice", "unknown", true).await().isSuccess()).isTrue();
+
+        within(5, () -> assertThat(reservation(OLD).isEmpty()).as("the external reservation is returned").isTrue());
+        assertThat(allocated()).as("with its slot").isEqualTo(1);
+        assertThat(lists.get() + terminates.get()).as("no provider call for an external node").isEqualTo(providerCalls);
+    }
+
+    /// Y7: the leader gate on the capacity return. A manager that is not the leader returns nothing; the leader (the harness manager) returns the slot.
+    @Test
+    void releaseAfterOperatorClear_isLeaderGated() {
+        confirmedReservation();
+        var nonLeader = CapacityControlledLifecycle.capacityControlledLifecycle(delegateLifecycle, CORE, store, this::process, () -> false, () -> 10);
+
+        assertThat(nonLeader.releaseAfterOperatorClear(OLD, WEST).await().isSuccess()).isTrue();
+
+        assertThat(reservation(OLD).isPresent()).as("a non-leader releases nothing").isTrue();
+        assertThat(allocated()).isEqualTo(3);
+        assertThat(lifecycle.releaseAfterOperatorClear(OLD, WEST).await().isSuccess()).isTrue();
+        assertThat(reservation(OLD).isEmpty()).as("the leader returns the slot").isTrue();
+        assertThat(allocated()).isEqualTo(2);
     }
 
     /// An instance the provider lists as TERMINATED is gone: the clear goes through unforced, and the event names what the provider showed.

@@ -2493,7 +2493,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                                                                                                                  seen.state(),
                                                                                                                                  known,
                                                                                                                                  cause),
-                                                                                                                     seen.nothingLive())));
+                                                                                                                     seen)));
     }
 
     /// The provider reads took time: a node that rejoined while they ran is a new incarnation (nothing to clear), and one that shows life now is never cleared.
@@ -2523,7 +2523,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     private Promise<ProviderSeen> providerState(NodeId nodeId, String attested, boolean force) {
         if (lifecycleManager.externalNode(nodeId)) {
             return force
-                   ? Promise.success(new ProviderSeen(EXTERNAL_STATE, false))
+                   ? Promise.success(new ProviderSeen(EXTERNAL_STATE, false, true))
                    : new UnconfirmedClearRefusal.ExternalNodeUnchecked(nodeId).promise();
         }
 
@@ -2537,7 +2537,7 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
     }
 
     /// What the provider reads showed: the state for the event, and whether NO read showed the instance live or failed (only then may the clear return the capacity).
-    private record ProviderSeen(String state, boolean nothingLive) {}
+    private record ProviderSeen(String state, boolean nothingLive, boolean external) {}
 
     private static final String EXTERNAL_STATE = "external node: no provider to check";
     private static final String UNKNOWN_INSTANCE = "unknown";
@@ -2598,7 +2598,8 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         }
 
         return Promise.success(new ProviderSeen(stateSeen(labelled, byId),
-                                                running.isEmpty() && unreachable.isEmpty()));
+                                                running.isEmpty() && unreachable.isEmpty(),
+                                                false));
     }
 
     private static Option<String> unreachableCause(org.pragmatica.lang.Result<List<org.pragmatica.aether.environment.InstanceInfo>> labelled,
@@ -2655,12 +2656,12 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
                                                      .mapError(_ -> new UnconfirmedClearRefusal.Changed(nodeId)));
     }
 
-    private Promise<Unit> afterClear(NodeId nodeId, long generation, Cleared cleared, boolean nothingLive) {
+    private Promise<Unit> afterClear(NodeId nodeId, long generation, Cleared cleared, ProviderSeen seen) {
         if (sameIncarnation(nodeId, generation)) {
             unconfirmedReaps.remove(nodeId);
         }
 
-        releaseIfGone(nodeId, generation, nothingLive);
+        returnCapacity(nodeId, generation, seen);
         org.pragmatica.utility.warning.OperatorWarnings.raise(log,
                                                               warningSink.get(),
                                                               org.pragmatica.utility.warning.OperatorWarningCode.INSTANCE_TERMINATION_CLEARED,
@@ -2677,16 +2678,26 @@ record ClusterTopologyManagerRecord(TopologyObserver observer,
         return Promise.unitPromise();
     }
 
-    /// Only a clear that committed, after reads that showed no instance live (and none failed), returns the node's capacity: the cluster stops counting
-    /// an instance the operator verified gone. A node that shows life again, or a new incarnation, keeps what it holds.
-    private void releaseIfGone(NodeId nodeId, long generation, boolean nothingLive) {
-        if (nothingLive && sameIncarnation(nodeId, generation) && !liveness.demonstrablyLive(nodeId)) {
-            lifecycleManager.releaseAfterOperatorClear(nodeId,
-                                                       lifecycleManager.sourceOf(nodeId).or(SourceName.DEFAULT))
-                            .onFailure(cause -> log.warn("CTM: the capacity of cleared node {} was not returned: {}",
-                                                         nodeId,
-                                                         cause.message()));
+    /// Only a clear that committed returns capacity, and only what Aether itself reserved for the node. A node with a provider instance gets its confirmed
+    /// reservation back when every read showed no instance live (and none failed). An EXTERNAL node (the operator started it, no provider of ours behind it)
+    /// gets its external reservation back through the fenced external release, which is nothing when the release is refused or there is none. A node that
+    /// shows life again, or a new incarnation, keeps what it holds.
+    private void returnCapacity(NodeId nodeId, long generation, ProviderSeen seen) {
+        if (!sameIncarnation(nodeId, generation) || liveness.demonstrablyLive(nodeId)) {
+            return;
         }
+
+        var returned = seen.external()
+                       ? lifecycleManager.releaseExternal(nodeId)
+                       : seen.nothingLive()
+                         ? lifecycleManager.releaseAfterOperatorClear(nodeId,
+                                                                      lifecycleManager.sourceOf(nodeId)
+                                                                                      .or(SourceName.DEFAULT))
+                         : Promise.unitPromise();
+
+        returned.onFailure(cause -> log.warn("CTM: the capacity of cleared node {} was not returned: {}",
+                                             nodeId,
+                                             cause.message()));
     }
 
     private static String instanceIds(List<org.pragmatica.aether.environment.InstanceInfo> listed) {
