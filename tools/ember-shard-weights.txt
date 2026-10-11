@@ -32,6 +32,7 @@ EmberOrdinaryFailoverNoFalseAlertTest 96
 EmberPacedBurstTest 49
 EmberPartitionedCoreSelfFenceTest 403
 EmberPlannedDepartureAlertsTest 334
+EmberReadCommittedFailoverTest 36
 EmberSameIdentityRelaunchTest 478
 EmberSelfDrainSlotReleaseTest 0
 EmberSilentPartitionMinorityOwnerAcksTest 114

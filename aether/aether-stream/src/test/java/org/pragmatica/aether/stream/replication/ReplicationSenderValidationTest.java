@@ -114,4 +114,29 @@ class ReplicationSenderValidationTest {
         assertThat(appends.get()).isEqualTo(2);
         assertThat(acks).hasSize(1);
     }
+
+    /// #2087: the owner's visible position is judged by the same rule as a batch. A deposed or non-owner sender's
+    /// position describes a lineage this replica no longer follows, and exposing records for it would serve them.
+    @Test
+    void onCommitAdvance_isDropped_whenSenderIsNotTheCommittedOwner() {
+        var told = new ArrayList<Long>();
+        var handler = handler(0L, committedTo(OWNER));
+
+        handler.commitSink((_, _, through, _) -> told.add(through));
+        handler.onCommitAdvance(ReplicationMessage.CommitAdvance.commitAdvance(OTHER_REPLICA, STREAM, PARTITION, 7L, COMMITTED_EPOCH));
+        handler.onCommitAdvance(ReplicationMessage.CommitAdvance.commitAdvance(OWNER, STREAM, PARTITION, 8L, Epoch.epoch(0L, 2L, 2L)));
+
+        assertThat(told).isEmpty();
+    }
+
+    @Test
+    void onCommitAdvance_reachesTheSink_whenSenderIsTheCommittedOwner() {
+        var told = new ArrayList<Long>();
+        var handler = handler(0L, committedTo(OWNER));
+
+        handler.commitSink((_, _, through, _) -> told.add(through));
+        handler.onCommitAdvance(ReplicationMessage.CommitAdvance.commitAdvance(OWNER, STREAM, PARTITION, 7L, COMMITTED_EPOCH));
+
+        assertThat(told).containsExactly(7L);
+    }
 }

@@ -95,6 +95,10 @@ class ReplicaRestartVisibilityTest {
 
         manager.markVerified(STREAM, PARTITION, 2L);
 
+        assertThat(offsets()).as("verified, but the owner has reported nothing visible (#2087)").isEmpty();
+
+        manager.commitAdvanced(STREAM, PARTITION, 4L, org.pragmatica.aether.slice.generation.Epoch.ZERO);
+
         assertThat(offsets()).containsExactly(0L, 1L, 2L);
 
         manager.markVerified(STREAM, PARTITION, 99L);
@@ -104,8 +108,12 @@ class ReplicaRestartVisibilityTest {
         manager.appendRecovered(STREAM, PARTITION, 5L, "owner-5".getBytes(UTF_8), 5L, org.pragmatica.aether.slice.generation.Epoch.ZERO).unwrap();
         manager.syncReplicated(STREAM, PARTITION).await();
 
-        assertThat(offsets()).as("everything held is verified now: later appends extend visibility as always")
-                             .containsExactly(0L, 1L, 2L, 3L, 4L, 5L);
+        assertThat(offsets()).as("everything held is verified now, but a later append is visible only once the owner reports it (#2087)")
+                             .containsExactly(0L, 1L, 2L, 3L, 4L);
+
+        manager.commitAdvanced(STREAM, PARTITION, 5L, org.pragmatica.aether.slice.generation.Epoch.ZERO);
+
+        assertThat(offsets()).containsExactly(0L, 1L, 2L, 3L, 4L, 5L);
     }
 
     /// A repair keeps the prefix the copy shares with its sender, which is verified by construction: the owner's
@@ -117,9 +125,15 @@ class ReplicaRestartVisibilityTest {
         manager.appendRecovered(STREAM, PARTITION, 3L, "owner-3".getBytes(UTF_8), 3L, org.pragmatica.aether.slice.generation.Epoch.ZERO);
         assertThat(manager.quarantinedAt(STREAM, PARTITION).or(-1L)).as("premise: the different record at 3 quarantines").isEqualTo(3L);
 
+        manager.commitAdvanced(STREAM, PARTITION, 4L, org.pragmatica.aether.slice.generation.Epoch.ZERO);
         manager.repairDivergence(STREAM, PARTITION, _ -> true).unwrap();
         manager.appendRecovered(STREAM, PARTITION, 3L, "owner-3".getBytes(UTF_8), 3L, org.pragmatica.aether.slice.generation.Epoch.ZERO).unwrap();
         manager.syncReplicated(STREAM, PARTITION).await();
+
+        assertThat(offsets()).as("the owner's report above the cut described records that no longer exist here (#2087): the new record 3 waits for its own report")
+                             .containsExactly(0L, 1L, 2L);
+
+        manager.commitAdvanced(STREAM, PARTITION, 3L, org.pragmatica.aether.slice.generation.Epoch.ZERO);
 
         assertThat(offsets()).containsExactly(0L, 1L, 2L, 3L);
     }
@@ -134,6 +148,10 @@ class ReplicaRestartVisibilityTest {
         manager.syncReplicated(STREAM, PARTITION).await();
 
         assertThat(offsets()).isEmpty();
+
+        manager.commitAdvanced(STREAM, PARTITION, 5L, org.pragmatica.aether.slice.generation.Epoch.ZERO);
+
+        assertThat(offsets()).as("reported by the owner, still unverified: invisible").isEmpty();
 
         manager.markVerified(STREAM, PARTITION, 5L);
 

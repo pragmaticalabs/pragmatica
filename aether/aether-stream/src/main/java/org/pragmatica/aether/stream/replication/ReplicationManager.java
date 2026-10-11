@@ -88,6 +88,13 @@ public interface ReplicationManager extends AutoCloseable {
                                               ownerEpoch));
     }
 
+    /// Tell the partition's replicas how far this owner's VISIBLE position reaches (#2087): a replica serves a
+    /// consumer read only up to the minimum of this and what it holds. Idempotent and loss-tolerant: a replica keeps
+    /// the highest value it has seen under an owner epoch, so a repeat is harmless and a lost one only delays it.
+    /// The default announces nothing (no replicas).
+    @Contract
+    default void announceCommitted(String streamName, int partition, long committedThrough, Epoch ownerEpoch) {}
+
     @Contract
     void handleAck(ReplicationMessage.ReplicateAck ack);
 

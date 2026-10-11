@@ -69,6 +69,15 @@ class ReplicationMessageCodecTest {
     }
 
     @Test
+    void commitAdvance_roundTrips() {
+        var original = new ReplicationMessage.CommitAdvance(GOVERNOR, "app:orders:2.1.0", 2, 41L, org.pragmatica.aether.slice.generation.Epoch.epoch(1L, 2L, 3L));
+
+        ReplicationMessage decoded = CODEC.decode(CODEC.encode(original));
+
+        assertThat(decoded).isEqualTo(original);
+    }
+
+    @Test
     void batchSync_roundTrips() {
         var original = new BatchSync(GOVERNOR, "app:orders:2.1.0", 1, 0L, 5L, new byte[]{4, 5, 6});
 

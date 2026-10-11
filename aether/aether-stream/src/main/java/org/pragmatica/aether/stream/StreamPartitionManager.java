@@ -278,6 +278,18 @@ public final class StreamPartitionManager implements AutoCloseable {
 
     private record EpochTrust(Epoch epoch, boolean verified) {}
 
+    /// #2087: the highest owner-visible offset this REPLICA has been told of, per partition, with the owner epoch it was
+    /// reported under ([#commitAdvanced]). A replica exposes to a consumer read no more than the minimum of this and what
+    /// it holds, so no read path serves an offset a failover could still replace. Absent means nothing is known: nothing
+    /// is exposed until the owner reports. A newer epoch replaces the entry, even with a lower value; an older one is ignored.
+    private final ConcurrentHashMap<String, CommittedMark> replicaCommitted = new ConcurrentHashMap<>();
+
+    private record CommittedMark(Epoch epoch, long through) {}
+
+    /// #2087: how far a replica's unverified tail has been compared with the committed owner ([#markVerified]); only
+    /// meaningful while the partition is in [#unverifiedReplicas]. A verified prefix is exposed up to the owner's report.
+    private final ConcurrentHashMap<String, Long> verifiedPrefix = new ConcurrentHashMap<>();
+
     /// The offset the owner of `epoch` began writing at.
     @FunctionalInterface
     public interface EpochStartSource {
@@ -2082,6 +2094,84 @@ public final class StreamPartitionManager implements AutoCloseable {
                                                                                                   partition,
                                                                                                   config.confirmationFactor() - 1)));
         }
+
+        ring.addAppendListener(visible -> announceVisible(config.name(), partition, visible));
+    }
+
+    /// #2087: the owner's visible position moved: tell the replicas. Runs on the ring's serial notifier -- never under
+    /// the append lock, never on a publisher's thread -- and the notifier coalesces advances, so a burst of acks is one
+    /// message per drain, not one per ack. A node that is not this partition's owner announces nothing.
+    @Contract
+    private void announceVisible(String streamName, int partition, long visible) {
+        if (placementRoleSupplier.roleFor(streamName, partition) == Role.OWNER) {
+            replicationManager.announceCommitted(streamName,
+                                                 partition,
+                                                 visible,
+                                                 ownerEpochSource.currentOwnerEpoch(streamName, partition));
+        }
+    }
+
+    /// #2087: repeat the visible position of every partition this node owns, on the owner's tick. A replica that missed
+    /// an announcement stays BEHIND, never ahead, and this closes the gap: after the last ack a replica's visible
+    /// position lags the owner's by at most one tick interval plus one message delivery. Cost: one small message per
+    /// owned partition per replica per tick, independent of the publish rate.
+    @Contract
+    public void repeatVisible() {
+        materializedHeads().forEach(head -> resolvePartitionBuffer(head.streamName(), head.partition()).onSuccess(ring -> repeatVisible(head,
+                                                                                                                                        ring)));
+    }
+
+    @Contract
+    private void repeatVisible(PartitionHead head, OffHeapRingBuffer ring) {
+        if (ring.visibleOffset() >= 0) {
+            announceVisible(head.streamName(), head.partition(), ring.visibleOffset());
+        }
+    }
+
+    /// #2087: the owner told this replica how far its visible position reaches. Ignored on the owner itself (it is the
+    /// authority, not a follower) and for an older epoch than the one already recorded.
+    @Contract
+    public void commitAdvanced(String streamName, int partition, long through, Epoch ownerEpoch) {
+        if (placementRoleSupplier.roleFor(streamName, partition) == Role.OWNER) {
+            return;
+        }
+
+        replicaCommitted.merge(partitionKeyOf(streamName, partition),
+                               new CommittedMark(ownerEpoch, through),
+                               StreamPartitionManager::newerMark);
+        resolvePartitionBuffer(streamName, partition).onSuccess(ring -> exposeReplicaCommitted(streamName,
+                                                                                               partition,
+                                                                                               ring));
+    }
+
+    private static CommittedMark newerMark(CommittedMark known, CommittedMark reported) {
+        if (reported.epoch().isStrictlyAfter(known.epoch())) {
+            return reported;
+        }
+
+        return reported.epoch()
+                       .equals(known.epoch()) && reported.through() > known.through()
+               ? reported
+               : known;
+    }
+
+    private long committedMarkThrough(String streamName, int partition) {
+        return option(replicaCommitted.get(partitionKeyOf(streamName, partition))).map(CommittedMark::through)
+                     .or(-1L);
+    }
+
+    /// A replica's visible position: what it holds durably, no further than the owner has reported visible, and not
+    /// into a tail it has not compared with the committed owner ([#unverifiedReplicas]). The epoch trust
+    /// ([#unverifiedFrom]) stays where it was, at the read ([#servedIfVerified]): it is evaluated lazily at the first read
+    /// after the committed epoch advances, and evaluating it here, on the append path, would fix its answer earlier.
+    @Contract
+    private void exposeReplicaCommitted(String streamName, int partition, OffHeapRingBuffer ring) {
+        var key = partitionKeyOf(streamName, partition);
+        var limit = Math.min(ring.durableOffset(), committedMarkThrough(streamName, partition));
+
+        ring.advanceVisible(unverifiedReplicas.contains(key)
+                            ? Math.min(limit, verifiedPrefix.getOrDefault(key, -1L))
+                            : limit);
     }
 
     /// A REPLICA that recovered a tail keeps it invisible until [#markVerified] (#1730 phase 2): before, "its OWN
@@ -2107,9 +2197,20 @@ public final class StreamPartitionManager implements AutoCloseable {
     }
 
     private void exposeVerified(String streamName, int partition, OffHeapRingBuffer ring, long offset) {
-        ring.advanceVisible(Math.min(offset, ring.durableOffset()));
+        var key = partitionKeyOf(streamName, partition);
+        var replica = placementRoleSupplier.roleFor(streamName, partition) == Role.REPLICA;
+
+        verifiedPrefix.merge(key, offset, Math::max);
+        if (replica) {
+            exposeReplicaCommitted(streamName, partition, ring);
+        } else {
+            ring.advanceVisible(Math.min(Math.min(offset, ring.durableOffset()),
+                                         peerAcknowledgedThrough(streamName, partition)));
+        }
+
         if (offset >= ring.headOffset()) {
-            unverifiedReplicas.remove(partitionKeyOf(streamName, partition));
+            unverifiedReplicas.remove(key);
+            verifiedPrefix.remove(key);
         }
     }
 
@@ -2572,6 +2673,13 @@ public final class StreamPartitionManager implements AutoCloseable {
         }
         // What remains is the prefix this copy shares with its sender: verified by construction.
         unverifiedReplicas.remove(partitionKeyOf(streamName, partition));
+        verifiedPrefix.remove(partitionKeyOf(streamName, partition));
+        // The owner's reported position above the cut described records that no longer exist here (#2087): what is appended
+        // at those offsets next is the new lineage, visible only once the owner reports it.
+        replicaCommitted.computeIfPresent(partitionKeyOf(streamName, partition),
+                                          (_, mark) -> mark.through() > keep
+                                                       ? new CommittedMark(mark.epoch(), keep)
+                                                       : mark);
         lastReplicatedWalWrite.computeIfPresent(partitionKeyOf(streamName, partition),
                                                 (_, write) -> write.offset() > keep
                                                               ? null
@@ -3397,16 +3505,23 @@ public final class StreamPartitionManager implements AutoCloseable {
 
     @Contract
     private void replicaDurable(String streamName, int partition, long offset) {
-        var verified = !unverifiedReplicas.contains(partitionKeyOf(streamName, partition));
-
-        resolvePartitionBuffer(streamName, partition).onSuccess(ring -> replicaDurable(ring, offset, verified));
+        resolvePartitionBuffer(streamName, partition).onSuccess(ring -> replicaDurable(streamName,
+                                                                                       partition,
+                                                                                       ring,
+                                                                                       offset));
     }
 
+    /// #2087: durable here is not visible here. A replica's visible position is bounded by what the owner has reported
+    /// visible ([#exposeReplicaCommitted]), so a record this replica holds but the owner has not seen acknowledged is
+    /// never served -- a failover may replace it at the same offset. A node that is no longer (or not yet) a replica --
+    /// a promoted one still landing a catch-up -- follows the owner rule ([#refreshVisible]).
     @Contract
-    private static void replicaDurable(OffHeapRingBuffer ring, long offset, boolean verified) {
+    private void replicaDurable(String streamName, int partition, OffHeapRingBuffer ring, long offset) {
         ring.markDurable(offset);
-        if (verified) {
-            ring.advanceVisible(offset);
+        if (placementRoleSupplier.roleFor(streamName, partition) == Role.REPLICA) {
+            exposeReplicaCommitted(streamName, partition, ring);
+        } else {
+            refreshVisible(ring, streamName, partition);
         }
     }
 
