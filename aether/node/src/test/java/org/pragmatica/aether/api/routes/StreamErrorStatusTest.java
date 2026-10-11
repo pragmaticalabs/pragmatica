@@ -65,6 +65,7 @@ class StreamErrorStatusTest {
         all.put(new StreamError.WalReplayMismatch("s", 0, WAL, 1, 3), HttpStatus.INTERNAL_SERVER_ERROR);
         all.put(new StreamError.WalHeadLost("s", 0, WAL, 1, 3), HttpStatus.INTERNAL_SERVER_ERROR);
         all.put(new StreamError.StreamNotFound("s"), HttpStatus.NOT_FOUND);
+        all.put(new StreamError.SystemStreamWriteRefused("system:s:1.0.0"), HttpStatus.METHOD_NOT_ALLOWED);
         all.put(new StreamError.StreamConfigNotYetVisible("s"), HttpStatus.SERVICE_UNAVAILABLE);
         all.put(new StreamError.PartitionOutOfRange("s", 99, 2), HttpStatus.BAD_REQUEST);
         all.put(new StreamError.MaterializeBudgetExceeded("s", 0, 1, 0, 1), HttpStatus.SERVICE_UNAVAILABLE);

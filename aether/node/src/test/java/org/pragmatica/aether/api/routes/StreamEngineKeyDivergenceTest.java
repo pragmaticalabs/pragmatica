@@ -156,22 +156,21 @@ class StreamEngineKeyDivergenceTest {
 
     @Nested
     class SystemNamespace {
-        /// `system` streams keep the bare reduction on BOTH sides. `SystemStreams.isForbiddenEngineKey`
-        /// gates management-api writes on that exact spelling, so qualifying them would carry
-        /// `cluster-events` out from under a security gate rather than merely renaming it.
+        /// #1338: `system` streams are keyed by their FULL address on both sides, the name the framework creates them
+        /// under (`SystemStreamFactories`), and the write gate recognises exactly that spelling.
         @Test
-        void engineKey_reducesToBareName_forSystemNamespace() {
+        void engineKey_isTheFullAddress_forSystemNamespace() {
             var systemAddress = SystemStreams.CLUSTER_EVENTS;
 
-            assertThat(StreamManager.engineKey(systemAddress)).isEqualTo("cluster-events");
+            assertThat(StreamManager.engineKey(systemAddress)).isEqualTo(systemAddress.asString());
             assertThat(SystemStreams.isForbiddenEngineKey(StreamManager.engineKey(systemAddress))).isTrue();
         }
 
-        /// The gate must keep REFUSING to recognise the qualified spelling — if it accepted both, the
-        /// reduction would no longer be what the gate depends on.
+        /// The bare name of a system stream is an ordinary stream name: the gate must not take a user stream called
+        /// `cluster-events` for the system one, and no address of a user namespace may key to the system stream's key.
         @Test
-        void isForbiddenEngineKey_rejectsQualifiedSpelling_ofSystemStream() {
-            assertThat(SystemStreams.isForbiddenEngineKey(SystemStreams.CLUSTER_EVENTS.asString())).isFalse();
+        void isForbiddenEngineKey_rejectsTheBareName_ofASystemStream() {
+            assertThat(SystemStreams.isForbiddenEngineKey("cluster-events")).isFalse();
         }
     }
 

@@ -84,8 +84,8 @@ public class StreamCommand implements Runnable {
         @CommandLine.ParentCommand
         private StreamCommand streamParent;
 
-        @Parameters(index = "0", description = "Stream identity — with --local: the local engine key (bare name for "
-                                             + "system-namespace streams, namespace:stream:version for others); "
+        @Parameters(index = "0", description = "Stream identity — with --local: the local engine key (the full "
+                                             + "namespace:stream:version, system streams included); "
                                              + "without: a namespace:stream:version catalog address")
         private String stream;
 
@@ -287,8 +287,8 @@ public class StreamCommand implements Runnable {
                                                                        "replicas");
 
     /// #753/local-key-shape fix: `STREAM_REPLICAS_LOCAL`'s "name" param is the raw engine key
-    /// ([StreamManager#engineKey] — bare name for `system`-namespace streams, full
-    /// `namespace:stream:version` for others), never uniformly a rendered catalog address, so
+    /// ([StreamManager#engineKey] — the full `namespace:stream:version` in every
+    /// namespace, `system` included), never uniformly a rendered catalog address, so
     /// `--local` keeps passing `stream` through unparsed exactly as before. The catalog-form
     /// `STREAM_REPLICAS` route is genuinely `(namespace, stream, version, partition)`-shaped and has
     /// no bare-name convenience (unlike `streams status/publish/delete`'s default-to-`system`): a
