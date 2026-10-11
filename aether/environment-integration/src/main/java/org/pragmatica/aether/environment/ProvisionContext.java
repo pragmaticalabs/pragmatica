@@ -70,7 +70,13 @@ public record ProvisionContext(Option<ClusterName> clusterName,
     /// id. Providers call this so identity is owned provider-side and echoed back via
     /// [InstanceInfo#nodeId], rather than only tagging when the caller supplied one.
     public String resolveNodeId() {
-        return nodeId.or(() -> IdGenerator.generate(coreNodeNamePrefix(clusterName())));
+        return nodeId.or(() -> mintNodeId(clusterName()));
+    }
+
+    /// A fresh `aether-<cluster>-node-<ulid>` node id. A caller that wants to KNOW the id before the provider runs (so the id it records and the
+    /// identity the node boots with are one) mints it here and puts it in the context (#1027).
+    public static String mintNodeId(Option<ClusterName> clusterName) {
+        return IdGenerator.generate(coreNodeNamePrefix(clusterName));
     }
 
     /// Canonical core-node name prefix for a cluster: `aether-<cluster>-node`. Compose

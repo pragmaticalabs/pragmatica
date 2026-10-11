@@ -205,7 +205,7 @@ class DockerBootstrapProvisionPhaseTest {
     }
 
     @Test
-    void provisionedNodes_areLabelledDistinctly_zoneAndProvisionedByAreStamped() {
+    void provisionedNodes_areIdentifiedByTheIdTheProviderWasGiven_zoneAndProvisionedByAreStamped() {
         var result = runPhase(config("""
 
                 [source.local]
@@ -214,12 +214,18 @@ class DockerBootstrapProvisionPhaseTest {
 
                 [source.local.core]
                 count = 3
+
+                [source.local.worker]
+                count = 2
                 """));
 
         assertThat(result.isSuccess()).isTrue();
-        List<String> labels = result.<List<String>> fold(cause -> List.of(), ctx -> ctx.nodes().stream().map(node -> node.nodeId()).toList());
+        List<String> ids = result.<List<String>> fold(cause -> List.of(), ctx -> ctx.nodes().stream().map(node -> node.nodeId()).toList());
+        var contextIds = requests.stream().map(request -> request.context().nodeId().or("<none>")).toList();
 
-        assertThat(labels).as("per-node labels are source-role-index, distinct").containsExactly("local-core-0", "local-core-1", "local-core-2");
+        assertThat(contextIds).as("every node, workers included, was handed a planned id").doesNotContain("<none>").doesNotHaveDuplicates();
+        assertThat(ids).as("#1027: the id recorded for a node is the id the provider was given - one identity, not a second label scheme")
+                       .containsExactlyElementsOf(contextIds);
         for (var request : requests) {
             assertThat(request.zone()).isEqualTo("z1");
             assertThat(request.context().provisionedBy()).isEqualTo(ProvisionContext.PROVISIONED_BY_BOOTSTRAP);

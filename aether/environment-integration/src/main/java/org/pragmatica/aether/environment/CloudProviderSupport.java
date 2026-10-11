@@ -5,6 +5,7 @@
 package org.pragmatica.aether.environment;
 
 import java.util.List;
+import java.util.Map;
 import java.util.stream.IntStream;
 
 import org.pragmatica.lang.Option;
@@ -20,14 +21,20 @@ public final class CloudProviderSupport {
     private CloudProviderSupport() {}
 
     public static Promise<List<ProvisionedNode>> provisionVia(ComputeProvider compute, NodeGroupConfig group) {
-        var provisions = IntStream.range(0, group.count()).mapToObj(i -> provisionSingle(compute, group, i)).toList();
+        var provisions = IntStream.range(0, group.count()).mapToObj(_ -> provisionSingle(compute, group)).toList();
 
         return Promise.allOf(provisions).flatMap(CloudProviderSupport::aggregateResults);
     }
 
-    public static Promise<ProvisionedNode> provisionOne(ComputeProvider compute, String nodeId, ProvisionSpec spec) {
+    /// The returned node's id is the id the provider was given in the spec's context when there is one, so the caller's record and the node's
+    /// identity are the same string; `fallbackNodeId` names the node only when the context carried none (#1027).
+    public static Promise<ProvisionedNode> provisionOne(ComputeProvider compute,
+                                                        String fallbackNodeId,
+                                                        ProvisionSpec spec) {
+        var plannedId = spec.context().nodeId().or(fallbackNodeId);
+
         return compute.provision(spec)
-                      .map(info -> toProvisionedNode(nodeId, info));
+                      .map(info -> toProvisionedNode(plannedId, info));
     }
 
     public static Promise<Unit> destroyVia(ComputeProvider compute, List<String> nodeIds) {
@@ -73,31 +80,36 @@ public final class CloudProviderSupport {
                : Option.none();
     }
 
-    private static Promise<ProvisionedNode> provisionSingle(ComputeProvider compute, NodeGroupConfig group, int index) {
-        var nodeId = group.sourceName().value() + "-" + group.role() + "-" + index;
+    private static Promise<ProvisionedNode> provisionSingle(ComputeProvider compute, NodeGroupConfig group) {
+        var clusterName = ClusterName.maybeClusterName(group.tags().get("aether-cluster"));
+        var nodeId = ProvisionContext.mintNodeId(clusterName);
 
-        return buildProvisionSpec(group).async()
+        return buildProvisionSpec(group, nodeId).async()
                                  .flatMap(compute::provision)
                                  .map(info -> toProvisionedNode(nodeId, info));
     }
 
-    static Result<ProvisionSpec> buildProvisionSpec(NodeGroupConfig group) {
+    static Result<ProvisionSpec> buildProvisionSpec(NodeGroupConfig group, String nodeId) {
         var spec = ProvisionSpec.provisionSpec(InstanceType.ON_DEMAND,
                                                group.instanceType(),
                                                group.role(),
-                                               toContext(group));
+                                               toContext(group, nodeId));
 
         return spec.map(s -> withZonePlacement(s, group.zone()));
     }
 
-    private static ProvisionContext toContext(NodeGroupConfig group) {
+    private static ProvisionContext toContext(NodeGroupConfig group, String nodeId) {
         var tags = group.tags();
         var clusterName = ClusterName.maybeClusterName(tags.get("aether-cluster"));
 
         return ProvisionContext.provisionContext(clusterName,
                                                  group.role(),
                                                  group.sourceName(),
-                                                 ProvisionContext.PROVISIONED_BY_BOOTSTRAP);
+                                                 Option.some(nodeId),
+                                                 Option.empty(),
+                                                 ProvisionContext.DEFAULT_CORE_MAX,
+                                                 ProvisionContext.PROVISIONED_BY_BOOTSTRAP,
+                                                 Map.of());
     }
 
     private static ProvisionSpec withZonePlacement(ProvisionSpec spec, String zone) {
