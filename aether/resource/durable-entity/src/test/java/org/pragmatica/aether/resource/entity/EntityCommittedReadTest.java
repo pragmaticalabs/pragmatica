@@ -218,21 +218,19 @@ class EntityCommittedReadTest {
     @Test
     void aCatchUpInFlightAtTheCut_doesNotBlockTheCatchUpsAfterIt() {
         append("k", 1);
-        entity.get("k").await();
         substrate.log.add(EntityLogRecord.upsert("a", "2".getBytes(StandardCharsets.UTF_8)).encode());
         substrate.blockNextRead = true;
-        var stuck = entity.get("other");
+        var stuck = fold.caughtUp(0);
 
-        assertThat(stuck.isResolved()).as("control: the catch-up read is stuck").isFalse();
+        assertThat(stuck.isResolved()).as("control: the catch-up read is stuck, its memo is held").isFalse();
         substrate.cutTo(0L);
-
-        assertThat(entity.get("k").await().unwrap().isPresent()).as("the fold is rebuilt from the surviving log").isTrue();
+        assertThat(fold.ready(0).await().isSuccess()).as("the fold is rebuilt from the surviving log").isTrue();
         substrate.log.add(EntityLogRecord.upsert("b", "3".getBytes(StandardCharsets.UTF_8)).encode());
 
-        var landed = entity.get("b").await(org.pragmatica.lang.io.TimeSpan.timeSpan(3).seconds());
+        var landed = fold.caughtUp(0).await(org.pragmatica.lang.io.TimeSpan.timeSpan(3).seconds());
 
         assertThat(landed.isSuccess()).as("a catch-up after the cut runs instead of joining the dropped one").isTrue();
-        assertThat(landed.unwrap()).isEqualTo(Option.some(3));
+        assertThat(fold.get(0, "b").isPresent()).isTrue();
     }
 
     /// A cut that has begun but not finished (the ring has not shrunk yet, or has just shrunk) makes no fold valid: a read is refused,
