@@ -113,6 +113,8 @@ class EntityCommittedReadEndToEndTest {
     void anUnacknowledgedWrite_isNotReadableOnTheOwnerOrTheReplica_untilItIsAcknowledged() throws Exception {
         var created = ownerEntity.create("k", 5);
 
+        Thread.sleep(500);
+        assertThat(created.isResolved() ? created.await().toString() : "pending").as("create state after 500 ms").isEqualTo("pending");
         awaitHeld(replicaManager);
         assertThat(replicaManager.appendedHead(arc(), PARTITION)).as("control: the replica holds the record").isEqualTo(0L);
 
@@ -136,7 +138,9 @@ class EntityCommittedReadEndToEndTest {
     void anUntouchedKey_isServedWhileAnotherKeyIsPending() {
         acksReachOwner.set(true);
         announcementsReachReplica.set(true);
-        assertThat(ownerEntity.create("a", 1).await().isSuccess()).isTrue();
+        var first = ownerEntity.create("a", 1).await();
+
+        assertThat(first.isSuccess()).as("first create: %s", first).isTrue();
 
         acksReachOwner.set(false);
         var pending = ownerEntity.create("b", 2);
