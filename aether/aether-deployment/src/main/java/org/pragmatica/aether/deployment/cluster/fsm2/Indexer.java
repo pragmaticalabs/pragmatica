@@ -455,6 +455,12 @@ public sealed interface Indexer {
 
     /// `departed` = {n : records[n] is DEPARTED and not ignored on read} (R-4.3.0). Recomputed for one node whenever its
     /// record or its admission changes, together with that node's assignment accounting and row classification.
+    private static PMap<String, PSet<NodeId>> assignment(ClusterModel m, String community, NodeId node, boolean departed) {
+        return departed
+               ? Idx.remove(m.assignedByCommunity, community, node)
+               : Idx.add(m.assignedByCommunity, community, node);
+    }
+
     static ClusterModel refreshDeparted(ClusterModel m, NodeId node) {
         var departed = m.records.get(node)
                                 .map(record -> record.state() == DepartureState.DEPARTED && !Departures.isIgnored(record,
@@ -467,13 +473,7 @@ public sealed interface Indexer {
         m.directives.get(node)
                     .filter(directive -> !directive.communityId()
                                                    .isEmpty())
-                    .onPresent(directive -> m.assignedByCommunity = departed
-                                                                    ? Idx.remove(m.assignedByCommunity,
-                                                                                 directive.communityId(),
-                                                                                 node)
-                                                                    : Idx.add(m.assignedByCommunity,
-                                                                              directive.communityId(),
-                                                                              node));
+                    .onPresent(directive -> m.assignedByCommunity = assignment(m, directive.communityId(), node, departed));
 
         return m;
     }

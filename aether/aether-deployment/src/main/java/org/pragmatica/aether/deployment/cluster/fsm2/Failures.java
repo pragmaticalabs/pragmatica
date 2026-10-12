@@ -28,13 +28,15 @@ public sealed interface Failures {
         }
 
         var reason = row.failureReason().or(UNKNOWN_REASON);
+        var first = m.failureRouted.get(pair).map(seen -> !seen.equals(row.forGeneration())).or(true);
 
         Outbox.artifactGoal(m, pair, SliceGoal.UNLOADED);
         m.holdSignatures = m.holdSignatures.remove(pair);
+        m.failureRouted = m.failureRouted.put(pair, row.forGeneration());
 
         return row.fatal()
-               ? settle(m, ctx, pair, reason)
-               : transientFailure(m, ctx, pair, reason);
+               ? settle(m, ctx, pair, reason, first)
+               : transientFailure(m, ctx, pair, reason, first);
     }
 
     /// Level-triggered safety net (step 2c): a FAILED row at the current generation whose failure handling was lost (a
@@ -50,7 +52,7 @@ public sealed interface Failures {
     }
 
     /// R-3.3.6: the terminal both failure branches converge on.
-    private static ClusterModel settle(ClusterModel m, Ctx ctx, SlicePair pair, String reason) {
+    private static ClusterModel settle(ClusterModel m, Ctx ctx, SlicePair pair, String reason, boolean first) {
         var artifact = pair.artifact();
 
         if (Slices.permanentlyFailed(m, artifact) || markedThisDrain(m, artifact)) {
@@ -60,7 +62,7 @@ public sealed interface Failures {
         Outbox.artifact(m,
                         artifact,
                         intent -> intent.withOp(new JudgmentOp.Fatal()));
-        ctx.route(new RoutedEvent.DeploymentFailed(artifact, pair.node(), reason, ctx.nowMs()));
+        routeFailed(m, ctx, pair, reason, first);
 
         return ctx.settings()
                   .atomicity() == DeploymentAtomicity.ALL_OR_NOTHING
@@ -79,12 +81,12 @@ public sealed interface Failures {
     /// R-3.3.7: the counter for (artifact, node) goes up in the same transaction. Counts 1 to 5 reconcile after
     /// `min(2^(n-1), 30)` s with jitter; the sixth is exhaustion (B-050), which condemns only while an apply is
     /// outstanding (#922).
-    private static ClusterModel transientFailure(ClusterModel m, Ctx ctx, SlicePair pair, String reason) {
+    private static ClusterModel transientFailure(ClusterModel m, Ctx ctx, SlicePair pair, String reason, boolean first) {
         var artifact = pair.artifact();
         var count = retries(m, pair) + 1;
 
         if (count > ctx.settings().timing().maxRetries()) {
-            return exhausted(m, ctx, pair, reason);
+            return exhausted(m, ctx, pair, reason, first);
         }
 
         var delayMs = retryDelayMs(ctx, pair, count);
@@ -115,23 +117,31 @@ public sealed interface Failures {
         return committed + pending;
     }
 
-    private static ClusterModel exhausted(ClusterModel m, Ctx ctx, SlicePair pair, String reason) {
+    private static ClusterModel exhausted(ClusterModel m, Ctx ctx, SlicePair pair, String reason, boolean first) {
         var artifact = pair.artifact();
 
         Outbox.artifact(m,
                         artifact,
                         intent -> intent.withOp(new JudgmentOp.Exhausted(pair.node())));
         if (Outcomes.applyOutstanding(m, artifact)) {
-            return settle(m, ctx, pair, reason);
+            return settle(m, ctx, pair, reason, first);
         }
 
-        ctx.route(new RoutedEvent.DeploymentFailed(artifact, pair.node(), reason, ctx.nowMs()));
+        routeFailed(m, ctx, pair, reason, first);
         ctx.warn("retry-exhausted-unsettled",
                  artifact.asString(),
                  "Max retries exceeded for " + artifact
                 + " on " + pair.node().id()
                 + ": " + reason
                 + " - not marking permanently failed, no blueprint apply is outstanding");
+
+        return m;
+    }
+
+    private static ClusterModel routeFailed(ClusterModel m, Ctx ctx, SlicePair pair, String reason, boolean first) {
+        if (first) {
+            ctx.route(new RoutedEvent.DeploymentFailed(pair.artifact(), pair.node(), reason, ctx.nowMs()));
+        }
 
         return m;
     }

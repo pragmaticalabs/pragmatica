@@ -57,6 +57,7 @@ public sealed interface Reconcile {
                          .filter(pair -> !m.observed.containsKey(pair))
                          .forEach(pair -> Gc.removeDesired(m, pair));
         DepartureFlow.sweep(m, ctx);
+        DepartureFlow.rereadOverdue(m, ctx);
         DepartureFlow.collectRecords(m, ctx);
 
         return Joins.retryPending(m, ctx);

@@ -234,6 +234,7 @@ public sealed interface Slices {
     /// permanently failed, a reconcile in 1 s re-derives the pair (B-062). A removal ends the node's exclusion too (C10e).
     static ClusterModel onObservedRemove(ClusterModel m, Ctx ctx, SlicePair pair) {
         Indexer.removeObserved(m, pair);
+        m.failureRouted = m.failureRouted.remove(pair);
         m.judgments.get(pair.artifact())
                    .filter(judgment -> judgment.unresponsive()
                                                .containsKey(pair.node()))

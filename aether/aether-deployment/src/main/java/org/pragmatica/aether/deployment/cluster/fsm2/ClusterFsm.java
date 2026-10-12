@@ -151,7 +151,7 @@ public final class ClusterFsm {
             }
             case Rebuild rebuild -> {
                 counted(ctx, input, "applied");
-                yield new Active(Lifecycle.rebuild(ctx, model.incarnation(), rebuild.snapshot()));
+                yield new Active(rebuiltAgain(model, rebuild, ctx));
             }
             default -> {
                 counted(ctx, input, "applied");
@@ -162,13 +162,32 @@ public final class ClusterFsm {
 
     /// `Deactivate`: cancel the incarnation's timers and discard the model (3.2, NT-02).
     private static ClusterState deactivated(ClusterModel model, Ctx ctx) {
+        cancelTimers(model, ctx);
+
+        return new Dormant(model.incarnation());
+    }
+
+    /// A `Rebuild` while Active replaces the model within the same incarnation: the old model's timers are cancelled (the
+    /// rebuild arms its own, so a second tick chain would otherwise run) and the correlation sequence continues, so a late
+    /// settlement of an earlier submission cannot match a new one.
+    private static ClusterModel rebuiltAgain(ClusterModel model, Rebuild rebuild, Ctx ctx) {
+        cancelTimers(model, ctx);
+
+        var fresh = Lifecycle.rebuild(ctx, model.incarnation(), rebuild.snapshot());
+
+        fresh.txSeq = model.txSeq;
+
+        return fresh;
+    }
+
+    private static ClusterModel cancelTimers(ClusterModel model, Ctx ctx) {
         model.timers.toList()
                     .stream()
                     .sorted(Comparator.comparing(TimerId::subject).thenComparing(timer -> timer.kind()
                                                                                                .name()))
                     .forEach(timer -> ctx.emit(new ClusterEffect.Cancel(timer)));
 
-        return new Dormant(model.incarnation());
+        return model;
     }
 
     /// One input against a copy of the model, then the end-of-step bookkeeping: a flush is queued if the handlers left

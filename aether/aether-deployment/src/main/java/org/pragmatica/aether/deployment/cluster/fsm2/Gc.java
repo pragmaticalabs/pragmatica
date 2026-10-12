@@ -31,17 +31,19 @@ public sealed interface Gc {
         var mutation = new KVCommand.Mutation<AetherKey, AetherValue>(pair.desiredKey(),
                                                                       Option.some((AetherValue) value),
                                                                       Option.none());
-        var existing = m.outbox.stream().filter(draft -> draft.kind() == SubmitKind.GC).findFirst();
+        return Option.from(m.outbox.stream().filter(draft -> draft.kind() == SubmitKind.GC).findFirst())
+                     .fold(() -> Outbox.direct(m,
+                                               TxDraft.draft(SubmitKind.GC,
+                                                             pair.desiredKey(),
+                                                             List.of(mutation))
+                                                      .withPairs(Set.of(pair))),
+                           draft -> merge(m, draft, pair, mutation));
+    }
 
-        if (existing.isEmpty()) {
-            return Outbox.direct(m,
-                                 TxDraft.draft(SubmitKind.GC,
-                                               pair.desiredKey(),
-                                               List.of(mutation))
-                                        .withPairs(Set.of(pair)));
-        }
-
-        var draft = existing.get();
+    private static ClusterModel merge(ClusterModel m,
+                                      TxDraft draft,
+                                      SlicePair pair,
+                                      KVCommand.Mutation<AetherKey, AetherValue> mutation) {
         var mutations = new ArrayList<>(draft.mutations());
         var pairs = new HashSet<>(draft.pairs());
 

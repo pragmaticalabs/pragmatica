@@ -63,6 +63,7 @@ public sealed interface DepartureFlow {
                                                            inferred,
                                                            ctx.monoNs()));
         dropGoalsOf(m, node);
+        m.pendingJoins = m.pendingJoins.remove(node);
         if (!inferred) {
             Absence.clear(m, node);
         }
@@ -78,6 +79,15 @@ public sealed interface DepartureFlow {
            .toList()
            .forEach(artifact -> dropGoal(m,
                                          SlicePair.slicePair(node, artifact)));
+        m.artifactIntents.values()
+                         .stream()
+                         .flatMap(intent -> intent.goals().stream())
+                         .filter(goal -> goal.pair().node().equals(node))
+                         .forEach(goal -> Indexer.clearPending(m, goal.pair()));
+        m.artifactIntents.entries()
+                         .forEach(entry -> Outbox.artifact(m,
+                                                           entry.getKey(),
+                                                           intent -> intent.withoutGoalsOf(node)));
 
         return m;
     }
@@ -289,9 +299,13 @@ public sealed interface DepartureFlow {
     static ClusterModel cleanupRefused(ClusterModel m, Ctx ctx, TxDraft draft) {
         return draft.node()
                     .fold(() -> m,
-                          node -> draft.attempt() < Outbox.GOAL_RESUBMISSIONS && recordUnchanged(m, node, draft)
-                                  ? resubmitUnmoved(m, draft)
-                                  : m);
+                          node -> resubmitIfUnchanged(m, node, draft));
+    }
+
+    private static ClusterModel resubmitIfUnchanged(ClusterModel m, NodeId node, TxDraft draft) {
+        return draft.attempt() < Outbox.GOAL_RESUBMISSIONS && recordUnchanged(m, node, draft)
+               ? resubmitUnmoved(m, draft)
+               : m;
     }
 
     private static ClusterModel resubmitUnmoved(ClusterModel m, TxDraft draft) {
@@ -333,6 +347,35 @@ public sealed interface DepartureFlow {
         }
 
         return Joins.writeAdmission(m, ctx, node, admission.or(Admission.UNKNOWN), record);
+    }
+
+    /// Step 10, "the `departing` re-reads" (R-4.3.0): a departure that is not in flight and has stood for one consensus timeout
+    /// is read again. A timer covers a submission that failed; this covers one whose draft was dropped (a suspended flush, an
+    /// expired submission) and so never reached a settlement.
+    static ClusterModel rereadOverdue(ClusterModel m, Ctx ctx) {
+        var bound = ctx.settings().timing().departingReread() * 1_000_000L;
+
+        m.departing.entries()
+                   .stream()
+                   .filter(entry -> ctx.monoNs() - entry.getValue().sinceMono() >= bound && !departureInFlight(m, entry.getKey()))
+                   .sorted(Map.Entry.comparingByKey())
+                   .forEach(entry -> rereadPending(m, ctx, entry.getKey(), entry.getValue()));
+
+        return m;
+    }
+
+    private static boolean departureInFlight(ClusterModel m, NodeId node) {
+        return m.submitted.values()
+                          .stream()
+                          .flatMap(submitted -> submitted.drafts()
+                                                         .stream())
+                          .anyMatch(draft -> concernsDeparture(draft, node)) || m.outbox.stream()
+                                                                                       .anyMatch(draft -> concernsDeparture(draft, node));
+    }
+
+    private static boolean concernsDeparture(TxDraft draft, NodeId node) {
+        return (draft.kind() == SubmitKind.DEPARTURE || draft.kind() == SubmitKind.INFERRED_DEPARTURE) && draft.node()
+                                                                                                             .equals(Option.some(node));
     }
 
     static boolean admissionInFlight(ClusterModel m, NodeId node) {

@@ -79,6 +79,9 @@ public final class ClusterModel {
     PMap<String, SchemaMigrationLockValue> schemaLocks = PMap.empty();
     PMap<String, PSet<BlueprintId>> blockingSchemasByOwner = PMap.empty();
     PMap<SlicePair, String> holdSignatures = PMap.empty();
+    /// The generation of the FAILED row whose `DeploymentFailed` was already routed, so a failure handled again (its
+    /// transaction was refused) is not announced twice.
+    PMap<SlicePair, Generation> failureRouted = PMap.empty();
     PMap<BlueprintId, DeploymentApplyValue> applies = PMap.empty();
     PMap<BlueprintId, DeploymentOutcomeValue> outcomes = PMap.empty();
     PMap<Artifact, ArtifactJudgmentValue> judgments = PMap.empty();
@@ -162,6 +165,7 @@ public final class ClusterModel {
         c.schemaLocks = schemaLocks;
         c.blockingSchemasByOwner = blockingSchemasByOwner;
         c.holdSignatures = holdSignatures;
+        c.failureRouted = failureRouted;
         c.applies = applies;
         c.outcomes = outcomes;
         c.judgments = judgments;
@@ -339,6 +343,12 @@ public final class ClusterModel {
             next.add(goal);
 
             return new ArtifactIntent(ops, next, extras);
+        }
+
+        public ArtifactIntent withoutGoalsOf(NodeId node) {
+            return new ArtifactIntent(ops,
+                                      goals.stream().filter(goal -> !goal.pair().node().equals(node)).toList(),
+                                      extras);
         }
 
         public ArtifactIntent withExtra(KVCommand.Mutation<AetherKey, AetherValue> extra) {

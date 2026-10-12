@@ -34,18 +34,16 @@ public sealed interface Rebalance {
             return level(m, artifact);
         }
 
-        var donor = allocatable.stream()
-                               .filter(hosts::contains)
-                               .max(Comparator.<NodeId, Integer> comparing(node -> Placement.load(m, node)).thenComparing(Comparator.<NodeId> naturalOrder().reversed()));
-        var target = allocatable.stream()
-                                .filter(node -> !hosts.contains(node))
-                                .min(Comparator.<NodeId, Integer> comparing(node -> Placement.load(m, node)).thenComparing(Comparator.naturalOrder()));
+        var donor = Option.from(allocatable.stream()
+                                           .filter(hosts::contains)
+                                           .max(Comparator.<NodeId, Integer> comparing(node -> Placement.load(m, node)).thenComparing(Comparator.<NodeId> naturalOrder().reversed())));
+        var target = Option.from(allocatable.stream()
+                                            .filter(node -> !hosts.contains(node))
+                                            .min(Comparator.<NodeId, Integer> comparing(node -> Placement.load(m, node)).thenComparing(Comparator.naturalOrder())));
 
-        if (donor.isEmpty() || target.isEmpty() || Placement.load(m, donor.get()) - Placement.load(m, target.get()) <= 1) {
-            return level(m, artifact);
-        }
-
-        return move(m, ctx, artifact, donor.get(), target.get());
+        return donor.flatMap(from -> target.filter(to -> Placement.load(m, from) - Placement.load(m, to) > 1)
+                                           .map(to -> move(m, ctx, artifact, from, to)))
+                    .or(() -> level(m, artifact));
     }
 
     private static ClusterModel level(ClusterModel m, Artifact artifact) {

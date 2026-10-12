@@ -578,7 +578,7 @@ public sealed interface Outbox {
             return Reconcile.request(m, ctx);
         }
 
-        if (!stayPairs.isEmpty()) {
+        if (!stayPairs.isEmpty() || carriesSharedOps(draft, shared, limit)) {
             var rest = new ArrayList<>(stay);
 
             rest.addAll(shared);
@@ -596,6 +596,16 @@ public sealed interface Outbox {
         return movedAny
                ? Reconcile.request(m, ctx)
                : m;
+    }
+
+    /// Every pair of the transaction moved but its shared mutations (the artifact's judgment, the retraction of a republished
+    /// blueprint) did not: they are resubmitted alone, since no reconcile derives them again. A FAILURE transaction is the
+    /// exception: its judgment ops (the retry count) are re-derived with the failure itself by the sweep, and a resubmission
+    /// would count the failure twice.
+    private static boolean carriesSharedOps(TxDraft draft,
+                                            List<KVCommand.Mutation<AetherKey, AetherValue>> shared,
+                                            int limit) {
+        return !shared.isEmpty() && draft.kind() != SubmitKind.FAILURE && draft.attempt() < limit;
     }
 
     /// The events to route on acceptance that still concern a pair of the resubmitted transaction.
