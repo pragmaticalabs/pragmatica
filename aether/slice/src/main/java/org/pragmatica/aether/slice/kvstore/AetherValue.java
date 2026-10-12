@@ -7,6 +7,7 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.TreeMap;
 
@@ -3699,4 +3700,129 @@ public sealed interface AetherValue {
     /// Either is `-1` before the first. `replica` says the member holds DHT partitions (a core): its catch-up is part of
     /// the settle. A worker holds none and reports what it applied only.
     record DhtReplicationReportValue(long appliedVersion, long caughtUpVersion, boolean replica) implements AetherValue {}
+
+    /// The version of a leader-issued goal (deployment state machine spec R-1.6.1), ordered lexicographically and not
+    /// packed: `viewSequence` is the committed `LeaderValue.viewSequence` of the issuing leader, which only grows across
+    /// leader changes, and `counter` is that leader incarnation's own counter.
+    @Codec
+    record Generation(long viewSequence, long counter) implements Comparable<Generation> {
+        @Override
+        public int compareTo(Generation other) {
+            var bySequence = Long.compare(viewSequence, other.viewSequence);
+
+            return bySequence != 0
+                   ? bySequence
+                   : Long.compare(counter, other.counter);
+        }
+    }
+
+    /// The boot identity of one process (spec R-1.6.2, C6): `bootIncarnation` is the SWIM boot incarnation and
+    /// `bootToken` the random per-process boot token, where `0` means unknown. Staleness is decided by token
+    /// equality, never by order.
+    @Codec
+    record ProcessIncarnation(long bootIncarnation, long bootToken) {}
+
+    /// What the leader wants of one (node, artifact) pair (spec R-1.6.1).
+    @Codec
+    enum SliceGoal {
+        LOADED,
+        ACTIVE,
+        UNLOADED,
+        /// Wire sentinel required of every `@Codec` enum; not a goal the leader issues.
+        UNKNOWN
+    }
+
+    /// What one node observed of one (node, artifact) pair (spec 1.6.2). Separate from the live `SliceState`, which keeps
+    /// the old verbs and ROUTING until the old state machines are retired: UNLOADED is the tombstone a node leaves
+    /// when it unloads (R-1.6.3). `UNKNOWN` is last and is the codec sentinel.
+    @Codec
+    enum SliceObservedState {
+        LOADING,
+        LOADED,
+        ACTIVATING,
+        ACTIVE,
+        DEACTIVATING,
+        FAILED,
+        UNLOADING,
+        UNLOADED,
+        UNKNOWN
+    }
+
+    /// The leader's goal for one (node, artifact) pair, under [AetherKey.SliceDesiredKey] (spec R-1.6.1).
+    /// [LeaderAuthorized]: the applier drops a bare Put and a witnessless Remove, so the leader writes it only
+    /// inside a `LeaderTransaction`.
+    record SliceDesiredValue(SliceGoal goal, Generation generation, long issuedAt) implements AetherValue, LeaderAuthorized {}
+
+    /// What one node observed for one (node, artifact) pair, under [AetherKey.SliceObservedKey] (spec R-1.6.2).
+    /// `version` is the [VersionFenced] chain: the first write is 1, each later write is the committed version + 1.
+    /// `forGeneration` is the generation of the goal the chain executed and `incarnation` the writing process.
+    /// [WitnessedRemoval]: a Remove is applied only with a witness equal to the committed value.
+    record SliceObservedValue(SliceObservedState state,
+                              long version,
+                              Generation forGeneration,
+                              ProcessIncarnation incarnation,
+                              Option<String> failureReason,
+                              boolean fatal,
+                              int instanceNumber,
+                              List<String> methods,
+                              long transitionedAt) implements AetherValue, VersionFenced, WitnessedRemoval {
+        public SliceObservedValue {
+            methods = List.copyOf(methods);
+        }
+
+        @Override
+        public long fenceVersion() {
+            return version;
+        }
+    }
+
+    /// The open apply of one blueprint, under [AetherKey.DeploymentApplyKey] (spec R-4.1.1): `attemptId` names the
+    /// attempt and `previous` is what a rollback restores, where `none` means delete. No marker: the blueprint
+    /// publish batch writes it, never the deployment state machine.
+    record DeploymentApplyValue(String attemptId, Option<AppBlueprintValue> previous, long openedAt) implements AetherValue {}
+
+    /// A node that did not answer a goal for the artifact (spec R-4.2.5): the goal's `generation` and `goal`, and
+    /// the time `at` the retraction was decided.
+    @Codec
+    record UnresponsiveEntry(Generation generation, SliceGoal goal, long at) {}
+
+    /// The durable failure judgment of one artifact, under [AetherKey.ArtifactJudgmentKey] (spec R-4.2.1):
+    /// `permanentFailure` and `retries` replace `permanentlyFailed` and `retryCounters`, and `unresponsive` holds the
+    /// nodes excluded from placement. [LeaderAuthorized]: every write is a `LeaderTransaction` mutation.
+    record ArtifactJudgmentValue(boolean permanentFailure, int retries, Map<NodeId, UnresponsiveEntry> unresponsive) implements AetherValue, LeaderAuthorized {
+        public ArtifactJudgmentValue {
+            unresponsive = Map.copyOf(unresponsive);
+        }
+    }
+
+    /// Whether a node id is recorded as departed or as admitted (spec R-4.3.0).
+    @Codec
+    enum DepartureState {
+        DEPARTED,
+        ADMITTED,
+        /// Wire sentinel required of every `@Codec` enum; not a state the leader records.
+        UNKNOWN
+    }
+
+    /// Why a node was recorded as departed (spec R-4.3.0). `STALE` is the inferred departure, written when the
+    /// node class's own absence bound passed without a departure input.
+    @Codec
+    enum DepartureCause {
+        NODE_REMOVED,
+        WORKER_LEAVE,
+        SELF_SHUTDOWN,
+        STALE,
+        /// Wire sentinel required of every `@Codec` enum; not a cause the leader records.
+        UNKNOWN
+    }
+
+    /// The fenced departure record of one node id, under [AetherKey.NodeDepartureKey] (spec R-4.3.0, 4.3): `epoch` and
+    /// `process` name the admission that departed or was admitted, and are `0` / unknown when the leader never saw the
+    /// admission. `cause` is present for DEPARTED only. [LeaderAuthorized]: every write is a `LeaderTransaction`
+    /// mutation expecting the value the leader observed.
+    record NodeDepartureValue(DepartureState state,
+                              long epoch,
+                              ProcessIncarnation process,
+                              Option<DepartureCause> cause,
+                              long decidedAt) implements AetherValue, LeaderAuthorized {}
 }

@@ -1402,6 +1402,175 @@ public sealed interface AetherKey extends StructuredKey permits AetherKey.Cluste
         }
     }
 
+    /// The leader's goal for one (node, artifact) pair of the deployment state machine rewrite (spec R-1.6.1). The
+    /// leader is its only writer, inside a `LeaderTransaction`; the node's observation lives under
+    /// [SliceObservedKey], so each key has one writer for a node's lifetime.
+    record SliceDesiredKey(NodeId nodeId, Artifact artifact) implements RuntimeKey {
+        private static final String PREFIX = "slice-desired/";
+
+        @Override
+        public String asString() {
+            return PREFIX + nodeId.id() + "/" + artifact.asString();
+        }
+
+        @Override
+        public String toString() {
+            return asString();
+        }
+
+        public static SliceDesiredKey sliceDesiredKey(NodeId nodeId, Artifact artifact) {
+            return new SliceDesiredKey(nodeId, artifact);
+        }
+
+        public static Result<SliceDesiredKey> sliceDesiredKey(String key) {
+            if (!key.startsWith(PREFIX)) {
+                return SLICE_DESIRED_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
+            var content = key.substring(PREFIX.length());
+            var slashIndex = content.indexOf('/');
+
+            if (slashIndex == -1 || slashIndex == 0 || slashIndex == content.length() - 1) {
+                return SLICE_DESIRED_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
+            return Result.all(NodeId.nodeId(content.substring(0, slashIndex)),
+                              Artifact.artifact(content.substring(slashIndex + 1)))
+                         .map(SliceDesiredKey::new);
+        }
+    }
+
+    /// What one node observed for one (node, artifact) pair (spec R-1.6.2). While the owning node lives it is the
+    /// only writer; the leader only Removes, and only after a recorded departure.
+    record SliceObservedKey(NodeId nodeId, Artifact artifact) implements RuntimeKey {
+        private static final String PREFIX = "slice-observed/";
+
+        @Override
+        public String asString() {
+            return PREFIX + nodeId.id() + "/" + artifact.asString();
+        }
+
+        @Override
+        public String toString() {
+            return asString();
+        }
+
+        public static SliceObservedKey sliceObservedKey(NodeId nodeId, Artifact artifact) {
+            return new SliceObservedKey(nodeId, artifact);
+        }
+
+        public static Result<SliceObservedKey> sliceObservedKey(String key) {
+            if (!key.startsWith(PREFIX)) {
+                return SLICE_OBSERVED_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
+            var content = key.substring(PREFIX.length());
+            var slashIndex = content.indexOf('/');
+
+            if (slashIndex == -1 || slashIndex == 0 || slashIndex == content.length() - 1) {
+                return SLICE_OBSERVED_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
+            return Result.all(NodeId.nodeId(content.substring(0, slashIndex)),
+                              Artifact.artifact(content.substring(slashIndex + 1)))
+                         .map(SliceObservedKey::new);
+        }
+    }
+
+    /// The open apply of one blueprint and what a rollback restores (spec R-4.1.1). Written by the blueprint publish
+    /// batch, never by the deployment state machine.
+    record DeploymentApplyKey(BlueprintId blueprintId) implements RuntimeKey {
+        private static final String PREFIX = "deployment-apply/";
+
+        @Override
+        public String asString() {
+            return PREFIX + blueprintId.asString();
+        }
+
+        @Override
+        public String toString() {
+            return asString();
+        }
+
+        public static DeploymentApplyKey deploymentApplyKey(BlueprintId blueprintId) {
+            return new DeploymentApplyKey(blueprintId);
+        }
+
+        public static Result<DeploymentApplyKey> deploymentApplyKey(String key) {
+            if (!key.startsWith(PREFIX)) {
+                return DEPLOYMENT_APPLY_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
+            return BlueprintId.blueprintId(key.substring(PREFIX.length())).map(DeploymentApplyKey::new);
+        }
+    }
+
+    /// The durable failure judgment of one artifact: permanent failure, retry count and the nodes that did not answer
+    /// (spec R-4.2.1).
+    record ArtifactJudgmentKey(Artifact artifact) implements RuntimeKey {
+        private static final String PREFIX = "artifact-judgment/";
+
+        @Override
+        public String asString() {
+            return PREFIX + artifact.asString();
+        }
+
+        @Override
+        public String toString() {
+            return asString();
+        }
+
+        public static ArtifactJudgmentKey artifactJudgmentKey(Artifact artifact) {
+            return new ArtifactJudgmentKey(artifact);
+        }
+
+        public static Result<ArtifactJudgmentKey> artifactJudgmentKey(String key) {
+            if (!key.startsWith(PREFIX)) {
+                return ARTIFACT_JUDGMENT_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
+            return Artifact.artifact(key.substring(PREFIX.length())).map(ArtifactJudgmentKey::new);
+        }
+    }
+
+    /// The fenced departure record of one node id: DEPARTED or ADMITTED, with the epoch and process it names
+    /// (spec R-4.3.0).
+    record NodeDepartureKey(NodeId nodeId) implements RuntimeKey {
+        private static final String PREFIX = "node-departure/";
+
+        @Override
+        public String asString() {
+            return PREFIX + nodeId.id();
+        }
+
+        @Override
+        public String toString() {
+            return asString();
+        }
+
+        public static NodeDepartureKey nodeDepartureKey(NodeId nodeId) {
+            return new NodeDepartureKey(nodeId);
+        }
+
+        public static Result<NodeDepartureKey> nodeDepartureKey(String key) {
+            if (!key.startsWith(PREFIX)) {
+                return NODE_DEPARTURE_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
+            return NodeId.nodeId(key.substring(PREFIX.length())).map(NodeDepartureKey::new);
+        }
+    }
+
+    Fn1<Cause, String> SLICE_DESIRED_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid slice-desired key format: %s");
+
+    Fn1<Cause, String> SLICE_OBSERVED_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid slice-observed key format: %s");
+
+    Fn1<Cause, String> DEPLOYMENT_APPLY_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid deployment-apply key format: %s");
+
+    Fn1<Cause, String> ARTIFACT_JUDGMENT_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid artifact-judgment key format: %s");
+
+    Fn1<Cause, String> NODE_DEPARTURE_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid node-departure key format: %s");
+
     Fn1<Cause, String> NODE_ARTIFACT_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid node-artifact key format: %s");
 
     Fn1<Cause, String> NODE_ROUTES_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid node-routes key format: %s");
