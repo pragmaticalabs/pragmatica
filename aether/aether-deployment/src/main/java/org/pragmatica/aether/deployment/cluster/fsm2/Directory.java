@@ -141,10 +141,9 @@ public sealed interface Directory {
     }
 
     // -- J5: a core ------------------------------------------------------------------------------------------------
-    /// J5 (core): non-seed only, and not for a superseded id (M-6); an existing directive of another role is left alone.
+    /// J5 (core): non-seed only, and not for a superseded id (M-6). The caller (J6) has already established that no directive exists.
     static ClusterModel assignCore(ClusterModel m, Ctx ctx, NodeId node) {
-        var assignable = !ctx.settings().seedNodes().contains(node) && !m.seams.superseded().contains(node) && m.directives.get(node)
-                                                                                                                           .isEmpty();
+        var assignable = !ctx.settings().seedNodes().contains(node) && !m.seams.superseded().contains(node);
 
         if (assignable) {
             putDirective(m, node, ActivationDirectiveValue.core(), List.of());

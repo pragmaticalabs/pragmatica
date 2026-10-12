@@ -422,4 +422,35 @@ class CommunityBackstopTest {
         w.h.drain();
         assertThat(w.h.submits(SubmitKind.CLEANUP)).hasSize(1);
     }
+
+    // NT-128 breaker boundary arms
+    // Red when: the breaker holds at exactly half (at least half instead of more than half), or at a single member (floor of 2
+    // lowered to 1): recording is then held back where the spec records.
+    @Test
+    void breaker_exactlyHalf_andASingleMemberCommunity_arePastTheBreaker() {
+        var four = MbWorld.world(CORE_1);
+        var g = List.of(node("g1"), node("g2"), node("g3"), node("g4"));
+
+        four.admit(CORE_1, 1L, 0x1111L);
+        four.workers("g-comm", 10, Set.copyOf(g), g.toArray(new NodeId[0])).target(ORDERS, 1, "WORKERS_ONLY");
+        for (var member : g) {
+            four.instance(member, BILLING, SliceGoal.ACTIVE, SliceObservedState.ACTIVE, gen(1), tokenOf(member));
+        }
+
+        four.activate();
+        var present = List.of(g.get(2), g.get(3));
+
+        four.evolve("g-comm", GOV, Set.copyOf(present), present, BW + 31_000L + 30_000L);
+        assertThat(four.inferred().stream().map(s -> s.transaction().key()))
+            .as("2 of 4 is exactly half: not more than half, the breaker does not hold").containsExactlyInAnyOrder(new NodeDepartureKey(g.get(0)), new NodeDepartureKey(g.get(1)));
+
+        var single = MbWorld.world(CORE_1);
+        var only = node("only");
+
+        single.admit(CORE_1, 1L, 0x1111L);
+        single.workers("s-comm", 10, Set.of(), only).target(ORDERS, 1, "WORKERS_ONLY");
+        single.instance(only, BILLING, SliceGoal.ACTIVE, SliceObservedState.ACTIVE, gen(1), tokenOf(only)).activate();
+        single.evolve("s-comm", GOV, Set.of(), List.of(M1), BW + 31_000L + 30_000L);
+        assertThat(single.inferred().stream().map(s -> s.transaction().key())).as("the floor of 2 covers a single-worker community").containsExactly(new NodeDepartureKey(only));
+    }
 }

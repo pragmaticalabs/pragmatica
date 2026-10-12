@@ -118,7 +118,7 @@ class JoinTableTest {
         w.community("c1", 5, CommunityState.ACTIVE).directive(W1, Fixtures.worker("c1"))
          .record(W1, DepartureState.DEPARTED, 1L, B, DepartureCause.STALE).activate();
         w.h.clearLog();
-        w.h.deliver(new ClusterInput.WorkerJoin(W1, w.admit(W1, 2L, B)));
+        w.h.deliver(new ClusterInput.WorkerJoin(W1, w.admit(W1, 1L, B)));
 
         assertThat(w.recordOf(W1).map(NodeDepartureValue::state)).isEqualTo(Option.some(DepartureState.ADMITTED));
         assertThat(w.h.submits().getFirst().transaction().mutations().getFirst().expected().map(v -> ((NodeDepartureValue) v).cause()))
@@ -263,6 +263,7 @@ class JoinTableTest {
         w.h.deliver(new ClusterInput.WorkerJoin(W1, w.admit(W1, 1L, B)));
         assertThat(w.h.submits(SubmitKind.DIRECTIVE)).as("deferred: no mint while the record stands").isEmpty();
         assertThat(w.h.submits(SubmitKind.ADMISSION)).as("deferred: no write while the record stands").isEmpty();
+        assertThat(w.h.warns("join-unmatched")).as("J7 defers silently; only J9 warns").isEmpty();
         w.h.policy = FsmHarness.SettlePolicy.APPLY;
         w.h.seedRemove(new NodeDepartureKey(W1));
         w.h.drain();
@@ -473,8 +474,10 @@ class JoinTableTest {
         assertThat(Rows.recordedWorker(w.h.model(), CORE_2)).isFalse();
         w.h.deliver(new ClusterInput.NodeRemoved(CORE_2));
         assertThat(w.recordOf(CORE_2).isPresent()).isTrue();
+        w.h.clearLog();
         w.h.seedRemove(new ActivationDirectiveKey(CORE_2));
         w.h.drain();
+        assertThat(w.h.submits(SubmitKind.DIRECTIVE_REMOVAL).stream().anyMatch(s -> touches(s, NodeDepartureKey.class))).as("R-4.3.3: one transaction removes the record").isTrue();
         assertThat(w.recordOf(CORE_2).isEmpty()).as("R-4.3.3: the record goes with the directive").isTrue();
     }
 }
