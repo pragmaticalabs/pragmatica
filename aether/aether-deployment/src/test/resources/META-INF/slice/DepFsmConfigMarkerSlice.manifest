@@ -1,0 +1,4 @@
+slice.factory=org.pragmatica.aether.deployment.node.fsm.NodeDeploymentStateStreamGuardAndLoadChainTest$ConfigProbeFactory
+reactive.count=1
+reactive.0.category=config-update
+reactive.0.config=database
