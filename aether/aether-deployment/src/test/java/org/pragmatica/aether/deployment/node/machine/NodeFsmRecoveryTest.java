@@ -235,7 +235,7 @@ class NodeFsmRecoveryTest {
             var step = redrive(h, owing(h, SliceObservedState.LOADING, 2L, 3L, NodeHarness.SELF_TOKEN));
             var line = step.effects().stream().filter(NodeFsmEffect.Log.class::isInstance).map(NodeFsmEffect.Log.class::cast).findFirst().orElseThrow().message();
 
-            assertThat(line).contains(SELF.id(), "LOADED", "FAILED", "LOADING", ARTIFACT.asString());
+            assertThat(line).contains(SELF.id(), ARTIFACT.asString(), "goal Some(LOADED)", "local write FAILED at version 3", "committed Some(LOADING at version 2)");
         }
     }
 
