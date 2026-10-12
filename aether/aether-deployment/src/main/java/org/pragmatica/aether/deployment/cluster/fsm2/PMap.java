@@ -58,7 +58,7 @@ public final class PMap<K, V> {
 
     @SuppressWarnings("unchecked")
     public Option<V> get(K key) {
-        return Option.option((V) lookup(root, 0, hash(key), key));
+        return lookup(root, 0, hash(key), key).map(value -> (V) value);
     }
 
     public PMap<K, V> put(K key, V value) {
@@ -123,15 +123,15 @@ public final class PMap<K, V> {
         record Branch(Node zero, Node one) implements Node {}
     }
 
-    private static Object lookup(Node node, int depth, int hash, Object key) {
+    private static Option<Object> lookup(Node node, int depth, int hash, Object key) {
         return switch (node) {
-            case Node.Empty _ -> null;
+            case Node.Empty _ -> Option.none();
             case Node.Leaf leaf -> leaf.hash() == hash && leaf.key().equals(key)
-                                   ? leaf.value()
-                                   : null;
+                                   ? Option.some(leaf.value())
+                                   : Option.none();
             case Node.Collision collision -> collision.hash() == hash
                                              ? lookupBucket(collision, key)
-                                             : null;
+                                             : Option.none();
             case Node.Branch branch -> lookup(bit(hash, depth) == 0
                                               ? branch.zero()
                                               : branch.one(),
@@ -141,14 +141,15 @@ public final class PMap<K, V> {
         };
     }
 
-    private static Object lookupBucket(Node.Collision collision, Object key) {
+    private static Option<Object> lookupBucket(Node.Collision collision, Object key) {
         return collision.leaves()
                         .stream()
                         .filter(leaf -> leaf.key()
                                             .equals(key))
                         .map(Node.Leaf::value)
                         .findFirst()
-                        .orElse(null);
+                        .map(Option::some)
+                        .orElseGet(Option::none);
     }
 
     private static int bit(int hash, int depth) {

@@ -6,6 +6,8 @@ package org.pragmatica.aether.deployment.cluster.fsm2;
 
 import java.util.Map;
 
+import org.pragmatica.aether.artifact.Artifact;
+import org.pragmatica.consensus.NodeId;
 import org.pragmatica.aether.deployment.cluster.fsm2.ClusterModel.GoalMode;
 import org.pragmatica.aether.deployment.cluster.fsm2.ClusterModel.ReissueMark;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceDesiredValue;
@@ -155,25 +157,26 @@ public sealed interface Divergence {
         return m;
     }
 
-    private static void expireOne(ClusterModel m,
-                                  Ctx ctx,
-                                  org.pragmatica.consensus.NodeId node,
-                                  org.pragmatica.aether.artifact.Artifact artifact,
-                                  long limit) {
+    private static ClusterModel expireOne(ClusterModel m, Ctx ctx, NodeId node, Artifact artifact, long limit) {
         m.judgments.get(artifact)
                    .flatMap(judgment -> Option.option(judgment.unresponsive().get(node)))
                    .filter(entry -> Math.min(ctx.nowMs() - entry.at(),
                                              (ctx.monoNs() - m.incarnationStart) / 1_000_000L) >= limit)
-                   .onPresent(_ -> {
-                                  Outbox.artifact(m,
-                                                  artifact,
-                                                  intent -> intent.withOp(new JudgmentOp.ClearUnresponsive(node)));
-                                  ctx.warn("slice-unresponsive-expired",
-                                           artifact.asString(),
-                                           "Exclusion of " + node.id() + " for " + artifact + " expired");
-                                  ctx.metric("aether_deployment_fsm_divergence_total",
-                                             Map.of("fsm", "cluster", "stage", "expire"));
-                              });
+                   .onPresent(_ -> expired(m, ctx, node, artifact));
+
+        return m;
+    }
+
+    private static ClusterModel expired(ClusterModel m, Ctx ctx, NodeId node, Artifact artifact) {
+        Outbox.artifact(m,
+                        artifact,
+                        intent -> intent.withOp(new JudgmentOp.ClearUnresponsive(node)));
+        ctx.warn("slice-unresponsive-expired",
+                 artifact.asString(),
+                 "Exclusion of " + node.id() + " for " + artifact + " expired");
+        ctx.metric("aether_deployment_fsm_divergence_total", Map.of("fsm", "cluster", "stage", "expire"));
+
+        return m;
     }
 
     record unused() implements Divergence {}

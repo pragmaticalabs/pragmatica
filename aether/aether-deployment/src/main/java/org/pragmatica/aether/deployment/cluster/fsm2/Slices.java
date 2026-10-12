@@ -7,6 +7,7 @@ package org.pragmatica.aether.deployment.cluster.fsm2;
 import java.util.Comparator;
 import java.util.Map;
 
+import org.pragmatica.aether.slice.kvstore.AetherValue.Generation;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.deployment.cluster.fsm2.ClusterModel.GoalMode;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceDesiredValue;
@@ -71,21 +72,22 @@ public sealed interface Slices {
 
     /// C10e: an UNLOADED answer (at any generation not below the recorded one) ends the exclusion of the node, and the
     /// pair is vacant for placement (R-1.6.3).
-    private static void vacated(ClusterModel m, Ctx ctx, SlicePair pair, SliceObservedValue row) {
+    private static ClusterModel vacated(ClusterModel m, Ctx ctx, SlicePair pair, SliceObservedValue row) {
         clearExclusion(m, ctx, pair, row.forGeneration());
         Reconcile.request(m, ctx);
+
+        return m;
     }
 
-    private static void clearExclusion(ClusterModel m,
-                                       Ctx ctx,
-                                       SlicePair pair,
-                                       org.pragmatica.aether.slice.kvstore.AetherValue.Generation answered) {
+    private static ClusterModel clearExclusion(ClusterModel m, Ctx ctx, SlicePair pair, Generation answered) {
         m.judgments.get(pair.artifact())
                    .flatMap(judgment -> Option.option(judgment.unresponsive().get(pair.node())))
                    .filter(entry -> answered.compareTo(entry.generation()) >= 0)
                    .onPresent(_ -> Outbox.artifact(m,
                                                    pair.artifact(),
                                                    intent -> intent.withOp(new JudgmentOp.ClearUnresponsive(pair.node()))));
+
+        return m;
     }
 
     // -- activation (C10a, R-3.3.5) --------------------------------------------------------------------------------
@@ -136,14 +138,19 @@ public sealed interface Slices {
         return m;
     }
 
-    private static void releaseHold(ClusterModel m, Ctx ctx, SlicePair pair) {
-        m.holdSignatures.get(pair)
-                        .onPresent(_ -> {
-                                       m.holdSignatures = m.holdSignatures.remove(pair);
-                                       ctx.warn("schema-hold-cleared",
-                                                pair.artifact().asString(),
-                                                "Slice " + pair.artifact() + " schema hold cleared, resuming activation");
-                                   });
+    private static ClusterModel releaseHold(ClusterModel m, Ctx ctx, SlicePair pair) {
+        m.holdSignatures.get(pair).onPresent(_ -> announceRelease(m, ctx, pair));
+
+        return m;
+    }
+
+    private static ClusterModel announceRelease(ClusterModel m, Ctx ctx, SlicePair pair) {
+        m.holdSignatures = m.holdSignatures.remove(pair);
+        ctx.warn("schema-hold-cleared",
+                 pair.artifact().asString(),
+                 "Slice " + pair.artifact() + " schema hold cleared, resuming activation");
+
+        return m;
     }
 
     /// Every dependency has at least one ACTIVE instance (the active count, R-2.6).
@@ -173,21 +180,25 @@ public sealed interface Slices {
         return retryHeld(m, ctx);
     }
 
-    private static void activateLoaded(ClusterModel m, Ctx ctx, Artifact artifact) {
+    private static ClusterModel activateLoaded(ClusterModel m, Ctx ctx, Artifact artifact) {
         Idx.members(m.observedByArtifact, artifact)
            .toList()
            .stream()
            .sorted()
            .map(node -> SlicePair.slicePair(node, artifact))
            .forEach(pair -> activateIfLoaded(m, ctx, pair));
+
+        return m;
     }
 
-    private static void activateIfLoaded(ClusterModel m, Ctx ctx, SlicePair pair) {
+    private static ClusterModel activateIfLoaded(ClusterModel m, Ctx ctx, SlicePair pair) {
         Rows.current(m, pair)
             .filter(row -> m.desired.get(pair)
                                     .map(goal -> loadedUnderGoal(row, goal))
                                     .or(false))
             .onPresent(row -> activate(m, ctx, pair, row));
+
+        return m;
     }
 
     private static boolean loadedUnderGoal(SliceObservedValue row, SliceDesiredValue goal) {

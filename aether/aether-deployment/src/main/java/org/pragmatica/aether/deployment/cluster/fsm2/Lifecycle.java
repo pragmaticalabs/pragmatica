@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.cluster.fsm2;
 
+import org.pragmatica.lang.Option;
 import org.pragmatica.aether.deployment.cluster.fsm2.ClusterInput.Snapshot;
 import org.pragmatica.aether.deployment.cluster.fsm2.TimerId.Kind;
 import org.pragmatica.cluster.state.kvstore.LeaderValue;
@@ -50,7 +51,7 @@ public sealed interface Lifecycle {
     static ClusterModel onLeader(ClusterModel m, Ctx ctx, LeaderValue value) {
         var wasSuspended = isSuspended(m, ctx);
 
-        m.leader = org.pragmatica.lang.Option.some(value);
+        m.leader = Option.some(value);
         if (wasSuspended && !isSuspended(m, ctx)) {
             Reconcile.request(m, ctx);
         }
@@ -60,7 +61,7 @@ public sealed interface Lifecycle {
 
     /// The interpreter's self-check found the committed leader does not name this node (R-5.7.1 (a)).
     static ClusterModel onWitnessStale(ClusterModel m) {
-        m.leader = org.pragmatica.lang.Option.none();
+        m.leader = Option.none();
 
         return m;
     }

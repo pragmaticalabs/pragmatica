@@ -4,9 +4,11 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.cluster.fsm2;
 
+import java.util.stream.Stream;
 import java.util.Comparator;
 import java.util.List;
 
+import org.pragmatica.aether.slice.kvstore.AetherValue.Generation;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.slice.kvstore.AetherValue.ActivationDirectiveValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.DepartureState;
@@ -125,10 +127,10 @@ public sealed interface Rows {
 
     /// Every instance of `artifact`: committed and in flight.
     static List<SlicePair> allInstances(ClusterModel m, Artifact artifact) {
-        return java.util.stream.Stream.concat(instances(m, artifact).stream(),
-                                              pendingOnly(m, artifact).stream())
-                                      .sorted(PAIR_ORDER)
-                                      .toList();
+        return Stream.concat(instances(m, artifact).stream(),
+                             pendingOnly(m, artifact).stream())
+                     .sorted(PAIR_ORDER)
+                     .toList();
     }
 
     /// `placed(a)`: instances on counting nodes, excluding departed, departing and unresponsive nodes (R-2.6).
@@ -188,10 +190,8 @@ public sealed interface Rows {
             return row.isPresent();
         }
 
-        var forGeneration = row.map(SliceObservedValue::forGeneration)
-                               .or(new org.pragmatica.aether.slice.kvstore.AetherValue.Generation(0L, 0L));
-        var current = goal.map(SliceDesiredValue::generation)
-                          .or(new org.pragmatica.aether.slice.kvstore.AetherValue.Generation(0L, 0L));
+        var forGeneration = row.map(SliceObservedValue::forGeneration).or(new Generation(0L, 0L));
+        var current = goal.map(SliceDesiredValue::generation).or(new Generation(0L, 0L));
         var comparison = forGeneration.compareTo(current);
 
         return comparison == 0 || (comparison < 0 && goal.map(value -> value.goal() != SliceGoal.UNLOADED)

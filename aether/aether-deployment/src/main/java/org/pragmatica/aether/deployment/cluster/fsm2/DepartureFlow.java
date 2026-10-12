@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.cluster.fsm2;
 
+import java.util.Set;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
@@ -72,15 +73,20 @@ public sealed interface DepartureFlow {
     }
 
     /// The pairs of a node that is leaving get no new goals.
-    private static void dropGoalsOf(ClusterModel m, NodeId node) {
+    private static ClusterModel dropGoalsOf(ClusterModel m, NodeId node) {
         Idx.members(m.pendingByNode, node)
            .toList()
-           .forEach(artifact -> {
-                        var pair = SlicePair.slicePair(node, artifact);
+           .forEach(artifact -> dropGoal(m,
+                                         SlicePair.slicePair(node, artifact)));
 
-                        Indexer.clearPending(m, pair);
-                        m.goalIntents = m.goalIntents.remove(pair);
-                    });
+        return m;
+    }
+
+    private static ClusterModel dropGoal(ClusterModel m, SlicePair pair) {
+        Indexer.clearPending(m, pair);
+        m.goalIntents = m.goalIntents.remove(pair);
+
+        return m;
     }
 
     private static TxDraft departureDraft(ClusterModel m,
@@ -113,7 +119,7 @@ public sealed interface DepartureFlow {
                            key,
                            mutations,
                            List.of(),
-                           java.util.Set.of(),
+                           Set.of(),
                            Option.some(node),
                            attempt,
                            List.of());
@@ -175,11 +181,13 @@ public sealed interface DepartureFlow {
     }
 
     /// R-4.3.0, "resolving an in-flight departure": a committed DEPARTED means it landed; an ADMITTED means it is obsolete.
-    private static void resolveInFlight(ClusterModel m, Ctx ctx, NodeId node) {
+    private static ClusterModel resolveInFlight(ClusterModel m, Ctx ctx, NodeId node) {
         if (m.departing.containsKey(node) && m.records.get(node).map(record -> !isUnchanged(m, node, record)).or(true)) {
             m.departing = m.departing.remove(node);
             Lifecycle.cancel(m, ctx, rereadTimer(node));
         }
+
+        return m;
     }
 
     private static boolean isUnchanged(ClusterModel m, NodeId node, NodeDepartureValue record) {
@@ -193,7 +201,7 @@ public sealed interface DepartureFlow {
     /// (step 10), which runs after the notifications of the same transaction (its desired and route removals) were applied to the
     /// mirror, so that C17b is built on what is really there [guess: C11c says "C17b" directly; the reconcile is the same
     /// transition one mailbox item later].
-    private static void departed(ClusterModel m, Ctx ctx, NodeId node) {
+    private static ClusterModel departed(ClusterModel m, Ctx ctx, NodeId node) {
         Absence.clear(m, node);
         Idx.members(m.unresponsiveByNode, node)
            .toList()
@@ -203,17 +211,20 @@ public sealed interface DepartureFlow {
         // C17b runs from the reconcile this step queues (step 10): the committed transaction notifies its mutations in
         // order, so the desired and route removals of C17 arrive after the record, and a cleanup built now would expect
         // values that are about to go and be refused as a whole.
+        return m;
     }
 
     /// An ADMITTED record committed. If it replaced a DEPARTED(STALE), the wrong recording is reversed (C11f, R-2.16).
-    private static void admitted(ClusterModel m, Ctx ctx, NodeId node, Option<NodeDepartureValue> previous) {
+    private static ClusterModel admitted(ClusterModel m, Ctx ctx, NodeId node, Option<NodeDepartureValue> previous) {
         previous.filter(record -> record.state() == DepartureState.DEPARTED && record.cause()
                                                                                      .map(DepartureCause.STALE::equals)
                                                                                      .or(false))
                 .onPresent(record -> reversed(m, ctx, node, record));
+
+        return m;
     }
 
-    private static void reversed(ClusterModel m, Ctx ctx, NodeId node, NodeDepartureValue record) {
+    private static ClusterModel reversed(ClusterModel m, Ctx ctx, NodeId node, NodeDepartureValue record) {
         var replacements = Idx.members(m.desiredByNode, node).size();
 
         ctx.warn("departure-inferred-reversed",
@@ -223,6 +234,8 @@ public sealed interface DepartureFlow {
                 + " was re-admitted; its slices were re-placed (" + replacements
                 + " pair(s) still keyed)");
         ctx.metric("aether_deployment_fsm_departures_inferred_reversed_total", Map.of("fsm", "cluster"));
+
+        return m;
     }
 
     // -- C17b ------------------------------------------------------------------------------------------------------
@@ -254,7 +267,7 @@ public sealed interface DepartureFlow {
                                          mutations.getFirst().key(),
                                          mutations,
                                          List.of(guard),
-                                         java.util.Set.of(),
+                                         Set.of(),
                                          Option.some(node),
                                          attempt,
                                          List.of()));

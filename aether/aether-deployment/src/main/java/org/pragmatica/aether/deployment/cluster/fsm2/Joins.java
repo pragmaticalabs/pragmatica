@@ -97,7 +97,7 @@ public sealed interface Joins {
     }
 
     /// After a (re-)admission the divergence clocks restart (R-6.1.2): a healed node has a full T to resume.
-    private static void restartClocks(ClusterModel m, Ctx ctx, NodeId node) {
+    private static ClusterModel restartClocks(ClusterModel m, Ctx ctx, NodeId node) {
         Idx.members(m.observedByNode, node)
            .toList()
            .forEach(artifact -> m.seenAt = m.seenAt.put(SlicePair.slicePair(node, artifact),
@@ -106,6 +106,8 @@ public sealed interface Joins {
            .toList()
            .forEach(artifact -> m.seenAt = m.seenAt.put(SlicePair.slicePair(node, artifact),
                                                         ctx.monoNs()));
+
+        return m;
     }
 
     // -- the table -------------------------------------------------------------------------------------------------

@@ -101,12 +101,14 @@ public sealed interface Schemas {
         return m;
     }
 
-    private static void recoverOne(ClusterModel m, Ctx ctx, String datasource, SchemaVersionValue value) {
+    private static ClusterModel recoverOne(ClusterModel m, Ctx ctx, String datasource, SchemaVersionValue value) {
         if (value.status() == SchemaStatus.PENDING) {
             dispatch(m, ctx, datasource);
         } else if (value.status() == SchemaStatus.MIGRATING && lockExpired(m, ctx, datasource)) {
             resetStalled(m, datasource, value, ctx);
         }
+
+        return m;
     }
 
     private static boolean lockExpired(ClusterModel m, Ctx ctx, String datasource) {
@@ -116,7 +118,7 @@ public sealed interface Schemas {
     }
 
     /// The lock is not removed here (#806): this runs only for an expired lock, which the next acquire takes over.
-    private static void resetStalled(ClusterModel m, String datasource, SchemaVersionValue value, Ctx ctx) {
+    private static ClusterModel resetStalled(ClusterModel m, String datasource, SchemaVersionValue value, Ctx ctx) {
         var reset = new SchemaVersionValue(datasource,
                                            value.currentVersion(),
                                            value.lastMigration(),
@@ -132,6 +134,8 @@ public sealed interface Schemas {
 
         Outbox.direct(m,
                       TxDraft.draft(SubmitKind.SCHEMA, key, List.of(mutation)));
+
+        return m;
     }
 
     // -- the gate --------------------------------------------------------------------------------------------------

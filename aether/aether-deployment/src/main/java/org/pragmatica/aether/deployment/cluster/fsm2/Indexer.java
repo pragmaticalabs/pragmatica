@@ -4,6 +4,8 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.cluster.fsm2;
 
+import java.util.Set;
+
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
 import org.pragmatica.aether.slice.blueprint.ResolvedSlice;
@@ -160,16 +162,18 @@ public sealed interface Indexer {
         return m;
     }
 
-    private static void indexSlice(ClusterModel m, BlueprintId id, ResolvedSlice slice) {
+    private static ClusterModel indexSlice(ClusterModel m, BlueprintId id, ResolvedSlice slice) {
         var artifact = slice.artifact();
 
         m.blueprintsByArtifact = Idx.add(m.blueprintsByArtifact, artifact, id);
         m.ownerByBase = m.ownerByBase.put(artifact.base(), id);
         m.dependencies = m.dependencies.put(artifact, setOf(slice.dependencies()));
         slice.dependencies().forEach(dependency -> m.dependents = Idx.add(m.dependents, dependency, artifact));
+
+        return m;
     }
 
-    private static PSet<Artifact> setOf(java.util.Set<Artifact> artifacts) {
+    private static PSet<Artifact> setOf(Set<Artifact> artifacts) {
         var set = PSet.<Artifact> empty();
 
         for (var artifact : artifacts) {
@@ -188,7 +192,7 @@ public sealed interface Indexer {
         return m;
     }
 
-    private static void unindexSlice(ClusterModel m, BlueprintId id, ResolvedSlice slice) {
+    private static ClusterModel unindexSlice(ClusterModel m, BlueprintId id, ResolvedSlice slice) {
         var artifact = slice.artifact();
 
         m.blueprintsByArtifact = Idx.remove(m.blueprintsByArtifact, artifact, id);
@@ -197,6 +201,8 @@ public sealed interface Indexer {
                      .onPresent(_ -> m.ownerByBase = m.ownerByBase.remove(artifact.base()));
         m.dependencies = m.dependencies.remove(artifact);
         slice.dependencies().forEach(dependency -> m.dependents = Idx.remove(m.dependents, dependency, artifact));
+
+        return m;
     }
 
     static ClusterModel indexTarget(ClusterModel m, SliceTargetKey key, SliceTargetValue value) {
@@ -275,13 +281,15 @@ public sealed interface Indexer {
     }
 
     /// `versionsByBase[base]` holds every artifact (version) of the base that has a desired or observed key.
-    private static void trackVersion(ClusterModel m, SlicePair pair) {
+    private static ClusterModel trackVersion(ClusterModel m, SlicePair pair) {
         var artifact = pair.artifact();
         var present = m.desiredByArtifact.containsKey(artifact) || m.observedByArtifact.containsKey(artifact);
 
         m.versionsByBase = present
                            ? Idx.add(m.versionsByBase, artifact.base(), artifact)
                            : Idx.remove(m.versionsByBase, artifact.base(), artifact);
+
+        return m;
     }
 
     /// A goal in flight is answered by the desired key that carries it (C11b), and is dropped when the desired key goes.
@@ -412,20 +420,24 @@ public sealed interface Indexer {
         return m;
     }
 
-    private static void removeRoster(ClusterModel m, String community) {
+    private static ClusterModel removeRoster(ClusterModel m, String community) {
         m.rosters.get(community)
                  .filter(old -> !old.dissolved())
                  .onPresent(old -> old.members()
                                       .forEach(member -> decrementRoster(m, member)));
         m.rosters = m.rosters.remove(community);
+
+        return m;
     }
 
-    private static void decrementRoster(ClusterModel m, NodeId member) {
+    private static ClusterModel decrementRoster(ClusterModel m, NodeId member) {
         var count = m.rosterCount.get(member).or(0) - 1;
 
         m.rosterCount = count > 0
                         ? m.rosterCount.put(member, count)
                         : m.rosterCount.remove(member);
+
+        return m;
     }
 
     // -- departure records (R-4.3.0) -------------------------------------------------------------------------------
@@ -484,13 +496,15 @@ public sealed interface Indexer {
         return m;
     }
 
-    private static void unindexExclusions(ClusterModel m, Artifact artifact) {
+    private static ClusterModel unindexExclusions(ClusterModel m, Artifact artifact) {
         m.judgments.get(artifact)
                    .onPresent(old -> old.unresponsive()
                                         .keySet()
                                         .forEach(node -> m.unresponsiveByNode = Idx.remove(m.unresponsiveByNode,
                                                                                            node,
                                                                                            artifact)));
+
+        return m;
     }
 
     static ClusterModel indexApply(ClusterModel m, BlueprintId id, DeploymentApplyValue value) {
@@ -562,7 +576,7 @@ public sealed interface Indexer {
     }
 
     static ClusterModel indexClusterConfig(ClusterModel m, ClusterConfigValue value) {
-        m.clusterConfig = org.pragmatica.lang.Option.some(value);
+        m.clusterConfig = Option.some(value);
 
         return m;
     }

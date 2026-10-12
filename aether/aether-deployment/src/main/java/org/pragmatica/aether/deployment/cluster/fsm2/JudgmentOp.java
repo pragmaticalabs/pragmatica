@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.cluster.fsm2;
 
+import java.util.Map;
 import java.util.HashMap;
 import java.util.List;
 
@@ -42,9 +43,9 @@ public sealed interface JudgmentOp {
     /// counts, no exclusions): the key is then removed (4.4, "empty after clears").
     static Option<ArtifactJudgmentValue> fold(Option<ArtifactJudgmentValue> committed, List<JudgmentOp> ops) {
         var permanent = committed.map(ArtifactJudgmentValue::permanentFailure).or(false);
-        var retries = new HashMap<NodeId, Integer>(committed.map(ArtifactJudgmentValue::retries).or(java.util.Map.of()));
+        var retries = new HashMap<NodeId, Integer>(committed.map(ArtifactJudgmentValue::retries).or(Map.of()));
         var unresponsive = new HashMap<NodeId, UnresponsiveEntry>(committed.map(ArtifactJudgmentValue::unresponsive)
-                                                                           .or(java.util.Map.of()));
+                                                                           .or(Map.of()));
 
         for (var op : ops) {
             switch (op) {

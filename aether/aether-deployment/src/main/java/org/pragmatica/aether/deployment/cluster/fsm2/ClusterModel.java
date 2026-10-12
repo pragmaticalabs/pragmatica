@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.cluster.fsm2;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
 
@@ -325,7 +326,7 @@ public final class ClusterModel {
         }
 
         public ArtifactIntent withOp(JudgmentOp op) {
-            var next = new java.util.ArrayList<>(ops);
+            var next = new ArrayList<>(ops);
 
             next.add(op);
 
@@ -333,7 +334,7 @@ public final class ClusterModel {
         }
 
         public ArtifactIntent withGoal(GoalWrite goal) {
-            var next = new java.util.ArrayList<>(goals);
+            var next = new ArrayList<>(goals);
 
             next.add(goal);
 
@@ -341,7 +342,7 @@ public final class ClusterModel {
         }
 
         public ArtifactIntent withExtra(KVCommand.Mutation<AetherKey, AetherValue> extra) {
-            var next = new java.util.ArrayList<>(extras);
+            var next = new ArrayList<>(extras);
 
             next.add(extra);
 

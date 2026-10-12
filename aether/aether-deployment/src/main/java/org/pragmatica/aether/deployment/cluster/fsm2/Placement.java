@@ -4,6 +4,8 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.cluster.fsm2;
 
+import java.util.stream.Stream;
+import java.util.HashMap;
 import java.util.Comparator;
 import java.util.HashSet;
 import java.util.List;
@@ -49,13 +51,13 @@ public sealed interface Placement {
         return m;
     }
 
-    private static void reconcileTarget(ClusterModel m, Ctx ctx, ArtifactBase base, SliceTargetValue target) {
+    private static ClusterModel reconcileTarget(ClusterModel m, Ctx ctx, ArtifactBase base, SliceTargetValue target) {
         var artifact = base.withVersion(target.currentVersion());
 
         if (Slices.permanentlyFailed(m, artifact) || Drains.hasInstanceOnDrainingNode(m, artifact)) {
             m.imbalancedTicks = m.imbalancedTicks.remove(artifact);
 
-            return;
+            return m;
         }
 
         Result.lift(() -> PlacementPolicy.valueOf(target.effectivePlacement()))
@@ -63,17 +65,19 @@ public sealed interface Placement {
                                            artifact.asString(),
                                            "Invalid placement " + target.placement() + " for " + artifact))
               .onSuccess(policy -> reconcileWithPolicy(m, ctx, artifact, target, policy));
+
+        return m;
     }
 
-    private static void reconcileWithPolicy(ClusterModel m,
-                                            Ctx ctx,
-                                            Artifact artifact,
-                                            SliceTargetValue target,
-                                            PlacementPolicy policy) {
+    private static ClusterModel reconcileWithPolicy(ClusterModel m,
+                                                    Ctx ctx,
+                                                    Artifact artifact,
+                                                    SliceTargetValue target,
+                                                    PlacementPolicy policy) {
         var audience = audience(m, policy);
 
         if (audience.isEmpty()) {
-            return;
+            return m;
         }
 
         var eligible = Set.copyOf(audience);
@@ -99,14 +103,18 @@ public sealed interface Placement {
         } else if (policy == PlacementPolicy.CORE_ONLY && !displaced) {
             Rebalance.consider(m, ctx, artifact, audience);
         }
+
+        return m;
     }
 
-    private static void adjusted(ClusterModel m, Ctx ctx, Artifact artifact, int current, int desired) {
+    private static ClusterModel adjusted(ClusterModel m, Ctx ctx, Artifact artifact, int current, int desired) {
         ctx.route(new RoutedEvent.ReconciliationAdjustment(artifact, current, desired));
         ctx.emit(new ClusterEffect.Audit(desired > current
                                          ? "reconciliation-scale-up"
                                          : "reconciliation-scale-down",
                                          artifact.asString() + " " + current + " -> " + desired));
+
+        return m;
     }
 
     // -- the audience ----------------------------------------------------------------------------------------------
@@ -135,7 +143,7 @@ public sealed interface Placement {
 
     /// The live half of the community planner (B-076): the placeable members of every ACTIVE community's roster.
     static Map<String, List<NodeId>> workersByCommunity(ClusterModel m) {
-        var out = new java.util.HashMap<String, List<NodeId>>();
+        var out = new HashMap<String, List<NodeId>>();
 
         m.communities.entries()
                      .stream()
@@ -172,7 +180,7 @@ public sealed interface Placement {
                                       ? cores
                                       : workers;
             case WORKERS_ONLY -> workers;
-            case ALL -> Rows.byId(java.util.stream.Stream.concat(cores.stream(), workers.stream()).distinct().toList());
+            case ALL -> Rows.byId(Stream.concat(cores.stream(), workers.stream()).distinct().toList());
         };
     }
 
@@ -197,7 +205,7 @@ public sealed interface Placement {
                         .or(false);
     }
 
-    private static void scaleUp(ClusterModel m, Ctx ctx, Artifact artifact, List<NodeId> audience, int toAdd) {
+    private static ClusterModel scaleUp(ClusterModel m, Ctx ctx, Artifact artifact, List<NodeId> audience, int toAdd) {
         audience.stream()
                 .filter(node -> !Rows.occupies(m,
                                                SlicePair.slicePair(node, artifact)))
@@ -214,10 +222,12 @@ public sealed interface Placement {
                                              GoalMode.FRESH,
                                              Option.none(),
                                              "place"));
+
+        return m;
     }
 
     /// Victims come from the most-loaded node first, ties by NodeId, and never below `minInstances` (B-032).
-    private static void scaleDown(ClusterModel m, List<SlicePair> placed, int toRemove, int minInstances) {
+    private static ClusterModel scaleDown(ClusterModel m, List<SlicePair> placed, int toRemove, int minInstances) {
         var count = Math.min(toRemove,
                              Math.max(0, placed.size() - minInstances));
 
@@ -235,6 +245,8 @@ public sealed interface Placement {
                                            GoalMode.FRESH,
                                            Option.none(),
                                            "scale-down"));
+
+        return m;
     }
 
     /// B-033: instances on counting nodes outside the audience are retired only once the instances inside it are ACTIVE.

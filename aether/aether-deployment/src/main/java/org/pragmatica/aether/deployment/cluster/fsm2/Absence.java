@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.cluster.fsm2;
 
+import java.util.stream.Collectors;
 import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
@@ -207,14 +208,16 @@ public sealed interface Absence {
         return Joins.reappeared(m, ctx, node);
     }
 
-    private static void markAbsent(ClusterModel m, Ctx ctx, NodeId node) {
+    private static ClusterModel markAbsent(ClusterModel m, Ctx ctx, NodeId node) {
         if (!m.absentSince.containsKey(node)) {
             m.absentSince = m.absentSince.put(node, ctx.monoNs());
         }
+
+        return m;
     }
 
     /// `worker-absence-unjudgeable`: once per Active incarnation per class (C10).
-    private static void unjudgeable(ClusterModel m, Ctx ctx, NodeId node) {
+    private static ClusterModel unjudgeable(ClusterModel m, Ctx ctx, NodeId node) {
         var label = labelOf(classOf(m, node));
 
         clear(m, node);
@@ -226,6 +229,8 @@ public sealed interface Absence {
                     + " class cannot be judged for absence on " + node.id()
                     + ": its signals are missing, stale or unwired");
         }
+
+        return m;
     }
 
     /// Every node of interest, on a seam refresh or a tick (O(nodes with a directive or rows)).
@@ -250,8 +255,8 @@ public sealed interface Absence {
     static Map<String, Long> absentCounts(ClusterModel m) {
         return m.absentSince.keys()
                             .stream()
-                            .collect(java.util.stream.Collectors.groupingBy(node -> labelOf(classOf(m, node)),
-                                                                            java.util.stream.Collectors.counting()));
+                            .collect(Collectors.groupingBy(node -> labelOf(classOf(m, node)),
+                                                           Collectors.counting()));
     }
 
     record unused() implements Absence {}

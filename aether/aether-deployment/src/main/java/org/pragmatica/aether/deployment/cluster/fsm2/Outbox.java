@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.cluster.fsm2;
 
+import java.util.TreeMap;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashSet;
@@ -147,13 +148,15 @@ public sealed interface Outbox {
                : m.leader.fold(() -> m, leader -> submit(m, ctx, drafts, leader));
     }
 
-    private static void clearIntents(ClusterModel m) {
+    private static ClusterModel clearIntents(ClusterModel m) {
         m.goalIntents = PMap.empty();
         m.artifactIntents = PMap.empty();
         m.outbox = List.of();
+
+        return m;
     }
 
-    private static void dropIntents(ClusterModel m, Ctx ctx) {
+    private static ClusterModel dropIntents(ClusterModel m, Ctx ctx) {
         var dropped = m.goalIntents.size() + m.artifactIntents.size() + m.outbox.size();
 
         m.goalIntents.keys().forEach(pair -> Indexer.clearPending(m, pair));
@@ -166,6 +169,8 @@ public sealed interface Outbox {
                        dropped,
                        Map.of("fsm", "cluster", "kind", "any", "outcome", "refused_witness_stale"));
         }
+
+        return m;
     }
 
     private static ClusterModel submit(ClusterModel m, Ctx ctx, List<TxDraft> drafts, LeaderValue leader) {
@@ -174,7 +179,7 @@ public sealed interface Outbox {
         return m;
     }
 
-    private static void submitOne(ClusterModel m, Ctx ctx, TxDraft draft, LeaderValue leader) {
+    private static ClusterModel submitOne(ClusterModel m, Ctx ctx, TxDraft draft, LeaderValue leader) {
         var correlation = "c" + m.incarnation + "-" + (++m.txSeq);
 
         m.submitted = m.submitted.put(correlation,
@@ -195,6 +200,8 @@ public sealed interface Outbox {
                           draft.kind().name(),
                           "outcome",
                           "submitted"));
+
+        return m;
     }
 
     private static KVCommand.LeaderTransaction<AetherKey, AetherValue> transaction(String correlation,
@@ -261,7 +268,7 @@ public sealed interface Outbox {
     }
 
     private static List<TxDraft> goalDrafts(ClusterModel m, Ctx ctx, Set<SlicePair> covered) {
-        var byNode = new java.util.TreeMap<NodeId, List<Map.Entry<SlicePair, GoalIntent>>>();
+        var byNode = new TreeMap<NodeId, List<Map.Entry<SlicePair, GoalIntent>>>();
 
         m.goalIntents.entries()
                      .stream()
@@ -477,7 +484,7 @@ public sealed interface Outbox {
                      .or(false);
     }
 
-    private static void metric(Ctx ctx, Submitted submission, String outcome) {
+    private static Ctx metric(Ctx ctx, Submitted submission, String outcome) {
         submission.drafts()
                   .forEach(draft -> ctx.metric("aether_deployment_fsm_submissions_total",
                                                Map.of("fsm",
@@ -486,10 +493,14 @@ public sealed interface Outbox {
                                                       draft.kind().name(),
                                                       "outcome",
                                                       outcome)));
+
+        return ctx;
     }
 
-    private static void dropPending(ClusterModel m, TxDraft draft) {
+    private static ClusterModel dropPending(ClusterModel m, TxDraft draft) {
         draft.pairs().forEach(pair -> Indexer.clearPending(m, pair));
+
+        return m;
     }
 
     /// Whether any mutation of `draft` expects a value other than the one the mirror holds now.

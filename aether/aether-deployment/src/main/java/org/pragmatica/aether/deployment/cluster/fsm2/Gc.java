@@ -4,6 +4,7 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.cluster.fsm2;
 
+import java.util.Set;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
@@ -37,7 +38,7 @@ public sealed interface Gc {
                                  TxDraft.draft(SubmitKind.GC,
                                                pair.desiredKey(),
                                                List.of(mutation))
-                                        .withPairs(java.util.Set.of(pair)));
+                                        .withPairs(Set.of(pair)));
         }
 
         var draft = existing.get();

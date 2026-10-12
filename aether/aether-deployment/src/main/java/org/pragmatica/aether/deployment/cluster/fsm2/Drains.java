@@ -100,20 +100,22 @@ public sealed interface Drains {
                   .toList();
     }
 
-    private static void evict(ClusterModel m, Ctx ctx, SlicePair original) {
+    private static ClusterModel evict(ClusterModel m, Ctx ctx, SlicePair original) {
         var artifact = original.artifact();
 
         if (hasActiveReplacement(m, artifact)) {
             Outbox.goal(m, original, SliceGoal.UNLOADED, GoalMode.FRESH, Option.none(), "drain");
 
-            return;
+            return m;
         }
 
         if (replacementPlaced(m, artifact)) {
-            return;
+            return m;
         }
 
         replacementNode(m, artifact).onPresent(node -> deployReplacement(m, ctx, artifact, node));
+
+        return m;
     }
 
     private static boolean hasActiveReplacement(ClusterModel m, Artifact artifact) {
@@ -148,7 +150,7 @@ public sealed interface Drains {
                         .orElse(Option.none());
     }
 
-    private static void deployReplacement(ClusterModel m, Ctx ctx, Artifact artifact, NodeId node) {
+    private static ClusterModel deployReplacement(ClusterModel m, Ctx ctx, Artifact artifact, NodeId node) {
         var current = Rows.allInstances(m, artifact).size();
 
         Outbox.goal(m,
@@ -158,6 +160,8 @@ public sealed interface Drains {
                     Option.none(),
                     "drain-replacement");
         ctx.route(new RoutedEvent.ReconciliationAdjustment(artifact, current, current + 1));
+
+        return m;
     }
 
     /// B-060: a blueprint with an instance on a draining node is not placed by the reconcile; the drain loop owns it.

@@ -9,6 +9,7 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.stream.Stream;
 
+import org.pragmatica.aether.artifact.ArtifactBase;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.deployment.cluster.fsm2.ClusterModel.ArtifactIntent;
 import org.pragmatica.aether.deployment.cluster.fsm2.ClusterModel.SubmitKind;
@@ -101,11 +102,11 @@ public sealed interface Outcomes {
                            .or(false);
     }
 
-    private static void succeedIfComplete(ClusterModel m, Ctx ctx, BlueprintId id) {
+    private static ClusterModel succeedIfComplete(ClusterModel m, Ctx ctx, BlueprintId id) {
         var apply = m.applies.get(id);
 
         if (apply.isEmpty() || !isDeployed(m, id) || succeededInFlight(m, id)) {
-            return;
+            return m;
         }
 
         var committed = m.outcomes.get(id);
@@ -124,10 +125,12 @@ public sealed interface Outcomes {
         resetRetries(m, id);
         ctx.emit(new ClusterEffect.Log("deployment " + id.asString() + " deployed: " + coverage(m, id)));
         Outbox.direct(m, TxDraft.draft(SubmitKind.SUCCEEDED, outcomeKey, mutations));
+
+        return m;
     }
 
     /// R-4.2.3: the retry counts of the declared slices ride the verdict.
-    private static void resetRetries(ClusterModel m, BlueprintId id) {
+    private static ClusterModel resetRetries(ClusterModel m, BlueprintId id) {
         m.blueprints.get(id)
                     .map(value -> value.blueprint()
                                        .loadOrder())
@@ -142,6 +145,8 @@ public sealed interface Outcomes {
                                                                                 .forEach(node -> Outbox.artifact(m,
                                                                                                                  slice.artifact(),
                                                                                                                  intent -> intent.withOp(new JudgmentOp.ResetRetries(node))))));
+
+        return m;
     }
 
     private static boolean succeededInFlight(ClusterModel m, BlueprintId id) {
@@ -191,16 +196,16 @@ public sealed interface Outcomes {
         return m;
     }
 
-    private static void rollback(ClusterModel m, Ctx ctx, BlueprintId id, Artifact failed, String cause) {
+    private static ClusterModel rollback(ClusterModel m, Ctx ctx, BlueprintId id, Artifact failed, String cause) {
         if (rollbackInFlight(m, id)) {
-            return;
+            return m;
         }
 
         var blueprint = m.blueprints.get(id);
         var apply = m.applies.get(id);
 
         if (blueprint.isEmpty() || apply.isEmpty()) {
-            return;
+            return m;
         }
 
         var committed = m.outcomes.get(id);
@@ -222,6 +227,8 @@ public sealed interface Outcomes {
                                                                         Option.some((AetherValue) value),
                                                                         Option.none())));
         Outbox.direct(m, TxDraft.draft(SubmitKind.ROLLBACK, new AppBlueprintKey(id), mutations));
+
+        return m;
     }
 
     /// R-4.1.2: `previous` is the same-id value the attempt overwrote, or the blueprint of the prior committed version
@@ -292,7 +299,7 @@ public sealed interface Outcomes {
                          .toList();
     }
 
-    private static KVCommand.Mutation<AetherKey, AetherValue> removal(org.pragmatica.aether.artifact.ArtifactBase base,
+    private static KVCommand.Mutation<AetherKey, AetherValue> removal(ArtifactBase base,
                                                                       AetherValue.SliceTargetValue target) {
         return new KVCommand.Mutation<>(new SliceTargetKey(base), Option.some((AetherValue) target), Option.none());
     }
@@ -331,7 +338,7 @@ public sealed interface Outcomes {
                   .orElseGet(() -> Schemas.owner(m, artifact));
     }
 
-    private static void mergeFailure(ClusterModel m, Ctx ctx, BlueprintId id, Artifact artifact, String cause) {
+    private static ClusterModel mergeFailure(ClusterModel m, Ctx ctx, BlueprintId id, Artifact artifact, String cause) {
         var key = new DeploymentOutcomeKey(id);
         var committed = m.outcomes.get(id);
         var attempt = attemptOf(m, id);
@@ -350,6 +357,8 @@ public sealed interface Outcomes {
                                                                       Option.some((AetherValue) value));
 
         Outbox.artifact(m, artifact, intent -> intent.withExtra(mutation));
+
+        return m;
     }
 
     /// The failing slices already merged into this drain's outcome mutation (removed here, re-added merged).

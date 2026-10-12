@@ -80,15 +80,17 @@ public sealed interface Backstop {
 
     /// `departure-inferred-suppressed`: once per community until the condition clears (R-2.17). The counter counts every
     /// recording the breaker held back (marked guess).
-    private static void announceBreakers(ClusterModel m, Ctx ctx) {
+    private static ClusterModel announceBreakers(ClusterModel m, Ctx ctx) {
         m.assignedByCommunity.keys().stream().sorted().forEach(community -> announceBreaker(m, ctx, community));
+
+        return m;
     }
 
-    private static void announceBreaker(ClusterModel m, Ctx ctx, String community) {
+    private static ClusterModel announceBreaker(ClusterModel m, Ctx ctx, String community) {
         if (!breakerHolds(m, community)) {
             m.suppressedWarned = m.suppressedWarned.remove(community);
 
-            return;
+            return m;
         }
 
         var held = members(m, community).stream().filter(node -> warrantsIgnoringBreaker(m, ctx, node)).count();
@@ -110,6 +112,8 @@ public sealed interface Backstop {
                     + " of " + members(m, community).size()
                     + " members are absent at once; no departure is recorded for it");
         }
+
+        return m;
     }
 
     private static boolean warrantsIgnoringBreaker(ClusterModel m, Ctx ctx, NodeId node) {
@@ -120,7 +124,7 @@ public sealed interface Backstop {
                     .or(false);
     }
 
-    private static void record(ClusterModel m, Ctx ctx, NodeId node) {
+    private static ClusterModel record(ClusterModel m, Ctx ctx, NodeId node) {
         var nodeClass = Absence.classOf(m, node);
         var since = m.absentSince.get(node).or(ctx.monoNs());
         var announced = nodeClass == NodeClass.ASSIGNED_WORKER
@@ -141,6 +145,8 @@ public sealed interface Backstop {
         ctx.metric("aether_deployment_fsm_departures_inferred_total",
                    Map.of("fsm", "cluster", "class", Absence.labelOf(nodeClass)));
         DepartureFlow.infer(m, ctx, node);
+
+        return m;
     }
 
     record unused() implements Backstop {}

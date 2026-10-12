@@ -4,6 +4,8 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.cluster.fsm2;
 
+import java.util.Map;
+import java.util.TreeSet;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
@@ -132,12 +134,14 @@ public sealed interface Directory {
     }
 
     /// Re-evaluate the absence of every node that belongs to, or is listed by, `community` (the previous roster included).
-    private static void refreshCommunity(ClusterModel m, Ctx ctx, String community, List<NodeId> previous) {
-        var nodes = new java.util.TreeSet<NodeId>(Idx.members(m.assignedByCommunity, community).toList());
+    private static ClusterModel refreshCommunity(ClusterModel m, Ctx ctx, String community, List<NodeId> previous) {
+        var nodes = new TreeSet<NodeId>(Idx.members(m.assignedByCommunity, community).toList());
 
         nodes.addAll(previous);
         nodes.addAll(rosterMembers(m, community));
         nodes.forEach(node -> Absence.refresh(m, ctx, node));
+
+        return m;
     }
 
     // -- J5: a core ------------------------------------------------------------------------------------------------
@@ -156,16 +160,18 @@ public sealed interface Directory {
                : m;
     }
 
-    private static void putDirective(ClusterModel m,
-                                     NodeId node,
-                                     ActivationDirectiveValue directive,
-                                     List<KVCommand.Mutation<AetherKey, AetherValue>> before) {
+    private static ClusterModel putDirective(ClusterModel m,
+                                             NodeId node,
+                                             ActivationDirectiveValue directive,
+                                             List<KVCommand.Mutation<AetherKey, AetherValue>> before) {
         var key = new ActivationDirectiveKey(node);
         var mutations = new ArrayList<KVCommand.Mutation<AetherKey, AetherValue>>(before);
 
         mutations.add(new KVCommand.Mutation<>(key, Option.none(), Option.some((AetherValue) directive)));
         Outbox.direct(m,
                       TxDraft.draft(SubmitKind.DIRECTIVE, key, mutations).withNode(node));
+
+        return m;
     }
 
     // -- J5: a worker (B-069, B-070) -------------------------------------------------------------------------------
@@ -209,7 +215,7 @@ public sealed interface Directory {
                                                        NodeId node,
                                                        String source,
                                                        Option<String> zone,
-                                                       java.util.Map<String, CommunityPlacement> policies) {
+                                                       Map<String, CommunityPlacement> policies) {
         return Option.from(policies.values()
                                    .stream()
                                    .filter(policy -> policy.targetSize() > 0)
@@ -232,16 +238,20 @@ public sealed interface Directory {
     private static Option<CommunityPlacement> configured(ClusterModel m,
                                                          String source,
                                                          Option<String> zone,
-                                                         java.util.Map<String, CommunityPlacement> policies) {
+                                                         Map<String, CommunityPlacement> policies) {
         return Option.from(policies.values()
                                    .stream()
                                    .filter(policy -> policy.targetSize() > 0)
                                    .filter(policy -> policy.locations()
                                                            .stream()
-                                                           .anyMatch(location -> location.source().equals(source)
-                                                                                 && location.zone().fold(() -> true, expected -> zone.filter(expected::equals).isPresent())))
-                                   .min(Comparator.<CommunityPlacement> comparingDouble(policy -> (double) Idx.members(m.assignedByCommunity, policy.id()).size() / policy.targetSize())
-                                                  .thenComparing(CommunityPlacement::id)));
+                                                           .anyMatch(location -> location.source()
+                                                                                         .equals(source) && location.zone()
+                                                                                                                    .fold(() -> true,
+                                                                                                                          expected -> zone.filter(expected::equals)
+                                                                                                                                          .isPresent())))
+                                   .min(Comparator.<CommunityPlacement> comparingDouble(policy -> (double) Idx.members(m.assignedByCommunity,
+                                                                                                                       policy.id())
+                                                                                                              .size() / policy.targetSize()).thenComparing(CommunityPlacement::id)));
     }
 
     private static ClusterModel commit(ClusterModel m,

@@ -35,7 +35,7 @@ public sealed interface Communities {
         return m;
     }
 
-    private static void evaluate(ClusterModel m, Ctx ctx, String id, CommunityValue community) {
+    private static ClusterModel evaluate(ClusterModel m, Ctx ctx, String id, CommunityValue community) {
         var floor = ctx.settings().communityViabilityFloor();
         var next = next(community.state(), liveMembers(m, id), floor);
 
@@ -51,6 +51,8 @@ public sealed interface Communities {
             Outbox.direct(m,
                           TxDraft.draft(SubmitKind.COMMUNITY, key, List.of(mutation)).withGuards(List.of(guard)));
         }
+
+        return m;
     }
 
     /// Members still on the committed, non-dissolved roster, still directed to this community and counted live. No roster

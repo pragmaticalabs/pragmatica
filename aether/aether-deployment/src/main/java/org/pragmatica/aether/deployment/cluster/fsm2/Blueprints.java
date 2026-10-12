@@ -9,6 +9,7 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 
+import org.pragmatica.aether.artifact.Version;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.artifact.ArtifactBase;
 import org.pragmatica.aether.deployment.cluster.fsm2.ClusterModel.AwaitedTarget;
@@ -55,9 +56,7 @@ public sealed interface Blueprints {
                         .or(false);
     }
 
-    private static boolean routingNames(ClusterModel m,
-                                        ArtifactBase base,
-                                        org.pragmatica.aether.artifact.Version version) {
+    private static boolean routingNames(ClusterModel m, ArtifactBase base, Version version) {
         return m.routings.get(base)
                          .map(routing -> routing.oldVersion()
                                                 .equals(version) || routing.newVersion()
@@ -135,12 +134,14 @@ public sealed interface Blueprints {
         return m;
     }
 
-    private static void clearJudgment(ClusterModel m, Artifact artifact) {
+    private static ClusterModel clearJudgment(ClusterModel m, Artifact artifact) {
         if (m.judgments.containsKey(artifact)) {
             Outbox.artifact(m,
                             artifact,
                             intent -> intent.withOp(new JudgmentOp.ClearAll()));
         }
+
+        return m;
     }
 
     private static KVCommand.Mutation<AetherKey, AetherValue> targetPut(ClusterModel m,
@@ -322,9 +323,7 @@ public sealed interface Blueprints {
     }
 
     // -- deallocation ----------------------------------------------------------------------------------------------
-    private static List<Artifact> otherVersions(ClusterModel m,
-                                                ArtifactBase base,
-                                                org.pragmatica.aether.artifact.Version keep) {
+    private static List<Artifact> otherVersions(ClusterModel m, ArtifactBase base, Version keep) {
         return Idx.members(m.versionsByBase, base)
                   .toList()
                   .stream()
@@ -377,7 +376,11 @@ public sealed interface Blueprints {
         return m;
     }
 
-    private static void watch(ClusterModel m, Ctx ctx, ArtifactBase base, SliceTargetValue pending, long bound) {
+    private static ClusterModel watch(ClusterModel m,
+                                      Ctx ctx,
+                                      ArtifactBase base,
+                                      SliceTargetValue pending,
+                                      long bound) {
         var artifact = base.withVersion(pending.currentVersion());
 
         if (permits(m, artifact) || !m.blueprintsByArtifact.containsKey(artifact)) {
@@ -389,7 +392,7 @@ public sealed interface Blueprints {
                        : "the blueprint is no longer desired");
             m.pendingTargetPuts = m.pendingTargetPuts.remove(base);
 
-            return;
+            return m;
         }
 
         var existing = m.awaitedTargets.get(artifact).or(new AwaitedTarget(ctx.nowMs(), false, ctx.nowMs()));
@@ -418,21 +421,31 @@ public sealed interface Blueprints {
             Outbox.direct(m,
                           TxDraft.draft(SubmitKind.TARGETS, mutation.key(), List.of(mutation)));
         }
+
+        return m;
     }
 
-    private static void endAwaited(ClusterModel m, Ctx ctx, Artifact artifact, String why) {
-        m.awaitedTargets.get(artifact)
-                        .onPresent(awaited -> {
-                                       m.awaitedTargets = m.awaitedTargets.remove(artifact);
-                                       if (awaited.warned()) {
-                                       ctx.warn(DEFERRAL_ENDED,
-                                                artifact.asString(),
-                                                "Leader " + ctx.self()
-                                                               .id()
-                                               + " no longer awaits a committed SliceTarget for " + artifact.asString()
-                                               + ": " + why);
-                                   }
-                                   });
+    private static ClusterModel endAwaited(ClusterModel m, Ctx ctx, Artifact artifact, String why) {
+        m.awaitedTargets.get(artifact).onPresent(awaited -> finishWait(m, ctx, artifact, awaited, why));
+
+        return m;
+    }
+
+    private static ClusterModel finishWait(ClusterModel m,
+                                           Ctx ctx,
+                                           Artifact artifact,
+                                           AwaitedTarget awaited,
+                                           String why) {
+        m.awaitedTargets = m.awaitedTargets.remove(artifact);
+        if (awaited.warned()) {
+            ctx.warn(DEFERRAL_ENDED,
+                     artifact.asString(),
+                     "Leader " + ctx.self().id()
+                    + " no longer awaits a committed SliceTarget for " + artifact.asString()
+                    + ": " + why);
+        }
+
+        return m;
     }
 
     // -- step 2: the intake re-drive (R-4.1.4, NT-83) ----------------------------------------------------------------
@@ -465,7 +478,11 @@ public sealed interface Blueprints {
         return m;
     }
 
-    private static void redriveOne(ClusterModel m, Ctx ctx, BlueprintId id, DeploymentApplyValue apply, long boundNs) {
+    private static ClusterModel redriveOne(ClusterModel m,
+                                           Ctx ctx,
+                                           BlueprintId id,
+                                           DeploymentApplyValue apply,
+                                           long boundNs) {
         var throttled = m.redriveAt.get(id).map(at -> ctx.monoNs() - at < boundNs).or(false);
 
         if (!throttled) {
@@ -475,6 +492,8 @@ public sealed interface Blueprints {
                         .filter(expanded -> hasUncommittedTarget(m, expanded))
                         .onPresent(expanded -> redeclare(m, ctx, id, expanded));
         }
+
+        return m;
     }
 
     private static boolean hasUncommittedTarget(ClusterModel m, ExpandedBlueprint expanded) {
@@ -486,9 +505,11 @@ public sealed interface Blueprints {
                                                     .or(false));
     }
 
-    private static void redeclare(ClusterModel m, Ctx ctx, BlueprintId id, ExpandedBlueprint expanded) {
+    private static ClusterModel redeclare(ClusterModel m, Ctx ctx, BlueprintId id, ExpandedBlueprint expanded) {
         m.redriveAt = m.redriveAt.put(id, ctx.monoNs());
         declare(m, ctx, id, expanded, false);
+
+        return m;
     }
 
     record unused() implements Blueprints {}

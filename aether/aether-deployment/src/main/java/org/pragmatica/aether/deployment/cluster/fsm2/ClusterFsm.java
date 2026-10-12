@@ -4,6 +4,8 @@
 // See LICENSE in the repository root for full terms.
 package org.pragmatica.aether.deployment.cluster.fsm2;
 
+import java.util.Comparator;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.function.LongSupplier;
@@ -107,7 +109,7 @@ public final class ClusterFsm {
     }
 
     private static Rebuilding hold(Rebuilding rebuilding, ClusterInput input) {
-        var held = new java.util.ArrayList<>(rebuilding.held());
+        var held = new ArrayList<>(rebuilding.held());
 
         held.add(input);
 
@@ -162,8 +164,8 @@ public final class ClusterFsm {
     private static ClusterState deactivated(ClusterModel model, Ctx ctx) {
         model.timers.toList()
                     .stream()
-                    .sorted(java.util.Comparator.comparing(TimerId::subject).thenComparing(timer -> timer.kind()
-                                                                                                         .name()))
+                    .sorted(Comparator.comparing(TimerId::subject).thenComparing(timer -> timer.kind()
+                                                                                               .name()))
                     .forEach(timer -> ctx.emit(new ClusterEffect.Cancel(timer)));
 
         return new Dormant(model.incarnation());
@@ -176,7 +178,7 @@ public final class ClusterFsm {
                                    ctx);
     }
 
-    private static void counted(Ctx ctx, ClusterInput input, String result) {
+    private static Ctx counted(Ctx ctx, ClusterInput input, String result) {
         ctx.metric("aether_deployment_fsm_inputs_total",
                    Map.of("fsm",
                           "cluster",
@@ -184,5 +186,7 @@ public final class ClusterFsm {
                           input.getClass().getSimpleName(),
                           "result",
                           result));
+
+        return ctx;
     }
 }
