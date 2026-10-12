@@ -90,12 +90,13 @@ class EmberSameIdentityRelaunchTest {
     }
 
     /// #2173: the survivor must register the death of a core that was killed while the cluster was still forming and whose
-    /// NodeId a new process then took over. Killed before the survivors' QUIC link to it was up, the original's link close is
-    /// never seen; the takeover is then retired by a boot-token conflict, a death-path removal that feeds the membership FSM
-    /// nothing, and the SWIM FAULTY was turned into UNKNOWN by the cold-boot rule and dropped when the member was swept. The
-    /// survivor's record for the NodeId then stayed MEMBER for good. The race is not deterministic (the kill has to beat the link
-    /// establishment), hence the repetitions: without the fix at least one of five fails with high probability.
-    @RepeatedTest(5)
+    /// NodeId a new process then took over. A core killed that early leaves the survivors' QUIC link to it unclosed; the takeover
+    /// is then retired by a boot-token conflict, a death-path removal that feeds the membership FSM nothing, and the SWIM FAULTY
+    /// was turned into UNKNOWN by the cold-boot rule and dropped when the member was swept, so the survivor's record for the
+    /// NodeId stayed MEMBER for good. The kill has to win a race against the link establishment, so one run does not always
+    /// hit it (about half of the runs did before the fix). Two repetitions is all the port pool of this class allows (four
+    /// blocks, TIME_WAIT between clusters); the deterministic regression is `SwimRetiredIdentityDeathTest`.
+    @RepeatedTest(2)
     @Timeout(300)
     void coreKilledWhileFormingAndSupersededByTheSameNodeId_isDemotedOnTheSurvivor() {
         var basePort = EmberTestPorts.freeBase(PORTS);
