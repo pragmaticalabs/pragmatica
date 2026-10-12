@@ -26,6 +26,7 @@ import org.pragmatica.aether.slice.kvstore.CommunityState;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Verify;
 
 
 /// Directives, communities and governor announcements (spec C13, C14, J5, B-066, B-069, B-070, R-4.3.3).
@@ -183,7 +184,7 @@ public sealed interface Directory {
         }
 
         var source = Option.option(m.seams.memberSource().get(node))
-                           .filter(label -> !label.isBlank())
+                           .filter(Verify.Is::notBlank)
                            .or(Joins.DEFAULT_SOURCE);
         var policies = m.seams.communityPolicies();
 

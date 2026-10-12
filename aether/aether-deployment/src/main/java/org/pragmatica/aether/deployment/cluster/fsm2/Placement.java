@@ -59,11 +59,15 @@ public sealed interface Placement {
 
             return m;
         }
-
+        // FER (degrade forward): an unparsable placement leaves this one target unplaced and is reported to the operator on every
+        // reconcile; the other targets are placed as usual. Guarantee: the failure is visible, never silent and never
+        // mistaken for a default placement. Mechanism: the warning below, repeated by each pass until the placement is fixed.
         Result.lift(() -> PlacementPolicy.valueOf(target.effectivePlacement()))
               .onFailure(cause -> ctx.warn("invalid-placement",
                                            artifact.asString(),
-                                           "Invalid placement " + target.placement() + " for " + artifact))
+                                           "Invalid placement " + target.placement()
+                                          + " for " + artifact
+                                          + ": " + cause.message()))
               .onSuccess(policy -> reconcileWithPolicy(m, ctx, artifact, target, policy));
 
         return m;

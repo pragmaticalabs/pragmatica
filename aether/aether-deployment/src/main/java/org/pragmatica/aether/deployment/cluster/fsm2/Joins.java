@@ -172,9 +172,21 @@ public sealed interface Joins {
                           "Worker " + node.id() + " is a different process under a known id: refused");
         }
 
+        endExclusions(m, node);
         var written = write(m, ctx, node, join, record, List.of());
 
         return directive(written, ctx, node, join, record);
+    }
+
+    /// R-4.2.5: the admission of a different process (positive evidence) ends the exclusion the old process earned.
+    private static ClusterModel endExclusions(ClusterModel m, NodeId node) {
+        Idx.members(m.unresponsiveByNode, node)
+           .toList()
+           .forEach(artifact -> Outbox.artifact(m,
+                                                artifact,
+                                                intent -> intent.withOp(new JudgmentOp.ClearUnresponsive(node))));
+
+        return m;
     }
 
     /// J3: the same process, a higher epoch. A worker needs its WORKER directive (else J7 defers); a racing C17b is
