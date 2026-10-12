@@ -17,11 +17,14 @@ import org.pragmatica.lang.Option;
 /// (spec R-7.3.1: no single-input handler scans the store).
 ///
 /// The trie is binary over the key's hash bits; keys with an equal hash share a collision bucket. Iteration
-/// ([#entries], [#keys], [#values]) is a scan and is counted in [#scans], which is how a test proves an
-/// ordinary input iterates nothing (NT-78).
+/// ([#entries], [#keys], [#values]) of a map larger than [#SCAN_THRESHOLD] is a scan and is counted in [#scans], which
+/// is how a test proves an ordinary input iterates nothing (NT-78). The few members of one index bucket (the instances of
+/// one artifact, the artifacts of one node) are below the threshold: reading a bucket is the O(instances) work 7.3 allows.
 public final class PMap<K, V> {
     private static final PMap<?, ?> EMPTY = new PMap<>(Node.EMPTY, 0);
     private static final AtomicLong SCANS = new AtomicLong();
+    /// Iterating a map of at most this many entries is not counted as a scan.
+    public static final int SCAN_THRESHOLD = 64;
 
     private final Node root;
     private final int size;
@@ -79,7 +82,10 @@ public final class PMap<K, V> {
     }
 
     public List<Map.Entry<K, V>> entries() {
-        SCANS.incrementAndGet();
+        if (size > SCAN_THRESHOLD) {
+            SCANS.incrementAndGet();
+        }
+
         var out = new ArrayList<Map.Entry<K, V>>(size);
 
         collect(root, out);

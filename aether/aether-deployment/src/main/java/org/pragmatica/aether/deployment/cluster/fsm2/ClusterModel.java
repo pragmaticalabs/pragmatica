@@ -57,6 +57,7 @@ public final class ClusterModel {
     Option<LeaderValue> leader = Option.none();
     boolean reconcileQueued;
     boolean flushQueued;
+    boolean auditDue;
     long txSeq;
     long genCounter;
     long tickCount;
@@ -100,6 +101,7 @@ public final class ClusterModel {
     PMap<SlicePair, Long> seenAt = PMap.empty();
     PMap<SlicePair, Long> transitionedAt = PMap.empty();
     PMap<SlicePair, ReissueMark> reissues = PMap.empty();
+    PMap<SlicePair, Long> retryAt = PMap.empty();
     PMap<Artifact, Integer> imbalancedTicks = PMap.empty();
     PSet<NodeId> drainLoops = PSet.empty();
     // -- membership-side state (CI-4..CI-9, CI-15) -----------------------------------------------------------------
@@ -139,6 +141,7 @@ public final class ClusterModel {
         c.leader = leader;
         c.reconcileQueued = reconcileQueued;
         c.flushQueued = flushQueued;
+        c.auditDue = auditDue;
         c.txSeq = txSeq;
         c.genCounter = genCounter;
         c.tickCount = tickCount;
@@ -180,6 +183,7 @@ public final class ClusterModel {
         c.seenAt = seenAt;
         c.transitionedAt = transitionedAt;
         c.reissues = reissues;
+        c.retryAt = retryAt;
         c.imbalancedTicks = imbalancedTicks;
         c.drainLoops = drainLoops;
         c.directives = directives;
@@ -438,7 +442,8 @@ public final class ClusterModel {
                             SubmitKind kind,
                             List<TxDraft> drafts,
                             long incarnation,
-                            LeaderValue leader) {
+                            LeaderValue leader,
+                            long atMono) {
         public Submitted {
             drafts = List.copyOf(drafts);
         }

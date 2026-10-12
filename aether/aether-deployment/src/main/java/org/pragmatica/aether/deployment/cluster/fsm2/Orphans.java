@@ -17,10 +17,11 @@ public sealed interface Orphans {
     int AUDIT_EVERY_TICKS = 10;
 
     static ClusterModel run(ClusterModel m, Ctx ctx) {
-        if (m.tickCount % AUDIT_EVERY_TICKS != 0) {
+        if (!m.auditDue) {
             return m;
         }
 
+        m.auditDue = false;
         m.observed.keys()
                   .stream()
                   .sorted(Rows.PAIR_ORDER)

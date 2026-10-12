@@ -30,6 +30,7 @@ public sealed interface Reconcile {
             return m;
         }
 
+        Outbox.expire(m, ctx);
         Blueprints.sweepAwaited(m, ctx);
         Blueprints.redrive(m, ctx);
         Strays.sweep(m, ctx);

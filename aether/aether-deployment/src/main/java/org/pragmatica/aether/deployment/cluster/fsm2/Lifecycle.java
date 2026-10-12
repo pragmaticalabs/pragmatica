@@ -28,6 +28,7 @@ public sealed interface Lifecycle {
         snapshot.entries().forEach(entry -> Indexer.indexPut(m, ctx, entry.key(), entry.value()));
         m.announcementSeenAt = PMap.empty();
         m.absentSince = PMap.empty();
+        m.auditDue = true;
         schedule(m,
                  ctx,
                  TimerId.timerId(Kind.POST_ACTIVATION),
@@ -118,6 +119,7 @@ public sealed interface Lifecycle {
     /// The 30 s tick: sample-driven work (completion repair, record GC, pending joins) rides the reconcile it queues.
     private static ClusterModel tick(ClusterModel m, Ctx ctx) {
         m.tickCount = m.tickCount + 1;
+        m.auditDue = m.auditDue || m.tickCount % Orphans.AUDIT_EVERY_TICKS == 0;
         schedule(m,
                  ctx,
                  TimerId.timerId(Kind.TICK),

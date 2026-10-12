@@ -86,7 +86,7 @@ public sealed interface Placement {
                          .toList();
 
         if (placed.size() < desired) {
-            scaleUp(m, artifact, audience, desired - placed.size());
+            scaleUp(m, ctx, artifact, audience, desired - placed.size());
         } else if (placed.size() > desired) {
             scaleDown(m, placed, placed.size() - desired, target.effectiveMinInstances());
         }
@@ -190,11 +190,21 @@ public sealed interface Placement {
     }
 
     // -- scale up and down -----------------------------------------------------------------------------------------
-    private static void scaleUp(ClusterModel m, Artifact artifact, List<NodeId> audience, int toAdd) {
+    /// R-3.3.7: a node whose transient failure is still within its retry delay is not chosen again yet.
+    private static boolean backedOff(ClusterModel m, Ctx ctx, SlicePair pair) {
+        return m.retryAt.get(pair)
+                        .map(at -> at > ctx.monoNs())
+                        .or(false);
+    }
+
+    private static void scaleUp(ClusterModel m, Ctx ctx, Artifact artifact, List<NodeId> audience, int toAdd) {
         audience.stream()
                 .filter(node -> !Rows.occupies(m,
                                                SlicePair.slicePair(node, artifact)))
                 .filter(node -> Rows.countsForPlacement(m, node, artifact))
+                .filter(node -> !backedOff(m,
+                                           ctx,
+                                           SlicePair.slicePair(node, artifact)))
                 .sorted(Comparator.<NodeId, Integer> comparing(node -> load(m, node)).thenComparing(Comparator.naturalOrder()))
                 .limit(toAdd)
                 .toList()

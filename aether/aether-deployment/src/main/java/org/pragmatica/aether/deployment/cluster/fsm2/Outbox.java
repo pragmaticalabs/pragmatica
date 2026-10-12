@@ -178,7 +178,12 @@ public sealed interface Outbox {
         var correlation = "c" + m.incarnation + "-" + (++m.txSeq);
 
         m.submitted = m.submitted.put(correlation,
-                                      new Submitted(correlation, draft.kind(), List.of(draft), m.incarnation, leader));
+                                      new Submitted(correlation,
+                                                    draft.kind(),
+                                                    List.of(draft),
+                                                    m.incarnation,
+                                                    leader,
+                                                    ctx.monoNs()));
         ctx.emit(new ClusterEffect.Submit(correlation,
                                           m.incarnation,
                                           draft.kind(),
@@ -340,6 +345,22 @@ public sealed interface Outbox {
         return new KVCommand.ReadWitness<>(pair.observedKey(), guard.map(v -> (Object) v));
     }
 
+    /// A submission that was never settled is lost (#2143): after one consensus timeout it no longer counts as in flight, its
+    /// pending goals are released (M-3), and the next reconcile re-derives it.
+    static ClusterModel expire(ClusterModel m, Ctx ctx) {
+        var bound = ctx.settings().timing().departingReread() * 1_000_000L;
+
+        for (var entry : m.submitted.entries()) {
+            if (ctx.monoNs() - entry.getValue().atMono() >= bound) {
+                m.submitted = m.submitted.remove(entry.getKey());
+                entry.getValue().drafts().forEach(draft -> dropPending(m, draft));
+                metric(ctx, entry.getValue(), "lost");
+            }
+        }
+
+        return m;
+    }
+
     // -- settlement (CI-14, 5.7.2, 6.2) ----------------------------------------------------------------------------
     /// The outcome of a submission. A settlement of another incarnation never reaches here (the FSM drops it, R-3.1.3).
     static ClusterModel settle(ClusterModel m, Ctx ctx, ClusterInput.WriteSettled settled) {
@@ -384,8 +405,18 @@ public sealed interface Outbox {
         var mirrorBefore = mirrorFingerprint(m, refused);
 
         refused.values()
-               .forEach((key, value) -> value.fold(() -> Indexer.indexRemove(m, ctx, key),
-                                                   present -> Indexer.indexPut(m, ctx, key, present)));
+               .entrySet()
+               .stream()
+               .filter(entry -> !mirrored(m,
+                                          entry.getKey()).equals(entry.getValue()))
+               .forEach(entry -> entry.getValue()
+                                      .fold(() -> Indexer.indexRemove(m,
+                                                                      ctx,
+                                                                      entry.getKey()),
+                                            present -> Indexer.indexPut(m,
+                                                                        ctx,
+                                                                        entry.getKey(),
+                                                                        present)));
         var corrected = !mirrorBefore.equals(mirrorFingerprint(m, refused));
 
         m.leader = refused.leader();
@@ -497,6 +528,7 @@ public sealed interface Outbox {
         var stayGuards = new ArrayList<KVCommand.ReadWitness<AetherKey>>();
         var stayPairs = new HashSet<SlicePair>();
         var shared = new ArrayList<KVCommand.Mutation<AetherKey, AetherValue>>();
+        var movedAny = false;
 
         for (var mutation : draft.mutations()) {
             var pairs = draft.pairs().stream().filter(pair -> pair.desiredKey()
@@ -517,6 +549,7 @@ public sealed interface Outbox {
 
             if (pairMoved || draft.attempt() >= limit) {
                 Indexer.clearPending(m, pair);
+                movedAny = movedAny || pairMoved;
                 continue;
             }
 
@@ -525,12 +558,18 @@ public sealed interface Outbox {
             guard.ifPresent(stayGuards::add);
         }
 
-        var moved = stayPairs.size() < draft.pairs().size();
+        var sharedMoved = shared.stream().anyMatch(mutation -> mutatedElsewhere(m, mutation));
+
+        if (sharedMoved) {
+            stayPairs.forEach(pair -> Indexer.clearPending(m, pair));
+
+            return Reconcile.request(m, ctx);
+        }
 
         if (!stayPairs.isEmpty()) {
             var rest = new ArrayList<>(stay);
 
-            rest.addAll(shared.stream().filter(mutation -> !mutatedElsewhere(m, mutation)).toList());
+            rest.addAll(shared);
             Outbox.direct(m,
                           new TxDraft(draft.kind(),
                                       rest.getFirst().key(),
@@ -542,11 +581,9 @@ public sealed interface Outbox {
                                       List.of()));
         }
 
-        if (moved || stayPairs.isEmpty()) {
-            Reconcile.request(m, ctx);
-        }
-
-        return m;
+        return movedAny
+               ? Reconcile.request(m, ctx)
+               : m;
     }
 
     private static boolean mutatedElsewhere(ClusterModel m, KVCommand.Mutation<AetherKey, AetherValue> mutation) {
@@ -560,9 +597,9 @@ public sealed interface Outbox {
             return Outbox.direct(m, draft.nextAttempt());
         }
 
-        Reconcile.request(m, ctx);
-
-        return m;
+        return moved(m, draft)
+               ? Reconcile.request(m, ctx)
+               : m;
     }
 
     /// Failed or unattributable (R-4.3.0, 6.2): a goal transaction that failed clears its pending entries (M-3) and the

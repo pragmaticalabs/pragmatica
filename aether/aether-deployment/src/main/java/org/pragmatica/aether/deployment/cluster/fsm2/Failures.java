@@ -87,11 +87,14 @@ public sealed interface Failures {
             return exhausted(m, ctx, pair, reason);
         }
 
+        var delayMs = retryDelayMs(ctx, pair, count);
+
         Outbox.artifact(m,
                         artifact,
                         intent -> intent.withOp(new JudgmentOp.Transient(pair.node())));
+        m.retryAt = m.retryAt.put(pair, ctx.monoNs() + delayMs * 1_000_000L);
 
-        return Lifecycle.schedule(m, ctx, retryTimer(pair), retryDelayMs(ctx, pair, count));
+        return Lifecycle.schedule(m, ctx, retryTimer(pair), delayMs);
     }
 
     /// The count after this failure's predecessors: the committed count plus the transients already in this drain's intent.
