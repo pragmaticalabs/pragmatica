@@ -104,6 +104,12 @@ class WritePathTest {
 
         assertThat(verdict).isInstanceOf(Settlement.Refused.class);
         assertThat(h.store.get(new SliceDesiredKey(CORE_1, ORDERS))).isEqualTo(org.pragmatica.lang.Option.some(other));
+
+        h.policy = FsmHarness.SettlePolicy.APPLY;
+        h.settleHeld(submit, verdict);
+        assertThat(h.submits(SubmitKind.GOALS).stream().skip(1).flatMap(g -> g.transaction().mutations().stream()).map(m -> m.expected()))
+            .as("the moved pair is split out: whatever follows is re-derived from the mirror, never the stale expected value")
+            .doesNotContain(org.pragmatica.lang.Option.<org.pragmatica.aether.slice.kvstore.AetherValue> none());
     }
 
     // NT-90 / NT-122
@@ -209,5 +215,34 @@ class WritePathTest {
         assertThat(adopt.transaction().mutations().getFirst().replacement().map(v -> ((SliceDesiredValue) v).generation())).as("adopted at the row's own generation").isEqualTo(org.pragmatica.lang.Option.some(gen(9)));
         new NodeSim(h, CORE_3, process(13)).writes(ORDERS, SliceObservedState.ACTIVATING, gen(9));
         assertThat(h.applyTransaction(adopt)).isInstanceOf(Settlement.Refused.class);
+    }
+
+    // NT-115 (retraction)
+    // Red when: a retraction built on v is applied after the node committed v+1.
+    @Test
+    void retractionBuiltOnV_isRefusedOnceTheNodeCommittedVPlusOne() {
+        var h = deployed(1);
+
+        h.policy = FsmHarness.SettlePolicy.HOLD;
+        h.advance(360_001L);
+        h.deliver(new ClusterInput.Reconcile());
+        var retraction = h.submits(SubmitKind.FAILURE).getLast();
+
+        assertThat(retraction.transaction().mutations().stream().anyMatch(m -> m.key() instanceof org.pragmatica.aether.slice.kvstore.AetherKey.ArtifactJudgmentKey)).isTrue();
+        new NodeSim(h, CORE_1, process(11)).writes(ORDERS, SliceObservedState.LOADING);
+        assertThat(h.applyTransaction(retraction)).isInstanceOf(Settlement.Refused.class);
+    }
+
+    // NT-115 (retraction control)
+    // Red when: a retraction whose observed value did not move is refused.
+    @Test
+    void retractionBuiltOnV_isAcceptedWhenTheRowDidNotMove() {
+        var h = deployed(1);
+
+        h.policy = FsmHarness.SettlePolicy.HOLD;
+        h.advance(360_001L);
+        h.deliver(new ClusterInput.Reconcile());
+
+        assertThat(h.applyTransaction(h.submits(SubmitKind.FAILURE).getLast())).isInstanceOf(Settlement.Accepted.class);
     }
 }

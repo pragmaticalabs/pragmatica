@@ -111,7 +111,9 @@ class GenerationTest {
         KVCommand.Put<?, ?> decoded = codec.read(buffer);
 
         assertThat(decoded.value()).isEqualTo(value);
-        assertThat(((SliceDesiredValue) decoded.value()).generation()).isEqualTo(generation).isGreaterThan(new Generation(1L << 32, 0L));
+        assertThat(((SliceDesiredValue) decoded.value()).generation()).isEqualTo(generation)
+                                                                      .isGreaterThan(new Generation(1L << 32, 0L))
+                                                                      .isGreaterThan(new Generation(7L, 0L));
         assertThat(bytes.length).isPositive();
     }
 }
