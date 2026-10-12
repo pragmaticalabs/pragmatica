@@ -24,6 +24,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.BootTokens;
+import org.pragmatica.consensus.topology.TransportObservation;
 import org.pragmatica.swim.SwimMember.MemberState;
 import org.pragmatica.swim.SwimMessage.MembershipUpdate;
 import org.pragmatica.swim.SwimMessage.Ping;
@@ -49,6 +50,7 @@ class SwimRetiredIdentityDeathTest {
     private static final NodeId NODE_A = new NodeId("node-a");
     private static final NodeId PHANTOM = new NodeId("node-phantom");
     private static final NodeId GOSSIPER = new NodeId("node-gossiper");
+    private static final NodeId CLAIMANT = new NodeId("node-claimant");
     private static final InetSocketAddress SELF_ADDR = new InetSocketAddress("127.0.0.1", 9000);
     private static final InetSocketAddress ADDR_A = new InetSocketAddress("127.0.0.1", 9001);
     private static final InetSocketAddress PHANTOM_ADDR = new InetSocketAddress("127.0.0.1", 9002);
@@ -163,6 +165,56 @@ class SwimRetiredIdentityDeathTest {
 
             await().atMost(Duration.ofSeconds(3)).until(() -> !departures(observations, PHANTOM).isEmpty());
             assertThat(faulties(observations, PHANTOM)).hasSize(1);
+            assertThat(protocol.tombstonedForTest(PHANTOM)).as("the replayed edge sets the FAULTY-edge tombstone, as for a resident member").isTrue();
+        } finally {
+            protocol.stop();
+        }
+    }
+
+    /// An identity refutation lifts the cold-boot suppression at once (`SwimProtocolIdentityRefutationTest`); that must hold
+    /// for a deferral whose member was already swept.
+    @Test
+    void sweptDeferral_isReplayedOnAnIdentityRefutation_beforeTheGateCloses() throws InterruptedException {
+        var booting = new AtomicBoolean(true);
+        var observations = new RecordingObservationSink();
+        var protocol = protocol(booting, observations, BootTokens.bootTokens(0x5E1FL));
+
+        protocol.addSeedMember(PHANTOM, PHANTOM_ADDR);
+        protocol.start();
+        try {
+            await().atMost(Duration.ofSeconds(3)).until(() -> hasUnknown(observations, PHANTOM));
+            Thread.sleep(PAST_RESIDENCY.toMillis());
+            assertThat(protocol.members()).as("positive control: swept").doesNotContainKey(PHANTOM);
+            assertThat(departures(observations, PHANTOM)).isEmpty();
+
+            protocol.recordTransportHint(PHANTOM, new TransportObservation.IdentityRefuted(PHANTOM, CLAIMANT));
+
+            assertThat(departures(observations, PHANTOM)).as("replayed on the refutation, gate still shut").hasSize(1);
+        } finally {
+            protocol.stop();
+        }
+    }
+
+    /// A peer that came back after the sweep is judged anew; the old deferral must not depart it when the gate closes.
+    @Test
+    void sweptDeferral_isNotReplayed_whenThePeerCameBack() throws InterruptedException {
+        var booting = new AtomicBoolean(true);
+        var observations = new RecordingObservationSink();
+        var protocol = protocol(booting, observations, BootTokens.bootTokens(0x5E1FL));
+
+        protocol.addSeedMember(PHANTOM, PHANTOM_ADDR);
+        protocol.start();
+        try {
+            await().atMost(Duration.ofSeconds(3)).until(() -> hasUnknown(observations, PHANTOM));
+            Thread.sleep(PAST_RESIDENCY.toMillis());
+            assertThat(protocol.members()).as("positive control: swept").doesNotContainKey(PHANTOM);
+
+            protocol.putMemberForTest(PHANTOM, PHANTOM_ADDR, MemberState.ALIVE);
+            booting.set(false);
+
+            // A replay would run on the next tick (20 ms); a fresh FAULTY for the returned peer needs a probe cycle and the
+            // 150 ms suspect window, so nothing may depart in the first 100 ms.
+            await().during(Duration.ofMillis(100)).atMost(Duration.ofSeconds(2)).until(() -> departures(observations, PHANTOM).isEmpty());
         } finally {
             protocol.stop();
         }
