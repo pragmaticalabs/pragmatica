@@ -58,22 +58,31 @@ sealed interface Redrive {
         };
     }
 
-    /// Step 5: the row is earlier in the chain and the goal still asks (a FAILED row is owed whatever the goal says).
+    /// Step 5: the row is earlier in the chain and the goal still asks.
     private static Transition rebuild(NodeFsm fsm,
                                       Transition t,
                                       Artifact artifact,
                                       InstanceRecord rec,
                                       Unconfirmed unconfirmed,
                                       int cycle) {
-        if (unconfirmed.state() == SliceObservedState.FAILED) {
-            return unconfirmed.failure()
-                              .fold(() -> t,
-                                    note -> Writes.issueFailed(fsm, t, artifact, note, cycle));
-        }
-
         return rec.desired()
-                  .fold(() -> t,
-                        desired -> rebuildForward(fsm, t, artifact, desired, unconfirmed));
+                  .fold(() -> t.update(artifact,
+                                       r -> r.withUnconfirmed(none())),
+                        desired -> rebuildFor(fsm, t, artifact, desired, unconfirmed, cycle));
+    }
+
+    /// Only while the goal still asks (R-6.0 step 5): a failure owed to a goal that went away is dropped (N17 writes nothing).
+    private static Transition rebuildFor(NodeFsm fsm,
+                                         Transition t,
+                                         Artifact artifact,
+                                         SliceDesiredValue desired,
+                                         Unconfirmed unconfirmed,
+                                         int cycle) {
+        return unconfirmed.state() == SliceObservedState.FAILED
+               ? unconfirmed.failure()
+                            .fold(() -> t,
+                                  note -> Writes.issueFailed(fsm, t, artifact, note, cycle))
+               : rebuildForward(fsm, t, artifact, desired, unconfirmed);
     }
 
     private static Transition rebuildForward(NodeFsm fsm,

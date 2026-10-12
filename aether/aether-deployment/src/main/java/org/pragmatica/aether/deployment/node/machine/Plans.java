@@ -37,7 +37,7 @@ sealed interface Plans {
         }
 
         return failedForGeneration(rec, row, desired)
-               ? Plan.adopted()
+               ? Plan.settled()
                : forGoal(model, artifact, desired.goal(), Rows.stateOf(row));
     }
 
@@ -73,7 +73,7 @@ sealed interface Plans {
     private static Plan forLoaded(NodeFsmModel model, Artifact artifact, SliceObservedState state) {
         return switch (state) {
             case UNLOADED, FAILED, UNLOADING -> plannedLoad();
-            case LOADED -> Plan.satisfied();
+            case LOADED -> Plan.settled();
             case LOADING -> Plan.run(ChainKind.LOAD, resume(loadSteps(), state), true);
             case ACTIVE -> backToLoaded(model, artifact, false);
             case ACTIVATING -> model.isLoaded(artifact)
@@ -104,7 +104,7 @@ sealed interface Plans {
                                ? plannedActivation(resume(activateSteps(), state))
                                : notInStore(artifact);
             case ACTIVE -> loaded
-                           ? Plan.satisfied()
+                           ? Plan.settled()
                            : plannedRedeploy();
             case DEACTIVATING -> loaded
                                  ? plannedActivation(activateSteps())
@@ -120,7 +120,7 @@ sealed interface Plans {
 
     private static Plan forUnloaded(SliceObservedState state) {
         return switch (state) {
-            case UNLOADED -> Plan.satisfied();
+            case UNLOADED -> Plan.settled();
             case UNLOADING -> Plan.run(ChainKind.UNLOAD, unloadSteps(true), false);
             case UNKNOWN -> Plan.unknown();
             default -> Plan.run(ChainKind.UNLOAD, unloadSteps(false), false);
@@ -130,7 +130,7 @@ sealed interface Plans {
     private static Plan forAbsentUnloaded(NodeFsmModel model, Artifact artifact) {
         return model.isLoaded(artifact)
                ? Plan.run(ChainKind.UNLOAD, unloadSteps(false), false)
-               : Plan.satisfied();
+               : Plan.settled();
     }
 
     private static Plan plannedLoad() {

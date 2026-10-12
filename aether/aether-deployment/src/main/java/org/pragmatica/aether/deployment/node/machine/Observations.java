@@ -60,7 +60,10 @@ sealed interface Observations {
                                     r -> r.withDesired(none())
                                           .withDesiredPending(false)
                                           .withChain(none())
-                                          .withServing(false))
+                                          .withDeferredFailure(none())
+                                          .withUnconfirmed(none())
+                                          .withServing(false)
+                                          .withSuspended(false))
                             .loaded(artifact, false);
 
         return Planner.armTombstone(fsm, cleared, artifact);
@@ -197,16 +200,19 @@ sealed interface Observations {
         return rec.write()
                   .filter(write -> write.purpose() == InFlight.Purpose.TOMBSTONE_REMOVE)
                   .fold(() -> Planner.reconcile(fsm, cleared, artifact),
-                        write -> removed(cleared, artifact, write));
+                        write -> removed(fsm, cleared, artifact, write));
     }
 
-    private static Transition removed(Transition t, Artifact artifact, InFlight write) {
-        return t.update(artifact,
-                        rec -> rec.withWrite(none()))
-                .emit(new NodeFsmEffect.Cancel(TimerId.timerId(TimerId.TimerKind.WRITE_CONFIRM,
-                                                               artifact,
-                                                               t.incarnation(),
-                                                               write.correlation())));
+    /// The tombstone Remove committed: the write is done, and a goal recorded behind it is evaluated now (R-3.4.2).
+    private static Transition removed(NodeFsm fsm, Transition t, Artifact artifact, InFlight write) {
+        var cleared = t.update(artifact,
+                               rec -> rec.withWrite(none()))
+                       .emit(new NodeFsmEffect.Cancel(TimerId.timerId(TimerId.TimerKind.WRITE_CONFIRM,
+                                                                      artifact,
+                                                                      t.incarnation(),
+                                                                      write.correlation())));
+
+        return Writes.settle(fsm, cleared, artifact);
     }
 
     // ---------------------------------------------------------------- targets and routings (NI-4)

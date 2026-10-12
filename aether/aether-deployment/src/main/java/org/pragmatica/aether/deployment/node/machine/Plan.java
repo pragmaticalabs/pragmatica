@@ -11,8 +11,8 @@ import org.pragmatica.lang.Cause;
 
 /// What the node decides to do about a pair whose goal and committed observation are known (spec R-3.4.3).
 sealed interface Plan {
-    /// Nothing to do. `satisfied` says the committed row already meets the goal, so the goal's generation counts as applied.
-    record Settled(boolean satisfied) implements Plan {}
+    /// Nothing to do: the committed row already meets the goal, or it is a FAILED row of the generation already executed.
+    record Settled() implements Plan {}
 
     /// An observed UNKNOWN (N18) or an unknown goal: warn, write nothing.
     record Unknown() implements Plan {}
@@ -23,12 +23,8 @@ sealed interface Plan {
     /// Write FAILED now with `cause` (N5). Gated like a start: the committed-target check comes first.
     record Fail(Cause cause) implements Plan {}
 
-    static Plan satisfied() {
-        return new Settled(true);
-    }
-
-    static Plan adopted() {
-        return new Settled(false);
+    static Plan settled() {
+        return new Settled();
     }
 
     static Plan unknown() {

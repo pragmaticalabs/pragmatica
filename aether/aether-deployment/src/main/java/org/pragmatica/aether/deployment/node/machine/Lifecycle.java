@@ -37,7 +37,8 @@ sealed interface Lifecycle {
                            .withInstances(seed(model, snapshot));
         var ready = Transition.transition(entered).emit(NodeFsmEffect.selfReady());
         var pruned = dropStaleDeferrals(ready);
-        var swept = staleRowSweep(fsm, pruned);
+        var rearmed = rearmEscalations(fsm, pruned);
+        var swept = staleRowSweep(fsm, rearmed);
 
         return reactivateSuspended(fsm, reconcileAll(fsm, swept));
     }
@@ -99,6 +100,35 @@ sealed interface Lifecycle {
         return desired.filter(value -> value.goal() == parked.goal() && value.generation()
                                                                              .equals(parked.generation()))
                       .isPresent();
+    }
+
+    /// A park survives the outage but its escalation timer belongs to the old incarnation: schedule it again for the time that
+    /// is left of the bound (B-158).
+    private static Transition rearmEscalations(NodeFsm fsm, Transition t) {
+        var parked = sorted(t).stream().filter(artifact -> isUnwarned(t.instance(artifact))).toList();
+
+        return t.each(parked, (current, artifact) -> rearmEscalation(fsm, current, artifact));
+    }
+
+    private static boolean isUnwarned(InstanceRecord rec) {
+        return rec.parked()
+                  .filter(park -> !park.warned())
+                  .isPresent();
+    }
+
+    private static Transition rearmEscalation(NodeFsm fsm, Transition t, Artifact artifact) {
+        return t.instance(artifact)
+                .parked()
+                .fold(() -> t,
+                      park -> escalationAt(fsm, t, artifact, park));
+    }
+
+    private static Transition escalationAt(NodeFsm fsm, Transition t, Artifact artifact, Parked park) {
+        var left = Math.max(0L,
+                            park.since() + fsm.config().timings().parkedBoundMs() - fsm.now());
+        var timer = TimerId.timerId(TimerId.TimerKind.PARKED_ESCALATION, artifact, t.incarnation(), park.since());
+
+        return t.emit(new NodeFsmEffect.Schedule(timer, left));
     }
 
     // ---------------------------------------------------------------- N0
@@ -203,10 +233,18 @@ sealed interface Lifecycle {
         return t.each(sorted(t), (current, artifact) -> reconcileEntry(fsm, current, artifact));
     }
 
-    /// A suspended instance whose goal is still ACTIVE waits for step 5; any other pair is reconciled now, cause "entry".
+    /// A suspended instance whose goal is still ACTIVE waits for step 5, and a key N0 already started a chain for is left to it. A key with no goal gets N17 (a goal removed while Dormant
+    /// was dropped, B-101) and re-arms its tombstone; any other pair is reconciled now, cause "entry".
     private static Transition reconcileEntry(NodeFsm fsm, Transition t, Artifact artifact) {
-        return staysActive(t.instance(artifact))
-               ? t
+        var rec = t.instance(artifact);
+
+        if (staysActive(rec) || rec.chain().isPresent()) {
+            return t;
+        }
+
+        return rec.desired()
+                  .isEmpty()
+               ? Observations.desiredRemove(fsm, t, artifact)
                : Planner.reconcile(fsm,
                                    t.update(artifact, r -> r.withSuspended(false)),
                                    artifact);

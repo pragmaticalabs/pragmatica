@@ -68,7 +68,7 @@ sealed interface Planner {
         var permitted = t.model().permits(artifact);
 
         return switch (plan) {
-            case Plan.Settled settled -> settle(fsm, t, artifact, desired, settled);
+            case Plan.Settled _ -> settle(fsm, t, artifact);
             case Plan.Unknown _ -> t.emit(unknownLine(artifact));
             case Plan.Fail fail -> permitted
                                    ? failNow(fsm, t, artifact, desired, fail.cause())
@@ -84,18 +84,10 @@ sealed interface Planner {
                                      "Observed state of " + artifact + " is UNKNOWN: no transition is driven");
     }
 
-    private static Transition settle(NodeFsm fsm,
-                                     Transition t,
-                                     Artifact artifact,
-                                     SliceDesiredValue desired,
-                                     Plan.Settled settled) {
-        var unparked = unpark(t, artifact, "the goal is already met");
-        var counted = settled.satisfied()
-                      ? unparked.update(artifact,
-                                        rec -> rec.withAppliedGeneration(some(desired.generation())))
-                      : unparked;
-
-        return armTombstone(fsm, counted, artifact);
+    /// The goal needs nothing more. `appliedGeneration` is not touched: only N0's same-process branch or a completed chain sets
+    /// it (spec 3.4).
+    private static Transition settle(NodeFsm fsm, Transition t, Artifact artifact) {
+        return armTombstone(fsm, unpark(t, artifact, "the goal is already met"), artifact);
     }
 
     private static Transition failNow(NodeFsm fsm,

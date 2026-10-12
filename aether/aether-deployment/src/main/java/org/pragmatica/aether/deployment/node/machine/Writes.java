@@ -241,8 +241,10 @@ sealed interface Writes {
             // FER (degrade and continue): a tombstone Remove that never confirmed is logged and dropped. The guarantee earned:
             // none beyond the log line; the tombstone is harmless (a vacant pair, R-1.6.3) and the next goal for the pair
             // writes over it at version + 1. The mechanism is a single 3-attempt cycle with no re-arm of the grace timer.
-            case TOMBSTONE_REMOVE -> cleared.emit(new NodeFsmEffect.Log(NodeFsmEffect.Level.WARN,
-                                                                        "Tombstone of " + artifact + " at version " + write.version() + " was not removed; it stays until the next goal"));
+            case TOMBSTONE_REMOVE -> settle(fsm,
+                                            cleared.emit(new NodeFsmEffect.Log(NodeFsmEffect.Level.WARN,
+                                                                               "Tombstone of " + artifact + " at version " + write.version() + " was not removed; it stays until the next goal")),
+                                            artifact);
         };
     }
 
